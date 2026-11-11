@@ -18,6 +18,13 @@
 
 namespace {
 
+std::vector<std::byte> sample_value_bytes(iv::Sample value)
+{
+    std::vector<std::byte> result(sizeof(value));
+    std::memcpy(result.data(), &value, sizeof(value));
+    return result;
+}
+
 struct TimedSamplePass {
     static constexpr auto inputs()
     {
@@ -796,7 +803,8 @@ build_connection_analysis_plan(
     iv::ConfiguredGraph const& graph,
     std::size_t kernel_block_size,
     iv::RealtimeStorageCostModel const& cost_model = {},
-    std::span<std::size_t const> callback_batch_classes = {})
+    std::span<std::size_t const> callback_batch_classes = {},
+    std::span<iv::NodeBundleHandle const> callback_elision_candidates = {})
 {
     auto port_realization = iv::graph_jit::resolve_port_realization(graph);
     if (!port_realization) {
@@ -808,7 +816,8 @@ build_connection_analysis_plan(
         kernel_block_size,
         cost_model,
         nullptr,
-        callback_batch_classes);
+        callback_batch_classes,
+        callback_elision_candidates);
 }
 
 } // namespace
@@ -1372,6 +1381,112 @@ TEST(GraphJitConnectionPlan, EqualizesFeedForwardSamplePathsAtConvergence)
     EXPECT_EQ(
         source_group->storage_plan->kind,
         RealtimeBufferStorageKind::stack_with_persistent_carry);
+}
+
+TEST(GraphJitConnectionPlan, ConstantProducerUsesImmutableStorageAcrossInputHistory)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<MonoSource>(graph);
+    auto sink = details::configure_concrete_node<TimedSamplePass>(graph);
+    auto const source_handle = source.node_bundle_handle();
+    auto const sink_handle = sink.node_bundle_handle();
+    sink(source);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    std::array callback_elision_candidates{source_handle};
+    auto connections = build_connection_analysis_plan(
+        configured, 64, {}, {}, callback_elision_candidates);
+    ASSERT_TRUE(connections.has_value())
+        << (connections ? std::string{} : connections.error());
+    ASSERT_EQ(connections->sample_connections.size(), 1u);
+    ASSERT_EQ(
+        connections->schedule.callback_elided.size(),
+        configured.node_bundles.size());
+    EXPECT_EQ(connections->schedule.callback_elided[source_handle], 1u);
+    EXPECT_FALSE(
+        connections->schedule.bundle_execution_position[source_handle]);
+    ASSERT_TRUE(connections->schedule.bundle_execution_position[sink_handle]);
+    EXPECT_EQ(
+        *connections->schedule.bundle_execution_position[sink_handle], 0u);
+
+    auto const group = std::ranges::find_if(
+        connections->sample_producer_groups,
+        [&](graph_jit::detail::SampleProducerGroupPlan const& candidate) {
+            return candidate.source_port
+                && candidate.source_port->node_bundle_handle == source_handle;
+        });
+    ASSERT_NE(group, connections->sample_producer_groups.end());
+    auto const group_index = static_cast<std::size_t>(std::distance(
+        connections->sample_producer_groups.begin(), group));
+    EXPECT_EQ(group->live_interval.begin, 0u);
+    EXPECT_EQ(group->live_interval.end, 0u);
+    auto const value = sample_value_bytes(Sample{0.375f});
+    std::array constant_producers{
+        graph_jit::detail::SampleConstantProducerRequest{
+            .producer_group_index = group_index,
+            .value = value,
+        },
+    };
+
+    auto storage = graph_jit::detail::build_sample_storage_plan(
+        *connections,
+        64,
+        {},
+        {},
+        {},
+        {},
+        constant_producers);
+    ASSERT_TRUE(storage.has_value())
+        << (storage ? std::string{} : storage.error());
+    ASSERT_TRUE(storage->producer_groups[group_index]);
+    auto const representation = storage->producer_groups[group_index]
+        ->canonical_representation;
+    ASSERT_LT(representation, storage->representations.size());
+    auto const& planned = storage->representations[representation];
+    ASSERT_TRUE(planned.constant_value);
+    EXPECT_EQ(*planned.constant_value, value);
+    EXPECT_EQ(
+        planned.transient_allocation,
+        graph_jit::detail::no_sample_transient_allocation);
+    EXPECT_EQ(
+        planned.persistent_allocation,
+        graph_jit::detail::no_sample_persistent_allocation);
+    EXPECT_GE(planned.frame_capacity, 64u + 5u);
+    EXPECT_TRUE(storage->transient_allocations.empty());
+    EXPECT_TRUE(storage->persistent_allocations.empty());
+
+    auto const& connection = connections->sample_connections.front();
+    EXPECT_EQ(connection.target_port.node_bundle_handle, sink_handle);
+    ASSERT_TRUE(storage->connection_representations.front());
+    EXPECT_EQ(*storage->connection_representations.front(), representation);
+}
+
+TEST(GraphJitConnectionPlan, BackgroundConsumerKeepsStaticProducerCallbackScheduled)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<ReplayableSource>(graph);
+    auto realtime = details::configure_concrete_node<TimedSamplePass>(graph);
+    auto background = details::configure_concrete_node<BackgroundSink>(graph);
+    auto const source_handle = source.node_bundle_handle();
+    realtime(source);
+    background(source);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    std::array callback_elision_candidates{source_handle};
+    auto connections = build_connection_analysis_plan(
+        configured, 64, {}, {}, callback_elision_candidates);
+    ASSERT_TRUE(connections.has_value())
+        << (connections ? std::string{} : connections.error());
+    ASSERT_EQ(
+        connections->schedule.callback_elided.size(),
+        configured.node_bundles.size());
+    EXPECT_EQ(connections->schedule.callback_elided[source_handle], 0u);
+    EXPECT_TRUE(
+        connections->schedule.bundle_execution_position[source_handle]);
 }
 
 TEST(GraphJitConnectionPlan, EqualizesChannelsInsideComposedSampleInput)

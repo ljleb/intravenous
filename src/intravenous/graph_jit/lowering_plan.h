@@ -30,6 +30,10 @@ struct ContinuousInputActivityPlan {
     // A compiler-owned immutable representation is unchanged by definition and
     // therefore owns no remembered-value state or runtime scan.
     bool static_constant = false;
+    // A transition-only suffix can expose an old value followed by the new
+    // immutable value. Keep the primitive awake for that transition without
+    // adding remembered-value storage to the steady plan.
+    bool changed_during_transition = false;
     std::vector<ContinuousActivityChannelStatePlan> channels{};
 };
 
@@ -230,6 +234,10 @@ struct PrimitiveSamplePortPlan {
     // instead receive bindings from the background executor.
     std::vector<PrimitiveSampleInputBindingPlan> inputs{};
     std::vector<PrimitiveSampleOutputBindingPlan> outputs{};
+    // The node-level static_sample_value fact has been validated against this
+    // primitive and every realtime output is backed by immutable storage.
+    // Connection analysis omits the primitive from the realtime schedule.
+    bool tick_callback_elided = false;
 };
 
 struct SamplePortBindingPlan {

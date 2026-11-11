@@ -2757,6 +2757,159 @@ builds are excluded. The block period is 5,333 µs.
     justifies it.
   - *Dependency-graph change if accepted.* SCC slice cost becomes the first step-5
     candidate. Step 4 is unaffected.
+  - *(A) implemented and measured (2026-11-10; collaborator implementation).* The
+    root no longer re-derives several plan-constant or call-constant facts for
+    each invocation.
+    - Each `RootStep` holds one ordered `RootOperation` list before and one after
+      its invocation. The lists contain only the operations the
+      `PrimitiveExecutionStep` schedules. An empty list costs one test, and
+      `run_operations()` dispatches all twelve operation kinds.
+    - Each primitive's `ReflectedNodeTickContext` lives in the binding template,
+      and its spans and State view are pointer fields filled when the template is
+      copied. `initialize_tick_slots()` adds the Random Access views and replaces
+      the bindings of slot-only inputs once per root call. The node wrapper
+      recomputes its contiguous-window fields from `sequential_begin_index` at
+      each invocation, so the replacement need not repeat per invocation.
+    - An invocation writes only its `RootBeginIndex` updates, each with its
+      precomputed Sequential cursor, plus any timeline-owning slot windows and
+      staged manual controls. It then calls the node through a reference to the
+      prepared context.
+    - Storage operations find their cursor through `representation_cursors`.
+      `mark_primitive_outputs()` keeps activity epochs only when some primitive
+      has an activity plan.
+    - The four benchmark processes compiled and completed successfully. A complete
+      test-suite result for these uncommitted changes has not been reported yet.
+  - *Measurement after (A).* The five edit-kind Tick means were 662-702 us for
+    `chain`, 968-1,008 us for `voices`, 1,580-2,605 us for `mixed`, and
+    3,072-3,119 us for `feedback`. The `feedback` result recovers only about
+    6-8% from the 3,319-3,342 us pre-(A) result. It remains about 54-60% slower
+    than the 1,948-1,991 us generated-root baseline. The large `mixed` range
+    depends on edit kind and must not be summarized as one stable same-graph
+    comparison without a focused measurement.
+  - *Conclusion.* (A) removes work from `execute_realtime_root()` dispatch, but it
+    does not remove the measured SCC cost. More importantly, native package callback
+    dispatch is not the final realtime-code model. It hides settled manual-control
+    values and other immutable values from the project LLVM module, so LLVM cannot
+    propagate them through downstream node code.
+
+**Selected next optimization feature (human co-author clarification,
+2026-11-10): graph-specific value specialization.** The precompiled
+`execute_realtime_root()` remains the graph-dependent sequencing and storage layer.
+GraphJit must also produce optimized realtime code for selected graph regions. Its
+planner propagates proven immutable continuous values, including settled manual
+controls, through the graph. Those values enter the selected LLVM code as constants,
+and LLVM then inlines and removes arithmetic, branches, and node work made unnecessary
+by those constants. Active manual controls use the exact `dynamic_inputs` variant
+specified in `graph_jit_direction.md`; idle controls return to constant-specialized
+code.
+
+This is not a replacement of the generic path described under "Value specialization
+over immutable temporal data." The generic package callbacks remain the correctness
+path when no specialization is valid. It is also not permission to compile a complete
+project root after every edit. Separate specialization cones are compiled independently
+and cached by their actual code inputs. The first implementation must establish the
+planner's immutable-value propagation and one selected cone end to end. The `feedback`
+benchmark's one-sample
+`ExecutionRegionPlan` is the first measured fusion candidate because it also removes
+the remaining per-slice interpreter boundary. The implementation must measure its
+compile time, cache reuse, and Tick improvement before choosing the general region
+size.
+
+**First slice: callback elision for `static_sample_value` producers
+(implementation status, 2026-11-10; collaborator build and test run pending).**
+This slice establishes the planner's first immutable-value source. It compiles no
+specialized code yet.
+- *Implemented.* `build_lowering_plan()` lists every concrete primitive whose
+  `ConfiguredNodeBundleView::static_sample_value` is set. Only `iv::Constant` sets
+  it. The node must be stateless, with no inputs and one ephemeral scalar `Sample`
+  Tick output.
+  - Connection analysis accepts a candidate only when its output has realtime
+    consumers and no background consumer, and records it in
+    `SchedulePlan::callback_elided` before `build_schedule()` runs. The producer
+    therefore gets no execution position, no region, and no
+    `PrimitiveExecutionStep`.
+  - `plan_sample_ports()` turns its producer group into a
+    `SampleConstantProducerRequest`. `build_sample_storage_plan()` then gives the
+    group an immutable `SampleRepresentationPlan::constant_value`. The
+    Constant node stays in `ConfiguredGraph`, the declarations, the configuration
+    data, and `NodeLayout`; only its Tick execution is absent.
+  - An operation that would have been anchored to the producer's position is
+    anchored to its first consumer instead. That covers the group's live
+    interval, a materialization before its first reader, a composition whose
+    sources are all elided, and a transition-root suffix copy (in
+    `specialize_transition_plan()`).
+  - Consumers see an immutable-constant input. Their activity plans therefore
+    mark the input `static_constant`, and a changed value carries the old value
+    across a cutover through the existing `transition_only_storage` path.
+- *Defects corrected in review (2026-11-10).*
+  - `plan_latency_compensation()` gave an elided producer no output path latency,
+    so every consumer failed with "latency compensation encountered a source
+    before its producer". The producer now has its internal latency.
+  - `live_interval_for_sample_group()` started an elided group at whichever
+    consumer it visited first. It now starts at the earliest consumer.
+  - A feed-forward composition whose sources are all elided was anchored after
+    position 0, which can follow its consumer. It now runs before its consumer.
+  - `plan_sample_ports()` and the event stack-lifetime pass both required an
+    execution position for every Tick primitive. Both now skip an elided one.
+  - `plan_sample_groups()` forced block materialization whenever an elided
+    source fed a sliced consumer. Immutable storage serves any window, so it no
+    longer does.
+  - The first collaborator run (852 tests, 3 failures) found two more. First, the
+    eligibility check in `build_lowering_plan()` required
+    `ResolvedContinuousPortRealization::size == 1`. A scalar value type always
+    resolves `size` to nullopt, so every Constant was rejected with "requires one
+    ephemeral scalar Sample Tick output". The check now rejects any resolved
+    `size`. Second, `BackgroundConsumerKeepsStaticProducerCallbackScheduled`
+    read an ephemeral, non-replayable `MonoSource` through a Region input, which
+    connection analysis correctly rejects ("explicit recorder is required"). The
+    test now uses `ReplayableSource` read by the Coverage input of
+    `BackgroundSink`, so its background delivery is
+    `replayed_tick_to_random_access`.
+  - The second run (852 tests, 2 failures) reached `build_execution_plan()`. Its
+    event-output reset loop required an execution step for every Tick primitive
+    and failed with "event output is absent from the execution schedule". It now
+    skips a primitive with `PrimitiveSamplePortPlan::tick_callback_elided` set,
+    after checking that the primitive has no event output. Activity planning
+    likewise gives such a primitive no `PrimitiveActivityPlan`, so a Constant
+    given a TTL is not tracked for a callback that never runs.
+  - The third run (852 tests, 1 failure) reached the cutover. A reader whose
+    Constant changed value has an `immutable_constant` successor realization,
+    for which `select_sample_inherited_state_realization()` selects
+    `transition_only_storage`. The suffix planner in
+    `realize_realtime_port_state_transition_storage()` and
+    `specialize_transition_plan()` accepted only direct, materialized and
+    composed successors. Both now accept an immutable successor. The private
+    suffix ring holds the current callback window plus the retained suffix; this
+    also covers a disconnected immutable input, whose steady representation
+    needs no history storage. The mirror copies the immutable value into the
+    suffix before the reader's step through the first-consumer anchor.
+  - A first correction incorrectly required
+    `SampleRealtimePortStateStorageView::producer`. A Constant routed through a
+    module boundary and a disconnected input default are both valid immutable
+    representations but need not be the canonical representation of a named
+    leaf output. This rejected all feedback benchmark edits. The suffix now
+    validates the immutable storage and its `constant_value` directly.
+  - Callback elision does not alter fresh-position semantics. Transition
+    transfer still initializes positions the source had not authored with the
+    input's normal fresh value. The mirror supplies the immutable value from the
+    cutover onward. Earlier text that claimed a Constant had existed before its
+    node was introduced was an implementation mistake, not a design decision,
+    and was removed.
+  - `PrimitiveActivityPlan::continuous_inputs[].static_constant` is derived from
+    the steady plan's input bindings. During a transition, an immutable input's
+    suffix can expose an old value followed by the new value. The transition
+    copy now marks that input `changed_during_transition`; activity keeps the
+    primitive awake for the transition without adding remembered-value storage
+    to the steady plan.
+- *Tests.* `GraphJitConnectionPlan.ConstantProducerUsesImmutableStorageAcrossInputHistory`
+  and `BackgroundConsumerKeepsStaticProducerCallbackScheduled` cover planning.
+  `GraphJitRuntimeFixture.ConstantProducerOutputIsImmutableStorage` and
+  `ChangedConstantKeepsItsOldValuesInReaderHistory` cover execution and the
+  cutover, through `iv.test.graph_jit.state_context.constant`.
+  `RealtimePortStateTransition.RealizesChangedImmutableInputWithoutCanonicalProducerIdentity`
+  covers the transition-storage rule without a canonical producer ID.
+- *Next.* Optimizer-visible code for one selected cone, beginning with the
+  `feedback` benchmark's one-sample `ExecutionRegionPlan`, as selected above.
 
 Measurement (implementation status, 2026-11-06): setting `IV_EDIT_TIMING=1` makes
 `ProjectGraph::rebuild_locked()` write one "edit timing" entry per published

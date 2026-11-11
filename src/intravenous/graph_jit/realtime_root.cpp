@@ -154,26 +154,45 @@ struct RootTickSlots {
     // Per Sequential slot of the invocation, the primitive input it supplies.
     std::vector<std::size_t> sample_inputs{};
     std::vector<std::size_t> event_inputs{};
+    // A slot whose input has no timeline of its own replaces that input's
+    // binding once per root call. A slot whose input owns a timeline writes
+    // the window of every invocation into it.
+    std::vector<std::size_t> sample_overlay_slots{};
+    std::vector<std::size_t> sample_timeline_slots{};
+    std::vector<std::size_t> event_overlay_slots{};
+    std::vector<std::size_t> event_timeline_slots{};
     // Per capture slot of the invocation, the compact realtime output index.
     std::vector<std::size_t> sample_capture_outputs{};
     std::vector<std::size_t> event_capture_outputs{};
 };
 
+// The Sequential begin index of one binding, written before every invocation.
+// It advances from one generation pace cursor, or, for an input bound directly
+// to a Tick slot (cursor == no_index), from the slot window's first frame.
+struct RootBeginIndex {
+    std::size_t field_offset = 0;
+    std::size_t cursor = no_index;
+    std::int32_t pace_exponent = 0;
+};
+
 struct RootPrimitive {
     AlignedBytes node_data{};
-    ReflectedNodeTickContext tick_context{};
     details::NodeCompilerOperations callbacks{};
-    // Root-scratch offsets of the primitive's reflected binding arrays.
+    // Root-scratch offsets of the primitive's reflected binding arrays and of
+    // its ReflectedNodeTickContext. The context holds the same values for every
+    // invocation of one root call, so the root completes it once per call.
     std::size_t sample_inputs_offset = 0;
     std::size_t sample_outputs_offset = 0;
     std::size_t event_inputs_offset = 0;
     std::size_t event_outputs_offset = 0;
+    std::size_t context_offset = 0;
     std::size_t sample_output_count = 0;
     std::size_t event_output_count = 0;
     std::optional<RootTickSlots> tick{};
     // Entries of SamplePortBindingPlan::manual_controls that target this
     // primitive.
     std::vector<std::size_t> manual_controls{};
+    std::vector<RootBeginIndex> begin_indices{};
     // Per event input: a Tick slot supplies it, so its activity is not shared
     // through the event representation's activity summary.
     std::vector<std::uint8_t> slot_supplied_event_inputs{};
@@ -182,10 +201,42 @@ struct RootPrimitive {
     std::vector<std::size_t> output_event_representations{};
 };
 
+enum class RootOperationKind : std::uint8_t {
+    event_sequence_reset,
+    event_ring_prune,
+    event_carry_restore,
+    event_carry_commit,
+    event_merge,
+    event_materialize,
+    event_feedback_append,
+    sample_carry_restore,
+    sample_materialization,
+    sample_composition,
+    sample_feedback_write,
+    sample_carry_commit,
+};
+
+// One storage operation. index selects the operation's plan entry; for a
+// sequence reset it is the event representation itself.
+struct RootOperation {
+    RootOperationKind kind = RootOperationKind::event_sequence_reset;
+    std::size_t index = 0;
+};
+
+// One execution step: its primitive and the operations before and after its
+// invocation, in the order PrimitiveExecutionStep defines.
 struct RootStep {
-    bool has_state = false;
-    std::size_t state_offset = 0;
-    std::size_t state_size = 0;
+    std::size_t primitive = 0;
+    std::size_t maximum_block_size = 0;
+    std::vector<RootOperation> before{};
+    std::vector<RootOperation> after{};
+    bool captures = false;
+};
+
+// The operations around one cyclic region's complete root call.
+struct RootRegion {
+    std::vector<RootOperation> before{};
+    std::vector<RootOperation> after{};
 };
 
 struct ContinuousActivitySummary {
@@ -226,7 +277,7 @@ struct RootFrameLayout {
     std::size_t tick_lanes = 0;
     std::size_t skip_lanes = 0;
     std::size_t tick_decisions = 0;
-    std::size_t tick_steps = 0;
+    std::size_t tick_lane_primitives = 0;
     std::size_t size = 0;
 };
 } // namespace
@@ -242,12 +293,18 @@ struct RealtimeRootPlan {
 
     // Facts derived once from those sections and the remaining plan.
     std::vector<RootPrimitive> primitives{};
+    // Indexed like ExecutionPlan::primitive_steps and ExecutionPlan::regions.
     std::vector<RootStep> steps{};
+    std::vector<RootRegion> regions{};
+    // Primitives with Tick runtime slots.
+    std::vector<std::size_t> tick_primitives{};
     std::vector<RootAddress> sample_addresses{};
     std::vector<RootAddress> event_addresses{};
     std::vector<AlignedBytes> immutable_storage{};
-    // Per sample representation, its producer authored extent or no_index.
+    // Per sample representation, its producer authored extent or no_index,
+    // and its pace's Sequential cursor or no_index.
     std::vector<std::size_t> authored_extents{};
+    std::vector<std::size_t> representation_cursors{};
     // Indexed like SampleStoragePlan::materializations, compositions, and
     // feedback_timelines. Entries of operations no step schedules stay empty.
     std::vector<RootMaterialization> materializations{};
@@ -264,6 +321,9 @@ struct RealtimeRootPlan {
     std::size_t maximum_batch_lanes = 0;
     RootFrameLayout frame{};
     bool has_tick_slots = false;
+    // Some primitive has a TTL activity plan, so the root keeps
+    // representation epochs for the activity summaries.
+    bool tracks_activity = false;
 };
 
 namespace {
@@ -386,7 +446,7 @@ struct RootFrame {
     std::span<ReflectedNodeTickBatchLane> tick_lanes{};
     std::span<ReflectedNodeTickBatchLane> skip_lanes{};
     std::span<PrimitiveActivityDecision> tick_decisions{};
-    std::span<std::size_t> tick_steps{};
+    std::span<std::size_t> tick_lane_primitives{};
     TickInvocationCall const* invocation = nullptr;
     GlobalIndex root_index{};
 };
@@ -417,16 +477,40 @@ std::byte* resolve_address(
     return nullptr;
 }
 
+// The physical Sequential index of callback_index on one generation pace
+// cursor.
 std::uint64_t sequential_begin_index(
     RootFrame const& frame,
-    GlobalIndex callback_index,
-    std::int32_t pace_exponent) noexcept
+    std::size_t cursor,
+    std::int32_t pace_exponent,
+    GlobalIndex callback_index) noexcept
+{
+    return frame.sequential_pace_cursors[cursor]
+        + projected_prefix(frame.root_index, callback_index, pace_exponent);
+}
+
+std::uint64_t representation_begin_index(
+    RootFrame const& frame,
+    std::size_t representation,
+    GlobalIndex callback_index) noexcept
+{
+    return sequential_begin_index(
+        frame,
+        frame.plan.representation_cursors[representation],
+        frame.plan.sample_ports.storage.representations[representation]
+            .absolute_pace_exponent,
+        callback_index);
+}
+
+std::uint64_t pace_begin_index(
+    RootFrame const& frame,
+    std::int32_t pace_exponent,
+    GlobalIndex callback_index) noexcept
 {
     auto const& cursors = frame.plan.sample_ports.storage.sequential_pace_cursors;
     std::size_t cursor = 0;
     while (cursors[cursor].absolute_pace_exponent != pace_exponent) ++cursor;
-    return frame.sequential_pace_cursors[cursor]
-        + projected_prefix(frame.root_index, callback_index, pace_exponent);
+    return sequential_begin_index(frame, cursor, pace_exponent, callback_index);
 }
 
 std::byte* continuous_value(
@@ -471,8 +555,8 @@ void materialize_sample(
     auto const projected = project_lattice(
         callback_index, callback_size, target.absolute_pace_exponent).value_count;
     if (projected == 0) return;
-    auto const begin = sequential_begin_index(
-        frame, callback_index, target.absolute_pace_exponent);
+    auto const begin = representation_begin_index(
+        frame, operation.target_representation, callback_index);
     auto const first = begin - operation.retained_before;
     auto const count = projected
         + (operation.retained_before - operation.latest_read_latency);
@@ -557,8 +641,8 @@ void compose_samples(
         callback_index, callback_size, target.absolute_pace_exponent).value_count
         + target_history;
     if (count == 0) return;
-    auto const first = sequential_begin_index(
-        frame, callback_index, target.absolute_pace_exponent) - target_history;
+    auto const first = representation_begin_index(
+        frame, target_representation, callback_index) - target_history;
     auto const lanes = target.geometry.channel_scalar_lane_count;
 
     // Shifted feedback writes rewrite only the history frames that every
@@ -681,8 +765,8 @@ void write_feedback_samples(
     auto const& target = storage.representations[timeline.timeline_representation];
     auto const projected = project_lattice(
         callback_index, callback_size, target.absolute_pace_exponent).value_count;
-    auto const begin = sequential_begin_index(
-        frame, callback_index, target.absolute_pace_exponent);
+    auto const begin = representation_begin_index(
+        frame, timeline.timeline_representation, callback_index);
     auto const revision = available_revision(
         frame,
         timeline.writer.source_representation,
@@ -725,8 +809,8 @@ void sample_carry(
     if (projected == 0) return;
     auto const& allocation = storage.persistent_allocations[
         operation.persistent_allocation];
-    auto const begin = sequential_begin_index(
-        frame, callback_index, representation.absolute_pace_exponent);
+    auto const begin = representation_begin_index(
+        frame, operation.representation_index, callback_index);
     auto const retained_before = operation.retained_frames
         - operation.future_frames;
     auto const first = restore
@@ -1100,59 +1184,116 @@ void append_event_feedback(
     }
 }
 
-void run_event_operations(
+void mark_sample_representation(RootFrame& frame, std::size_t representation) noexcept
+{
+    if (frame.plan.tracks_activity) {
+        ++frame.sample_representation_epochs[representation];
+    }
+}
+
+void mark_event_representation(RootFrame& frame, std::size_t representation) noexcept
+{
+    if (frame.plan.tracks_activity) {
+        ++frame.event_representation_epochs[representation];
+    }
+}
+
+void run_operations(
     RootFrame& frame,
-    std::span<detail::EventOperationRef const> operations,
+    std::span<RootOperation const> operations,
     GlobalIndex index,
     std::size_t block_size) noexcept
 {
-    auto const& plan = frame.plan.event_ports;
+    auto const& plan = frame.plan;
+    auto const& events = plan.event_ports;
+    auto const& storage = plan.sample_ports.storage;
     for (auto const operation : operations) {
         switch (operation.kind) {
-        case detail::EventOperationKind::sequence_reset: {
-            // A sequence reset names its representation directly.
+        case RootOperationKind::event_sequence_reset:
             store_raw<std::size_t>(
                 frame.event_representations[operation.index],
-                plan.ports[operation.index].count_relative_offset,
+                events.ports[operation.index].count_relative_offset,
                 0);
-            ++frame.event_representation_epochs[operation.index];
+            mark_event_representation(frame, operation.index);
             break;
-        }
-        case detail::EventOperationKind::persistent_ring_prune: {
-            auto const& selected = plan.persistent_rings[operation.index];
+        case RootOperationKind::event_ring_prune: {
+            auto const& selected = events.persistent_rings[operation.index];
             prune_event_ring(frame, selected, index, block_size);
-            ++frame.event_representation_epochs[selected.storage];
+            mark_event_representation(frame, selected.storage);
             break;
         }
-        case detail::EventOperationKind::carry_restore:
-        case detail::EventOperationKind::carry_commit: {
-            auto const restore =
-                operation.kind == detail::EventOperationKind::carry_restore;
-            auto const& selected = plan.carry_operations[operation.index];
-            event_carry(frame, selected, index, block_size, restore);
-            ++frame.event_representation_epochs[restore
-                ? selected.working_representation
-                : selected.persistent_representation];
+        case RootOperationKind::event_carry_restore: {
+            auto const& selected = events.carry_operations[operation.index];
+            event_carry(frame, selected, index, block_size, true);
+            mark_event_representation(frame, selected.working_representation);
             break;
         }
-        case detail::EventOperationKind::merge: {
-            auto const& selected = plan.merges[operation.index];
+        case RootOperationKind::event_carry_commit: {
+            auto const& selected = events.carry_operations[operation.index];
+            event_carry(frame, selected, index, block_size, false);
+            mark_event_representation(frame, selected.persistent_representation);
+            break;
+        }
+        case RootOperationKind::event_merge: {
+            auto const& selected = events.merges[operation.index];
             merge_events(frame, selected);
-            ++frame.event_representation_epochs[selected.target_representation];
+            mark_event_representation(frame, selected.target_representation);
             break;
         }
-        case detail::EventOperationKind::materialize: {
-            auto const& selected = plan.materializations[operation.index];
+        case RootOperationKind::event_materialize: {
+            auto const& selected = events.materializations[operation.index];
             materialize_events(frame, selected, index, block_size);
-            ++frame.event_representation_epochs[selected.target_representation];
+            mark_event_representation(frame, selected.target_representation);
             break;
         }
-        case detail::EventOperationKind::feedback_append: {
-            auto const& selected = plan.feedback_operations[operation.index];
+        case RootOperationKind::event_feedback_append: {
+            auto const& selected = events.feedback_operations[operation.index];
             append_event_feedback(frame, selected, index, block_size);
-            ++frame.event_representation_epochs[selected.target_representation];
+            mark_event_representation(frame, selected.target_representation);
             break;
         }
+        case RootOperationKind::sample_carry_restore: {
+            auto const& selected = storage.carry_operations[operation.index];
+            sample_carry(frame, selected, index, block_size, true);
+            mark_sample_representation(frame, selected.representation_index);
+            break;
+        }
+        case RootOperationKind::sample_materialization:
+            materialize_sample(frame, operation.index, index, block_size);
+            mark_sample_representation(
+                frame,
+                storage.materializations[operation.index].target_representation);
+            break;
+        case RootOperationKind::sample_composition: {
+            auto const& composition = storage.compositions[operation.index];
+            compose_samples(
+                frame,
+                composition.contributions,
+                plan.compositions[operation.index],
+                composition.target_representation,
+                composition.target_history,
+                false,
+                index,
+                block_size);
+            mark_sample_representation(frame, composition.target_representation);
+            break;
+        }
+        case RootOperationKind::sample_feedback_write:
+            write_feedback_samples(frame, operation.index, index, block_size);
+            mark_sample_representation(
+                frame,
+                storage.feedback_timelines[operation.index].timeline_representation);
+            break;
+        case RootOperationKind::sample_carry_commit:
+            // A commit writes the retained carry, not the working
+            // representation, so no activity summary is invalidated.
+            sample_carry(
+                frame,
+                storage.carry_operations[operation.index],
+                index,
+                block_size,
+                false);
+            break;
         }
     }
 }
@@ -1194,50 +1335,31 @@ std::byte* bound_channel_value(
     return channel.storage + slot * channel.value_stride_bytes;
 }
 
-// Overlays the Tick slots of a primitive's inputs without their own timeline
-// and writes the current block of every slot-fed input timeline. A pure input
-// receives its slot window; a mixed input receives the node's combination of
-// its realtime operand with that window. Earlier timeline positions are the
-// input's node-owned history and are never rewritten.
-void stage_sequential_sample_inputs(
+// Writes the current window of every slot-fed input that owns a timeline. A
+// pure input receives its slot window; a mixed input receives the node's
+// combination of its realtime operand with that window. Earlier timeline
+// positions are the input's node-owned history and are never rewritten.
+void stage_sample_timelines(
     RootFrame& frame,
     std::size_t primitive_index,
     RootTickSlots const& tick,
     GlobalIndex callback_index,
-    std::size_t callback_size,
-    std::span<ReflectedContinuousInputPortBinding> bindings) noexcept
+    std::size_t callback_size) noexcept
 {
     auto const& plan = frame.plan;
     auto const& inputs = plan.sample_ports.primitives[primitive_index].inputs;
     auto const& callbacks = plan.primitives[primitive_index].callbacks;
     auto const* supplied = frame.invocation->sequential_sample_inputs.data()
         + tick.invocation.sequential_sample_begin;
-    for (std::size_t slot = 0; slot < tick.sample_inputs.size(); ++slot) {
+    for (auto const slot : tick.sample_timeline_slots) {
         auto const input_index = tick.sample_inputs[slot];
         auto const& input = inputs[input_index];
         auto const& source = supplied[slot];
-        if (input.channels.empty()) {
-            // The slot replaces the binding except for its compiler-owned
-            // contiguous scratch.
-            auto& binding = bindings[input_index];
-            auto const capacity = binding.contiguous_value_capacity;
-            std::array<std::byte*, maximum_supported_channel_count> scratch{};
-            for (std::size_t channel = 0; channel < scratch.size(); ++channel) {
-                scratch[channel] = binding.storage.channels[channel].contiguous_scratch;
-            }
-            binding = source;
-            binding.contiguous_value_capacity = capacity;
-            for (std::size_t channel = 0; channel < scratch.size(); ++channel) {
-                binding.storage.channels[channel].contiguous_scratch = scratch[channel];
-            }
-            continue;
-        }
-
         // The timeline and the realtime operand are addressed by the same
         // generation pace cursor as the callback binding; slot frame zero is
         // the root call's first position.
         auto const pace = input.absolute_pace_exponent;
-        auto const timeline_begin = sequential_begin_index(frame, callback_index, pace);
+        auto const timeline_begin = pace_begin_index(frame, pace, callback_index);
         auto const supplied_begin = source.sequential_begin_index
             + projected_prefix(frame.root_index, callback_index, pace)
             - source.read_latency;
@@ -1284,31 +1406,25 @@ void stage_sequential_sample_inputs(
     }
 }
 
-// Overlays the Tick slots of event inputs without their own timeline ring and
-// inserts the current window of every slot-fed input that owns one. A mixed
-// input inserts the current window of the deterministic merge of its realtime
-// operand with the slot window. The ring was pruned and rebased before this
-// primitive, so earlier events are the input's node-owned history.
-void stage_sequential_event_inputs(
+// Inserts the current window of every slot-fed event input that owns a
+// timeline ring. A mixed input inserts the current window of the deterministic
+// merge of its realtime operand with the slot window. The ring was pruned and
+// rebased before this primitive, so earlier events are the input's node-owned
+// history.
+void stage_event_timelines(
     RootFrame& frame,
     std::size_t primitive_index,
     RootTickSlots const& tick,
     GlobalIndex callback_index,
-    std::size_t callback_size,
-    std::span<ReflectedEventInputPortBinding> bindings) noexcept
+    std::size_t callback_size) noexcept
 {
     auto const& plan = frame.plan;
     auto const& inputs = plan.event_ports.primitives[primitive_index].inputs;
     auto const* supplied = frame.invocation->sequential_event_inputs.data()
         + tick.invocation.sequential_event_begin;
-    for (std::size_t slot = 0; slot < tick.event_inputs.size(); ++slot) {
-        auto const input_index = tick.event_inputs[slot];
-        auto const& input = inputs[input_index];
+    for (auto const slot : tick.event_timeline_slots) {
+        auto const& input = inputs[tick.event_inputs[slot]];
         auto const& source_binding = supplied[slot];
-        if (!input.storage) {
-            bindings[input_index] = source_binding;
-            continue;
-        }
         auto const& source = source_binding.storage;
         auto const* source_events = source.storage + source.events_offset;
         auto source_capacity = source.event_capacity;
@@ -1424,7 +1540,7 @@ void stage_manual_control_sample_timelines(
         auto const callback_values = project_lattice(
             callback_index, callback_size, pace).value_count;
         auto const callback_prefix = projected_prefix(callback_index, slice_index, pace);
-        auto const timeline_begin = sequential_begin_index(frame, slice_index, pace);
+        auto const timeline_begin = pace_begin_index(frame, pace, slice_index);
         auto const has_existing_value = input.invocation_supplied
             || !input.manual_operand_channels.empty();
         for (std::size_t channel = 0;
@@ -1490,85 +1606,47 @@ ReflectedSpan<T const> invocation_span(
     return {supplied.data() + begin, count};
 }
 
-struct PreparedPrimitive {
-    RootPrimitive const* primitive = nullptr;
-    ReflectedNodeTickContext context{};
-};
-
-PreparedPrimitive prepare_primitive(
-    RootFrame& frame,
-    std::size_t step_index,
-    GlobalIndex callback_index,
-    std::size_t callback_size,
-    GlobalIndex enclosing_index,
-    std::size_t enclosing_size) noexcept
+// Completes, once per root call, the parts of each Tick primitive's bindings
+// and context that its TickInvocationCall supplies: the bindings of inputs a
+// slot replaces, and the Random Access views.
+void initialize_tick_slots(RootFrame& frame) noexcept
 {
     auto const& plan = frame.plan;
-    auto const& step = plan.execution.primitive_steps[step_index];
-    auto const primitive_index = step.configuration_index;
-    auto const& primitive = plan.primitives[primitive_index];
-    auto const& sample_plan = plan.sample_ports.primitives[primitive_index];
-    auto const& event_plan = plan.event_ports.primitives[primitive_index];
-    auto sample_inputs = frame_array<ReflectedContinuousInputPortBinding>(
-        frame.scratch, primitive.sample_inputs_offset, sample_plan.inputs.size());
-    auto sample_outputs = frame_array<ReflectedContinuousOutputPortBinding>(
-        frame.scratch, primitive.sample_outputs_offset, primitive.sample_output_count);
-    auto event_inputs = frame_array<ReflectedEventInputPortBinding>(
-        frame.scratch, primitive.event_inputs_offset, event_plan.inputs.size());
-    auto event_outputs = frame_array<ReflectedEventOutputPortBinding>(
-        frame.scratch, primitive.event_outputs_offset, primitive.event_output_count);
-
-    if (primitive.tick) {
-        stage_sequential_sample_inputs(
-            frame,
-            primitive_index,
-            *primitive.tick,
-            callback_index,
-            callback_size,
-            sample_inputs);
-        stage_sequential_event_inputs(
-            frame,
-            primitive_index,
-            *primitive.tick,
-            callback_index,
-            callback_size,
-            event_inputs);
-    }
-    stage_manual_control_sample_timelines(
-        frame,
-        primitive_index,
-        callback_index,
-        callback_size,
-        enclosing_index,
-        enclosing_size);
-
-    for (std::size_t input = 0; input < sample_plan.inputs.size(); ++input) {
-        auto const& input_plan = sample_plan.inputs[input];
-        if (input_plan.random_access) continue;
-        // A directly bound slot holds the root call's window from frame zero,
-        // so a slice begins at its projected offset.
-        sample_inputs[input].sequential_begin_index = input_plan.channels.empty()
-            ? projected_prefix(
-                  frame.root_index,
-                  callback_index,
-                  input_plan.absolute_pace_exponent)
-            : sequential_begin_index(
-                  frame, callback_index, input_plan.absolute_pace_exponent);
-    }
-    std::size_t compact = 0;
-    for (auto const& output : sample_plan.outputs) {
-        if (!output.realtime) continue;
-        sample_outputs[compact++].sequential_begin_index = sequential_begin_index(
-            frame, callback_index, output.absolute_pace_exponent);
-    }
-
-    auto context = primitive.tick_context;
-    context.continuous_input_bindings = {sample_inputs.data(), sample_inputs.size()};
-    context.continuous_output_bindings = {sample_outputs.data(), sample_outputs.size()};
-    context.event_input_bindings = {event_inputs.data(), event_inputs.size()};
-    context.event_output_bindings = {event_outputs.data(), event_outputs.size()};
-    if (primitive.tick) {
-        auto const& invocation = primitive.tick->invocation;
+    for (auto const primitive_index : plan.tick_primitives) {
+        auto const& primitive = plan.primitives[primitive_index];
+        auto const& tick = *primitive.tick;
+        auto const& invocation = tick.invocation;
+        auto sample_inputs = frame_array<ReflectedContinuousInputPortBinding>(
+            frame.scratch,
+            primitive.sample_inputs_offset,
+            plan.sample_ports.primitives[primitive_index].inputs.size());
+        for (auto const slot : tick.sample_overlay_slots) {
+            auto const& supplied = frame.invocation->sequential_sample_inputs
+                .data()[invocation.sequential_sample_begin + slot];
+            // The slot replaces the binding except for its compiler-owned
+            // contiguous scratch.
+            auto& binding = sample_inputs[tick.sample_inputs[slot]];
+            auto const capacity = binding.contiguous_value_capacity;
+            std::array<std::byte*, maximum_supported_channel_count> scratch{};
+            for (std::size_t channel = 0; channel < scratch.size(); ++channel) {
+                scratch[channel] = binding.storage.channels[channel].contiguous_scratch;
+            }
+            binding = supplied;
+            binding.contiguous_value_capacity = capacity;
+            for (std::size_t channel = 0; channel < scratch.size(); ++channel) {
+                binding.storage.channels[channel].contiguous_scratch = scratch[channel];
+            }
+        }
+        auto event_inputs = frame_array<ReflectedEventInputPortBinding>(
+            frame.scratch,
+            primitive.event_inputs_offset,
+            plan.event_ports.primitives[primitive_index].inputs.size());
+        for (auto const slot : tick.event_overlay_slots) {
+            event_inputs[tick.event_inputs[slot]] = frame.invocation
+                ->sequential_event_inputs.data()[invocation.sequential_event_begin + slot];
+        }
+        auto& context = *reinterpret_cast<ReflectedNodeTickContext*>(
+            frame.scratch + primitive.context_offset);
         if (invocation.random_access_sample_count != 0) {
             context.random_access_inputs = invocation_span(
                 frame.invocation->random_access_sample_inputs,
@@ -1582,13 +1660,54 @@ PreparedPrimitive prepare_primitive(
                 invocation.random_access_event_count);
         }
     }
-    auto const& state = plan.steps[step_index];
-    if (state.has_state) {
-        context.state = ReflectedSpan<std::byte>{
-            frame.storage_base + state.state_offset,
-            state.state_size};
+}
+
+// Writes what one invocation of a primitive changes: the windows of its
+// timeline-owning slot inputs and staged manual controls, and the Sequential
+// begin index of each binding. Everything else in its context is complete for
+// the root call.
+ReflectedNodeTickContext const& prepare_invocation(
+    RootFrame& frame,
+    std::size_t primitive_index,
+    GlobalIndex callback_index,
+    std::size_t callback_size,
+    GlobalIndex enclosing_index,
+    std::size_t enclosing_size) noexcept
+{
+    auto const& primitive = frame.plan.primitives[primitive_index];
+    if (primitive.tick) {
+        if (!primitive.tick->sample_timeline_slots.empty()) {
+            stage_sample_timelines(
+                frame, primitive_index, *primitive.tick, callback_index, callback_size);
+        }
+        if (!primitive.tick->event_timeline_slots.empty()) {
+            stage_event_timelines(
+                frame, primitive_index, *primitive.tick, callback_index, callback_size);
+        }
     }
-    return {.primitive = &primitive, .context = context};
+    if (!primitive.manual_controls.empty()) {
+        stage_manual_control_sample_timelines(
+            frame,
+            primitive_index,
+            callback_index,
+            callback_size,
+            enclosing_index,
+            enclosing_size);
+    }
+    for (auto const& update : primitive.begin_indices) {
+        // A directly bound slot holds the root call's window from frame zero,
+        // so a slice begins at its projected offset.
+        auto const prefix = projected_prefix(
+            frame.root_index, callback_index, update.pace_exponent);
+        store_raw<std::uint64_t>(
+            frame.scratch,
+            update.field_offset,
+            update.cursor == no_index
+                ? prefix
+                : frame.sequential_pace_cursors[update.cursor] + prefix);
+    }
+    return *reinterpret_cast<ReflectedNodeTickContext const*>(
+        frame.scratch + primitive.context_offset);
 }
 
 PrimitiveActivityDecision decide_primitive_activity(
@@ -1609,6 +1728,11 @@ PrimitiveActivityDecision decide_primitive_activity(
     auto const& sample_plan = plan.sample_ports.primitives[primitive_index];
     for (std::size_t input = 0; input < activity.continuous_inputs.size(); ++input) {
         auto const& input_activity = activity.continuous_inputs[input];
+        if (input_activity.changed_during_transition) {
+            inputs_constant = false;
+            inputs_unchanged = false;
+            continue;
+        }
         if (input_activity.static_constant) continue;
         auto const value_count = project_lattice(
             index,
@@ -1742,6 +1866,7 @@ void update_primitive_activity(
 
 void mark_primitive_outputs(RootFrame& frame, RootPrimitive const& primitive) noexcept
 {
+    if (!frame.plan.tracks_activity) return;
     for (auto const representation : primitive.output_sample_representations) {
         ++frame.sample_representation_epochs[representation];
     }
@@ -1752,44 +1877,36 @@ void mark_primitive_outputs(RootFrame& frame, RootPrimitive const& primitive) no
 
 void invoke_primitive(
     RootFrame& frame,
-    std::size_t step_index,
+    std::size_t primitive_index,
     GlobalIndex callback_index,
     std::size_t callback_size,
     GlobalIndex enclosing_index,
     std::size_t enclosing_size) noexcept
 {
-    auto const primitive_index = frame.plan.execution
-        .primitive_steps[step_index].configuration_index;
-    auto prepared = prepare_primitive(
+    auto const& primitive = frame.plan.primitives[primitive_index];
+    auto const& context = prepare_invocation(
         frame,
-        step_index,
+        primitive_index,
         callback_index,
         callback_size,
         enclosing_index,
         enclosing_size);
-    auto const& primitive = *prepared.primitive;
+    if (!frame.plan.tracks_activity) {
+        primitive.callbacks.tick_block(
+            primitive.node_data.data(), context, callback_index, callback_size);
+        return;
+    }
     auto const decision = decide_primitive_activity(
-        frame, primitive_index, prepared.context, callback_index, callback_size);
+        frame, primitive_index, context, callback_index, callback_size);
     if (decision.should_skip) {
         primitive.callbacks.skip_block(
-            primitive.node_data.data(),
-            prepared.context,
-            callback_index,
-            callback_size);
+            primitive.node_data.data(), context, callback_index, callback_size);
     } else {
         if (decision.state) decision.state->dormant = 0;
         primitive.callbacks.tick_block(
-            primitive.node_data.data(),
-            prepared.context,
-            callback_index,
-            callback_size);
+            primitive.node_data.data(), context, callback_index, callback_size);
         update_primitive_activity(
-            frame,
-            primitive_index,
-            decision,
-            prepared.context,
-            callback_index,
-            callback_size);
+            frame, primitive_index, decision, context, callback_index, callback_size);
     }
     mark_primitive_outputs(frame, primitive);
 }
@@ -1799,13 +1916,11 @@ void invoke_primitive(
 // slices its own invocation.
 void capture_outputs(
     RootFrame& frame,
-    std::size_t step_index,
+    std::size_t primitive_index,
     GlobalIndex index,
     std::size_t block_size) noexcept
 {
-    auto const& primitive = frame.plan.primitives[
-        frame.plan.execution.primitive_steps[step_index].configuration_index];
-    if (!primitive.tick) return;
+    auto const& primitive = frame.plan.primitives[primitive_index];
     auto const& tick = *primitive.tick;
     auto sample_outputs = frame_array<ReflectedContinuousOutputPortBinding>(
         frame.scratch, primitive.sample_outputs_offset, primitive.sample_output_count);
@@ -1844,89 +1959,24 @@ void run_step(
     std::size_t block_size,
     bool allow_primitive_slicing) noexcept
 {
-    auto const& plan = frame.plan;
-    auto const& storage = plan.sample_ports.storage;
-    auto const& step = plan.execution.primitive_steps[step_index];
-    run_event_operations(frame, step.event_operations_before, index, block_size);
-    for (auto const operation : step.sample_carry_restores_before) {
-        auto const& selected = storage.carry_operations[operation];
-        sample_carry(frame, selected, index, block_size, true);
-        ++frame.sample_representation_epochs[selected.representation_index];
-    }
-    for (auto const operation : step.sample_materializations_before) {
-        materialize_sample(frame, operation, index, block_size);
-        ++frame.sample_representation_epochs[
-            storage.materializations[operation].target_representation];
-    }
-    for (auto const operation : step.sample_compositions_before) {
-        auto const& composition = storage.compositions[operation];
-        compose_samples(
-            frame,
-            composition.contributions,
-            plan.compositions[operation],
-            composition.target_representation,
-            composition.target_history,
-            false,
-            index,
-            block_size);
-        ++frame.sample_representation_epochs[composition.target_representation];
-    }
-    for (auto const operation : step.sample_transition_materializations_before) {
-        materialize_sample(frame, operation, index, block_size);
-        ++frame.sample_representation_epochs[
-            storage.materializations[operation].target_representation];
-    }
-
+    auto const& step = frame.plan.steps[step_index];
+    if (!step.before.empty()) run_operations(frame, step.before, index, block_size);
     if (allow_primitive_slicing && step.maximum_block_size < block_size) {
         for (std::size_t offset = 0; offset < block_size;
              offset += step.maximum_block_size) {
             invoke_primitive(
                 frame,
-                step_index,
+                step.primitive,
                 index.advanced_by(offset),
                 std::min(step.maximum_block_size, block_size - offset),
                 index,
                 block_size);
         }
     } else {
-        invoke_primitive(frame, step_index, index, block_size, index, block_size);
+        invoke_primitive(frame, step.primitive, index, block_size, index, block_size);
     }
-
-    run_event_operations(frame, step.event_operations_after, index, block_size);
-    for (auto const operation : step.sample_materializations_after) {
-        materialize_sample(frame, operation, index, block_size);
-        ++frame.sample_representation_epochs[
-            storage.materializations[operation].target_representation];
-    }
-    for (auto const operation : step.sample_feedback_writes_after) {
-        write_feedback_samples(frame, operation, index, block_size);
-        ++frame.sample_representation_epochs[
-            storage.feedback_timelines[operation].timeline_representation];
-    }
-    for (auto const operation : step.sample_compositions_after) {
-        auto const& composition = storage.compositions[operation];
-        compose_samples(
-            frame,
-            composition.contributions,
-            plan.compositions[operation],
-            composition.target_representation,
-            composition.target_history,
-            false,
-            index,
-            block_size);
-        ++frame.sample_representation_epochs[composition.target_representation];
-    }
-    for (auto const operation : step.sample_transition_materializations_after) {
-        materialize_sample(frame, operation, index, block_size);
-        ++frame.sample_representation_epochs[
-            storage.materializations[operation].target_representation];
-    }
-    // A commit writes the retained carry, not the working representation.
-    for (auto const operation : step.sample_carry_commits_after) {
-        sample_carry(
-            frame, storage.carry_operations[operation], index, block_size, false);
-    }
-    capture_outputs(frame, step_index, index, block_size);
+    if (!step.after.empty()) run_operations(frame, step.after, index, block_size);
+    if (step.captures) capture_outputs(frame, step.primitive, index, block_size);
 }
 
 // A multi-step acyclic ready group is an antichain whose lanes have no
@@ -1940,20 +1990,40 @@ void run_batch(
     std::size_t block_size) noexcept
 {
     auto const& plan = frame.plan;
+    if (!plan.tracks_activity) {
+        details::NodeCompilerOperations const* callbacks = nullptr;
+        std::size_t lane_count = 0;
+        for (auto const step_index : group.primitive_steps) {
+            auto const primitive_index = plan.steps[step_index].primitive;
+            auto const& primitive = plan.primitives[primitive_index];
+            if (!callbacks) callbacks = &primitive.callbacks;
+            frame.tick_lanes[lane_count++] = ReflectedNodeTickBatchLane{
+                .node_data = primitive.node_data.data(),
+                .context = prepare_invocation(
+                    frame, primitive_index, index, block_size, index, block_size),
+                .index = index,
+                .block_size = block_size,
+            };
+        }
+        callbacks->tick_block_batch(ReflectedNodeTickBatchContext{
+            .lanes = {frame.tick_lanes.data(), lane_count},
+        });
+        return;
+    }
     std::size_t tick_count = 0;
     std::size_t skip_count = 0;
     details::NodeCompilerOperations const* callbacks = nullptr;
     for (auto const step_index : group.primitive_steps) {
-        auto const primitive_index = plan.execution
-            .primitive_steps[step_index].configuration_index;
-        auto prepared = prepare_primitive(
-            frame, step_index, index, block_size, index, block_size);
-        if (!callbacks) callbacks = &prepared.primitive->callbacks;
+        auto const primitive_index = plan.steps[step_index].primitive;
+        auto const& primitive = plan.primitives[primitive_index];
+        if (!callbacks) callbacks = &primitive.callbacks;
+        auto const& context = prepare_invocation(
+            frame, primitive_index, index, block_size, index, block_size);
         auto const decision = decide_primitive_activity(
-            frame, primitive_index, prepared.context, index, block_size);
+            frame, primitive_index, context, index, block_size);
         auto const lane = ReflectedNodeTickBatchLane{
-            .node_data = prepared.primitive->node_data.data(),
-            .context = prepared.context,
+            .node_data = primitive.node_data.data(),
+            .context = context,
             .index = index,
             .block_size = block_size,
         };
@@ -1964,7 +2034,7 @@ void run_batch(
         if (decision.state) decision.state->dormant = 0;
         frame.tick_lanes[tick_count] = lane;
         frame.tick_decisions[tick_count] = decision;
-        frame.tick_steps[tick_count] = primitive_index;
+        frame.tick_lane_primitives[tick_count] = primitive_index;
         ++tick_count;
     }
     if (tick_count != 0) {
@@ -1974,7 +2044,7 @@ void run_batch(
         for (std::size_t lane = 0; lane < tick_count; ++lane) {
             update_primitive_activity(
                 frame,
-                frame.tick_steps[lane],
+                frame.tick_lane_primitives[lane],
                 frame.tick_decisions[lane],
                 frame.tick_lanes[lane].context,
                 index,
@@ -1987,10 +2057,7 @@ void run_batch(
         });
     }
     for (auto const step_index : group.primitive_steps) {
-        mark_primitive_outputs(
-            frame,
-            plan.primitives[plan.execution.primitive_steps[step_index]
-                .configuration_index]);
+        mark_primitive_outputs(frame, plan.primitives[plan.steps[step_index].primitive]);
     }
 }
 
@@ -2005,22 +2072,29 @@ std::unexpected<std::string> invalid(std::string message)
     return std::unexpected(std::move(message));
 }
 
-bool has_pace_cursor(RealtimeRootPlan const& plan, std::int32_t pace_exponent)
+// The generation Sequential cursor of one pace, or no_index.
+std::size_t pace_cursor(RealtimeRootPlan const& plan, std::int32_t pace_exponent)
 {
-    return std::ranges::any_of(
-        plan.sample_ports.storage.sequential_pace_cursors,
-        [&](auto const& cursor) {
-            return cursor.absolute_pace_exponent == pace_exponent;
-        });
+    auto const& cursors = plan.sample_ports.storage.sequential_pace_cursors;
+    for (std::size_t cursor = 0; cursor < cursors.size(); ++cursor) {
+        if (cursors[cursor].absolute_pace_exponent == pace_exponent) return cursor;
+    }
+    return no_index;
 }
 
-Checked require_pace_cursor(RealtimeRootPlan const& plan, std::int32_t pace_exponent)
+Checked require_pace(std::int32_t pace_exponent)
 {
     if (pace_exponent >= static_cast<std::int32_t>(sizeof(std::size_t) * 8)
         || pace_exponent < -static_cast<std::int32_t>(sizeof(std::size_t) * 8)) {
         return invalid("GraphJit continuous pace is outside the Q64.64 lattice");
     }
-    if (!has_pace_cursor(plan, pace_exponent)) {
+    return {};
+}
+
+Checked require_pace_cursor(RealtimeRootPlan const& plan, std::int32_t pace_exponent)
+{
+    if (auto valid = require_pace(pace_exponent); !valid) return valid;
+    if (pace_cursor(plan, pace_exponent) == no_index) {
         return invalid("GraphJit continuous storage has no cursor for its resolved pace");
     }
     return {};
@@ -2041,7 +2115,7 @@ sample_storage_binding(
             || storage.persistent_allocation
                 != detail::no_sample_persistent_allocation) {
             return invalid(
-                "GraphJit constant sample input unexpectedly owns writable storage");
+                "GraphJit constant sample representation unexpectedly owns writable storage");
         }
     } else if (storage.transient_allocation
                != detail::no_sample_transient_allocation) {
@@ -2292,8 +2366,13 @@ private:
         }
         auto const& storage = plan_.sample_ports.storage;
         plan_.sample_addresses.resize(storage.representations.size());
+        plan_.representation_cursors.resize(storage.representations.size());
         for (std::size_t index = 0; index < storage.representations.size(); ++index) {
             auto const& representation = storage.representations[index];
+            // An operation on a representation without a cursor is rejected
+            // by require_pace_cursor() when the operation is prepared.
+            plan_.representation_cursors[index] =
+                pace_cursor(plan_, representation.absolute_pace_exponent);
             auto& address = plan_.sample_addresses[index];
             if (representation.constant_value) {
                 auto const channels = channel_count(representation.channel_layout);
@@ -2305,7 +2384,7 @@ private:
                     || channels * representation.frame_capacity
                         > std::numeric_limits<std::size_t>::max() / value_size) {
                     return invalid(
-                        "GraphJit disconnected continuous input has invalid storage geometry");
+                        "GraphJit constant continuous representation has invalid storage geometry");
                 }
                 auto const values = channels * representation.frame_capacity;
                 AlignedBytes bytes(
@@ -2978,14 +3057,6 @@ private:
         return invalid("GraphJit execution plan contains an unknown event operation");
     }
 
-    Checked validate_event_operations(std::span<detail::EventOperationRef const> operations) const
-    {
-        for (auto const operation : operations) {
-            if (auto valid = validate_event_operation(operation); !valid) return valid;
-        }
-        return {};
-    }
-
     // --- primitives -------------------------------------------------------
 
     Checked build_primitives()
@@ -3011,6 +3082,9 @@ private:
             implementations.emplace(implementation.node_bundle, &implementation);
         }
 
+        plan_.tracks_activity = std::ranges::any_of(
+            plan_.primitive_activity,
+            [](auto const& activity) { return activity.has_value(); });
         plan_.primitives.resize(count);
         for (std::size_t index = 0; index < count; ++index) {
             auto& primitive = plan_.primitives[index];
@@ -3049,7 +3123,6 @@ private:
                 store_raw(primitive.node_data.data(), relocation.byte_offset, pointer);
                 cursor = relocation.byte_offset + sizeof(void*);
             }
-            primitive.tick_context = configuration.tick_context_template;
 
             // A primitive no step executes needs no native callbacks;
             // build_steps() rejects a step whose primitive has none.
@@ -3131,8 +3204,18 @@ private:
             !valid) {
             return valid;
         }
-        for (auto const input : tick.event_inputs) {
-            primitive.slot_supplied_event_inputs[input] = 1;
+        for (std::size_t slot = 0; slot < tick.sample_inputs.size(); ++slot) {
+            (sample_inputs[tick.sample_inputs[slot]].channels.empty()
+                    ? tick.sample_overlay_slots
+                    : tick.sample_timeline_slots)
+                .push_back(slot);
+        }
+        for (std::size_t slot = 0; slot < tick.event_inputs.size(); ++slot) {
+            primitive.slot_supplied_event_inputs[tick.event_inputs[slot]] = 1;
+            (event_inputs[tick.event_inputs[slot]].storage
+                    ? tick.event_timeline_slots
+                    : tick.event_overlay_slots)
+                .push_back(slot);
         }
         for (auto const input : tick.sample_inputs) {
             auto const& planned = sample_inputs[input];
@@ -3234,6 +3317,7 @@ private:
             return {};
         }
         primitive.tick = std::move(tick);
+        plan_.tick_primitives.push_back(index);
         plan_.has_tick_slots = true;
         return {};
     }
@@ -3283,35 +3367,72 @@ private:
     // Facts the root needs only for a primitive that a step executes.
     Checked prepare_executed_primitive(std::size_t index)
     {
-        if (primitive_ready_[index]) return {};
-        auto const& callbacks = plan_.primitives[index].callbacks;
+        if (primitive_ready_[index]) {
+            return invalid("GraphJit execution plan executes a primitive more than once");
+        }
+        auto& primitive = plan_.primitives[index];
+        auto const& callbacks = primitive.callbacks;
         if (!callbacks.tick_block
             || (plan_.primitive_activity[index] && !callbacks.skip_block)) {
             return invalid("GraphJit execution plan references a missing primitive callback");
         }
         if (auto valid = validate_activity(index); !valid) return valid;
         auto const& sample = plan_.sample_ports.primitives[index];
-        for (auto const& input : sample.inputs) {
-            if (input.random_access || input.channels.empty()) continue;
-            if (auto valid = require_pace_cursor(plan_, input.absolute_pace_exponent);
-                !valid) {
-                return valid;
+        for (std::size_t input = 0; input < sample.inputs.size(); ++input) {
+            auto const& planned = sample.inputs[input];
+            if (planned.random_access) continue;
+            auto update = RootBeginIndex{
+                .field_offset = primitive.sample_inputs_offset
+                    + input * sizeof(ReflectedContinuousInputPortBinding)
+                    + offsetof(ReflectedContinuousInputPortBinding, sequential_begin_index),
+                .pace_exponent = planned.absolute_pace_exponent,
+            };
+            if (planned.channels.empty()) {
+                if (auto valid = require_pace(planned.absolute_pace_exponent); !valid) {
+                    return valid;
+                }
+            } else {
+                if (auto valid = require_pace_cursor(plan_, planned.absolute_pace_exponent);
+                    !valid) {
+                    return valid;
+                }
+                update.cursor = pace_cursor(plan_, planned.absolute_pace_exponent);
             }
+            primitive.begin_indices.push_back(update);
         }
+        std::size_t compact = 0;
         for (auto const& output : sample.outputs) {
             if (!output.realtime) continue;
             if (auto valid = require_pace_cursor(plan_, output.absolute_pace_exponent);
                 !valid) {
                 return valid;
             }
+            primitive.begin_indices.push_back(RootBeginIndex{
+                .field_offset = primitive.sample_outputs_offset
+                    + compact++ * sizeof(ReflectedContinuousOutputPortBinding)
+                    + offsetof(ReflectedContinuousOutputPortBinding, sequential_begin_index),
+                .cursor = pace_cursor(plan_, output.absolute_pace_exponent),
+                .pace_exponent = output.absolute_pace_exponent,
+            });
         }
-        for (auto const control : plan_.primitives[index].manual_controls) {
+        for (auto const control : primitive.manual_controls) {
             auto const& planned = plan_.sample_ports.manual_controls[control];
             if (!planned.stages_timeline) continue;
             if (auto valid = require_pace_cursor(
                     plan_, sample.inputs[planned.input_index].absolute_pace_exponent);
                 !valid) {
                 return valid;
+            }
+        }
+        if (primitive.tick) {
+            for (auto const slot : primitive.tick->sample_timeline_slots) {
+                if (auto valid = require_pace_cursor(
+                        plan_,
+                        sample.inputs[primitive.tick->sample_inputs[slot]]
+                            .absolute_pace_exponent);
+                    !valid) {
+                    return valid;
+                }
             }
         }
         primitive_ready_[index] = 1;
@@ -3443,6 +3564,8 @@ private:
                 primitive.event_output_count,
                 sizeof(ReflectedEventOutputPortBinding),
                 alignof(ReflectedEventOutputPortBinding));
+            primitive.context_offset = reserve_bindings(
+                1, sizeof(ReflectedNodeTickContext), alignof(ReflectedNodeTickContext));
         }
         // The binding area follows the root stack. Primitive offsets become
         // scratch offsets; the template is indexed relative to the area.
@@ -3454,6 +3577,7 @@ private:
             primitive.sample_outputs_offset += area;
             primitive.event_inputs_offset += area;
             primitive.event_outputs_offset += area;
+            primitive.context_offset += area;
         }
 
         auto const& storage = plan_.sample_ports.storage;
@@ -3645,16 +3769,113 @@ private:
                 primitive.output_event_representations.push_back(*output.storage);
                 ++compact;
             }
+
+            // The context addresses this call's binding arrays. build_steps()
+            // adds the State view and initialize_tick_slots() the Random
+            // Access views.
+            auto context = lowering_.configurations.nodes[index].tick_context_template;
+            context.continuous_input_bindings = {nullptr, sample.inputs.size()};
+            context.continuous_output_bindings = {nullptr, primitive.sample_output_count};
+            context.event_input_bindings = {nullptr, event.inputs.size()};
+            context.event_output_bindings = {nullptr, primitive.event_output_count};
+            write_template(primitive.context_offset - area, context);
+            auto bind_span = [&](std::size_t span_offset,
+                            std::size_t count,
+                            std::size_t array_offset) {
+                if (count == 0) return;
+                add_pointer(
+                    primitive.context_offset + span_offset,
+                    BindingPointerBase::scratch,
+                    0,
+                    array_offset);
+            };
+            bind_span(offsetof(ReflectedNodeTickContext, continuous_input_bindings)
+                    + offsetof(
+                        ReflectedSpan<ReflectedContinuousInputPortBinding const>,
+                        pointer),
+                sample.inputs.size(),
+                primitive.sample_inputs_offset);
+            bind_span(offsetof(ReflectedNodeTickContext, continuous_output_bindings)
+                    + offsetof(
+                        ReflectedSpan<ReflectedContinuousOutputPortBinding const>,
+                        pointer),
+                primitive.sample_output_count,
+                primitive.sample_outputs_offset);
+            bind_span(offsetof(ReflectedNodeTickContext, event_input_bindings)
+                    + offsetof(ReflectedSpan<ReflectedEventInputPortBinding const>, pointer),
+                event.inputs.size(),
+                primitive.event_inputs_offset);
+            bind_span(offsetof(ReflectedNodeTickContext, event_output_bindings)
+                    + offsetof(ReflectedSpan<ReflectedEventOutputPortBinding const>, pointer),
+                primitive.event_output_count,
+                primitive.event_outputs_offset);
         }
         return {};
     }
 
     // --- execution --------------------------------------------------------
 
+    // Appends validated event operations in the root's operation form.
+    Checked append_event_operations(
+        std::span<detail::EventOperationRef const> operations,
+        std::vector<RootOperation>& result) const
+    {
+        for (auto const operation : operations) {
+            if (auto valid = validate_event_operation(operation); !valid) return valid;
+            auto kind = RootOperationKind::event_sequence_reset;
+            switch (operation.kind) {
+            case detail::EventOperationKind::sequence_reset:
+                kind = RootOperationKind::event_sequence_reset;
+                break;
+            case detail::EventOperationKind::persistent_ring_prune:
+                kind = RootOperationKind::event_ring_prune;
+                break;
+            case detail::EventOperationKind::carry_restore:
+                kind = RootOperationKind::event_carry_restore;
+                break;
+            case detail::EventOperationKind::carry_commit:
+                kind = RootOperationKind::event_carry_commit;
+                break;
+            case detail::EventOperationKind::merge:
+                kind = RootOperationKind::event_merge;
+                break;
+            case detail::EventOperationKind::materialize:
+                kind = RootOperationKind::event_materialize;
+                break;
+            case detail::EventOperationKind::feedback_append:
+                kind = RootOperationKind::event_feedback_append;
+                break;
+            }
+            result.push_back({.kind = kind, .index = operation.index});
+        }
+        return {};
+    }
+
+    template<class Prepare>
+    Checked append_sample_operations(
+        std::span<std::size_t const> operations,
+        RootOperationKind kind,
+        Prepare prepare,
+        std::vector<RootOperation>& result)
+    {
+        for (auto const operation : operations) {
+            if (auto valid = prepare(operation); !valid) return valid;
+            result.push_back({.kind = kind, .index = operation});
+        }
+        return {};
+    }
+
     Checked build_steps()
     {
         auto const& steps = plan_.execution.primitive_steps;
         auto const& primitive_storage = lowering_.declarations.primitive_storage;
+        auto const area = plan_.binding_offset;
+        auto carry = [&](std::size_t index) { return prepare_sample_carry(index); };
+        auto materialization = [&](std::size_t index) {
+            return prepare_materialization(index);
+        };
+        auto composition = [&](std::size_t index) { return prepare_composition(index); };
+        auto feedback = [&](std::size_t index) { return prepare_feedback_write(index); };
         plan_.steps.resize(steps.size());
         for (std::size_t index = 0; index < steps.size(); ++index) {
             auto const& step = steps[index];
@@ -3673,44 +3894,93 @@ private:
                 !valid) {
                 return valid;
             }
-            auto const& state = primitive_storage[step.storage_index];
-            plan_.steps[index] = {
-                .has_state = state.has_state,
-                .state_offset = state.state_offset,
-                .state_size = state.state_size,
-            };
+            auto const& primitive = plan_.primitives[step.configuration_index];
 
-            for (auto const operation : step.sample_carry_restores_before) {
-                if (auto valid = prepare_sample_carry(operation); !valid) return valid;
+            // The primitive's State view completes its context.
+            auto const& state = primitive_storage[step.storage_index];
+            if (state.has_state) {
+                auto const span_offset = primitive.context_offset
+                    + offsetof(ReflectedNodeTickContext, state);
+                write_template(
+                    span_offset - area + offsetof(ReflectedSpan<std::byte>, extent),
+                    state.state_size);
+                add_pointer(
+                    span_offset + offsetof(ReflectedSpan<std::byte>, pointer),
+                    BindingPointerBase::node_storage,
+                    0,
+                    state.state_offset);
             }
-            for (auto const operation : step.sample_carry_commits_after) {
-                if (auto valid = prepare_sample_carry(operation); !valid) return valid;
-            }
-            for (auto const operation : step.sample_materializations_before) {
-                if (auto valid = prepare_materialization(operation); !valid) return valid;
-            }
-            for (auto const operation : step.sample_transition_materializations_before) {
-                if (auto valid = prepare_materialization(operation); !valid) return valid;
-            }
-            for (auto const operation : step.sample_materializations_after) {
-                if (auto valid = prepare_materialization(operation); !valid) return valid;
-            }
-            for (auto const operation : step.sample_transition_materializations_after) {
-                if (auto valid = prepare_materialization(operation); !valid) return valid;
-            }
-            for (auto const operation : step.sample_compositions_before) {
-                if (auto valid = prepare_composition(operation); !valid) return valid;
-            }
-            for (auto const operation : step.sample_compositions_after) {
-                if (auto valid = prepare_composition(operation); !valid) return valid;
-            }
-            for (auto const operation : step.sample_feedback_writes_after) {
-                if (auto valid = prepare_feedback_write(operation); !valid) return valid;
-            }
-            if (auto valid = validate_event_operations(step.event_operations_before); !valid) {
+
+            auto& root_step = plan_.steps[index];
+            root_step.primitive = step.configuration_index;
+            root_step.maximum_block_size = step.maximum_block_size;
+            root_step.captures = primitive.tick
+                && (!primitive.tick->sample_capture_outputs.empty()
+                    || !primitive.tick->event_capture_outputs.empty());
+            auto& before = root_step.before;
+            auto& after = root_step.after;
+            // The order of PrimitiveExecutionStep: event operations, then the
+            // sample operations of each phase.
+            if (auto valid = append_event_operations(step.event_operations_before, before);
+                !valid) {
                 return valid;
             }
-            if (auto valid = validate_event_operations(step.event_operations_after); !valid) {
+            if (auto valid = append_sample_operations(
+                    step.sample_carry_restores_before,
+                    RootOperationKind::sample_carry_restore, carry, before);
+                !valid) {
+                return valid;
+            }
+            if (auto valid = append_sample_operations(
+                    step.sample_materializations_before,
+                    RootOperationKind::sample_materialization, materialization, before);
+                !valid) {
+                return valid;
+            }
+            if (auto valid = append_sample_operations(
+                    step.sample_compositions_before,
+                    RootOperationKind::sample_composition, composition, before);
+                !valid) {
+                return valid;
+            }
+            if (auto valid = append_sample_operations(
+                    step.sample_transition_materializations_before,
+                    RootOperationKind::sample_materialization, materialization, before);
+                !valid) {
+                return valid;
+            }
+            if (auto valid = append_event_operations(step.event_operations_after, after);
+                !valid) {
+                return valid;
+            }
+            if (auto valid = append_sample_operations(
+                    step.sample_materializations_after,
+                    RootOperationKind::sample_materialization, materialization, after);
+                !valid) {
+                return valid;
+            }
+            if (auto valid = append_sample_operations(
+                    step.sample_feedback_writes_after,
+                    RootOperationKind::sample_feedback_write, feedback, after);
+                !valid) {
+                return valid;
+            }
+            if (auto valid = append_sample_operations(
+                    step.sample_compositions_after,
+                    RootOperationKind::sample_composition, composition, after);
+                !valid) {
+                return valid;
+            }
+            if (auto valid = append_sample_operations(
+                    step.sample_transition_materializations_after,
+                    RootOperationKind::sample_materialization, materialization, after);
+                !valid) {
+                return valid;
+            }
+            if (auto valid = append_sample_operations(
+                    step.sample_carry_commits_after,
+                    RootOperationKind::sample_carry_commit, carry, after);
+                !valid) {
                 return valid;
             }
         }
@@ -3720,6 +3990,7 @@ private:
     Checked build_groups()
     {
         auto const& execution = plan_.execution;
+        plan_.regions.resize(execution.regions.size());
         for (auto const& group : execution.ready_groups) {
             if (!group.cyclic_region) {
                 for (auto const step : group.primitive_steps) {
@@ -3754,10 +4025,15 @@ private:
                         "GraphJit SCC quantum exceeds a primitive maximum block size");
                 }
             }
-            if (auto valid = validate_event_operations(region.event_operations_before); !valid) {
+            auto& operations = plan_.regions[*group.cyclic_region];
+            if (auto valid = append_event_operations(
+                    region.event_operations_before, operations.before);
+                !valid) {
                 return valid;
             }
-            if (auto valid = validate_event_operations(region.event_operations_after); !valid) {
+            if (auto valid = append_event_operations(
+                    region.event_operations_after, operations.after);
+                !valid) {
                 return valid;
             }
         }
@@ -3836,15 +4112,19 @@ private:
             sizeof(std::uint64_t),
             alignof(std::uint64_t));
         layout.sample_epochs = take(
-            storage.representations.size(), sizeof(std::size_t), alignof(std::size_t));
+            plan_.tracks_activity ? storage.representations.size() : 0,
+            sizeof(std::size_t),
+            alignof(std::size_t));
         layout.event_epochs = take(
-            plan_.event_ports.ports.size(), sizeof(std::size_t), alignof(std::size_t));
+            plan_.tracks_activity ? plan_.event_ports.ports.size() : 0,
+            sizeof(std::size_t),
+            alignof(std::size_t));
         layout.continuous_summaries = take(
-            plan_.activity_frontiers.size(),
+            plan_.tracks_activity ? plan_.activity_frontiers.size() : 0,
             sizeof(ContinuousActivitySummary),
             alignof(ContinuousActivitySummary));
         layout.event_summaries = take(
-            plan_.event_ports.ports.size(),
+            plan_.tracks_activity ? plan_.event_ports.ports.size() : 0,
             sizeof(EventActivitySummary),
             alignof(EventActivitySummary));
         layout.tick_lanes = take(
@@ -3852,15 +4132,17 @@ private:
             sizeof(ReflectedNodeTickBatchLane),
             alignof(ReflectedNodeTickBatchLane));
         layout.skip_lanes = take(
-            plan_.maximum_batch_lanes,
+            plan_.tracks_activity ? plan_.maximum_batch_lanes : 0,
             sizeof(ReflectedNodeTickBatchLane),
             alignof(ReflectedNodeTickBatchLane));
         layout.tick_decisions = take(
-            plan_.maximum_batch_lanes,
+            plan_.tracks_activity ? plan_.maximum_batch_lanes : 0,
             sizeof(PrimitiveActivityDecision),
             alignof(PrimitiveActivityDecision));
-        layout.tick_steps = take(
-            plan_.maximum_batch_lanes, sizeof(std::size_t), alignof(std::size_t));
+        layout.tick_lane_primitives = take(
+            plan_.tracks_activity ? plan_.maximum_batch_lanes : 0,
+            sizeof(std::size_t),
+            alignof(std::size_t));
         layout.size = cursor;
         if (!std::has_single_bit(plan_.scratch_alignment)) {
             return invalid("GraphJit realtime root scratch alignment is not a power of two");
@@ -3896,6 +4178,18 @@ void execute_realtime_root(
     auto const& plan = *root;
     auto const& layout = plan.frame;
     auto const& storage = plan.sample_ports.storage;
+    auto const activity_sample_count = plan.tracks_activity
+        ? storage.representations.size()
+        : std::size_t{0};
+    auto const activity_event_count = plan.tracks_activity
+        ? plan.event_ports.ports.size()
+        : std::size_t{0};
+    auto const activity_frontier_count = plan.tracks_activity
+        ? plan.activity_frontiers.size()
+        : std::size_t{0};
+    auto const activity_batch_count = plan.tracks_activity
+        ? plan.maximum_batch_lanes
+        : std::size_t{0};
     IV_ASSERT(invocation != nullptr || !plan.has_tick_slots,
         "GraphJit Tick runtime slots require an invocation record");
     auto* allocation = static_cast<std::byte*>(
@@ -3916,21 +4210,21 @@ void execute_realtime_root(
         .sequential_pace_cursors = frame_array<std::uint64_t>(
             scratch, layout.pace_cursors, storage.sequential_pace_cursors.size()),
         .sample_representation_epochs = frame_array<std::size_t>(
-            scratch, layout.sample_epochs, storage.representations.size()),
+            scratch, layout.sample_epochs, activity_sample_count),
         .event_representation_epochs = frame_array<std::size_t>(
-            scratch, layout.event_epochs, plan.event_ports.ports.size()),
+            scratch, layout.event_epochs, activity_event_count),
         .continuous_activity_summaries = frame_array<ContinuousActivitySummary>(
-            scratch, layout.continuous_summaries, plan.activity_frontiers.size()),
+            scratch, layout.continuous_summaries, activity_frontier_count),
         .event_activity_summaries = frame_array<EventActivitySummary>(
-            scratch, layout.event_summaries, plan.event_ports.ports.size()),
+            scratch, layout.event_summaries, activity_event_count),
         .tick_lanes = frame_array<ReflectedNodeTickBatchLane>(
             scratch, layout.tick_lanes, plan.maximum_batch_lanes),
         .skip_lanes = frame_array<ReflectedNodeTickBatchLane>(
-            scratch, layout.skip_lanes, plan.maximum_batch_lanes),
+            scratch, layout.skip_lanes, activity_batch_count),
         .tick_decisions = frame_array<PrimitiveActivityDecision>(
-            scratch, layout.tick_decisions, plan.maximum_batch_lanes),
-        .tick_steps = frame_array<std::size_t>(
-            scratch, layout.tick_steps, plan.maximum_batch_lanes),
+            scratch, layout.tick_decisions, activity_batch_count),
+        .tick_lane_primitives = frame_array<std::size_t>(
+            scratch, layout.tick_lane_primitives, activity_batch_count),
         .invocation = invocation,
         .root_index = sample_index,
     };
@@ -3955,6 +4249,7 @@ void execute_realtime_root(
             storage_base, storage.sequential_pace_cursors[index].storage_offset);
     }
     initialize_bindings(frame);
+    initialize_tick_slots(frame);
 
     auto const& execution = plan.execution;
     for (auto const& group : execution.ready_groups) {
@@ -3969,8 +4264,8 @@ void execute_realtime_root(
             continue;
         }
         auto const& region = execution.regions[*group.cyclic_region];
-        run_event_operations(
-            frame, region.event_operations_before, sample_index, block_size);
+        auto const& operations = plan.regions[*group.cyclic_region];
+        run_operations(frame, operations.before, sample_index, block_size);
         for (std::size_t offset = 0; offset < block_size;
              offset += region.maximum_block_size) {
             auto const slice = sample_index.advanced_by(offset);
@@ -3979,8 +4274,7 @@ void execute_realtime_root(
                 run_step(frame, step, slice, count, false);
             }
         }
-        run_event_operations(
-            frame, region.event_operations_after, sample_index, block_size);
+        run_operations(frame, operations.after, sample_index, block_size);
     }
 
     for (std::size_t index = 0; index < storage.producer_authored_extents.size(); ++index) {

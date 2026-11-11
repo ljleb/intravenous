@@ -136,11 +136,18 @@ iv::graph_jit::RealtimePortStateRealizations realizations_for(
 iv::graph_jit::SampleRealtimePortStateRealization constant_sample(
     std::size_t requirement_index, float value)
 {
+    auto const geometry = *iv::continuous_value_storage_geometry(
+        iv::ContinuousValueTypeId::sample, std::nullopt);
     return {
         .requirement_index = requirement_index,
         .authored_storage = iv::graph_jit::SampleRealtimePortStateStorageView{
             .storage = iv::graph_jit::SampleRealtimePortStateStorage::
                 immutable_constant,
+            .channel_layout = iv::mono_planar_channel_layout,
+            .geometry = geometry,
+            .sequential_cursor_node_storage_offset = 0,
+            .working_frame_capacity = 8,
+            .storage_frame_count = 8,
             .constant_value = sample_value_bytes(iv::Sample{value}),
         },
         .retained_access = iv::graph_jit::SampleRealtimePortStateAccess::
@@ -428,6 +435,69 @@ TEST(RealtimePortStateTransition, SelectsImmutableAndPrivateSampleRealizations)
     EXPECT_EQ(transfer.target_end, 0);
     EXPECT_EQ(transfer.inherited_begin, -8);
     EXPECT_EQ(transfer.inherited_end, 0);
+}
+
+TEST(RealtimePortStateTransition,
+     RealizesChangedImmutableInputWithoutCanonicalProducerIdentity)
+{
+    iv::graph_jit::RealtimePortStateRequirements previous{
+        .states = {requirement(
+            1,
+            8,
+            iv::PortKind::sample,
+            iv::graph_jit::PortDirection::input,
+            iv::graph_jit::RealtimePortStateRole::sequential_input_history,
+            "reader",
+            "in",
+            0)},
+    };
+    auto current = previous;
+    current.states.front().configured_port.node_bundle_handle = 2;
+    iv::graph_jit::RealtimePortStateRealizations previous_realizations{
+        .sample_states = {constant_sample(0, 0.25f)},
+    };
+    iv::graph_jit::RealtimePortStateRealizations current_realizations{
+        .sample_states = {constant_sample(0, 0.75f)},
+    };
+    current_realizations.sample_states.front().neutral_value =
+        sample_value_bytes(iv::Sample{0.0f});
+
+    auto planned = iv::graph_jit::plan_realtime_port_state_transition(
+        previous,
+        previous_realizations,
+        current,
+        current_realizations);
+    ASSERT_TRUE(planned.has_value())
+        << (planned ? std::string{} : planned.error());
+    ASSERT_EQ(planned->sample_states.size(), 1u);
+    EXPECT_EQ(
+        planned->sample_states.front().inherited_state_realization,
+        iv::graph_jit::InheritedRealtimePortStateRealization::
+            transition_only_storage);
+
+    iv::NodeLayoutBuilder layout_builder(sizeof(std::uint64_t));
+    (void)layout_builder.declare_raw_region(sizeof(std::uint64_t));
+    auto realized =
+        iv::graph_jit::realize_realtime_port_state_transition_storage(
+            std::move(layout_builder).build(),
+            std::move(*planned),
+            previous_realizations,
+            current,
+            current_realizations);
+    ASSERT_TRUE(realized.has_value())
+        << (realized ? std::string{} : realized.error());
+    ASSERT_EQ(realized->plan.sample_transfers.size(), 1u);
+    auto const& transfer = realized->plan.sample_transfers.front();
+    EXPECT_TRUE(transfer.target_transition_only);
+    EXPECT_EQ(
+        transfer.target_storage.storage,
+        iv::graph_jit::SampleRealtimePortStateStorage::ring);
+    EXPECT_EQ(transfer.target_storage.working_frame_capacity, 16u);
+    EXPECT_FALSE(transfer.target_storage.producer.has_value());
+    ASSERT_EQ(transfer.fresh_value.size(), sizeof(iv::Sample));
+    iv::Sample fresh{};
+    std::memcpy(&fresh, transfer.fresh_value.data(), sizeof(fresh));
+    EXPECT_FLOAT_EQ(fresh.value, 0.0f);
 }
 
 // A state the predecessor does not have owns a fresh window too. When it shares

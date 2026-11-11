@@ -3816,11 +3816,14 @@ std::size_t floor_power_of_two(std::size_t value) noexcept
 std::expected<SchedulePlan, std::string> build_schedule(
     ConfiguredGraph const& graph,
     ConnectionAnalysisPlan const& plan,
-    std::span<std::size_t const> callback_batch_classes)
+    std::span<std::size_t const> callback_batch_classes,
+    std::span<std::uint8_t const> callback_elided)
 {
     SchedulePlan schedule;
     schedule.bundle_to_region.resize(graph.node_bundles.size());
     schedule.bundle_execution_position.resize(graph.node_bundles.size());
+    schedule.callback_elided.assign(
+        callback_elided.begin(), callback_elided.end());
     if (plan.nodes.empty()) return schedule;
 
     // Ordinary tick dependencies remain acyclic. Semantic SCC membership and
@@ -3840,7 +3843,12 @@ std::expected<SchedulePlan, std::string> build_schedule(
         std::vector<std::size_t> tick_component;
         tick_component.reserve(component.size());
         for (auto const node : component) {
-            if (plan.nodes[node].tick_execution) tick_component.push_back(node);
+            auto const bundle = plan.nodes[node].bundle;
+            if (plan.nodes[node].tick_execution
+                && (bundle >= callback_elided.size()
+                    || callback_elided[bundle] == 0)) {
+                tick_component.push_back(node);
+            }
         }
         if (tick_component.empty()) continue;
 
@@ -3914,6 +3922,14 @@ std::expected<SchedulePlan, std::string> build_schedule(
     for (std::size_t source = 0; source < explicit_outgoing.size(); ++source) {
         for (auto const target : explicit_outgoing[source]) {
             if (!node_to_region[source] || !node_to_region[target]) {
+                auto const source_bundle = plan.nodes[source].bundle;
+                auto const target_bundle = plan.nodes[target].bundle;
+                if ((source_bundle < callback_elided.size()
+                        && callback_elided[source_bundle] != 0)
+                    || (target_bundle < callback_elided.size()
+                        && callback_elided[target_bundle] != 0)) {
+                    continue;
+                }
                 return std::unexpected(
                     "GraphJit ordinary Tick dependency references a Tock-only primitive");
             }
@@ -4299,6 +4315,19 @@ std::expected<void, std::string> plan_latency_compensation(
         }
     }
 
+    // A callback-elided producer has no inputs and belongs to no schedule
+    // region. Its output path latency is its internal latency.
+    for (std::size_t bundle = 0;
+         bundle < plan.schedule.callback_elided.size(); ++bundle) {
+        if (plan.schedule.callback_elided[bundle] == 0) continue;
+        auto const* node = planned_node(bundle);
+        if (!node || bundle >= node_output_latency.size()) {
+            return std::unexpected(
+                "latency compensation lost a callback-elided concrete node");
+        }
+        node_output_latency[bundle] = node->internal_latency_samples;
+    }
+
     std::vector<IncomingStreamPath> paths;
     for (auto const region_index : plan.schedule.region_order) {
         if (region_index >= plan.schedule.regions.size()) {
@@ -4362,15 +4391,20 @@ ConnectionLiveIntervalPlan live_interval_for_sample_group(
         .end = 0,
     };
     bool saw_port = false;
+    // A producer whose callback is elided has no execution position. Its
+    // immutable storage is live from the first realtime consumer.
+    bool source_positioned = false;
 
     if (group.source_port) {
         saw_port = true;
         auto const source_bundle = group.source_port->node_bundle_handle;
         if (source_bundle == plan.boundary_bundle) {
             live.begin = 0;
+            source_positioned = true;
         } else if (source_bundle < plan.schedule.bundle_execution_position.size()
             && plan.schedule.bundle_execution_position[source_bundle]) {
             live.begin = *plan.schedule.bundle_execution_position[source_bundle];
+            source_positioned = true;
         }
     }
 
@@ -4389,12 +4423,13 @@ ConnectionLiveIntervalPlan live_interval_for_sample_group(
         auto const target = connection.target_port.node_bundle_handle;
         saw_port = true;
         if (target == plan.boundary_bundle) {
+            if (!source_positioned) live.begin = 0;
             live.end = execution_count;
         } else if (target < plan.schedule.bundle_execution_position.size()
             && plan.schedule.bundle_execution_position[target]) {
-            live.end = std::max(
-                live.end,
-                *plan.schedule.bundle_execution_position[target]);
+            auto const position = *plan.schedule.bundle_execution_position[target];
+            if (!source_positioned) live.begin = std::min(live.begin, position);
+            live.end = std::max(live.end, position);
         }
         live.crosses_kernel_invocations =
             live.crosses_kernel_invocations || has_detached_source(connection);
@@ -5206,6 +5241,12 @@ std::expected<void, std::string> plan_sample_groups(
                 auto const& channel =
                     connection.source_channel_timings[channel_index];
                 if (!uses_realtime_storage(channel.delivery)) continue;
+                // A callback-elided producer's immutable storage serves every
+                // consumer window, whatever its invocation block.
+                if (channel.source.bundle < plan.schedule.callback_elided.size()
+                    && plan.schedule.callback_elided[channel.source.bundle] != 0) {
+                    continue;
+                }
                 if (effective_block_size(
                         plan, channel.source.bundle, kernel_block_size)
                     != target_block) {
@@ -5993,7 +6034,8 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     std::size_t kernel_block_size,
     RealtimeStorageCostModel const& cost_model,
     BackgroundEvaluationPlan const* retained_background_plan,
-    std::span<std::size_t const> callback_batch_classes)
+    std::span<std::size_t const> callback_batch_classes,
+    std::span<NodeBundleHandle const> callback_elision_candidates)
 {
     if (kernel_block_size == 0) {
         return std::unexpected(
@@ -6113,7 +6155,37 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     if (auto detaches = validate_detached_connections(graph, plan); !detaches) {
         return std::unexpected(std::move(detaches.error()));
     }
-    auto schedule = build_schedule(graph, plan, callback_batch_classes);
+    std::vector<std::uint8_t> callback_elided(
+        graph.node_bundles.size(), std::uint8_t{0});
+    std::vector<std::uint8_t> callback_elision_seen(
+        graph.node_bundles.size(), std::uint8_t{0});
+    for (auto const bundle : callback_elision_candidates) {
+        if (bundle >= callback_elided.size()) {
+            return std::unexpected(
+                "GraphJit callback-elision candidate references an invalid node bundle");
+        }
+        if (callback_elision_seen[bundle] != 0) {
+            return std::unexpected(
+                "GraphJit callback-elision candidate is listed more than once");
+        }
+        callback_elision_seen[bundle] = 1;
+        bool has_realtime_consumer = false;
+        bool has_background_consumer = false;
+        for (auto const& connection : plan.sample_connections) {
+            for (auto const& source : connection.source_channel_timings) {
+                if (source.source.bundle != bundle) continue;
+                if (uses_realtime_storage(source.delivery)) {
+                    has_realtime_consumer = true;
+                } else {
+                    has_background_consumer = true;
+                }
+            }
+        }
+        callback_elided[bundle] = static_cast<std::uint8_t>(
+            has_realtime_consumer && !has_background_consumer);
+    }
+    auto schedule = build_schedule(
+        graph, plan, callback_batch_classes, callback_elided);
     if (!schedule) return std::unexpected(std::move(schedule.error()));
     plan.schedule = std::move(*schedule);
     if (auto detach_regions = bind_detach_regions(plan); !detach_regions) {

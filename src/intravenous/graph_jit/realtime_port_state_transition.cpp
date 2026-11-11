@@ -2878,9 +2878,20 @@ realize_realtime_port_state_transition_storage(
                 && current.retained_access
                     != SampleRealtimePortStateAccess::materialized
                 && current.retained_access
-                    != SampleRealtimePortStateAccess::composed)) {
+                    != SampleRealtimePortStateAccess::composed
+                && current.retained_access
+                    != SampleRealtimePortStateAccess::immutable_constant)) {
             return std::unexpected(
                 "transition suffix requires a recoverable predecessor and supported successor sample view");
+        }
+        auto const immutable_successor = current.retained_access
+            == SampleRealtimePortStateAccess::immutable_constant;
+        if (immutable_successor
+            && (!current.authored_storage.constant_value
+                || current.authored_storage.storage
+                    != SampleRealtimePortStateStorage::immutable_constant)) {
+            return std::unexpected(
+                "transition suffix immutable successor lost its constant value");
         }
 
         auto source_views = source.retained_access
@@ -2908,12 +2919,71 @@ realize_realtime_port_state_transition_storage(
         }
         std::optional<std::size_t> steady_target_offset;
         // The suffix stands in for the storage the steady successor reads.
+        // Callback elision does not change fresh-position semantics: the
+        // transition mirror writes the immutable value from the cutover
+        // onward, while positions the source had not authored keep the input's
+        // normal fresh value.
         auto fresh_value = sample_fresh_value(
             current.retained_access == SampleRealtimePortStateAccess::direct
                 ? current.retained_sources.front()
                 : current.authored_storage,
             current);
         auto target = current.authored_storage;
+        if (transition.inherited_extent_samples
+            > std::numeric_limits<std::size_t>::max()
+                - transition.newly_exposed_extent_samples) {
+            return std::unexpected(
+                "transition suffix sample extent overflows size_t");
+        }
+        auto const target_extent = transition.inherited_extent_samples
+            + transition.newly_exposed_extent_samples;
+        if (!std::in_range<std::int64_t>(target_extent)) {
+            return std::unexpected(
+                "transition suffix sample extent is not representable");
+        }
+
+        if (immutable_successor) {
+            // The steady representation needs only its current callback
+            // window. The transition root additionally retains this suffix,
+            // so its private ring must hold both at once.
+            auto const channels = channel_count(target.channel_layout);
+            if (target.working_frame_capacity == 0
+                || channels == 0
+                || target.geometry.value_size_bytes == 0
+                || target_extent > std::numeric_limits<std::size_t>::max()
+                        - target.working_frame_capacity) {
+                return std::unexpected(
+                    "transition suffix cannot expand the successor's immutable input");
+            }
+            auto const minimum_capacity =
+                target.working_frame_capacity + target_extent;
+            auto const maximum_power_of_two = std::bit_floor(
+                std::numeric_limits<std::size_t>::max());
+            if (minimum_capacity > maximum_power_of_two) {
+                return std::unexpected(
+                    "transition suffix cannot expand the successor's immutable input");
+            }
+            auto const capacity = std::bit_ceil(
+                std::max<std::size_t>(1, minimum_capacity));
+            if (channels > std::numeric_limits<std::size_t>::max()
+                    / capacity
+                || channels * capacity
+                        > std::numeric_limits<std::size_t>::max()
+                            / target.geometry.value_size_bytes) {
+                return std::unexpected(
+                    "transition suffix cannot expand the successor's immutable input");
+            }
+            target.storage = SampleRealtimePortStateStorage::ring;
+            target.working_frame_capacity = capacity;
+            target.storage_frame_count = capacity;
+            target.storage_size_bytes = channels
+                * target.storage_frame_count
+                * target.geometry.value_size_bytes;
+            target.constant_value.reset();
+            target.initial_value.reset();
+            target.node_storage_offset.reset();
+            target.callback_arena_offset.reset();
+        }
         if (current.retained_access
             == SampleRealtimePortStateAccess::direct) {
             auto const& steady_target = current.retained_sources.front();
@@ -2974,19 +3044,6 @@ realize_realtime_port_state_transition_storage(
             return std::unexpected(
                 "transition suffix sample state has incompatible source or target geometry");
         }
-        if (transition.inherited_extent_samples
-            > std::numeric_limits<std::size_t>::max()
-                - transition.newly_exposed_extent_samples) {
-            return std::unexpected(
-                "transition suffix sample extent overflows size_t");
-        }
-        auto const target_extent = transition.inherited_extent_samples
-            + transition.newly_exposed_extent_samples;
-        if (!std::in_range<std::int64_t>(target_extent)) {
-            return std::unexpected(
-                "transition suffix sample extent is not representable");
-        }
-
         auto const target_begin = transition.target_begin;
         auto const target_end = transition.target_end;
         if (target_end - target_begin

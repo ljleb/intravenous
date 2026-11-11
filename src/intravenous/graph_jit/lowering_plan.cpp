@@ -922,6 +922,9 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         if (!primitive.bundle.ttl_samples) continue;
 
         auto const& sample_plan = sample_ports.primitives[primitive_index];
+        // A callback-elided producer never ticks, so it has no dormancy to
+        // track. Its readers see an immutable input instead.
+        if (sample_plan.tick_callback_elided) continue;
         // TTL dormancy needs proof that every input is unchanged. Published
         // Random Access data changes without a realtime writer, so a
         // primitive with a Random Access input always ticks.
@@ -2722,7 +2725,8 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
     GraphAnalysis const& analysis,
     ConnectionAnalysisPlan const& connections,
     ResolvedPortRealization const& realization,
-    RealtimeStorageCostModel const& cost_model)
+    RealtimeStorageCostModel const& cost_model,
+    std::span<std::optional<Sample> const> static_sample_values)
 {
     SamplePortBindingPlan plan;
     if (analysis.empty) return plan;
@@ -2833,6 +2837,49 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         }
         return std::nullopt;
     };
+
+    std::vector<SampleConstantProducerRequest> constant_producer_requests;
+    std::vector<bool> constant_producer_primitives(
+        analysis.primitives.size(), false);
+    for (std::size_t primitive_index = 0;
+         primitive_index < analysis.primitives.size(); ++primitive_index) {
+        auto const bundle =
+            analysis.primitives[primitive_index].bundle.node_bundle;
+        if (bundle >= static_sample_values.size()
+            || !static_sample_values[bundle]
+            || bundle >= connections.schedule.callback_elided.size()
+            || connections.schedule.callback_elided[bundle] == 0) {
+            continue;
+        }
+        NodeBundlePortId const source_port{
+            bundle, PortKind::sample, 0};
+        auto const& binding = plan.primitives[primitive_index].outputs.front();
+        if (binding.geometry.value_type != ContinuousValueTypeId::sample
+            || binding.geometry.elements_per_value != 1
+            || binding.geometry.value_size_bytes != sizeof(Sample)) {
+            return std::unexpected(
+                "GraphJit callback-elided static sample producer has invalid storage geometry");
+        }
+        auto const group_index = producer_group_index_for_port(source_port);
+        if (!group_index
+            || !connections.sample_producer_groups[*group_index]
+                    .has_realtime_connections
+            || connections.sample_producer_groups[*group_index]
+                    .has_background_connections) {
+            return std::unexpected(
+                "GraphJit callback-elided static sample producer lost its realtime-only producer group");
+        }
+        std::vector<std::byte> value(sizeof(Sample));
+        std::memcpy(
+            value.data(),
+            std::addressof(*static_sample_values[bundle]),
+            sizeof(Sample));
+        constant_producer_requests.push_back(SampleConstantProducerRequest{
+            .producer_group_index = *group_index,
+            .value = std::move(value),
+        });
+        constant_producer_primitives[primitive_index] = true;
+    }
 
     for (std::size_t connection_index = 0;
          connection_index < connections.sample_connections.size();
@@ -3307,6 +3354,12 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             continue;
         }
         auto const bundle = analysis.primitives[primitive_index].bundle.node_bundle;
+        // A callback-elided producer has no execution position. It has no
+        // inputs, and its only output has realtime consumers.
+        if (bundle < connections.schedule.callback_elided.size()
+            && connections.schedule.callback_elided[bundle] != 0) {
+            continue;
+        }
         auto execution_position = execution_position_for_bundle(bundle);
         if (!execution_position) {
             return std::unexpected(std::move(execution_position.error()));
@@ -3555,7 +3608,8 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         sink_requests,
         constant_input_requests,
         cost_model,
-        timeline_requests);
+        timeline_requests,
+        constant_producer_requests);
     if (!storage) return std::unexpected(std::move(storage.error()));
     plan.storage = std::move(*storage);
 
@@ -3589,6 +3643,23 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         source_binding.storage = output;
         source_binding.history = source.source_history;
         source_binding.latency = source.source_latency;
+    }
+
+    for (std::size_t primitive_index = 0;
+         primitive_index < constant_producer_primitives.size(); ++primitive_index) {
+        if (!constant_producer_primitives[primitive_index]) continue;
+        auto& primitive = plan.primitives[primitive_index];
+        if (primitive.outputs.size() != 1 || !primitive.outputs.front().storage) {
+            return std::unexpected(
+                "GraphJit static sample producer lost its realtime output storage");
+        }
+        auto const representation = *primitive.outputs.front().storage;
+        if (representation >= plan.storage.representations.size()
+            || !plan.storage.representations[representation].constant_value) {
+            return std::unexpected(
+                "GraphJit static sample producer did not resolve to immutable storage");
+        }
+        primitive.tick_callback_elided = true;
     }
 
     for (auto const& target : validated_targets) {
@@ -7676,6 +7747,11 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             continue;
         }
         auto const bundle = analysis.primitives[primitive_index].bundle.node_bundle;
+        // A callback-elided producer reads and writes no event buffer.
+        if (bundle < connections.schedule.callback_elided.size()
+            && connections.schedule.callback_elided[bundle] != 0) {
+            continue;
+        }
         if (bundle >= connections.schedule.bundle_execution_position.size()
             || !connections.schedule.bundle_execution_position[bundle]) {
             return std::unexpected(
@@ -8140,10 +8216,12 @@ std::expected<ExecutionPlan, std::string> plan_execution(
     }
     for (std::size_t i = 0; i < scheduled.size(); ++i) {
         auto const tick = !imports.primitive_callbacks[i].tick_block.empty();
-        if (scheduled[i] != tick) {
-            return std::unexpected(tick
-                ? "GraphJit connection schedule omitted a Tick primitive"
-                : "GraphJit connection schedule included a Tock-only primitive");
+        auto const executes = tick
+            && !sample_ports.primitives[i].tick_callback_elided;
+        if (scheduled[i] != executes) {
+            return std::unexpected(executes
+                ? "GraphJit connection schedule omitted an executable Tick primitive"
+                : "GraphJit connection schedule included a non-executable primitive");
         }
     }
 
@@ -8342,6 +8420,15 @@ std::expected<ExecutionPlan, std::string> plan_execution(
     for (std::size_t primitive_index = 0;
          primitive_index < event_ports.primitives.size(); ++primitive_index) {
         if (analysis.primitives[primitive_index].implementation->tick_block.empty()) {
+            continue;
+        }
+        // A callback-elided producer has no execution step. Its eligibility
+        // already requires that it have no event output.
+        if (sample_ports.primitives[primitive_index].tick_callback_elided) {
+            if (!event_ports.primitives[primitive_index].outputs.empty()) {
+                return std::unexpected(
+                    "GraphJit callback-elided primitive has an event output");
+            }
             continue;
         }
         if (primitive_index >= configuration_steps.size()
@@ -8598,7 +8685,6 @@ std::expected<bool, std::string> realtime_ready_group_batches(
         }
         lanes.push_back(std::addressof(step));
     }
-
     // Transient placement is planned against the flattened scalar execution
     // positions. Two representations whose scalar lifetimes do not overlap may
     // therefore share bytes even when their primitives are later selected for
@@ -8849,6 +8935,49 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         return std::unexpected(std::move(port_realization.error()));
     }
 
+    std::vector<std::optional<Sample>> static_sample_values(
+        input.graph.node_bundles.size());
+    std::size_t static_value_bundle = 0;
+    input.graph.node_bundles.for_each_configured_bundle(
+        [&](ConfiguredNodeBundleView const& view) {
+            if (view.static_sample_value) {
+                static_sample_values.at(static_value_bundle) =
+                    *view.static_sample_value;
+            }
+            ++static_value_bundle;
+        });
+    std::vector<NodeBundleHandle> callback_elision_candidates;
+    for (auto const& primitive : analysis->primitives) {
+        auto const bundle = primitive.bundle.node_bundle;
+        if (bundle >= static_sample_values.size()
+            || !static_sample_values[bundle]) {
+            continue;
+        }
+        auto const& configured = input.graph.node_bundles.bundle(bundle);
+        auto const& implementation = *primitive.implementation;
+        if (!configured.is_concrete()
+            || configured.sample_input_count() != 0
+            || configured.sample_output_count() != 1
+            || configured.event_input_count() != 0
+            || configured.event_output_count() != 0
+            || implementation.state_size != 0
+            || implementation.background_state_size != 0) {
+            return std::unexpected(
+                "GraphJit static_sample_value requires one stateless concrete Tick sample output and no inputs");
+        }
+        NodeBundlePortId const output_port{bundle, PortKind::sample, 0};
+        auto const output = input.graph.node_bundles.resolve_sample_output(
+            output_port).config;
+        auto const& resolved = port_realization->output(bundle, 0);
+        if (!is_tick(output) || is_persisted(output)
+            || resolved.value_type != ContinuousValueTypeId::sample
+            || resolved.size.has_value()) {
+            return std::unexpected(
+                "GraphJit static_sample_value requires one ephemeral scalar Sample Tick output");
+        }
+        callback_elision_candidates.push_back(bundle);
+    }
+
     // The identifier has no semantic meaning outside this compilation. Equal
     // values mean that the package callback and every callback-facing solved
     // port fact are equal. Configured values, state, and storage addresses are
@@ -9084,7 +9213,8 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
             input.specialization.block_size,
             cost_model,
             retained_background_plan ? &*retained_background_plan : nullptr,
-            realtime_batch_classes);
+            realtime_batch_classes,
+            callback_elision_candidates);
         if (!connections) {
             return std::unexpected(std::move(connections.error()));
         }
@@ -9095,7 +9225,12 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
             retained_background_plan = connections->background;
         }
         auto sample_ports = plan_sample_ports(
-            input, *analysis, *connections, *port_realization, cost_model);
+            input,
+            *analysis,
+            *connections,
+            *port_realization,
+            cost_model,
+            static_sample_values);
         if (!sample_ports) {
             return std::unexpected(std::move(sample_ports.error()));
         }

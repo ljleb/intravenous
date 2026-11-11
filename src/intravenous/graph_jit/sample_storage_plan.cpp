@@ -12,6 +12,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
@@ -781,7 +782,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
     std::span<SampleSinkStorageRequest const> sinks,
     std::span<SampleConstantInputRequest const> constant_inputs,
     RealtimeStorageCostModel const& cost_model,
-    std::span<SampleInputTimelineRequest const> input_timelines)
+    std::span<SampleInputTimelineRequest const> input_timelines,
+    std::span<SampleConstantProducerRequest const> constant_producers)
 {
     if (kernel_block_size == 0 || !is_power_of_2(kernel_block_size)) {
         return std::unexpected(
@@ -793,6 +795,21 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
     plan.producer_groups.resize(connections.sample_producer_groups.size());
     plan.connection_representations.resize(connections.sample_connections.size());
     plan.connection_channel_bindings.resize(connections.sample_connections.size());
+
+    std::vector<std::vector<std::byte> const*> constant_producer_values(
+        connections.sample_producer_groups.size());
+    for (auto const& request : constant_producers) {
+        if (request.producer_group_index >= constant_producer_values.size()) {
+            return std::unexpected(
+                "GraphJit constant sample producer references an invalid producer group");
+        }
+        auto& value = constant_producer_values[request.producer_group_index];
+        if (value != nullptr) {
+            return std::unexpected(
+                "GraphJit sample producer group has more than one constant value");
+        }
+        value = std::addressof(request.value);
+    }
 
     std::vector<TransientArenaAllocationRequest> transient_requests;
     std::vector<std::size_t> transient_representations;
@@ -820,6 +837,27 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             return *connections.schedule.bundle_execution_position[bundle];
         }
         return fallback.begin;
+    };
+
+    // A feed-forward composition runs after its last scheduled source. When
+    // every source is a callback-elided constant, none is scheduled, and the
+    // composition instead runs before its consumer.
+    auto composition_anchor = [&](SampleConnectionPlan const& connection)
+        -> std::optional<std::size_t> {
+        auto const scheduled_source = std::ranges::any_of(
+            connection.source_channel_timings,
+            [&](SampleSourceChannelTimingPlan const& channel) {
+                auto const bundle = channel.source.bundle;
+                return bundle == connections.boundary_bundle
+                    || (bundle < connections.schedule.bundle_execution_position.size()
+                        && connections.schedule.bundle_execution_position[bundle]);
+            });
+        auto const target = connection.target_port.node_bundle_handle;
+        if (scheduled_source
+            || target >= connections.schedule.bundle_execution_position.size()) {
+            return std::nullopt;
+        }
+        return connections.schedule.bundle_execution_position[target];
     };
 
     auto composition_position = [&](SampleConnectionPlan const& connection,
@@ -978,6 +1016,12 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             return std::unexpected(
                 "GraphJit sample storage plan requires a canonical realtime source layout");
         }
+        auto const* constant_value = constant_producer_values[group_index];
+        if (constant_value
+            && constant_value->size() != group.geometry.value_size_bytes) {
+            return std::unexpected(
+                "GraphJit constant sample producer value has the wrong storage size");
+        }
         auto current_value_count = maximum_projected_value_count(
             kernel_block_size, group.absolute_pace_exponent);
         if (!current_value_count) {
@@ -1093,7 +1137,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         std::size_t home_feedback_capacity = 0;
         std::size_t home_feedback_restore_position = producer_position;
         SampleConnectionStoragePlan home_feedback_storage{};
-        if (group.storage_requirements.retained_frames == 0) {
+        if (!constant_value && group.storage_requirements.retained_frames == 0) {
             for (auto const connection_index : group.connection_indices) {
                 auto const& connection = connections.sample_connections[connection_index];
                 if (!is_entirely_realtime_delivery(connection)
@@ -1158,7 +1202,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             : choose_sample_connection_storage_plan(
                 producer_storage_requirements, cost_model);
 
-        if (group.live_interval.crosses_kernel_invocations
+        if (!constant_value
+            && group.live_interval.crosses_kernel_invocations
             && !has_feedback_branch
             && producer_storage_plan.kind
                 == RealtimeBufferStorageKind::transient_stack) {
@@ -1167,7 +1212,19 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         }
 
         std::size_t canonical = no_sample_representation;
-        if (has_feedback_home) {
+        if (constant_value) {
+            canonical = append_representation(SampleRepresentationPlan{
+                .producer_group_index = group_index,
+                .canonical_producer_representation = true,
+                .storage = RealtimeBufferStorageKind::transient_stack,
+                .channel_layout = *group.canonical_source_layout,
+                .geometry = group.geometry,
+                .absolute_pace_exponent = group.absolute_pace_exponent,
+                .frame_capacity = canonical_capacity,
+                .live_interval = canonical_live,
+                .constant_value = *constant_value,
+            });
+        } else if (has_feedback_home) {
             if (home_feedback_storage.kind
                 == RealtimeBufferStorageKind::full_node_storage) {
                 auto const index = append_representation(SampleRepresentationPlan{
@@ -1461,6 +1518,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     .source_representation = canonical,
                     .target_representation = *representation,
                     .after_execution_position = canonical_live.begin,
+                    .before_execution_position = constant_value
+                        ? std::optional<std::size_t>{canonical_live.begin}
+                        : std::nullopt,
                     .source_layout = *group.canonical_source_layout,
                     .target_layout = connection.target_layout,
                     .transform = connection.transform,
@@ -2512,6 +2572,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     .contributions = {std::move(contribution)},
                     .target_representation = *representation,
                     .after_execution_position = composition_begin,
+                    .before_execution_position = composition_anchor(connection),
                     .target_layout = converted_layout,
                     .target_history = connection.target_history,
                 });
@@ -2919,6 +2980,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 .contributions = std::move(composition_contributions),
                 .target_representation = target_representation,
                 .after_execution_position = begin,
+                .before_execution_position = composition_anchor(connection),
                 .target_layout = connection.target_layout,
                 .target_history = connection.target_history,
             });

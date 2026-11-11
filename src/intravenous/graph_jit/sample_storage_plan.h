@@ -42,10 +42,11 @@ struct SampleRepresentationPlan {
     std::size_t transient_allocation = no_sample_transient_allocation;
     std::size_t persistent_allocation = no_sample_persistent_allocation;
 
-    // A disconnected realtime input is one immutable, compiler-owned constant
-    // timeline. It needs neither stack storage nor retained NodeStorage: every
-    // addressable frame has the same declared default value. The generated
-    // module materializes this bounded representation as read-only data.
+    // One immutable, compiler-owned constant timeline. This represents either
+    // a disconnected realtime input's authored default or a producer whose
+    // static_sample_value proves the same result at every Sequential index. It
+    // needs neither stack storage nor retained NodeStorage. The realtime root
+    // materializes the bounded representation as read-only data.
     std::optional<std::vector<std::byte>> constant_value{};
 };
 
@@ -88,6 +89,15 @@ struct SampleConstantInputRequest {
     std::int32_t absolute_pace_exponent = 0;
     std::vector<std::byte> default_value{};
     std::size_t execution_position = 0;
+};
+
+// One producer group whose authored callback result is proven to have the same
+// value at every Sequential index. Its canonical representation owns immutable
+// storage, so connection analysis can omit the producer callback from the
+// realtime schedule.
+struct SampleConstantProducerRequest {
+    std::size_t producer_group_index = no_sample_producer_group;
+    std::vector<std::byte> value{};
 };
 
 struct SampleProducerStoragePlan {
@@ -399,7 +409,8 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
     std::span<SampleSinkStorageRequest const> sinks = {},
     std::span<SampleConstantInputRequest const> constant_inputs = {},
     RealtimeStorageCostModel const& cost_model = {},
-    std::span<SampleInputTimelineRequest const> input_timelines = {});
+    std::span<SampleInputTimelineRequest const> input_timelines = {},
+    std::span<SampleConstantProducerRequest const> constant_producers = {});
 
 // Reserve canonical NodeStorage for persistent connection state. Transient
 // backing belongs to the realtime root stack. Retained feedback state with

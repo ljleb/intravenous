@@ -253,6 +253,8 @@ constexpr char graph_jit_downmixed_tile_compensation_module_id[] =
     "iv.test.graph_jit.state_context.downmixed_tile_compensation_module";
 constexpr char graph_jit_retained_neutral_latency_module_id[] =
     "iv.test.graph_jit.state_context.retained_neutral_latency_module";
+constexpr char graph_jit_constant_history_module_id[] =
+    "iv.test.graph_jit.state_context.constant_history_module";
 constexpr char graph_jit_shared_neutral_compensated_module_id[] =
     "iv.test.graph_jit.state_context.shared_neutral_compensated_module";
 constexpr char graph_jit_unequal_latency_composition_module_id[] =
@@ -10406,6 +10408,17 @@ void revising_capture_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 IV_MODULE("iv.test.graph_jit.state_context.revising_capture_module", revising_capture_module);
+IV_NODE("iv.test.graph_jit.state_context.constant", iv::Constant);
+// A Constant read by a history reader. `raised` selects its value.
+void constant_history_module(iv::GraphBuilder& graph, bool raised = false)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.constant">(
+        iv::Sample{raised ? 0.75f : 0.25f});
+    auto sink = graph.node<"iv.test.graph_jit.state_context.history_consumer">();
+    sink(source);
+    graph.outputs();
+}
+IV_MODULE("iv.test.graph_jit.state_context.constant_history_module", constant_history_module);
 )cpp";
     static_assert(part_1.size() < 60 * 1024);
     static_assert(part_2.size() < 60 * 1024);
@@ -19294,6 +19307,56 @@ TEST_F(GraphJitRuntimeFixture, GrowingLatencyOfRetainedSourceExposesNeutralValue
             return ramp_value(position - 3);
         },
         416);
+}
+
+// A Constant's static_sample_value makes its output immutable storage, so the
+// root runs no callback for it. The history reader's input record is therefore
+// an immutable constant rather than a direct view of a written ring.
+TEST_F(GraphJitRuntimeFixture, ConstantProducerOutputIsImmutableStorage)
+{
+    bool raised = false;
+    std::array arguments{iv::details::configuration_argument(raised)};
+    auto const graph = configured_module_graph_with_arguments(
+        *revision, graph_jit_constant_history_module_id, arguments);
+    expect_sequential_input_access(
+        *jit, definitions, graph, 5, 0,
+        iv::graph_jit::SampleRealtimePortStateAccess::immutable_constant, 440);
+}
+
+// The edit changes the Constant from 0.25 to 0.75. The reader is identified in
+// both graphs, so its input keeps the values it already holds: after the
+// cutover it reads 0.75 at the current position and 0.25 at positions before
+// the cutover until they leave its 5-value history.
+TEST_F(GraphJitRuntimeFixture, ChangedConstantKeepsItsOldValuesInReaderHistory)
+{
+    bool predecessor_raised = false;
+    bool successor_raised = true;
+    std::array predecessor_arguments{
+        iv::details::configuration_argument(predecessor_raised)};
+    std::array successor_arguments{
+        iv::details::configuration_argument(successor_raised)};
+    auto const predecessor = configured_module_graph_with_arguments(
+        *revision, graph_jit_constant_history_module_id, predecessor_arguments);
+    auto const successor = configured_module_graph_with_arguments(
+        *revision, graph_jit_constant_history_module_id, successor_arguments);
+    ASSERT_EQ(
+        stable_node_identities(*successor), stable_node_identities(*predecessor));
+    auto const value = [](std::int64_t position) {
+        return position < sequence_cutover ? 0.25f : 0.75f;
+    };
+    run_across_graph_edit(
+        *jit, definitions, resources, predecessor, successor, 442,
+        sequence_cutover, sequence_cutover + 4 * 64,
+        [&](iv::CompiledGraph const& compiled,
+            iv::NodeStorage const& storage,
+            std::int64_t begin) {
+            auto const* reader = find_unique_state<HistoryConsumerStateMirror>(
+                compiled.node_layout, storage);
+            ASSERT_NE(reader, nullptr);
+            EXPECT_FLOAT_EQ(reader->current, value(begin));
+            EXPECT_FLOAT_EQ(reader->history_1, value(begin - 1));
+            EXPECT_FLOAT_EQ(reader->history_5, value(begin - 5));
+        });
 }
 
 // The probe's mono input downmixes a stereo tile of a ramp of latency 3 and the

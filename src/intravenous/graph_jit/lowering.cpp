@@ -1306,6 +1306,39 @@ specialize_transition_plan(
         }
         return std::nullopt;
     };
+    auto execution_position_for_bundle = [&](NodeBundleHandle bundle)
+        -> std::optional<std::size_t> {
+        auto const& schedule = transition_plan.connections.schedule;
+        if (bundle < schedule.bundle_execution_position.size()
+            && schedule.bundle_execution_position[bundle]) {
+            return schedule.bundle_execution_position[bundle];
+        }
+        if (bundle >= schedule.callback_elided.size()
+            || schedule.callback_elided[bundle] == 0) {
+            return std::nullopt;
+        }
+        std::optional<std::size_t> first_consumer;
+        for (auto const& connection :
+             transition_plan.connections.sample_connections) {
+            auto const uses_source = std::ranges::any_of(
+                connection.source_channel_timings,
+                [&](detail::SampleSourceChannelTimingPlan const& source) {
+                    return source.source.bundle == bundle
+                        && detail::uses_realtime_storage(source.delivery);
+                });
+            if (!uses_source) continue;
+            auto const target = connection.target_port.node_bundle_handle;
+            if (target >= schedule.bundle_execution_position.size()
+                || !schedule.bundle_execution_position[target]) {
+                continue;
+            }
+            auto const position = *schedule.bundle_execution_position[target];
+            first_consumer = first_consumer
+                ? std::min(*first_consumer, position)
+                : std::optional<std::size_t>{position};
+        }
+        return first_consumer;
+    };
     auto region_for_view = [&](SampleRealtimePortStateStorageView const& view)
         -> std::optional<NodeLayout::RegionHandle> {
         if (!view.node_storage_offset) return std::nullopt;
@@ -1390,7 +1423,9 @@ specialize_transition_plan(
                 && current_realization.retained_access
                     != SampleRealtimePortStateAccess::materialized
                 && current_realization.retained_access
-                    != SampleRealtimePortStateAccess::composed)) {
+                    != SampleRealtimePortStateAccess::composed
+                && current_realization.retained_access
+                    != SampleRealtimePortStateAccess::immutable_constant)) {
             return std::unexpected(
                 "GraphJit transition sample state has an unsupported steady realization");
         }
@@ -1401,6 +1436,24 @@ specialize_transition_plan(
                 >= transition_plan.sample_ports.primitives.size()) {
             return std::unexpected(
                 "GraphJit transition sample state lost its authored primitive");
+        }
+        if (input_history
+            && current_realization.retained_access
+                == SampleRealtimePortStateAccess::immutable_constant
+            && *target_primitive
+                < transition_plan.declarations.primitive_activity.size()
+            && transition_plan.declarations
+                .primitive_activity[*target_primitive]) {
+            auto& activity = *transition_plan.declarations
+                .primitive_activity[*target_primitive];
+            if (requirement.configured_port.port_index
+                >= activity.continuous_inputs.size()) {
+                return std::unexpected(
+                    "GraphJit transition immutable input lost its activity plan");
+            }
+            activity.continuous_inputs[
+                requirement.configured_port.port_index]
+                .changed_during_transition = true;
         }
         std::optional<std::size_t> source_representation;
         if (input_history) {
@@ -1439,21 +1492,16 @@ specialize_transition_plan(
 
         auto const source = transition_plan.sample_ports.storage
             .representations[*source_representation];
-        if (requirement.configured_port.node_bundle_handle
-            >= transition_plan.connections.schedule
-                .bundle_execution_position.size()) {
-            return std::unexpected(
-                "GraphJit transition suffix lost its target execution position");
-        }
-        auto const target_position = transition_plan.connections.schedule
-            .bundle_execution_position[
-                requirement.configured_port.node_bundle_handle];
+        auto const target_position = execution_position_for_bundle(
+            requirement.configured_port.node_bundle_handle);
         std::optional<std::size_t> source_position;
         bool source_after_composition = false;
         bool source_before_consumer_materialization = false;
         bool source_before_consumer_composition = false;
         if (output_window) {
             source_position = target_position;
+            source_before_consumer_materialization =
+                source.constant_value.has_value();
         } else {
             auto const materialization = std::ranges::find_if(
                 transition_plan.sample_ports.storage.materializations,
@@ -1498,16 +1546,14 @@ specialize_transition_plan(
                 }
                 auto const& producer_group = transition_plan.connections
                     .sample_producer_groups[source.producer_group_index];
-                if (!producer_group.source_port
-                    || producer_group.source_port->node_bundle_handle
-                        >= transition_plan.connections.schedule
-                            .bundle_execution_position.size()) {
+                if (!producer_group.source_port) {
                     return std::unexpected(
                         "GraphJit transition suffix lost its source producer");
                 }
-                source_position = transition_plan.connections.schedule
-                    .bundle_execution_position[
-                        producer_group.source_port->node_bundle_handle];
+                source_position = execution_position_for_bundle(
+                    producer_group.source_port->node_bundle_handle);
+                source_before_consumer_materialization =
+                    source.constant_value.has_value();
             }
         }
         if (!source_position || !target_position
@@ -1901,11 +1947,8 @@ specialize_transition_plan(
         auto const& producer_group = transition_plan.connections
             .sample_producer_groups[source.producer_group_index];
         auto const source_position = producer_group.source_port
-                && producer_group.source_port->node_bundle_handle
-                    < transition_plan.connections.schedule
-                        .bundle_execution_position.size()
-            ? transition_plan.connections.schedule.bundle_execution_position[
-                producer_group.source_port->node_bundle_handle]
+            ? execution_position_for_bundle(
+                producer_group.source_port->node_bundle_handle)
             : std::nullopt;
         auto const suffix_region = region_for_view(transfer.target_storage);
         if (!source_position || !suffix_region
@@ -1969,6 +2012,9 @@ specialize_transition_plan(
                 .source_representation = source_representation,
                 .target_representation = *suffix_representation,
                 .after_execution_position = *source_position,
+                .before_execution_position = source.constant_value
+                    ? std::optional<std::size_t>{*source_position}
+                    : std::nullopt,
                 .source_layout = source.channel_layout,
                 .target_layout = source.channel_layout,
                 .retained_before = mirror_delay,

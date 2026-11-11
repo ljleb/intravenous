@@ -8,6 +8,7 @@
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <optional>
 #include <ranges>
@@ -90,6 +91,10 @@ struct SchedulePlan {
     // Entry positions correspond to configured NodeBundleHandle values. Values
     // are positions in the flattened provisional execution schedule.
     std::vector<std::optional<std::size_t>> bundle_execution_position{};
+    // Entry positions correspond to configured NodeBundleHandle values. A set
+    // entry means planning proved that the node's Tick result is immutable and
+    // omitted its callback before constructing the schedule.
+    std::vector<std::uint8_t> callback_elided{};
 };
 
 struct SampleSourceChannelTimingPlan {
@@ -462,7 +467,11 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     // Optional entry positions are ConfiguredGraph NodeBundleHandle values.
     // Equal identifiers mean equal callback-facing implementation/realization.
     // The empty span preserves the ordinary deterministic bundle order.
-    std::span<std::size_t const> callback_batch_classes = {});
+    std::span<std::size_t const> callback_batch_classes = {},
+    // Concrete bundle handles whose node metadata makes callback elision a
+    // candidate. Connection analysis accepts a candidate only when its output
+    // has realtime consumers and no background consumer.
+    std::span<NodeBundleHandle const> callback_elision_candidates = {});
 
 // Compiler-owned raw regions (producer storage, detach structures) migrate
 // across graph revisions by identity, and that identity names what owns the
