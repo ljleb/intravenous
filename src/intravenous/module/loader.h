@@ -126,23 +126,11 @@ namespace iv {
         ModuleLoader(ModuleLoader const&) = delete;
         ModuleLoader& operator=(ModuleLoader const&) = delete;
 
-        // Compiles and loads one IV package, then configures its iv module definitions
-        // against the last-valid package revisions already loaded into this
-        // loader. A valid package may publish no iv modules. Use load_packages()
-        // to establish a fresh multi-package candidate set, including every
-        // provider that is not already active.
-        LoadedPackage load_package(
-            PackageBuildRequest const& package
-        ) const;
-
-        LoadedPackage load_project_package(
-            std::filesystem::path const& package_path
-        ) const;
-
         // Compiles only `packages`, then configures each successful
         // candidate against that batch and the last valid revisions of all
         // other packages. It deliberately does not scan and rebuild every
-        // package discoverable from the project directory.
+        // package discoverable from the project directory. A valid package may
+        // publish no iv modules.
         std::vector<PackageLoadResult> load_packages(
             std::vector<PackageBuildRequest> const& packages
         ) const;
@@ -151,14 +139,6 @@ namespace iv {
         // package discovery says that its source disappeared. Existing graphs
         // retain their ModuleRef-owned code revision until they are replaced.
         void remove_package(std::filesystem::path const& package_path) const;
-
-        std::vector<LoadedDefinition> load_package_definitions(
-            PackageBuildRequest const& package
-        ) const;
-
-        std::vector<LoadedDefinition> load_project_package_definitions(
-            std::filesystem::path const& package_path
-        ) const;
 
         // Builds finalized O0 LLVM for the IV package without adding it to the shared ORC JIT.
         std::filesystem::path compile_package(

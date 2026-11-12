@@ -54,7 +54,6 @@ namespace iv {
 
         void update(std::vector<ModuleDependency> dependencies);
         [[nodiscard]] std::vector<ModuleDependency> changed_dependencies();
-        bool has_changes();
         [[nodiscard]] int native_handle() const noexcept { return _fd.get(); }
     };
 

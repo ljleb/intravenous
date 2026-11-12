@@ -15,7 +15,7 @@ int main()
         auto missing_dir = runtime_root / "missing_entry";
         std::filesystem::create_directories(missing_dir);
         iv::test::expect_failure(
-            [&] { (void)loader.load_project_package_definitions(missing_dir); },
+            [&] { (void)iv::test::load_project_package_definitions(loader, missing_dir); },
             "iv_package.json",
             "missing manifest should fail");
     }
@@ -23,7 +23,7 @@ int main()
     {
         auto loader = iv::test::make_loader();
         iv::test::expect_failure(
-            [&] { (void)loader.load_project_package_definitions(fixtures / "missing_export"); },
+            [&] { (void)iv::test::load_project_package_definitions(loader, fixtures / "missing_export"); },
             "iv_package.json",
             "source without manifest should fail");
     }
@@ -31,7 +31,7 @@ int main()
     {
         auto loader = iv::test::make_loader();
         iv::test::expect_failure(
-            [&] { (void)loader.load_project_package_definitions(fixtures / "build_failure"); },
+            [&] { (void)iv::test::load_project_package_definitions(loader, fixtures / "build_failure"); },
             "command failed",
             "build failure should propagate");
     }
@@ -39,7 +39,7 @@ int main()
     {
         auto loader = iv::test::make_loader();
         iv::test::expect_failure(
-            [&] { (void)loader.load_project_package_definitions(fixtures / "missing_dependency"); },
+            [&] { (void)iv::test::load_project_package_definitions(loader, fixtures / "missing_dependency"); },
             "imports missing",
             "missing dependency id should fail");
     }
@@ -47,9 +47,9 @@ int main()
     {
         auto const duplicates = iv::test::duplicate_modules_root();
         auto loader = iv::test::make_loader();
-        (void)loader.load_project_package_definitions(duplicates / "one");
+        (void)iv::test::load_project_package_definitions(loader, duplicates / "one");
         iv::test::expect_failure(
-            [&] { (void)loader.load_project_package_definitions(duplicates / "two"); },
+            [&] { (void)iv::test::load_project_package_definitions(loader, duplicates / "two"); },
             "duplicate stable IV definition ID",
             "duplicate module id should fail");
     }

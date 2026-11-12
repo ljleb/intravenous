@@ -386,11 +386,6 @@ namespace iv {
         return result;
     }
 
-    bool DependencyWatcher::has_changes()
-    {
-        return !changed_dependencies().empty();
-    }
-
     DependencyWatcher make_dependency_watcher()
     {
         return DependencyWatcher();

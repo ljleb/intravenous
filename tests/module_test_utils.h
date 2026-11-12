@@ -86,6 +86,52 @@ namespace iv::test {
         }
     }
 
+    // Single-package loads, through the batch load the package pipeline uses:
+    // one PackageBuildRequest in ModuleLoader::load_packages. A failed load
+    // throws its error, as a direct single-package load would.
+    inline iv::ModuleLoader::LoadedPackage load_package(
+        iv::ModuleLoader const& loader,
+        iv::PackageBuildRequest const& package)
+    {
+        auto results = loader.load_packages({package});
+        if (results.empty() || !results.front()) {
+            throw std::runtime_error(
+                results.empty() ? "IV package load produced no result"
+                                : results.front().error);
+        }
+        return std::move(*results.front().package);
+    }
+
+    inline iv::PackageBuildRequest project_package_request(
+        std::filesystem::path const& package_path)
+    {
+        return iv::PackageBuildRequest{
+            .package_root = package_path,
+            .provenance = iv::PackageProvenance::project_local,
+        };
+    }
+
+    inline iv::ModuleLoader::LoadedPackage load_project_package(
+        iv::ModuleLoader const& loader,
+        std::filesystem::path const& package_path)
+    {
+        return load_package(loader, project_package_request(package_path));
+    }
+
+    inline std::vector<iv::ModuleLoader::LoadedDefinition> load_package_definitions(
+        iv::ModuleLoader const& loader,
+        iv::PackageBuildRequest const& package)
+    {
+        return std::move(load_package(loader, package).definitions);
+    }
+
+    inline std::vector<iv::ModuleLoader::LoadedDefinition> load_project_package_definitions(
+        iv::ModuleLoader const& loader,
+        std::filesystem::path const& package_path)
+    {
+        return load_package_definitions(loader, project_package_request(package_path));
+    }
+
     inline std::string test_process_namespace()
     {
         static std::string cached = [] {
@@ -503,7 +549,7 @@ namespace iv::test {
             config.toolchain,
             {});
         load_test_default_package_catalog(loader);
-        auto loaded_graph = loader.load_project_package_definitions(package_root).front();
+        auto loaded_graph = load_project_package_definitions(loader, package_root).front();
         return iv::PackageModuleDefinition{
             .package_id = normalized_package_root.generic_string(),
             .definition_id = loaded_graph.module_id,

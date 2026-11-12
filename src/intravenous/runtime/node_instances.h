@@ -23,7 +23,6 @@
 namespace iv {
 class ProjectPersistenceBuilder;
 class SocketRpcNodeInstancesResultBuilder;
-struct NodeDefinitionsSnapshotChanged;
 struct GetNodeInstancesRequest;
 
 struct IvModuleRequiredDefinition {
@@ -320,14 +319,6 @@ public:
     NodeInstances(NodeInstances const&) = delete;
     NodeInstances& operator=(NodeInstances const&) = delete;
 
-    std::string create_instance(
-        std::string_view definition_id,
-        std::filesystem::path package_root,
-        std::optional<std::string> instance_id = std::nullopt,
-        std::optional<std::string> display_name = std::nullopt,
-        std::string configuration_source = {});
-    void remove_instance(std::string const& instance_id);
-    void update_instances(std::vector<Update> updates);
     [[nodiscard]] std::vector<IvModuleInstanceInfo> list_instances() const;
     [[nodiscard]] std::vector<ProjectNodeInstanceDeclaration>
     desired_instances() const;
@@ -349,8 +340,6 @@ public:
         std::vector<ProjectNodeReplacement> const* replacement_override = nullptr);
     [[nodiscard]] std::size_t configuration_cache_size() const;
 
-    void handle_node_definitions_snapshot_changed(
-        NodeDefinitionsSnapshotChanged const& change);
     void handle_project_graph_transaction(NodeInstancesProjectGraphRequest& request);
     void handle_project_graph_interaction(NodeInstancesInteractionRequest& request);
     void handle_project_persistence_collect_state(ProjectPersistenceBuilder& builder) const;

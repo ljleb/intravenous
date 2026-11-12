@@ -1,5 +1,8 @@
 #include "../module_test_utils.h"
 #include "../event_source_test_support.h"
+#include "../node_definitions_test_support.h"
+#include "../node_instances_test_driver.h"
+#include <intravenous/runtime/runtime_project_events.h>
 
 #include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/node_definitions_project_graph_bridge.h>
@@ -29,7 +32,7 @@ TEST(IntrospectionBridges, DefinitionsReachIvModuleSourceIntrospectionOnlyThroug
     iv::NodeDefinitions definitions;
     iv::IvModuleSourceIntrospection introspection;
 
-    in_event_source([&] { return definitions.initialize_loaded_definition(make_loaded_definition(workspace)); });
+    iv::test::publish_loaded_definition(definitions, make_loaded_definition(workspace));
     auto const result = introspection.query_active_regions(
         std::filesystem::weakly_canonical(workspace / "module.cpp"));
     EXPECT_TRUE(result.source_spans.empty());
@@ -60,7 +63,7 @@ TEST(IntrospectionBridges, DefinitionsReachIvModuleSourceIntrospectionThroughPro
     auto loaded = iv::test::load_runtime_iv_module_definition(
         startup,
         std::filesystem::weakly_canonical(workspace));
-    in_event_source([&] { return definitions.initialize_loaded_definition(iv::PackageModuleDefinition{
+    iv::test::publish_loaded_definition(definitions, iv::PackageModuleDefinition{
         .package_id = loaded.package_id,
         .definition_id = loaded.definition_id,
         .package_root = loaded.package_root,
@@ -69,7 +72,7 @@ TEST(IntrospectionBridges, DefinitionsReachIvModuleSourceIntrospectionThroughPro
         .dependencies = loaded.dependencies,
         .module_refs = std::move(loaded.module_refs),
         .configured_graph = loaded.configured_graph,
-    }); });
+    });
     auto const result = introspection.query_active_regions(
         std::filesystem::weakly_canonical(workspace / "module.cpp"));
 
@@ -82,11 +85,12 @@ TEST(IntrospectionBridges, InstancesToDefinitionsRequiresBinding)
         fresh_module_fixture_workspace("runtime_bridges_instances_to_definitions_unbound");
 
     iv::NodeInstances instances;
+    iv::test::NodeInstancesDriver driver {instances};
     iv::NodeDefinitions definitions;
 
-    (void)in_event_source([&] { return instances.create_instance(
+    (void)driver.create(
         "iv.test.runtime_module_bridges",
-        std::filesystem::weakly_canonical(workspace)); });
+        std::filesystem::weakly_canonical(workspace));
 
     EXPECT_TRUE(definitions.loaded_module_definitions().empty());
 }
@@ -112,11 +116,19 @@ TEST(InstanceDefinitionBridges, InstanceCreatedAfterDefinitionPublicationRealize
         iv::project_graph_graph_connections_bridge::bind(
             project_graph, graph_connections);
 
-    in_event_source([&] { return definitions.initialize_loaded_definition(
-        make_loaded_definition(package_root, std::string(module_id))); });
+    iv::test::publish_loaded_definition(definitions, make_loaded_definition(package_root, std::string(module_id)));
     EXPECT_TRUE(instances.list_instances().empty());
 
-    auto const instance_id = in_event_source([&] { return instances.create_instance(module_id, package_root); });
+    iv::ProjectStringBuilder create_builder;
+    in_event_source([&] {
+        project_graph.handle_project_create_node_instance(
+            iv::ProjectCreateNodeInstanceRequest{
+                .definition_id = std::string(module_id),
+                .package_root = package_root,
+            },
+            create_builder);
+    });
+    auto const instance_id = create_builder.build();
     auto const listed = instances.list_instances();
 
     ASSERT_EQ(listed.size(), 1u);

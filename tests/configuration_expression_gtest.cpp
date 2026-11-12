@@ -283,7 +283,7 @@ RegisteredSignature const node_reference_signature{
 
 TEST(ConfigurationExpression, ConstructsNestedNamedAggregatesAndSequences)
 {
-    auto values = iv::compile_configuration_expression_list(R"(
+    auto values = iv::evaluate_configuration_expression_list(iv::parse_configuration_expression_list(R"(
         {
             .cutoff = max(1200, 600 * 3),
             .mode = highpass,
@@ -292,7 +292,7 @@ TEST(ConfigurationExpression, ConstructsNestedNamedAggregatesAndSequences)
                 {.frequency = 2000, .gain = 2.5}
             }
         }
-    )", signature);
+    )"), signature);
     ASSERT_EQ(values.arguments().size(), 1u);
     auto const& value = *static_cast<FilterConfiguration const*>(
         values.arguments()[0].data);
@@ -307,8 +307,8 @@ TEST(ConfigurationExpression, ConstructsNestedNamedAggregatesAndSequences)
 
 TEST(ConfigurationExpression, AssignsFixedSequenceElementsThroughProviderCode)
 {
-    auto values = iv::compile_configuration_expression_list(
-        "{1.25, 2.5}", fixed_values_signature);
+    auto values = iv::evaluate_configuration_expression_list(
+        iv::parse_configuration_expression_list("{1.25, 2.5}"), fixed_values_signature);
     ASSERT_EQ(values.arguments().size(), 1u);
     auto const& value = *static_cast<FixedValues const*>(
         values.arguments()[0].data);
@@ -319,8 +319,8 @@ TEST(ConfigurationExpression, AssignsFixedSequenceElementsThroughProviderCode)
 TEST(ConfigurationExpression, RejectsValuesOutsideTheTransportedFloatingRange)
 {
     EXPECT_THROW(
-        (void)iv::compile_configuration_expression_list(
-            "{.cutoff = 1e309}", signature),
+        (void)iv::evaluate_configuration_expression_list(
+            iv::parse_configuration_expression_list("{.cutoff = 1e309}"), signature),
         std::invalid_argument);
 }
 
@@ -343,8 +343,8 @@ TEST(ConfigurationExpression, ParsesStableNodeReferencesAndAllPathSelectors)
 
 TEST(ConfigurationExpression, ResolvesTheSameEnumeratorNameFromEachExpectedType)
 {
-    auto values = iv::compile_configuration_expression_list(
-        "highpass, highpass", enum_signature);
+    auto values = iv::evaluate_configuration_expression_list(
+        iv::parse_configuration_expression_list("highpass, highpass"), enum_signature);
     ASSERT_EQ(values.arguments().size(), 2u);
     EXPECT_EQ(
         *static_cast<Mode const*>(values.arguments()[0].data),
@@ -357,8 +357,8 @@ TEST(ConfigurationExpression, ResolvesTheSameEnumeratorNameFromEachExpectedType)
 TEST(ConfigurationExpression, RejectsUnknownEnumeratorForTheExpectedType)
 {
     EXPECT_THROW(
-        (void)iv::compile_configuration_expression_list(
-            "direct, lowpass", enum_signature),
+        (void)iv::evaluate_configuration_expression_list(
+            iv::parse_configuration_expression_list("direct, lowpass"), enum_signature),
         std::invalid_argument);
 }
 
@@ -385,8 +385,8 @@ TEST(ConfigurationExpression, RefusesANodeReferenceWithoutAConstructionSession)
     // A live NodeRef exists only inside the session that constructs the
     // configured node; evaluation without that session must not invent one.
     try {
-        (void)iv::compile_configuration_expression_list(
-            "&550e8400-e29b-41d4-a716-446655440000",
+        (void)iv::evaluate_configuration_expression_list(
+            iv::parse_configuration_expression_list("&550e8400-e29b-41d4-a716-446655440000"),
             node_reference_signature);
         FAIL() << "expected node-reference materialization to fail";
     } catch (std::invalid_argument const& error) {

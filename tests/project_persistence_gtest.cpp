@@ -1,5 +1,6 @@
 #include "module_test_utils.h"
 #include "event_source_test_support.h"
+#include "node_instances_test_driver.h"
 
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/runtime/node_instances.h>
@@ -591,12 +592,12 @@ TEST(ProjectPersistence, SaveCollectsInstanceMetadataWithoutExecutionState)
     auto instances_scope =
         iv::project_persistence_node_instances_bridge::bind(persistence, instances);
 
-    (void)in_event_source([&] { return instances.create_instance(
+    (void)iv::test::NodeInstancesDriver(instances).create(
         "iv.test.persisted",
         workspace / "modules" / "persisted",
         "instance:stable",
         "Persisted",
-        "{.cutoff = 1200}"); });
+        "{.cutoff = 1200}");
 
     in_event_source([&] { return persistence.save(); });
 

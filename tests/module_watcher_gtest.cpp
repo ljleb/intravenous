@@ -20,15 +20,15 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
     iv::test::copy_directory(voice_src, voice_dst);
 
     auto loader = iv::test::make_loader();
-    ASSERT_NO_THROW((void)loader.load_project_package_definitions(voice_dst));
-    auto graph = loader.load_project_package_definitions(project_dst).front();
+    ASSERT_NO_THROW((void)iv::test::load_project_package_definitions(loader, voice_dst));
+    auto graph = iv::test::load_project_package_definitions(loader, project_dst).front();
 
     auto watcher = iv::make_dependency_watcher();
     watcher.update(graph.dependencies);
-    EXPECT_FALSE(watcher.has_changes());
+    EXPECT_TRUE(watcher.changed_dependencies().empty());
 
     iv::test::write_text_advancing_timestamp(project_dst / "compile_commands.json", "[]\n");
-    EXPECT_FALSE(watcher.has_changes());
+    EXPECT_TRUE(watcher.changed_dependencies().empty());
 
     // Opening a package source in clangd can populate a persistent background
     // index below .cache without modifying package source. That editor cache
@@ -36,7 +36,7 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
     auto const clangd_cache = project_dst / ".cache" / "clangd" / "index";
     std::filesystem::create_directories(clangd_cache);
     iv::test::write_text_advancing_timestamp(clangd_cache / "module.cpp.fake.idx", "index\n");
-    EXPECT_FALSE(watcher.has_changes());
+    EXPECT_TRUE(watcher.changed_dependencies().empty());
 
     // The configured graph watches its own source and every provider it
     // resolves through g.node<Id>().
@@ -50,7 +50,7 @@ TEST(ModuleWatcher, ObservesDependencyEdits)
 
     bool saw_change = false;
     for (int i = 0; i < 40; ++i) {
-        if (watcher.has_changes()) {
+        if (!watcher.changed_dependencies().empty()) {
             saw_change = true;
             break;
         }
@@ -76,16 +76,16 @@ TEST(ModuleWatcher, MissingDependencyDirectoryIsReportedAsChangeWithoutThrowing)
     iv::test::copy_directory(voice_src, voice_dst);
 
     auto loader = iv::test::make_loader();
-    ASSERT_NO_THROW((void)loader.load_project_package_definitions(voice_dst));
-    auto graph = loader.load_project_package_definitions(project_dst).front();
+    ASSERT_NO_THROW((void)iv::test::load_project_package_definitions(loader, voice_dst));
+    auto graph = iv::test::load_project_package_definitions(loader, project_dst).front();
 
     auto watcher = iv::make_dependency_watcher();
     watcher.update(graph.dependencies);
-    EXPECT_FALSE(watcher.has_changes());
+    EXPECT_TRUE(watcher.changed_dependencies().empty());
 
     std::filesystem::rename(project_dst, runtime_root / "watch_target_renamed");
 
-    EXPECT_TRUE(watcher.has_changes());
+    EXPECT_FALSE(watcher.changed_dependencies().empty());
 }
 
 TEST(ModuleWatcher, WatchSetReplacementPreservesDescriptorAndClosesPreinstallChangeRace)

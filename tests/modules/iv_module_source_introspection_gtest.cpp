@@ -1,5 +1,6 @@
 #include "../module_test_utils.h"
 #include "../event_source_test_support.h"
+#include "../node_definitions_test_support.h"
 
 #include <intravenous/runtime/node_definitions_project_graph_bridge.h>
 #include <intravenous/runtime/graph_connections.h>
@@ -82,7 +83,7 @@ struct InitializedIvModuleSourceIntrospectionApp {
         // Source introspection learns instance declarations from the
         // ProjectGraph root build that creates the instance.
         auto const module_id = definition.module_id;
-        in_event_source([&] { return definitions.initialize_loaded_definition(std::move(definition)); });
+        iv::test::publish_loaded_definition(definitions, std::move(definition));
         iv::ProjectStringBuilder created;
         in_event_source([&] { return project_graph.handle_project_create_node_instance(
             iv::ProjectCreateNodeInstanceRequest{
@@ -249,7 +250,7 @@ namespace {
 )");
 
     auto loader = iv::test::make_loader();
-    auto definition = loader.load_project_package_definitions(workspace).front();
+    auto definition = iv::test::load_project_package_definitions(loader, workspace).front();
     ASSERT_NE(definition.configured_graph, nullptr);
 
     auto structural_state_nodes = 0u;
@@ -369,7 +370,7 @@ namespace {
 )");
 
     auto loader = iv::test::make_loader();
-    auto definitions = loader.load_project_package_definitions(workspace);
+    auto definitions = iv::test::load_project_package_definitions(loader, workspace);
     auto const definition = std::ranges::find_if(definitions, [](auto const& candidate) {
         return candidate.module_id == "iv.test.source_provenance.main";
     });

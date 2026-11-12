@@ -1,5 +1,6 @@
 #include "../module_test_utils.h"
 #include "../event_source_test_support.h"
+#include "../node_instances_test_driver.h"
 
 #include <intravenous/bridge.h>
 #include <intravenous/runtime/node_instances.h>
@@ -69,7 +70,7 @@ iv::ModuleNodeDefinition make_definition(std::filesystem::path module_root)
 }
 
 void apply_module_definitions(
-    iv::NodeInstances &instances,
+    iv::test::NodeInstancesDriver& driver,
     iv::ModuleNodeDefinitionsChanged diff)
 {
     static std::uint64_t generation = 0;
@@ -86,8 +87,7 @@ void apply_module_definitions(
     };
     for (auto& definition : diff.created) publish(std::move(definition));
     for (auto& definition : diff.updated) publish(std::move(definition));
-    in_event_source([&] { return instances.handle_node_definitions_snapshot_changed(
-        iv::NodeDefinitionsSnapshotChanged{.snapshot = std::move(snapshot)}); });
+    (void)driver.install(std::move(snapshot));
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
@@ -98,6 +98,7 @@ IV_SUBSCRIBE_LINKER_EVENT(
 class NodeInstancesTest : public ::testing::Test {
 protected:
     iv::NodeInstances bridge_source {};
+    iv::test::NodeInstancesDriver bridge_driver {bridge_source};
     NodeInstancesWitness witness {};
     node_instances_witness_bridge::scope witness_scope {bridge_source, witness};
 };
@@ -109,8 +110,9 @@ TEST_F(NodeInstancesTest, CreateInstancePublishesRequiredDefinitionAndListsTheIn
         iv::test_support::fresh_module_fixture_workspace("iv_module_instances_create");
     auto const module_root = std::filesystem::weakly_canonical(workspace);
     iv::NodeInstances instances;
+    iv::test::NodeInstancesDriver driver {instances};
 
-    auto const instance_id = in_event_source([&] { return instances.create_instance(module_id, module_root); });
+    auto const instance_id = driver.create(std::string(module_id), module_root);
 
     EXPECT_FALSE(instance_id.empty());
     ASSERT_TRUE(witness.required_diff.has_value());
@@ -131,13 +133,13 @@ TEST_F(NodeInstancesTest, CreateRejectsEmptyStableAndDefinitionIds)
         "node_instances_empty_ids");
 
     EXPECT_THROW(
-        (void)in_event_source([&] { return bridge_source.create_instance(
-            module_id,
+        (void)bridge_driver.create(
+            std::string(module_id),
             workspace,
-            std::optional<std::string>{""}); }),
+            std::optional<std::string>{""}),
         std::invalid_argument);
     EXPECT_THROW(
-        (void)in_event_source([&] { return bridge_source.create_instance("", workspace); }),
+        (void)bridge_driver.create("", workspace),
         std::invalid_argument);
     EXPECT_TRUE(bridge_source.desired_instances().empty());
 }
@@ -148,11 +150,12 @@ TEST_F(NodeInstancesTest, CreateSecondInstanceForSameDefinitionDoesNotRepublishR
         iv::test_support::fresh_module_fixture_workspace("iv_module_instances_dedup_required");
     auto const module_root = std::filesystem::weakly_canonical(workspace);
     iv::NodeInstances instances;
+    iv::test::NodeInstancesDriver driver {instances};
 
-    (void)in_event_source([&] { return instances.create_instance(module_id, module_root); });
+    (void)driver.create(std::string(module_id), module_root);
     witness.reset();
 
-    auto const second_instance_id = in_event_source([&] { return instances.create_instance(module_id, module_root); });
+    auto const second_instance_id = driver.create(std::string(module_id), module_root);
 
     EXPECT_FALSE(second_instance_id.empty());
     EXPECT_FALSE(witness.required_diff.has_value());
@@ -168,11 +171,12 @@ TEST_F(NodeInstancesTest, SameDefinitionIdAtNewRootRepublishesUpdatedRequirement
     auto const first_root = std::filesystem::weakly_canonical(first_workspace);
     auto const second_root = std::filesystem::weakly_canonical(second_workspace);
     iv::NodeInstances instances;
+    iv::test::NodeInstancesDriver driver {instances};
 
-    (void)in_event_source([&] { return instances.create_instance(module_id, first_root); });
+    (void)driver.create(std::string(module_id), first_root);
     witness.reset();
 
-    auto const second_instance_id = in_event_source([&] { return instances.create_instance(module_id, second_root); });
+    auto const second_instance_id = driver.create(std::string(module_id), second_root);
 
     EXPECT_FALSE(second_instance_id.empty());
     ASSERT_TRUE(witness.required_diff.has_value());
@@ -193,11 +197,12 @@ TEST_F(NodeInstancesTest, DefinitionChangeMovesInstanceToPublishedPackageRoot)
     auto const stale_root = std::filesystem::weakly_canonical(workspace / "stale");
     auto const moved_root = std::filesystem::weakly_canonical(workspace);
     iv::NodeInstances instances;
+    iv::test::NodeInstancesDriver driver {instances};
 
-    (void)in_event_source([&] { return instances.create_instance(module_id, stale_root); });
+    (void)driver.create(std::string(module_id), stale_root);
     witness.reset();
 
-    apply_module_definitions(instances, iv::ModuleNodeDefinitionsChanged{
+    apply_module_definitions(driver, iv::ModuleNodeDefinitionsChanged{
         .created = {make_definition(moved_root)},
     });
 
@@ -254,11 +259,12 @@ TEST_F(NodeInstancesTest, DefinitionsChangedRealizesMatchingInstances)
         iv::test_support::fresh_module_fixture_workspace("iv_module_instances_realize");
     auto const module_root = std::filesystem::weakly_canonical(workspace);
     iv::NodeInstances instances;
+    iv::test::NodeInstancesDriver driver {instances};
 
-    auto const instance_id = in_event_source([&] { return instances.create_instance(module_id, module_root); });
+    auto const instance_id = driver.create(std::string(module_id), module_root);
     witness.reset();
 
-    apply_module_definitions(instances, iv::ModuleNodeDefinitionsChanged{
+    apply_module_definitions(driver, iv::ModuleNodeDefinitionsChanged{
         .created = {make_definition(module_root)},
     });
 
@@ -276,9 +282,10 @@ TEST_F(NodeInstancesTest, DefinitionRemovalKeepsDesiredInstanceVisibleAsUnrealiz
         iv::test_support::fresh_module_fixture_workspace("iv_module_instances_removed_definition");
     auto const module_root = std::filesystem::weakly_canonical(workspace);
     iv::NodeInstances instances;
+    iv::test::NodeInstancesDriver driver {instances};
 
-    auto const instance_id = in_event_source([&] { return instances.create_instance(module_id, module_root); });
-    apply_module_definitions(instances, iv::ModuleNodeDefinitionsChanged{
+    auto const instance_id = driver.create(std::string(module_id), module_root);
+    apply_module_definitions(driver, iv::ModuleNodeDefinitionsChanged{
         .created = {make_definition(module_root)},
     });
     witness.reset();
@@ -287,7 +294,7 @@ TEST_F(NodeInstancesTest, DefinitionRemovalKeepsDesiredInstanceVisibleAsUnrealiz
     // while the project still desires an instance of it. Drop the published
     // snapshot but preserve durable instance metadata so the UI can show it as
     // unresolved and offer deletion instead of hiding orphaned project state.
-    apply_module_definitions(instances, iv::ModuleNodeDefinitionsChanged{
+    apply_module_definitions(driver, iv::ModuleNodeDefinitionsChanged{
         .deleted_definition_ids = {std::string(module_id)},
     });
 
@@ -304,14 +311,15 @@ TEST_F(NodeInstancesTest, RemoveLastPublishedInstanceUnlistsItAndDropsRequiremen
         iv::test_support::fresh_module_fixture_workspace("iv_module_instances_remove");
     auto const module_root = std::filesystem::weakly_canonical(workspace);
     iv::NodeInstances instances;
+    iv::test::NodeInstancesDriver driver {instances};
 
-    auto const instance_id = in_event_source([&] { return instances.create_instance(module_id, module_root); });
-    apply_module_definitions(instances, iv::ModuleNodeDefinitionsChanged{
+    auto const instance_id = driver.create(std::string(module_id), module_root);
+    apply_module_definitions(driver, iv::ModuleNodeDefinitionsChanged{
         .created = {make_definition(module_root)},
     });
     witness.reset();
 
-    in_event_source([&] { return instances.remove_instance(instance_id); });
+    driver.remove(instance_id);
 
     ASSERT_TRUE(witness.required_diff.has_value());
     ASSERT_EQ(witness.required_diff->deleted_definition_ids.size(), 1u);
@@ -324,21 +332,21 @@ TEST_F(NodeInstancesTest, ConfigurationSourceUpdateListsTheNewDurableRequest)
     auto const workspace = iv::test_support::fresh_module_fixture_workspace(
         "iv_module_instances_configuration_source_update");
     auto const module_root = std::filesystem::weakly_canonical(workspace);
-    auto const instance_id = in_event_source([&] { return bridge_source.create_instance(
-        module_id,
+    auto const instance_id = bridge_driver.create(
+        std::string(module_id),
         module_root,
         "instance:configured",
         std::nullopt,
-        "440"); });
-    apply_module_definitions(bridge_source, iv::ModuleNodeDefinitionsChanged{
+        "440");
+    apply_module_definitions(bridge_driver, iv::ModuleNodeDefinitionsChanged{
         .created = {make_definition(module_root)},
     });
     witness.reset();
 
-    in_event_source([&] { return bridge_source.update_instances({iv::NodeInstances::Update{
+    bridge_driver.update({iv::NodeInstanceDisplayNameUpdate{
         .instance_id = instance_id,
         .configuration_source = "880",
-    }}); });
+    }});
 
     auto const listed = bridge_source.list_instances();
     ASSERT_EQ(listed.size(), 1u);
@@ -387,12 +395,12 @@ TEST_F(NodeInstancesTest, InvalidReplaceAllDoesNotPartiallyChangeDesiredState)
     auto const workspace = iv::test_support::fresh_module_fixture_workspace(
         "node_instances_replace_all_atomicity");
     auto const module_root = std::filesystem::weakly_canonical(workspace);
-    (void)in_event_source([&] { return bridge_source.create_instance(
-        module_id,
+    (void)bridge_driver.create(
+        std::string(module_id),
         module_root,
         "instance:existing",
         "Existing",
-        "440"); });
+        "440");
     auto const before = bridge_source.desired_instances();
     witness.reset();
 

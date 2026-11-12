@@ -298,28 +298,6 @@ void NodeDefinitions::handle_package_definitions_publication(
     request.project_publication = std::move(change.publication);
 }
 
-void NodeDefinitions::initialize_loaded_definition(PackageModuleDefinition loaded_definition)
-{
-    auto package_id = loaded_definition.package_id;
-    if (package_id.empty()) {
-        package_id = loaded_definition.package_root.empty()
-            ? loaded_definition.definition_id
-            : normalize_path(loaded_definition.package_root).generic_string();
-        loaded_definition.package_id = package_id;
-    }
-    auto revision = std::make_shared<PackageRevision const>(PackageRevision{
-        .package_id = package_id,
-        .package_root = loaded_definition.package_root,
-        .revision = 1,
-        .module_definitions = {std::move(loaded_definition)},
-    });
-    auto package_snapshot = std::make_shared<PackageDefinitionsSnapshot>();
-    package_snapshot->generation = 1;
-    package_snapshot->by_package_id.emplace(package_id, std::move(revision));
-    PackageDefinitionsPublicationRequest request{.snapshot = std::move(package_snapshot)};
-    handle_package_definitions_publication(request);
-}
-
 std::shared_ptr<NodeDefinitionsSnapshot const> NodeDefinitions::snapshot() const
 {
     std::scoped_lock lock(mutex_);

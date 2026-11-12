@@ -439,23 +439,6 @@ NodeInstances::rebuild_required_definitions_locked()
 }
 
 std::string NodeInstances::create_instance(
-    std::string_view definition_id,
-    std::filesystem::path package_root,
-    std::optional<std::string> requested_instance_id,
-    std::optional<std::string> requested_display_name,
-    std::string configuration_source)
-{
-    Changes changes;
-    return create_instance(
-        changes,
-        definition_id,
-        std::move(package_root),
-        std::move(requested_instance_id),
-        std::move(requested_display_name),
-        std::move(configuration_source));
-}
-
-std::string NodeInstances::create_instance(
     Changes& changes,
     std::string_view definition_id,
     std::filesystem::path package_root,
@@ -530,12 +513,6 @@ std::string NodeInstances::create_instance(
     return instance_id;
 }
 
-void NodeInstances::remove_instance(std::string const& instance_id)
-{
-    Changes changes;
-    remove_instance(changes, instance_id);
-}
-
 void NodeInstances::remove_instance(Changes& changes, std::string const& instance_id)
 {
     IvModuleRequiredDefinitionsChanged required_diff;
@@ -566,12 +543,6 @@ void NodeInstances::remove_instance(Changes& changes, std::string const& instanc
             iv_runtime_iv_module_required_definitions_changed_event,
             required_diff);
     }
-}
-
-void NodeInstances::update_instances(std::vector<Update> updates)
-{
-    Changes changes;
-    update_instances(changes, std::move(updates));
 }
 
 void NodeInstances::update_instances(Changes& changes, std::vector<Update> updates)
@@ -1280,13 +1251,6 @@ std::size_t NodeInstances::configuration_cache_size() const
 {
     std::scoped_lock lock(mutex_);
     return configuration_cache_.size();
-}
-
-void NodeInstances::handle_node_definitions_snapshot_changed(
-    NodeDefinitionsSnapshotChanged const& change)
-{
-    Changes changes;
-    install_definitions_snapshot(changes, change.snapshot);
 }
 
 void NodeInstances::install_definitions_snapshot(

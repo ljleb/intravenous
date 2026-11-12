@@ -1,5 +1,6 @@
 #include "../module_test_utils.h"
 #include "../event_source_test_support.h"
+#include "../node_definitions_test_support.h"
 
 #include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
@@ -249,7 +250,7 @@ TEST(SocketRpcNodeInstancesBridge, BoundEventsCreateAndDeleteInstances)
     auto definition = iv::test_support::make_loaded_definition(
         module_root, "iv.test.local_cmake");
     definition.package_id = std::filesystem::weakly_canonical(module_root).generic_string();
-    in_event_source([&] { return definitions.initialize_loaded_definition(std::move(definition)); });
+    iv::test::publish_loaded_definition(definitions, std::move(definition));
     auto iv_module_instances_iv_module_source_introspection_scope =
         iv::node_instances_iv_module_source_introspection_bridge::bind(
             instances,
@@ -305,7 +306,7 @@ TEST(SocketRpcNodeInstancesBridge, BoundUpdateRenamesInstance)
     auto definition = iv::test_support::make_loaded_definition(
         module_root, "iv.test.local_cmake");
     definition.package_id = std::filesystem::weakly_canonical(module_root).generic_string();
-    in_event_source([&] { return definitions.initialize_loaded_definition(std::move(definition)); });
+    iv::test::publish_loaded_definition(definitions, std::move(definition));
     auto iv_module_instances_iv_module_source_introspection_scope =
         iv::node_instances_iv_module_source_introspection_bridge::bind(
             instances,

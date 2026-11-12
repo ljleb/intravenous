@@ -149,10 +149,6 @@ private:
     details::RegisteredSignature const& signature,
     ConfigurationNodeReferenceMaterializer const* node_references = nullptr);
 
-[[nodiscard]] EvaluatedConfigurationArguments compile_configuration_expression_list(
-    std::string source,
-    details::RegisteredSignature const& signature);
-
 [[nodiscard]] EvaluatedConfigurationArguments evaluate_configuration_json_arguments(
     nlohmann::ordered_json const& value,
     details::RegisteredSignature const& signature);

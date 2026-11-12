@@ -1,5 +1,6 @@
 #include <intravenous/basic_nodes/arithmetic.h>
 #include "../event_source_test_support.h"
+#include "../node_instances_test_driver.h"
 #include <intravenous/dsl.h>
 #include <intravenous/graph/builder.h>
 #include <intravenous/graph/configured_graph.hpp>
@@ -549,8 +550,8 @@ TEST(NodeInstancesConfiguration, SnapshotPublicationInvalidatesChangedDefinition
     auto first_snapshot = make_snapshot(1, {counted_spec()});
     auto second_snapshot = make_snapshot(2, {counted_spec()});
     iv::NodeInstances instances;
-    in_event_source([&] { return instances.handle_node_definitions_snapshot_changed(
-        iv::NodeDefinitionsSnapshotChanged{.snapshot = first_snapshot}); });
+    iv::test::NodeInstancesDriver driver {instances};
+    (void)driver.install(first_snapshot);
     int value = 9;
     std::array arguments{int_argument(value)};
     std::array requests{request("first", counted_id, arguments)};
@@ -559,8 +560,7 @@ TEST(NodeInstancesConfiguration, SnapshotPublicationInvalidatesChangedDefinition
     ASSERT_TRUE(first.diagnostics.empty());
     ASSERT_EQ(instances.configuration_cache_size(), 1u);
 
-    in_event_source([&] { return instances.handle_node_definitions_snapshot_changed(
-        iv::NodeDefinitionsSnapshotChanged{.snapshot = second_snapshot}); });
+    (void)driver.install(second_snapshot);
     EXPECT_EQ(instances.configuration_cache_size(), 0u);
 
     iv::GraphBuilder second_root;
@@ -576,8 +576,8 @@ TEST(NodeInstancesConfiguration, SnapshotPublicationRetainsUnchangedDefinitionCl
     counted_calls = 0;
     auto first_snapshot = make_snapshot(1, {counted_spec()});
     iv::NodeInstances instances;
-    in_event_source([&] { return instances.handle_node_definitions_snapshot_changed(
-        iv::NodeDefinitionsSnapshotChanged{.snapshot = first_snapshot}); });
+    iv::test::NodeInstancesDriver driver {instances};
+    (void)driver.install(first_snapshot);
     int value = 9;
     std::array arguments{int_argument(value)};
     std::array requests{request("first", counted_id, arguments)};
@@ -589,8 +589,7 @@ TEST(NodeInstancesConfiguration, SnapshotPublicationRetainsUnchangedDefinitionCl
     auto second_snapshot = std::make_shared<iv::NodeDefinitionsSnapshot>(
         *first_snapshot);
     second_snapshot->generation = 2;
-    in_event_source([&] { return instances.handle_node_definitions_snapshot_changed(
-        iv::NodeDefinitionsSnapshotChanged{.snapshot = second_snapshot}); });
+    (void)driver.install(second_snapshot);
     EXPECT_EQ(instances.configuration_cache_size(), 1u);
 
     iv::GraphBuilder second_root;
@@ -621,8 +620,8 @@ TEST(NodeInstancesConfiguration, SnapshotPublicationInvalidatesChangedNestedClos
         },
     });
     iv::NodeInstances instances;
-    in_event_source([&] { return instances.handle_node_definitions_snapshot_changed(
-        iv::NodeDefinitionsSnapshotChanged{.snapshot = first_snapshot}); });
+    iv::test::NodeInstancesDriver driver {instances};
+    (void)driver.install(first_snapshot);
     int value = 4;
     std::array arguments{int_argument(value)};
     std::array requests{request("first", nested_parent_id, arguments)};
@@ -636,8 +635,7 @@ TEST(NodeInstancesConfiguration, SnapshotPublicationInvalidatesChangedNestedClos
         *first_snapshot);
     second_snapshot->generation = 2;
     second_snapshot->by_id.at(nested_child_id).version = 2;
-    in_event_source([&] { return instances.handle_node_definitions_snapshot_changed(
-        iv::NodeDefinitionsSnapshotChanged{.snapshot = second_snapshot}); });
+    (void)driver.install(second_snapshot);
     EXPECT_EQ(instances.configuration_cache_size(), 0u);
 
     iv::GraphBuilder second_root;
@@ -659,8 +657,8 @@ TEST(NodeInstancesConfiguration, OlderPinnedBatchDoesNotRepopulateCacheAfterNewe
     auto older_snapshot = make_snapshot(1, {counted_spec()});
     auto newer_snapshot = make_snapshot(2, {counted_spec()});
     iv::NodeInstances instances;
-    in_event_source([&] { return instances.handle_node_definitions_snapshot_changed(
-        iv::NodeDefinitionsSnapshotChanged{.snapshot = newer_snapshot}); });
+    iv::test::NodeInstancesDriver driver {instances};
+    (void)driver.install(newer_snapshot);
 
     int value = 13;
     std::array arguments{int_argument(value)};

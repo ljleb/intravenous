@@ -90,13 +90,6 @@ public:
     {
         return used_size_;
     }
-
-    [[nodiscard]] bool set_used_size(std::size_t size) noexcept
-    {
-        if (size > storage_size_) return false;
-        used_size_ = size;
-        return true;
-    }
 };
 
 // Realtime-owned chain assembled entirely before publication. Destroying an

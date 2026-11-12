@@ -1775,19 +1775,6 @@ public:
         return results;
     }
 
-    ModuleLoader::LoadedPackage load_package(
-        PackageBuildRequest const& package) const
-    {
-        auto results = load_packages({package});
-        if (results.empty() || !results.front()) {
-            throw std::runtime_error(
-                results.empty()
-                    ? "IV package load produced no result"
-                    : results.front().error);
-        }
-        return std::move(*results.front().package);
-    }
-
     void remove_package(std::filesystem::path const& path) const
     {
         std::lock_guard lock(mutex_);
@@ -1826,21 +1813,6 @@ ModuleLoader::~ModuleLoader() = default;
 ModuleLoader::ModuleLoader(ModuleLoader &&) noexcept = default;
 ModuleLoader &ModuleLoader::operator=(ModuleLoader &&) noexcept = default;
 
-ModuleLoader::LoadedPackage ModuleLoader::load_package(
-    PackageBuildRequest const& package) const
-{
-    return _impl->load_package(package);
-}
-
-ModuleLoader::LoadedPackage ModuleLoader::load_project_package(
-    std::filesystem::path const& package_path) const
-{
-    return load_package(PackageBuildRequest{
-        .package_root = package_path,
-        .provenance = PackageProvenance::project_local,
-    });
-}
-
 std::vector<ModuleLoader::PackageLoadResult> ModuleLoader::load_packages(
     std::vector<PackageBuildRequest> const& packages) const
 {
@@ -1850,22 +1822,6 @@ std::vector<ModuleLoader::PackageLoadResult> ModuleLoader::load_packages(
 void ModuleLoader::remove_package(std::filesystem::path const& path) const
 {
     _impl->remove_package(path);
-}
-
-std::vector<ModuleLoader::LoadedDefinition> ModuleLoader::load_package_definitions(
-    PackageBuildRequest const& package) const
-{
-    auto source = load_package(package);
-    return std::move(source.definitions);
-}
-
-std::vector<ModuleLoader::LoadedDefinition> ModuleLoader::load_project_package_definitions(
-    std::filesystem::path const& package_path) const
-{
-    return load_package_definitions(PackageBuildRequest{
-        .package_root = package_path,
-        .provenance = PackageProvenance::project_local,
-    });
 }
 
 std::filesystem::path ModuleLoader::compile_package(

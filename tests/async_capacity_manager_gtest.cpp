@@ -21,16 +21,29 @@ constexpr auto policy = iv::ProducerCapacityPolicy{
     .high_watermark = 7,
 };
 
-void write_value(iv::AsyncQueueBlock& block, std::uint32_t value)
+// Tags each block of an unpublished chain with one value, written through the
+// chain's writer as realtime producers write: every block is filled
+// completely, starting with its value. Returns the value after the last one.
+std::uint32_t write_values(iv::ProducedBlockChain& chain, std::uint32_t value)
 {
-    ASSERT_GE(block.storage().size(), sizeof(value));
-    std::memcpy(block.storage().data(), &value, sizeof(value));
-    ASSERT_TRUE(block.set_used_size(sizeof(value)));
+    std::vector<std::size_t> block_sizes;
+    chain.for_each([&](iv::AsyncQueueBlock& block) {
+        block_sizes.push_back(block.storage().size());
+    });
+    auto writer = chain.writer();
+    for (auto const size : block_sizes) {
+        std::vector<std::byte> bytes(size);
+        EXPECT_GE(size, sizeof(value));
+        std::memcpy(bytes.data(), &value, std::min(size, sizeof(value)));
+        EXPECT_TRUE(writer.append(bytes));
+        ++value;
+    }
+    return value;
 }
 
 std::uint32_t read_value(iv::AsyncQueueBlock const& block)
 {
-    EXPECT_EQ(block.used_size(), sizeof(std::uint32_t));
+    EXPECT_EQ(block.used_size(), block.storage().size());
     std::uint32_t value = 0;
     std::memcpy(&value, block.used_storage().data(), sizeof(value));
     return value;
@@ -100,10 +113,7 @@ TEST(AsyncCapacityManager, PrivateChainIsInvisibleUntilOnePublication)
 
     auto chain = reserve.acquire(3);
     ASSERT_TRUE(chain);
-    std::uint32_t next = 10;
-    chain.for_each([&](iv::AsyncQueueBlock& block) {
-        write_value(block, next++);
-    });
+    (void)write_values(chain, 10);
 
     auto const unpublished_revision = work_signal.work_revision();
     EXPECT_TRUE(pending.pin().empty());
@@ -161,11 +171,7 @@ TEST(AsyncCapacityManager, PrivateChainsJoinBeforeOneQueuePublication)
     auto later_in_same_pass = reserve.acquire(2);
     ASSERT_TRUE(pass);
     ASSERT_TRUE(later_in_same_pass);
-    pass.for_each([](iv::AsyncQueueBlock& block) { write_value(block, 1); });
-    std::uint32_t next = 2;
-    later_in_same_pass.for_each([&](iv::AsyncQueueBlock& block) {
-        write_value(block, next++);
-    });
+    (void)write_values(later_in_same_pass, write_values(pass, 1));
 
     ASSERT_TRUE(pass.append(std::move(later_in_same_pass)));
     EXPECT_TRUE(pending.pin().empty());
@@ -208,17 +214,12 @@ TEST(AsyncCapacityManager, LaterAppendDoesNotExtendPinnedPrefix)
     ASSERT_EQ(manager.maintain(reserve, policy), 8u);
 
     auto first = reserve.acquire(2);
-    std::uint32_t next = 1;
-    first.for_each([&](iv::AsyncQueueBlock& block) {
-        write_value(block, next++);
-    });
+    auto const next = write_values(first, 1);
     ASSERT_TRUE(pending.publish(std::move(first)));
     auto selected = pending.pin();
 
     auto later = reserve.acquire(2);
-    later.for_each([&](iv::AsyncQueueBlock& block) {
-        write_value(block, next++);
-    });
+    (void)write_values(later, next);
     ASSERT_TRUE(pending.publish(std::move(later)));
 
     EXPECT_EQ(values(selected), (std::vector<std::uint32_t>{1, 2}));
@@ -347,12 +348,12 @@ TEST(AsyncCapacityManager, IndependentQueuesPinIndependentPrefixes)
     ASSERT_EQ(manager.maintain(second_reserve, policy), 8u);
 
     auto first = first_reserve.acquire(1);
-    first.for_each([](iv::AsyncQueueBlock& block) { write_value(block, 1); });
+    (void)write_values(first, 1);
     ASSERT_TRUE(first_pending.publish(std::move(first)));
     auto first_selection = first_pending.pin();
 
     auto second = second_reserve.acquire(1);
-    second.for_each([](iv::AsyncQueueBlock& block) { write_value(block, 2); });
+    (void)write_values(second, 2);
     ASSERT_TRUE(second_pending.publish(std::move(second)));
 
     EXPECT_EQ(values(first_selection), (std::vector<std::uint32_t>{1}));

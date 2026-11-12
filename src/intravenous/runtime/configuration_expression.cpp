@@ -1073,14 +1073,6 @@ EvaluatedConfigurationArguments evaluate_configuration_expression_list(
     return result;
 }
 
-EvaluatedConfigurationArguments compile_configuration_expression_list(
-    std::string source,
-    details::RegisteredSignature const& signature)
-{
-    return evaluate_configuration_expression_list(
-        parse_configuration_expression_list(std::move(source)), signature);
-}
-
 EvaluatedConfigurationArguments evaluate_configuration_json_arguments(
     nlohmann::ordered_json const& value,
     details::RegisteredSignature const& signature)
