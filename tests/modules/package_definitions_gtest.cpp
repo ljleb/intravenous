@@ -98,17 +98,9 @@ TEST(PackageDefinitions, SuccessfulRevisionBecomesAcceptedAndPublicationProjecti
     ASSERT_NE(initial, nullptr);
     EXPECT_EQ(initial->generation, 0u);
 
-    auto successful_revision = revision(package, 7);
-    successful_revision.node_presentations = {
-        iv::NodePresentationDescriptor{
-            .definition_id = "iv.test.voice",
-            .presentation_id = "iv.test.voice.controls",
-            .display_name = "Voice controls",
-        },
-    };
     harness.packages.handle_package_refresh(iv::PackageRefreshTransaction{
         .declarations = iv::IvPackageDeclarationsChanged{.created = {package}},
-        .successful_revisions = {std::move(successful_revision)},
+        .successful_revisions = {revision(package, 7)},
     });
 
     ASSERT_EQ(harness.definitions.calls, 1u);
@@ -128,13 +120,6 @@ TEST(PackageDefinitions, SuccessfulRevisionBecomesAcceptedAndPublicationProjecti
         info.module_ids,
         (std::vector<std::string>{"iv.test.voice", "iv.test.voice.mod"}));
     EXPECT_EQ(info.node_type_ids, std::vector<std::string>{"iv.test.osc"});
-    EXPECT_EQ(info.node_presentations, (std::vector<iv::NodePresentationDescriptor>{
-        iv::NodePresentationDescriptor{
-            .definition_id = "iv.test.voice",
-            .presentation_id = "iv.test.voice.controls",
-            .display_name = "Voice controls",
-        },
-    }));
     EXPECT_TRUE(info.build_message.empty());
     EXPECT_TRUE(info.publication_message.empty());
 }

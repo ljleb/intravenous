@@ -11,6 +11,7 @@ information removed from a current document must be preserved under `historical/
 The primary application-architecture entry points are:
 
 - [Outstanding Implementation Fronts](./implementation_fronts_direction.md)
+- [Vue Client Implementation Stages](./vue_client_implementation_stages.md)
 - [Design, Implementation, And Documentation Workflow](./development_workflow.md)
 - [Project Graph Application Architecture](./project_graph_application_architecture.md)
 - [Package Pipeline Application Architecture](./package_pipeline_architecture.md)

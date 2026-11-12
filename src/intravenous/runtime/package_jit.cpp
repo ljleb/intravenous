@@ -99,7 +99,6 @@ PackageJitBatchResult PackageJit::build(
                 .node_code_retained_globals =
                     std::move(loaded_package.node_code_retained_globals),
                 .provider_definitions = std::move(loaded_package.provider_definitions),
-                .node_presentations = std::move(loaded_package.node_presentations),
                 .config_pointer_fields = std::move(loaded_package.config_pointer_fields),
                 .retained_globals = std::move(loaded_package.retained_globals),
                 .node_message_handlers =

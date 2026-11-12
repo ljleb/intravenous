@@ -1,209 +1,71 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {
-    serializeLiveGraphInstances,
-    serializeLiveGraphNodes,
-} from "../src/liveGraphModel";
 import { VirtualNode } from "../src/graphModel";
+import { liveGraphInstances, upsertVirtualNodes } from "../src/liveGraphModel";
+import { instanceLabel, visibleNodes } from "../webview/liveGraphView";
 
-function continuousNode(): VirtualNode {
-    return {
-        id: "node-1",
-        kind: "Oscillator",
-        definitionId: "iv.test.oscillator",
-        packageIdentity: "module@Oscillator",
-        memberCount: 2,
-        continuousInputs: [{
-            index: 1,
-            name: "frequency",
-            connectivity: "disconnected",
-            binding: "interface",
-            valueTypes: [{
-                type: "Sample",
-                rank: 0,
-                channelCapability: "audio",
-                defaultValue: 0.5,
-                minValue: 0,
-                maxValue: 1,
-            }],
-            channelType: "mono",
-        }],
-        continuousOutputs: [{
-            index: 2,
-            name: "out",
-            connectivity: "connected",
-            binding: "interface",
-            valueTypes: [{
-                type: "Sample",
-                rank: 0,
-                channelCapability: "audio",
-            }],
-            channelType: "mono",
-        }],
-        eventInputs: [{
-            index: 3,
-            name: "gate",
-            connectivity: "mixed",
-            binding: "interface",
-            eventType: "trigger",
-        }],
-        eventOutputs: [{
-            index: 4,
-            name: "trig",
-            connectivity: "connected",
-            binding: "interface",
-            eventType: "trigger",
-        }],
-        members: [{
-            index: 7,
-            backingNodeId: "backing-1",
-            kind: "Oscillator",
-            definitionId: "iv.test.oscillator",
-            continuousInputs: [{
-                index: 1,
-                name: "frequency",
-                connectivity: "disconnected",
-                binding: "virtualInput",
-                valueTypes: [{
-                    type: "Sample",
-                    rank: 0,
-                    channelCapability: "audio",
-                    defaultValue: 0.5,
-                    minValue: 0,
-                    maxValue: 1,
-                }],
-                channelType: "mono",
-            }],
-            continuousOutputs: [{
-                index: 2,
-                name: "out",
-                connectivity: "connected",
-                binding: "virtualOutput",
-                valueTypes: [{
-                    type: "Sample",
-                    rank: 0,
-                    channelCapability: "audio",
-                }],
-                channelType: "mono",
-            }],
-            eventInputs: [{
-                index: 3,
-                name: "gate",
-                connectivity: "mixed",
-                binding: "mixed",
-                eventType: "trigger",
-            }],
-            eventOutputs: [{
-                index: 4,
-                name: "trig",
-                connectivity: "connected",
-                binding: "virtualOutput",
-                eventType: "trigger",
-            }],
-        }],
-    };
-}
+test("liveGraphInstances keeps only records with an instance ID", () => {
+    const instances = liveGraphInstances([
+        {
+            instanceId: "instance-1",
+            definitionId: "definition-1",
+            moduleId: "iv.project.simple_sine",
+            packageRoot: "/tmp/simple_sine",
+            realized: true,
+        },
+        { definitionId: "definition-2" },
+        { instanceId: "" },
+    ]);
 
-test("serializeLiveGraphNodes exposes declared types and static bindings", () => {
-    const serialized = serializeLiveGraphNodes([continuousNode()]);
-    assert.equal(serialized.length, 1);
+    assert.deepEqual(instances, [{
+        instanceId: "instance-1",
+        definitionId: "definition-1",
+        displayName: "",
+        moduleId: "iv.project.simple_sine",
+        packageRoot: "/tmp/simple_sine",
+        realized: true,
+    }]);
+});
 
-    const node = serialized[0];
-    const virtualContinuousInput = node.groups[0].ports[0];
-    const virtualContinuousOutput = node.groups[1].ports[0];
-    const virtualEventInput = node.groups[2].ports[0];
-    const virtualEventOutput = node.groups[3].ports[0];
-    const memberContinuousInput = node.members[0].groups[0].ports[0];
-
-    assert.equal(virtualContinuousInput.index, 1);
-    assert.equal(virtualContinuousOutput.index, 2);
-    assert.equal(virtualEventInput.index, 3);
-    assert.equal(virtualEventOutput.index, 4);
-    assert.equal(node.members[0].index, 7);
-    assert.equal(node.definitionId, "iv.test.oscillator");
-    assert.equal(node.members[0].definitionId, "iv.test.oscillator");
-    assert.equal(memberContinuousInput.index, 1);
-
-    assert.equal(virtualContinuousInput.typeSummary, "Sample • mono");
-    assert.equal(virtualContinuousInput.bindingSummary, "graph interface");
-    assert.equal(virtualContinuousOutput.typeSummary, "Sample • mono");
-    assert.equal(virtualEventInput.typeSummary, "trigger");
-    assert.equal(virtualEventInput.bindingSummary, "graph interface");
-    assert.equal(virtualEventOutput.typeSummary, "trigger");
-    assert.equal(memberContinuousInput.bindingSummary, "follow virtual input");
+test("instanceLabel prefers the display name and marks unrealized instances", () => {
+    const [instance] = liveGraphInstances([{
+        instanceId: "instance-1",
+        moduleId: "iv.project.simple_sine",
+        realized: true,
+    }]);
+    assert.equal(instanceLabel(instance), "iv.project.simple_sine • instance-1");
     assert.equal(
-        node.members[0].groups[2].ports[0].bindingSummary,
-        "mixed built-in and virtual input");
+        instanceLabel({ ...instance, displayName: "Lead", realized: false }),
+        "Lead [loading]");
 });
 
-test("serializeLiveGraphNodes reports concrete and virtual bindings", () => {
-    const node: VirtualNode = {
-        id: "node-1",
-        kind: "Module",
-        continuousOutputs: [{
-            index: 2,
-            name: "mix",
-            connectivity: "connected",
-            binding: "interface",
-            valueTypes: [{
-                type: "Sample",
-                rank: 0,
-                channelCapability: "audio",
-            }],
-        }],
-        members: [{
-            index: 1,
-            backingNodeId: "backing-1",
-            kind: "Member",
-            continuousInputs: [{
-                index: 3,
-                name: "in",
-                connectivity: "connected",
-                binding: "none",
-                valueTypes: [{
-                    type: "Sample",
-                    rank: 0,
-                    channelCapability: "audio",
-                }],
-            }],
-            continuousOutputs: [{
-                index: 2,
-                name: "mix",
-                connectivity: "connected",
-                binding: "virtualOutput",
-                valueTypes: [{
-                    type: "Sample",
-                    rank: 0,
-                    channelCapability: "audio",
-                }],
-            }],
-        }],
-    };
+test("upsertVirtualNodes replaces whole instances and then nodes by ID", () => {
+    const current: VirtualNode[] = [
+        { id: "a:1", instanceId: "a", kind: "Old" },
+        { id: "a:2", instanceId: "a", kind: "Removed" },
+        { id: "b:1", instanceId: "b", kind: "Kept" },
+        { id: "c:1", instanceId: "c", kind: "Old" },
+    ];
+    const updated = upsertVirtualNodes(
+        current,
+        [
+            { id: "a:1", instanceId: "a", kind: "New" },
+            { id: "c:1", instanceId: "c", kind: "New" },
+        ],
+        ["a"]);
 
-    const serialized = serializeLiveGraphNodes([node]);
-    const memberContinuousInput = serialized[0].members[0].groups[0].ports[0];
-    const memberContinuousOutput = serialized[0].members[0].groups[1].ports[0];
-
-    assert.equal(memberContinuousInput.bindingSummary, "built-in connection");
-    assert.equal(memberContinuousOutput.bindingSummary, "virtual output");
+    assert.deepEqual(
+        updated.map((node) => `${node.id}=${node.kind}`).sort(),
+        ["a:1=New", "b:1=Kept", "c:1=New"]);
 });
 
-test("serializeLiveGraphInstances builds stable dropdown labels", () => {
-    const serialized = serializeLiveGraphInstances([{
-        instanceId: "instance-1",
-        definitionId: "definition-1",
-        moduleId: "iv.project.simple_sine",
-        packageRoot: "/tmp/simple_sine",
-        realized: true,
-    }]);
-
-    assert.deepEqual(serialized, [{
-        instanceId: "instance-1",
-        definitionId: "definition-1",
-        moduleId: "iv.project.simple_sine",
-        packageRoot: "/tmp/simple_sine",
-        realized: true,
-        label: "iv.project.simple_sine • instance-1",
-    }]);
+test("visibleNodes falls back to every node when the selection has none", () => {
+    const nodes: VirtualNode[] = [
+        { id: "a:1", instanceId: "a" },
+        { id: "b:1", instanceId: "b" },
+    ];
+    assert.deepEqual(visibleNodes(nodes, "b").map((node) => node.id), ["b:1"]);
+    assert.deepEqual(visibleNodes(nodes, "missing").map((node) => node.id), ["a:1", "b:1"]);
+    assert.deepEqual(visibleNodes(nodes, null).map((node) => node.id), ["a:1", "b:1"]);
 });

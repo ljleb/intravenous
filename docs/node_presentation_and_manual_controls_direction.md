@@ -453,6 +453,12 @@ frontend to select presentations using stable node definition IDs. No source
 removal is claimed here. The currently landed frontend does not implement live
 observation or the intended Vue presentation host.
 
+Status update (2026-11-12, not yet built or tested): the backend registration path
+and `NodePresentationRegistry` were removed from source, and the
+`intravenous.liveGraph` webview became a Vue application with a frontend-owned
+registry, the generic presentation, and the four display modes (Vue client stage 1
+in [Vue Client Implementation Stages](./vue_client_implementation_stages.md)).
+
 The key architectural boundary is that presentations and manual controls consume
 stable graph/runtime identities; they do not become an alternate owner of graph
 construction or runtime state.

@@ -161,26 +161,6 @@ void PackageDefinitions::apply_publication_result(
         package.node_type_ids = leaves == request.published_leaf_ids_by_package_id.end()
             ? std::vector<std::string>{}
             : leaves->second;
-        package.node_presentations.clear();
-        auto const accepted = accepted_revisions_by_package_id_.find(package_id);
-        if (accepted != accepted_revisions_by_package_id_.end()) {
-            for (auto const& presentation : accepted->second->node_presentations) {
-                if (std::ranges::contains(
-                        package.module_ids, presentation.definition_id)
-                    || std::ranges::contains(
-                        package.node_type_ids, presentation.definition_id)) {
-                    package.node_presentations.push_back(presentation);
-                }
-            }
-        }
-        std::ranges::sort(
-            package.node_presentations,
-            [](auto const& lhs, auto const& rhs) {
-                if (lhs.definition_id != rhs.definition_id) {
-                    return lhs.definition_id < rhs.definition_id;
-                }
-                return lhs.presentation_id < rhs.presentation_id;
-            });
         auto const message = request.publication_messages_by_package_id.find(package_id);
         package.publication_message = message == request.publication_messages_by_package_id.end()
             ? std::string{}

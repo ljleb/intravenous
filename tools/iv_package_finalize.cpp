@@ -2,7 +2,6 @@
 #include <intravenous/module/abi.h>
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/node/node_state_structure.h>
-#include <intravenous/node/presentation.h>
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -1124,24 +1123,6 @@ std::vector<GlobalVariable*> package_definition_globals(Module& module)
     return result;
 }
 
-std::vector<GlobalVariable*> package_node_presentation_globals(Module& module)
-{
-    std::vector<GlobalVariable*> result;
-    for (auto& global : module.globals()) {
-        if (global.getSection()
-                == StringRef(
-                    iv::details::package_node_presentation_section.data(),
-                    iv::details::package_node_presentation_section.size())
-            && global.isConstant() && global.hasInitializer()) {
-            result.push_back(&global);
-        }
-    }
-    std::ranges::sort(result, {}, [](GlobalVariable const* presentation) {
-        return presentation->getName();
-    });
-    return result;
-}
-
 std::string constant_string_field(
     Constant* value, Constant* size_value, std::string_view field)
 {
@@ -1282,53 +1263,6 @@ void validate_package_definitions(
             && !runtime_definitions.contains({"module", handler.definition_id})) {
             fail("module message handler references unavailable IV module '"
                 + handler.definition_id + "'");
-        }
-    }
-}
-
-void validate_package_node_presentations(
-    std::span<GlobalVariable* const> presentations,
-    std::span<GlobalVariable* const> definitions)
-{
-    std::set<std::string> definition_ids;
-    for (auto* global : definitions) {
-        auto* record = dyn_cast_or_null<ConstantStruct>(global->getInitializer());
-        if (!record || record->getNumOperands() != 11) {
-            fail("malformed IV package definition record");
-        }
-        definition_ids.insert(constant_string_field(
-            record->getOperand(1), record->getOperand(2), "stable ID"));
-    }
-
-    std::set<std::pair<std::string, std::string>> registrations;
-    for (auto* global : presentations) {
-        auto* record = dyn_cast_or_null<ConstantStruct>(global->getInitializer());
-        if (!record || record->getNumOperands() != 6) {
-            fail("malformed IV package node presentation record");
-        }
-        auto const definition_id = constant_string_field(
-            record->getOperand(0), record->getOperand(1),
-            "node presentation definition ID");
-        auto const presentation_id = constant_string_field(
-            record->getOperand(2), record->getOperand(3),
-            "node presentation ID");
-        (void)constant_string_field(
-            record->getOperand(4), record->getOperand(5),
-            "node presentation display name");
-        if (definition_id.empty()) {
-            fail("IV package node presentation has an empty definition ID");
-        }
-        if (presentation_id.empty()) {
-            fail("IV package node presentation for '" + definition_id
-                + "' has an empty presentation ID");
-        }
-        if (!definition_ids.contains(definition_id)) {
-            fail("IV package node presentation for '" + definition_id
-                + "' does not name an IV_NODE or IV_MODULE in the same package");
-        }
-        if (!registrations.emplace(definition_id, presentation_id).second) {
-            fail("duplicate IV package node presentation ('" + definition_id
-                + "', '" + presentation_id + "')");
         }
     }
 }
@@ -1813,46 +1747,6 @@ void inject_package_definition_table(
         values.size() * record_size.getFixedValue());
 }
 
-void inject_package_node_presentation_table(
-    Module& module,
-    std::span<GlobalVariable* const> presentations)
-{
-    auto* pointer_type = PointerType::getUnqual(module.getContext());
-    if (presentations.empty()) {
-        emit_view_accessor(
-            module, "iv_package_node_presentations",
-            ConstantPointerNull::get(pointer_type), 0);
-        return;
-    }
-
-    auto* record_type = presentations.front()->getValueType();
-    for (auto* presentation : presentations) {
-        if (presentation->getValueType() != record_type) {
-            fail("IV package node presentation records have inconsistent LLVM types");
-        }
-    }
-    auto const record_size = module.getDataLayout().getTypeAllocSize(record_type);
-    if (record_size.isScalable()
-        || record_size.getFixedValue()
-            != sizeof(iv::details::PackageNodePresentation)) {
-        fail("IV package node presentation ABI does not match PackageNodePresentation");
-    }
-
-    std::vector<Constant*> values;
-    values.reserve(presentations.size());
-    for (auto* presentation : presentations) {
-        values.push_back(presentation->getInitializer());
-    }
-    auto* array_type = ArrayType::get(record_type, values.size());
-    auto* table = new GlobalVariable(
-        module, array_type, true, GlobalValue::PrivateLinkage,
-        ConstantArray::get(array_type, values), "iv.package_node_presentations");
-    emit_view_accessor(
-        module, "iv_package_node_presentations",
-        ConstantExpr::getPointerCast(table, pointer_type),
-        values.size() * record_size.getFixedValue());
-}
-
 Constant* string_view_constant(
     Module& module,
     StructType* view_type,
@@ -2305,10 +2199,9 @@ void inject_package_configuration_metadata(
 // later function terminates (Front 16, 2026-11-07).
 void remove_unreachable_package_code(Module& module)
 {
-    static constexpr std::array<StringRef, 9> entry_points{
+    static constexpr std::array<StringRef, 8> entry_points{
         "iv_package_abi_version",
         "iv_package_definitions",
-        "iv_package_node_presentations",
         "iv_package_node_config_pointer_fields",
         "iv_package_retained_globals",
         "iv_package_node_message_handlers",
@@ -3012,8 +2905,6 @@ int finalize(Options options)
     require_node_config_metadata(node_records, metadata);
     auto definitions = package_definition_globals(package);
     validate_package_definitions(definitions, metadata);
-    auto presentations = package_node_presentation_globals(package);
-    validate_package_node_presentations(presentations, definitions);
     auto retained_globals = collect_retained_globals(package, definitions);
     timings.finish_stage("package_metadata_validate", stage_started_at);
 
@@ -3023,7 +2914,6 @@ int finalize(Options options)
     inject_node_message_handler_table(package, metadata);
     inject_module_message_handler_table(package, metadata);
     inject_package_definition_table(package, definitions);
-    inject_package_node_presentation_table(package, presentations);
     inject_package_configuration_metadata(
         package,
         metadata,

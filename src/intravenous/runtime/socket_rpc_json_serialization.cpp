@@ -139,21 +139,12 @@ SocketRpcJson iv_module_instances_json(std::vector<IvModuleInstanceInfo> const &
 
 SocketRpcJson iv_package_json(IvPackageInfo const &package)
 {
-    SocketRpcJson presentations = SocketRpcJson::array();
-    for (auto const& presentation : package.node_presentations) {
-        presentations.push_back(SocketRpcJson{
-            {"definitionId", presentation.definition_id},
-            {"presentationId", presentation.presentation_id},
-            {"displayName", presentation.display_name},
-        });
-    }
     return SocketRpcJson{
         {"packageId", package.package_id},
         {"packageRoot", package.package_root.generic_string()},
         {"provenance", package_provenance_json(package.provenance)},
         {"moduleIds", package.module_ids},
         {"nodeTypeIds", package.node_type_ids},
-        {"nodePresentations", std::move(presentations)},
         {"buildState", package_build_state_json(package.build_state)},
         {"buildMessage", package.build_message},
         {"publicationMessage", package.publication_message},

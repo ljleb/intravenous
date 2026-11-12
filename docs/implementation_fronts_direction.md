@@ -11,6 +11,11 @@ _Status: coordination map for design work that is compatible with the current di
 > see [Node Interaction And Presentation Communication Direction](./node_interaction_and_presentation_communication_direction.md)
 > and [the archived pre-unification contract](./historical/node_state_lifecycle_before_unification_2026-11-12.md).
 
+> **Implementation order (2026-11-12):** the remaining Vue-client, node-interaction,
+> `Node::State` unification, and observation work is ordered in
+> [Vue Client Implementation Stages](./vue_client_implementation_stages.md) rather
+> than by new fronts.
+
 This document groups the remaining work by implementation ownership rather than by
 which design document first introduced it. The goal is to make the outstanding work
 parallelizable: one person or team should be able to own one front, define the missing
@@ -2524,6 +2529,14 @@ node definition ID without backend `IV_NODE_PRESENTATION` descriptors. Removing 
 old package/loader/RPC/frontend presentation path is outstanding work, not already
 completed by Front 14. See
 [node_presentation_and_manual_controls_direction.md](./node_presentation_and_manual_controls_direction.md).
+
+**Status update (2026-11-12, Vue client stage 1, not yet built or tested):** the
+source no longer contains `IV_NODE_PRESENTATION`, `PackageNodePresentation`,
+`NodePresentationDescriptor`, the finalizer/loader table, the `PackageRevision` and
+`IvPackageInfo` fields, the socket RPC `nodePresentations` record, or the VS Code
+`NodePresentationRegistry`. The `intravenous.liveGraph` webview is a Vue application
+with a frontend-owned registry. See
+[Vue Client Implementation Stages](./vue_client_implementation_stages.md).
 
 This front owns:
 

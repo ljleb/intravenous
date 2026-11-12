@@ -8,7 +8,6 @@
 #include <intravenous/module/package_provenance.h>
 #include <intravenous/module/builder_session.h>
 #include <intravenous/node/compiler_record.h>
-#include <intravenous/node/presentation.h>
 
 #include <filesystem>
 #include <functional>
@@ -86,7 +85,6 @@ namespace iv {
             // Complete package-side configuration tables used to create a stable
             // BuilderSession later from an immutable NodeDefinitions snapshot.
             std::vector<details::PackageDefinition> provider_definitions{};
-            std::vector<NodePresentationDescriptor> node_presentations{};
             std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
             std::vector<RetainedGlobalData> retained_globals{};
             std::vector<NodeMessageHandlerData> node_message_handlers{};

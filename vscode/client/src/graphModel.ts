@@ -79,7 +79,7 @@ export type VirtualNode = {
     id?: string;
     instanceId?: string;
     kind?: string;
-    packageIdentity?: string;
+    sourceIdentity?: string;
     typeIdentity?: string;
     definitionId?: string;
     sourceSpans?: SourceSpan[];

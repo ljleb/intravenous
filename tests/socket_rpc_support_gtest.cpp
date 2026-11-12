@@ -672,7 +672,7 @@ TEST(SocketRpcCreateNodeInstanceResultBuilder, SerializesCreatedInstanceId)
     EXPECT_EQ(response["result"]["instanceId"], "instance:7");
 }
 
-TEST(SocketRpcIvPackageDefinitionsResultBuilder, SerializesProvenanceAndNodePresentations)
+TEST(SocketRpcIvPackageDefinitionsResultBuilder, SerializesProvenance)
 {
     iv::SocketRpcIvPackageDefinitionsResultBuilder builder;
     builder.succeed({
@@ -680,11 +680,6 @@ TEST(SocketRpcIvPackageDefinitionsResultBuilder, SerializesProvenanceAndNodePres
             .package_id = "iv.builtin",
             .package_root = "/tmp/builtin",
             .provenance = iv::PackageProvenance::built_in,
-            .node_presentations = {{
-                .definition_id = "iv.builtin.oscillator",
-                .presentation_id = "iv.frontend.oscillator",
-                .display_name = "Oscillator",
-            }},
         },
         iv::IvPackageInfo{
             .package_id = "iv.common",
@@ -705,14 +700,6 @@ TEST(SocketRpcIvPackageDefinitionsResultBuilder, SerializesProvenanceAndNodePres
     EXPECT_EQ(packages[1]["provenance"], "common");
     EXPECT_EQ(packages[2]["provenance"], "projectLocal");
     EXPECT_FALSE(packages[0].contains("projectLocal"));
-    ASSERT_EQ(packages[0]["nodePresentations"].size(), 1u);
-    EXPECT_EQ(
-        packages[0]["nodePresentations"][0],
-        Json::object({
-            {"definitionId", "iv.builtin.oscillator"},
-            {"presentationId", "iv.frontend.oscillator"},
-            {"displayName", "Oscillator"},
-        }));
 }
 
 TEST(SocketRpcAudioDevicesResultBuilder, SerializesSnapshot)

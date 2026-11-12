@@ -4,7 +4,6 @@
 #include <intravenous/module/abi.h>
 #include <intravenous/module/builder_session.h>
 #include <intravenous/module/package_compiler_artifact.h>
-#include <intravenous/node/presentation.h>
 
 #include <cstdint>
 #include <filesystem>
@@ -58,7 +57,6 @@ struct PackageRevision {
     // Immutable configuration tables copied from the accepted package code.
     // Their function/data pointers remain valid while package_code is retained.
     std::vector<details::PackageDefinition> provider_definitions{};
-    std::vector<NodePresentationDescriptor> node_presentations{};
     std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
     std::vector<RetainedGlobalData> retained_globals{};
     std::vector<NodeMessageHandlerData> node_message_handlers{};

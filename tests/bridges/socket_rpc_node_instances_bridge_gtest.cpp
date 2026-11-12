@@ -195,11 +195,6 @@ TEST(PackageDefinitions, RegistryConflictIsNotReportedAsAnEmptyPackage)
             .package_id = "iv.test.second",
             .package_root = second_root,
             .revision = 1,
-            .node_presentations = {{
-                .definition_id = "iv.test.shared",
-                .presentation_id = "iv.test.shared.controls",
-                .display_name = "Shared controls",
-            }},
             .module_definitions = {iv::PackageModuleDefinition{
                 .package_id = "iv.test.second",
                 .definition_id = "iv.test.shared",
@@ -217,7 +212,6 @@ TEST(PackageDefinitions, RegistryConflictIsNotReportedAsAnEmptyPackage)
         });
     ASSERT_NE(second, listed.end());
     EXPECT_TRUE(second->module_ids.empty());
-    EXPECT_TRUE(second->node_presentations.empty());
     EXPECT_EQ(second->build_state, iv::PackageBuildState::built);
     EXPECT_NE(
         second->publication_message.find("provided by multiple IV packages"),

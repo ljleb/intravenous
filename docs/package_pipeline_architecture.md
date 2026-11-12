@@ -343,6 +343,8 @@ node definition IDs by frontend-owned registration. Do not add an adapter or mai
 the old descriptor path as a second compatibility mechanism. See
 [node_presentation_and_manual_controls_direction.md](./node_presentation_and_manual_controls_direction.md)
 and its [preserved previous contract](./historical/node_presentation_and_live_observation_before_vue_direction_2026-11-12.md).
+Status update (2026-11-12, not yet built or tested): these records were removed
+from source; packages no longer emit an `iv_package_node_presentations` table.
 
 The operational watcher copy of detected declarations is not a competing source
 of application truth: `PackageWatcher` needs source declarations to maintain

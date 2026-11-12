@@ -18,7 +18,7 @@
     "scripts": {
         "build": "node ./esbuild.mjs",
         "watch": "node ./esbuild.mjs --watch",
-        "typecheck": "tsc --noEmit -p ./tsconfig.json",
+        "typecheck": "tsc --noEmit -p ./tsconfig.json && vue-tsc --noEmit -p ./webview/tsconfig.json",
         "test": "tsc -p ./tsconfig.tests.json && node --test dist-test/test/**/*.test.js"
     },
     "dependencies": {
@@ -28,8 +28,12 @@
     "devDependencies": {
         "@types/node": "^22.15.31",
         "@types/vscode": "^1.85.0",
+        "@vitejs/plugin-vue": "^5.2.4",
         "esbuild": "^0.25.5",
-        "typescript": "^5.8.3"
+        "typescript": "^5.8.3",
+        "vite": "^6.3.5",
+        "vue": "^3.5.13",
+        "vue-tsc": "^2.2.10"
     },
     "contributes": {
         "configuration": {

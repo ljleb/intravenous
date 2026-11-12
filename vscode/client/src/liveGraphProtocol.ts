@@ -1,75 +1,45 @@
-export type SerializedLiveGraphPort = {
-    name: string;
-    connectivity: string;
-    binding: string;
-    index: number;
-    typeSummary: string;
-    bindingSummary: string;
-};
+import type { VirtualNode } from "./graphModel";
 
-export type SerializedLiveGraphGroup = {
-    label: string;
-    count: number;
-    direction: "input" | "output";
-    portKind: "continuous" | "event";
-    ports: SerializedLiveGraphPort[];
-};
+// Messages between the extension host and the Vue webview. This module is
+// imported by both sides; it must contain only types and pure functions.
 
-export type SerializedLiveGraphMember = {
-    index: number;
-    backingNodeId: string;
-    kind: string;
-    definitionId: string;
-    description: string;
-    groups: SerializedLiveGraphGroup[];
-};
+export type LiveGraphSessionStatus =
+    | "connecting"
+    | "attached"
+    | "reconnecting";
 
-export type SerializedLiveGraphNode = {
-    id: string;
-    instanceId: string;
-    kind: string;
-    definitionId: string;
-    description: string;
-    tooltip: string;
-    memberCount: number;
-    icon: "merged" | "single";
-    groups: SerializedLiveGraphGroup[];
-    members: SerializedLiveGraphMember[];
-};
-
-export type SerializedLiveGraphInstance = {
+export type LiveGraphInstance = {
     instanceId: string;
     definitionId: string;
+    displayName: string;
     moduleId: string;
     packageRoot: string;
     realized: boolean;
-    label: string;
 };
 
-export type LiveGraphSetInstancesMessage = {
-    type: "setInstances";
-    instances: SerializedLiveGraphInstance[];
-};
-
-export type LiveGraphSetSelectedInstanceMessage = {
-    type: "setSelectedInstance";
+// The complete state the host publishes to the webview. The host always
+// sends the whole state, so a webview that (re)loads after a reconnect or
+// while hidden needs no replay.
+export type LiveGraphViewState = {
+    sessionStatus: LiveGraphSessionStatus;
+    instances: LiveGraphInstance[];
     selectedInstanceId: string | null;
-};
-
-export type LiveGraphSetPackageRootMessage = {
-    type: "setPackageRoot";
+    // Package root of the active module.cpp editor, which enables
+    // "Duplicate".
     packageRoot: string | null;
+    // Virtual nodes from the backend's source-introspection read model.
+    nodes: VirtualNode[];
 };
 
-export type LiveGraphSetNodesMessage = {
-    type: "setNodes";
-    nodes: SerializedLiveGraphNode[];
+export type LiveGraphStateMessage = {
+    type: "state";
+    state: LiveGraphViewState;
 };
 
-export type LiveGraphUpsertNodesMessage = {
-    type: "upsertNodes";
-    replaceInstanceIds: string[];
-    nodes: SerializedLiveGraphNode[];
+export type LiveGraphHostMessage = LiveGraphStateMessage;
+
+export type LiveGraphReadyMessage = {
+    type: "ready";
 };
 
 export type LiveGraphSelectInstanceMessage = {
@@ -81,13 +51,19 @@ export type LiveGraphCreateInstanceMessage = {
     type: "createInstance";
 };
 
+export type LiveGraphWebviewMessage =
+    | LiveGraphReadyMessage
+    | LiveGraphSelectInstanceMessage
+    | LiveGraphCreateInstanceMessage;
+
+// The webview messages that WorkspaceSession acts on.
 export type LiveGraphControlMessage =
     | LiveGraphSelectInstanceMessage
     | LiveGraphCreateInstanceMessage;
 
 export type LiveGraphControlHandler = (message: LiveGraphControlMessage) => Promise<void>;
 
-export function isLiveGraphControlMessage(message: unknown): message is LiveGraphControlMessage {
+export function isLiveGraphWebviewMessage(message: unknown): message is LiveGraphWebviewMessage {
     if (!message || typeof message !== "object") {
         return false;
     }
@@ -96,5 +72,5 @@ export function isLiveGraphControlMessage(message: unknown): message is LiveGrap
     if (candidate.type === "selectInstance") {
         return candidate.instanceId == null || typeof candidate.instanceId === "string";
     }
-    return candidate.type === "createInstance";
+    return candidate.type === "ready" || candidate.type === "createInstance";
 }

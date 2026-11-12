@@ -1,21 +1,11 @@
 import type * as vscode from "vscode";
 import { injectable } from "tsyringe";
 
-import { LiveGraphControlHandler } from "./liveGraphProtocol";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
-import { NodePresentationDescriptor } from "./nodePresentation";
 import { ModulesViewProvider } from "./modulesViewProvider";
 import { WorkspaceSession } from "./workspaceSession";
 
-type LiveGraphProviderLike = {
-    setControlHandler(handler: LiveGraphControlHandler): void;
-    setInstances(instances: unknown[]): void;
-    setNodes(nodes: unknown[]): void;
-    upsertNodes(nodes: unknown[], replaceInstanceIds?: string[]): void;
-    setSelectedInstanceId(instanceId: string | null): void;
-    setPackageRoot(packageRoot: string | null): void;
-    setNodePresentationDescriptors(descriptors: NodePresentationDescriptor[]): void;
-};
+type LiveGraphProviderLike = WorkspaceSession["provider"];
 
 type ModulesViewProviderLike = Pick<ModulesViewProvider, "setState">;
 
