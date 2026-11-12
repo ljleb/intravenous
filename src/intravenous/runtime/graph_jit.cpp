@@ -2143,6 +2143,7 @@ public:
         timings.lowering_plan_us = lowering->plan_us;
         timings.lowering_transition_us = lowering->transition_us;
         timings.lowering_emit_us = lowering->emit_us;
+        timings.realtime_storage = lowering->realtime_storage;
 
         try {
             auto const verify_begin = Clock::now();

@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <limits>
+#include <string>
 
 namespace iv {
 
@@ -31,6 +32,30 @@ struct RealtimeStorageCostModel {
     std::size_t ring_addressed_byte_weight = 0;
     std::size_t stack_footprint_byte_weight = 0;
     std::size_t persistent_footprint_byte_weight = 2;
+};
+
+// Measurements of the final storage decisions retained by one lowering plan.
+// The selected_* byte counts are the cost model's unaliased estimates. The
+// packed_root_stack_bytes field is the actual high-water mark after transient
+// live ranges have been packed together. Persistent allocation bytes are the
+// actual sample and event allocations owned by NodeStorage.
+struct RealtimeStoragePlanSummary {
+    // Ordered storage-kind codes for sample producer groups, sample feedback
+    // timelines, event producer groups, and event feedback operations. This
+    // distinguishes plans that have equal aggregate decision counts.
+    std::string selection_signature{};
+    std::size_t selected_decisions = 0;
+    std::size_t transient_stack_decisions = 0;
+    std::size_t stack_with_persistent_carry_decisions = 0;
+    std::size_t full_node_storage_decisions = 0;
+    std::size_t selected_copied_bytes = 0;
+    std::size_t selected_ring_addressed_bytes = 0;
+    std::size_t selected_stack_bytes = 0;
+    std::size_t selected_persistent_bytes = 0;
+    std::size_t selected_weighted_cost = 0;
+    std::size_t packed_root_stack_bytes = 0;
+    std::size_t sample_persistent_allocation_bytes = 0;
+    std::size_t event_persistent_allocation_bytes = 0;
 };
 
 // Operation work that is known before storage placement is selected. Counts

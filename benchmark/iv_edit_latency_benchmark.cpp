@@ -25,8 +25,9 @@
 //             which forces sample-by-sample interleaving across node types.
 //             Project connections cannot express feedback; only module code
 //             can break a cycle with detach(), so the loop lives in a package.
-// No registered built-in node produces events without external MIDI, so there is
-// no event-heavy shape yet.
+//   storage   N instances of iv.bench.storage_voice. Each instance combines
+//             retained sample history, mono-to-stereo conversion, sample
+//             fan-out, event fan-in, event fan-out, and retained event history.
 // Each iteration applies five edits: change the shape's frequency constant, add
 // a sink, connect the shape's tap output to it, disconnect it, and delete the
 // sink.
@@ -70,6 +71,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <charconv>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
@@ -78,12 +80,15 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -110,29 +115,81 @@ struct Options {
     // After the initial graph activates, run only that graph for this many
     // seconds. This gives a sampling profiler a stable audio-thread workload.
     int profile_seconds = 0;
+    // Zero keeps the project execution configuration.
+    std::size_t block_size = 0;
+    iv::RealtimeStorageCostModel realtime_storage_cost_model{};
+    std::optional<std::filesystem::path> results_tsv{};
+    std::optional<std::filesystem::path> workspace{};
 };
+
+std::size_t parse_size(std::string_view option, std::string_view text)
+{
+    std::size_t result = 0;
+    auto const [end, error] = std::from_chars(
+        text.data(), text.data() + text.size(), result);
+    if (error != std::errc{} || end != text.data() + text.size()) {
+        throw std::runtime_error(
+            "invalid non-negative integer for " + std::string(option));
+    }
+    return result;
+}
 
 Options parse_options(int argc, char** argv)
 {
     Options options;
     for (int i = 1; i < argc; ++i) {
         std::string_view const arg = argv[i];
-        auto value = [&] {
+        auto text_value = [&]() -> std::string_view {
             if (++i == argc) throw std::runtime_error("missing value for " + std::string(arg));
-            return std::stoi(argv[i]);
+            return argv[i];
+        };
+        auto int_value = [&] {
+            auto const text = text_value();
+            std::size_t consumed = 0;
+            auto const result = std::stoi(std::string(text), &consumed);
+            if (consumed != text.size()) {
+                throw std::runtime_error("invalid integer for " + std::string(arg));
+            }
+            return result;
         };
         if (arg == "--shape") {
-            if (++i == argc) throw std::runtime_error("missing value for --shape");
-            options.shape = argv[i];
-        } else if (arg == "--size") options.size = value();
-        else if (arg == "--iterations") options.iterations = value();
-        else if (arg == "--settle-ms") options.settle_ms = value();
-        else if (arg == "--profile-seconds") options.profile_seconds = value();
-        else if (arg == "--help") {
+            options.shape = text_value();
+        } else if (arg == "--size") options.size = int_value();
+        else if (arg == "--iterations") options.iterations = int_value();
+        else if (arg == "--settle-ms") options.settle_ms = int_value();
+        else if (arg == "--profile-seconds") options.profile_seconds = int_value();
+        else if (arg == "--block-size") {
+            options.block_size = parse_size(arg, text_value());
+        } else if (arg == "--stack-budget-bytes") {
+            options.realtime_storage_cost_model.stack_budget_bytes =
+                parse_size(arg, text_value());
+        } else if (arg == "--copied-byte-weight") {
+            options.realtime_storage_cost_model.copied_byte_weight =
+                parse_size(arg, text_value());
+        } else if (arg == "--ring-addressed-byte-weight") {
+            options.realtime_storage_cost_model.ring_addressed_byte_weight =
+                parse_size(arg, text_value());
+        } else if (arg == "--stack-footprint-byte-weight") {
+            options.realtime_storage_cost_model.stack_footprint_byte_weight =
+                parse_size(arg, text_value());
+        } else if (arg == "--persistent-footprint-byte-weight") {
+            options.realtime_storage_cost_model.persistent_footprint_byte_weight =
+                parse_size(arg, text_value());
+        } else if (arg == "--results-tsv") {
+            options.results_tsv = std::filesystem::path(text_value());
+        } else if (arg == "--workspace") {
+            options.workspace = std::filesystem::path(text_value());
+        } else if (arg == "--help") {
             std::cout << "Usage: iv_edit_latency_benchmark"
-                         " [--shape voices|chain|mixed|feedback] [--size N]"
+                         " [--shape voices|chain|mixed|feedback|storage] [--size N]"
                          " [--iterations N] [--settle-ms N]"
-                         " [--profile-seconds N]\n";
+                         " [--profile-seconds N] [--block-size N]"
+                         " [--stack-budget-bytes N]"
+                         " [--copied-byte-weight N]"
+                         " [--ring-addressed-byte-weight N]"
+                         " [--stack-footprint-byte-weight N]"
+                         " [--persistent-footprint-byte-weight N]"
+                         " [--results-tsv PATH] [--workspace PATH]\n";
             std::exit(0);
         } else {
             throw std::runtime_error("unknown option " + std::string(arg));
@@ -143,7 +200,31 @@ Options parse_options(int argc, char** argv)
         throw std::runtime_error(
             "--size and --iterations must be positive; timing values cannot be negative");
     }
+    if (options.block_size != 0
+        && (options.block_size & (options.block_size - 1)) != 0) {
+        throw std::runtime_error("--block-size must be a power of two");
+    }
     return options;
+}
+
+void write_text_if_changed(
+    std::filesystem::path const& path,
+    std::string_view contents)
+{
+    std::ifstream input(path, std::ios::binary);
+    std::string existing{
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()};
+    if (input && existing == contents) return;
+
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        throw std::runtime_error("cannot write benchmark package file " + path.string());
+    }
+    output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    if (!output) {
+        throw std::runtime_error("cannot finish benchmark package file " + path.string());
+    }
 }
 
 iv::ProjectNodePortMatcher port(std::string instance, std::string name)
@@ -288,6 +369,7 @@ ShapeProject mixed_project(int voices)
 }
 
 constexpr std::string_view feedback_voice_id = "iv.bench.feedback_voice";
+constexpr std::string_view storage_voice_id = "iv.bench.storage_voice";
 
 // One feedback voice: a saw minus the voice's own low-pass output one sample
 // earlier, low-pass filtered.
@@ -336,12 +418,208 @@ ShapeProject feedback_project(int loops)
     };
 }
 
+constexpr char const* storage_voice_source = R"(#include <intravenous/dsl.h>
+
+struct StorageSampleSource {
+    std::size_t history = 0;
+
+    explicit StorageSampleSource(std::size_t history_ = 0)
+        : history(history_)
+    {}
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>("drive")};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>(
+            "out", iv::OutputProduction::tick)};
+    }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<StorageSampleSource>& ctx) const
+    {
+        ctx.output<"out">().history() = history;
+        ctx.output<"out">().latency() = 16;
+    }
+
+    void tick_block(iv::TickBlockContext<StorageSampleSource> const& ctx) const
+    {
+        auto input = ctx.input<"drive">();
+        auto output = ctx.output<"out">();
+        for (std::size_t i = 0; i < ctx.block_size; ++i) {
+            output.push(input.get_value(i));
+        }
+    }
+};
+
+struct StorageHistoryConsumer {
+    struct State {
+        float oldest = 0.0f;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>("in")};
+    }
+
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<StorageHistoryConsumer>& ctx) const
+    {
+        ctx.input<"in">().history() = 384;
+    }
+
+    void tick_block(iv::TickBlockContext<StorageHistoryConsumer> const& ctx) const
+    {
+        ctx.state().oldest = static_cast<float>(ctx.input<"in">().get(384));
+    }
+};
+
+struct StorageStereoConsumer {
+    struct State {
+        float left = 0.0f;
+        float right = 0.0f;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>("in", {
+            .channel_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::interleaved,
+            },
+        })};
+    }
+
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<StorageStereoConsumer>& ctx) const
+    {
+        ctx.input<"in">().history() = 96;
+    }
+
+    void tick_block(iv::TickBlockContext<StorageStereoConsumer> const& ctx) const
+    {
+        ctx.state().left = static_cast<float>(ctx.input<"in">().get(96, 0));
+        ctx.state().right = static_cast<float>(ctx.input<"in">().get(96, 1));
+    }
+};
+
+struct StorageEventSource {
+    static constexpr auto inputs() { return std::tuple{}; }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::event_output(
+            "events",
+            iv::EventTypeId::trigger,
+            iv::OutputProduction::tick,
+            {.max_events_per_index = 0.25})};
+    }
+
+    void tick_block(iv::TickBlockContext<StorageEventSource> const& ctx) const
+    {
+        if (ctx.block_size != 0) {
+            ctx.output<"events">().push(iv::TriggerEvent{}, ctx.block_size / 2);
+        }
+    }
+};
+
+struct StorageEventConsumer {
+    struct State {
+        std::size_t count = 0;
+    };
+
+    static constexpr auto inputs()
+    {
+        return std::array{iv::event_input(
+            "events",
+            iv::EventTypeId::trigger,
+            iv::InputAccess::sequential)};
+    }
+
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    void constrain_ports(
+        iv::ConstrainPortsContext<StorageEventConsumer>& ctx) const
+    {
+        ctx.input<"events">().history() = 256;
+    }
+
+    void tick_block(iv::TickBlockContext<StorageEventConsumer> const& ctx) const
+    {
+        ctx.state().count = ctx.input<"events">().events().size();
+    }
+};
+
+void storage_voice(iv::GraphBuilder& graph)
+{
+    auto drive = graph.input<"drive">(0.25f);
+    auto samples = graph.node<"iv.bench.storage_sample_source">(
+        std::size_t{512});
+    auto converted_samples = graph.node<"iv.bench.storage_sample_source">(
+        std::size_t{64});
+    auto history = graph.node<"iv.bench.storage_history_consumer">();
+    auto stereo = graph.node<"iv.bench.storage_stereo_consumer">();
+    samples(drive);
+    converted_samples(drive);
+    history(samples);
+    stereo(converted_samples);
+
+    auto events_a = graph.node<"iv.bench.storage_event_source">();
+    auto events_b = graph.node<"iv.bench.storage_event_source">();
+    std::array event_ports{events_a.event_port(), events_b.event_port()};
+    auto merged = graph.make_event_port(event_ports);
+    auto event_sink_a = graph.node<"iv.bench.storage_event_consumer">();
+    auto event_sink_b = graph.node<"iv.bench.storage_event_consumer">();
+    event_sink_a.connect_event_input(0, merged);
+    event_sink_b.connect_event_input(0, merged);
+    graph.outputs(samples);
+}
+
+IV_NODE("iv.bench.storage_sample_source", StorageSampleSource);
+IV_NODE("iv.bench.storage_history_consumer", StorageHistoryConsumer);
+IV_NODE("iv.bench.storage_stereo_consumer", StorageStereoConsumer);
+IV_NODE("iv.bench.storage_event_source", StorageEventSource);
+IV_NODE("iv.bench.storage_event_consumer", StorageEventConsumer);
+IV_MODULE("iv.bench.storage_voice", storage_voice);
+)";
+
+ShapeProject storage_project(int voices)
+{
+    GraphWriter g;
+    for (int voice = 0; voice < voices; ++voice) {
+        auto const v = std::to_string(voice);
+        g.instance("drive_" + v, constant_id, std::to_string(voice + 1));
+        g.instance("voice_" + v, storage_voice_id);
+        g.instance("sink_" + v, sink_id);
+        g.connect(port("drive_" + v, 0), port("voice_" + v, "drive"));
+        g.connect(port("voice_" + v, 0), port("sink_" + v, 0));
+    }
+    return {
+        .graph = std::move(g.graph),
+        .configure_instance = "drive_0",
+        .tap = port("voice_0", 0),
+        .definitions = {constant_id, storage_voice_id, sink_id},
+        .packages = {{
+            .directory = "storage_voice",
+            .module_source = storage_voice_source,
+        }},
+    };
+}
+
 ShapeProject shape_project(std::string_view shape, int size)
 {
     if (shape == "voices") return voices_project(size);
     if (shape == "chain") return chain_project(size);
     if (shape == "mixed") return mixed_project(size);
     if (shape == "feedback") return feedback_project(size);
+    if (shape == "storage") return storage_project(size);
     throw std::runtime_error("unknown shape " + std::string(shape));
 }
 
@@ -531,6 +809,107 @@ void print_record(EditRecord const& record, int iteration)
               << " block_period_us=" << record.block_period_us << '\n';
 }
 
+void write_tsv_header(std::ostream& output)
+{
+    output
+        << "schema\tshape\tgraph_size\tblock_size\titeration\tedit"
+           "\tpublished\taccepted\tbundles\twall_ms\tconfigure_ms"
+           "\tgraph_jit_ms\tstage_ms\ttick_mean_us\ttick_p50_us"
+           "\ttick_p95_us\ttick_p99_us\ttick_max_us\ttick_blocks"
+           "\tblock_period_us\tstack_budget_bytes\tcopied_byte_weight"
+           "\tring_addressed_byte_weight\tstack_footprint_byte_weight"
+           "\tpersistent_footprint_byte_weight\tcompile_present"
+           "\tcompile_index\tcompile_transition\tcompile_total_us"
+           "\tcompile_capture_us\tcompile_plan_us"
+           "\tcompile_transition_plan_us\tcompile_emit_us"
+           "\tcompile_verify_us\tcompile_optimization_us"
+           "\tcompile_materialization_us\tselection_signature"
+           "\tselected_decisions"
+           "\ttransient_stack_decisions"
+           "\tstack_with_persistent_carry_decisions"
+           "\tfull_node_storage_decisions\tselected_copied_bytes"
+           "\tselected_ring_addressed_bytes\tselected_stack_bytes"
+           "\tselected_persistent_bytes\tselected_weighted_cost"
+           "\tpacked_root_stack_bytes"
+           "\tsample_persistent_allocation_bytes"
+           "\tevent_persistent_allocation_bytes\n";
+}
+
+void write_tsv_record(
+    std::ostream& output,
+    Options const& options,
+    std::size_t block_size,
+    EditRecord const& record,
+    int iteration)
+{
+    auto const configure_us = record.rebuild.node_instances_us
+        + record.rebuild.graph_connections_us + record.rebuild.finish_us;
+    auto write = [&](iv::GraphJitCompileTimings const* compile,
+                     std::size_t compile_index) {
+        static iv::GraphJitCompileTimings const empty_compile{};
+        auto const& measured = compile ? *compile : empty_compile;
+        auto const& storage = measured.realtime_storage;
+        output << std::setprecision(17)
+               << "1\t" << options.shape
+               << '\t' << options.size
+               << '\t' << block_size
+               << '\t' << iteration
+               << '\t' << record.kind
+               << '\t' << record.published
+               << '\t' << record.accepted
+               << '\t' << record.bundles
+               << '\t' << record.wall_ms
+               << '\t' << ms(configure_us)
+               << '\t' << ms(record.rebuild.graph_jit_us)
+               << '\t' << ms(record.rebuild.executor_stage_us)
+               << '\t' << record.tick.mean_us
+               << '\t' << record.tick.p50_us
+               << '\t' << record.tick.p95_us
+               << '\t' << record.tick.p99_us
+               << '\t' << record.tick.max_us
+               << '\t' << record.tick.blocks
+               << '\t' << record.block_period_us
+               << '\t' << options.realtime_storage_cost_model.stack_budget_bytes
+               << '\t' << options.realtime_storage_cost_model.copied_byte_weight
+               << '\t' << options.realtime_storage_cost_model.ring_addressed_byte_weight
+               << '\t' << options.realtime_storage_cost_model.stack_footprint_byte_weight
+               << '\t' << options.realtime_storage_cost_model.persistent_footprint_byte_weight
+               << '\t' << (compile != nullptr)
+               << '\t' << compile_index
+               << '\t' << measured.transition
+               << '\t' << measured.total_us
+               << '\t' << measured.capture_us
+               << '\t' << measured.lowering_plan_us
+               << '\t' << measured.lowering_transition_us
+               << '\t' << measured.lowering_emit_us
+               << '\t' << measured.verify_us
+               << '\t' << measured.optimization_us
+               << '\t' << measured.materialization_us
+               << '\t' << storage.selection_signature
+               << '\t' << storage.selected_decisions
+               << '\t' << storage.transient_stack_decisions
+               << '\t' << storage.stack_with_persistent_carry_decisions
+               << '\t' << storage.full_node_storage_decisions
+               << '\t' << storage.selected_copied_bytes
+               << '\t' << storage.selected_ring_addressed_bytes
+               << '\t' << storage.selected_stack_bytes
+               << '\t' << storage.selected_persistent_bytes
+               << '\t' << storage.selected_weighted_cost
+               << '\t' << storage.packed_root_stack_bytes
+               << '\t' << storage.sample_persistent_allocation_bytes
+               << '\t' << storage.event_persistent_allocation_bytes
+               << '\n';
+    };
+
+    if (record.compiles.empty()) {
+        write(nullptr, 0);
+        return;
+    }
+    for (std::size_t index = 0; index < record.compiles.size(); ++index) {
+        write(&record.compiles[index], index);
+    }
+}
+
 void print_summary(std::vector<EditRecord> const& records, std::string const& label)
 {
     std::map<std::string, std::vector<EditRecord const*>> by_kind;
@@ -606,18 +985,44 @@ int main(int argc, char** argv)
     try {
         iv::install_crash_handlers();
         auto const options = parse_options(argc, argv);
+        std::ofstream results_tsv;
+        if (options.results_tsv) {
+            results_tsv.open(*options.results_tsv, std::ios::trunc);
+            if (!results_tsv) {
+                throw std::runtime_error(
+                    "cannot open --results-tsv path "
+                    + options.results_tsv->string());
+            }
+            write_tsv_header(results_tsv);
+        }
         // The server build directory holds .intravenous_defaults, which names the
         // built-in package roots and the execution configuration.
         ::setenv("INTRAVENOUS_DIR", IV_EDIT_BENCHMARK_INSTALL_DIR, 0);
         ::setenv("IV_EDIT_TIMING", "1", 0);
 
-        auto const workspace =
-            std::filesystem::temp_directory_path() / "iv_edit_latency_benchmark_workspace";
-        std::filesystem::remove_all(workspace);
+        auto const workspace = options.workspace.value_or(
+            std::filesystem::temp_directory_path()
+                / "iv_edit_latency_benchmark_workspace");
+        if (!options.workspace) std::filesystem::remove_all(workspace);
         std::filesystem::create_directories(workspace);
 
         iv::StartupConfig startup_config(workspace, std::filesystem::current_path());
         auto const startup = startup_config.initialize();
+        auto const block_size = options.block_size == 0
+            ? startup.execution.block_size
+            : options.block_size;
+
+        auto const& cost_model = options.realtime_storage_cost_model;
+        std::cout << "realtime storage cost model: stack_budget_bytes="
+                  << cost_model.stack_budget_bytes
+                  << " copied_byte_weight=" << cost_model.copied_byte_weight
+                  << " ring_addressed_byte_weight="
+                  << cost_model.ring_addressed_byte_weight
+                  << " stack_footprint_byte_weight="
+                  << cost_model.stack_footprint_byte_weight
+                  << " persistent_footprint_byte_weight="
+                  << cost_model.persistent_footprint_byte_weight
+                  << " block_size=" << block_size << '\n';
 
         iv::NodeInstances node_instances;
         iv::NodeDefinitions node_definitions;
@@ -625,7 +1030,8 @@ int main(int argc, char** argv)
         iv::GraphConnections graph_connections;
         iv::GraphJit graph_jit(iv::GraphJitConfig{
             .sample_rate = startup.execution.sample_rate,
-            .block_size = startup.execution.block_size,
+            .block_size = block_size,
+            .realtime_storage_cost_model = cost_model,
         });
         iv::PackageWatcher package_watcher;
         iv::PackageJit package_jit(startup);
@@ -662,9 +1068,10 @@ int main(int argc, char** argv)
         for (auto const& package : project.packages) {
             auto const root = workspace / package.directory;
             std::filesystem::create_directories(root);
-            std::ofstream(root / "iv_package.json")
-                << "{\"schema\":2,\"entry\":\"module.cpp\"}\n";
-            std::ofstream(root / "module.cpp") << package.module_source;
+            write_text_if_changed(
+                root / "iv_package.json",
+                "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
+            write_text_if_changed(root / "module.cpp", package.module_source);
         }
         std::cout << "building the packages (not timed)...\n" << std::flush;
         package_watcher_service.start();
@@ -672,7 +1079,7 @@ int main(int argc, char** argv)
             project_graph, package_watcher_service, project.definitions);
 
         RealtimeLoop realtime(
-            graph_executor, startup.execution.sample_rate, startup.execution.block_size);
+            graph_executor, startup.execution.sample_rate, block_size);
 
         std::vector<EditRecord> records;
         auto run_edit = [&](std::string kind, int iteration, std::function<void()> const& apply) {
@@ -715,6 +1122,11 @@ int main(int argc, char** argv)
                 }
             }
             print_record(record, iteration);
+            if (results_tsv) {
+                write_tsv_record(
+                    results_tsv, options, block_size, record, iteration);
+                results_tsv.flush();
+            }
             records.push_back(std::move(record));
         };
         auto ack = [](auto&& handler) {

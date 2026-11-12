@@ -280,6 +280,7 @@ struct GraphJitCompileTimings {
     std::uint64_t region_specialization_cache_budget_bytes = 0;
     std::string region_specialization_failure{};
     std::string region_specialization_skip{};
+    RealtimeStoragePlanSummary realtime_storage{};
 };
 
 struct GraphJitCompileResult {

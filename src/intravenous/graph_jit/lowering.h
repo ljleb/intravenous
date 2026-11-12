@@ -171,6 +171,7 @@ struct LoweringOutput {
     std::shared_ptr<RealtimeRootPlan const> realtime_root{};
     std::shared_ptr<RealtimeRootPlan const> transition_realtime_root{};
     LoweredGraphRootSymbols root_symbols{};
+    RealtimeStoragePlanSummary realtime_storage{};
     // Wall-clock microseconds of the three lowering phases.
     std::uint64_t plan_us = 0;
     std::uint64_t transition_us = 0;

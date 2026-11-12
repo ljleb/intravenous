@@ -5,6 +5,7 @@ set -euo pipefail
 shape="${1:-feedback}"
 size="${2:-64}"
 seconds="${3:-30}"
+extra_benchmark_args=("${@:4}")
 repo_root="$(git rev-parse --show-toplevel)"
 build_dir="${IV_BUILD_DIR:-${repo_root}/build-release}"
 benchmark="${build_dir}/benchmark/iv_edit_latency_benchmark"
@@ -18,7 +19,7 @@ if [[ ! -x "${benchmark}" ]]; then
     exit 1
 fi
 if [[ ! "${size}" =~ ^[1-9][0-9]*$ || ! "${seconds}" =~ ^[1-9][0-9]*$ ]]; then
-    echo "usage: $0 [voices|chain|mixed|feedback] [positive-size] [positive-seconds]" >&2
+    echo "usage: $0 [voices|chain|mixed|feedback|storage] [positive-size] [positive-seconds] [benchmark-options...]" >&2
     exit 1
 fi
 
@@ -44,6 +45,7 @@ JITDUMPDIR="${profile_dir}" IV_ORC_PERF_JITDUMP=1 \
             --shape "${shape}" \
             --size "${size}" \
             --profile-seconds "${seconds}" \
+            "${extra_benchmark_args[@]}" \
     2>&1 | tee "${benchmark_log}"
 
 if [[ -z "$(find "${profile_dir}" -type f -name 'jit-*.dump' -print -quit)" ]]; then

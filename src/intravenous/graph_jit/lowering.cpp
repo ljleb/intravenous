@@ -2405,12 +2405,138 @@ specialize_transition_plan(
     }};
 }
 
+void account_realtime_storage_selection(
+    RealtimeStoragePlanSummary& summary,
+    RealtimeBufferStorageKind kind,
+    RealtimeStorageCandidateCosts const& costs)
+{
+    auto const& selected = costs.for_kind(kind);
+    if (!selected.legal) return;
+
+    summary.selected_decisions = iv::detail::saturating_add(
+        summary.selected_decisions, std::size_t{1});
+    switch (kind) {
+    case RealtimeBufferStorageKind::transient_stack:
+        summary.transient_stack_decisions = iv::detail::saturating_add(
+            summary.transient_stack_decisions, std::size_t{1});
+        break;
+    case RealtimeBufferStorageKind::stack_with_persistent_carry:
+        summary.stack_with_persistent_carry_decisions =
+            iv::detail::saturating_add(
+                summary.stack_with_persistent_carry_decisions,
+                std::size_t{1});
+        break;
+    case RealtimeBufferStorageKind::full_node_storage:
+        summary.full_node_storage_decisions = iv::detail::saturating_add(
+            summary.full_node_storage_decisions, std::size_t{1});
+        break;
+    }
+    summary.selected_copied_bytes = iv::detail::saturating_add(
+        summary.selected_copied_bytes, selected.copied_bytes);
+    summary.selected_ring_addressed_bytes = iv::detail::saturating_add(
+        summary.selected_ring_addressed_bytes,
+        selected.ring_addressed_bytes);
+    summary.selected_stack_bytes = iv::detail::saturating_add(
+        summary.selected_stack_bytes, selected.stack_bytes);
+    summary.selected_persistent_bytes = iv::detail::saturating_add(
+        summary.selected_persistent_bytes, selected.persistent_bytes);
+    summary.selected_weighted_cost = iv::detail::saturating_add(
+        summary.selected_weighted_cost, selected.weighted_cost);
+}
+
+RealtimeStoragePlanSummary summarize_realtime_storage(
+    detail::LoweringPlan const& plan)
+{
+    RealtimeStoragePlanSummary summary{
+        .packed_root_stack_bytes = plan.root_stack.size_bytes,
+    };
+    auto const code = [](RealtimeBufferStorageKind kind) {
+        switch (kind) {
+        case RealtimeBufferStorageKind::transient_stack:
+            return 't';
+        case RealtimeBufferStorageKind::stack_with_persistent_carry:
+            return 'c';
+        case RealtimeBufferStorageKind::full_node_storage:
+            return 'f';
+        }
+        return 'x';
+    };
+    auto append_selection = [&](auto const& storage) {
+        auto const& selected = storage.candidate_costs.for_kind(storage.kind);
+        summary.selection_signature.push_back(
+            selected.legal ? code(storage.kind) : 'x');
+    };
+
+    summary.selection_signature += "Sg:";
+    for (auto const& producer : plan.sample_ports.storage.producer_groups) {
+        if (!producer) {
+            summary.selection_signature.push_back('-');
+            continue;
+        }
+        append_selection(producer->storage_plan);
+        account_realtime_storage_selection(
+            summary,
+            producer->storage_plan.kind,
+            producer->storage_plan.candidate_costs);
+    }
+    summary.selection_signature += ";Sf:";
+    for (auto const& feedback : plan.sample_ports.storage.feedback_timelines) {
+        // producer_home writes into the producer representation already
+        // counted above. Copy and composition writers own another selected
+        // timeline representation.
+        if (feedback.writer.kind
+            == detail::SampleFeedbackTimelineWriterKind::producer_home) {
+            summary.selection_signature.push_back('p');
+            continue;
+        }
+        append_selection(feedback.storage_plan);
+        account_realtime_storage_selection(
+            summary,
+            feedback.storage_plan.kind,
+            feedback.storage_plan.candidate_costs);
+    }
+    for (auto const& allocation : plan.sample_ports.storage.persistent_allocations) {
+        summary.sample_persistent_allocation_bytes =
+            iv::detail::saturating_add(
+                summary.sample_persistent_allocation_bytes,
+                allocation.size_bytes);
+    }
+
+    summary.selection_signature += ";Eg:";
+    for (auto const& group : plan.event_ports.producer_group_storage_plans) {
+        if (!group) {
+            summary.selection_signature.push_back('-');
+            continue;
+        }
+        append_selection(*group);
+        account_realtime_storage_selection(
+            summary, group->kind, group->candidate_costs);
+    }
+    summary.selection_signature += ";Ef:";
+    for (auto const& feedback : plan.event_ports.feedback_operations) {
+        append_selection(feedback.storage_plan);
+        account_realtime_storage_selection(
+            summary,
+            feedback.storage_plan.kind,
+            feedback.storage_plan.candidate_costs);
+    }
+    for (auto const& representation : plan.event_ports.ports) {
+        if (!representation.persistent) continue;
+        summary.event_persistent_allocation_bytes =
+            iv::detail::saturating_add(
+                summary.event_persistent_allocation_bytes,
+                representation.size_bytes);
+    }
+    return summary;
+}
+
 std::expected<LoweringOutput, std::string> emit_lowering_plan(
     LoweringInput& input,
     detail::LoweringPlan&& plan,
     std::optional<TransitionLoweringPlan>&& transition,
     llvm::Module& output_module)
 {
+    auto const realtime_storage = summarize_realtime_storage(plan);
     // Executor-side manual-control metadata is read before the realtime root
     // takes ownership of sample_ports.
     std::vector<ManualControlRuntimeBinding> manual_controls;
@@ -2517,6 +2643,7 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
             .initialize_sequential_input =
                 std::string(root_initialize_sequential_input_symbol),
         },
+        .realtime_storage = realtime_storage,
     };
 }
 } // namespace

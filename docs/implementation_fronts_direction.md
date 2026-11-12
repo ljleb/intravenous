@@ -3678,6 +3678,142 @@ maximum, edit and compile latency, copied bytes, stack bytes, and persistent
 bytes. Choose a Pareto frontier before selecting production defaults. Do not
 tune the cost model from one graph or one machine.
 
+*Realtime storage cost-model benchmark implementation (2026-11-11, pending
+repository owner compilation and verification).* The parameter sweep now uses
+the same `iv_edit_latency_benchmark` process, project pipeline, generated roots,
+and `RealtimeLoop` measurement path as the existing Front 16 edit benchmarks.
+It does not reproduce the planner in benchmark code.
+
+- The benchmark accepts `--stack-budget-bytes`, `--copied-byte-weight`,
+  `--ring-addressed-byte-weight`, `--stack-footprint-byte-weight`, and
+  `--persistent-footprint-byte-weight`. `--block-size` overrides only the
+  execution block size for the run.
+- `GraphJitCompileTimings::realtime_storage` reports the final
+  `SampleConnectionStoragePlan` and `EventConnectionStoragePlan` selections.
+  It counts each selected `RealtimeBufferStorageKind` and sums the selected
+  candidates' copied, ring-addressed, stack, persistent, and weighted byte
+  costs. An ordered signature distinguishes equal counts assigned to different
+  sample producer groups, sample feedback timelines, event producer groups, or
+  event feedback operations. The summary also reports the final packed
+  root-stack high-water mark and the actual sample and event persistent
+  allocation bytes. The candidate stack sum and packed stack high-water mark
+  are intentionally separate because transient live ranges can share stack
+  storage.
+- `--results-tsv PATH` writes one row per GraphJit compilation. An edit that
+  reuses all compiled code writes one row with `compile_present=0`. Edit and
+  Tick measurements are repeated on multiple compilation rows, so analysis must
+  group them by profile, case, iteration, and edit before computing their
+  distributions.
+- The `storage` shape is a benchmark-local package. Each
+  `iv.bench.storage_voice` instance contains retained sample history,
+  mono-to-stereo conversion, sample fan-out, event fan-in, event fan-out, and
+  retained event history. It complements `voices`, `chain`, `mixed`, and
+  `feedback` without adding production nodes or planner exceptions.
+- `scripts/sweep_realtime_storage_cost_model.sh` runs those five shapes and a
+  2,048-frame `storage` case. `quick` changes one cost dimension at a time.
+  `coarse` adds intermediate values, stronger values, one combined probe, and
+  two more stack budgets. Every run retains its log and TSV file. The script
+  reuses one workspace so unchanged benchmark-local packages do not rebuild,
+  then combines all rows in
+  `build-release/iv-storage-cost-sweep.latest/results.tsv`.
+- `scripts/summarize_realtime_storage_cost_sweep.py` removes the repeated Tick
+  fields from multiple compilation rows. The sweep runs it automatically and
+  writes `tick-edit-summary.tsv` and `plan-summary.tsv` beside `results.tsv`.
+
+Run the first pass after building the benchmark:
+
+```text
+./scripts/sweep_realtime_storage_cost_model.sh quick 64 3 500
+```
+
+Run the broader one-factor pass only after the first pass proves that every
+case completes:
+
+```text
+./scripts/sweep_realtime_storage_cost_model.sh coarse 64 5 500
+```
+
+The first selection pass must reject any parameter set that makes an accepted
+graph miss its block period. Among the remaining sets, compare Tick p50, p95,
+p99, and maximum first, then edit and compilation latency, then packed stack and
+persistent allocation bytes. Keep all non-dominated parameter sets. A later
+refinement sweep can concentrate around that Pareto frontier instead of running
+an exhaustive Cartesian product of arbitrary integer weights.
+
+Before changing production defaults, profile each remaining parameter set for a
+long steady window. `profile_edit_benchmark.sh` forwards arguments after its
+shape, size, and duration to the benchmark. For example:
+
+```text
+./scripts/profile_edit_benchmark.sh storage 64 30 \
+    --copied-byte-weight 2 \
+    --ring-addressed-byte-weight 1 \
+    --stack-footprint-byte-weight 1 \
+    --persistent-footprint-byte-weight 2
+```
+
+*Realtime storage cost-model coarse-sweep verification (repository owner,
+2026-11-11).* The complete configured test suite passes. The coarse sweep ran
+17 parameter profiles across `chain`, `feedback`, `mixed`, `storage`,
+`storage-large-block`, and `voices`, with six edit shapes per case. All 2,652
+rows in `results.tsv` were accepted. No reported Tick maximum exceeded its
+block period; the largest ratio was 12.9%.
+
+The ordered `selection_signature` was important because many apparent timing
+differences occurred without any plan change. The following probes left every
+selected plan unchanged: copied-byte weights 0 and 2, ring-addressed-byte
+weights 1, 2, and 4, persistent-footprint weights 1 and 4, and stack budgets of
+256 KiB and 1 MiB. Their Tick variation gives an approximate noise range for
+these short runs. Do not use those timing differences to tune production
+defaults.
+
+The probes that changed plans established these decision boundaries:
+
+- copied-byte weight 4 and the combined `balanced` profile changed only
+  `storage` and `storage-large-block`;
+- stack-footprint weight 1 changed only `storage`;
+- stack-footprint weight 2 changed all six cases to the same plans selected by
+  persistent-footprint weight 0;
+- stack-footprint weight 4 changed all six cases more aggressively; and
+- the 64 KiB stack budget changed `mixed`, `storage-large-block`, and `voices`.
+
+Stack-footprint weight 2 is the strongest audio-time candidate from this
+synthetic sweep. Relative to the current defaults, median results across the
+five non-initial edits were:
+
+| Case | Tick mean | Tick p95 | Packed root stack | Sample + event persistent allocation |
+|---|---:|---:|---:|---:|
+| `chain` | -0.2% | -6.1% | 6,152 -> 3,080 bytes | 260 -> 131,072 bytes |
+| `feedback` | -5.7% | -6.6% | 8,200 -> 81,984 bytes | 768 -> 393,216 bytes |
+| `mixed` | -4.4% | -0.7% | 136,200 -> 18,496 bytes | 1,024 -> 393,216 bytes |
+| `storage` | -33.6% | -27.9% | unchanged at 24,592 bytes | 555,008 -> 657,408 bytes |
+| `storage-large-block` | -25.6% | -15.4% | 99,096 -> 153,616 bytes | 296,448 -> 4,196,352 bytes |
+| `voices` | -1.2% | +0.9% | 6,152 -> 81,984 bytes | 512 -> 131,072 bytes |
+
+Initial GraphJit time for that profile stayed within -3.2% to +3.2% of the
+current defaults. Later GraphJit measurements showed no consistent slowdown.
+The strong `storage` improvements prove that `RealtimeStorageCostModel` can
+avoid material realtime work, but the persistent-allocation increase is too
+large to select a new production default from synthetic graphs alone.
+
+Three one-factor profiles remain useful comparison points rather than one
+winner. Stack-footprint weight 1 changed only `storage`; it reduced Tick mean
+by 31.8% while increasing its persistent allocation from 555,008 to 657,408
+bytes. Copied-byte weight 4 also changed `storage-large-block`; it reduced Tick
+mean by 29.1% and 20.1% in those two cases, with persistent allocations of
+657,408 and 1,209,856 bytes. Stack-footprint weight 2 made the broader changes
+shown above and reached the best large-block Tick mean, but used 4,196,352
+bytes there. These profiles describe a memory-versus-Tick frontier that a real
+project can distinguish.
+
+Keep the current defaults for now. Retain stack-footprint weight 2 as the first
+audio-time comparison profile when representative projects exist, together
+with stack-footprint weight 1 and copied-byte weight 4 as lower-memory points.
+Repeat the sweep with their actual histories, channel counts, fan-in, fan-out,
+feedback regions, block sizes, and edit patterns. Longer steady profiles
+should decide whether the Tick improvement justifies the memory cost and
+should replace the short 500 ms windows used here.
+
 *Manual-control specialization implementation (2026-11-11, pending repository
 owner verification).* The first step now has a complete source implementation.
 This supersedes the earlier test assertion that both manual-control forms stay
