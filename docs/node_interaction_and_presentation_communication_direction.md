@@ -1,9 +1,11 @@
 # Node Interaction And Presentation Communication Direction
 
 _Status: normative direction for semantic backend-node events, coherent application
-synchronization, and Vue-driven live observation. The observation operation
-contract is intentional; its exact C++/TypeScript syntax and transport routes remain
-provisional until exercised by the Vue client. The 2026-11-12 revision supersedes
+synchronization, and Vue-driven observation. Output-observation and range-query
+semantics are specified in
+[Vue Output Observation And Query Direction](./vue_output_observation_direction.md);
+exact C++/TypeScript syntax and transport routes remain provisional until
+exercised by the Vue client. The 2026-11-12 revision supersedes
 backend presentation registration and the unimplemented `PresentationState` API;
 see [the preserved earlier design](./historical/node_presentation_and_live_observation_before_vue_direction_2026-11-12.md).
 The unified authored `State`/lifecycle direction of 2026-11-12 supersedes the
@@ -577,11 +579,11 @@ node.send(...)  // reliable, typed semantic node event
 ```
 
 A Vue presentation may also request observation of selected, supported reflected
-`State` fields (Tick or Tock) and port data. Exact observation hook syntax is deferred;
+`State` fields from Tick nodes and output-port data. Exact observation hook syntax is deferred;
 observations are **not** a permanent `node.state` projection of all implementation
 storage. For a statically known definition, generated bindings may expose supported
-field names and result types. The generic presentation can inspect ports and their
-available operations without any node-specific TypeScript source.
+field names and result types. The generic presentation can inspect output-port observation capabilities and
+all input/output connection metadata without node-specific TypeScript source.
 
 Vue must not see concrete node indices, `NodeStorage` offsets, `NodeCodeKey`,
 compiled realization objects, or socket/JSON-RPC method details. A semantic
@@ -674,168 +676,26 @@ selectors whose concrete target set cannot be known statically.
 
 # Live backend-to-presentation information
 
-## Separate requirements, capture operations, and delivery
+The normative design for observation operations, capability discovery, Tick
+capture placement, Tock sparse/persisted output queries, the `Observations` app
+module, and batched client interest/delivery is consolidated in
+[Vue Output Observation And Query Direction](./vue_output_observation_direction.md).
+It is driven by concrete Vue usage, not speculative RPC routes. Observations are
+read-only with respect to graph semantics and never reuse semantic `on_message`
+dispatch or require authored node `publish()`/subscription callbacks.
 
-The intended live-observation system is driven by real Vue presentation needs, not
-by speculative RPC routes. A presentation asks for selected observations of a
-semantic node's reflected fields or resolved ports. A registered type provides the
-finite set of observation operations meaningful for that source. GraphJit plans
-only the required executable captures; the application collects and batches their
-results. Concrete routes, public C++ signatures, and Vue binding syntax should be
-settled alongside the first functioning Vue presentation.
+For the initial client, **only supported reflected Tick `Node::State` fields are
+observable**. Tock `State` diagnostic observation is explicitly deferred; Tock
+*outputs* remain observable through the existing background coverage and
+persisted-data model. All inputs remain connectable but input-*value* observation
+is deferred. Registered continuous and event types opt into operations whose
+implementation respects the output's execution, access, and retention contract.
 
-An observation is not a semantic node mutation: missing intermediate *replaceable*
-snapshots is acceptable, and the reliable node-event/application revision stream
-remains separate. An observation is never an instruction for a node to send a
-socket notification. No default `ctx.publish()`, `on_message`, `on_subscribe`, or
-`on_subscription_change` callback is required on authored leaf or module nodes.
-
-## Discovery from existing state reflection and resolved ports
-
-Use existing `NodeStateStructure`/`NodeStateFieldStructure` reflection for the
-single authored `State` (with its execution-domain classification) and resolved port
-metadata. Discovery names a field or port and its type; **observability** additionally
-requires a registered, safe capture/transport operation for that type and execution
-context. A discoverable but unsupported field is not an observation error or an
-implicit byte-serialization request. It simply advertises no usable observation
-operation. Do not expose arbitrary pointers or runtime storage-layout details to
-Vue.
-
-Initially support a fixed set of scalar/state-field types through a global
-registered type codec/capture system. Generic implementations can be reused by
-several registered types, with each type explicitly opting in and supplying its
-type-dependent behavior. Unsupported types remain unobservable. Per-field codec or
-serialization overrides and arbitrary custom node-authored producers are deferred.
-The source of a field need not be modified just to add an ordinary observation.
-
-For continuous ports, extend the existing closed registered continuous-value type
-system with **explicitly supported observation operations**. Reusable operation
-implementations may be templated; each value-type extension chooses the operations
-that actually make sense for its value shape, dimensions, channels, and realization.
-The existence of an operation for `Sample` must not imply its existence for
-`FFTBlock`, `FractionalGlobalIndex`, or a future value type. Source access and
-retention semantics further constrain availability: Sequential/Tick/ephemeral
-outputs are not interchangeable with persisted or random-access data.
-
-## Vue chooses the observation operation reactively
-
-A generic Vue presentation discovers all of a node's input/output ports so users can
-connect them. It may visualize only the relevant subset for its mode and geometry.
-A specialized presentation may refer to supported reflected fields by generated
-static names and types; a generic component discovers supported port operations at
-runtime. Different presentations may request different operations for the same
-source, and the same presentation may revise them when scale, mode, visibility, or
-interaction state changes.
-
-For example, one `Sample` output might offer the distinct operations `latest`,
-`level`, and `waveform` (not necessarily all in the first implementation):
-
-| Operation | Intended result | Capture behavior |
-| --- | --- | --- |
-| `latest` | A replaceable instantaneous value or bounded current block | Snapshot while valid; suppress unchanged results where meaningful |
-| `level` | A low-cost sample-level measure for a meter | Optional interval reduction (e.g. sample peak and/or RMS) |
-| `waveform` | A bounded recent time-domain window | Capture samples or a useful min/max envelope; reduce for display resolution |
-
-These are **type-registered alternatives**, not a universal enum applied to every
-port. `level` does not turn every `Sample` observation into a peak detector;
-`waveform` does not require permanent raw-sample history when unrequested. A future
-`FFTBlock` observation may expose spectrum data using its own type-specific shape.
-Exact initial operation IDs and parameters follow concrete Vue usage.
-
-The frontend host aggregates computed observation requirements; individual Vue
-component mount/unmount events must not become immediate individual RPC requests.
-The host can register the desired requirement set when a node approaches the
-viewport and recalculate it reactively when the component's inputs change. A full
-set replacement or equivalent reconciled batched delta should establish the
-server's intended interest state.
-
-## GraphJit places minimal, optional observation work
-
-Capture points must be located where the observed field or port value is valid.
-They cannot all execute at the end of the root Tick callback: ephemeral outputs
-may have been overwritten, native region execution may have hidden intermediate
-values, and some values require a producer or post-operation boundary. Tick-owned
-and Tock-owned `State` have different thread ownership. Non-realtime code must not
-read mutable realtime storage concurrently without a safe snapshot/handoff.
-
-A registered observation operation should supply the equivalent of:
-
-1. **Describe:** supported source type/shape, parameters, and result schema.
-2. **Prepare:** select a legal capture point and preallocate any bounded storage.
-3. **Capture:** perform bounded, allocation-free, nonblocking work at the correct
-   execution point, including realtime when necessary.
-4. **Collect:** transfer or read a coherent observation-owned result off realtime,
-   perform type-aware comparison/reduction/serialization, and produce a transportable
-   value when changed.
-
-These are required capabilities of an operation, not necessarily four public virtual
-callbacks. A cheap `latest` snapshot may use a generic implementation; a waveform
-or level reduction may use type-owned code. GraphJit should consume normalized
-operations instead of switching centrally on known visualization kinds. Type
-extensions can share generic templates while registering only valid operations.
-
-The union of currently required observations across clients is an input to
-GraphJit's incremental realization. Adding/removing an observation may replace an
-immutable capture/root plan at a safe execution boundary. Preserve existing node
-instances, `NodeStorage`, `NodeLayout`, scratch allocation, scheduling, and native
-specializations whenever the observation can be attached without changing them.
-Observation-only changes should do the minimum actual compile/replan work; there is
-no blanket rule forbidding recompilation when the viewport changes.
-
-Some observations genuinely affect execution: an otherwise unused output may need
-production or materialization, and some probes may require storage or different
-specialization boundaries. Change those parts **only when necessary** for the
-requested observation, instead of pretending every source can be captured with a
-layout-neutral end-of-root read. Activating/deactivating a probe should otherwise
-remove its unused realtime work, not leave checks on every node indefinitely.
-Viewport overscan, interest-set hysteresis, and deferred deactivation should avoid
-frequent recompilations during small or rapid movements.
-
-## Batching, shared production, and subscription lifetime
-
-Batch in both directions:
-
-- Vue sends reconciled sets of desired observation operations/parameters for each
-  client-owned presentation scope, rather than one RPC per node/component event.
-- The server merges compatible interests across all clients and only changes the
-  effective producer/capture plan when the combined requirements change.
-- The observation service collects changed results and emits bounded,
-  presentation-rate **batches** per client. It does not deliver one socket message
-  per node or enqueue one reliable project-revision notification per meter block.
-
-Use replaceable/coalesced data for state-like observations. An unchanged snapshot
-should not require a new client update. Update rates are maximum publication rates,
-not mandatory periodic traffic. Do not sacrifice significant interval information
-when the requested operation's semantics require accumulation: a `level` operation
-can retain the maximum sample magnitude over the collection interval, while
-`waveform` retains an appropriate bounded window. This is **sample peak**, not
-costlier inter-sample *true peak* detection. True peak or other expensive DSP may
-be an explicit node/operation, never a requirement of every generic meter. Event
-histories requiring every occurrence are not silently converted into replaceable
-snapshots.
-
-Use three interest tiers as a host policy: **visible** (full requested quality),
-**nearby/predicted** (cheaper prefetch or lower cadence), and **inactive** (no
-observation work, apart from a bounded shutdown grace period). Overscan, viewport
-hysteresis, and predictive prefetch prevent rapid interest churn while panning or
-zooming. Tier changes need not rebuild GraphJit if only the publication cadence or
-frontend reduction changes; different capture operations or resource needs may.
-
-Subscription correctness must not depend on every Vue component explicitly
-unsubscribing. An authoritative per-client/per-scope desired set, connection-disconnect
-cleanup, scoped lease expiry/reconciliation, and graph-generation rebind/invalidation
-bound interest lifetime. Explicit unsubscribe may release resources sooner but is
-not required for correctness. Do not keep pointers to reclaimed execution
-generations. The server validates all source identities and parameters, applies
-resource/bandwidth limits, and coalesces replaceable frames for slow clients rather
-than filling the reliable replay log or disconnecting them for obsolete telemetry.
-
-The application-module ownership of the observation registry and batching is not
-fixed yet. A presentation/observation owner such as the prospective
-`PresentationInstances` may collect results and hand frames to `SocketRpcServer`,
-without introducing a dedicated thread unless actual scheduling/concurrency needs
-justify one. It must respect the application event-tree constraint: an asynchronous
-outgoing batch is a distinct cause, not re-entry into the incoming request's tree.
+`Observations` is the single intended application module for reconciliation,
+shared work, and batched transport results. `ProjectGraph`, `GraphJit`, and
+`GraphExecutor` retain their graph-generation, compilation, and execution
+ownership. The observation-specific ownership does not introduce a backend
+presentation registry or an independent graph cutover coordinator.
 
 # Default presentation
 
@@ -845,7 +705,8 @@ The frontend always provides a generic Vue presentation, even if the node type h
 no custom Vue component or observable runtime fields. It discovers and renders
 **all available ports** for graph editing, including arbitrary port counts and
 channels, with stable semantic endpoint identities. Ports stay connectable even
-when their live visualizations are hidden at a given scale. The host can choose
+when their live visualizations are hidden at a given scale. The initial
+generic presentation observes output *values*, not input values. The host can choose
 which observations to activate from registered capabilities rather than requiring
 authored nodes to forward port values.
 
@@ -859,27 +720,12 @@ port-observation rule.
 
 # Deferred implementation choices
 
-The direction intentionally does **not** settle:
+The observation-specific unsettled implementation details and explicitly
+excluded capabilities are recorded in
+[Vue Output Observation And Query Direction](./vue_output_observation_direction.md).
+Do not settle new RPC routes, public observation callback shapes, or compilation
+representation until a concrete Vue feature exercises the full path.
 
-- the first Vue observation hook signature or any new RPC route, before a real
-  component needs it;
-- the exact C++ registration template/descriptor layout for type observation
-  operations and the exact first set of transport-supported field types;
-- field-specific serialization overrides, arbitrary user-defined producers, or
-  observation-lifecycle callbacks on authored nodes;
-- whether a given observation-plan change is represented as a separate immutable
-  overlay or an updated `RealtimeRootPlan`, and which native-region boundaries
-  can be probed with no specialization change;
-- detailed persisted/random-access observation/query integration, buffer sizing,
-  and publication cadence, including frontend-driven resolution changes;
-- the TypeScript code-generation/tooling workflow for observing optional fields
-  and operation-specific result types;
-- the exact transaction/journal representation for ordered root semantic events,
-  partial/successor `NodeStorage` migration, and frontend regeneration of typed
-  event bindings.
-
-Begin the Vue presentation host and use the first reflected scalar-field
-observation plus a real `Sample` output observation to drive the smallest complete
-end-to-end implementation. Measure observation-only incremental compile latency,
-realtime overhead, specialization effects, and subscription churn before creating
-new node-facing hooks or a general-purpose speculative transport API.
+The exact transaction/journal representation for ordered root semantic events,
+partial/successor `NodeStorage` migration, and frontend regeneration of typed
+semantic event bindings also remain separate implementation decisions.

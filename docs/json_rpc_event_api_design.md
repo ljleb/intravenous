@@ -124,6 +124,17 @@ contexts rather than captured in static registration callbacks.
 Duplicate JSON-RPC method registration should fail loudly. Multiple callbacks
 are allowed inside a route event; duplicate route names are not.
 
+## Observation transport is demand-driven, not a route catalog in advance
+
+When Vue needs output/state observation, route definitions are selected from
+its actual batched interest and window-query requirements. `SocketRpcServer`
+remains the transport adapter; the planned `Observations` app module owns
+interest reconciliation, work coordination, and bounded outgoing results.
+There is no per-node notification route or individual subscribe/unsubscribe
+callback on authored nodes. Disposable observation frames are separate from
+reliable session revisions and replay. The normative contract is
+[Vue Output Observation And Query Direction](./vue_output_observation_direction.md).
+
 ## Initial Direction
 
 The first useful slice is:

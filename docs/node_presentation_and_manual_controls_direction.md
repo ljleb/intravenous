@@ -49,7 +49,11 @@ source for every construction-argument change. See
 Presentation selection is independent of observation capabilities. A backend node
 need not be altered to support a new Vue presentation of its reflected state or
 ports. The observation mechanism and its limits are specified in
-[Node Interaction And Presentation Communication Direction](./node_interaction_and_presentation_communication_direction.md).
+[Vue Output Observation And Query Direction](./vue_output_observation_direction.md).
+Input *connection metadata* belongs in every graph presentation, but input
+*value* observation is postponed. The generic presentation initially observes
+outputs only, and supported reflected Tick state may be requested by custom
+presentations. Tock state observation remains out of scope.
 
 ## Four global display modes
 
@@ -349,13 +353,14 @@ current UI interaction.
 
 ## Live observation is outside Front 14
 
-Front 14 did not implement the live-observation API. The intended direction is now
-recorded in [Node Interaction And Presentation Communication Direction](./node_interaction_and_presentation_communication_direction.md):
-frontend-selected registered observation operations over reflected state fields and
-ports, selectively planned GraphJit captures, and batched subscriptions and updates.
-The concrete frontend and transport interfaces are intentionally deferred until a
-real Vue presentation requires them. Manual controls do not depend on implementing
-live observation first.
+Front 14 did not implement the observation API. The current normative direction is
+[Vue Output Observation And Query Direction](./vue_output_observation_direction.md):
+output-first type-registered operations, reflected supported Tick `State` fields,
+selective live probes, sparse/persisted Tock output queries, and the planned
+`Observations` application module for batched subscriptions/results. Input values
+and Tock `State` diagnostics are explicitly outside the initial scope. Concrete
+Vue and transport interfaces still follow real client requirements. Manual controls
+do not depend on implementing observations first.
 
 ## Implementation order
 

@@ -373,6 +373,32 @@ There is no persisted sample page width or page index. Changing the whole-graph 
 block size changes Tick scheduling but does not repartition canonical persisted
 samples or events and requires no repaging transition.
 
+### Vue output queries are consumers of existing coverage
+
+[Vue Output Observation And Query Direction](./vue_output_observation_direction.md)
+specifies the intended `Observations` application client of this mechanism.
+Only output-port values are in initial observation scope; Tock `Node::State`
+and input-port value observations are deferred. A viewport request supplies
+bounded output coverage/resolution to the background actor's existing batched
+demand roots. An input required by reverse propagation is an internal dependency,
+not a UI-observed input port.
+
+A Tock/ephemeral query may compute sparse requested coverage and project the
+transaction-local data into an owned bounded view result before that temporary
+storage expires. It must not turn ephemeral output into persisted output.
+A published Tock/persisted or Tick/persisted query pins an immutable stored
+version and projects the requested subset; an unpublished Tock/persisted
+successor is subject to ordinary candidate completion before publication.
+
+Representative sparse waveform samples are an explicitly approximate display
+operation. Exact min/max envelopes need interval data or suitable summaries;
+exact event windows need event enumeration, not point sampling. Display gaps
+and absence of published data accurately using the returned `IndexCoverage`
+and version information. Do not infer that sparse positional requests imply
+cheap producer computation in every graph. Playback-critical work takes
+precedence over exploratory viewport coverage, and obsolete results may be
+discarded without violating persisted-data transactions.
+
 ## 6. Dependency propagation remains independent of storage record boundaries
 
 Storage record boundaries are representation details only. Semantic dependency

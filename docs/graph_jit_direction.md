@@ -49,6 +49,24 @@ its own target/header. A PImpl is not required merely to keep LLVM out of
 `ProjectGraph` or event users when the app-module boundary already provides that
 isolation.
 
+### Planned observation-only replanning
+
+[Vue Output Observation And Query Direction](./vue_output_observation_direction.md)
+defines read-only observation requirements originating in the planned
+`Observations` module. GraphJit must place requested live probes only while
+the resolved output or Tick state field is valid and avoid per-node observation
+work when no client needs it. Observation-only changes may compile incrementally;
+re-use unaffected node storage, scratch layout, scheduling, and native-region
+specializations. If observing an optimized-away output requires production or
+materialization, update only the required graph elements rather than promise
+a layout-neutral probe. The source remains semantically identical.
+
+GraphJit does not acquire observation client interests and cannot accept an
+independently competing generation chain. `ProjectGraph` and `GraphExecutor`
+retain their existing coordinated compilation and cutover contract. Persisted
+and Tock/ephemeral window queries normally use existing background data paths
+and do not require a realtime-root probe.
+
 ### Current implementation checkpoint
 
 The application/compiler shell around whole-graph lowering has landed. `GraphJit`

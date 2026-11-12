@@ -2544,11 +2544,16 @@ This front owns:
 - an explicit idle/debounce policy for return to constant specialization;
 - compatible code-only activation with no state reconstruction.
 
-Front 14 did not implement live observation. The newly accepted observation direction
-uses reflected fields and ports, type-registered operations, minimal GraphJit capture
-planning, and batched/reactive Vue interests and updates. Its concrete interfaces
-remain future implementation work driven by a real Vue client, not new speculative
-Front 14 routes or node callbacks.
+Front 14 did not implement observation. The accepted output-first direction
+uses supported reflected Tick `State` fields and registered continuous/event
+output operations, minimal GraphJit live captures, and versioned sparse/persisted
+Tock output queries. Tock `State` and input value observation are postponed.
+The planned `Observations` application module reconciles Vue interest scopes and
+batches results; it does not own GraphJit generations or Vue components. These
+contracts are specified in
+[Vue Output Observation And Query Direction](./vue_output_observation_direction.md).
+The concrete transport and callback interfaces remain future work driven by Vue,
+not new speculative Front 14 routes or authored node callbacks.
 Front 14 also does not add a cache of old control specializations. The prior policy is
 preserved in
 [historical documentation](./historical/front_14_manual_control_jit_policy_before_demand_activation_2026-11-04.md).

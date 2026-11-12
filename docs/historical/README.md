@@ -60,6 +60,10 @@ These documents are retained because they record deleted architectures, supersed
 
 - [September 2026 pre-big-rename snapshots](./pre_big_rename/README.md) preserve verbatim copies of current-design documents before the terminology/dead-code cleanup. Use them for rationale/history only; the corresponding files in `docs/` are normative.
 
+## Superseded Vue observation design
+
+- [Vue Observation Before Output Queries And `Observations` Ownership (2026-11-12)](./vue_output_observation_before_module_and_range_direction_2026-11-12.md) retains the original superseded normative passages; the replacement contract is [Vue Output Observation And Query Direction](../vue_output_observation_direction.md).
+
 ## Completed migrations, experiments, and checkpoints
 
 - [Node State And Lifecycle Before Tick/Tock Authored-State Unification (2026-11-12)](./node_state_lifecycle_before_unification_2026-11-12.md)

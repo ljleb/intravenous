@@ -414,27 +414,26 @@ recompute eligible Tick producers for arbitrary requested coverage. A possible
 future `tack()`/`tack_block()` split may make replayability explicit, but it is not the
 current direction.
 
-### Type-registered live observation operations (planned)
+### Type-owned observation operations (planned)
 
-The same closed registered continuous-value type system should also advertise a
-finite set of **optional** observation operations suitable for each type. The
-operation's supported source shape, resolved dimensions/channels, capture contract,
-and output schema are type-specific. An implementation shared by multiple types may
-be expressed once as a generic template, but each type explicitly opts in; there is
-no universal `Peak`/`Waveform` switch and no implicit transformation between
-continuous value types.
+Registered continuous value types explicitly opt into a finite set of
+observation operations meaningful for their value/shape. Event types provide
+their own compatible operation set; the two type registries need not merge,
+but clients see one capability model. Reusable generic templates can implement
+common operations while the type extension supplies shape-specific behavior.
+No universal `Sample`/`FFTBlock` visualization switch belongs in GraphJit.
 
-For example, `Sample` may support latest-value, sample-level, and bounded waveform
-observations as distinct operations; `FFTBlock` may support a spectrum projection,
-while `FractionalGlobalIndex` may only support latest-value observation. The set
-actually implemented should be driven by concrete Vue usage. Availability may also
-depend on whether the resolved source is ephemeral Sequential, persisted, or
-random-access. Observation operations do not change the existing authored-port,
-connection, storage, or value-conversion semantics just by being registered.
+The registered operation describes its result/quality semantics, parameter
+schema, and source-form eligibility. Resolved Tick ephemeral, Tock ephemeral,
+and persisted output forms use different capture/query backends. `Sample` may
+support latest/level/waveform alternatives; event types may support exact
+bounded events or explicitly lossy activity/density projections. Sparse and
+exact-envelope waveforms are not silently interchangeable. No observation
+operation changes authored retention, port storage semantics, or connections.
 
-The operation interface, selective capture placement, and collection/batching
-lifecycle are specified in
-[Node Interaction And Presentation Communication Direction](./node_interaction_and_presentation_communication_direction.md).
+The authoritative observation module, Vue interest, window-query, and batching
+contracts are in
+[Vue Output Observation And Query Direction](./vue_output_observation_direction.md).
 
 ### Type-dependent `size()` is a realization fact
 

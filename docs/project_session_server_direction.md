@@ -48,8 +48,9 @@ shape is not a sufficient foundation for this direction.
 - State-changing requests are executed through one ordered command executor.
 - Read-only requests may run concurrently only against a safe snapshot.
 - State changes produce notifications for subscribed clients.
-- Snapshots and notifications carry a monotonically increasing session
-  `revision`.
+- Durable state snapshots and reliable mutation notifications carry a
+  monotonically increasing session `revision`. Disposable observation frames
+  do not advance that revision.
 - Clients can subscribe from a known revision. If the server cannot replay the
   required history, the client requests a fresh snapshot.
 - Mutations that replace or edit existing state may include an
@@ -61,6 +62,20 @@ shape is not a sufficient foundation for this direction.
 
 Threading and atomicity belong at this server boundary. Extension-side locks
 cannot make concurrent clients coherent.
+
+### Planned observation delivery is not session revision replay
+
+Ordinary session snapshots, revisions, and reliable mutation notifications
+retain the guarantees above. The future `Observations` application module
+reconciles authenticated per-client interests and hands `SocketRpcServer`
+bounded replaceable live observation batches and versioned window results.
+A live meter frame must not advance the durable project revision, fill the
+session replay log, or use the reliable slow-client queue policy unchanged.
+Latest-value frames can be coalesced/dropped; versioned range replies must
+support discarding obsolete viewport requests; exact event histories may
+require different delivery guarantees. Disconnect releases observation
+interests; leases also reclaim abandoned scopes. See
+[Vue Output Observation And Query Direction](./vue_output_observation_direction.md).
 
 ## Current core implementation
 

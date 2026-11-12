@@ -74,10 +74,13 @@ The core package/project-graph modules are:
 | `ProjectPersistence` | load/save normalized persistent state without becoming the canonical owner of instance/connection intent |
 | `ProjectAutosave` | coalesce configured-state mutations and request persistence |
 | `SocketRpcServer` | transport JSON-RPC requests/notifications without becoming the owner of project state |
+| `Observations` (planned) | own reconciled observation interests, shared work requests, bounded result handling, and batched delivery for Vue; never graph or presentation definitions |
 
-Future presentation modules may include `PresentationDefinitions` and
-`PresentationInstances`. They are intentionally not required for the initial
-project-graph implementation.
+The Vue client owns presentation registration and component instances. The planned
+`Observations` module is one new application owner, independent of Vue rendering;
+its activation follows the first end-to-end observation feature. It has no
+inherent dedicated-thread requirement. See
+[Vue Output Observation And Query Direction](./vue_output_observation_direction.md).
 
 ### Implementation checkpoints
 
@@ -925,40 +928,42 @@ Do not persist:
 Project replay may produce unresolved node instances/connections until package
 loading completes. That is a valid initialized state.
 
-## Presentations
+## Vue presentations and application observations
 
-The initial project-graph work does not require a generic automatically managed
-subgraph/controller layer. Presentation selection belongs to the Vue frontend:
-there is no backend `NodePresentation` registration extension or package-owned
-frontend-provider compatibility contract in the intended architecture. A generic
-Vue presentation is always available, while specialized presentations select nodes
-by stable leaf or module definition ID.
+Vue selects generic or specialized presentations by stable leaf/module definition
+ID, without backend `IV_NODE_PRESENTATION`/provider registration. All ports
+remain discoverable and connectable; only outputs are initially observable as
+port *values*. Supported Tick `Node::State` fields may also be observed, while
+Tock state and input value observations are deferred.
 
-A future application module such as `PresentationInstances` may own reconciled
-client observation interests, shared producer activation, collected observation
-results, and batched delivery. It need not be a presentation-component registry
-and does not necessarily require its own thread. This ownership remains subject to
-concrete Vue integration. Subscription changes and observations use the same
-application-module batching discipline as other project operations, but replaceable
-observation frames remain separate from durable graph/semantic notifications.
+The planned **`Observations`** application module owns each authenticated
+client's reconciled observation-interest scopes, aggregate requests, lifecycle,
+shared work coordination, and bounded per-client result batching. It does not
+own Vue components, semantic node event handling, authored output retention,
+`NodeStorage`, or compiled/persisted graph output. It does not itself compile
+or cut over new graph generations and does not require a dedicated thread.
 
-A presentation requiring structural graph changes routes them through the same
-`ProjectGraph` root-build transaction, not directly through independently converging
-`NodeInstances` and `GraphConnections` paths. A purely visual presentation need not
-own graph state at all.
+`Observations` expresses the union of requested live probes to the existing
+`ProjectGraph`/`GraphJit`/`GraphExecutor` graph-generation path, preserving
+`ProjectGraph` as the transaction coordinator and `GraphExecutor` as the
+ordered activation owner. Background range requests use `GraphExecutor`'s
+existing background actor and batched coverage workflow, rather than a
+parallel caller-driven Tock evaluator. Whether observation-plan updates can
+be represented independently of structural graph generations remains an
+implementation choice; they must not form a competing generation chain.
 
-A module publishing asynchronous UI updates to `SocketRpcServer` does so as a
-separate source/cause from an incoming JSON-RPC request. `SocketRpcServer` may be a
-request-tree root and a notification-tree sink, but the same cause must not leave and
-then re-enter it.
+`SocketRpcServer` remains transport. Observation frames are replaceable and
+batched separately from reliable project-revision replay; versioned range
+query results also reject obsolete viewport requests. A new outgoing batch
+runs as a distinct cause rather than re-entering the incoming JSON-RPC event
+tree. Observation work is lower priority than playback-critical background
+materialization and cannot compromise coherent persisted publication.
 
-The intended four global display modes, stable interaction rebinding, and manual
-control/JIT-specialization semantics remain in
-[node_presentation_and_manual_controls_direction.md](./node_presentation_and_manual_controls_direction.md).
-Reflected state/port observations, type-registered operations, and minimal
-observation-aware GraphJit replanning are described in
-[node_interaction_and_presentation_communication_direction.md](./node_interaction_and_presentation_communication_direction.md).
-The former backend-presentation-module proposal is preserved in
+Display modes, stable interaction rebinding, and manual controls are specified
+in [Node Presentation And Manual Controls Direction](./node_presentation_and_manual_controls_direction.md).
+The complete output-observation/query contract is in
+[Vue Output Observation And Query Direction](./vue_output_observation_direction.md).
+The former presentation-module proposal is preserved in
 [historical documentation](./historical/node_presentation_and_live_observation_before_vue_direction_2026-11-12.md).
 
 ## Immediate implementation order

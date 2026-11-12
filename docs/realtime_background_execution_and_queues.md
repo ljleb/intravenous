@@ -172,6 +172,26 @@ mutation single-threaded. Reader-slot registration and unregistration may still 
 during off-realtime generation staging or destruction, so those registries synchronize
 with background reclamation; realtime root pinning itself remains lock-free.
 
+### Planned observation requests to the existing background owner
+
+The planned `Observations` application module may submit batched bounded
+output-window requests. These are one class of the already supported external
+random-access demand roots, not a second background executor or a direct
+caller-driven `tock_coverage()` call. Tock/ephemeral result projections must
+be copied/derived while transaction-local materializations are valid;
+persisted output views pin the selected immutable published version. No
+request may make the realtime thread block on missing coverage or
+promote output retention.
+
+Prioritize correctness/playback-critical materialization and generation
+publication over visible UI output queries, and visible over nearby/predicted
+queries. Apply bounded work, memory, and request/result limits, and discard
+obsolete viewport results where safe. Cancellation must not violate an
+already selected transaction or a persisted-output publication. Live Tick
+probes use separate prepared realtime-safe handoffs, not the canonical
+recording queues unless the output is actually authored persisted. See
+[Vue Output Observation And Query Direction](./vue_output_observation_direction.md).
+
 ## 5. Producer reserve and pending queue are different roles
 
 The runtime's logical SPSC queue is implemented from two ownership-facing pieces:
