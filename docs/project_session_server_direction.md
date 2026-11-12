@@ -80,6 +80,18 @@ state path. Live `Observations` frames remain disposable and separate.
 Threading and atomicity belong at this server boundary. Extension-side locks
 cannot make concurrent clients coherent.
 
+### Planned project-session undo and redo
+
+Initial undo/redo uses one server-owned project-session-global history. One
+undoable user action can contain multiple durable mutations; applying its
+reverse or forward batch is one accepted session change, revisioned and
+published to every subscribed client. Ctrl+Z/Ctrl+Shift+Z belongs to the
+focused Intravenous editor, not to arbitrary VS Code text editors. Redo is
+cleared by a new ordinary accepted edit, and undo/redo themselves do not create
+new history entries. Failed/stale reversals must not advance the history
+position. Per-user selective undo and durable history across restarts remain
+future possibilities. See [Project Undo, Redo, And Backup Direction](./project_undo_redo_and_backups_direction.md).
+
 ### Planned observation delivery is not session revision replay
 
 Ordinary session snapshots, revisions, and reliable mutation notifications

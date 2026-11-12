@@ -230,6 +230,20 @@ surface is implemented.
 The live scalar may reside in `NodeStorage`; one scalar per eligible/manual control
 is not a reason to create a separate runtime storage architecture.
 
+### Manual-control history is grouped by completed interaction (planned)
+
+The durable `ProjectManualControl` value is eligible for project undo, but
+scrub updates, hover, interpolation, and control-specialization requests are
+not each separate undo steps. The long-lived interaction context groups one
+user gesture: retain the original accepted stored value and, when the gesture
+settles, record one reversible change to the final accepted value. A no-op
+should create no history entry. The interaction context already outlives an
+individual Vue control component and must remain the grouping authority
+through remounts and presentation-mode changes. On disconnect, the last
+accepted durable value remains authoritative; any unfinished history grouping
+must be resolved consistently rather than inventing an audio-thread rollback.
+See [Project Undo, Redo, And Backup Direction](./project_undo_redo_and_backups_direction.md).
+
 ## Manual values are Tick/ephemeral sources
 
 A participating manual control is semantically a live Tick/ephemeral source,

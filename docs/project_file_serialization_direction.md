@@ -127,6 +127,18 @@ remove this project connection
 
 The normalized file is not an append-only edit history.
 
+### Undo records and backup checkpoints are separate from the project file
+
+Undo/redo is planned as server-owned history of **reversible batches of accepted
+durable project changes**, constructed from authoritative before/after records.
+It may reuse this command vocabulary without serializing each user action into
+`iv_project.jsonl`. Saving or replaying a normalized snapshot does not append or
+replay undo steps. A future backup/checkpoint system may reuse the same complete
+project snapshot and serialization facilities, possibly alongside an action
+journal; an inverse-only undo record is not a complete restorable backup.
+
+See [Project Undo, Redo, And Backup Direction](./project_undo_redo_and_backups_direction.md).
+
 The implemented normalized commands are:
 
 - `nodeInstances.upsert`, with `instance_id`, `definition_id`, optional

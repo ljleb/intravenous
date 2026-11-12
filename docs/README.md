@@ -14,6 +14,7 @@ The primary application-architecture entry points are:
 - [Vue Client Implementation Stages](./vue_client_implementation_stages.md)
 - [Design, Implementation, And Documentation Workflow](./development_workflow.md)
 - [Project Graph Application Architecture](./project_graph_application_architecture.md)
+- [Project Undo, Redo, And Backup Direction](./project_undo_redo_and_backups_direction.md)
 - [Package Pipeline Application Architecture](./package_pipeline_architecture.md)
 - [Node Definitions And Instances Direction](./node_definitions_and_instances_direction.md)
 - [Configuration Expression Language Direction](./configuration_expression_language_direction.md)

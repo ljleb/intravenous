@@ -69,6 +69,15 @@ This stage deserves substantial attention.
 **Completion criterion:** build a small audio graph entirely through Vue, connect it
 to an output, hear the result, save it, and restore it.
 
+The first **undo/redo implementation slice** follows functioning instance and
+connection editing and precedes relying on complex editing gestures: introduce
+one batched reversible project mutation, an authoritative global session history,
+and a multi-node delete/restore test. This is one coherent project-editing
+feature, not a new general history framework in advance of Vue requirements.
+Stage 3 then groups completed manual-control gestures in that same history.
+The normative behavior is in
+[Project Undo, Redo, And Backup Direction](./project_undo_redo_and_backups_direction.md).
+
 After this stage Intravenous has a usable graph-building interface.
 
 ## Stage 3 — Node interactions and specialized presentations

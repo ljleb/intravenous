@@ -34,6 +34,14 @@ project save collection, and UI-only presentation settings should be designed
 later using the same rule. They should not be grafted onto these trees if doing
 so creates a diamond or causes one module to process the same cause twice.
 
+The accepted [Project Undo, Redo, And Backup Direction](../project_undo_redo_and_backups_direction.md)
+requires a whole reversible user-action batch to use **one** normal coordinated
+project-mutation tree. A multi-record undo is not multiple `SocketRpcServer` or
+`ProjectGraph` requests, and history does not create a second graph state owner.
+Its exact event flow will be documented once the first Vue editing/undo feature
+establishes the concrete typed request; do not assume one event per reversed
+record.
+
 ## Scope of the diagrams
 
 The diagrams emphasize the graph/execution state path. Other state-only children

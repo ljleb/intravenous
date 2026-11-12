@@ -740,3 +740,10 @@ representation until a concrete Vue feature exercises the full path.
 The exact transaction/journal representation for ordered root semantic events,
 partial/successor `NodeStorage` migration, and frontend regeneration of typed
 semantic event bindings also remain separate implementation decisions.
+
+For undo/redo, a completed root semantic interaction contributes its **accepted
+project-state difference**, including any durable replacements, to one
+reversible user action. Its provisional `ctx.replace()`/`ctx.send()` successor
+worlds are not individual undo steps, and a reverse transaction does not require
+a custom inverse message handler. See
+[Project Undo, Redo, And Backup Direction](./project_undo_redo_and_backups_direction.md).

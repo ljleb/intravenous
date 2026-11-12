@@ -21,6 +21,7 @@ Related documents:
 - [startup_realization_order.md](./startup_realization_order.md)
 - [unified_graph_direction.md](./historical/unified_graph_direction.md)
 - [event_flows/README.md](./event_flows/README.md)
+- [project_undo_redo_and_backups_direction.md](./project_undo_redo_and_backups_direction.md)
 
 ## Terminology
 
@@ -226,6 +227,26 @@ An unavailable definition or temporarily unresolved matcher does not delete the
 corresponding desired state from `NodeInstances` or `GraphConnections`. The
 root transaction reports unresolved/failed configured state while the owning
 module retains the user's request for a later generation.
+
+## Reversible project editing (planned)
+
+Project undo/redo is a server/session-owned **history of user actions**, not a
+second owner of the state held by `NodeInstances`, `GraphConnections`, or other
+project-state modules. An action may carry a complete batch of instance,
+replacement, connection, and manual-value changes. Its reverse restores the
+**actual prior durable records**, including stable IDs, rather than sending an
+inverse node event or assuming that deleting a node also deletes dangling
+connection intent. See [Project Undo, Redo, And Backup Direction](./project_undo_redo_and_backups_direction.md).
+
+The normal `ProjectGraph` coordination path must accept a coherent multi-domain
+mutation per user action, including undo and redo, **without** repeatedly
+entering `NodeInstances`, `GraphConnections`, `GraphJit`, or `GraphExecutor` in
+one `IV_EVENT_SOURCE` tree. The same accepted desired-state semantics,
+compilation diagnostics, and ordered executable-generation activation apply to
+normal edits and their reversals. An undo history entry is not a second graph
+realization or an independently authoritative project snapshot. The exact
+history owner and typed batch request are to be determined with the first
+end-to-end Vue undo feature, not as speculative routes.
 
 ## Tree-shaped event propagation is a hard constraint
 
