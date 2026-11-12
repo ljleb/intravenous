@@ -64,7 +64,7 @@ The core package/project-graph modules are:
 | `PackageJit` | synchronously build/JIT one requested package batch into immutable package revision results |
 | `PackageDefinitions` | own accepted package revisions, package catalog/build state, and one immutable package-revision snapshot |
 | `NodeDefinitions` | derive the immutable global node-definition namespace from accepted package revisions |
-| `ProjectGraph` | orchestrate one complete root-graph construction transaction without duplicating instance/connection intent |
+| `ProjectGraph` | orchestrate one complete root-graph construction transaction without duplicating instance/connection intent; retain accepted executable live-probe requirements from `Observations` for coordinated builds (planned) |
 | `NodeInstances` | own desired node-instance state, instantiate one complete batch against exactly one definitions snapshot, and own reusable configured node-instance caches |
 | `GraphConnections` | own desired cross-node connection state, resolve project-wide port matchers against one complete root embedding, and apply those connections |
 | `GraphJit` | synchronously lower, optimize, and ORC-JIT one complete root `ConfiguredGraph` into an immutable `CompiledGraph` generation |
@@ -985,6 +985,41 @@ A representation-only capture-plan swap may be cheaper than a new root plan,
 but cannot bypass `ProjectGraph`'s coordination or `GraphExecutor`'s ordered
 activation. Actual latency, including native-region specialization effects,
 needs measurement in the first working Vue observation slice.
+
+### Observation requirements in every root build
+
+_Accepted design decision, 2026-11-12._ `Observations` owns desired client
+interests and aggregates them into executable live-probe requirements.
+`ProjectGraph` retains the last accepted aggregate for use in **every** root
+build, including node/connection edits, package refresh, and replay. Range
+queries and presentation-only rate/resolution changes that require no change to
+live capture are not part of that compilation input.
+
+A structural edit resolves compatible probes along with the edited graph in
+**one coordinated compilation**. After staging, `Observations` prepares
+routing for the successor generation; it does not trigger a second compilation
+just to restore probes. Changes to the executable requirements themselves go
+through the same `ProjectGraph`/`GraphJit`/`GraphExecutor` path, with coalescing
+where possible. Concurrent independent changes may still require separate
+compilations. See the [observation contract](./vue_output_observation_direction.md#accepted-observation-requirements-are-realization-inputs).
+
+The application-module tree must remain non-reentrant:
+
+- When an interest-change cause enters `Observations` and then `ProjectGraph`,
+  any compile/staging result returns along the originating request path; the
+  same cause must not enter `Observations` again through a notification.
+- When a structural-edit cause enters `ProjectGraph`, it may inform
+  `Observations` once after staging as a sibling of the other build participants.
+  This conveys source-resolution changes without requesting another build.
+
+A **staged** generation is not necessarily active yet. `Observations` can
+prepare generation-specific result routing from the coordinated outcome, but
+must not treat staging as cutover. Outcomes refer to resolved aggregate semantic
+sources, not per-client subscription handles; `Observations` maps those sources
+to its own subscriptions. Invalidation and live delivery must respect actual
+generation activation, and unsuccessful staging must not discard valid current
+bindings. The current [event-flow documents](./event_flows/README.md) describe
+the implemented procedures; these observation edges are planned.
 
 `SocketRpcServer` remains transport. Observation frames are replaceable and
 batched separately from reliable project-revision replay; versioned range

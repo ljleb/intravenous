@@ -143,6 +143,9 @@ ordered `GraphExecutor` generation activation, **not** an independently competin
 compilation/cutover pipeline. Empty demand should remove unnecessary realtime
 capture work; viewport hysteresis reduces plan churn. Whether the plan is a
 separate overlay or part of `RealtimeRootPlan` is an implementation choice.
+Structural builds compile with the same accepted executable live-probe
+requirements, so an edit does not drop live probes; see
+[Accepted observation requirements are realization inputs](#accepted-observation-requirements-are-realization-inputs).
 
 ### Background window queries
 
@@ -205,7 +208,9 @@ thread simply because it is a module. It owns:
 - validated semantic sources, type capabilities, observation requests, and
   aggregate requirements across all interested clients;
 - subscription reconciliation, lease/expiry, disconnection cleanup, and
-  generation rebinding/invalidation;
+  generation-safe result routing and invalidation (the generation's own
+  compilation has already resolved compatible probes; see
+  [Accepted observation requirements are realization inputs](#accepted-observation-requirements-are-realization-inputs));
 - coordination of live-probe requirements and versioned background window
   queries, including cancellation/discard of obsolete viewport results;
 - shared/capped observation work where valid, result collection and change
@@ -225,6 +230,60 @@ Do not cause the same incoming `SocketRpcServer` request to enter that module
 again through a synchronous notification edge. Batch/asynchronous publication
 is a distinct cause; a worker or scheduler is optional until demonstrated
 necessary by actual load.
+
+### Accepted observation requirements are realization inputs
+
+_Accepted design decision, 2026-11-12. The superseded after-cutover rebinding
+wording is preserved in [historical documentation](./historical/vue_observation_rebinding_before_realization_input_invariant_2026-11-12.md)._
+
+**Every structural graph build includes the accepted executable live-probe
+requirements.** Compatible probes are resolved and incorporated into the same
+compilation and staged generation as the structural edit. Restoring those probes
+must not require a second compilation after cutover. This applies to node and
+connection edits, package refresh, and replay. Whether a change is represented
+by an updated `RealtimeRootPlan` or another coordinated observation plan remains
+an implementation choice.
+
+`Observations` owns the per-client desired sets and their aggregation.
+`ProjectGraph` retains the last **accepted aggregate executable requirements**
+for compilation. These identify semantic sources (`NodeAddress` and an output,
+channel, or supported Tick `State` field) and the capture operations needed,
+not client subscriptions or generation-local indices. Non-executable window
+queries, client delivery cadence, and purely presentational resolution settings
+do not enter that snapshot. `ProjectGraph` must not independently modify its
+accepted requirements; it resolves their availability against each new graph.
+
+An interest change that alters executable requirements goes through the same
+coordinated `ProjectGraph`/`GraphJit`/`GraphExecutor` pipeline. Aggregate-interest
+equality and coalescing avoid redundant builds. If requirements change during
+an already running compilation, another compile may still be necessary; the
+single-compile guarantee applies to a structural edit with unchanged accepted
+requirements, not to arbitrary concurrent changes.
+
+**Staging and cutover differ.** A root build returns after staging a successor
+in `GraphExecutor`; activation occurs at a later safe boundary. The coordinated
+outcome must provide enough generation identity and **aggregate source**
+resolution information for `Observations` to prepare routing and identify
+unavailable sources. It need not return per-client subscription bindings:
+`Observations` maps source resolutions to the interests it owns. A failure to
+stage a successor must not invalidate valid bindings of the current generation.
+
+The application-module event-tree rule still applies. When `Observations`
+requests compilation, the outcome returns on that request path, without a
+notification re-entering `Observations` for the same cause. For a structural
+edit, `ProjectGraph` may inform `Observations` once after staging as another
+child of the root build. This notification is a **staging outcome**, not an
+activation event. The exact result record and bridge arrangement are left to
+implementation.
+
+**Continuity across cutover.** Compatible interests retain their logical
+identities. The compiled successor owns its own probe bindings; `Observations`
+accepts data only from a valid generation and prevents older frames from
+replacing newer values. Vue may retain its last displayed value until a valid
+replacement arrives, avoiding a blank meter while bindings change. Removed or
+incompatible sources must be invalidated when the applicable generation becomes
+active, not prematurely when it is merely staged. No observation may retain
+pointers into a reclaimed generation.
 
 ## 6. Vue interest and transport semantics
 
@@ -278,9 +337,13 @@ The external boundary reuses existing semantic `NodeAddress` plus resolved
 output/channel identity, with implementation-local capture identities and
 versions kept internal. Replies/results carry sufficient generation and
 `(semantic_version, data_version)` provenance (where applicable), actual
-coverage and request identity to reject stale deliveries. Rebind a compatible
-semantic source after a generation cutover; otherwise invalidate it, and
-never retain pointers into reclaimed generations.
+coverage and request identity to reject stale deliveries. A compatible semantic
+source keeps its logical subscription identity across a generation change: the
+successor's compilation resolves its probe, and `Observations` routes results
+from the active generation to the same subscription. Incompatible or removed
+sources are invalidated when the relevant generation activates. Never retain
+pointers into reclaimed generations. See
+[Accepted observation requirements are realization inputs](#accepted-observation-requirements-are-realization-inputs).
 
 `SocketRpcServer` transports these messages and applies connection/security
 policy; it does not own observation interests or observation DSP computation.

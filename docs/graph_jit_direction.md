@@ -1480,6 +1480,15 @@ from native-region specialization must not be imposed indiscriminately on the
 new observation-probe representation. Benchmark both options before deciding
 whether a separate observation overlay or a root-plan change is preferable.
 
+Every compile request from `ProjectGraph` includes the currently accepted
+**executable live-probe requirements** by semantic source and operation. This
+also applies to builds caused by node/connection edits, package refresh, and
+project replay. `GraphJit` resolves the applicable probes against the same
+`ConfiguredGraph` being compiled; it does not rely on a second, post-cutover
+compile to restore observations. Persisted-window and sparse background queries
+that do not affect the executable graph are not compilation inputs. See
+[Vue Output Observation And Query Direction](./vue_output_observation_direction.md#accepted-observation-requirements-are-realization-inputs).
+
 These are planned semantics, not a claim that UI probes already exist in source.
 
 ## Exact-generation consistency
