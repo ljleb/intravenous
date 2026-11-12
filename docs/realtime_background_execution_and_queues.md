@@ -107,7 +107,8 @@ versions.
 - its worker thread;
 - the current background generation and ordered generation cutovers already performed
   by realtime;
-- background-only mutable evaluation state and optional `TockState`;
+- background-only mutable evaluation state and optional Tock-owned `State`
+  (authored as `Node::State`, stored separately from realtime `NodeStorage`);
 - canonical persisted-data/recording state and immutable publication roots;
 - one pending queue per producer as required by the compiled generation;
 - pre-sized descriptors used to pin the current finite workload;
@@ -563,7 +564,14 @@ closed N queues, or preparing the N -> N+1 retained-state migration. All such da
 interpreted using generation N.
 
 Only after required N work is complete does background transition to N+1 and interpret
-N+1 queue data under the new generation.
+N+1 queue data under the new generation. This is also the safe ownership boundary
+for optional Tock `State` migration: compatible retained state may be transferred or
+adapted by the same authored `move(MoveContext<Node> const&)` vocabulary used for
+Tick, executed by the background owner. If an old-generation evaluation still uses
+that state, migration cannot touch it. Otherwise the successor initializes fresh
+`State`; neither path changes the semantics of background-produced outputs. The
+existing implementation still initializes fresh `TockState` and does not yet
+implement a background move callback.
 
 This requires no global atomic snapshot across old queues. Queue closure is sufficient;
 background may drain each finite queue independently.

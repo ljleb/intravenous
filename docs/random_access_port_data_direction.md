@@ -999,13 +999,13 @@ Connectivity/fan-in arity may be a realization fact and can legitimately affect
 packed realtime `State`. Region decomposition depends on evaluated/random-access
 contents and belongs to background work.
 
-If a node needs one background object per Region, its separately owned `TockState`
-can dynamically resize during the appropriate `tock*()` callback:
+If a Tock node needs one background object per Region, its separately owned
+background `State` can dynamically resize during the appropriate `tock*()` callback:
 
 ```text
 coverage/content changes
     -> tock*() observes the new Region set
-    -> TockState resizes/rebuilds acceleration data
+    -> Tock State resizes/rebuilds acceleration data
 ```
 
 This does not change `NodeLayout` or force `NodeStorage` replacement.
@@ -1113,7 +1113,7 @@ Migration should preserve the broader architectural invariants already establish
 
 - the audio thread does not block on background evaluation;
 - random-access materialization/publication occurs off the audio thread;
-- `TockState` remains separately owned background state and may allocate dynamically;
+- Tock-owned `State` remains separately owned background state and may allocate dynamically;
 - `NodeStorage` remains the packed fixed-layout audio-thread realization;
 - output retention remains independent of Tick/Tock production;
 - connection validation rejects requirements the producer cannot satisfy directly

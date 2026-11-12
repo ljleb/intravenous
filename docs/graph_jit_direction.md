@@ -1535,7 +1535,8 @@ job is to pack the structures needed by generated audio-thread execution as tigh
 and access-locally as practical: authored `State`, compiler-selected cross-call
 sample/event carry, feedback/activity state, and other fixed regions the audio root
 actually needs. Request-sized objects, dynamically growing background data,
-persisted-output data, and `TockState` are not part of this packed realtime arena.
+persisted-output data, and Tock-owned `State` are not part of this packed realtime
+arena.
 
 `GraphJit` must not introduce `CompiledGraphNodeStorageLayout`,
 `GraphKernelStorage`, or another parallel fixed **audio-thread** state arena.
@@ -1545,39 +1546,61 @@ becomes part of its `CompiledGraph`, and `RealtimeExecutor` creates/owns the
 corresponding `NodeStorage` while that realization can be active or is needed for a
 handoff.
 
-### `TockState` is background-owned sidecar state
+### Domain-owned `State`: realtime packed storage or background sidecar
 
-`TockState` is Tock/background acceleration state, not realtime node storage. It is
-managed separately from `NodeStorage` and is never addressed by the audio-thread
-root. Ordinary dynamic allocation is allowed inside it. Its internal size may
-therefore follow actual background requirements such as input coverage/content
-without changing `NodeLayout` or forcing a realtime-storage migration.
+An authored concrete primitive has one optional nested `State` type. The validated
+exclusive Tick/Tock primary callback family determines its storage domain:
 
-A node may use `initialize()` to set up its instance's `TockState` from configuration
-and resources. Any derived data that depends on current input contents/coverage is
-computed or recomputed by the appropriate background `tock*()` work instead.
-`TockState` remains non-semantic acceleration state: outputs must be correct from a
-freshly initialized instance, and retaining/moving compatible acceleration state
-across realization changes is only an optimization.
+- Tick `State` contributes to realtime `NodeLayout`/`NodeStorage` and uses the
+  existing realtime migration and execution guarantees.
+- Tock `State` occupies separately owned background storage, not realtime
+  `NodeStorage`. It may allocate dynamically, including structures sized by actual
+  input coverage/content, without changing `NodeLayout` or forcing an audio-thread
+  storage migration.
 
-Source introspection may still publish nominal/definition metadata for `TockState`
-for lifecycle/hot-reload validation, but `TockState` field layout is not a
-`NodeLayout`/`NodeStorage` placement contract. `State` remains the authored typed
-state whose realtime storage relationship is fixed by declaration/layout.
+For Tock, `initialize(InitializationContext<Node> const&)` can establish
+configuration/resource-dependent acceleration. Input-content-derived cache entries
+must be established or validated by background work. Tock `State` is non-semantic:
+output values, coverage, and dependency propagation must be correct when it is
+freshly initialized or discarded. Preserving it across generations is an optional
+performance optimization, not semantic output migration.
+
+The lifecycle templates `InitializationContext<Node>`, `MoveContext<Node>`, and
+`ReleaseContext<Node>` select their domain at compile time. Their common authored
+surface includes `state()` (and `previous_state()` for move); realtime-only storage
+accessors are absent for Tock. `TockCoverageContext<Node>` uses the same `state()`
+spelling for its background-owned state. A compatible Tock state may be migrated by
+an authored `move()` or a safely valid implicit move after predecessor background
+work finishes; otherwise the successor is initialized fresh. A move must invalidate
+or rebuild cache entries that do not remain valid for the successor's inputs,
+configuration, or semantic version.
+
+Source introspection records one `State` structure and its execution domain. Only
+Tick state participates in `NodeLayout` placement. Background layout/lifecycle
+metadata remains distinct even if the implementation renames its old
+`TockStateLayout`/`TockStateStorage` records. These are runtime ownership details,
+not separate authored state types.
+
+The checked-in source still uses `TockState`, `TockInitializationContext`,
+`TockReleaseContext`, and fresh-only `TockStateStorage::initialize()`; a Tock
+`move()` path is not implemented yet. Those names and the current behavior are an
+implementation checkpoint, not the intended lifecycle contract. See the
+[historical state/lifecycle direction](./historical/node_state_lifecycle_before_unification_2026-11-12.md).
 
 Fixed-size project-owned memory whose contents must cross **audio-thread root calls**
 should use the same realtime `NodeLayout` / `NodeStorage`, including for example:
 
-- authored node `State`;
+- authored Tick node `State`;
 - history/latency/feedback carry selected for persistent placement;
 - full fixed persistent sample/event buffers selected for realtime access;
 - root/compiler-owned realtime activity state; and
 - other fixed-size compiler-selected regions touched by the audio root.
 
 Background-owned memory is a sidecar even when it happens to have a fixed size.
-Examples include `TockState`, reusable background-evaluation workspaces, transaction
-frames, and dynamically sized persisted-output storage. Persisted output continues
-to use executor-owned stable data stores because its size follows semantic coverage
+Examples include Tock-owned `State`, reusable background-evaluation
+workspaces, transaction frames, and dynamically sized persisted-output storage.
+Persisted output continues to use executor-owned stable data stores because its size
+follows semantic coverage
 and retained authoritative content rather than one realtime `NodeLayout`.
 
 Tick/persisted finalized data satisfies Random Access through the published
@@ -1599,8 +1622,8 @@ This gives the whole-project compiler control over realtime storage declaration
 order. The current layout builder packs regions in declaration order while solving
 `initialize_order` separately from dependency information, so lowering can co-locate
 data in approximately the order generated O3 audio code will access it without
-conflating storage locality with lifecycle ordering. `TockState` placement is not
-part of that optimization problem.
+conflating storage locality with lifecycle ordering. Background-owned `State`
+placement is not part of that optimization problem.
 
 ### No compiler-owned façade initialization path
 
@@ -2199,7 +2222,7 @@ CompiledGraph + finalized NodeLayout
 Realtime node state and compiler-selected audio-thread regions whose contents cross
 audio-root calls become one packed `NodeLayout`/`NodeStorage`. Invocation-local
 realtime representations instead use the statically packed generated-root stack
-frame. Background-owned state (`TockState`, evaluation workspaces, persisted data,
+frame. Background-owned state (Tock `State`, evaluation workspaces, persisted data,
 etc.) is intentionally outside this realtime allocation model and follows its own
 lifetimes. Pure realtime storage analyses may still decide which logical values need
 stack or `NodeStorage`, their size/alignment, liveness, and desirable layout before

@@ -540,9 +540,9 @@ graph-JIT generation boundary merely to hide avoidable compiler work.
 
 The executable project itself masquerades as an ordinary zero-input/zero-output
 root node. Its generated declaration operation populates one `NodeLayoutBuilder`;
-the resulting canonical `NodeLayout` covers realtime `State` plus
+the resulting canonical `NodeLayout` covers Tick-owned realtime `State` plus
 root/compiler-owned persistent regions needed by audio-thread execution. There is
-no parallel graph-kernel realtime-storage arena. Background-only `TockState` and
+no parallel graph-kernel realtime-storage arena. Background-owned Tock `State` and
 background workspaces are executor-owned sidecars rather than part of the packed
 `NodeStorage`.
 
@@ -676,7 +676,8 @@ thread. It keeps at least:
 
 - the current background side of the active execution generation plus ordered actual
   successor cutovers already performed by realtime;
-- separately owned lifecycle/storage for optional background-only `TockState`;
+- separately owned lifecycle/storage for optional Tock `State`, including safe
+  background-generation migration or fresh initialization;
 - stable canonical persisted-data/recording state and immutable publication roots;
 - committed background coverage state and reusable propagation/evaluation workspaces;
 - transaction-local invocation/materialization frames and private persisted-data candidates;

@@ -261,7 +261,7 @@ temporaries belong to the generated root's fixed stack frame.
 Project-owned data that must survive from one **audio-root execution call** to
 another belongs in that layout. This includes history/latency carry, full fixed
 persistent port buffers selected for realtime access, feedback state, `State`, and
-activity state. Background-only `TockState` does not: it is separately owned by the
+activity state. Tock-owned `State` does not: it is separately owned by the
 background runtime and may use dynamic allocation. Background workspaces are also
 sidecars even when bounded/reusable.
 

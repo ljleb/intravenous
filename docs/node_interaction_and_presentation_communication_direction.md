@@ -5,7 +5,10 @@ synchronization, and Vue-driven live observation. The observation operation
 contract is intentional; its exact C++/TypeScript syntax and transport routes remain
 provisional until exercised by the Vue client. The 2026-11-12 revision supersedes
 backend presentation registration and the unimplemented `PresentationState` API;
-see [the preserved earlier design](./historical/node_presentation_and_live_observation_before_vue_direction_2026-11-12.md)._
+see [the preserved earlier design](./historical/node_presentation_and_live_observation_before_vue_direction_2026-11-12.md).
+The unified authored `State`/lifecycle direction of 2026-11-12 supersedes the
+separate `TockState` authoring contract; see
+[the preserved prior contract](./historical/node_state_lifecycle_before_unification_2026-11-12.md)._
 
 This note is about communication with **semantic backend nodes** and their
 presentations. It is not a description of the current VS Code extension transport
@@ -54,7 +57,8 @@ IV-specific language rules that ordinary runtime/library code may then assume.
 
 Its authoritative responsibilities may include:
 
-- validating the restrictions on explicit nested `State` and `TockState` types;
+- validating one explicit nested `State` type for a stateful concrete
+  primitive, regardless of its Tick or Tock execution domain;
 - rejecting aliases used as substitutes for those explicit state definitions;
 - assigning stable field identities and recording offsets/type fingerprints;
 - discovering typed node-event handlers;
@@ -80,48 +84,89 @@ rather than requiring a synthetic `State` object only so declaration code can
 recover field offsets. Once source introspection makes the member relationship
 authoritative, `DeclarationContext::state()` should disappear.
 
-`declare()` describes the packed realtime realization and therefore declarations
-associated with `State` and compiler-owned audio-thread storage. `TockState` is not
-part of this declaration/layout model and should not need a synthetic
-`DeclarationContext::tock_state()` either.
+`declare()` describes the packed realtime realization. For Tick primitives,
+`State` fields participating in declarations and compiler-owned realtime regions
+contribute to `NodeLayout`. For Tock primitives the same authored `State` name
+denotes background-owned state, not a realtime declaration or layout input.
+No synthetic `DeclarationContext::tock_state()` is needed.
 
-## `State`, `TockState`, and `NodeStorage` have different ownership
+## One authored `State`; storage and lifecycle follow the primary callback family
 
-`NodeStorage` exists to make the audio-thread realization as cheap to execute as
-possible. It is the fixed-layout packed storage addressed by the JIT: authored
-`State` plus compiler-selected audio-thread data that must survive execution calls.
-Its layout should be chosen for compactness/locality and, where useful, roughly the
-order in which generated audio-thread code will touch it.
+A concrete primitive authors at most one nested `State` type, for either the Tick
+callback family or the Tock callback family. The callback families are mutually
+exclusive. The author does not choose storage through the state type's name:
 
-`TockState` is different. It is background-thread state used by Tock/background
-work and must not be packed into `NodeStorage`. Ordinary dynamic allocation is
-allowed inside `TockState`; its size and internal allocations may change as
-background work changes. This is particularly important for acceleration structures
-whose useful size depends on actual input coverage/content rather than on the
-compiled realtime realization.
+- Tick `State` is part of the realtime realization and is packed into the
+  canonical `NodeLayout`/`NodeStorage`, alongside compiler-selected audio-thread
+  persistent data.
+- Tock `State` belongs to separately owned background storage managed by
+  `BackgroundExecutor`. It may contain dynamically allocated acceleration or
+  memoization data and may resize as background coverage/content changes. It does
+  not add to realtime `NodeLayout` or require realtime storage migration.
+- Nodes with no `State` need no authored state allocation. Declaration-only/nested
+  helper representations must be resolved in their owning declaration context;
+  they must not be arbitrarily classified as executable Tick or Tock primitives.
 
-A node may still set up its instance's `TockState` from `initialize()`. For example,
-`initialize()` may allocate configuration/resource-dependent tables or establish
-background acceleration state that is meaningful before any particular input
-contents are examined. Input-dependent derived contents, however, must be computed
-or recomputed by the appropriate background `tock*()` work rather than by
-`initialize()`.
+The single authored type does **not** unify its physical storage, execution domain,
+or correctness guarantees. Tock `State` is non-semantic acceleration: results,
+coverage, and dependency requirements must remain correct if its contents are
+discarded and freshly initialized, or if the order of background requests changes.
+`initialize()` may establish configuration/resource-dependent acceleration; derived
+input-content-dependent data is computed/revalidated by background evaluation.
 
-`TockState` remains non-semantic acceleration/memoization state: observable results
-must not depend on its history, and correctness must survive discarding and freshly
-reinitializing it. Whether an implementation opportunistically retains/moves a
-compatible `TockState` across realization changes is a background-lifecycle policy,
-not part of `NodeStorage` compatibility.
+### One authored lifecycle vocabulary, domain-specific capabilities
 
-## Configuration, realtime state, background state, layout, and executable behavior are distinct
+The authored lifecycle signatures are uniform regardless of execution family:
 
-A semantic node has at least five independent aspects:
+```cpp
+void initialize(InitializationContext<MyNode> const& ctx) const;
+void move(MoveContext<MyNode> const& ctx) const;
+void release(ReleaseContext<MyNode> const& ctx) const;
+```
+
+Each context template determines the primary callback family statically. `ctx.state()`
+is available for either family when `Node::State` exists; `MoveContext<Node>` also
+provides `ctx.previous_state()` when relevant. Tick contexts retain the relevant
+realtime `NodeStorage`/block/layout facilities. Tock contexts expose background-owned
+state and relevant resources, **not** realtime `NodeStorage` or audio-thread-only
+capabilities. A node author can change execution domain without renaming `State` or
+rewriting unrelated lifecycle callback signatures; the callback body may still need
+to change if it uses operations unavailable in the other domain.
+
+`TockCoverageContext<Node>` and its Tock batch-lane views likewise expose
+`ctx.state()` for background-owned state, rather than `ctx.tock_state()`.
+
+### Tock generation migration is supported, but is not semantic persistence
+
+Tock has the same optional authored `move(MoveContext<Node> const&)` operation as
+Tick. Migration is considered for a compatible retained concrete node and state
+representation at an ordered generation transition. It runs on the background
+owner **after** predecessor evaluation using that state has completed; it must not
+move or read a concurrently active predecessor. No audio-thread work or blocking
+synchronization is introduced by background-state migration.
+
+A node's `move()` is responsible for preserving or invalidating cached entries as
+needed for changed configuration, inputs, coverage, and semantic version. If safe
+migration cannot be established, fresh initialization is valid and required as the
+fallback. An implicit state move may be used only where the state type and the
+runtime's compatibility/lifetime contract make it safe; it is not a promise to move
+all move-constructible Tock caches unconditionally. The executor must respect old
+and successor ownership, construct/destroy each state exactly once, and run release
+on the appropriate owner. Fresh initialization and reset remain correctness-preserving.
+
+The **current implementation** still uses separate `TockState`,
+`TockInitializationContext`/`TockReleaseContext`, and `TockStateStorage` records,
+with fresh initialization and no Tock move callback. Those are migration targets,
+not alternate intended authored APIs.
+
+## Configuration, execution state, layout, and executable behavior are distinct
+
+A semantic node has distinct aspects:
 
 1. its construction/configuration value;
-2. the contents of its realtime `State`;
-3. its background-only `TockState`;
-4. the realtime `NodeLayout` produced by `declare()`;
-5. its compiled Tick/Tock behavior.
+2. the contents of its domain-owned `State`, if any;
+3. the realtime `NodeLayout` produced by a Tick realization's `declare()`;
+4. its compiled Tick/Tock behavior and associated storage ownership.
 
 The same C++ `State` type can produce different realtime storage layouts:
 
@@ -139,10 +184,10 @@ class MyNode {
 };
 ```
 
-`MyNode{8}` and `MyNode{32}` have the same `State` type but different realtime
+`MyNode{8}` and `MyNode{32}` have the same Tick `State` type but different realtime
 storage requirements. Conversely, configuration may alter executable behavior
-without altering the resulting `NodeLayout`. Changes to `TockState` allocation do
-not by themselves alter `NodeLayout`.
+without altering the resulting `NodeLayout`. Changes to background-owned
+Tock `State` allocation do not by themselves alter `NodeLayout`.
 
 The intended realtime-storage rule is therefore:
 
@@ -157,8 +202,8 @@ different resulting NodeLayout
 
 Executable replacement is independent of realtime-storage replacement. A new
 compiled realization may reuse the existing `NodeStorage` when its realtime layout
-and persistent-state semantics are compatible. Background `TockState` lifecycle is
-managed separately.
+and persistent-state semantics are compatible. Background-owned Tock `State`
+lifecycle is managed separately, including optional safe migration.
 
 Nodes themselves decide how structural a realtime parameter is. A node may
 deliberately bucket/overallocate its declaration:
@@ -173,14 +218,16 @@ fixed multiples, geometric growth, hysteresis, reluctant shrinking, or other
 policies belong to the node implementation rather than `NodeStorage`.
 
 By contrast, background data whose useful size follows input coverage/content can
-use dynamic storage in `TockState` and resize during `tock*()` work without creating
-a new `NodeLayout` or forcing a graph-wide realtime-storage migration.
+use dynamic storage in its background-owned `State` and resize during
+`tock*()` work without creating a new `NodeLayout` or forcing graph-wide
+realtime-storage migration.
 
 A useful statement of the intended division is:
 
-> Configuration defines the realtime realization envelope; `State` represents the
-> current realtime point within that envelope; `TockState` is reconstructible
-> background acceleration state outside the packed realtime realization.
+> Configuration defines the realtime realization envelope for a Tick primitive;
+> Tick `State` represents its realtime point within that envelope. A Tock
+> primitive instead uses the same authored `State` name for reconstructible
+> background acceleration outside the packed realtime realization.
 
 # Semantic node events
 
@@ -320,8 +367,8 @@ design.
 
 ## Nodes own their state exclusively
 
-A backend node cannot directly mutate another backend node's `State`, `TockState`,
-configuration, or realization.
+A backend node cannot directly mutate another backend node's `State` (in
+either execution domain), configuration, or realization.
 
 If node A requires node B to change, A sends B an event. This is a hard semantic
 boundary, not merely a preferred coding style.
@@ -501,7 +548,7 @@ construction arguments, identities, resolved ports and connections, manual-contr
 values, and mutation outcomes are authoritative application/graph information.
 They should be exposed through the appropriate application-owned read model.
 
-`State` and `TockState` retain their existing meanings as node execution state,
+`State` retains its execution-domain-specific meaning as node execution state,
 not semantic configuration or automatically authoritative UI state. A presentation
 may separately observe supported reflected runtime fields as *disposable live
 information*. A Vue component may also own local display and interaction state.
@@ -530,7 +577,7 @@ node.send(...)  // reliable, typed semantic node event
 ```
 
 A Vue presentation may also request observation of selected, supported reflected
-`State`/`TockState` fields and port data. Exact observation hook syntax is deferred;
+`State` fields (Tick or Tock) and port data. Exact observation hook syntax is deferred;
 observations are **not** a permanent `node.state` projection of all implementation
 storage. For a statically known definition, generated bindings may expose supported
 field names and result types. The generic presentation can inspect ports and their
@@ -645,8 +692,8 @@ socket notification. No default `ctx.publish()`, `on_message`, `on_subscribe`, o
 
 ## Discovery from existing state reflection and resolved ports
 
-Use existing `NodeStateStructure`/`NodeStateFieldStructure` reflection for `State`
-(and the appropriate source metadata for `TockState`) together with resolved port
+Use existing `NodeStateStructure`/`NodeStateFieldStructure` reflection for the
+single authored `State` (with its execution-domain classification) and resolved port
 metadata. Discovery names a field or port and its type; **observability** additionally
 requires a registered, safe capture/transport operation for that type and execution
 context. A discoverable but unsupported field is not an observation error or an
@@ -707,9 +754,9 @@ server's intended interest state.
 Capture points must be located where the observed field or port value is valid.
 They cannot all execute at the end of the root Tick callback: ephemeral outputs
 may have been overwritten, native region execution may have hidden intermediate
-values, and some values require a producer or post-operation boundary. `State` and
-`TockState` also have different thread ownership. Non-realtime code must not read
-mutable realtime storage concurrently without a safe snapshot/handoff.
+values, and some values require a producer or post-operation boundary. Tick-owned
+and Tock-owned `State` have different thread ownership. Non-realtime code must not
+read mutable realtime storage concurrently without a safe snapshot/handoff.
 
 A registered observation operation should supply the equivalent of:
 

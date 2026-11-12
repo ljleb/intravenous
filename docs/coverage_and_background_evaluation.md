@@ -118,7 +118,7 @@ The central rules are:
 > evaluation transactions: all roots accumulate
 > before traversal; fan-in/fan-out requirements are unioned; each applicable authored
 > forward/reverse/tock callback runs at most once per implicated node per transaction.
-> `TockState` remains non-semantic acceleration available only to tock.
+> Tock `State` remains non-semantic acceleration available only to tock.
 
 > No unresolved random-access computation dependency may participate in a cycle.
 > Replayable tick subgraphs must be acyclic when expanded for background demand;
@@ -538,7 +538,7 @@ persisted output is the recorded boundary for finalized data; it does not acquir
 output with exact forward-coverage semantics and background `tock_coverage()`
 materialization; it is not a realtime recording output.
 
-`TockState` is **not** visible here. Forward dependency semantics must not vary
+Tock-owned `State` is **not** visible here. Forward dependency semantics must not vary
 according to memoization or acceleration history.
 
 Forward and reverse propagation are directional dependency queries, not inverse
@@ -615,7 +615,7 @@ all required computation run off the audio thread. The audio thread only reads
 the already published/materialized result; an unavailable position uses the sequential
 consumer's `neutral_value`.
 
-`TockState` is **not** visible here. Dependency requirements may not depend on
+Tock-owned `State` is **not** visible here. Dependency requirements may not depend on
 memoization history.
 
 ## 10. Tock coverage evaluation callbacks
@@ -654,31 +654,33 @@ The callback:
 - cannot depend on mutable or unavailable live tick values; finalized persisted
   tick outputs and contextually replayed tick values are valid sources through
   random-access inputs;
-- cannot depend on sequential `State`;
-- may use `TockState` solely as non-semantic acceleration/memoization state; and
+- cannot depend on Tick-owned sequential `State`;
+- may use its own background-owned `State` solely for non-semantic
+  acceleration/memoization; and
 - must produce observable results independent of background request order and the
-  contents/history of `TockState`.
+  contents/history of that `State`.
 
-`TockState` has one deliberately narrow meaning:
+The background-owned `State` of a Tock primitive has one deliberately narrow
+meaning:
 
 > It may change the pace or implementation strategy of `tock_coverage()`, but it
 > may not change output values, output coverage, reverse requirements, or any other
 > observable semantics.
 
-`TockState` is background-owned and is not part of packed realtime `NodeStorage`.
-It may use ordinary dynamic allocation. A node may set up configuration/resource-
-dependent acceleration data in `initialize()`, but anything derived from current
-input contents or coverage belongs in the appropriate background `tock*()` work and
-may be resized/recomputed there.
+It is separate from packed realtime `NodeStorage` and may use ordinary dynamic
+allocation. `initialize(InitializationContext<Node> const&)` may establish
+configuration/resource-dependent acceleration, while cache contents derived from
+current inputs/coverage belong in background `tock*()` work.
 
-A correct node must therefore produce the same result from a freshly initialized
-`TockState`. The executor is free to serialize access, duplicate state per worker,
-discard/reinitialize it, or otherwise manage acceleration state without changing
-semantics. One mutable `TockState` instance must not be concurrently mutated by
-overlapping tock executions unless the node's own state representation makes that
-safe. All tock execution is background-only. `BackgroundExecutor` may serialize,
-duplicate, retain, move, or reset compatible acceleration state without introducing
-any audio-thread lock, live callback, or ephemeral-output exception.
+A correct node must produce the same results from freshly initialized Tock `State`.
+`BackgroundExecutor` may serialize, duplicate, reset, or migrate compatible state
+without changing observable semantics. An optional `move(MoveContext<Node> const&)`
+can retain compatible caches and must invalidate entries made stale by the
+successor's configuration, inputs, or semantic version. Migration occurs only after
+predecessor background work using that state finishes; otherwise fresh
+initialization is required. One mutable Tock `State` instance must not be mutated
+concurrently by overlapping evaluations unless its own representation makes this
+safe. None of this introduces audio-thread locks or ephemeral-output exceptions.
 
 Successful tock completion is transactional. For samples, every requested covered
 sample/channel of every requested output is completely initialized. For events,
@@ -1111,14 +1113,15 @@ realtime storage whose shape is known when the `CompiledGraph` is built, includi
 - compiler-owned realtime persistent regions; and
 - Tick carry/history/feedback storage selected for persistent placement.
 
-`TockState` is deliberately outside realtime `NodeStorage`. `BackgroundExecutor`
-owns it as per-node background acceleration state, and it may contain dynamically
-allocated structures. Reusable background workspaces are likewise background
-sidecars rather than `NodeStorage` merely because they happen to be bounded.
+The `State` of a Tock primitive is deliberately outside realtime `NodeStorage`.
+`BackgroundExecutor` owns it as per-node background acceleration state, and it may
+contain dynamically allocated structures. Reusable background workspaces are
+likewise background sidecars rather than `NodeStorage` merely because they happen
+to be bounded.
 
-`TockState` is not an authoritative persisted-output store and is not shared with
-`tick_block()` or propagation callbacks. A node's observable behavior must remain
-correct if its `TockState` is discarded or independently instantiated.
+Tock-owned `State` is not an authoritative persisted-output store and is not
+shared with `tick_block()` or propagation callbacks. A node's observable behavior
+must remain correct if it is discarded or independently initialized.
 
 `BackgroundExecutor` instead owns stable persisted-output storage plus
 per-generation port mappings. Conceptually:
@@ -1350,7 +1353,7 @@ new machine code for a stable retained node is not by itself semantic creation.
 
 For a new node with Tock outputs (`tock/ephemeral` or `tock/persisted`):
 
-1. ordinary node configuration/resources and optional background `TockState` are
+1. ordinary node configuration/resources and optional background-owned `State` are
    initialized; `initialize()` may establish configuration/resource-dependent
    acceleration state, but not input-content-derived results;
 2. current random-access-input coverages are available once upstream coverage is known;
@@ -2252,9 +2255,9 @@ unresolved Random Access evaluation cycles.
 
 ## 31. Static validation
 
-Node/package validation rejects non-static or non-constexpr concrete port schemas
-at **every** construction path (including internal builder paths), malformed
-`TockState`, conflicting callback/production declarations, invalid event
+Target node/package validation rejects non-static or non-constexpr concrete port
+schemas at **every** construction path (including internal builder paths), malformed
+authored `State` in either execution domain, conflicting callback/production declarations, invalid event
 capacity declarations, and invalid replayability trait declarations. The planned batch
 API additionally rejects ambiguous authored shapes: a primitive authors exactly one
 primary form across `tick()`/`tick_block()`/`tick_block_batch()` or
@@ -2263,7 +2266,8 @@ and skip plus each authored
 propagation direction choose at most one scalar-or-batch form as specified in
 [Batched Node Callback Direction](./batched_node_callbacks_direction.md).
 
-The checked-in replayability validation accepts `tick()`, `tick_block()`, or
+The following is a source-status checkpoint and retains legacy type names:
+the checked-in replayability validation accepts `tick()`, `tick_block()`, or
 `tick_block_batch()` through the normalized `do_tick_block()` operation. It rejects
 `State`, `TockState`, Random Access inputs, nonzero port history or latency, and
 nonzero internal latency. This is an implementation checkpoint, not the target
@@ -2681,7 +2685,7 @@ recording merely because that planning metadata exists.
     pins one finite prefix per queue. There is no cross-queue atomic snapshot. Queue
     insertion is not persisted-data publication, and released blocks return
     through non-realtime capacity management.
-11. `TockState` is non-semantic Tock-only acceleration; canonical persisted-data
+11. Tock-owned `State` is non-semantic Tock-only acceleration; canonical persisted-data
     stores and pending producer queues are background-owned sidecars, distinct from
     realtime fixed `NodeStorage`.
 12. Storage requirements are joined over exact overlapping port atoms, not chosen

@@ -62,6 +62,8 @@ These documents are retained because they record deleted architectures, supersed
 
 ## Completed migrations, experiments, and checkpoints
 
+- [Node State And Lifecycle Before Tick/Tock Authored-State Unification (2026-11-12)](./node_state_lifecycle_before_unification_2026-11-12.md)
+
 - [Presentation And Live Observation Direction Before The 2026-11-12 Vue Revision](./node_presentation_and_live_observation_before_vue_direction_2026-11-12.md)
 
 - [Front 16 Region Specialization Before The First Profile Correction, 2026-11-11](./front_16_region_specialization_before_first_profile_correction_2026-11-11.md)

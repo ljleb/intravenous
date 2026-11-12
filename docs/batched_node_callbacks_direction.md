@@ -42,6 +42,10 @@ A batch of size one is always legal.
 ## 2. Authored callback vocabulary
 
 One concrete executable node type authors **exactly one primary callback family**.
+Its optional nested `State` name and authored `initialize()`/`move()`/`release()`
+context names are the same for either family; context capabilities and state
+ownership are selected statically by the chosen family. This does not change
+scalar-versus-batch callback normalization.
 It chooses either one ordinary Tick form:
 
 ```cpp
@@ -229,11 +233,11 @@ for (auto lane : ctx) {
 
 The lane forwards the useful scalar-context accessors directly where that improves
 source ergonomics. In particular, a Tock lane exposes `input<Name>()`,
-`output<Name>()`, and `tock_state()` with the same meaning as
+`output<Name>()`, and `state()` with the same meaning as
 `TockCoverageContext<Node>`.
 
 Different lanes may carry different requested/changed coverage and different
-`TockState`. Coverage equality is not a batch-compatibility requirement.
+background-owned `State`. Coverage equality is not a batch-compatibility requirement.
 
 ## 4. Semantic equivalence of scalar and batch forms
 
@@ -383,9 +387,8 @@ example:
 - resolved per-port block extents for the selected dyadic interval;
 - execution/SCC phase facts that affect callback-visible semantics.
 
-Configured values, `State`, `TockState`, port addresses, and requested
-`IndexCoverage` need
-not be equal across lanes.
+Configured values, domain-owned `State`, port addresses, and requested
+`IndexCoverage` need not be equal across lanes.
 
 Consequently, instances of the same C++ node type that resolve to different FFT sizes,
 pace domains, or other callback-facing realizations normally belong to different batch

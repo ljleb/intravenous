@@ -2,6 +2,15 @@
 
 _Status: coordination map for design work that is compatible with the current direction but has not yet fully landed in the implementation._
 
+> **Subsequent normative API decision (2026-11-12):** the intended authored
+> lifecycle now uses one `Node::State` for mutually exclusive Tick/Tock concrete
+> primitives, with uniform `InitializationContext<Node>`, `MoveContext<Node>`, and
+> `ReleaseContext<Node>` signatures. Tock `move()` permits background-safe
+> generation migration, with fresh initialization as fallback. Older Front
+> checkpoints below retain their historical implementation names and observations;
+> see [Node Interaction And Presentation Communication Direction](./node_interaction_and_presentation_communication_direction.md)
+> and [the archived pre-unification contract](./historical/node_state_lifecycle_before_unification_2026-11-12.md).
+
 This document groups the remaining work by implementation ownership rather than by
 which design document first introduced it. The goal is to make the outstanding work
 parallelizable: one person or team should be able to own one front, define the missing

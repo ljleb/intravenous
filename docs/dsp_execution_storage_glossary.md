@@ -473,9 +473,13 @@ steady realizations, each with its own canonical `NodeStorage`. It contains real
 `State` and compiler-selected persistent regions used by generated audio-thread
 execution, packed for locality and low callback overhead.
 
-It is not the owner of `TockState`, background workspaces, dynamically sized
-persisted-output data, or recording capture backlogs. `TockState` is separately
-owned background acceleration state and may use dynamic allocation.
+It is not the owner of a Tock primitive's `State`, background workspaces,
+dynamically sized persisted-output data, or recording capture backlogs. Tock
+`State` is separately owned background acceleration state and may use dynamic
+allocation. Tick and Tock primitives author the same optional nested `State`
+name, but its storage and lifecycle capabilities follow the callback family.
+Tock state may be migrated on the background worker after prior evaluation has
+finished, or initialized fresh when migration is unsafe.
 
 ### Persisted data store, sample region, and event chunk
 
