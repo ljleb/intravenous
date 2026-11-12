@@ -239,7 +239,7 @@ struct LearnedHrtfSourceIcosphere
     void tick_block(TickBlockContext<LearnedHrtfSourceIcosphere> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const& input = ctx.inputs[0];
+        auto const input = ctx.input<"in">();
         auto const azimuth = ctx.input<"azimuth">();
         auto const elevation = ctx.input<"elevation">();
         auto output = ctx.output<"out">();
@@ -1605,7 +1605,7 @@ struct BaselineFir256
     void tick_block(TickBlockContext<BaselineFir256> const& ctx) const
     {
         auto const& state = ctx.state();
-        auto const& input = ctx.inputs[0];
+        auto const& input = ctx.input<"in">();
         auto output = ctx.output<"out">();
 
         for (size_t frame = 0; frame < ctx.block_size; ++frame) {

@@ -60,7 +60,9 @@ cause's root, which publishes them once (implemented 2026-11-12):
   connect.
 
 The tree rule caught this when a refresh reached `SocketRpcServer` through both
-`NodeInstances` and `IvModuleSourceIntrospection`.
+`NodeInstances` and `IvModuleSourceIntrospection`. The previous trees are
+preserved in
+[event_flows_before_root_batched_publication_2026-11-12.md](../historical/event_flows_before_root_batched_publication_2026-11-12.md).
 
 Package-specific ownership and the reason `PackageWatcher` coordinates every package
 build cause are specified in
