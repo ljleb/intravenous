@@ -12,7 +12,7 @@ build-release/
 compile_commands.json
 intravenious
 /scripts/benchmark.txt*
-/intravenous-source.zip
+/intravenous.zip
 node_modules
 *.vsix
 vscode/client/dist

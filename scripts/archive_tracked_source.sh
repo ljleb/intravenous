@@ -11,8 +11,7 @@ parent="$(dirname "$root")"
 
 # The archive sits beside the repository by default. This keeps it out of the
 # tracked working tree that it contains.
-output="${2:-$parent/$name.zip}"
-mkdir -p "$(dirname "$output")"
+output="${2:-$root/$name.zip}"
 output="$(cd "$(dirname "$output")" && pwd -P)/$(basename "$output")"
 
 # This archive intentionally contains the complete Git repository. A worktree
