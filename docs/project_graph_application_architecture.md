@@ -936,6 +936,20 @@ remain discoverable and connectable; only outputs are initially observable as
 port *values*. Supported Tick `Node::State` fields may also be observed, while
 Tock state and input value observations are deferred.
 
+The graph's application-owned read model, not `Observations`, supplies the
+semantic data used by Vue's `node.ports` and connection editor: `NodeAddress`,
+resolved port identity/name/direction, continuous or event type, channels,
+access/retention characteristics, effective versus authored connections, and
+resolution diagnostics. The present `VirtualNodeInfo`/port records in
+`runtime_project_api_types.h` and `ProjectGraph` queries are starting points,
+**not** a claim that the current response contains every required graph-editor
+field. Extend the relevant owner projection from actual Vue use cases, without
+introducing an `Observations`-owned duplicate graph model. Observation operation
+availability is computed from the registered type operations **and** each
+resolved output's production/retention capabilities, then exposed with or
+alongside that authoritative port projection. Vue never receives executable
+indices, storage offsets, or runtime pointers.
+
 The planned **`Observations`** application module owns each authenticated
 client's reconciled observation-interest scopes, aggregate requests, lifecycle,
 shared work coordination, and bounded per-client result batching. It does not
@@ -951,6 +965,26 @@ existing background actor and batched coverage workflow, rather than a
 parallel caller-driven Tock evaluator. Whether observation-plan updates can
 be represented independently of structural graph generations remains an
 implementation choice; they must not form a competing generation chain.
+
+The intended control flow for a changed viewport interest set is:
+
+```text
+Vue host collects/reconciles its scoped interests
+    -> Observations validates and merges the client interest union
+    -> if executable probe requirements actually change:
+         ProjectGraph coordinates a normal accepted compilation request
+         -> GraphJit compiles the minimal compatible realization change
+         -> GraphExecutor activates it through the ordered generation boundary
+    -> otherwise no graph compilation (only query/scheduling changes if needed)
+```
+
+This follows the synchronous configured-graph compilation contract when a
+compile is required. It does **not** compile once per pan/zoom event: overscan,
+hysteresis, scope batching, and aggregate-interest equality are tested first.
+A representation-only capture-plan swap may be cheaper than a new root plan,
+but cannot bypass `ProjectGraph`'s coordination or `GraphExecutor`'s ordered
+activation. Actual latency, including native-region specialization effects,
+needs measurement in the first working Vue observation slice.
 
 `SocketRpcServer` remains transport. Observation frames are replaceable and
 batched separately from reliable project-revision replay; versioned range

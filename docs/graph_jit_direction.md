@@ -61,6 +61,17 @@ specializations. If observing an optimized-away output requires production or
 materialization, update only the required graph elements rather than promise
 a layout-neutral probe. The source remains semantically identical.
 
+Current `plan_region_specialization()` rejects an existing Tick step when
+`step.captures` is set (`"a step captures its outputs"`). Those Tick capture
+records are **not automatically the representation of future UI probes**.
+Do not globally disable native specialization merely because a Vue observation
+is active: capture at a valid region boundary when possible, instrument the
+specialized region when necessary and supported, or rebuild/fall back only for
+the affected region when no compatible path exists. No blanket promise that
+all probes preserve specialization is made. The first slice must measure
+probe-only edits and native-region effects before selecting the overlay or
+`RealtimeRootPlan` implementation.
+
 GraphJit does not acquire observation client interests and cannot accept an
 independently competing generation chain. `ProjectGraph` and `GraphExecutor`
 retain their existing coordinated compilation and cutover contract. Persisted
@@ -1451,22 +1462,25 @@ to the final configured project graph -> native graph generation step.
 
 ### Planned observation-aware incremental realization
 
-The Vue client may request observations of supported reflected `State` fields and
-resolved port data. `GraphJit` should incorporate their union into the incremental
-realization and place only the needed capture operations at legal production/lifetime
-boundaries. An observation-only change may rebuild/replace the immutable root/capture
-plan at a safe boundary without reconstructing node state or rescheduling unrelated
-work. If observing an otherwise unavailable output genuinely requires production,
-materialization, or specialization changes, perform only those necessary changes.
-Do not retain per-node realtime observation checks when no observation requires them.
+The initial observation scope is **supported reflected Tick `Node::State` fields
+and resolved output-port values**, not Tock state or input-value observation.
+The normative operation/source/lifetime contract is
+[Vue Output Observation And Query Direction](./vue_output_observation_direction.md),
+and the integration point is described under
+[Planned observation-only replanning](#planned-observation-only-replanning).
 
-These are intended semantics, not a claim that the current GraphJit already provides
-UI observation probes. Reuse Front 16 incremental compilation and unchanged
-realization artifacts wherever compatible; benchmark probe-only edits, native-region
-specialization interactions, and realtime overhead before fixing a particular
-plan/overlay implementation. Viewport movement can legitimately request compilation,
-with client overscan/hysteresis reducing churn. See
-[Node Interaction And Presentation Communication Direction](./node_interaction_and_presentation_communication_direction.md).
+`Observations` reconciles clients' desired interests before requesting any
+compiler work. `ProjectGraph` coordinates the necessary synchronous compilation,
+`GraphJit` changes only the affected executable capture/production work, and
+`GraphExecutor` performs its ordinary ordered activation. Where no executable
+requirements changed, no GraphJit compilation is needed. A non-invasive capture
+may preserve the prior schedule/storage/specialization; an otherwise eliminated
+output may require limited realization changes. Existing Tick capture rejection
+from native-region specialization must not be imposed indiscriminately on the
+new observation-probe representation. Benchmark both options before deciding
+whether a separate observation overlay or a root-plan change is preferable.
+
+These are planned semantics, not a claim that UI probes already exist in source.
 
 ## Exact-generation consistency
 

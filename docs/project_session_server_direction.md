@@ -60,6 +60,14 @@ shape is not a sufficient foundation for this direction.
   especially important for controls that start audio, change devices, or expose
   a network stream.
 
+For Vue, a successful mutation's direct RPC reply confirms the sender's request;
+it does not replace reliable revisioned publication to every subscribed client
+or other presentation of the same semantic node. `session.subscribe` with
+`session.snapshot`/replay supplies authoritative committed read-model
+synchronization. A future affected-node delta shape may be chosen from actual
+Vue graph-editor requirements without turning this into a second unversioned
+state path. Live `Observations` frames remain disposable and separate.
+
 Threading and atomicity belong at this server boundary. Extension-side locks
 cannot make concurrent clients coherent.
 

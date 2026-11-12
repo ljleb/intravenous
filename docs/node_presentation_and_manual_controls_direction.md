@@ -36,6 +36,35 @@ same presentation host rules as other nodes; it is not a distinct backend provid
 kind. Backend state, GraphJit, and `IV_NODE` / `IV_MODULE` definitions neither name
 Vue components nor depend on presentation selection.
 
+### Initial Vue host, component distribution, and preferences
+
+The first replacement Vue client runs inside the existing `vscode/` extension's
+webview. Retain the extension host's useful project/session discovery, server
+connection, and VS Code integration; replace the old webview presentation/UI
+implementation rather than preserving its renderer as a second frontend. Keep
+the Vue application's application-facing interface independent of VS Code-only
+APIs where practical, so a standalone host can be added later without changing
+node presentation semantics. A standalone browser client is **not** a prerequisite
+for the first Vue slice.
+
+Initially, Vue components ship with the frontend and register compatibility
+by stable leaf or module definition IDs in a **frontend-owned registry**. A
+single component may support many IDs; a node may have several candidates;
+missing or incompatible specialized components fall back to the generic
+presentation. Package-finalization metadata, C++ `IV_NODE`/`IV_MODULE`
+declarations, and backend socket records do not name or distribute Vue code.
+Third-party package-associated Vue bundles, their discovery, trust/isolation,
+hot-reload/versioning, and the binding-generation workflow for rebuilt packages
+are future integration questions, **not** reasons to restore backend presentation
+registration or require package authors to modify C++ node definitions.
+
+For the initial client, user-selected preferred presentations are frontend-owned
+workspace preferences, not canonical `ProjectPersistence` graph data. Store a
+preference only for a stable frontend component identity and applicable node
+identity/definition; recover with the generic fallback when the component is
+unavailable. The backend must not interpret a Vue component name. Later
+project-sharing or per-user preference semantics can be designed when needed.
+
 The generic presentation discovers all available ports, including their resolved
 identities, types, channel structure, access semantics, and connection state. It
 can choose which ports to visualize at a particular scale, but **all ports must
@@ -72,6 +101,14 @@ not a width x height Cartesian product.
 
 There is no required left-anchor rule. Presentation layout is responsible for
 responding to the supplied mode and available host geometry.
+
+The host chooses the effective mode from the available width/height, available
+presentation capabilities, and any supported user view choice. It supplies one
+mode, not two orthogonal mode flags. The precise size thresholds and switching
+hysteresis are Vue layout/tuning decisions, to be fixed against real controls
+rather than as a backend protocol invariant. The component should not infer
+backend observation interests solely from the existence of a mode: it declares
+the operations its rendered state actually needs.
 
 ## Presentation interaction state outlives Vue components
 
@@ -366,9 +403,11 @@ do not depend on implementing observations first.
 
 Front 14 uses the completed identity, persistence, GraphJit, and executor contracts:
 
-1. Define a frontend-owned presentation registry, generic Vue fallback, and the four
-   display modes; remove the obsolete backend `NodePresentation` registration path
-   when implementing the replacement Vue integration.
+1. Remove the obsolete backend `NodePresentation`/`IV_NODE_PRESENTATION`
+   registration and socket/package plumbing **before** integrating the first Vue
+   presentation slice; remove affected tests and old webview registry assumptions
+   rather than adding a compatibility adapter. Define the frontend-owned registry,
+   generic Vue fallback, and four display modes as part of that replacement.
 2. Rebind presentation hosts and long-lived interaction contexts through stable
    semantic identities.
 3. Store manual values and participation policies in durable project state.

@@ -62,6 +62,8 @@ These documents are retained because they record deleted architectures, supersed
 
 ## Superseded Vue observation design
 
+- [Vue Host And Observation Integration Before The 2026-11-12 Clarifications](./vue_host_and_observation_integration_before_2026-11-12_clarifications.md) preserves the replaced registration-removal wording and broad GraphJit observation description; see the current [Node Presentation](../node_presentation_and_manual_controls_direction.md), [Vue Output Observation](../vue_output_observation_direction.md), and [Graph JIT](../graph_jit_direction.md) directions.
+
 - [Vue Observation Before Output Queries And `Observations` Ownership (2026-11-12)](./vue_output_observation_before_module_and_range_direction_2026-11-12.md) retains the original superseded normative passages; the replacement contract is [Vue Output Observation And Query Direction](../vue_output_observation_direction.md).
 
 ## Completed migrations, experiments, and checkpoints

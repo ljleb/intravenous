@@ -233,6 +233,14 @@ observation interests **reactively** from viewport, mode, geometry, and
 interactions. Component mounting is not an individual network subscription.
 One host-owned scope reconciles batched desired sets across components:
 
+Here, a **presentation scope** means one interest-owning UI surface, typically
+a graph canvas/viewport or an independent panel, scoped beneath one authenticated
+client connection. It is **not** an individual node component or the node's
+visible rectangle. Many node components contribute requirements to one scope;
+a client can own multiple scopes. The frontend replaces/reconciles each scope's
+full desired set; the server merges effective interests across all scopes and
+clients. Scope destruction, disconnect, and lease expiry release its interests.
+
 - **visible:** full supported quality appropriate to that view;
 - **nearby/predicted:** cheaper, lower-rate interests or metadata prefetch;
 - **inactive:** no producer work after a bounded deactivation grace period.
@@ -244,6 +252,13 @@ implicitly releases absent interests; explicit unsubscribe is optional.
 Connection disconnection and expiring leases guarantee cleanup even if Vue
 does not send a final release. An interest is associated with an authenticated
 connection, not an arbitrarily trusted client-supplied owner ID.
+
+Maximum live publication rate, nearby-tier cadence, overscan distance,
+debounce/hysteresis, deactivation grace time, and lease/heartbeat timeout are
+bounded **tuning parameters**, not architectural constants. Choose and measure
+initial defaults in the working Vue host and server; do not hardcode invented
+protocol guarantees or trigger plan rebuilds for changes that affect only
+result reduction/network cadence.
 
 **Live updates** are maximum-rate, replaceable/coalesced, per-client batches.
 If a value hasn't changed according to its operation semantics, no update is

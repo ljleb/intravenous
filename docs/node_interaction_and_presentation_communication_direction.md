@@ -66,7 +66,8 @@ Its authoritative responsibilities may include:
 - discovering typed node-event handlers;
 - validating declaration/member-pointer use;
 - generating serialization/deserialization code;
-- generating the frontend TypeScript protocol surface;
+- emitting the language-neutral protocol information from which frontend-specific
+  TypeScript bindings can be generated;
 - providing stable semantic identities required by graph and presentation tooling.
 
 The runtime should not defensively rediscover source facts already established by
@@ -541,6 +542,16 @@ keep Vue consistent. The event tree's affected nodes and structurally changed
 semantic descendants can inform the invalidation/synchronization set. The server
 publishes committed results from the owning application structures rather than
 requiring nodes to manually send presentation messages.
+
+The sending client receives the ordinary reliable request result, but that
+reply alone does not synchronize other views or other clients. After acceptance,
+`SocketRpcServer`'s revisioned session notifications deliver the committed
+application-state change to subscribed clients (`session.subscribe`), with
+`session.snapshot`/replay recovery when a revision is missed. This is the
+existing **reliable semantic synchronization** path; it is not a live observation
+frame and must not be implemented through the `Observations` module. The exact
+shape of affected-node deltas versus refreshed read-model records is determined
+by the first Vue read model, while preserving one coherent accepted result.
 
 ## Do not introduce `PresentationState` just to duplicate application data
 
