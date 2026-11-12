@@ -1,13 +1,14 @@
 #include "../module_test_utils.h"
 
 #include <intravenous/runtime/node_instances.h>
-#include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/node_definitions_events.h>
 #include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
 #include <intravenous/runtime/package_definitions.h>
 #include <intravenous/runtime/package_pipeline_events.h>
+#include <intravenous/runtime/package_watcher.h>
 #include <intravenous/runtime/socket_rpc_package_definitions_bridge.h>
+#include <intravenous/runtime/socket_rpc_package_watcher_bridge.h>
 #include <intravenous/runtime/socket_rpc_node_instances_bridge.h>
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
@@ -206,87 +207,67 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
 
 
 
-TEST(SocketRpcNotificationBridge, BoundServerForwardsIvModuleInstancesUpdated)
+TEST(SocketRpcNotificationBridge, BoundServerPublishesOnePackageRefreshReport)
 {
-    auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_instances_notification_server"));
-    NodeInstances instances;
-    auto notification_scope =
-        socket_rpc_node_instances_bridge::bind(
-            harness.server,
-            instances);
+    auto harness = NotificationServerHarness(
+        iv::test::fresh_module_fixture_workspace("socket_rpc_package_refresh_report"));
+    PackageWatcher watcher;
+    auto report_scope = socket_rpc_package_watcher_bridge::bind(harness.server, watcher);
 
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_iv_module_instances_list_changed_event,
-        std::vector<iv::IvModuleInstanceInfo>{
-            iv::IvModuleInstanceInfo{
-                .instance_id = "instance:1",
-                .definition_id = "/tmp/module-a",
-                .package_root = "/tmp/module-a",
-                .configuration_source = "{.gain = 0.5}",
-                .realized = true,
-                .module_id = "module.a",
+    // PackageWatcher sends one report after a refresh's whole propagation;
+    // SocketRpcServer turns it into the existing wire notifications in order.
+    IV_INVOKE_LINKER_EVENT_SOURCE(
+        iv_runtime_package_refresh_published_event,
+        PackageRefreshPublication{
+            .build_status = ProjectStatusNotification{
+                .level = "info",
+                .code = "rebuildFinished",
+                .message = "IV package build ready to apply in 5 ms",
             },
-            iv::IvModuleInstanceInfo{
-                .instance_id = "instance:2",
-                .definition_id = "/tmp/module-b",
-                .package_root = "/tmp/module-b",
-                .realized = false,
+            .package_catalog_changed = true,
+            .project = ProjectGraphPublication{
+                .instances = std::vector<IvModuleInstanceInfo>{
+                    IvModuleInstanceInfo{
+                        .instance_id = "instance:1",
+                        .definition_id = "/tmp/module-a",
+                        .package_root = "/tmp/module-a",
+                        .configuration_source = "{.gain = 0.5}",
+                        .realized = true,
+                        .module_id = "module.a",
+                    },
+                    IvModuleInstanceInfo{
+                        .instance_id = "instance:2",
+                        .definition_id = "/tmp/module-b",
+                        .package_root = "/tmp/module-b",
+                        .realized = false,
+                    },
+                },
+                .virtual_nodes = ProjectVirtualNodesNotification{
+                    .replace_instance_ids = {"instance:1"},
+                },
             },
         });
 
-    auto const line = harness.read_line();
-    ASSERT_FALSE(line.empty());
-    auto const json = parse_json_line(line);
-    EXPECT_EQ(json["method"], "nodeInstances.updated");
-    ASSERT_EQ(json["params"]["instances"].size(), 2u);
-    EXPECT_EQ(json["params"]["instances"][0]["instanceId"], "instance:1");
-    EXPECT_EQ(json["params"]["instances"][0]["moduleId"], "module.a");
+    auto const status = parse_json_line(harness.read_line());
+    EXPECT_EQ(status["method"], "server.status");
+    EXPECT_EQ(status["params"]["code"], "rebuildFinished");
+
+    auto const catalog = parse_json_line(harness.read_line());
+    EXPECT_EQ(catalog["method"], "ivPackages.updated");
+
+    auto const instances = parse_json_line(harness.read_line());
+    EXPECT_EQ(instances["method"], "nodeInstances.updated");
+    ASSERT_EQ(instances["params"]["instances"].size(), 2u);
+    EXPECT_EQ(instances["params"]["instances"][0]["instanceId"], "instance:1");
+    EXPECT_EQ(instances["params"]["instances"][0]["moduleId"], "module.a");
     EXPECT_EQ(
-        json["params"]["instances"][0]["configurationSource"],
+        instances["params"]["instances"][0]["configurationSource"],
         "{.gain = 0.5}");
-    EXPECT_EQ(json["params"]["instances"][1]["realized"], false);
+    EXPECT_EQ(instances["params"]["instances"][1]["realized"], false);
 
-}
-
-TEST(SocketRpcNotificationBridge, PublishedPackageDefinitionsRefreshThePackageCatalog)
-{
-    auto const workspace = iv::test::fresh_module_fixture_workspace(
-        "socket_rpc_package_catalog_notification_server");
-    auto harness = NotificationServerHarness(workspace);
-    NodeDefinitions definitions;
-    PackageDefinitions package_definitions(workspace);
-    auto definitions_scope = package_definitions_node_definitions_bridge::bind(
-        package_definitions,
-        definitions);
-    auto package_catalog_scope = socket_rpc_package_definitions_bridge::bind(
-        harness.server,
-        package_definitions);
-
-    package_definitions.handle_package_refresh(PackageRefreshTransaction{
-        .declarations = IvPackageDeclarationsChanged{
-            .created = {{.package_id = "iv.test.catalog", .package_root = workspace}},
-        },
-        .successful_revisions = {PackageRevision{
-            .package_id = "iv.test.catalog",
-            .package_root = workspace,
-            .revision = 1,
-            .module_definitions = {PackageModuleDefinition{
-                .package_id = "iv.test.catalog",
-                .definition_id = "iv.test.catalog.module",
-                .package_root = workspace,
-                .module_id = "iv.test.catalog.module",
-            }},
-        }},
-    });
-    IV_INVOKE_LINKER_EVENT_SOURCE(
-        iv_runtime_iv_package_catalog_changed_event,
-        IvPackageCatalogChanged{});
-
-    auto const line = harness.read_line();
-    ASSERT_FALSE(line.empty());
-    auto const json = parse_json_line(line);
-    EXPECT_EQ(json["method"], "ivPackages.updated");
-    EXPECT_EQ(json["params"], Json::object({{"revision", 1}}));
+    auto const nodes = parse_json_line(harness.read_line());
+    EXPECT_EQ(nodes["method"], "graph.nodesUpdated");
+    EXPECT_EQ(nodes["params"]["replaceInstanceIds"], Json::array({"instance:1"}));
 }
 
 } // namespace iv

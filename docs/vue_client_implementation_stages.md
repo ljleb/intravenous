@@ -214,15 +214,17 @@ Added:
   `LiveGraphViewProvider` writes the CSP/nonce HTML and loads that bundle.
 - Host/webview protocol (`src/liveGraphProtocol.ts`): the webview sends `ready`,
   `selectInstance`, and `createInstance`; the host answers every change with the
-  complete `LiveGraphViewState`, including a `sessionStatus` of `connecting`,
-  `attached`, or `reconnecting`.
+  complete `LiveGraphViewState`, including a `sessionStatus` of `starting`,
+  `running`, or `restarting`.
 - `webview/presentation/`: the frontend-owned `PresentationRegistry` keyed by
   definition ID, the generic presentation (`GenericPresentation.vue`), the four
   display modes with host-imposed `compact` (`displayMode.ts`), the
   `PresentationHost` that selects a presentation and provides the node, and
   `useNode()`.
-- After every (re)attach, `WorkspaceSession` re-runs the panel's source-span query,
-  so the panel shows the attached session's nodes after a reconnect.
+- The window owns its server (`--rpc-fd`; see
+  [Project Session Server Direction](./project_session_server_direction.md)):
+  reloading the window restarts the server, and a server that stops while the
+  window is open is restarted, after which the panel re-runs its source-span query.
 
 Decisions and assumptions made to proceed:
 
@@ -250,4 +252,4 @@ back to the raw node ID.
 Remaining before the stage 1 completion criterion can be checked: run `npm install`
 in `vscode/client` (this updates `package-lock.json`, which `install_client.sh`
 needs for `npm ci`), build, typecheck, run the client and C++ tests, and open an
-existing project including a session reconnect.
+existing project, including a window reload and a server restart.

@@ -15,6 +15,7 @@
 
 namespace iv {
 class IvModuleInstancesSourceFileFilterBuilder;
+struct IvModuleSourceIntrospectionProjectGraphRequest;
 class SocketRpcGraphQueryResultBuilder;
 class SocketRpcRegionQueryResultBuilder;
 class SocketRpcVirtualNodeResultBuilder;
@@ -61,10 +62,10 @@ class IvModuleSourceIntrospection {
 public:
     IvModuleSourceIntrospection() = default;
 
-    void handle_iv_package_definitions_changed(
-        IvPackageDefinitionsChanged const &diff);
-    void handle_iv_module_instance_declarations_changed(
-        std::vector<IvModuleInstanceInfo> const &instances);
+    // Applies one ProjectGraph root build's definition and instance-declaration
+    // changes and returns the virtual-node replacements they cause.
+    void handle_project_graph_source_introspection(
+        IvModuleSourceIntrospectionProjectGraphRequest &request);
     ProjectQueryResult
     query_by_spans(
         std::filesystem::path const &file_path,

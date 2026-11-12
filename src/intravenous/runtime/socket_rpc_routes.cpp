@@ -151,11 +151,15 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
         });
     impl_->add<CreateNodeInstanceRequest>(
         "nodeInstances.create", "project.write", true, false,
-        [](auto const& request, int id, Context const&) {
+        [](auto const& request, int id, Context const& context) {
             SocketRpcCreateNodeInstanceResultBuilder builder;
             IV_INVOKE_LINKER_EVENT(
                 iv_socket_rpc_create_node_instance_event, request, builder);
             if (!builder.has_response()) builder.fail("node instance service is unavailable");
+            // The request's committed read-model changes go out after its response.
+            if (context.publish_project_graph) {
+                context.publish_project_graph(builder.take_publication());
+            }
             return builder.build(id);
         });
     impl_->add<GetIvPackageDefinitionsRequest>(
@@ -187,56 +191,80 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
         });
     impl_->add<DeleteNodeInstanceRequest>(
         "nodeInstances.delete", "project.write", true, false,
-        [](auto const& request, int id, Context const&) {
+        [](auto const& request, int id, Context const& context) {
             SocketRpcAckResponseBuilder builder;
             IV_INVOKE_LINKER_EVENT(
                 iv_socket_rpc_delete_node_instance_event, request, builder);
             if (!builder.has_response()) builder.fail("node instance service is unavailable");
+            // The request's committed read-model changes go out after its response.
+            if (context.publish_project_graph) {
+                context.publish_project_graph(builder.take_publication());
+            }
             return builder.build(id);
         });
     impl_->add<UpdateNodeInstancesRequest>(
         "nodeInstances.update", "project.write", true, false,
-        [](auto const& request, int id, Context const&) {
+        [](auto const& request, int id, Context const& context) {
             SocketRpcAckResponseBuilder builder;
             IV_INVOKE_LINKER_EVENT(
                 iv_socket_rpc_update_node_instances_event, request, builder);
             if (!builder.has_response()) builder.fail("node instance service is unavailable");
+            // The request's committed read-model changes go out after its response.
+            if (context.publish_project_graph) {
+                context.publish_project_graph(builder.take_publication());
+            }
             return builder.build(id);
         });
     impl_->add<UpsertGraphConnectionRequest>(
         "graphConnections.upsert", "project.write", true, false,
-        [](auto const& request, int id, Context const&) {
+        [](auto const& request, int id, Context const& context) {
             SocketRpcAckResponseBuilder builder;
             IV_INVOKE_LINKER_EVENT(
                 iv_socket_rpc_upsert_graph_connection_event, request, builder);
             if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            // The request's committed read-model changes go out after its response.
+            if (context.publish_project_graph) {
+                context.publish_project_graph(builder.take_publication());
+            }
             return builder.build(id);
         });
     impl_->add<DeleteGraphConnectionRequest>(
         "graphConnections.delete", "project.write", true, false,
-        [](auto const& request, int id, Context const&) {
+        [](auto const& request, int id, Context const& context) {
             SocketRpcAckResponseBuilder builder;
             IV_INVOKE_LINKER_EVENT(
                 iv_socket_rpc_delete_graph_connection_event, request, builder);
             if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            // The request's committed read-model changes go out after its response.
+            if (context.publish_project_graph) {
+                context.publish_project_graph(builder.take_publication());
+            }
             return builder.build(id);
         });
     impl_->add<UpsertManualControlRequest>(
         "manualControls.upsert", "project.write", true, false,
-        [](auto const& request, int id, Context const&) {
+        [](auto const& request, int id, Context const& context) {
             SocketRpcAckResponseBuilder builder;
             IV_INVOKE_LINKER_EVENT(
                 iv_socket_rpc_upsert_manual_control_event, request, builder);
             if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            // The request's committed read-model changes go out after its response.
+            if (context.publish_project_graph) {
+                context.publish_project_graph(builder.take_publication());
+            }
             return builder.build(id);
         });
     impl_->add<DeleteManualControlRequest>(
         "manualControls.delete", "project.write", true, false,
-        [](auto const& request, int id, Context const&) {
+        [](auto const& request, int id, Context const& context) {
             SocketRpcAckResponseBuilder builder;
             IV_INVOKE_LINKER_EVENT(
                 iv_socket_rpc_delete_manual_control_event, request, builder);
             if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            // The request's committed read-model changes go out after its response.
+            if (context.publish_project_graph) {
+                context.publish_project_graph(builder.take_publication());
+            }
             return builder.build(id);
         });
     impl_->add<SetManualControlHoverRequest>(
@@ -248,6 +276,10 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
             IV_INVOKE_LINKER_EVENT(
                 iv_socket_rpc_set_manual_control_hover_event, bound, builder);
             if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            // The request's committed read-model changes go out after its response.
+            if (context.publish_project_graph) {
+                context.publish_project_graph(builder.take_publication());
+            }
             return builder.build(id);
         });
     impl_->add<BeginManualControlInteractionRequest>(
@@ -261,6 +293,10 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
                 bound,
                 builder);
             if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            // The request's committed read-model changes go out after its response.
+            if (context.publish_project_graph) {
+                context.publish_project_graph(builder.take_publication());
+            }
             return builder.build(id);
         });
     impl_->add<UpdateManualControlInteractionRequest>(
@@ -274,6 +310,10 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
                 bound,
                 builder);
             if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            // The request's committed read-model changes go out after its response.
+            if (context.publish_project_graph) {
+                context.publish_project_graph(builder.take_publication());
+            }
             return builder.build(id);
         });
     impl_->add<EndManualControlInteractionRequest>(
@@ -287,6 +327,10 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
                 bound,
                 builder);
             if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            // The request's committed read-model changes go out after its response.
+            if (context.publish_project_graph) {
+                context.publish_project_graph(builder.take_publication());
+            }
             return builder.build(id);
         });
     impl_->add<GetNodeEventProtocolRequest>(
@@ -300,11 +344,15 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
         });
     impl_->add<DispatchNodeMessageRequest>(
         "nodeMessages.dispatch", "project.write", true, false,
-        [](auto const& request, int id, Context const&) {
+        [](auto const& request, int id, Context const& context) {
             SocketRpcNodeMessageResultBuilder builder;
             IV_INVOKE_LINKER_EVENT(
                 iv_socket_rpc_dispatch_node_message_event, request, builder);
             if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            // The request's committed read-model changes go out after its response.
+            if (context.publish_project_graph) {
+                context.publish_project_graph(builder.take_publication());
+            }
             return builder.build(id);
         });
     impl_->add<GetAudioDevicesRequest>(

@@ -31,6 +31,9 @@ IV_DEFINE_LINKER_EVENT(
 IV_DEFINE_LINKER_EVENT(
     ProjectGraphConnectionsRequestedEvent,
     iv_runtime_project_graph_connections_requested_event)
+IV_DEFINE_LINKER_EVENT(
+    ProjectGraphSourceIntrospectionRequestedEvent,
+    iv_runtime_project_graph_source_introspection_requested_event)
 IV_DEFINE_SINGLETON_EVENT(
     ProjectGraphGraphJitRequestedEvent,
     iv_runtime_project_graph_graph_jit_requested_event,

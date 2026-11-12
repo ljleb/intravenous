@@ -6,6 +6,7 @@
 #include <intravenous/runtime/node_definition_types.h>
 #include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/node_event_protocol_types.h>
+#include <intravenous/runtime/project_graph_publication.h>
 #include <intravenous/node/message.h>
 
 #include <cstdint>
@@ -120,6 +121,9 @@ struct NodeMessageDiagnostic {
 struct NodeMessageDispatchResult {
     std::vector<NodeMessageDiagnostic> diagnostics{};
     bool project_state_changed = false;
+    // Read-model changes of the rebuild a replacement caused, for the caller
+    // to publish.
+    ProjectGraphPublication publication{};
 };
 
 struct SerializedNodeMessage {
@@ -139,6 +143,8 @@ class ProjectGraph {
         std::shared_ptr<ProjectGraphGeneration const> generation{};
         std::vector<std::string> created_instance_ids{};
         std::shared_ptr<ProjectGraphConfigurationFailure const> failure{};
+        // Read-model changes of the build, also when configuration failed.
+        ProjectGraphPublication publication{};
     };
     struct ActiveManualControlInteraction {
         ManualControlInteractionId interaction{};
@@ -187,10 +193,13 @@ class ProjectGraph {
     static constexpr auto manual_control_idle_debounce =
         std::chrono::milliseconds(250);
 
+    // `package_definitions` is the module-definition change of the
+    // definitions publication this build follows, if any.
     RebuildResult rebuild_locked(
         NodeInstancesMutation instance_mutation,
         GraphConnectionsMutation connection_mutation,
-        bool publish_execution = true);
+        bool publish_execution = true,
+        IvPackageDefinitionsChanged const* package_definitions = nullptr);
     void dispatch_node_message_locked(
         NodeAddress const& target,
         OwnedNodeMessage message,
@@ -234,7 +243,9 @@ public:
         NodeAddress const& target, SerializedNodeMessage const& message);
     [[nodiscard]] NodeEventProtocolSnapshot node_event_protocol() const;
 
-    void handle_node_definitions_snapshot_changed(NodeDefinitionsSnapshotChanged const& change);
+    // Rebuilds from a published snapshot and returns the build's read-model
+    // changes in `change.publication`.
+    void handle_node_definitions_snapshot_changed(NodeDefinitionsSnapshotChanged& change);
     void handle_project_create_node_instance(
         ProjectCreateNodeInstanceRequest const& request,
         ProjectStringBuilder& builder);

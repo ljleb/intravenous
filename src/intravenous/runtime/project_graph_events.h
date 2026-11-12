@@ -4,6 +4,7 @@
 #include <intravenous/runtime/graph_connections.h>
 #include <intravenous/runtime/graph_jit.h>
 #include <intravenous/runtime/graph_executor.h>
+#include <intravenous/runtime/iv_module_source_introspection_events.h>
 #include <intravenous/runtime/node_instances.h>
 
 namespace iv {
@@ -11,6 +12,8 @@ using ProjectGraphNodeInstancesRequestedEvent =
     void (*)(NodeInstancesProjectGraphRequest&);
 using ProjectGraphConnectionsRequestedEvent =
     void (*)(GraphConnectionsProjectGraphRequest&);
+using ProjectGraphSourceIntrospectionRequestedEvent =
+    void (*)(IvModuleSourceIntrospectionProjectGraphRequest&);
 using ProjectGraphGraphJitRequestedEvent =
     GraphJitCompileResult (*)(ProjectGraphGraphJitRequest const&);
 using ProjectGraphGraphExecutorRequestedEvent =
@@ -27,6 +30,9 @@ IV_DECLARE_LINKER_EVENT(
 IV_DECLARE_LINKER_EVENT(
     ProjectGraphConnectionsRequestedEvent,
     iv_runtime_project_graph_connections_requested_event);
+IV_DECLARE_LINKER_EVENT(
+    ProjectGraphSourceIntrospectionRequestedEvent,
+    iv_runtime_project_graph_source_introspection_requested_event);
 IV_DECLARE_SINGLETON_EVENT(
     ProjectGraphGraphJitRequestedEvent,
     iv_runtime_project_graph_graph_jit_requested_event);

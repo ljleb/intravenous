@@ -17,7 +17,7 @@ const vscode = acquireVsCodeApi<WebviewLocalState>();
 // The latest complete state from the extension host. It is replaced, never
 // mutated, so a shallow ref is enough.
 export const hostState = shallowRef<LiveGraphViewState>({
-    sessionStatus: "connecting",
+    sessionStatus: "starting",
     instances: [],
     selectedInstanceId: null,
     packageRoot: null,

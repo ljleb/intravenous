@@ -83,6 +83,16 @@ std::string format_rebuild_duration(std::chrono::steady_clock::duration duration
         + " ms";
 }
 
+PackageWatcherRefreshPlan refresh_plan(PackageJitBatchRequest const& jit_request)
+{
+    return PackageWatcherRefreshPlan{
+        .build_count = jit_request.declarations.size(),
+        .single_package_root = jit_request.declarations.size() == 1
+            ? jit_request.declarations.front().package_root
+            : std::filesystem::path{},
+    };
+}
+
 struct PackageManifest {
     std::filesystem::path entry;
 };
@@ -384,88 +394,84 @@ bool PackageWatcher::has_pending_refresh() const
     return false;
 }
 
-void PackageWatcher::emit_status(
-    std::string level,
-    std::string code,
-    std::string message,
-    std::filesystem::path package_root)
+std::optional<PackageWatcher::PreparedRefresh> PackageWatcher::prepare_refresh_locked()
 {
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_project_notification_event,
-        ProjectNotification(ProjectStatusNotification{
-            .level = std::move(level),
-            .code = std::move(code),
-            .message = std::move(message),
-            .package_root = std::move(package_root),
-        }));
-}
+    PreparedRefresh prepared;
+    auto& transaction = prepared.transaction;
+    auto& jit_request = prepared.jit_request;
+    prepared.next_published = package_declarations_by_id_;
 
-bool PackageWatcher::refresh_pending_packages(
-    PackageWatcherRefreshRequest& request)
-{
-    PackageRefreshTransaction transaction;
-    PackageJitBatchRequest jit_request;
-    std::unordered_map<std::string, IvPackageDeclaration> next_published;
-    {
-        std::scoped_lock lock(mutex_);
-        next_published = package_declarations_by_id_;
-
-        for (auto const& [package_id, declaration] : package_declarations_by_id_) {
-            auto const published = published_declarations_by_id_.find(package_id);
-            if (published == published_declarations_by_id_.end()) {
-                transaction.declarations.created.push_back(declaration);
-            } else if (published->second != declaration) {
-                transaction.declarations.updated.push_back(declaration);
-                jit_request.removed_package_roots.push_back(published->second.package_root);
-            }
+    for (auto const& [package_id, declaration] : package_declarations_by_id_) {
+        auto const published = published_declarations_by_id_.find(package_id);
+        if (published == published_declarations_by_id_.end()) {
+            transaction.declarations.created.push_back(declaration);
+        } else if (published->second != declaration) {
+            transaction.declarations.updated.push_back(declaration);
+            jit_request.removed_package_roots.push_back(published->second.package_root);
         }
-        for (auto const& [package_id, declaration] : published_declarations_by_id_) {
-            if (!package_declarations_by_id_.contains(package_id)) {
-                transaction.declarations.deleted_package_ids.push_back(package_id);
-                jit_request.removed_package_roots.push_back(declaration.package_root);
-            }
+    }
+    for (auto const& [package_id, declaration] : published_declarations_by_id_) {
+        if (!package_declarations_by_id_.contains(package_id)) {
+            transaction.declarations.deleted_package_ids.push_back(package_id);
+            jit_request.removed_package_roots.push_back(declaration.package_root);
         }
+    }
 
-        jit_request.declarations.reserve(dirty_package_ids_.size());
-        for (auto const& package_id : dirty_package_ids_) {
-            if (auto const declaration = package_declarations_by_id_.find(package_id);
-                declaration != package_declarations_by_id_.end()) {
-                jit_request.declarations.push_back(declaration->second);
-                // Baseline immediately before the build. If the source changes
-                // while PackageJit is running, the next watcher poll observes it.
-                source_dependencies_by_package_id_.insert_or_assign(
-                    package_id, source_dependency(declaration->second));
-                if (auto dependencies = dependencies_by_package_id_.find(package_id);
-                    dependencies != dependencies_by_package_id_.end()) {
-                    for (auto& dependency : dependencies->second) {
-                        dependency.package_stamp = package_source_stamp(dependency.module_dir);
-                    }
+    jit_request.declarations.reserve(dirty_package_ids_.size());
+    for (auto const& package_id : dirty_package_ids_) {
+        if (auto const declaration = package_declarations_by_id_.find(package_id);
+            declaration != package_declarations_by_id_.end()) {
+            jit_request.declarations.push_back(declaration->second);
+            // Baseline immediately before the build. If the source changes
+            // while PackageJit is running, the next watcher poll observes it.
+            source_dependencies_by_package_id_.insert_or_assign(
+                package_id, source_dependency(declaration->second));
+            if (auto dependencies = dependencies_by_package_id_.find(package_id);
+                dependencies != dependencies_by_package_id_.end()) {
+                for (auto& dependency : dependencies->second) {
+                    dependency.package_stamp = package_source_stamp(dependency.module_dir);
                 }
             }
         }
-        dirty_package_ids_.clear();
     }
+    dirty_package_ids_.clear();
 
     auto const has_declaration_changes = !transaction.declarations.created.empty()
         || !transaction.declarations.updated.empty()
         || !transaction.declarations.deleted_package_ids.empty();
     if (!has_declaration_changes && jit_request.declarations.empty()
         && jit_request.removed_package_roots.empty()) {
+        return std::nullopt;
+    }
+    return prepared;
+}
+
+std::optional<PackageWatcherRefreshPlan> PackageWatcher::prepare_refresh()
+{
+    std::scoped_lock lock(mutex_);
+    if (!prepared_refresh_) {
+        prepared_refresh_ = prepare_refresh_locked();
+    }
+    if (!prepared_refresh_) return std::nullopt;
+    return refresh_plan(prepared_refresh_->jit_request);
+}
+
+bool PackageWatcher::refresh_pending_packages(
+    PackageWatcherRefreshRequest& request)
+{
+    std::optional<PreparedRefresh> prepared;
+    {
+        std::scoped_lock lock(mutex_);
+        prepared = std::exchange(prepared_refresh_, std::nullopt);
+        if (!prepared) {
+            prepared = prepare_refresh_locked();
+        }
+    }
+    if (!prepared) {
         return false;
     }
-
-    if (!jit_request.declarations.empty()) {
-        emit_status(
-            "info",
-            "rebuildStarted",
-            jit_request.declarations.size() == 1
-                ? "Building IV package"
-                : "Building " + std::to_string(jit_request.declarations.size())
-                    + " IV packages",
-            jit_request.declarations.size() == 1
-                ? jit_request.declarations.front().package_root
-                : std::filesystem::path{});
-    }
+    auto& transaction = prepared->transaction;
+    auto& jit_request = prepared->jit_request;
 
     auto const rebuild_started_at = std::chrono::steady_clock::now();
     if (!jit_request.declarations.empty() || !jit_request.removed_package_roots.empty()) {
@@ -473,7 +479,8 @@ bool PackageWatcher::refresh_pending_packages(
             iv_runtime_package_jit_batch_requested_event,
             jit_request);
     }
-    auto const rebuild_duration = format_rebuild_duration(
+    auto const built = refresh_plan(jit_request);
+    auto const build_duration = format_rebuild_duration(
         std::chrono::steady_clock::now() - rebuild_started_at);
 
     {
@@ -487,23 +494,6 @@ bool PackageWatcher::refresh_pending_packages(
         refresh_watched_dependencies_locked();
     }
 
-    if (!jit_request.result.failed.empty()) {
-        auto const& failure = jit_request.result.failed.front();
-        emit_status(
-            "error",
-            "rebuildFailed",
-            "Module build failed after " + rebuild_duration + ": " + failure.message,
-            failure.package_root);
-    } else if (!jit_request.declarations.empty()) {
-        emit_status(
-            "info",
-            "rebuildFinished",
-            "IV package build ready to apply in " + rebuild_duration,
-            jit_request.declarations.size() == 1
-                ? jit_request.declarations.front().package_root
-                : std::filesystem::path{});
-    }
-
     transaction.successful_revisions = std::move(jit_request.result.revisions);
     transaction.failed_builds = std::move(jit_request.result.failed);
     request.failed_builds = transaction.failed_builds;
@@ -511,8 +501,32 @@ bool PackageWatcher::refresh_pending_packages(
 
     {
         std::scoped_lock lock(mutex_);
-        published_declarations_by_id_ = std::move(next_published);
+        published_declarations_by_id_ = std::move(prepared->next_published);
     }
+
+    // The refresh's one report, after its whole propagation has returned.
+    PackageRefreshPublication publication{
+        .package_catalog_changed = true,
+        .project = std::move(transaction.project_publication),
+    };
+    if (!transaction.failed_builds.empty()) {
+        auto const& failure = transaction.failed_builds.front();
+        publication.build_status = ProjectStatusNotification{
+            .level = "error",
+            .code = "rebuildFailed",
+            .message = "Module build failed after " + build_duration + ": "
+                + failure.message,
+            .package_root = failure.package_root,
+        };
+    } else if (built.build_count > 0) {
+        publication.build_status = ProjectStatusNotification{
+            .level = "info",
+            .code = "rebuildFinished",
+            .message = "IV package build ready to apply in " + build_duration,
+            .package_root = built.single_package_root,
+        };
+    }
+    IV_INVOKE_LINKER_EVENT(iv_runtime_package_refresh_published_event, publication);
     return true;
 }
 

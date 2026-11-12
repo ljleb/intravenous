@@ -14,8 +14,8 @@ IV_DEFINE_LINKER_EVENT(
     PackageDefinitionsPublicationRequestedEvent,
     iv_runtime_package_definitions_publication_requested_event);
 IV_DEFINE_LINKER_EVENT(
-    IvPackageCatalogChangedEvent,
-    iv_runtime_iv_package_catalog_changed_event);
+    PackageRefreshPublishedEvent,
+    iv_runtime_package_refresh_published_event);
 IV_DEFINE_LINKER_EVENT(
     PackageWatcherWorkAvailableEvent,
     iv_runtime_package_watcher_work_available_event);

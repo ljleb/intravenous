@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -91,18 +92,19 @@ iv::PackageDefinitionsPublicationRequest publish(
     return request;
 }
 
+// Stands in for ProjectGraph: the snapshot change carries the definitions diff,
+// and the witness can answer with a publication like a rebuild would.
 struct NodeDefinitionsWitness {
     std::vector<iv::IvPackageDefinitionsChanged> package_definition_changes{};
     std::vector<std::shared_ptr<iv::NodeDefinitionsSnapshot const>> snapshots{};
+    std::optional<iv::ProjectGraphPublication> reply{};
 
-    void handle_package_definitions_changed(iv::IvPackageDefinitionsChanged const& change)
-    {
-        package_definition_changes.push_back(change);
-    }
     void handle_node_definitions_snapshot_changed(
-        iv::NodeDefinitionsSnapshotChanged const& change)
+        iv::NodeDefinitionsSnapshotChanged& change)
     {
         snapshots.push_back(change.snapshot);
+        package_definition_changes.push_back(change.package_definitions);
+        if (reply) change.publication = *reply;
     }
 };
 
@@ -112,10 +114,6 @@ IV_DECLARE_BRIDGE(
     iv::NodeDefinitions,
     NodeDefinitionsWitness);
 IV_DEFINE_BRIDGE(node_definitions_witness_bridge)
-IV_SUBSCRIBE_LINKER_EVENT(
-    node_definitions_witness_bridge,
-    iv_runtime_iv_package_definitions_changed_event,
-    &NodeDefinitionsWitness::handle_package_definitions_changed)
 IV_SUBSCRIBE_LINKER_EVENT(
     node_definitions_witness_bridge,
     iv_runtime_node_definitions_snapshot_changed_event,
@@ -276,6 +274,39 @@ TEST(NodeDefinitions, PackageRemovalPublishesDefinitionDeletion)
     EXPECT_EQ(
         witness.package_definition_changes.front().module_definitions.deleted_definition_ids,
         std::vector<std::string>{"iv.test.removed"});
+}
+
+TEST(NodeDefinitions, PublicationReturnsTheProjectRebuildsReadModelChanges)
+{
+    auto const workspace = fresh_module_fixture_workspace(
+        "node_definitions_publication_reply");
+    auto const package_id = canonical_package_id(workspace);
+
+    iv::NodeDefinitions definitions;
+    NodeDefinitionsWitness witness;
+    witness.reply = iv::ProjectGraphPublication{
+        .instances = std::vector<iv::IvModuleInstanceInfo>{
+            iv::IvModuleInstanceInfo{.instance_id = "instance:rebuilt"},
+        },
+    };
+    node_definitions_witness_bridge::scope witness_scope{definitions, witness};
+
+    auto const request = publish(definitions, {iv::PackageRevision{
+        .package_id = package_id,
+        .package_root = workspace,
+        .revision = 1,
+        .module_definitions = {
+            module_definition(workspace, package_id, "iv.test.published"),
+        },
+    }});
+
+    // The definitions diff rides the snapshot change, and the rebuild's
+    // publication returns on the publication request.
+    ASSERT_EQ(witness.package_definition_changes.size(), 1u);
+    ASSERT_EQ(witness.package_definition_changes.front().module_definitions.created.size(), 1u);
+    ASSERT_TRUE(request.project_publication.instances.has_value());
+    ASSERT_EQ(request.project_publication.instances->size(), 1u);
+    EXPECT_EQ(request.project_publication.instances->front().instance_id, "instance:rebuilt");
 }
 
 TEST(NodeDefinitions, WithinPackageDuplicateDefinitionIdIsRejectedAtNamespaceBoundary)

@@ -6,7 +6,7 @@
 #include <intravenous/runtime/project_graph.h>
 #include <intravenous/runtime/project_graph_graph_connections_bridge.h>
 #include <intravenous/runtime/project_graph_node_instances_bridge.h>
-#include <intravenous/runtime/node_definitions_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/project_graph_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/node_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
@@ -21,7 +21,7 @@ using iv::test_support::read_only_module_fixture_workspace;
 
 }
 
-TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionRequiresBinding)
+TEST(IntrospectionBridges, DefinitionsReachIvModuleSourceIntrospectionOnlyThroughProjectGraph)
 {
     auto const workspace =
         fresh_module_fixture_workspace("runtime_bridges_defs_to_introspection_unbound");
@@ -34,16 +34,26 @@ TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionRequiresBindi
     EXPECT_TRUE(result.source_spans.empty());
 }
 
-TEST(IntrospectionBridges, DefinitionsToIvModuleSourceIntrospectionForwardsWhenBound)
+// ProjectGraph applies a definitions publication to source introspection once,
+// in the root build the publication causes.
+TEST(IntrospectionBridges, DefinitionsReachIvModuleSourceIntrospectionThroughProjectGraph)
 {
     auto const workspace =
         read_only_module_fixture_workspace("local_cmake");
     iv::NodeDefinitions definitions;
+    iv::NodeInstances instances;
+    iv::GraphConnections graph_connections;
+    iv::ProjectGraph project_graph;
     iv::IvModuleSourceIntrospection introspection;
-    auto definitions_introspection_scope =
-        iv::node_definitions_iv_module_source_introspection_bridge::bind(
-            definitions,
-            introspection);
+    auto definitions_project_graph_scope =
+        iv::node_definitions_project_graph_bridge::bind(definitions, project_graph);
+    auto project_graph_instances_scope =
+        iv::project_graph_node_instances_bridge::bind(project_graph, instances);
+    auto project_graph_connections_scope =
+        iv::project_graph_graph_connections_bridge::bind(project_graph, graph_connections);
+    auto project_graph_introspection_scope =
+        iv::project_graph_iv_module_source_introspection_bridge::bind(
+            project_graph, introspection);
 
     auto const startup = iv::StartupConfig(workspace, iv::test::repo_root(), {}).initialize();
     auto loaded = iv::test::load_runtime_iv_module_definition(

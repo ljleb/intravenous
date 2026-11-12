@@ -4,6 +4,7 @@
 #include <intravenous/module/abi.h>
 #include <intravenous/module/builder_session.h>
 #include <intravenous/module/package_compiler_artifact.h>
+#include <intravenous/runtime/project_graph_publication.h>
 
 #include <cstdint>
 #include <filesystem>
@@ -79,6 +80,15 @@ struct PackageJitBatchResult {
     std::vector<PackageJitFailure> failed{};
 };
 
+// The packages one refresh builds, prepared before the refresh cause so
+// PackageWatcherService can report rebuildStarted ahead of the build. The
+// refresh's outcome is reported once by PackageWatcher (PackageRefreshPublication).
+struct PackageWatcherRefreshPlan {
+    std::size_t build_count = 0;
+    // The package root when exactly one package is built.
+    std::filesystem::path single_package_root{};
+};
+
 struct PackageWatcherRefreshRequest {
     bool changed = false;
     // The service that owns the refresh request retains these diagnostics so
@@ -113,6 +123,9 @@ struct PackageRefreshTransaction {
     IvPackageDeclarationsChanged declarations{};
     std::vector<PackageRevision> successful_revisions{};
     std::vector<PackageJitFailure> failed_builds{};
+    // Reply: the read-model changes of the project rebuild this refresh's
+    // publication caused, for PackageWatcher to publish with the refresh.
+    ProjectGraphPublication project_publication{};
 };
 
 struct PackageDefinitionsSnapshot {
@@ -130,5 +143,7 @@ struct PackageDefinitionsPublicationRequest {
     std::unordered_map<std::string, std::vector<std::string>>
         published_leaf_ids_by_package_id{};
     std::unordered_map<std::string, std::string> publication_messages_by_package_id{};
+    // The read-model changes of the project rebuild this publication caused.
+    ProjectGraphPublication project_publication{};
 };
 } // namespace iv

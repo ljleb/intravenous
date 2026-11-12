@@ -26,6 +26,15 @@
 #include <vector>
 
 namespace {
+// The refresh transaction also carries PackageDefinitions' reply (the project
+// publication), so the handler takes it as an lvalue.
+void refresh_packages(
+    iv::PackageDefinitions& packages,
+    iv::PackageRefreshTransaction transaction)
+{
+    packages.handle_package_refresh(transaction);
+}
+
 using Json = nlohmann::ordered_json;
 
 Json parse_json_line(std::string_view line)
@@ -100,7 +109,7 @@ TEST(PackageDefinitions, NewProjectPackagesReceivePackageSpecificSharedPchCompil
     // File creation and catalog publication are separate responsibilities.
     // The package catalog only changes when the definition pipeline publishes
     // package declarations.
-    packages.handle_package_refresh(iv::PackageRefreshTransaction{
+    refresh_packages(packages, iv::PackageRefreshTransaction{
         .declarations = iv::IvPackageDeclarationsChanged{
             .created = {
                 {.package_id = first.package_id, .package_root = first.package_root},
@@ -131,7 +140,7 @@ TEST(PackageDefinitions, ListsPublishedDefinitionsFromTheRegistrySnapshot)
     auto definition = iv::test_support::make_loaded_definition(
         package_root, "iv.test.local_cmake");
     definition.package_id = normalized_root.generic_string();
-    packages.handle_package_refresh(iv::PackageRefreshTransaction{
+    refresh_packages(packages, iv::PackageRefreshTransaction{
         .declarations = iv::IvPackageDeclarationsChanged{
             .created = {{
                 .package_id = normalized_root.generic_string(),
@@ -167,7 +176,7 @@ TEST(PackageDefinitions, RegistryConflictIsNotReportedAsAnEmptyPackage)
     iv::PackageDefinitions packages(workspace);
     auto definitions_scope = iv::package_definitions_node_definitions_bridge::bind(
         packages, definitions);
-    packages.handle_package_refresh(iv::PackageRefreshTransaction{
+    refresh_packages(packages, iv::PackageRefreshTransaction{
         .declarations = iv::IvPackageDeclarationsChanged{
             .created = {
                 {.package_id = "iv.test.first", .package_root = first_root},
@@ -185,7 +194,7 @@ TEST(PackageDefinitions, RegistryConflictIsNotReportedAsAnEmptyPackage)
             }},
         }},
     });
-    packages.handle_package_refresh(iv::PackageRefreshTransaction{
+    refresh_packages(packages, iv::PackageRefreshTransaction{
         .declarations = iv::IvPackageDeclarationsChanged{
             .created = {
                 {.package_id = "iv.test.second", .package_root = second_root},

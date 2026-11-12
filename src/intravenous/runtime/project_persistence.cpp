@@ -428,6 +428,9 @@ void ProjectPersistence::load()
                 < std::tie(rhs_address, rhs.id.input_name);
         });
     try {
+        // Startup replay runs before any client attaches; clients read the
+        // replayed instances and virtual nodes when they connect, so the
+        // rebuild's publication (builder.take_publication()) is not sent.
         ProjectAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(
             iv_runtime_project_replace_graph_requested_event,

@@ -1,6 +1,8 @@
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <intravenous/filesystem_paths.h>
+#include <intravenous/runtime/package_pipeline_events.h>
+#include <intravenous/runtime/project_graph_publication.h>
 #include <intravenous/runtime/socket_rpc_json_serialization.h>
 #include <intravenous/runtime/socket_rpc_routes.h>
 
@@ -212,6 +214,9 @@ struct SocketRpcServer::Impl {
     struct Client : std::enable_shared_from_this<Client> {
         std::uint64_t key = 0;
         int fd = -1;
+        // The client on the inherited --rpc-fd descriptor: the process that
+        // launched this server. The server stops when that connection is lost.
+        bool owner = false;
         bool authenticated = false;
         bool subscribed = false;
         std::string identity{};
@@ -482,6 +487,12 @@ struct SocketRpcServer::Impl {
 
     void schedule_client_cleanup(Client* client)
     {
+        // Closing, reloading, or crashing the launching process closes the
+        // owner's descriptor; the server must not outlive it.
+        if (client->owner) {
+            request_shutdown();
+            return;
+        }
         {
             std::scoped_lock lock(commands_mutex);
             if (shutting_down.load()) return;
@@ -610,7 +621,7 @@ struct SocketRpcServer::Impl {
         }
     }
 
-    void attach_client(int fd, bool trusted)
+    void attach_client(int fd, bool trusted, bool owner = false)
     {
         if (fd < 0) throw std::invalid_argument("client fd must be valid");
         if (!started || shutting_down.load()) {
@@ -618,6 +629,7 @@ struct SocketRpcServer::Impl {
         }
         auto client = std::make_shared<Client>();
         client->fd = fd;
+        client->owner = owner;
         client->authenticated = trusted;
         client->subscribed = trusted;
         client->identity = trusted ? "inherited-local-client" : std::string{};
@@ -718,6 +730,22 @@ struct SocketRpcServer::Impl {
             }
         }
         for (auto const& client : targets) (void)enqueue(client, message);
+    }
+
+    // Notifications produced while this thread handles a request are deferred
+    // and published after its response.
+    void publish_project_graph(ProjectGraphPublication const& publication)
+    {
+        if (publication.instances) {
+            publish(
+                "nodeInstances.updated",
+                Json{{"instances", iv_module_instances_json(*publication.instances)}});
+        }
+        if (publication.virtual_nodes) {
+            publish(
+                "graph.nodesUpdated",
+                virtual_nodes_updated_json(*publication.virtual_nodes));
+        }
     }
 
     void publish(std::string method, Json params)
@@ -866,6 +894,10 @@ struct SocketRpcServer::Impl {
                     int id, SessionSubscribeRequest const& request) {
                     return subscribe(client, id, request, after_response);
                 },
+                .publish_project_graph = [this](
+                    ProjectGraphPublication const& publication) {
+                    publish_project_graph(publication);
+                },
             });
             route_known = true;
             response = std::move(route.response);
@@ -962,7 +994,7 @@ struct SocketRpcServer::Impl {
                 [this](std::stop_token) { command_loop(); });
             if (initial_rpc_fd >= 0) {
                 auto const fd = std::exchange(initial_rpc_fd, -1);
-                attach_client(fd, true);
+                attach_client(fd, true, true);
             } else {
                 accept_thread.emplace(
                     [this](std::stop_token) { accept_loop(); });
@@ -1116,21 +1148,17 @@ void SocketRpcServer::handle_project_notification(
     }, notification);
 }
 
-void SocketRpcServer::handle_iv_package_catalog_changed(
-    IvPackageCatalogChanged const&)
+void SocketRpcServer::send_project_graph_publication(
+    ProjectGraphPublication const& publication)
 {
-    send_iv_package_definitions_updated();
+    impl_->publish_project_graph(publication);
 }
 
-void SocketRpcServer::handle_iv_module_instances_list_changed(
-    std::vector<IvModuleInstanceInfo> const& instances)
+void SocketRpcServer::handle_package_refresh_published(
+    PackageRefreshPublication const& publication)
 {
-    send_node_instances_updated(instances);
-}
-
-void SocketRpcServer::handle_iv_module_source_introspection_nodes_updated(
-    ProjectVirtualNodesNotification const& notification)
-{
-    send_virtual_nodes_updated(notification);
+    if (publication.build_status) send_server_status(*publication.build_status);
+    if (publication.package_catalog_changed) send_iv_package_definitions_updated();
+    send_project_graph_publication(publication.project);
 }
 } // namespace iv

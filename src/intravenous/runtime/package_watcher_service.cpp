@@ -13,11 +13,21 @@
 
 namespace iv {
 namespace {
-void publish_package_catalog_changed()
+// rebuildStarted is its own cause, before the refresh cause and its build: it
+// reports progress at a different moment than the refresh's one outcome report
+// (PackageRefreshPublication, sent by PackageWatcher).
+void publish_build_started(PackageWatcherRefreshPlan const& plan)
 {
     IV_INVOKE_LINKER_EVENT_SOURCE(
-        iv_runtime_iv_package_catalog_changed_event,
-        IvPackageCatalogChanged{});
+        iv_runtime_project_notification_event,
+        ProjectNotification(ProjectStatusNotification{
+            .level = "info",
+            .code = "rebuildStarted",
+            .message = plan.build_count == 1
+                ? "Building IV package"
+                : "Building " + std::to_string(plan.build_count) + " IV packages",
+            .package_root = plan.single_package_root,
+        }));
 }
 
 std::vector<std::filesystem::path> discovery_roots(
@@ -127,6 +137,9 @@ void PackageWatcherService::process_pending_refresh()
     for (;;) {
         watcher_->poll_dependency_changes();
         if (!watcher_->has_pending_refresh()) return;
+        auto const plan = watcher_->prepare_refresh();
+        if (!plan) return;
+        if (plan->build_count > 0) publish_build_started(*plan);
 
         PackageWatcherRefreshRequest request;
         IV_INVOKE_LINKER_EVENT_SOURCE(
@@ -138,7 +151,6 @@ void PackageWatcherService::process_pending_refresh()
                 last_refresh_failures_ = request.failed_builds;
             }
         }
-        if (request.changed) publish_package_catalog_changed();
     }
 }
 

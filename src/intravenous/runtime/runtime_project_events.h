@@ -3,6 +3,7 @@
 #include <intravenous/devices/audio_device.h>
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/project_connection_types.h>
+#include <intravenous/runtime/project_graph_publication.h>
 #include <intravenous/runtime/project_node_instance_types.h>
 #include <intravenous/runtime/project_node_replacement_types.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
@@ -11,25 +12,46 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace iv {
+// The read-model changes a project-graph request committed travel back on its
+// result builder, so the cause's root publishes them once.
 class ProjectAckBuilder {
     std::optional<std::string> error_message;
     bool handled = false;
+    ProjectGraphPublication publication_{};
 
 public:
     void succeed();
     void fail(std::string message);
     void build() const;
+    void set_publication(ProjectGraphPublication publication)
+    {
+        publication_ = std::move(publication);
+    }
+    [[nodiscard]] ProjectGraphPublication take_publication()
+    {
+        return std::move(publication_);
+    }
 };
 
 class ProjectStringBuilder {
     std::optional<std::string> result;
+    ProjectGraphPublication publication_{};
 
 public:
     void succeed(std::string value);
     [[nodiscard]] std::string build() const;
+    void set_publication(ProjectGraphPublication publication)
+    {
+        publication_ = std::move(publication);
+    }
+    [[nodiscard]] ProjectGraphPublication take_publication()
+    {
+        return std::move(publication_);
+    }
 };
 
 class ProjectAudioDevicesBuilder {

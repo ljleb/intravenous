@@ -25,7 +25,7 @@ export class LiveGraphViewProvider implements vscode.WebviewViewProvider {
     private postScheduled = false;
     private controlHandler: LiveGraphControlHandler | null = null;
     private readonly state: LiveGraphViewState = {
-        sessionStatus: "connecting",
+        sessionStatus: "starting",
         instances: [],
         selectedInstanceId: null,
         packageRoot: null,

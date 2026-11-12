@@ -5,12 +5,14 @@
 #include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/node_event_protocol_types.h>
 #include <intravenous/runtime/package_definitions.h>
+#include <intravenous/runtime/project_graph_publication.h>
 #include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/devices/audio_device.h>
 
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace iv {
@@ -76,6 +78,7 @@ namespace iv {
         std::vector<SocketRpcNodeMessageDiagnostic> diagnostics_{};
         int error_code = -32000;
         std::string error_message{};
+        ProjectGraphPublication publication_{};
 
     public:
         void succeed(std::vector<SocketRpcNodeMessageDiagnostic> diagnostics);
@@ -83,12 +86,24 @@ namespace iv {
         void fail(int code, std::string message);
         [[nodiscard]] bool has_response() const noexcept { return has_response_; }
         [[nodiscard]] std::string build(int request_id) const;
+
+        // Read-model changes the request committed. The route hands them to
+        // SocketRpcServer, which publishes them after the response.
+        void set_publication(ProjectGraphPublication publication)
+        {
+            publication_ = std::move(publication);
+        }
+        [[nodiscard]] ProjectGraphPublication take_publication()
+        {
+            return std::move(publication_);
+        }
     };
 
     class SocketRpcAckResponseBuilder {
         int error_code = -32000;
         std::string error_message;
         bool has_response_ = false;
+        ProjectGraphPublication publication_{};
 
     public:
         void succeed() noexcept;
@@ -98,6 +113,17 @@ namespace iv {
         [[nodiscard]] bool has_response() const noexcept { return has_response_; }
 
         [[nodiscard]] std::string build(int request_id) const;
+
+        // Read-model changes the request committed. The route hands them to
+        // SocketRpcServer, which publishes them after the response.
+        void set_publication(ProjectGraphPublication publication)
+        {
+            publication_ = std::move(publication);
+        }
+        [[nodiscard]] ProjectGraphPublication take_publication()
+        {
+            return std::move(publication_);
+        }
     };
 
     class SocketRpcGraphQueryResultBuilder {
@@ -176,6 +202,7 @@ namespace iv {
         int error_code = -32000;
         std::string error_message;
         std::optional<std::string> instance_id;
+        ProjectGraphPublication publication_{};
 
     public:
         void succeed(std::string created_instance_id);
@@ -188,6 +215,17 @@ namespace iv {
         }
 
         [[nodiscard]] std::string build(int request_id) const;
+
+        // Read-model changes the request committed. The route hands them to
+        // SocketRpcServer, which publishes them after the response.
+        void set_publication(ProjectGraphPublication publication)
+        {
+            publication_ = std::move(publication);
+        }
+        [[nodiscard]] ProjectGraphPublication take_publication()
+        {
+            return std::move(publication_);
+        }
     };
 
     class SocketRpcIvPackageDefinitionsResultBuilder {

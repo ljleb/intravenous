@@ -559,7 +559,8 @@ void log_configuration_failure(ProjectGraphConfigurationFailure const& failure) 
 ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     NodeInstancesMutation instance_mutation,
     GraphConnectionsMutation connection_mutation,
-    bool publish_execution)
+    bool publish_execution,
+    IvPackageDefinitionsChanged const* package_definitions)
 {
     using Clock = std::chrono::steady_clock;
     auto const rebuild_begin = Clock::now();
@@ -576,6 +577,26 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         throw std::runtime_error("ProjectGraph cannot rebuild without NodeInstances");
     }
 
+    // The read-model changes of this build. Source introspection is updated
+    // once, from both the definitions publication and the instance
+    // declarations, before configuration can fail: neither depends on the
+    // configured graph. Previews change no read model.
+    ProjectGraphPublication publication;
+    if (publish_execution) {
+        if (request.instances_list_changed) publication.instances = request.instances;
+        if (package_definitions || request.instance_declarations_changed) {
+            IvModuleSourceIntrospectionProjectGraphRequest introspection{};
+            if (package_definitions) introspection.package_definitions = *package_definitions;
+            if (request.instance_declarations_changed) {
+                introspection.instance_declarations = request.instances;
+            }
+            IV_INVOKE_LINKER_EVENT(
+                iv_runtime_project_graph_source_introspection_requested_event,
+                introspection);
+            publication.virtual_nodes = std::move(introspection.result);
+        }
+    }
+
     // A failed configuration pass discards the root builder and publishes no
     // generation; the previous generation stays current and keeps running.
     auto fail = [&](ProjectGraphConfigurationFailure failure) {
@@ -588,6 +609,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         return RebuildResult{
             .created_instance_ids = std::move(request.created_instance_ids),
             .failure = std::move(shared),
+            .publication = std::move(publication),
         };
     };
     auto const definitions_generation =
@@ -796,6 +818,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     return RebuildResult{
         .generation = std::move(generation),
         .created_instance_ids = std::move(request.created_instance_ids),
+        .publication = std::move(publication),
     };
 }
 
@@ -1156,12 +1179,13 @@ void ProjectGraph::dispatch_root_node_message_locked(
         target, std::move(message), interaction, result);
     if (interaction.replacements == interaction.original_replacements) return;
 
-    (void)rebuild_locked(
+    auto rebuilt = rebuild_locked(
         NodeReplacementsReplaceMutation{
             .replacements = std::move(interaction.replacements),
         },
         std::monostate{});
     result.project_state_changed = true;
+    result.publication = std::move(rebuilt.publication);
 }
 
 NodeMessageDispatchResult ProjectGraph::dispatch_node_message(
@@ -1259,7 +1283,7 @@ NodeMessageDispatchResult ProjectGraph::dispatch_node_message(
 }
 
 void ProjectGraph::handle_node_definitions_snapshot_changed(
-    NodeDefinitionsSnapshotChanged const& change)
+    NodeDefinitionsSnapshotChanged& change)
 {
     if (!change.snapshot) {
         throw std::invalid_argument("ProjectGraph received an empty definitions snapshot");
@@ -1273,7 +1297,9 @@ void ProjectGraph::handle_node_definitions_snapshot_changed(
     auto previous_snapshot = definitions_snapshot_;
     definitions_snapshot_ = change.snapshot;
     try {
-        (void)rebuild_locked(std::monostate{}, std::monostate{});
+        auto rebuilt = rebuild_locked(
+            std::monostate{}, std::monostate{}, true, &change.package_definitions);
+        change.publication = std::move(rebuilt.publication);
     } catch (...) {
         // A snapshot is committed only together with the root generation built
         // from it. This also keeps an identical publication retryable after a
@@ -1301,6 +1327,7 @@ void ProjectGraph::handle_project_create_node_instance(
             throw std::logic_error("NodeInstances did not return one created instance id");
         }
         created_instance_id = std::move(rebuilt.created_instance_ids.front());
+        builder.set_publication(std::move(rebuilt.publication));
     }
     builder.succeed(std::move(created_instance_id));
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
@@ -1312,9 +1339,10 @@ void ProjectGraph::handle_project_delete_node_instance(
 {
     {
         std::scoped_lock lock(mutex_);
-        (void)rebuild_locked(NodeInstanceDeleteMutation{
+        auto rebuilt = rebuild_locked(NodeInstanceDeleteMutation{
             .instance_id = request.instance_id,
         }, std::monostate{});
+        builder.set_publication(std::move(rebuilt.publication));
     }
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
@@ -1335,7 +1363,8 @@ void ProjectGraph::handle_project_update_node_instances(
     }
     {
         std::scoped_lock lock(mutex_);
-        (void)rebuild_locked(std::move(mutation), std::monostate{});
+        auto rebuilt = rebuild_locked(std::move(mutation), std::monostate{});
+        builder.set_publication(std::move(rebuilt.publication));
     }
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
@@ -1347,9 +1376,10 @@ void ProjectGraph::handle_project_upsert_graph_connection(
 {
     {
         std::scoped_lock lock(mutex_);
-        (void)rebuild_locked(
+        auto rebuilt = rebuild_locked(
             std::monostate{},
             GraphConnectionUpsertMutation{.connection = request.connection});
+        builder.set_publication(std::move(rebuilt.publication));
     }
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
@@ -1361,9 +1391,10 @@ void ProjectGraph::handle_project_delete_graph_connection(
 {
     {
         std::scoped_lock lock(mutex_);
-        (void)rebuild_locked(
+        auto rebuilt = rebuild_locked(
             std::monostate{},
             GraphConnectionDeleteMutation{.connection_id = request.connection_id});
+        builder.set_publication(std::move(rebuilt.publication));
     }
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
@@ -1447,7 +1478,7 @@ void ProjectGraph::handle_project_replace_graph(
         auto previous_manual_controls = manual_controls_;
         manual_controls_ = request.manual_controls;
         try {
-            (void)rebuild_locked(
+            auto rebuilt = rebuild_locked(
                 NodeInstanceReplaceAllMutation{
                     .instances = request.instances,
                     .node_replacements = request.node_replacements,
@@ -1455,6 +1486,7 @@ void ProjectGraph::handle_project_replace_graph(
                 GraphConnectionReplaceAllMutation{
                     .connections = request.connections,
                 });
+            builder.set_publication(std::move(rebuilt.publication));
         } catch (...) {
             manual_controls_ = std::move(previous_manual_controls);
             throw;
@@ -1486,7 +1518,8 @@ void ProjectGraph::handle_project_upsert_manual_control(
             *found = request.control;
         }
         try {
-            (void)rebuild_locked(std::monostate{}, std::monostate{});
+            auto rebuilt = rebuild_locked(std::monostate{}, std::monostate{});
+            builder.set_publication(std::move(rebuilt.publication));
         } catch (...) {
             manual_controls_ = std::move(previous_manual_controls);
             throw;
@@ -1507,7 +1540,8 @@ void ProjectGraph::handle_project_delete_manual_control(
             return control.id == request.id;
         });
         try {
-            (void)rebuild_locked(std::monostate{}, std::monostate{});
+            auto rebuilt = rebuild_locked(std::monostate{}, std::monostate{});
+            builder.set_publication(std::move(rebuilt.publication));
         } catch (...) {
             manual_controls_ = std::move(previous_manual_controls);
             throw;
@@ -1691,6 +1725,7 @@ void ProjectGraph::handle_socket_rpc_create_node_instance(
                 .configuration_source = request.configuration_source,
             },
             project_builder);
+        builder.set_publication(project_builder.take_publication());
         builder.succeed(project_builder.build());
     } catch (std::exception const& error) {
         builder.fail(error.what());
@@ -1706,6 +1741,7 @@ void ProjectGraph::handle_socket_rpc_delete_node_instance(
         handle_project_delete_node_instance(
             ProjectDeleteNodeInstanceRequest{.instance_id = request.instance_id},
             project_builder);
+        builder.set_publication(project_builder.take_publication());
         project_builder.build();
         builder.succeed();
     } catch (std::exception const& error) {
@@ -1731,6 +1767,7 @@ void ProjectGraph::handle_socket_rpc_update_node_instances(
         handle_project_update_node_instances(
             ProjectUpdateNodeInstancesRequest{.updates = std::move(updates)},
             project_builder);
+        builder.set_publication(project_builder.take_publication());
         project_builder.build();
         builder.succeed();
     } catch (std::exception const& error) {
@@ -1747,6 +1784,7 @@ void ProjectGraph::handle_socket_rpc_upsert_graph_connection(
         handle_project_upsert_graph_connection(
             ProjectUpsertGraphConnectionRequest{.connection = request.connection},
             project_builder);
+        builder.set_publication(project_builder.take_publication());
         project_builder.build();
         builder.succeed();
     } catch (std::exception const& error) {
@@ -1765,6 +1803,7 @@ void ProjectGraph::handle_socket_rpc_delete_graph_connection(
                 .connection_id = request.connection_id,
             },
             project_builder);
+        builder.set_publication(project_builder.take_publication());
         project_builder.build();
         builder.succeed();
     } catch (std::exception const& error) {
@@ -1781,6 +1820,7 @@ void ProjectGraph::handle_socket_rpc_upsert_manual_control(
         handle_project_upsert_manual_control(
             ProjectUpsertManualControlRequest{.control = request.control},
             project_builder);
+        builder.set_publication(project_builder.take_publication());
         project_builder.build();
         builder.succeed();
     } catch (std::exception const& error) {
@@ -1797,6 +1837,7 @@ void ProjectGraph::handle_socket_rpc_delete_manual_control(
         handle_project_delete_manual_control(
             ProjectDeleteManualControlRequest{.id = request.id},
             project_builder);
+        builder.set_publication(project_builder.take_publication());
         project_builder.build();
         builder.succeed();
     } catch (std::exception const& error) {
@@ -1816,6 +1857,7 @@ void ProjectGraph::handle_socket_rpc_set_manual_control_hover(
                 .id = request.id,
             },
             project_builder);
+        builder.set_publication(project_builder.take_publication());
         project_builder.build();
         builder.succeed();
     } catch (std::exception const& error) {
@@ -1836,6 +1878,7 @@ void ProjectGraph::handle_socket_rpc_begin_manual_control_interaction(
                 .value = request.value,
             },
             project_builder);
+        builder.set_publication(project_builder.take_publication());
         project_builder.build();
         builder.succeed();
     } catch (std::exception const& error) {
@@ -1855,6 +1898,7 @@ void ProjectGraph::handle_socket_rpc_update_manual_control_interaction(
                 .value = request.value,
             },
             project_builder);
+        builder.set_publication(project_builder.take_publication());
         project_builder.build();
         builder.succeed();
     } catch (std::exception const& error) {
@@ -1874,6 +1918,7 @@ void ProjectGraph::handle_socket_rpc_end_manual_control_interaction(
                 .value = request.value,
             },
             project_builder);
+        builder.set_publication(project_builder.take_publication());
         project_builder.build();
         builder.succeed();
     } catch (std::exception const& error) {
@@ -1920,6 +1965,7 @@ void ProjectGraph::handle_socket_rpc_dispatch_node_message(
                     request.event_type_definition_fingerprint,
                 .payload = request.payload,
             });
+        builder.set_publication(std::move(result.publication));
         std::vector<SocketRpcNodeMessageDiagnostic> diagnostics;
         diagnostics.reserve(result.diagnostics.size());
         for (auto& diagnostic : result.diagnostics) {

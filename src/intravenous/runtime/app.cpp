@@ -9,7 +9,6 @@
 #include <intravenous/runtime/handlers.h>
 #include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/node_definitions_project_graph_bridge.h>
-#include <intravenous/runtime/node_definitions_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
 #include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/node_instances_iv_module_source_introspection_bridge.h>
@@ -34,12 +33,14 @@
 #include <intravenous/runtime/project_graph_graph_connections_bridge.h>
 #include <intravenous/runtime/project_graph_graph_executor_bridge.h>
 #include <intravenous/runtime/project_graph_graph_jit_bridge.h>
+#include <intravenous/runtime/project_graph_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/project_graph_node_instances_bridge.h>
 #include <intravenous/runtime/server_options.h>
 #include <intravenous/runtime/socket_rpc_node_instances_bridge.h>
 #include <intravenous/runtime/socket_rpc_project_graph_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/socket_rpc_package_definitions_bridge.h>
+#include <intravenous/runtime/socket_rpc_package_watcher_bridge.h>
 #include <intravenous/runtime/socket_rpc_project_autosave_bridge.h>
 #include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
@@ -363,9 +364,9 @@ int run_server_mode(int argc, char** argv)
         project_graph_graph_jit_bridge::bind(project_graph, graph_jit);
     auto project_graph_graph_executor_scope =
         project_graph_graph_executor_bridge::bind(project_graph, graph_executor);
-    auto definitions_introspection_scope =
-        node_definitions_iv_module_source_introspection_bridge::bind(
-            node_definitions, introspection);
+    auto project_graph_introspection_scope =
+        project_graph_iv_module_source_introspection_bridge::bind(
+            project_graph, introspection);
     auto watcher_service_scope =
         package_watcher_service_bridge::bind(package_watcher_service, package_watcher);
     auto watcher_jit_scope =
@@ -403,6 +404,8 @@ int run_server_mode(int argc, char** argv)
         socket_rpc_node_instances_bridge::bind(server, node_instances);
     auto rpc_packages_scope =
         socket_rpc_package_definitions_bridge::bind(server, package_definitions);
+    auto rpc_package_watcher_scope =
+        socket_rpc_package_watcher_bridge::bind(server, package_watcher);
     auto rpc_introspection_scope =
         socket_rpc_iv_module_source_introspection_bridge::bind(server, introspection);
     auto rpc_persistence_scope =

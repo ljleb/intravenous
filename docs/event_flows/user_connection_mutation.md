@@ -23,7 +23,7 @@ flowchart TD
     GE["GraphExecutor"]
 
     SRC --> RPC
-    RPC -->|"connection mutation request ⇄ acceptance / diagnostics"| PG
+    RPC -->|"connection mutation request ⇄ acceptance / diagnostics / ProjectGraphPublication"| PG
     PG -->|"1. embed complete current instance set into fresh root builder"| NI
     PG -->|"2. resolve/apply complete ProjectNodePortMatcher connection batch"| GC
     PG -->|"3. completed ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
@@ -71,3 +71,8 @@ that converge on the read model.
 Any asynchronous UI notification to `SocketRpcServer` that would re-enter an
 incoming RPC/reload propagation must be published only after the current cause
 unwinds, as a new cause.
+
+Implemented (2026-11-12): a connection-only mutation changes no instance
+declaration, so `ProjectGraph` does not update `IvModuleSourceIntrospection`; any
+instance-list change returns on the RPC result builder and is published after
+the response (see [README](./README.md)).

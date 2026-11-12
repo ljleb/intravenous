@@ -413,7 +413,6 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/config.cpp
     runtime/node_definitions.cpp
     runtime/node_definitions_project_graph_bridge.cpp
-    runtime/node_definitions_iv_module_source_introspection_bridge.cpp
     runtime/package_definitions_node_definitions_bridge.cpp
     runtime/package_watcher_package_definitions_bridge.cpp
     runtime/package_watcher_package_jit_bridge.cpp
@@ -429,6 +428,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/project_graph_graph_connections_bridge.cpp
     runtime/project_graph_graph_executor_bridge.cpp
     runtime/project_graph_graph_jit_bridge.cpp
+    runtime/project_graph_iv_module_source_introspection_bridge.cpp
     runtime/project_graph_node_instances_bridge.cpp
     runtime/package_definitions.cpp
     runtime/package_jit.cpp
@@ -452,6 +452,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/socket_rpc_node_instances_bridge.cpp
     runtime/socket_rpc_project_graph_bridge.cpp
     runtime/socket_rpc_package_definitions_bridge.cpp
+    runtime/socket_rpc_package_watcher_bridge.cpp
     runtime/socket_rpc_project_autosave_bridge.cpp
     runtime/socket_rpc_project_persistence_bridge.cpp
     runtime/socket_rpc_json_serialization.cpp

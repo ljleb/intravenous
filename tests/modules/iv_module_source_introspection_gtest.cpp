@@ -3,9 +3,10 @@
 #include <intravenous/runtime/node_definitions_project_graph_bridge.h>
 #include <intravenous/runtime/graph_connections.h>
 #include <intravenous/runtime/project_graph.h>
+#include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/project_graph_graph_connections_bridge.h>
 #include <intravenous/runtime/project_graph_node_instances_bridge.h>
-#include <intravenous/runtime/node_definitions_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/project_graph_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/node_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
@@ -48,8 +49,8 @@ struct InitializedIvModuleSourceIntrospectionApp {
         project_graph_node_instances_scope;
     iv::project_graph_graph_connections_bridge::scope
         project_graph_graph_connections_scope;
-    iv::node_definitions_iv_module_source_introspection_bridge::scope
-        node_definitions_iv_module_source_introspection_scope;
+    iv::project_graph_iv_module_source_introspection_bridge::scope
+        project_graph_iv_module_source_introspection_scope;
     iv::node_instances_iv_module_source_introspection_bridge::scope
         iv_module_instances_iv_module_source_introspection_scope;
 
@@ -64,8 +65,8 @@ struct InitializedIvModuleSourceIntrospectionApp {
           node_definitions_project_graph_scope(definitions, project_graph),
           project_graph_node_instances_scope(project_graph, instances),
           project_graph_graph_connections_scope(project_graph, graph_connections),
-          node_definitions_iv_module_source_introspection_scope(
-              definitions,
+          project_graph_iv_module_source_introspection_scope(
+              project_graph,
               introspection),
           iv_module_instances_iv_module_source_introspection_scope(
               instances,
@@ -77,11 +78,19 @@ struct InitializedIvModuleSourceIntrospectionApp {
         auto const config = startup_config.initialize();
         auto const module_root = std::filesystem::weakly_canonical(config.workspace_root);
         auto definition = iv::test::load_runtime_iv_module_definition(config, module_root);
-        (void)instances.create_instance(
-            definition.module_id,
-            module_root,
-            "instance:1");
+        // Source introspection learns instance declarations from the
+        // ProjectGraph root build that creates the instance.
+        auto const module_id = definition.module_id;
         definitions.initialize_loaded_definition(std::move(definition));
+        iv::ProjectStringBuilder created;
+        project_graph.handle_project_create_node_instance(
+            iv::ProjectCreateNodeInstanceRequest{
+                .instance_id = "instance:1",
+                .definition_id = module_id,
+                .package_root = module_root,
+            },
+            created);
+        (void)created.build();
     }
 
     auto query_by_spans(

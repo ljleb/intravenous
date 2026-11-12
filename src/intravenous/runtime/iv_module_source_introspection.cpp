@@ -329,16 +329,20 @@ VirtualNodeInfo IvModuleSourceIntrospection::to_virtual_node(
     return live;
 }
 
-void IvModuleSourceIntrospection::handle_iv_package_definitions_changed(
-    IvPackageDefinitionsChanged const &package_diff)
+void IvModuleSourceIntrospection::handle_project_graph_source_introspection(
+    IvModuleSourceIntrospectionProjectGraphRequest &request)
 {
+    if (request.handled) {
+        throw std::logic_error(
+            "IvModuleSourceIntrospection ProjectGraph request was handled more than once");
+    }
+    request.handled = true;
+
     std::vector<std::string> replace_instance_ids;
     std::vector<IvModuleInstanceInfo> updated_instances;
-
     {
         std::scoped_lock lock(mutex);
         std::unordered_set<std::string> changed_definition_ids;
-
         auto apply_definition = [&](ModuleNodeDefinition const &definition) {
             changed_definition_ids.insert(definition.definition_id);
             invalidate_source_texts(definition.dependencies);
@@ -350,14 +354,10 @@ void IvModuleSourceIntrospection::handle_iv_package_definitions_changed(
                     definition.module_id,
                     definition.dependencies);
         };
-
-        for (auto const &definition : package_diff.module_definitions.created) {
-            apply_definition(definition);
-        }
-        for (auto const &definition : package_diff.module_definitions.updated) {
-            apply_definition(definition);
-        }
-        for (auto const &definition_id : package_diff.module_definitions.deleted_definition_ids) {
+        auto const& definitions = request.package_definitions.module_definitions;
+        for (auto const &definition : definitions.created) apply_definition(definition);
+        for (auto const &definition : definitions.updated) apply_definition(definition);
+        for (auto const &definition_id : definitions.deleted_definition_ids) {
             changed_definition_ids.insert(definition_id);
             if (auto index = graph_indexes_by_definition_id.find(definition_id);
                 index != graph_indexes_by_definition_id.end()) {
@@ -368,78 +368,54 @@ void IvModuleSourceIntrospection::handle_iv_package_definitions_changed(
             }
         }
 
+        // An instance is replaced when it appeared, disappeared, or changed
+        // definition, or when its definition changed.
+        std::unordered_set<std::string> declared_changed_ids;
+        if (request.instance_declarations) {
+            std::unordered_map<std::string, IvModuleInstanceInfo> next_instances;
+            for (auto const &instance : *request.instance_declarations) {
+                if (instance.instance_id.empty() || instance.definition_id.empty()) {
+                    continue;
+                }
+                next_instances.emplace(instance.instance_id, instance);
+            }
+            for (auto const &[instance_id, previous] : instances_by_id) {
+                auto const next = next_instances.find(instance_id);
+                if (next == next_instances.end()
+                    || next->second.definition_id != previous.definition_id) {
+                    replace_instance_ids.push_back(instance_id);
+                }
+            }
+            for (auto const &[instance_id, instance] : next_instances) {
+                auto const previous = instances_by_id.find(instance_id);
+                if (previous == instances_by_id.end()
+                    || previous->second.definition_id != instance.definition_id) {
+                    replace_instance_ids.push_back(instance_id);
+                    declared_changed_ids.insert(instance_id);
+                    updated_instances.push_back(instance);
+                }
+            }
+            instances_by_id = std::move(next_instances);
+        }
         for (auto const &[instance_id, instance] : instances_by_id) {
-            if (!changed_definition_ids.contains(instance.definition_id)) {
-                continue;
-            }
+            if (!changed_definition_ids.contains(instance.definition_id)) continue;
             replace_instance_ids.push_back(instance_id);
-            if (graph_indexes_by_definition_id.contains(instance.definition_id)) {
+            if (!declared_changed_ids.contains(instance_id)
+                && graph_indexes_by_definition_id.contains(instance.definition_id)) {
                 updated_instances.push_back(instance);
             }
         }
-    }
-
-    if (replace_instance_ids.empty()) {
-        return;
-    }
-
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_source_introspection_nodes_updated_event,
-        ProjectVirtualNodesNotification{
-            .nodes = get_virtual_nodes_for_instances(updated_instances),
-            .replace_instance_ids = std::move(replace_instance_ids),
-        });
-}
-
-void IvModuleSourceIntrospection::handle_iv_module_instance_declarations_changed(
-    std::vector<IvModuleInstanceInfo> const &instances)
-{
-    std::vector<std::string> replace_instance_ids;
-    std::vector<IvModuleInstanceInfo> updated_instances;
-
-    {
-        std::scoped_lock lock(mutex);
-        std::unordered_map<std::string, IvModuleInstanceInfo> next_instances;
-        for (auto const &instance : instances) {
-            if (instance.instance_id.empty() || instance.definition_id.empty()) {
-                continue;
-            }
-            next_instances.emplace(instance.instance_id, instance);
-        }
-
-        for (auto const &[instance_id, previous] : instances_by_id) {
-            auto const next = next_instances.find(instance_id);
-            if (next == next_instances.end()
-                || next->second.definition_id != previous.definition_id) {
-                replace_instance_ids.push_back(instance_id);
-            }
-        }
-        for (auto const &[instance_id, instance] : next_instances) {
-            auto const previous = instances_by_id.find(instance_id);
-            if (previous == instances_by_id.end()
-                || previous->second.definition_id != instance.definition_id) {
-                replace_instance_ids.push_back(instance_id);
-                updated_instances.push_back(instance);
-            }
-        }
-
-        instances_by_id = std::move(next_instances);
     }
 
     std::ranges::sort(replace_instance_ids);
     replace_instance_ids.erase(
         std::unique(replace_instance_ids.begin(), replace_instance_ids.end()),
         replace_instance_ids.end());
-    if (replace_instance_ids.empty()) {
-        return;
-    }
-
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_source_introspection_nodes_updated_event,
-        ProjectVirtualNodesNotification{
-            .nodes = get_virtual_nodes_for_instances(updated_instances),
-            .replace_instance_ids = std::move(replace_instance_ids),
-        });
+    if (replace_instance_ids.empty()) return;
+    request.result = ProjectVirtualNodesNotification{
+        .nodes = get_virtual_nodes_for_instances(updated_instances),
+        .replace_instance_ids = std::move(replace_instance_ids),
+    };
 }
 
 ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(

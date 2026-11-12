@@ -287,15 +287,15 @@ void NodeDefinitions::handle_package_definitions_publication(
 
     if (!registry_changed) return;
 
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_node_definitions_snapshot_changed_event,
-        NodeDefinitionsSnapshotChanged{.snapshot = snapshot()});
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_package_definitions_changed_event,
-        IvPackageDefinitionsChanged{
+    NodeDefinitionsSnapshotChanged change{
+        .snapshot = snapshot(),
+        .package_definitions = IvPackageDefinitionsChanged{
             .module_definitions = std::move(module_diff),
             .leaf_definitions = std::move(leaf_diff),
-        });
+        },
+    };
+    IV_INVOKE_LINKER_EVENT(iv_runtime_node_definitions_snapshot_changed_event, change);
+    request.project_publication = std::move(change.publication);
 }
 
 void NodeDefinitions::initialize_loaded_definition(PackageModuleDefinition loaded_definition)

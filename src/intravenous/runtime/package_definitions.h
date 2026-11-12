@@ -49,7 +49,9 @@ public:
     [[nodiscard]] IvPackageInfo create_project_package(std::string const& name) const;
     [[nodiscard]] std::shared_ptr<PackageDefinitionsSnapshot const> snapshot() const;
 
-    void handle_package_refresh(PackageRefreshTransaction const& transaction);
+    // Accepts the refresh and returns the publication's project read-model
+    // changes in `transaction.project_publication`.
+    void handle_package_refresh(PackageRefreshTransaction& transaction);
     void handle_socket_rpc_get_iv_package_definitions(
         GetIvPackageDefinitionsRequest const& request,
         SocketRpcIvPackageDefinitionsResultBuilder& builder) const;

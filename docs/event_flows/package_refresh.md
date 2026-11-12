@@ -19,19 +19,29 @@ flowchart TD
     PG["ProjectGraph"]
     NI["NodeInstances"]
     GC["GraphConnections"]
+    IMSI["IvModuleSourceIntrospection"]
     GJ["GraphJit"]
     GE["GraphExecutor"]
+    RPC["SocketRpcServer"]
 
     PW -->|"1. complete build subset ⇄ revisions + dependencies + diagnostics"| PJ
-    PW -->|"2. declarations + removals + complete build results"| PD
-    PD -->|"accepted package revision snapshot ⇄ publication diagnostics"| ND
-    ND -->|"one immutable versioned NodeDefinitionsSnapshot"| PG
+    PW -->|"2. declarations + removals + complete build results ⇄ project publication"| PD
+    PD -->|"accepted package revision snapshot ⇄ publication diagnostics + project publication"| ND
+    ND -->|"one immutable versioned NodeDefinitionsSnapshot + definitions diff ⇄ ProjectGraphPublication"| PG
 
-    PG -->|"1. reconfigure/embed complete desired node batch against exactly this snapshot"| NI
-    PG -->|"2. re-resolve/apply complete desired connection batch"| GC
-    PG -->|"3. successor ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
-    PG -->|"4. stage one compiled execution generation"| GE
+    PG -->|"1. reconfigure/embed complete desired node batch against exactly this snapshot ⇄ instance changes"| NI
+    PG -->|"2. definitions diff + changed instance declarations ⇄ virtual-node replacements"| IMSI
+    PG -->|"3. re-resolve/apply complete desired connection batch"| GC
+    PG -->|"4. successor ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
+    PG -->|"5. stage one compiled execution generation"| GE
+    PW -->|"3. one PackageRefreshPublication: build outcome + catalog change + project publication"| RPC
 ```
+
+Edge 3 of `PackageWatcher` is its last: the refresh reports once, after its whole
+propagation has returned. `PackageWatcherService` sends `rebuildStarted` as a
+separate cause before this tree, because it reports progress before the build.
+The read-model changes ride the existing request records back up the tree
+(see [README](./README.md)).
 
 The numeric labels on sibling edges are orchestration order inside their parent.
 `GraphExecutor` internally constructs one complete `ExecutionGeneration`; no

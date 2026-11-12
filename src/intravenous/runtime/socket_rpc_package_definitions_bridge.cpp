@@ -12,8 +12,4 @@ IV_SUBSCRIBE_LINKER_EVENT(
     socket_rpc_package_definitions_bridge,
     iv_socket_rpc_create_iv_package_event,
     &PackageDefinitions::handle_socket_rpc_create_iv_package)
-IV_SUBSCRIBE_LINKER_EVENT(
-    socket_rpc_package_definitions_bridge,
-    iv_runtime_iv_package_catalog_changed_event,
-    &SocketRpcServer::handle_iv_package_catalog_changed)
 }

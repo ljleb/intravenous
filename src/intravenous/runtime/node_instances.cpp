@@ -340,8 +340,7 @@ NodeInstances::parse_expression_cached(
 
 bool NodeInstances::publish_instance_locked(
     std::string const& instance_id,
-    NodeDefinitionEntry const& definition,
-    IvModuleInstancesChanged& diff)
+    NodeDefinitionEntry const& definition)
 {
     auto desired = desired_instances_by_id_.find(instance_id);
     if (desired == desired_instances_by_id_.end()
@@ -367,29 +366,8 @@ bool NodeInstances::publish_instance_locked(
     if (existing != published_instances_by_id_.end() && existing->second == instance) {
         return false;
     }
-    auto const is_new = existing == published_instances_by_id_.end();
-    published_instances_by_id_[instance_id] = instance;
-    (is_new ? diff.created : diff.updated).push_back(std::move(instance));
+    published_instances_by_id_[instance_id] = std::move(instance);
     return true;
-}
-
-void NodeInstances::publish_instance_changes(
-    IvModuleInstancesChanged diff,
-    bool list_changed) const
-{
-    if (!diff.created.empty() || !diff.updated.empty() || !diff.deleted_instance_ids.empty()) {
-        IV_INVOKE_LINKER_EVENT(iv_runtime_iv_module_instances_changed_event, diff);
-    }
-    if (list_changed) {
-        IV_INVOKE_LINKER_EVENT(iv_runtime_iv_module_instances_list_changed_event, list_instances());
-    }
-}
-
-void NodeInstances::publish_instance_declarations_changed() const
-{
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_iv_module_instance_declarations_changed_event,
-        list_instances());
 }
 
 IvModuleRequiredDefinitionsChanged
@@ -467,8 +445,25 @@ std::string NodeInstances::create_instance(
     std::optional<std::string> requested_display_name,
     std::string configuration_source)
 {
+    Changes changes;
+    return create_instance(
+        changes,
+        definition_id,
+        std::move(package_root),
+        std::move(requested_instance_id),
+        std::move(requested_display_name),
+        std::move(configuration_source));
+}
+
+std::string NodeInstances::create_instance(
+    Changes& changes,
+    std::string_view definition_id,
+    std::filesystem::path package_root,
+    std::optional<std::string> requested_instance_id,
+    std::optional<std::string> requested_display_name,
+    std::string configuration_source)
+{
     IvModuleRequiredDefinitionsChanged required_diff;
-    IvModuleInstancesChanged instance_diff;
     auto const definition_key = std::string(definition_id);
     if (definition_key.empty()) {
         throw std::invalid_argument("node definition id must not be empty");
@@ -519,7 +514,7 @@ std::string NodeInstances::create_instance(
         if (definitions_snapshot_) {
             if (auto definition = definitions_snapshot_->by_id.find(definition_key);
                 definition != definitions_snapshot_->by_id.end()) {
-                publish_instance_locked(instance_id, definition->second, instance_diff);
+                publish_instance_locked(instance_id, definition->second);
             }
         }
     }
@@ -530,15 +525,20 @@ std::string NodeInstances::create_instance(
             iv_runtime_iv_module_required_definitions_changed_event,
             required_diff);
     }
-    publish_instance_changes(std::move(instance_diff), true);
-    publish_instance_declarations_changed();
+    changes.instances_list_changed = true;
+    changes.instance_declarations_changed = true;
     return instance_id;
 }
 
 void NodeInstances::remove_instance(std::string const& instance_id)
 {
+    Changes changes;
+    remove_instance(changes, instance_id);
+}
+
+void NodeInstances::remove_instance(Changes& changes, std::string const& instance_id)
+{
     IvModuleRequiredDefinitionsChanged required_diff;
-    IvModuleInstancesChanged instance_diff;
     bool changed = false;
 
     {
@@ -552,16 +552,14 @@ void NodeInstances::remove_instance(std::string const& instance_id)
                 return replacement.address.instance_id == instance_id;
             });
         changed = true;
-
-        if (published_instances_by_id_.erase(instance_id) > 0) {
-            instance_diff.deleted_instance_ids.push_back(instance_id);
-        }
-
+        published_instances_by_id_.erase(instance_id);
         required_diff = rebuild_required_definitions_locked();
     }
 
-    publish_instance_changes(std::move(instance_diff), changed);
-    if (changed) publish_instance_declarations_changed();
+    if (changed) {
+        changes.instances_list_changed = true;
+        changes.instance_declarations_changed = true;
+    }
     if (!required_diff.created.empty() || !required_diff.updated.empty()
         || !required_diff.deleted_definition_ids.empty()) {
         IV_INVOKE_LINKER_EVENT(
@@ -572,7 +570,12 @@ void NodeInstances::remove_instance(std::string const& instance_id)
 
 void NodeInstances::update_instances(std::vector<Update> updates)
 {
-    IvModuleInstancesChanged diff;
+    Changes changes;
+    update_instances(changes, std::move(updates));
+}
+
+void NodeInstances::update_instances(Changes& changes, std::vector<Update> updates)
+{
     bool list_changed = false;
     {
         std::scoped_lock lock(mutex_);
@@ -606,12 +609,13 @@ void NodeInstances::update_instances(std::vector<Update> updates)
                 instance->second.display_name = desired->second.display_name;
                 instance->second.configuration_source =
                     desired->second.configuration_source;
-                diff.updated.push_back(instance->second);
             }
         }
     }
-    publish_instance_changes(std::move(diff), list_changed);
-    if (list_changed) publish_instance_declarations_changed();
+    if (list_changed) {
+        changes.instances_list_changed = true;
+        changes.instance_declarations_changed = true;
+    }
 }
 
 std::vector<IvModuleInstanceInfo> NodeInstances::list_instances() const
@@ -1281,25 +1285,32 @@ std::size_t NodeInstances::configuration_cache_size() const
 void NodeInstances::handle_node_definitions_snapshot_changed(
     NodeDefinitionsSnapshotChanged const& change)
 {
-    if (!change.snapshot) {
+    Changes changes;
+    install_definitions_snapshot(changes, change.snapshot);
+}
+
+void NodeInstances::install_definitions_snapshot(
+    Changes& changes,
+    std::shared_ptr<NodeDefinitionsSnapshot const> const& snapshot)
+{
+    if (!snapshot) {
         throw std::invalid_argument("NodeDefinitions snapshot change is empty");
     }
 
-    IvModuleInstancesChanged diff;
     std::vector<std::shared_ptr<CacheEntry>> retired_cache_entries;
     bool list_changed = false;
     {
         std::scoped_lock lock(mutex_);
-        definitions_snapshot_ = change.snapshot;
+        definitions_snapshot_ = snapshot;
         (void)rebuild_required_definitions_locked();
         minimum_cache_generation_ = std::max(
-            minimum_cache_generation_, change.snapshot->generation);
+            minimum_cache_generation_, snapshot->generation);
         std::vector<std::shared_ptr<CacheEntry>> retained_cache_entries;
         retained_cache_entries.reserve(configuration_cache_.size());
         for (auto& entry : configuration_cache_) {
             if (entry && entry->configured
                 && configured_definition_closure_matches(
-                    *entry->configured, *change.snapshot)) {
+                    *entry->configured, *snapshot)) {
                 retained_cache_entries.push_back(std::move(entry));
             } else {
                 retired_cache_entries.push_back(std::move(entry));
@@ -1308,8 +1319,8 @@ void NodeInstances::handle_node_definitions_snapshot_changed(
         configuration_cache_ = std::move(retained_cache_entries);
         std::erase_if(expression_cache_, [&](auto const& entry) {
             if (!entry) return true;
-            auto const definition = change.snapshot->by_id.find(entry->definition_id);
-            return definition == change.snapshot->by_id.end()
+            auto const definition = snapshot->by_id.find(entry->definition_id);
+            return definition == snapshot->by_id.end()
                 || definition->second.version != entry->definition_version;
         });
 
@@ -1317,7 +1328,7 @@ void NodeInstances::handle_node_definitions_snapshot_changed(
         for (auto& [instance_id, desired] : desired_instances_by_id_) {
             auto definition = definitions_snapshot_->by_id.find(desired.definition_id);
             if (definition == definitions_snapshot_->by_id.end()) continue;
-            if (publish_instance_locked(instance_id, definition->second, diff)) {
+            if (publish_instance_locked(instance_id, definition->second)) {
                 list_changed = true;
             }
             realized_ids.insert(instance_id);
@@ -1328,12 +1339,11 @@ void NodeInstances::handle_node_definitions_snapshot_changed(
                 ++it;
                 continue;
             }
-            diff.deleted_instance_ids.push_back(it->first);
             it = published_instances_by_id_.erase(it);
             list_changed = true;
         }
     }
-    publish_instance_changes(std::move(diff), list_changed);
+    if (list_changed) changes.instances_list_changed = true;
 }
 
 void NodeInstances::handle_project_graph_transaction(
@@ -1350,14 +1360,14 @@ void NodeInstances::handle_project_graph_transaction(
         throw std::invalid_argument("ProjectGraph transaction requires a root GraphBuilder");
     }
 
+    Changes changes;
     bool install_snapshot = false;
     {
         std::scoped_lock lock(mutex_);
         install_snapshot = definitions_snapshot_.get() != request.snapshot.get();
     }
     if (install_snapshot) {
-        handle_node_definitions_snapshot_changed(
-            NodeDefinitionsSnapshotChanged{.snapshot = request.snapshot});
+        install_definitions_snapshot(changes, request.snapshot);
     }
 
     std::visit(
@@ -1380,13 +1390,14 @@ void NodeInstances::handle_project_graph_transaction(
                         "unknown loaded node definition: " + mutation.definition_id);
                 }
                 request.created_instance_ids.push_back(create_instance(
+                    changes,
                     mutation.definition_id,
                     *package_root,
                     mutation.instance_id,
                     mutation.display_name,
                     mutation.configuration_source));
             } else if constexpr (std::same_as<Mutation, NodeInstanceDeleteMutation>) {
-                remove_instance(mutation.instance_id);
+                remove_instance(changes, mutation.instance_id);
             } else if constexpr (std::same_as<Mutation, NodeInstanceUpdateMutation>) {
                 std::vector<Update> updates;
                 updates.reserve(mutation.updates.size());
@@ -1397,7 +1408,7 @@ void NodeInstances::handle_project_graph_transaction(
                         .configuration_source = update.configuration_source,
                     });
                 }
-                update_instances(std::move(updates));
+                update_instances(changes, std::move(updates));
             } else if constexpr (std::same_as<Mutation, NodeInstanceReplaceAllMutation>) {
                 std::unordered_set<std::string> instance_ids;
                 std::unordered_map<std::string, DesiredInstance> desired;
@@ -1508,8 +1519,8 @@ void NodeInstances::handle_project_graph_transaction(
                 }
 
                 IvModuleRequiredDefinitionsChanged required_diff;
-                IvModuleInstancesChanged instance_diff;
                 bool list_changed = false;
+                bool published_changed = false;
                 {
                     std::scoped_lock lock(mutex_);
                     list_changed = desired_instances_by_id_.size() != desired.size();
@@ -1554,16 +1565,15 @@ void NodeInstances::handle_project_graph_transaction(
                             next.display_name,
                             next.configuration_source);
                         auto const current = published_instances_by_id_.find(instance_id);
-                        if (current == published_instances_by_id_.end()) {
-                            instance_diff.created.push_back(instance);
-                        } else if (current->second != instance) {
-                            instance_diff.updated.push_back(instance);
+                        if (current == published_instances_by_id_.end()
+                            || current->second != instance) {
+                            published_changed = true;
                         }
                         published.emplace(instance_id, std::move(instance));
                     }
                     for (auto const& [instance_id, _] : published_instances_by_id_) {
                         if (!published.contains(instance_id)) {
-                            instance_diff.deleted_instance_ids.push_back(instance_id);
+                            published_changed = true;
                         }
                     }
 
@@ -1580,8 +1590,10 @@ void NodeInstances::handle_project_graph_transaction(
                         iv_runtime_iv_module_required_definitions_changed_event,
                         required_diff);
                 }
-                publish_instance_changes(std::move(instance_diff), list_changed);
-                if (list_changed) publish_instance_declarations_changed();
+                if (list_changed || published_changed) {
+                    changes.instances_list_changed = true;
+                }
+                if (list_changed) changes.instance_declarations_changed = true;
             } else if constexpr (std::same_as<
                                      Mutation,
                                      NodeReplacementPreviewMutation>) {
@@ -1720,6 +1732,12 @@ void NodeInstances::handle_project_graph_transaction(
         *request.root_builder,
         configuration_requests,
         &replacements_for_realization);
+
+    request.instances_list_changed = changes.instances_list_changed;
+    request.instance_declarations_changed = changes.instance_declarations_changed;
+    if (changes.instances_list_changed || changes.instance_declarations_changed) {
+        request.instances = list_instances();
+    }
 }
 
 void NodeInstances::handle_project_persistence_collect_state(

@@ -18,7 +18,8 @@
 #include <vector>
 
 namespace iv {
-    struct IvPackageCatalogChanged;
+    struct PackageRefreshPublication;
+    struct ProjectGraphPublication;
 
     using SocketRpcGraphQueryResult = ProjectQueryResult;
     using SocketRpcRegionQueryResult = ProjectRegionQueryResult;
@@ -145,12 +146,13 @@ namespace iv {
         void send_iv_package_definitions_updated();
         void send_virtual_nodes_updated(
             ProjectVirtualNodesNotification const &notification);
+        // The read-model changes a project-graph change committed: the
+        // instance list and the virtual-node replacements.
+        void send_project_graph_publication(
+            ProjectGraphPublication const &publication);
         void handle_project_notification(ProjectNotification const &notification);
-        void handle_iv_package_catalog_changed(
-            IvPackageCatalogChanged const &changed);
-        void handle_iv_module_instances_list_changed(
-            std::vector<IvModuleInstanceInfo> const &instances);
-        void handle_iv_module_source_introspection_nodes_updated(
-            ProjectVirtualNodesNotification const &notification);
+        // The one report of a package refresh.
+        void handle_package_refresh_published(
+            PackageRefreshPublication const &publication);
     };
 } // namespace iv

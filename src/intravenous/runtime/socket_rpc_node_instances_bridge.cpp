@@ -11,8 +11,4 @@ IV_SUBSCRIBE_LINKER_EVENT(
     socket_rpc_node_instances_bridge,
     iv_socket_rpc_get_node_instances_event,
     &NodeInstances::handle_socket_rpc_get_node_instances)
-IV_SUBSCRIBE_LINKER_EVENT(
-    socket_rpc_node_instances_bridge,
-    iv_runtime_iv_module_instances_list_changed_event,
-    &SocketRpcServer::handle_iv_module_instances_list_changed)
 } // namespace iv

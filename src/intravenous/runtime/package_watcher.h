@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -35,18 +36,24 @@ class PackageWatcher {
     std::unordered_set<std::string> dirty_package_ids_;
     DependencyWatcher dependency_watcher_;
 
+    // The changes and build batch of the next refresh, taken from the dirty
+    // and declaration state by prepare_refresh() so the service can announce
+    // the build before the refresh cause runs.
+    struct PreparedRefresh {
+        PackageRefreshTransaction transaction{};
+        PackageJitBatchRequest jit_request{};
+        std::unordered_map<std::string, IvPackageDeclaration> next_published{};
+    };
+    std::optional<PreparedRefresh> prepared_refresh_;
+
     [[nodiscard]] std::unordered_map<std::string, IvPackageDeclaration>
     merge_declaration_sources_locked() const;
     void install_effective_declarations_locked(
         std::unordered_map<std::string, IvPackageDeclaration> next);
     void refresh_watched_dependencies_locked();
+    [[nodiscard]] std::optional<PreparedRefresh> prepare_refresh_locked();
     [[nodiscard]] bool refresh_pending_packages(
         PackageWatcherRefreshRequest& request);
-    void emit_status(
-        std::string level,
-        std::string code,
-        std::string message,
-        std::filesystem::path package_root = {});
 
 public:
     PackageWatcher();
@@ -59,6 +66,9 @@ public:
     void poll_dependency_changes();
     [[nodiscard]] int dependency_watch_descriptor() const noexcept;
     [[nodiscard]] bool has_pending_refresh() const;
+    // Fixes the next refresh's batch and reports it; nullopt when nothing
+    // needs refreshing. A refresh without a prepared batch prepares its own.
+    [[nodiscard]] std::optional<PackageWatcherRefreshPlan> prepare_refresh();
     void handle_refresh_requested(PackageWatcherRefreshRequest& request);
 };
 } // namespace iv

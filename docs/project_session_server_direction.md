@@ -22,10 +22,16 @@ shared client ──┘              │
                                 └─ notifications to subscribed clients
 ```
 
-The session server owns mutable project/runtime state. A client does not own a
-server merely because it started it.
+The session server owns mutable project/runtime state.
 
-On activation, a client should:
+**Default: the client owns its server** (decided 2026-11-12). A client launches its
+own server process and is that server's only client. Reloading or closing the
+client stops the server, so restarting the client restarts the application. If
+the server stops while the client keeps running, the client starts a new one.
+There is no discovery of, or attachment to, a server launched by another client.
+
+**Shared sessions are a future opt-in mode, not implemented in the client.** When
+explicitly enabled, a client would instead:
 
 1. derive a stable identity from the canonical project root;
 2. discover an existing session server for that project;
@@ -36,7 +42,10 @@ On activation, a client should:
 This is preferable to deciding behavior from the presence of a specific VS Code
 extension. In a Remote SSH window, the extension host discovers a server on the
 remote machine because that is where it runs. In a local window, it discovers a
-local one by the same mechanism.
+local one by the same mechanism. The protocol requirements below remain the
+foundation of that mode. The superseded rule that a client never owns the server
+it starts is preserved in
+[historical documentation](./historical/project_session_client_attachment_before_owned_server_2026-11-12.md).
 
 ## Session protocol requirements
 
@@ -114,15 +123,19 @@ On Linux, a server without `--rpc-fd` owns the project lock and publishes
 project root, protocol version, PID, startup time, Unix socket path, and local
 capability. The descriptor and socket permit access by the current user only.
 
-The VS Code client now uses create-or-connect behavior. It discovers an existing
-descriptor before it starts a server. It authenticates with `session.hello`,
-subscribes from its last revision, and requests a snapshot when replay is not
-possible. If the connection closes, it discovers or starts a session again.
-Extension shutdown closes only the client connection. It does not stop the
-shared server.
+The VS Code client owns its server (implemented 2026-11-12, not yet built or
+tested). It spawns the server with `--rpc-fd 3` and the parent end of a socket
+pair as that descriptor, so the server publishes no project endpoint and takes no
+project lock. The client on the inherited descriptor is the server's **owner**:
+when that connection closes, including when the extension host exits on a window
+reload or a crash, the server shuts down. If the connection is lost while the
+window stays open, the client starts a new server, backing off while servers keep
+failing soon after starting. Extension shutdown closes the socket and also sends
+`SIGTERM`.
 
-The inherited `--rpc-fd` transport remains available for tests and compatible
-launchers. It creates one trusted client and does not publish a project endpoint.
+Without `--rpc-fd`, the server still publishes the endpoint and descriptor
+described below and accepts multiple authenticated clients; the client no longer
+uses that path.
 
 As of 2026-11-04, the repository owner's complete C++ build and test suite passes for
 this core implementation. The VS Code client typecheck and npm tests also pass.

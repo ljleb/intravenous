@@ -21,11 +21,9 @@ import {
     VirtualPortConnectivity,
 } from "./graphModel";
 import { LiveGraphControlMessage, LiveGraphSessionStatus } from "./liveGraphProtocol";
+import { Duplex } from "stream";
+
 import { JsonRpcSocketClient } from "./rpcClient";
-import {
-    ProjectSessionDescriptor,
-    readProjectSessionDescriptor,
-} from "./projectSessionDiscovery";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
 import { autoDetectedServerDirectoriesForWorkspaceRoot } from "./serverBinaryPaths";
 import { WorkspaceNotificationRouter } from "./workspaceNotifications";
@@ -74,7 +72,9 @@ type ServerMessageNotification = {
     message?: string;
 };
 
-type ServerReadyNotification = Record<string, never>;
+type ServerReadyNotification = {
+    sessionRevision?: number;
+};
 
 type IvModuleInstanceInfo = {
     instanceId?: string;
@@ -119,8 +119,16 @@ export class WorkspaceSession {
             "diagnostics.log",
         );
     private serverReadyReceived = false;
+    // Covers package/project loading before the server starts serving.
+    private readonly serverReadyTimeoutMs = 20000;
     private lastSessionRevision = 0;
-    private sessionDescriptorIdentity = "";
+    // Restart backoff for a server that keeps failing soon after it starts.
+    private readonly initialRestartDelayMs = 1000;
+    private readonly maxRestartDelayMs = 30000;
+    private readonly stableServerRunMs = 30000;
+    private restartDelayMs = 1000;
+    private restartInFlight = false;
+    private connectedAtMs: number | null = null;
     private shuttingDown = false;
     private serverReadyWaiters: Array<{
         resolve: () => void;
@@ -170,7 +178,10 @@ export class WorkspaceSession {
             }
         });
 
-        this.notifications.subscribe<ServerReadyNotification>("server.ready", () => {
+        this.notifications.subscribe<ServerReadyNotification>("server.ready", (params) => {
+            if (typeof params.sessionRevision === "number") {
+                this.lastSessionRevision = params.sessionRevision;
+            }
             this.serverReadyReceived = true;
             this.outputChannel.appendLine("Intravenous server ready");
             this.resolveServerReadyWaiters();
@@ -691,6 +702,9 @@ export class WorkspaceSession {
         return await this.startInFlight;
     }
 
+    // The window owns its server. The server is spawned with one inherited
+    // socket on fd 3 (--rpc-fd) and stops when that socket closes, which also
+    // happens when the extension host exits on a window reload or a crash.
     private async startImpl(): Promise<boolean> {
         if (!this.isIntravenousProject()) {
             return false;
@@ -698,18 +712,14 @@ export class WorkspaceSession {
         this.lastTerminalStatusMessage = "";
         this.resetServerReadyState();
 
-        const existing = readProjectSessionDescriptor(this.workspaceRoot());
-        if (existing && await this.attachToProjectSession(existing)) {
-            await this.loadInitialSessionState();
-            return true;
-        }
-
         const binary = this.serverBinaryPath();
         const serverDir = path.dirname(binary);
         const args = [
             "--server",
             "--workspace-root",
             this.workspaceRoot(),
+            "--rpc-fd",
+            "3",
         ];
         const childEnv = {
             ...process.env,
@@ -724,18 +734,17 @@ export class WorkspaceSession {
             `Intravenous server diagnostic log: ${this.serverDiagnosticLogPath}`,
         );
         const processLog = fs.openSync(this.serverDiagnosticLogPath, "a");
+        let spawnedProcess: childProcess.ChildProcess;
         try {
-            this.process = childProcess.spawn(binary, args, {
+            spawnedProcess = childProcess.spawn(binary, args, {
                 cwd: this.workspaceRoot(),
                 env: childEnv,
-                detached: true,
-                stdio: ["ignore", processLog, processLog],
+                stdio: ["ignore", processLog, processLog, "pipe"],
             });
         } finally {
             fs.closeSync(processLog);
         }
-        const spawnedProcess = this.process;
-        spawnedProcess.unref();
+        this.process = spawnedProcess;
         this.outputChannel.appendLine("Intravenous startup: server process spawned");
 
         spawnedProcess.on("error", (error) => {
@@ -747,29 +756,25 @@ export class WorkspaceSession {
             this.outputChannel.appendLine(`Intravenous server exited: code=${code} signal=${signal}`);
         });
 
-        if (!(await this.attachToAvailableProjectSession(10000))) {
+        const socket = spawnedProcess.stdio[3];
+        if (!(socket instanceof Duplex)) {
+            spawnedProcess.kill();
+            throw new Error("Intravenous server was spawned without its RPC socket");
+        }
+        try {
+            await this.connectToServer(socket);
+        } catch (error) {
             this.logCapturedServerFailureContext();
-            throw new Error(
-                "Intravenous project session did not accept a connection before timeout",
-            );
+            spawnedProcess.kill();
+            throw error;
         }
         await this.loadInitialSessionState();
         return true;
     }
 
-    private async attachToProjectSession(
-        descriptor: ProjectSessionDescriptor,
-    ): Promise<boolean> {
-        this.resetServerReadyState();
-        let attached = false;
-        const descriptorIdentity =
-            `${descriptor.pid}:${descriptor.startupTimeUnixMs}:${descriptor.localCapability}`;
-        const afterRevision = descriptorIdentity === this.sessionDescriptorIdentity
-            ? this.lastSessionRevision
-            : 0;
-        let client: JsonRpcSocketClient;
-        client = new JsonRpcSocketClient(
-            descriptor.endpoint.path,
+    private async connectToServer(socket: Duplex): Promise<void> {
+        const client = new JsonRpcSocketClient(
+            socket,
             (method, params) => {
                 if (typeof params.revision === "number") {
                     this.lastSessionRevision = Math.max(
@@ -777,116 +782,83 @@ export class WorkspaceSession {
                 }
                 void this.notifications.dispatch(method, params);
             },
-            (error) => {
-                if (attached) this.handleProjectSessionDisconnect(client, error);
-            },
+            (error) => this.handleServerConnectionLost(client, error),
             (revision) => {
                 this.lastSessionRevision = revision;
             },
         );
-        try {
-            this.outputChannel.appendLine(
-                `Intravenous startup: attaching to project session ${descriptor.endpoint.path}`,
-            );
-            await client.connect(1000);
-            this.client = client;
-            this.rpc = new WorkspaceRpc(client, () => this.lastSessionRevision);
-            await this.waitForServerReady(3000);
-            await this.rpc.hello(
-                `vscode-${process.pid}-${crypto.randomUUID()}`,
-                descriptor.localCapability,
-            );
-            const subscription = await this.rpc.subscribe(afterRevision);
-            this.lastSessionRevision = subscription.currentRevision;
-            if (subscription.snapshotRequired) {
-                const snapshot = await this.rpc.snapshot();
-                this.applySessionSnapshot(snapshot);
-                if (typeof snapshot.sessionRevision === "number") {
-                    this.lastSessionRevision = snapshot.sessionRevision;
-                }
-                const resumed = await this.rpc.subscribe(this.lastSessionRevision);
-                this.lastSessionRevision = resumed.currentRevision;
-                if (resumed.snapshotRequired) {
-                    throw new Error(
-                        "project session replay window advanced while applying a snapshot",
-                    );
-                }
-            }
-            this.outputChannel.appendLine(
-                `Intravenous startup: attached at session revision ${subscription.currentRevision}`,
-            );
-            this.sessionDescriptorIdentity = descriptorIdentity;
-            attached = true;
-            return true;
-        } catch (error) {
-            attached = false;
-            client.dispose();
-            if (this.client === client) this.client = null;
-            this.rpc = null;
-            this.outputChannel.appendLine(
-                `Intravenous startup: project session attachment failed: ${error instanceof Error ? error.message : String(error)}`,
-            );
-            return false;
-        }
+        this.client = client;
+        await client.connect();
+        this.rpc = new WorkspaceRpc(client, () => this.lastSessionRevision);
+        // The inherited client is trusted and subscribed to every notification
+        // from the moment it is attached, so nothing needs replaying.
+        await this.waitForServerReady(this.serverReadyTimeoutMs);
+        await this.rpc.hello(`vscode-${process.pid}-${crypto.randomUUID()}`, "");
+        this.connectedAtMs = Date.now();
+        this.outputChannel.appendLine(
+            `Intravenous startup: connected at session revision ${this.lastSessionRevision}`,
+        );
     }
 
-    private handleProjectSessionDisconnect(
+    // The server stops with its socket, so a lost connection means this
+    // window's server is gone. Unless the window is shutting down, start a new
+    // one, backing off while servers keep failing soon after starting.
+    private handleServerConnectionLost(
         client: JsonRpcSocketClient,
         error: Error,
     ): void {
-        if (this.shuttingDown || this.client !== client) return;
-        this.outputChannel.appendLine(
-            `Intravenous project session disconnected: ${error.message}; reconnecting`,
-        );
+        if (this.client !== client) return;
         this.client = null;
         this.rpc = null;
-        this.resetServerReadyState();
-        this.provider.setSessionStatus("reconnecting");
-        const priorStart = this.startInFlight;
-        void (async () => {
-            if (priorStart) {
-                try {
-                    await priorStart;
-                } catch {
-                }
-            }
-            while (!this.shuttingDown && !this.rpc) {
-                try {
-                    await this.start();
-                } catch (reconnectError) {
-                    this.outputChannel.appendLine(
-                        `Intravenous project session reconnect attempt failed: ${reconnectError instanceof Error ? reconnectError.message : String(reconnectError)}`,
-                    );
-                }
-                if (!this.shuttingDown && !this.rpc) {
-                    await new Promise<void>((resolve) => setTimeout(resolve, 1000));
-                }
-            }
-        })().catch((reconnectError) => {
-                this.outputChannel.appendLine(
-                    `Intravenous project session reconnect failed: ${reconnectError instanceof Error ? reconnectError.message : String(reconnectError)}`,
-                );
-            });
+        this.serverReadyReceived = false;
+        this.rejectServerReadyWaiters(error);
+        this.rebuildStatusBar.hide();
+        const lostProcess = this.process;
+        this.process = null;
+        lostProcess?.kill("SIGTERM");
+        if (this.shuttingDown) return;
+
+        const ranLongEnough = this.connectedAtMs !== null
+            && Date.now() - this.connectedAtMs >= this.stableServerRunMs;
+        this.restartDelayMs = ranLongEnough
+            ? this.initialRestartDelayMs
+            : Math.min(this.restartDelayMs * 2, this.maxRestartDelayMs);
+        this.connectedAtMs = null;
+        this.provider.setSessionStatus("restarting");
+        this.outputChannel.appendLine(
+            `Intravenous server connection lost: ${error.message}; restarting the server`,
+        );
+        void this.restartServer();
     }
 
-    private async attachToAvailableProjectSession(
-        timeoutMs: number,
-    ): Promise<boolean> {
-        const deadline = Date.now() + timeoutMs;
-        let lastEndpoint = "";
-        for (;;) {
-            const descriptor = readProjectSessionDescriptor(this.workspaceRoot());
-            if (descriptor) {
-                if (descriptor.endpoint.path !== lastEndpoint) {
-                    lastEndpoint = descriptor.endpoint.path;
+    private async restartServer(): Promise<void> {
+        if (this.restartInFlight) return;
+        this.restartInFlight = true;
+        try {
+            while (!this.shuttingDown && !this.rpc) {
+                await new Promise<void>((resolve) => setTimeout(resolve, this.restartDelayMs));
+                if (this.shuttingDown || this.rpc) break;
+                try {
+                    await this.start();
+                } catch (error) {
                     this.outputChannel.appendLine(
-                        `Intravenous startup: discovered project session ${lastEndpoint}`,
+                        `Intravenous server restart failed: ${error instanceof Error ? error.message : String(error)}`,
                     );
+                    this.restartDelayMs = Math.min(
+                        this.restartDelayMs * 2, this.maxRestartDelayMs);
                 }
-                if (await this.attachToProjectSession(descriptor)) return true;
             }
-            if (Date.now() >= deadline) return false;
-            await new Promise<void>((resolve) => setTimeout(resolve, 50));
+            // The panel still shows nodes from the stopped server.
+            if (this.rpc && this.lastQuery) {
+                const nodes = await this.refreshLastQuery();
+                this.updatePrimaryHighlight(nodes);
+            }
+        } catch (error) {
+            this.outputChannel.appendLine(
+                `Intravenous query after restart failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+        } finally {
+            this.restartInFlight = false;
         }
     }
 
@@ -902,38 +874,7 @@ export class WorkspaceSession {
         this.outputChannel.appendLine(
             `Intravenous instances after ready: total=${this.ivModuleInstances.length} realized=${realizedCount} selected=${this.selectedInstanceId ?? "[none]"}`,
         );
-        this.provider.setSessionStatus("attached");
-        // After a reconnect the panel still shows nodes from the previous
-        // session; re-run its source-span query against the attached one.
-        if (this.lastQuery) {
-            try {
-                const nodes = await this.refreshLastQuery();
-                this.updatePrimaryHighlight(nodes);
-            } catch (error) {
-                this.outputChannel.appendLine(
-                    `Intravenous query after attach failed: ${error instanceof Error ? error.message : String(error)}`,
-                );
-            }
-        }
-    }
-
-    private applySessionSnapshot(snapshot: Record<string, unknown>): void {
-        const nodeInstances = snapshot.nodeInstances as
-            | { instances?: unknown[] }
-            | undefined;
-        if (Array.isArray(nodeInstances?.instances)) {
-            this.ivModuleInstances = this.parseIvModuleInstances(
-                nodeInstances.instances);
-            this.projectModuleInstances = this.ivModuleInstances;
-            this.refreshVisibleInstances();
-        }
-        const packages = snapshot.packages as
-            | { packages?: unknown[] }
-            | undefined;
-        if (Array.isArray(packages?.packages)) {
-            this.ivPackages = this.parseIvPackageDefinitions(packages.packages);
-            this.refreshModulesPanelState();
-        }
+        this.provider.setSessionStatus("running");
     }
 
     private async waitForServerReady(timeoutMs: number): Promise<void> {
@@ -1288,7 +1229,7 @@ export class WorkspaceSession {
         if (!this.rpc) {
             await this.start();
         }
-        return true;
+        return this.rpc !== null;
     }
 
     private logServerState(prefix: string, params: ServerStatusNotification): void {
@@ -1385,13 +1326,16 @@ export class WorkspaceSession {
             clearTimeout(this.clangdRestartTimer);
             this.clangdRestartTimer = null;
         }
+        // Closing the inherited socket stops the server; the signal covers a
+        // server that is not reading its socket.
         if (this.client) {
             this.client.dispose();
             this.client = null;
         }
         this.rpc = null;
-        // A client does not own the project session merely because it won the
-        // create-or-connect race and started the server process.
-        this.process = null;
+        if (this.process) {
+            this.process.kill("SIGTERM");
+            this.process = null;
+        }
     }
 }

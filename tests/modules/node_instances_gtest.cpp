@@ -23,32 +23,30 @@
 #include <vector>
 
 namespace {
+// The refresh transaction also carries PackageDefinitions' reply (the project
+// publication), so the handler takes it as an lvalue.
+void refresh_packages(
+    iv::PackageDefinitions& packages,
+    iv::PackageRefreshTransaction transaction)
+{
+    packages.handle_package_refresh(transaction);
+}
+
 constexpr std::string_view module_id = "iv.test.module";
 
+// NodeInstances raises only the required-definitions event; its instance-list
+// changes return in the ProjectGraph transaction record.
 struct NodeInstancesWitness {
     std::optional<iv::IvModuleRequiredDefinitionsChanged> required_diff {};
-    std::optional<iv::IvModuleInstancesChanged> instances_diff {};
-    std::optional<std::vector<iv::IvModuleInstanceInfo>> listed_instances {};
 
     void reset()
     {
         required_diff.reset();
-        instances_diff.reset();
-        listed_instances.reset();
     }
     void handle_required_definitions_changed(
         iv::IvModuleRequiredDefinitionsChanged const &diff)
     {
         required_diff = diff;
-    }
-    void handle_instances_changed(iv::IvModuleInstancesChanged const &diff)
-    {
-        instances_diff = diff;
-    }
-    void handle_instances_list_changed(
-        std::vector<iv::IvModuleInstanceInfo> const &instances)
-    {
-        listed_instances = instances;
     }
 };
 
@@ -95,14 +93,6 @@ IV_SUBSCRIBE_LINKER_EVENT(
     node_instances_witness_bridge,
     iv_runtime_iv_module_required_definitions_changed_event,
     &NodeInstancesWitness::handle_required_definitions_changed)
-IV_SUBSCRIBE_LINKER_EVENT(
-    node_instances_witness_bridge,
-    iv_runtime_iv_module_instances_changed_event,
-    &NodeInstancesWitness::handle_instances_changed)
-IV_SUBSCRIBE_LINKER_EVENT(
-    node_instances_witness_bridge,
-    iv_runtime_iv_module_instances_list_changed_event,
-    &NodeInstancesWitness::handle_instances_list_changed)
 
 class NodeInstancesTest : public ::testing::Test {
 protected:
@@ -112,7 +102,7 @@ protected:
 };
 } // namespace
 
-TEST_F(NodeInstancesTest, CreateInstancePublishesRequiredDefinitionAndListChange)
+TEST_F(NodeInstancesTest, CreateInstancePublishesRequiredDefinitionAndListsTheInstance)
 {
     auto const workspace =
         iv::test_support::fresh_module_fixture_workspace("iv_module_instances_create");
@@ -127,11 +117,11 @@ TEST_F(NodeInstancesTest, CreateInstancePublishesRequiredDefinitionAndListChange
     EXPECT_EQ(witness.required_diff->created.front().definition_id, module_id);
     EXPECT_EQ(witness.required_diff->created.front().package_root, module_root);
 
-    ASSERT_TRUE(witness.listed_instances.has_value());
-    ASSERT_EQ(witness.listed_instances->size(), 1u);
-    EXPECT_EQ(witness.listed_instances->front().instance_id, instance_id);
-    EXPECT_EQ(witness.listed_instances->front().definition_id, module_id);
-    EXPECT_FALSE(witness.listed_instances->front().realized);
+    auto const listed = instances.list_instances();
+    ASSERT_EQ(listed.size(), 1u);
+    EXPECT_EQ(listed.front().instance_id, instance_id);
+    EXPECT_EQ(listed.front().definition_id, module_id);
+    EXPECT_FALSE(listed.front().realized);
 }
 
 TEST_F(NodeInstancesTest, CreateRejectsEmptyStableAndDefinitionIds)
@@ -165,8 +155,7 @@ TEST_F(NodeInstancesTest, CreateSecondInstanceForSameDefinitionDoesNotRepublishR
 
     EXPECT_FALSE(second_instance_id.empty());
     EXPECT_FALSE(witness.required_diff.has_value());
-    ASSERT_TRUE(witness.listed_instances.has_value());
-    ASSERT_EQ(witness.listed_instances->size(), 2u);
+    EXPECT_EQ(instances.list_instances().size(), 2u);
 }
 
 TEST_F(NodeInstancesTest, SameDefinitionIdAtNewRootRepublishesUpdatedRequirement)
@@ -215,10 +204,10 @@ TEST_F(NodeInstancesTest, DefinitionChangeMovesInstanceToPublishedPackageRoot)
     // Updating the local instance snapshot must not feed a second requirement event
     // back into NodeDefinitions during the same source-event propagation.
     EXPECT_FALSE(witness.required_diff.has_value());
-    ASSERT_TRUE(witness.listed_instances.has_value());
-    ASSERT_EQ(witness.listed_instances->size(), 1u);
-    EXPECT_EQ(witness.listed_instances->front().package_root, moved_root);
-    EXPECT_TRUE(witness.listed_instances->front().realized);
+    auto const listed = instances.list_instances();
+    ASSERT_EQ(listed.size(), 1u);
+    EXPECT_EQ(listed.front().package_root, moved_root);
+    EXPECT_TRUE(listed.front().realized);
 }
 
 TEST_F(NodeInstancesTest, PackageRegistryListsQueuedPackagesBeforeTheirFirstBuild)
@@ -243,7 +232,7 @@ TEST_F(NodeInstancesTest, PackageRegistryListsQueuedPackagesBeforeTheirFirstBuil
     auto package_definitions_scope =
         iv::package_definitions_node_definitions_bridge::bind(sources, definitions);
     auto declarations = iv::discover_iv_package_declarations(workspace, {});
-    sources.handle_package_refresh(iv::PackageRefreshTransaction{
+    refresh_packages(sources, iv::PackageRefreshTransaction{
         .declarations = iv::IvPackageDeclarationsChanged{
             .created = std::move(declarations),
         },
@@ -258,7 +247,7 @@ TEST_F(NodeInstancesTest, PackageRegistryListsQueuedPackagesBeforeTheirFirstBuil
     EXPECT_TRUE(discovered.front().module_ids.empty());
 }
 
-TEST_F(NodeInstancesTest, DefinitionsChangedRealizesMatchingInstancesAndPublishesDiff)
+TEST_F(NodeInstancesTest, DefinitionsChangedRealizesMatchingInstances)
 {
     auto const workspace =
         iv::test_support::fresh_module_fixture_workspace("iv_module_instances_realize");
@@ -272,16 +261,12 @@ TEST_F(NodeInstancesTest, DefinitionsChangedRealizesMatchingInstancesAndPublishe
         .created = {make_definition(module_root)},
     });
 
-    ASSERT_TRUE(witness.instances_diff.has_value());
-    ASSERT_EQ(witness.instances_diff->created.size(), 1u);
-    EXPECT_EQ(witness.instances_diff->created.front().instance_id, instance_id);
-    EXPECT_EQ(witness.instances_diff->created.front().definition_id, module_id);
-    EXPECT_EQ(witness.instances_diff->created.front().module_id, "iv.test.module");
-
-    ASSERT_TRUE(witness.listed_instances.has_value());
-    ASSERT_EQ(witness.listed_instances->size(), 1u);
-    EXPECT_TRUE(witness.listed_instances->front().realized);
-    EXPECT_EQ(witness.listed_instances->front().module_id, "iv.test.module");
+    auto const listed = instances.list_instances();
+    ASSERT_EQ(listed.size(), 1u);
+    EXPECT_EQ(listed.front().instance_id, instance_id);
+    EXPECT_EQ(listed.front().definition_id, module_id);
+    EXPECT_TRUE(listed.front().realized);
+    EXPECT_EQ(listed.front().module_id, "iv.test.module");
 }
 
 TEST_F(NodeInstancesTest, DefinitionRemovalKeepsDesiredInstanceVisibleAsUnrealized)
@@ -305,17 +290,14 @@ TEST_F(NodeInstancesTest, DefinitionRemovalKeepsDesiredInstanceVisibleAsUnrealiz
         .deleted_definition_ids = {std::string(module_id)},
     });
 
-    ASSERT_TRUE(witness.instances_diff.has_value());
-    ASSERT_EQ(witness.instances_diff->deleted_instance_ids.size(), 1u);
-    EXPECT_EQ(witness.instances_diff->deleted_instance_ids.front(), instance_id);
-    ASSERT_TRUE(witness.listed_instances.has_value());
-    ASSERT_EQ(witness.listed_instances->size(), 1u);
-    EXPECT_EQ(witness.listed_instances->front().instance_id, instance_id);
-    EXPECT_EQ(witness.listed_instances->front().definition_id, module_id);
-    EXPECT_FALSE(witness.listed_instances->front().realized);
+    auto const listed = instances.list_instances();
+    ASSERT_EQ(listed.size(), 1u);
+    EXPECT_EQ(listed.front().instance_id, instance_id);
+    EXPECT_EQ(listed.front().definition_id, module_id);
+    EXPECT_FALSE(listed.front().realized);
 }
 
-TEST_F(NodeInstancesTest, RemoveLastPublishedInstancePublishesDeleteAndDropsRequirement)
+TEST_F(NodeInstancesTest, RemoveLastPublishedInstanceUnlistsItAndDropsRequirement)
 {
     auto const workspace =
         iv::test_support::fresh_module_fixture_workspace("iv_module_instances_remove");
@@ -330,19 +312,13 @@ TEST_F(NodeInstancesTest, RemoveLastPublishedInstancePublishesDeleteAndDropsRequ
 
     instances.remove_instance(instance_id);
 
-    ASSERT_TRUE(witness.instances_diff.has_value());
-    ASSERT_EQ(witness.instances_diff->deleted_instance_ids.size(), 1u);
-    EXPECT_EQ(witness.instances_diff->deleted_instance_ids.front(), instance_id);
-
     ASSERT_TRUE(witness.required_diff.has_value());
     ASSERT_EQ(witness.required_diff->deleted_definition_ids.size(), 1u);
     EXPECT_EQ(witness.required_diff->deleted_definition_ids.front(), module_id);
-
-    ASSERT_TRUE(witness.listed_instances.has_value());
-    EXPECT_TRUE(witness.listed_instances->empty());
+    EXPECT_TRUE(instances.list_instances().empty());
 }
 
-TEST_F(NodeInstancesTest, ConfigurationSourceUpdatePublishesTheNewDurableRequest)
+TEST_F(NodeInstancesTest, ConfigurationSourceUpdateListsTheNewDurableRequest)
 {
     auto const workspace = iv::test_support::fresh_module_fixture_workspace(
         "iv_module_instances_configuration_source_update");
@@ -363,14 +339,46 @@ TEST_F(NodeInstancesTest, ConfigurationSourceUpdatePublishesTheNewDurableRequest
         .configuration_source = "880",
     }});
 
-    ASSERT_TRUE(witness.instances_diff.has_value());
-    ASSERT_EQ(witness.instances_diff->updated.size(), 1u);
-    EXPECT_EQ(
-        witness.instances_diff->updated.front().configuration_source,
-        "880");
-    ASSERT_TRUE(witness.listed_instances.has_value());
-    ASSERT_EQ(witness.listed_instances->size(), 1u);
-    EXPECT_EQ(witness.listed_instances->front().configuration_source, "880");
+    auto const listed = bridge_source.list_instances();
+    ASSERT_EQ(listed.size(), 1u);
+    EXPECT_EQ(listed.front().configuration_source, "880");
+}
+
+TEST_F(NodeInstancesTest, TransactionReturnsItsInstanceReadModelChanges)
+{
+    auto const workspace = iv::test_support::fresh_module_fixture_workspace(
+        "node_instances_transaction_changes");
+    auto const module_root = std::filesystem::weakly_canonical(workspace);
+
+    iv::GraphBuilder root;
+    iv::NodeInstancesProjectGraphRequest created{
+        .snapshot = std::make_shared<iv::NodeDefinitionsSnapshot const>(),
+        .root_builder = &root,
+        .mutation = iv::NodeInstanceCreateMutation{
+            .instance_id = "instance:created",
+            .definition_id = std::string(module_id),
+            .package_root = module_root,
+        },
+    };
+    bridge_source.handle_project_graph_transaction(created);
+
+    // NodeInstances publishes nothing itself; ProjectGraph publishes these.
+    EXPECT_TRUE(created.instances_list_changed);
+    EXPECT_TRUE(created.instance_declarations_changed);
+    ASSERT_EQ(created.instances.size(), 1u);
+    EXPECT_EQ(created.instances.front().instance_id, "instance:created");
+    EXPECT_FALSE(created.instances.front().realized);
+
+    iv::GraphBuilder unchanged_root;
+    iv::NodeInstancesProjectGraphRequest unchanged{
+        .snapshot = created.snapshot,
+        .root_builder = &unchanged_root,
+    };
+    bridge_source.handle_project_graph_transaction(unchanged);
+
+    EXPECT_FALSE(unchanged.instances_list_changed);
+    EXPECT_FALSE(unchanged.instance_declarations_changed);
+    EXPECT_TRUE(unchanged.instances.empty());
 }
 
 TEST_F(NodeInstancesTest, InvalidReplaceAllDoesNotPartiallyChangeDesiredState)
@@ -413,8 +421,8 @@ TEST_F(NodeInstancesTest, InvalidReplaceAllDoesNotPartiallyChangeDesiredState)
     EXPECT_TRUE(request.handled);
     EXPECT_EQ(bridge_source.desired_instances(), before);
     EXPECT_FALSE(witness.required_diff.has_value());
-    EXPECT_FALSE(witness.instances_diff.has_value());
-    EXPECT_FALSE(witness.listed_instances.has_value());
+    EXPECT_FALSE(request.instances_list_changed);
+    EXPECT_FALSE(request.instance_declarations_changed);
 }
 
 TEST_F(NodeInstancesTest, ReplaceAllDoesNotInventARootForAnUnresolvedDefinition)

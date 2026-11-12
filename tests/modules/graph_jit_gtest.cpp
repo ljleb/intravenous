@@ -54,6 +54,15 @@
 
 
 namespace {
+// The snapshot record also carries ProjectGraph's reply (its publication), so
+// the handler takes it as an lvalue.
+void publish_definitions_snapshot(
+    iv::ProjectGraph& project_graph,
+    iv::NodeDefinitionsSnapshotChanged change)
+{
+    project_graph.handle_node_definitions_snapshot_changed(change);
+}
+
 
 iv::GlobalIndex index(std::int64_t value)
 {
@@ -24894,7 +24903,7 @@ TEST(GraphJitProjectGraphBridge, EmptyRootGenerationCompilesSuccessfully)
 
     auto snapshot = std::make_shared<iv::NodeDefinitionsSnapshot>();
     snapshot->generation = 1;
-    EXPECT_NO_THROW(project_graph.handle_node_definitions_snapshot_changed(
+    EXPECT_NO_THROW(publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{.snapshot = snapshot}));
 
     auto const generation = project_graph.current_generation();
@@ -24929,7 +24938,7 @@ TEST(GraphJitProjectGraphBridge, UnboundSingletonReturnLeavesCompilationUnattemp
 
     auto snapshot = std::make_shared<iv::NodeDefinitionsSnapshot>();
     snapshot->generation = 1;
-    EXPECT_NO_THROW(project_graph.handle_node_definitions_snapshot_changed(
+    EXPECT_NO_THROW(publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{.snapshot = snapshot}));
 
     auto const generation = project_graph.current_generation();

@@ -14,6 +14,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -162,6 +163,18 @@ namespace {
             });
         }
 
+        // Stands in for ProjectGraph: a mutation answers with the read-model
+        // changes it committed.
+        void handle_delete_node_instance(
+            iv::DeleteNodeInstanceRequest const&,
+            iv::SocketRpcAckResponseBuilder& builder)
+        {
+            builder.set_publication(iv::ProjectGraphPublication{
+                .instances = std::vector<iv::IvModuleInstanceInfo>{},
+            });
+            builder.succeed();
+        }
+
     };
 
     SocketRpcTestState socket_rpc_test_state;
@@ -196,6 +209,10 @@ namespace {
         socket_rpc_server_test_state_bridge,
         iv_socket_rpc_get_node_event_protocol_event,
         &SocketRpcTestState::handle_get_node_event_protocol)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_state_bridge,
+        iv_socket_rpc_delete_node_instance_event,
+        &SocketRpcTestState::handle_delete_node_instance)
     std::filesystem::path make_server_workspace()
     {
         auto const* info = ::testing::UnitTest::GetInstance()->current_test_info();
@@ -396,7 +413,7 @@ namespace {
     };
 }
 
-TEST(SocketRpcServer, SendsReadyNotificationAndSurvivesClientDisconnect)
+TEST(SocketRpcServer, SendsReadyNotificationAndStopsWhenItsOwnerDisconnects)
 {
     socket_rpc_test_state.reset();
     auto harness = SocketRpcHarness(make_server_workspace());
@@ -405,15 +422,15 @@ TEST(SocketRpcServer, SendsReadyNotificationAndSurvivesClientDisconnect)
     ASSERT_FALSE(ready.empty());
     EXPECT_TRUE(ready.contains(R"("method":"server.ready")")) << ready;
 
+    // The inherited descriptor belongs to the process that launched the
+    // server. Closing it stops the server without a shutdown request.
     harness.close_client_fd();
-    auto const deadline = std::chrono::steady_clock::now() + 1s;
-    while (harness.server.client_count() != 0
-           && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::yield();
+    auto stopped = std::async(std::launch::async, [&] { harness.server.wait(); });
+    auto const status = stopped.wait_for(2s);
+    if (status != std::future_status::ready) {
+        harness.server.request_shutdown();
     }
-    EXPECT_EQ(harness.server.client_count(), 0u);
-    harness.server.request_shutdown();
-    harness.server.wait();
+    EXPECT_EQ(status, std::future_status::ready);
 }
 
 TEST(SocketRpcServer, DispatchesQueryEventAndReturnsSubscriberResult)
@@ -547,6 +564,27 @@ TEST(SocketRpcServer, DeliversOneOrderedNotificationToEverySubscribedClient)
     ::close(second[0]);
 }
 
+// A mutation's read-model changes return on its result builder and go out
+// after the response, at the response's revision, without the handler
+// notifying SocketRpcServer.
+TEST(SocketRpcServer, PublishesAMutationsReadModelChangesAfterItsResponse)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":70,"method":"nodeInstances.delete","params":{"instanceId":"instance:gone"}})"
+        "\n");
+    auto const response = nlohmann::ordered_json::parse(harness.read_response(70));
+    EXPECT_EQ(response["result"]["sessionRevision"], 1);
+
+    auto const notification = nlohmann::ordered_json::parse(harness.read_line());
+    EXPECT_EQ(notification["method"], "nodeInstances.updated");
+    EXPECT_EQ(notification["params"]["revision"], 1);
+    EXPECT_TRUE(notification["params"]["instances"].empty());
+}
+
 TEST(SocketRpcServer, RejectsAStaleMutationAfterThePriorMutationCommits)
 {
     socket_rpc_test_state.reset();
@@ -624,6 +662,19 @@ TEST(SocketRpcServer, DisconnectsAClientWhoseOutboundQueueCannotAcceptAMessage)
     socket_rpc_test_state.reset();
     auto harness = SocketRpcHarness(make_server_workspace());
     ASSERT_FALSE(harness.read_line().empty());
+    // Losing the owner would stop the server, so the owner filters out the
+    // oversized server.message and only the second client overflows.
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":64,"method":"session.subscribe","params":{"afterRevision":0,"topics":["server.status"]}})"
+        "\n");
+    ASSERT_FALSE(harness.read_response(64).empty());
+
+    auto second = make_socket_pair();
+    harness.server.attach_client(second[1], true);
+    std::string second_buffer;
+    ASSERT_FALSE(read_line_until(
+        second[0], &second_buffer, socket_rpc_startup_timeout).empty());
+    ASSERT_EQ(harness.server.client_count(), 2u);
 
     harness.server.send_server_message(iv::SocketRpcServerMessage{
         .level = "info",
@@ -631,11 +682,12 @@ TEST(SocketRpcServer, DisconnectsAClientWhoseOutboundQueueCannotAcceptAMessage)
     });
 
     auto const deadline = std::chrono::steady_clock::now() + 2s;
-    while (harness.server.client_count() != 0
+    while (harness.server.client_count() != 1
            && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::yield();
     }
-    EXPECT_EQ(harness.server.client_count(), 0u);
+    EXPECT_EQ(harness.server.client_count(), 1u);
+    ::close(second[0]);
 
     auto replacement = make_socket_pair();
     harness.server.attach_client(replacement[1], true);

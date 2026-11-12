@@ -169,7 +169,7 @@ void PackageDefinitions::apply_publication_result(
 }
 
 void PackageDefinitions::handle_package_refresh(
-    PackageRefreshTransaction const& transaction)
+    PackageRefreshTransaction& transaction)
 {
     bool accepted_changed = false;
     std::shared_ptr<PackageDefinitionsSnapshot const> next_snapshot;
@@ -232,6 +232,7 @@ void PackageDefinitions::handle_package_refresh(
         iv_runtime_package_definitions_publication_requested_event,
         request);
     apply_publication_result(request);
+    transaction.project_publication = std::move(request.project_publication);
 }
 
 void PackageDefinitions::handle_socket_rpc_get_iv_package_definitions(

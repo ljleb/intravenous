@@ -14,16 +14,22 @@ flowchart TD
     PG["ProjectGraph"]
     NI["NodeInstances"]
     GC["GraphConnections"]
+    IMSI["IvModuleSourceIntrospection"]
     GJ["GraphJit"]
     GE["GraphExecutor"]
 
     SRC --> PP
-    PP -->|"one normalized replay batch"| PG
-    PG -->|"1. replace/update desired instance batch; populate root builder"| NI
-    PG -->|"2. replace/update desired connection batch; apply against complete embeddings"| GC
-    PG -->|"3. current complete/partial ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
-    PG -->|"4. stage one compiled execution generation"| GE
+    PP -->|"one normalized replay batch ⇄ ProjectGraphPublication (not published)"| PG
+    PG -->|"1. replace/update desired instance batch; populate root builder ⇄ instance changes"| NI
+    PG -->|"2. replayed instance declarations ⇄ virtual-node replacements"| IMSI
+    PG -->|"3. replace/update desired connection batch; apply against complete embeddings"| GC
+    PG -->|"4. current complete/partial ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
+    PG -->|"5. stage one compiled execution generation"| GE
 ```
+
+Replay runs before any client attaches, so `ProjectPersistence` does not publish
+the rebuild's `ProjectGraphPublication`; clients read the replayed state when
+they connect (see [README](./README.md)).
 
 `ProjectPersistence` reconstructs persistent data but does not become the owner
 of graph intent. `NodeInstances` owns the replayed desired instance state and

@@ -6,6 +6,7 @@
 #include <intravenous/runtime/package_definitions.h>
 #include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
 #include <intravenous/runtime/package_jit.h>
+#include <intravenous/runtime/package_pipeline_events.h>
 #include <intravenous/runtime/package_watcher.h>
 #include <intravenous/runtime/package_watcher_package_definitions_bridge.h>
 #include <intravenous/runtime/package_watcher_package_jit_bridge.h>
@@ -23,26 +24,25 @@
 #include <vector>
 
 namespace {
-struct PackageWatcherStatusWitness {
-    std::vector<iv::ProjectStatusNotification> statuses{};
-    void handle_notification(iv::ProjectNotification const& notification)
+// Records PackageWatcher's one report per refresh.
+struct PackageRefreshWitness {
+    std::vector<iv::PackageRefreshPublication> publications{};
+    void handle_refresh_published(iv::PackageRefreshPublication const& publication)
     {
-        if (auto const* status = std::get_if<iv::ProjectStatusNotification>(&notification)) {
-            statuses.push_back(*status);
-        }
+        publications.push_back(publication);
     }
 };
 
 using namespace iv;
 IV_DECLARE_BRIDGE(
-    package_watcher_status_witness_bridge,
+    package_refresh_witness_bridge,
     iv::PackageWatcher,
-    PackageWatcherStatusWitness);
-IV_DEFINE_BRIDGE(package_watcher_status_witness_bridge)
+    PackageRefreshWitness);
+IV_DEFINE_BRIDGE(package_refresh_witness_bridge)
 IV_SUBSCRIBE_LINKER_EVENT(
-    package_watcher_status_witness_bridge,
-    iv_runtime_project_notification_event,
-    &PackageWatcherStatusWitness::handle_notification)
+    package_refresh_witness_bridge,
+    iv_runtime_package_refresh_published_event,
+    &PackageRefreshWitness::handle_refresh_published)
 
 iv::IvPackageDeclaration package_declaration(
     std::string package_id,
@@ -74,11 +74,11 @@ struct PipelineHarness {
     iv::PackageJit jit;
     iv::PackageDefinitions packages;
     iv::NodeDefinitions definitions{};
-    PackageWatcherStatusWitness status_witness{};
+    PackageRefreshWitness refresh_witness{};
     iv::package_watcher_package_jit_bridge::scope watcher_jit_scope;
     iv::package_watcher_package_definitions_bridge::scope watcher_packages_scope;
     iv::package_definitions_node_definitions_bridge::scope packages_definitions_scope;
-    package_watcher_status_witness_bridge::scope status_scope;
+    package_refresh_witness_bridge::scope refresh_witness_scope;
 
     PipelineHarness(iv::StartupConfigState startup, std::filesystem::path project_root)
         : jit(std::move(startup))
@@ -86,14 +86,19 @@ struct PipelineHarness {
         , watcher_jit_scope(watcher, jit)
         , watcher_packages_scope(watcher, packages)
         , packages_definitions_scope(packages, definitions)
-        , status_scope(watcher, status_witness)
+        , refresh_witness_scope(watcher, refresh_witness)
     {}
 
-    bool refresh()
+    iv::PackageWatcherRefreshRequest refresh_request()
     {
         iv::PackageWatcherRefreshRequest request;
         watcher.handle_refresh_requested(request);
-        return request.changed;
+        return request;
+    }
+
+    bool refresh()
+    {
+        return refresh_request().changed;
     }
 };
 } // namespace
@@ -175,7 +180,7 @@ TEST(PackagePipeline, FailedBuildKeepsAcceptedRevisionAndReportsFailure)
     EXPECT_FALSE(failed->build_message.empty());
 }
 
-TEST(PackagePipeline, SuccessfulBuildStatusIncludesElapsedTime)
+TEST(PackagePipeline, SuccessfulRefreshReportsItsBuildOnceWithElapsedTime)
 {
     auto const workspace =
         iv::test_support::read_only_module_fixture_workspace("local_cmake");
@@ -186,16 +191,23 @@ TEST(PackagePipeline, SuccessfulBuildStatusIncludesElapsedTime)
         default_package_declaration(),
         package_declaration("iv.test.local_cmake", workspace),
     });
-    ASSERT_TRUE(pipeline.refresh());
+    auto const plan = pipeline.watcher.prepare_refresh();
+    ASSERT_TRUE(plan.has_value());
+    EXPECT_GT(plan->build_count, 0u);
 
-    auto const completed = std::ranges::find_if(
-        pipeline.status_witness.statuses,
-        [](iv::ProjectStatusNotification const& status) {
-            return status.code == "rebuildFinished";
-        });
-    ASSERT_NE(completed, pipeline.status_witness.statuses.end());
+    auto const request = pipeline.refresh_request();
+    ASSERT_TRUE(request.changed);
+    EXPECT_TRUE(request.failed_builds.empty());
+    EXPECT_FALSE(pipeline.watcher.prepare_refresh().has_value());
+
+    // One report per refresh, after its whole propagation has returned.
+    ASSERT_EQ(pipeline.refresh_witness.publications.size(), 1u);
+    auto const& publication = pipeline.refresh_witness.publications.front();
+    EXPECT_TRUE(publication.package_catalog_changed);
+    ASSERT_TRUE(publication.build_status.has_value());
+    EXPECT_EQ(publication.build_status->code, "rebuildFinished");
     EXPECT_TRUE(std::regex_match(
-        completed->message,
+        publication.build_status->message,
         std::regex("IV package build ready to apply in [0-9]+ ms")));
 }
 

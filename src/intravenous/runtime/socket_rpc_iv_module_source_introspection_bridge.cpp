@@ -23,8 +23,4 @@ IV_SUBSCRIBE_LINKER_EVENT(
     socket_rpc_iv_module_source_introspection_bridge,
     iv_socket_rpc_get_virtual_nodes_event,
     &IvModuleSourceIntrospection::handle_socket_rpc_get_virtual_nodes)
-IV_SUBSCRIBE_LINKER_EVENT(
-    socket_rpc_iv_module_source_introspection_bridge,
-    iv_runtime_iv_module_source_introspection_nodes_updated_event,
-    &SocketRpcServer::handle_iv_module_source_introspection_nodes_updated)
 } // namespace iv

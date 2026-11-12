@@ -50,12 +50,6 @@ struct IvModuleInstance {
     bool operator==(IvModuleInstance const&) const = default;
 };
 
-struct IvModuleInstancesChanged {
-    std::vector<IvModuleInstance> created{};
-    std::vector<IvModuleInstance> updated{};
-    std::vector<std::string> deleted_instance_ids{};
-};
-
 struct NodeInstanceConfigurationRequest {
     std::string instance_id{};
     std::string definition_id{};
@@ -180,6 +174,15 @@ struct NodeInstancesProjectGraphRequest {
     NodeInstancesBatchResult result{};
     std::vector<std::string> created_instance_ids{};
     std::vector<ProjectNodeReplacement> realized_node_replacements{};
+    // What this transaction changed in the instance read models. NodeInstances
+    // publishes nothing itself; ProjectGraph returns these to its cause's root.
+    // `instances` is the published list after the transaction, filled when
+    // either flag is set. Declarations are the project-owned instances
+    // (source-introspection input); the published list also changes when a
+    // definition's realization does.
+    bool instances_list_changed = false;
+    bool instance_declarations_changed = false;
+    std::vector<IvModuleInstanceInfo> instances{};
     bool handled = false;
 };
 
@@ -206,6 +209,11 @@ private:
     struct CacheEntry;
     struct ConfigurationContext;
     struct ExpressionCacheEntry;
+    // Read-model changes accumulated over one transaction.
+    struct Changes {
+        bool instances_list_changed = false;
+        bool instance_declarations_changed = false;
+    };
 
     mutable std::mutex mutex_;
     std::unordered_map<std::string, DesiredInstance> desired_instances_by_id_;
@@ -217,13 +225,24 @@ private:
     std::vector<std::shared_ptr<ExpressionCacheEntry const>> expression_cache_{};
     std::uint64_t minimum_cache_generation_ = 0;
 
+    // Updates the published record of one realized instance; true when it
+    // changed.
     bool publish_instance_locked(
         std::string const& instance_id,
-        NodeDefinitionEntry const& definition,
-        IvModuleInstancesChanged& diff);
-    void publish_instance_changes(IvModuleInstancesChanged diff, bool list_changed) const;
-    void publish_instance_declarations_changed() const;
+        NodeDefinitionEntry const& definition);
     IvModuleRequiredDefinitionsChanged rebuild_required_definitions_locked();
+    std::string create_instance(
+        Changes& changes,
+        std::string_view definition_id,
+        std::filesystem::path package_root,
+        std::optional<std::string> instance_id,
+        std::optional<std::string> display_name,
+        std::string configuration_source);
+    void remove_instance(Changes& changes, std::string const& instance_id);
+    void update_instances(Changes& changes, std::vector<Update> updates);
+    void install_definitions_snapshot(
+        Changes& changes,
+        std::shared_ptr<NodeDefinitionsSnapshot const> const& snapshot);
     struct RealizedInvocation {
         NodeBundleHandle root = 0;
         std::shared_ptr<ConfiguredNodeInstance const> configured{};

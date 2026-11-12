@@ -30,6 +30,15 @@
 #include <vector>
 
 namespace {
+// The snapshot record also carries ProjectGraph's reply (its publication), so
+// the handler takes it as an lvalue.
+void publish_definitions_snapshot(
+    iv::ProjectGraph& project_graph,
+    iv::NodeDefinitionsSnapshotChanged change)
+{
+    project_graph.handle_node_definitions_snapshot_changed(change);
+}
+
 using iv::details::ConfigurationArgument;
 using iv::details::PackageDefinition;
 using iv::details::PackageDefinitionKind;
@@ -1249,7 +1258,7 @@ struct ProjectGraphManualControlSchedulingFixture : ::testing::Test {
 
     std::vector<iv::ManualControlId> realize_controls(std::size_t count)
     {
-        project_graph.handle_node_definitions_snapshot_changed(
+        publish_definitions_snapshot(project_graph, 
             iv::NodeDefinitionsSnapshotChanged{
                 .snapshot = make_replacement_snapshot(1),
             });
@@ -1280,7 +1289,7 @@ struct ProjectGraphManualControlSchedulingFixture : ::testing::Test {
 
 TEST_F(ProjectGraphFixture, DefinitionAndMutationTransactionsBuildWholeRootGenerations)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
     auto generation = project_graph.current_generation();
     ASSERT_TRUE(generation);
@@ -1318,7 +1327,7 @@ TEST_F(ProjectGraphFixture, DefinitionAndMutationTransactionsBuildWholeRootGener
     // Same definitions generation + same typed value tuple reuses configuration.
     EXPECT_EQ(configure_calls.load(), 1);
 
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(2)});
     generation = project_graph.current_generation();
     EXPECT_EQ(generation->generation, 4u);
@@ -1360,7 +1369,7 @@ TEST_F(ProjectGraphFixture, MissingDefinitionFailsThePassAndRealizesWhenDefiniti
     ASSERT_EQ(listed.size(), 1u);
     EXPECT_FALSE(listed.front().realized);
 
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
     auto generation = project_graph.current_generation();
     ASSERT_TRUE(generation);
@@ -1373,7 +1382,7 @@ TEST_F(ProjectGraphFixture, MissingDefinitionFailsThePassAndRealizesWhenDefiniti
 
 TEST_F(ProjectGraphFixture, InvalidEditKeepsThePreviousGenerationCurrent)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
     iv::ProjectStringBuilder create_builder;
     project_graph.handle_project_create_node_instance(
@@ -1416,7 +1425,7 @@ TEST_F(ProjectGraphFixture, InvalidEditKeepsThePreviousGenerationCurrent)
 
 TEST_F(ProjectGraphFixture, NodeMessageReplacementPersistsCompleteSuccessorArguments)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{
             .snapshot = make_replacement_snapshot(1),
         });
@@ -1478,7 +1487,7 @@ TEST_F(ProjectGraphFixture, NodeMessageReplacementPersistsCompleteSuccessorArgum
 
 TEST_F(ProjectGraphFixture, EventProtocolListsPackageSchemasAndActiveAddressSupport)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{
             .snapshot = make_protocol_snapshot(9),
         });
@@ -1532,7 +1541,7 @@ TEST_F(ProjectGraphFixture, EventProtocolListsPackageSchemasAndActiveAddressSupp
 
 TEST_F(ProjectGraphFixture, FailedReplacementPreviewDoesNotCommitReplacement)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{
             .snapshot = make_replacement_snapshot(1),
         });
@@ -1562,7 +1571,7 @@ TEST_F(ProjectGraphFixture, FailedReplacementPreviewDoesNotCommitReplacement)
 
 TEST_F(ProjectGraphFixture, ReplacementThenSendUsesTheSuccessorHandler)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{
             .snapshot = make_replacement_snapshot(1),
         });
@@ -1594,7 +1603,7 @@ TEST_F(ProjectGraphFixture, ReplacementThenSendUsesTheSuccessorHandler)
 
 TEST_F(ProjectGraphFixture, OneInteractionRejectsASecondDeliveryToTheSameNode)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{
             .snapshot = make_replacement_snapshot(1),
         });
@@ -1621,7 +1630,7 @@ TEST_F(ProjectGraphFixture, OneInteractionRejectsASecondDeliveryToTheSameNode)
 
 TEST_F(ProjectGraphFixture, ModuleHandlerSendsToACapturedNodeRef)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{
             .snapshot = make_replacement_snapshot(1),
         });
@@ -1649,7 +1658,7 @@ TEST_F(ProjectGraphFixture, ModuleHandlerSendsToACapturedNodeRef)
 
 TEST_F(ProjectGraphFixture, SerializedModuleMessageSendsToACapturedNodeRef)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{
             .snapshot = make_serialized_sender_snapshot(1),
         });
@@ -1683,7 +1692,7 @@ TEST_F(ProjectGraphFixture, SerializedModuleMessageSendsToACapturedNodeRef)
 
 TEST_F(ProjectGraphFixture, ModuleMessageSelectorsReachOneTiledConcreteReceiver)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{
             .snapshot = make_replacement_snapshot(1),
         });
@@ -1710,7 +1719,7 @@ TEST_F(ProjectGraphFixture, ModuleMessageSelectorsReachOneTiledConcreteReceiver)
 
 TEST_F(ProjectGraphFixture, AncestorReplacementCreatesANewDescendantDeliveryWorld)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{
             .snapshot = make_replacement_snapshot(1),
         });
@@ -1739,7 +1748,7 @@ TEST_F(ProjectGraphFixture, AncestorReplacementCreatesANewDescendantDeliveryWorl
 
 TEST_F(ProjectGraphFixture, UnrelatedReplacementDoesNotResetReceiverDelivery)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{
             .snapshot = make_replacement_snapshot(1),
         });
@@ -1773,7 +1782,7 @@ TEST_F(ProjectGraphFixture, UnrelatedReplacementDoesNotResetReceiverDelivery)
 
 TEST_F(ProjectGraphFixture, SuccessiveReplacementsReplaceTheCompletePriorRecord)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{
             .snapshot = make_replacement_snapshot(1),
         });
@@ -1808,7 +1817,7 @@ TEST_F(ProjectGraphFixture, SuccessiveReplacementsReplaceTheCompletePriorRecord)
 
 TEST_F(ProjectGraphFixture, ProjectGraphDispatchesToALeafHandler)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{
             .snapshot = make_replacement_snapshot(1),
         });
@@ -1833,12 +1842,12 @@ TEST_F(ProjectGraphFixture, ProjectGraphDispatchesToALeafHandler)
 
 TEST_F(ProjectGraphFixture, StaleDefinitionsSnapshotCannotRollBackRootGeneration)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(2)});
     auto const current = project_graph.current_generation();
     ASSERT_TRUE(current);
 
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
     auto const after_stale = project_graph.current_generation();
     ASSERT_TRUE(after_stale);
@@ -1877,7 +1886,7 @@ TEST(ProjectGraph, FailedRootBuildDoesNotCommitDefinitionsAndSameSnapshotCanRetr
         project_graph, instances);
     auto snapshot = make_snapshot(1);
     EXPECT_THROW(
-        project_graph.handle_node_definitions_snapshot_changed(
+        publish_definitions_snapshot(project_graph, 
             iv::NodeDefinitionsSnapshotChanged{.snapshot = snapshot}),
         std::runtime_error);
     EXPECT_FALSE(project_graph.current_generation());
@@ -1886,7 +1895,7 @@ TEST(ProjectGraph, FailedRootBuildDoesNotCommitDefinitionsAndSameSnapshotCanRetr
     iv::GraphConnections connections;
     auto connections_scope = iv::project_graph_graph_connections_bridge::bind(
         project_graph, connections);
-    EXPECT_NO_THROW(project_graph.handle_node_definitions_snapshot_changed(
+    EXPECT_NO_THROW(publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{.snapshot = snapshot}));
     auto generation = project_graph.current_generation();
     ASSERT_TRUE(generation);
@@ -1895,7 +1904,7 @@ TEST(ProjectGraph, FailedRootBuildDoesNotCommitDefinitionsAndSameSnapshotCanRetr
 
 TEST_F(ProjectGraphFixture, InvalidUpdateBatchDoesNotPartiallyMutateDesiredState)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
     iv::ProjectStringBuilder create_builder;
     project_graph.handle_project_create_node_instance(
@@ -1930,7 +1939,7 @@ TEST_F(ProjectGraphFixture, InvalidUpdateBatchDoesNotPartiallyMutateDesiredState
 
 TEST_F(ProjectGraphFixture, ConnectionMutationRebuildsWholeRootAndDanglingIntentRecovers)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
 
     for (auto const* instance_id : {"instance:source", "instance:sink"}) {
@@ -2037,7 +2046,7 @@ TEST_F(ProjectGraphFixture, ReplaceGraphReplaysNodesAndConnectionsInOneGeneratio
     ASSERT_EQ(instances.desired_instances().size(), 2u);
     ASSERT_EQ(connections.desired_connections().size(), 1u);
 
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
     auto generation = project_graph.current_generation();
     ASSERT_TRUE(generation);
@@ -2060,7 +2069,7 @@ TEST_F(ProjectGraphFixture, ReplaceGraphReplaysNodesAndConnectionsInOneGeneratio
 TEST_F(ProjectGraphFixture,
        ManualControlsResolveStableAddressesAndInputNamesPerGeneration)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{
             .snapshot = make_replacement_snapshot(1),
         });
@@ -2251,7 +2260,7 @@ TEST_F(ProjectGraphManualControlSchedulingFixture,
 TEST_F(ProjectGraphFixture,
        DisconnectInvalidatesClientOwnedManualControlInteraction)
 {
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{
             .snapshot = make_replacement_snapshot(1),
         });

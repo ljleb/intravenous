@@ -13,6 +13,15 @@
 #include <vector>
 
 namespace {
+// The refresh transaction also carries PackageDefinitions' reply (the project
+// publication), so the handler takes it as an lvalue.
+void refresh_packages(
+    iv::PackageDefinitions& packages,
+    iv::PackageRefreshTransaction transaction)
+{
+    packages.handle_package_refresh(transaction);
+}
+
 struct FakeNodeDefinitions {
     std::size_t calls = 0;
     std::vector<std::shared_ptr<iv::PackageDefinitionsSnapshot const>> snapshots{};
@@ -98,7 +107,7 @@ TEST(PackageDefinitions, SuccessfulRevisionBecomesAcceptedAndPublicationProjecti
     ASSERT_NE(initial, nullptr);
     EXPECT_EQ(initial->generation, 0u);
 
-    harness.packages.handle_package_refresh(iv::PackageRefreshTransaction{
+    refresh_packages(harness.packages, iv::PackageRefreshTransaction{
         .declarations = iv::IvPackageDeclarationsChanged{.created = {package}},
         .successful_revisions = {revision(package, 7)},
     });
@@ -136,7 +145,7 @@ TEST(PackageDefinitions, AcceptedRevisionRetainsDiscoveredPackageProvenance)
         iv::PackageProvenance::common);
 
     DefinitionsHarness harness(project);
-    harness.packages.handle_package_refresh(iv::PackageRefreshTransaction{
+    refresh_packages(harness.packages, iv::PackageRefreshTransaction{
         .declarations = iv::IvPackageDeclarationsChanged{.created = {package}},
         .successful_revisions = {revision(package, 1)},
     });
@@ -161,14 +170,14 @@ TEST(PackageDefinitions, FailedRebuildPreservesAcceptedSnapshotAndPublishedProje
     harness.definitions.respond = [&](iv::PackageDefinitionsPublicationRequest& request) {
         request.published_module_ids_by_package_id[package.package_id] = {"iv.test.voice"};
     };
-    harness.packages.handle_package_refresh(iv::PackageRefreshTransaction{
+    refresh_packages(harness.packages, iv::PackageRefreshTransaction{
         .declarations = iv::IvPackageDeclarationsChanged{.created = {package}},
         .successful_revisions = {revision(package, 1)},
     });
     auto const accepted_before = harness.packages.snapshot();
     ASSERT_EQ(harness.definitions.calls, 1u);
 
-    harness.packages.handle_package_refresh(iv::PackageRefreshTransaction{
+    refresh_packages(harness.packages, iv::PackageRefreshTransaction{
         .failed_builds = {iv::PackageJitFailure{
             .package_id = package.package_id,
             .package_root = package.package_root,
@@ -196,14 +205,14 @@ TEST(PackageDefinitions, RemovingPackagePublishesNewEmptySnapshotAndDeletesCatal
     auto const package = declaration("iv.test.voice", root);
 
     DefinitionsHarness harness(project);
-    harness.packages.handle_package_refresh(iv::PackageRefreshTransaction{
+    refresh_packages(harness.packages, iv::PackageRefreshTransaction{
         .declarations = iv::IvPackageDeclarationsChanged{.created = {package}},
         .successful_revisions = {revision(package, 1)},
     });
     auto const first = harness.packages.snapshot();
     ASSERT_EQ(harness.definitions.calls, 1u);
 
-    harness.packages.handle_package_refresh(iv::PackageRefreshTransaction{
+    refresh_packages(harness.packages, iv::PackageRefreshTransaction{
         .declarations = iv::IvPackageDeclarationsChanged{
             .deleted_package_ids = {package.package_id},
         },
@@ -239,13 +248,13 @@ TEST(PackageDefinitions, PublicationFailureDoesNotRollBackAcceptedPackageRevisio
             "synthetic namespace collision";
     };
 
-    harness.packages.handle_package_refresh(iv::PackageRefreshTransaction{
+    refresh_packages(harness.packages, iv::PackageRefreshTransaction{
         .declarations = iv::IvPackageDeclarationsChanged{.created = {package}},
         .successful_revisions = {revision(package, 1)},
     });
     auto const first = harness.packages.snapshot();
 
-    harness.packages.handle_package_refresh(iv::PackageRefreshTransaction{
+    refresh_packages(harness.packages, iv::PackageRefreshTransaction{
         .successful_revisions = {revision(package, 2)},
     });
 
@@ -274,14 +283,14 @@ TEST(PackageDefinitions, AcceptedSnapshotsRemainImmutableAcrossLaterSuccessfulRe
     auto const package = declaration("iv.test.voice", root);
 
     DefinitionsHarness harness(project);
-    harness.packages.handle_package_refresh(iv::PackageRefreshTransaction{
+    refresh_packages(harness.packages, iv::PackageRefreshTransaction{
         .declarations = iv::IvPackageDeclarationsChanged{.created = {package}},
         .successful_revisions = {revision(package, 41)},
     });
     auto const old_snapshot = harness.packages.snapshot();
     auto const old_revision = old_snapshot->by_package_id.at(package.package_id);
 
-    harness.packages.handle_package_refresh(iv::PackageRefreshTransaction{
+    refresh_packages(harness.packages, iv::PackageRefreshTransaction{
         .successful_revisions = {revision(package, 42)},
     });
     auto const new_snapshot = harness.packages.snapshot();

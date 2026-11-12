@@ -74,7 +74,7 @@ struct FakePackageJit {
 struct FakePackageDefinitions {
     std::vector<iv::PackageRefreshTransaction> transactions{};
 
-    void handle_package_refresh(iv::PackageRefreshTransaction const& transaction)
+    void handle_package_refresh(iv::PackageRefreshTransaction& transaction)
     {
         transactions.push_back(transaction);
     }
@@ -120,13 +120,16 @@ IV_SUBSCRIBE_LINKER_EVENT(
     iv_runtime_package_watcher_work_available_event,
     &FakePackageWatcherWorkSink::handle_work_available)
 
+// Counts the package-catalog changes reported by PackageWatcher's one report
+// per refresh.
 struct ServiceCatalogObserver {
     std::mutex mutex{};
     std::condition_variable changed{};
     std::size_t calls = 0;
 
-    void handle_catalog_changed(iv::IvPackageCatalogChanged const&)
+    void handle_refresh_published(iv::PackageRefreshPublication const& publication)
     {
+        if (!publication.package_catalog_changed) return;
         {
             std::scoped_lock lock(mutex);
             ++calls;
@@ -148,14 +151,14 @@ struct ServiceCatalogObserver {
 };
 
 IV_DECLARE_BRIDGE(
-    package_watcher_service_catalog_observer_bridge,
-    iv::PackageWatcherService,
+    package_watcher_catalog_observer_bridge,
+    iv::PackageWatcher,
     ServiceCatalogObserver);
-IV_DEFINE_BRIDGE(package_watcher_service_catalog_observer_bridge)
+IV_DEFINE_BRIDGE(package_watcher_catalog_observer_bridge)
 IV_SUBSCRIBE_LINKER_EVENT(
-    package_watcher_service_catalog_observer_bridge,
-    iv_runtime_iv_package_catalog_changed_event,
-    &ServiceCatalogObserver::handle_catalog_changed)
+    package_watcher_catalog_observer_bridge,
+    iv_runtime_package_refresh_published_event,
+    &ServiceCatalogObserver::handle_refresh_published)
 
 struct WatcherHarness {
     iv::PackageWatcher watcher{};
@@ -483,11 +486,11 @@ TEST(PackageWatcherService, LogicalWorkAfterStartupIsNotStrandedWithoutFilesyste
     // assertion-failure unwinding. The service is deliberately declared after
     // the optional scopes so its destructor runs first.
     std::optional<iv::package_watcher_service_bridge::scope> service_scope;
-    std::optional<package_watcher_service_catalog_observer_bridge::scope> observer_scope;
+    std::optional<package_watcher_catalog_observer_bridge::scope> observer_scope;
     iv::PackageWatcherService service(watcher, project_root, {});
     service_scope = iv::package_watcher_service_bridge::bind(service, watcher);
-    observer_scope = package_watcher_service_catalog_observer_bridge::bind(
-        service,
+    observer_scope = package_watcher_catalog_observer_bridge::bind(
+        watcher,
         observer);
 
     service.start();

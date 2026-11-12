@@ -60,6 +60,10 @@ These documents are retained because they record deleted architectures, supersed
 
 - [September 2026 pre-big-rename snapshots](./pre_big_rename/README.md) preserve verbatim copies of current-design documents before the terminology/dead-code cleanup. Use them for rationale/history only; the corresponding files in `docs/` are normative.
 
+## Superseded project session client behavior
+
+- [Project Session Client Attachment Before The Owned-Server Default (2026-11-12)](./project_session_client_attachment_before_owned_server_2026-11-12.md) preserves the rule that a client discovers and attaches to an existing server and never owns the one it starts; the replacement default is in [Project Session Server Direction](../project_session_server_direction.md).
+
 ## Superseded Vue observation design
 
 - [Vue Observation Rebinding Before The Realization-Input Invariant (2026-11-12)](./vue_observation_rebinding_before_realization_input_invariant_2026-11-12.md) preserves the after-cutover rebinding wording that left structural edits free to drop probes; the replacement is the realization-input invariant in [Vue Output Observation](../vue_output_observation_direction.md) and [Project Graph Application Architecture](../project_graph_application_architecture.md).

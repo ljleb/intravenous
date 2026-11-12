@@ -34,6 +34,15 @@
 #include <vector>
 
 namespace {
+// The snapshot record also carries ProjectGraph's reply (its publication), so
+// the handler takes it as an lvalue.
+void publish_definitions_snapshot(
+    iv::ProjectGraph& project_graph,
+    iv::NodeDefinitionsSnapshotChanged change)
+{
+    project_graph.handle_node_definitions_snapshot_changed(change);
+}
+
 using Json = nlohmann::ordered_json;
 
 constexpr char persisted_original_definition_id[] =
@@ -535,7 +544,7 @@ TEST(ProjectPersistence, LoadedReplacementConfiguresAfterDefinitionsArrive)
     EXPECT_FALSE(project_graph.current_generation());
     EXPECT_TRUE(project_graph.configuration_failure());
 
-    project_graph.handle_node_definitions_snapshot_changed(
+    publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{
             .snapshot = persisted_replacement_definitions(),
         });

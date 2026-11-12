@@ -39,6 +39,29 @@ Any UI notification that would cause a module such as `SocketRpcServer` to be
 re-entered during its own incoming-request cause must be emitted only after that
 cause unwinds, as a new source invocation.
 
+## Presentation notifications are batched at the cause's root
+
+No module notifies `SocketRpcServer` partway through a cause. A module's
+read-model changes return on the request record it already answers, up to the
+cause's root, which publishes them once (implemented 2026-11-12):
+
+- `NodeInstances` returns its instance-list and declaration changes in
+  `NodeInstancesProjectGraphRequest`; `ProjectGraph` updates
+  `IvModuleSourceIntrospection` once per root build and returns the instance
+  list and virtual-node replacements as a `ProjectGraphPublication`.
+- In an RPC cause, the publication returns on the request's result builder and
+  `SocketRpcServer` publishes it after the response, at the response's revision.
+- In a package refresh, it returns through `NodeDefinitionsSnapshotChanged`,
+  `PackageDefinitionsPublicationRequest`, and `PackageRefreshTransaction` to
+  `PackageWatcher`, which sends one `PackageRefreshPublication` (build outcome,
+  catalog change, project changes) as its last edge. Only `rebuildStarted`,
+  sent before the build, is a separate cause.
+- Startup replay publishes nothing; clients read the replayed state when they
+  connect.
+
+The tree rule caught this when a refresh reached `SocketRpcServer` through both
+`NodeInstances` and `IvModuleSourceIntrospection`.
+
 Package-specific ownership and the reason `PackageWatcher` coordinates every package
 build cause are specified in
 [../package_pipeline_architecture.md](../package_pipeline_architecture.md).

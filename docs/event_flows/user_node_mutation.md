@@ -12,15 +12,17 @@ flowchart TD
     PG["ProjectGraph"]
     NI["NodeInstances"]
     GC["GraphConnections"]
+    IMSI["IvModuleSourceIntrospection"]
     GJ["GraphJit"]
     GE["GraphExecutor"]
 
     SRC --> RPC
-    RPC -->|"node mutation request ⇄ acceptance / diagnostics"| PG
-    PG -->|"1. complete requested instance batch + one definitions snapshot; root builder ⇄ embedding map"| NI
-    PG -->|"2. complete requested connection batch; root builder + embedding map ⇄ diagnostics"| GC
-    PG -->|"3. completed ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
-    PG -->|"4. stage one compiled execution generation"| GE
+    RPC -->|"node mutation request ⇄ acceptance / diagnostics / ProjectGraphPublication"| PG
+    PG -->|"1. complete requested instance batch + one definitions snapshot; root builder ⇄ embedding map + instance changes"| NI
+    PG -->|"2. instance declarations, when changed ⇄ virtual-node replacements"| IMSI
+    PG -->|"3. complete requested connection batch; root builder + embedding map ⇄ diagnostics"| GC
+    PG -->|"4. completed ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
+    PG -->|"5. stage one compiled execution generation"| GE
 ```
 
 `NodeInstances`, `GraphConnections`, `GraphJit`, and `GraphExecutor` are sibling
@@ -86,3 +88,8 @@ that converge on the read model.
 Any asynchronous UI notification to `SocketRpcServer` that would re-enter an
 incoming RPC/reload propagation must be published only after the current cause
 unwinds, as a new cause.
+
+Implemented (2026-11-12): `ProjectGraph` updates `IvModuleSourceIntrospection`
+once per root build (edge 2), and the instance list and virtual-node
+replacements return to `SocketRpcServer` on the RPC result builder, which
+publishes them after the response (see [README](./README.md)).

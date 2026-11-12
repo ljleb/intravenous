@@ -2,17 +2,19 @@
 
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/node_definitions.h>
+#include <intravenous/runtime/project_graph_publication.h>
 
 namespace iv {
-using IvPackageDefinitionsChangedEvent = void (*)(IvPackageDefinitionsChanged const&);
+// One definitions publication. `package_definitions` is what it changed among
+// module and leaf definitions. ProjectGraph rebuilds from the snapshot and
+// returns the build's read-model changes in `publication`.
 struct NodeDefinitionsSnapshotChanged {
     std::shared_ptr<NodeDefinitionsSnapshot const> snapshot{};
+    IvPackageDefinitionsChanged package_definitions{};
+    ProjectGraphPublication publication{};
 };
-using NodeDefinitionsSnapshotChangedEvent = void (*)(NodeDefinitionsSnapshotChanged const&);
+using NodeDefinitionsSnapshotChangedEvent = void (*)(NodeDefinitionsSnapshotChanged&);
 
-IV_DECLARE_LINKER_EVENT(
-    IvPackageDefinitionsChangedEvent,
-    iv_runtime_iv_package_definitions_changed_event);
 IV_DECLARE_LINKER_EVENT(
     NodeDefinitionsSnapshotChangedEvent,
     iv_runtime_node_definitions_snapshot_changed_event);

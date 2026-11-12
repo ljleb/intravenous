@@ -26,12 +26,12 @@ const selectedInstanceId = computed({
 
 const statusText = computed(() => {
     switch (state.value.sessionStatus) {
-    case "attached":
+    case "running":
         return "";
-    case "reconnecting":
-        return "Reconnecting to the project session…";
-    case "connecting":
-        return "Connecting to the project session…";
+    case "restarting":
+        return "The Intravenous server stopped; restarting it…";
+    case "starting":
+        return "Starting the Intravenous server…";
     }
 });
 
