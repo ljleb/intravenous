@@ -866,39 +866,43 @@ struct SocketRpcServer::Impl {
         try {
             auto const request = parse_socket_rpc_request(command.line);
             request_id = request.request_id;
-            route = routes.dispatch(request, SocketRpcRouteContext{
-                .client_id = connected_client_id(command.client->key),
-                .authorize = [this, client = command.client](
-                    std::string const& required) {
-                    authorize(client, required);
-                },
-                .before_invoke = [this, &request](bool mutates) {
-                    if (request.expected_revision && !mutates) {
-                        throw std::runtime_error(
-                            "expectedRevision is only valid for mutation routes");
-                    }
-                    auto const current = current_revision();
-                    if (request.expected_revision
-                        && *request.expected_revision != current) {
-                        throw std::runtime_error(
-                            "stale project session revision: expected "
-                            + std::to_string(*request.expected_revision)
-                            + ", current " + std::to_string(current));
-                    }
-                },
-                .hello = [this, client = command.client](
-                    int id, SessionHelloRequest const& request) {
-                    return hello(client, id, request);
-                },
-                .subscribe = [this, client = command.client, &after_response](
-                    int id, SessionSubscribeRequest const& request) {
-                    return subscribe(client, id, request, after_response);
-                },
-                .publish_project_graph = [this](
-                    ProjectGraphPublication const& publication) {
-                    publish_project_graph(publication);
-                },
-            });
+            // One client message is one event source entry: its route's whole
+            // propagation is one tree, which may not come back to this server.
+            IV_EVENT_SOURCE(SocketRpcServer, request.method) {
+                route = routes.dispatch(request, SocketRpcRouteContext{
+                    .client_id = connected_client_id(command.client->key),
+                    .authorize = [this, client = command.client](
+                        std::string const& required) {
+                        authorize(client, required);
+                    },
+                    .before_invoke = [this, &request](bool mutates) {
+                        if (request.expected_revision && !mutates) {
+                            throw std::runtime_error(
+                                "expectedRevision is only valid for mutation routes");
+                        }
+                        auto const current = current_revision();
+                        if (request.expected_revision
+                            && *request.expected_revision != current) {
+                            throw std::runtime_error(
+                                "stale project session revision: expected "
+                                + std::to_string(*request.expected_revision)
+                                + ", current " + std::to_string(current));
+                        }
+                    },
+                    .hello = [this, client = command.client](
+                        int id, SessionHelloRequest const& request) {
+                        return hello(client, id, request);
+                    },
+                    .subscribe = [this, client = command.client, &after_response](
+                        int id, SessionSubscribeRequest const& request) {
+                        return subscribe(client, id, request, after_response);
+                    },
+                    .publish_project_graph = [this](
+                        ProjectGraphPublication const& publication) {
+                        publish_project_graph(publication);
+                    },
+                });
+            }
             route_known = true;
             response = std::move(route.response);
         } catch (std::exception const& error) {
@@ -965,9 +969,11 @@ struct SocketRpcServer::Impl {
                     }
                 }
                 if (retired) {
-                    IV_INVOKE_LINKER_EVENT(
-                        iv_socket_rpc_client_disconnected_event,
-                        connected_client_id(retired->key));
+                    IV_EVENT_SOURCE(SocketRpcServer, "client disconnected") {
+                        IV_INVOKE_LINKER_EVENT(
+                            iv_socket_rpc_client_disconnected_event,
+                            connected_client_id(retired->key));
+                    }
                 }
                 retired.reset();
             } else if (command.is_notification()) {

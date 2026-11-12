@@ -1,4 +1,5 @@
 #include <intravenous/basic_nodes/arithmetic.h>
+#include "../event_source_test_support.h"
 #include <intravenous/dsl.h>
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/runtime/configuration_expression.h>
@@ -172,7 +173,7 @@ iv::GraphConnectionsBatchResult apply(
         .placements = &placements,
         .mutation = std::move(mutation),
     };
-    connections.handle_project_graph_transaction(request);
+    in_event_source([&] { return connections.handle_project_graph_transaction(request); });
     EXPECT_TRUE(request.handled);
     return std::move(request.result);
 }
@@ -521,7 +522,7 @@ TEST(GraphConnections, InvalidReplaceAllBatchHasStrongExceptionSafety)
             .connections = {valid, valid},
         },
     };
-    EXPECT_THROW(connections.handle_project_graph_transaction(request), std::invalid_argument);
+    EXPECT_THROW(in_event_source([&] { return connections.handle_project_graph_transaction(request); }), std::invalid_argument);
     auto desired = connections.desired_connections();
     ASSERT_EQ(desired.size(), 1u);
     EXPECT_EQ(iv::project_connection_id(desired.front()), "valid");
@@ -547,7 +548,7 @@ TEST(GraphConnections, EventConnectionRejectsSampleChannelSelector)
     };
 
     EXPECT_THROW(
-        connections.handle_project_graph_transaction(request),
+        in_event_source([&] { return connections.handle_project_graph_transaction(request); }),
         std::invalid_argument);
     EXPECT_TRUE(connections.desired_connections().empty());
 }

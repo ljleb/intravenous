@@ -1346,6 +1346,65 @@ void NodeInstances::install_definitions_snapshot(
     if (list_changed) changes.instances_list_changed = true;
 }
 
+NodeInstancesInteraction::NodeInstancesInteraction(
+    NodeInstances& owner,
+    EventModuleVisit visit)
+    : owner_(&owner)
+    , visit_(visit)
+{}
+
+NodeInstancesInteraction::NodeInstancesInteraction(
+    NodeInstancesInteraction&& other) noexcept
+    : owner_(std::exchange(other.owner_, nullptr))
+    , visit_(other.visit_)
+    , committed_(other.committed_)
+{}
+
+NodeInstancesInteraction& NodeInstancesInteraction::operator=(
+    NodeInstancesInteraction&& other) noexcept
+{
+    owner_ = std::exchange(other.owner_, nullptr);
+    visit_ = other.visit_;
+    committed_ = other.committed_;
+    return *this;
+}
+
+void NodeInstancesInteraction::run(NodeInstancesProjectGraphRequest& request)
+{
+    if (!owner_) {
+        throw std::logic_error("NodeInstances interaction is not open");
+    }
+    if (request.handled) {
+        throw std::logic_error("NodeInstances ProjectGraph request was handled more than once");
+    }
+    bool const commit =
+        std::holds_alternative<NodeReplacementsReplaceMutation>(request.mutation);
+    if (!commit
+        && !std::holds_alternative<NodeReplacementPreviewMutation>(request.mutation)) {
+        throw std::logic_error(
+            "a NodeInstances interaction only previews and commits node replacements");
+    }
+    if (committed_) {
+        throw std::logic_error(
+            "a NodeInstances interaction commits its node replacements once");
+    }
+    EventModuleVisitScope entry(visit_);
+    request.handled = true;
+    owner_->apply_project_graph_transaction(request);
+    committed_ = commit;
+}
+
+void NodeInstances::handle_project_graph_interaction(
+    NodeInstancesInteractionRequest& request)
+{
+    if (request.handled) {
+        throw std::logic_error("NodeInstances interaction request was handled more than once");
+    }
+    request.handled = true;
+    request.interaction = NodeInstancesInteraction(
+        *this, EventModuleVisit::current<NodeInstances>());
+}
+
 void NodeInstances::handle_project_graph_transaction(
     NodeInstancesProjectGraphRequest& request)
 {
@@ -1353,6 +1412,12 @@ void NodeInstances::handle_project_graph_transaction(
         throw std::logic_error("NodeInstances ProjectGraph request was handled more than once");
     }
     request.handled = true;
+    apply_project_graph_transaction(request);
+}
+
+void NodeInstances::apply_project_graph_transaction(
+    NodeInstancesProjectGraphRequest& request)
+{
     if (!request.snapshot) {
         throw std::invalid_argument("ProjectGraph transaction requires a definitions snapshot");
     }

@@ -1,4 +1,5 @@
 #include "../module_test_utils.h"
+#include "../event_source_test_support.h"
 
 #include <intravenous/bridge.h>
 #include <intravenous/runtime/node_instances.h>
@@ -29,7 +30,7 @@ void refresh_packages(
     iv::PackageDefinitions& packages,
     iv::PackageRefreshTransaction transaction)
 {
-    packages.handle_package_refresh(transaction);
+    in_event_source([&] { return packages.handle_package_refresh(transaction); });
 }
 
 constexpr std::string_view module_id = "iv.test.module";
@@ -85,8 +86,8 @@ void apply_module_definitions(
     };
     for (auto& definition : diff.created) publish(std::move(definition));
     for (auto& definition : diff.updated) publish(std::move(definition));
-    instances.handle_node_definitions_snapshot_changed(
-        iv::NodeDefinitionsSnapshotChanged{.snapshot = std::move(snapshot)});
+    in_event_source([&] { return instances.handle_node_definitions_snapshot_changed(
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = std::move(snapshot)}); });
 }
 
 IV_SUBSCRIBE_LINKER_EVENT(
@@ -109,7 +110,7 @@ TEST_F(NodeInstancesTest, CreateInstancePublishesRequiredDefinitionAndListsTheIn
     auto const module_root = std::filesystem::weakly_canonical(workspace);
     iv::NodeInstances instances;
 
-    auto const instance_id = instances.create_instance(module_id, module_root);
+    auto const instance_id = in_event_source([&] { return instances.create_instance(module_id, module_root); });
 
     EXPECT_FALSE(instance_id.empty());
     ASSERT_TRUE(witness.required_diff.has_value());
@@ -130,13 +131,13 @@ TEST_F(NodeInstancesTest, CreateRejectsEmptyStableAndDefinitionIds)
         "node_instances_empty_ids");
 
     EXPECT_THROW(
-        (void)bridge_source.create_instance(
+        (void)in_event_source([&] { return bridge_source.create_instance(
             module_id,
             workspace,
-            std::optional<std::string>{""}),
+            std::optional<std::string>{""}); }),
         std::invalid_argument);
     EXPECT_THROW(
-        (void)bridge_source.create_instance("", workspace),
+        (void)in_event_source([&] { return bridge_source.create_instance("", workspace); }),
         std::invalid_argument);
     EXPECT_TRUE(bridge_source.desired_instances().empty());
 }
@@ -148,10 +149,10 @@ TEST_F(NodeInstancesTest, CreateSecondInstanceForSameDefinitionDoesNotRepublishR
     auto const module_root = std::filesystem::weakly_canonical(workspace);
     iv::NodeInstances instances;
 
-    (void)instances.create_instance(module_id, module_root);
+    (void)in_event_source([&] { return instances.create_instance(module_id, module_root); });
     witness.reset();
 
-    auto const second_instance_id = instances.create_instance(module_id, module_root);
+    auto const second_instance_id = in_event_source([&] { return instances.create_instance(module_id, module_root); });
 
     EXPECT_FALSE(second_instance_id.empty());
     EXPECT_FALSE(witness.required_diff.has_value());
@@ -168,10 +169,10 @@ TEST_F(NodeInstancesTest, SameDefinitionIdAtNewRootRepublishesUpdatedRequirement
     auto const second_root = std::filesystem::weakly_canonical(second_workspace);
     iv::NodeInstances instances;
 
-    (void)instances.create_instance(module_id, first_root);
+    (void)in_event_source([&] { return instances.create_instance(module_id, first_root); });
     witness.reset();
 
-    auto const second_instance_id = instances.create_instance(module_id, second_root);
+    auto const second_instance_id = in_event_source([&] { return instances.create_instance(module_id, second_root); });
 
     EXPECT_FALSE(second_instance_id.empty());
     ASSERT_TRUE(witness.required_diff.has_value());
@@ -193,7 +194,7 @@ TEST_F(NodeInstancesTest, DefinitionChangeMovesInstanceToPublishedPackageRoot)
     auto const moved_root = std::filesystem::weakly_canonical(workspace);
     iv::NodeInstances instances;
 
-    (void)instances.create_instance(module_id, stale_root);
+    (void)in_event_source([&] { return instances.create_instance(module_id, stale_root); });
     witness.reset();
 
     apply_module_definitions(instances, iv::ModuleNodeDefinitionsChanged{
@@ -254,7 +255,7 @@ TEST_F(NodeInstancesTest, DefinitionsChangedRealizesMatchingInstances)
     auto const module_root = std::filesystem::weakly_canonical(workspace);
     iv::NodeInstances instances;
 
-    auto const instance_id = instances.create_instance(module_id, module_root);
+    auto const instance_id = in_event_source([&] { return instances.create_instance(module_id, module_root); });
     witness.reset();
 
     apply_module_definitions(instances, iv::ModuleNodeDefinitionsChanged{
@@ -276,7 +277,7 @@ TEST_F(NodeInstancesTest, DefinitionRemovalKeepsDesiredInstanceVisibleAsUnrealiz
     auto const module_root = std::filesystem::weakly_canonical(workspace);
     iv::NodeInstances instances;
 
-    auto const instance_id = instances.create_instance(module_id, module_root);
+    auto const instance_id = in_event_source([&] { return instances.create_instance(module_id, module_root); });
     apply_module_definitions(instances, iv::ModuleNodeDefinitionsChanged{
         .created = {make_definition(module_root)},
     });
@@ -304,13 +305,13 @@ TEST_F(NodeInstancesTest, RemoveLastPublishedInstanceUnlistsItAndDropsRequiremen
     auto const module_root = std::filesystem::weakly_canonical(workspace);
     iv::NodeInstances instances;
 
-    auto const instance_id = instances.create_instance(module_id, module_root);
+    auto const instance_id = in_event_source([&] { return instances.create_instance(module_id, module_root); });
     apply_module_definitions(instances, iv::ModuleNodeDefinitionsChanged{
         .created = {make_definition(module_root)},
     });
     witness.reset();
 
-    instances.remove_instance(instance_id);
+    in_event_source([&] { return instances.remove_instance(instance_id); });
 
     ASSERT_TRUE(witness.required_diff.has_value());
     ASSERT_EQ(witness.required_diff->deleted_definition_ids.size(), 1u);
@@ -323,21 +324,21 @@ TEST_F(NodeInstancesTest, ConfigurationSourceUpdateListsTheNewDurableRequest)
     auto const workspace = iv::test_support::fresh_module_fixture_workspace(
         "iv_module_instances_configuration_source_update");
     auto const module_root = std::filesystem::weakly_canonical(workspace);
-    auto const instance_id = bridge_source.create_instance(
+    auto const instance_id = in_event_source([&] { return bridge_source.create_instance(
         module_id,
         module_root,
         "instance:configured",
         std::nullopt,
-        "440");
+        "440"); });
     apply_module_definitions(bridge_source, iv::ModuleNodeDefinitionsChanged{
         .created = {make_definition(module_root)},
     });
     witness.reset();
 
-    bridge_source.update_instances({iv::NodeInstances::Update{
+    in_event_source([&] { return bridge_source.update_instances({iv::NodeInstances::Update{
         .instance_id = instance_id,
         .configuration_source = "880",
-    }});
+    }}); });
 
     auto const listed = bridge_source.list_instances();
     ASSERT_EQ(listed.size(), 1u);
@@ -360,7 +361,7 @@ TEST_F(NodeInstancesTest, TransactionReturnsItsInstanceReadModelChanges)
             .package_root = module_root,
         },
     };
-    bridge_source.handle_project_graph_transaction(created);
+    in_event_source([&] { return bridge_source.handle_project_graph_transaction(created); });
 
     // NodeInstances publishes nothing itself; ProjectGraph publishes these.
     EXPECT_TRUE(created.instances_list_changed);
@@ -374,7 +375,7 @@ TEST_F(NodeInstancesTest, TransactionReturnsItsInstanceReadModelChanges)
         .snapshot = created.snapshot,
         .root_builder = &unchanged_root,
     };
-    bridge_source.handle_project_graph_transaction(unchanged);
+    in_event_source([&] { return bridge_source.handle_project_graph_transaction(unchanged); });
 
     EXPECT_FALSE(unchanged.instances_list_changed);
     EXPECT_FALSE(unchanged.instance_declarations_changed);
@@ -386,12 +387,12 @@ TEST_F(NodeInstancesTest, InvalidReplaceAllDoesNotPartiallyChangeDesiredState)
     auto const workspace = iv::test_support::fresh_module_fixture_workspace(
         "node_instances_replace_all_atomicity");
     auto const module_root = std::filesystem::weakly_canonical(workspace);
-    (void)bridge_source.create_instance(
+    (void)in_event_source([&] { return bridge_source.create_instance(
         module_id,
         module_root,
         "instance:existing",
         "Existing",
-        "440");
+        "440"); });
     auto const before = bridge_source.desired_instances();
     witness.reset();
 
@@ -416,7 +417,7 @@ TEST_F(NodeInstancesTest, InvalidReplaceAllDoesNotPartiallyChangeDesiredState)
     };
 
     EXPECT_THROW(
-        bridge_source.handle_project_graph_transaction(request),
+        in_event_source([&] { return bridge_source.handle_project_graph_transaction(request); }),
         std::invalid_argument);
     EXPECT_TRUE(request.handled);
     EXPECT_EQ(bridge_source.desired_instances(), before);
@@ -440,7 +441,7 @@ TEST_F(NodeInstancesTest, ReplaceAllDoesNotInventARootForAnUnresolvedDefinition)
         },
     };
 
-    bridge_source.handle_project_graph_transaction(request);
+    in_event_source([&] { return bridge_source.handle_project_graph_transaction(request); });
 
     ASSERT_TRUE(request.handled);
     ASSERT_EQ(request.result.diagnostics.size(), 1u);

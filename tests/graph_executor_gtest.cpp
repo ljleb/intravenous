@@ -1,4 +1,5 @@
 #include <intravenous/runtime/background_coverage_propagation.h>
+#include "event_source_test_support.h"
 #include <intravenous/runtime/graph_executor.h>
 
 #include <intravenous/node/layout.h>
@@ -1227,11 +1228,11 @@ TEST_F(GraphExecutorFixture, ProjectGraphSubmissionMustAdvanceTheAcceptedTail)
     iv::GraphExecutor executor;
     auto first = compiled_graph(1, &observe_first);
 
-    auto const accepted = executor.handle_project_graph_transaction(first);
+    auto const accepted = in_event_source([&] { return executor.handle_project_graph_transaction(first); });
     EXPECT_TRUE(accepted.attempted);
     EXPECT_TRUE(accepted.accepted);
     EXPECT_THROW(
-        executor.handle_project_graph_transaction(first),
+        in_event_source([&] { return executor.handle_project_graph_transaction(first); }),
         std::logic_error);
     EXPECT_EQ(executor.pending_generation(), 1u);
 }

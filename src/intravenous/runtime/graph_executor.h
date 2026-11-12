@@ -35,6 +35,23 @@ struct ProjectGraphGraphExecutorResult {
     bool accepted = false;
 };
 
+struct ProjectGraphManualControlTarget {
+    std::uint64_t project_generation = 0;
+    ManualControlId id{};
+    Sample value{};
+};
+
+// One ProjectGraph -> GraphExecutor manual-control update per cause: the
+// optional target change is applied first, then the optional same-layout
+// realtime code is staged. The results return on the same record.
+struct ProjectGraphGraphExecutorControlsRequest {
+    std::optional<ProjectGraphManualControlTarget> target{};
+    std::shared_ptr<CompiledGraph const> realtime_code{};
+    bool target_applied = false;
+    GraphExecutorStageResult realtime_code_result =
+        GraphExecutorStageResult::ignored_stale;
+};
+
 struct GraphExecutorReclaimedSnapshots {
     std::size_t realtime_persisted_states = 0;
     std::size_t persisted_data = 0;
@@ -370,6 +387,9 @@ public:
 
     ProjectGraphGraphExecutorResult handle_project_graph_transaction(
         std::shared_ptr<CompiledGraph const> const& compiled_graph);
+
+    void handle_project_graph_controls(
+        ProjectGraphGraphExecutorControlsRequest& request);
 
     // At the caller-provided quiescent boundary, commits the prepared realtime
     // migration at the first successor sample, closes the predecessor's

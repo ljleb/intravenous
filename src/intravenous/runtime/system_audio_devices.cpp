@@ -704,7 +704,8 @@ void SystemAudioDevices::handle_project_override_settings(
         request.input_device_id.has_value()
             ? request.input_device_id
             : current.selected_input.device_id);
-    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+    // Only project replay overrides settings, and it restores the saved
+    // project: no project state changes.
 }
 
 void SystemAudioDevices::handle_project_persistence_collect_state(

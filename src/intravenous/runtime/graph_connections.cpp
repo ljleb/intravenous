@@ -549,13 +549,47 @@ void GraphConnections::handle_project_persistence_collect_state(
     builder.add_graph_connections(desired_connections());
 }
 
+void GraphConnectionsInteraction::run(
+    GraphConnectionsProjectGraphRequest& request) const
+{
+    if (!owner_) {
+        throw std::logic_error("GraphConnections interaction is not open");
+    }
+    if (request.handled) {
+        throw std::logic_error("GraphConnections ProjectGraph request was handled more than once");
+    }
+    if (!std::holds_alternative<std::monostate>(request.mutation)) {
+        throw std::logic_error(
+            "a GraphConnections interaction does not change desired connections");
+    }
+    EventModuleVisitScope entry(visit_);
+    request.handled = true;
+    owner_->apply_project_graph_transaction(request);
+}
+
+void GraphConnections::handle_project_graph_interaction(
+    GraphConnectionsInteractionRequest& request)
+{
+    if (request.handled) {
+        throw std::logic_error("GraphConnections interaction request was handled more than once");
+    }
+    request.handled = true;
+    request.interaction = GraphConnectionsInteraction(
+        *this, EventModuleVisit::current<GraphConnections>());
+}
+
 void GraphConnections::handle_project_graph_transaction(
     GraphConnectionsProjectGraphRequest& request)
 {
     if (request.handled)
         throw std::logic_error("GraphConnections ProjectGraph request was handled more than once");
     request.handled = true;
+    apply_project_graph_transaction(request);
+}
 
+void GraphConnections::apply_project_graph_transaction(
+    GraphConnectionsProjectGraphRequest& request)
+{
     std::scoped_lock lock(mutex_);
     auto staged = apply_mutation(desired_connections_, request.mutation);
     if (!request.root_builder) {

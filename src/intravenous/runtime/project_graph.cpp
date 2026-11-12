@@ -304,41 +304,46 @@ void ProjectGraph::schedule_control_compile_locked(
     control_compile_changed_.notify_all();
 }
 
-bool ProjectGraph::stage_ready_control_code_locked(
-    std::span<ManualControlId const> dynamic_inputs)
+bool ProjectGraph::update_graph_executor_controls_locked(
+    std::optional<ManualControlTargetValue> target,
+    std::optional<std::span<ManualControlId const>> code_inputs)
 {
-    if (!ready_control_code_ || !current_generation_
-        || ready_control_code_->project_generation
-            != current_generation_->generation
-        || !std::ranges::equal(
-            ready_control_code_->dynamic_inputs, dynamic_inputs)) {
+    if (!current_generation_) return false;
+    ProjectGraphGraphExecutorControlsRequest request;
+    if (target) {
+        request.target = ProjectGraphManualControlTarget{
+            .project_generation = current_generation_->generation,
+            .id = std::move(target->id),
+            .value = target->value,
+        };
+    }
+    bool const stage_code = code_inputs && ready_control_code_
+        && ready_control_code_->project_generation
+            == current_generation_->generation
+        && std::ranges::equal(ready_control_code_->dynamic_inputs, *code_inputs);
+    if (stage_code) request.realtime_code = ready_control_code_->graph;
+    if (!request.target && !request.realtime_code) return false;
+    (void)IV_INVOKE_SINGLETON_EVENT(
+        iv_runtime_project_graph_graph_executor_controls_requested_event,
+        request);
+    if (!stage_code
+        || request.realtime_code_result != GraphExecutorStageResult::accepted) {
         return false;
     }
-    auto const result = IV_INVOKE_SINGLETON_EVENT(
-        iv_runtime_project_graph_realtime_code_requested_event,
-        ready_control_code_->graph);
-    if (result != GraphExecutorStageResult::accepted) return false;
     ready_control_code_.reset();
     return true;
 }
 
-void ProjectGraph::set_manual_control_target_locked(
-    ManualControlId const& id,
-    Sample value)
-{
-    if (!current_generation_) return;
-    (void)IV_INVOKE_SINGLETON_EVENT(
-        iv_runtime_project_graph_manual_control_target_requested_event,
-        current_generation_->generation,
-        id,
-        value);
-}
-
 void ProjectGraph::reconcile_manual_control_activity_locked(
-    bool settled_dynamic_input)
+    bool settled_dynamic_input,
+    std::optional<ManualControlTargetValue> target)
 {
     dynamic_inputs_ = desired_dynamic_inputs_locked(false);
     if (dynamic_inputs_.empty()) {
+        if (target) {
+            (void)update_graph_executor_controls_locked(
+                std::move(target), std::nullopt);
+        }
         // No finished compile may activate merely because a gesture that
         // required it ended or its client disconnected. A remaining hover can
         // still prepare matching code without activating it.
@@ -360,7 +365,8 @@ void ProjectGraph::reconcile_manual_control_activity_locked(
 
     constant_specialization_deadline_.reset();
     auto const requested_inputs = desired_dynamic_inputs_locked(true);
-    if (!stage_ready_control_code_locked(requested_inputs)) {
+    if (!update_graph_executor_controls_locked(
+            std::move(target), std::span<ManualControlId const>(requested_inputs))) {
         schedule_control_compile_locked(requested_inputs, true);
     }
 }
@@ -408,48 +414,55 @@ void ProjectGraph::control_compile_worker(std::stop_token stop)
             };
         }
 
-        auto result = IV_INVOKE_SINGLETON_EVENT(
-            iv_runtime_project_graph_graph_jit_requested_event,
-            ProjectGraphGraphJitRequest{
-                .successor = {
-                    .project_generation = request->project_generation,
-                    .graph = request->graph,
-                    .definitions = request->definitions,
-                },
-            });
+        // A finished compile completes work scheduled by an earlier cause, so
+        // it is a cause of its own: one GraphJit request, then at most one
+        // GraphExecutor control update.
+        IV_EVENT_SOURCE(ProjectGraph, "control compile completion") {
+            auto result = IV_INVOKE_SINGLETON_EVENT(
+                iv_runtime_project_graph_graph_jit_requested_event,
+                ProjectGraphGraphJitRequest{
+                    .successor = {
+                        .project_generation = request->project_generation,
+                        .graph = request->graph,
+                        .definitions = request->definitions,
+                    },
+                });
 
-        std::scoped_lock lock(mutex_);
-        auto activate_on_ready = request->activate_on_ready;
-        if (inflight_control_compile_
-            && inflight_control_compile_->request_id == request->request_id) {
-            activate_on_ready |=
-                inflight_control_compile_->activate_on_ready;
-            inflight_control_compile_.reset();
-        }
-        if (stop.stop_requested()
-            || request->request_id != latest_control_compile_request_
-            || !current_generation_
-            || request->project_generation != current_generation_->generation
-            || !result.compiled_graph) {
-            continue;
-        }
-        ready_control_code_ = ReadyControlCode{
-            .project_generation = request->project_generation,
-            .dynamic_inputs = request->dynamic_inputs,
-            .graph = std::move(result.compiled_graph),
-        };
-        auto staged = false;
-        if (activate_on_ready) {
-            staged = stage_ready_control_code_locked(request->dynamic_inputs);
-        }
-        // A settled constant replacement consumes the one ready-code slot.
-        // If the client still hovers a participating control, prepare that
-        // exact dynamic set again without activating it.
-        if (staged && request->dynamic_inputs.empty()
-            && dynamic_inputs_.empty()) {
-            auto const predictive_inputs = desired_dynamic_inputs_locked(true);
-            if (!predictive_inputs.empty()) {
-                schedule_control_compile_locked(predictive_inputs, false);
+            std::scoped_lock lock(mutex_);
+            auto activate_on_ready = request->activate_on_ready;
+            if (inflight_control_compile_
+                && inflight_control_compile_->request_id == request->request_id) {
+                activate_on_ready |=
+                    inflight_control_compile_->activate_on_ready;
+                inflight_control_compile_.reset();
+            }
+            if (stop.stop_requested()
+                || request->request_id != latest_control_compile_request_
+                || !current_generation_
+                || request->project_generation != current_generation_->generation
+                || !result.compiled_graph) {
+                continue;
+            }
+            ready_control_code_ = ReadyControlCode{
+                .project_generation = request->project_generation,
+                .dynamic_inputs = request->dynamic_inputs,
+                .graph = std::move(result.compiled_graph),
+            };
+            auto staged = false;
+            if (activate_on_ready) {
+                staged = update_graph_executor_controls_locked(
+                    std::nullopt,
+                    std::span<ManualControlId const>(request->dynamic_inputs));
+            }
+            // A settled constant replacement consumes the one ready-code slot.
+            // If the client still hovers a participating control, prepare that
+            // exact dynamic set again without activating it.
+            if (staged && request->dynamic_inputs.empty()
+                && dynamic_inputs_.empty()) {
+                auto const predictive_inputs = desired_dynamic_inputs_locked(true);
+                if (!predictive_inputs.empty()) {
+                    schedule_control_compile_locked(predictive_inputs, false);
+                }
             }
         }
     }
@@ -560,7 +573,8 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     NodeInstancesMutation instance_mutation,
     GraphConnectionsMutation connection_mutation,
     bool publish_execution,
-    IvPackageDefinitionsChanged const* package_definitions)
+    IvPackageDefinitionsChanged const* package_definitions,
+    InteractionTransactions* interaction_transactions)
 {
     using Clock = std::chrono::steady_clock;
     auto const rebuild_begin = Clock::now();
@@ -570,9 +584,25 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         .root_builder = &root_builder,
         .mutation = std::move(instance_mutation),
     };
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_project_graph_node_instances_requested_event,
-        request);
+    if (interaction_transactions) {
+        auto& transaction = interaction_transactions->node_instances;
+        if (!transaction) {
+            NodeInstancesInteractionRequest open{};
+            IV_INVOKE_LINKER_EVENT(
+                iv_runtime_project_graph_node_instances_interaction_requested_event,
+                open);
+            if (!open.handled) {
+                throw std::runtime_error(
+                    "ProjectGraph cannot run a node-message interaction without NodeInstances");
+            }
+            transaction = std::move(open.interaction);
+        }
+        transaction.run(request);
+    } else {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_graph_node_instances_requested_event,
+            request);
+    }
     if (!request.handled) {
         throw std::runtime_error("ProjectGraph cannot rebuild without NodeInstances");
     }
@@ -623,9 +653,25 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         .mutation = std::move(connection_mutation),
     };
     auto const instances_end = Clock::now();
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_project_graph_connections_requested_event,
-        connections_request);
+    if (interaction_transactions) {
+        auto& transaction = interaction_transactions->graph_connections;
+        if (!transaction) {
+            GraphConnectionsInteractionRequest open{};
+            IV_INVOKE_LINKER_EVENT(
+                iv_runtime_project_graph_connections_interaction_requested_event,
+                open);
+            if (!open.handled) {
+                throw std::runtime_error(
+                    "ProjectGraph cannot run a node-message interaction without GraphConnections");
+            }
+            transaction = std::move(open.interaction);
+        }
+        transaction.run(connections_request);
+    } else {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_graph_connections_requested_event,
+            connections_request);
+    }
     auto const connections_end = Clock::now();
     if (!connections_request.handled) {
         throw std::runtime_error("ProjectGraph cannot rebuild without GraphConnections");
@@ -842,6 +888,7 @@ struct ProjectGraph::NodeMessageInteraction {
     std::vector<DeliveredHandler> delivered{};
     std::vector<ProjectNodeReplacement> original_replacements{};
     std::vector<ProjectNodeReplacement> replacements{};
+    InteractionTransactions transactions{};
 };
 
 std::shared_ptr<ProjectGraphGeneration const> ProjectGraph::current_generation() const
@@ -1054,7 +1101,9 @@ void ProjectGraph::dispatch_node_message_locked(
                     .replacements = replacements,
                 },
                 std::monostate{},
-                false);
+                false,
+                nullptr,
+                &state.interaction->transactions);
             if (preview.failure) {
                 auto const& diagnostics = preview.failure->node_instance_diagnostics;
                 throw std::runtime_error(
@@ -1183,7 +1232,10 @@ void ProjectGraph::dispatch_root_node_message_locked(
         NodeReplacementsReplaceMutation{
             .replacements = std::move(interaction.replacements),
         },
-        std::monostate{});
+        std::monostate{},
+        true,
+        nullptr,
+        &interaction.transactions);
     result.project_state_changed = true;
     result.publication = std::move(rebuilt.publication);
 }
@@ -1637,9 +1689,12 @@ void ProjectGraph::handle_project_begin_manual_control_interaction(
         constant_specialization_deadline_.reset();
         dynamic_inputs_ = desired_dynamic_inputs_locked(false);
         auto const requested_inputs = desired_dynamic_inputs_locked(true);
-        set_manual_control_target_locked(request.id, request.value);
-        if (!requested_inputs.empty()
-            && !stage_ready_control_code_locked(requested_inputs)) {
+        auto const staged = update_graph_executor_controls_locked(
+            ManualControlTargetValue{.id = request.id, .value = request.value},
+            requested_inputs.empty()
+                ? std::nullopt
+                : std::optional(std::span<ManualControlId const>(requested_inputs)));
+        if (!requested_inputs.empty() && !staged) {
             schedule_control_compile_locked(requested_inputs, true);
         }
     }
@@ -1667,7 +1722,12 @@ void ProjectGraph::handle_project_update_manual_control_interaction(
                 "active manual-control interaction lost its durable control");
         }
         control->stored_value = request.value;
-        set_manual_control_target_locked(interaction->control, request.value);
+        (void)update_graph_executor_controls_locked(
+            ManualControlTargetValue{
+                .id = interaction->control,
+                .value = request.value,
+            },
+            std::nullopt);
     }
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
@@ -1694,11 +1754,12 @@ void ProjectGraph::handle_project_end_manual_control_interaction(
                 "active manual-control interaction lost its durable control");
         }
         control->stored_value = request.value;
-        set_manual_control_target_locked(control_id, request.value);
         auto const settled_dynamic_input = std::ranges::contains(
             dynamic_inputs_, control_id);
         manual_interactions_.erase(interaction);
-        reconcile_manual_control_activity_locked(settled_dynamic_input);
+        reconcile_manual_control_activity_locked(
+            settled_dynamic_input,
+            ManualControlTargetValue{.id = control_id, .value = request.value});
     }
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);

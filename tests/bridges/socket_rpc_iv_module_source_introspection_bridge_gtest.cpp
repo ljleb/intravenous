@@ -1,4 +1,5 @@
 #include "../module_test_utils.h"
+#include "../event_source_test_support.h"
 
 #include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/node_definitions_project_graph_bridge.h>
@@ -87,15 +88,15 @@ struct InitializedIvModuleSourceIntrospectionOwner {
         // Source introspection learns instance declarations from the
         // ProjectGraph root build that creates the instance.
         auto const module_id = definition.module_id;
-        definitions.initialize_loaded_definition(std::move(definition));
+        in_event_source([&] { return definitions.initialize_loaded_definition(std::move(definition)); });
         iv::ProjectStringBuilder created;
-        project_graph.handle_project_create_node_instance(
+        in_event_source([&] { return project_graph.handle_project_create_node_instance(
             iv::ProjectCreateNodeInstanceRequest{
                 .instance_id = "instance:1",
                 .definition_id = module_id,
                 .package_root = module_root,
             },
-            created);
+            created); });
         (void)created.build();
     }
 
@@ -110,7 +111,7 @@ TEST(SocketRpcIvModuleSourceIntrospectionBridge, UnboundQueryEventLeavesBuilderU
     auto const workspace = make_project_workspace();
     SocketRpcGraphQueryResultBuilder builder;
 
-    IV_INVOKE_LINKER_EVENT(
+    in_event_source([&] { IV_INVOKE_LINKER_EVENT(
         iv_socket_rpc_graph_query_by_spans_event,
         GraphQueryBySpansRequest{
             .file_path = workspace / "module.cpp",
@@ -123,7 +124,7 @@ TEST(SocketRpcIvModuleSourceIntrospectionBridge, UnboundQueryEventLeavesBuilderU
             .match_mode = iv::SourceRangeMatchMode::intersection,
             .instance_id = "instance:1",
         },
-        builder);
+        builder); });
 
     EXPECT_THROW((void)builder.build(1), std::runtime_error);
 }
@@ -138,7 +139,7 @@ TEST(SocketRpcIvModuleSourceIntrospectionBridge, BoundQueryEventPopulatesBuilder
         socket_rpc_iv_module_source_introspection_bridge::bind(server, owner.introspection);
 
     SocketRpcGraphQueryResultBuilder builder;
-    IV_INVOKE_LINKER_EVENT(
+    in_event_source([&] { IV_INVOKE_LINKER_EVENT(
         iv_socket_rpc_graph_query_by_spans_event,
         GraphQueryBySpansRequest{
             .file_path = workspace / "module.cpp",
@@ -151,7 +152,7 @@ TEST(SocketRpcIvModuleSourceIntrospectionBridge, BoundQueryEventPopulatesBuilder
             .match_mode = iv::SourceRangeMatchMode::intersection,
             .instance_id = "instance:1",
         },
-        builder);
+        builder); });
 
     auto const response = parse_json_line(builder.build(2));
 

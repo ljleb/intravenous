@@ -6,6 +6,7 @@
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <fstream>
+#include <optional>
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <ranges>
@@ -240,8 +241,26 @@ std::vector<ProjectCommand> ProjectPersistence::read_commands() const
     return commands;
 }
 
-void ProjectPersistence::load()
+std::vector<ProjectMessageNotification> ProjectPersistence::load()
 {
+    std::vector<ProjectMessageNotification> messages;
+    IV_EVENT_SOURCE(ProjectPersistence, "project replay") {
+        replay(messages);
+    }
+    return messages;
+}
+
+void ProjectPersistence::replay(std::vector<ProjectMessageNotification>& messages)
+{
+    auto const report = [&](std::string level, std::string message) {
+        messages.push_back(ProjectMessageNotification{
+            .level = std::move(level),
+            .message = std::move(message),
+        });
+    };
+    // Every project.overrideSettings command joins one request, raised once:
+    // a later command's setting replaces an earlier one.
+    std::optional<ProjectOverrideSettingsRequest> override_settings;
     std::unordered_map<std::string, ProjectNodeInstanceDeclaration> instances;
     std::unordered_map<std::string, ProjectNodeReplacement> node_replacements;
     std::unordered_map<std::string, ProjectConnection> connections;
@@ -254,12 +273,22 @@ void ProjectPersistence::load()
                     args,
                     workspace_root_,
                     [&](std::string const& message) {
-                        emit_message("warning", message);
+                        report("warning", message);
                     });
                 if (request) {
-                    IV_INVOKE_LINKER_EVENT(
-                        iv_runtime_project_override_settings_requested_event,
-                        *request);
+                    if (!override_settings) override_settings.emplace();
+                    auto const merge = [](auto& into, auto const& from) {
+                        if (from) into = from;
+                    };
+                    merge(override_settings->c_compiler, request->c_compiler);
+                    merge(override_settings->cxx_compiler, request->cxx_compiler);
+                    merge(override_settings->cmake_program, request->cmake_program);
+                    merge(override_settings->cmake_generator, request->cmake_generator);
+                    merge(override_settings->make_program, request->make_program);
+                    merge(override_settings->juce_dir, request->juce_dir);
+                    merge(override_settings->iv_package_pch, request->iv_package_pch);
+                    merge(override_settings->output_device_id, request->output_device_id);
+                    merge(override_settings->input_device_id, request->input_device_id);
                 }
             } else if (command.command == "nodeInstances.upsert") {
                 ProjectNodeInstanceDeclaration declaration{
@@ -380,11 +409,17 @@ void ProjectPersistence::load()
                 throw std::runtime_error("unknown project command: " + command.command);
             }
         } catch (std::exception const &error) {
-            emit_message(
+            report(
                 "error",
                 "project load command failed for '" + command.command + "' args="
                     + command.args.dump() + ": " + error.what());
         }
+    }
+
+    if (override_settings) {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_override_settings_requested_event,
+            *override_settings);
     }
 
     ProjectReplaceGraphRequest request;
@@ -438,7 +473,7 @@ void ProjectPersistence::load()
             builder);
         builder.build();
     } catch (std::exception const& error) {
-        emit_message("error", "project graph replay failed: " + std::string(error.what()));
+        report("error", "project graph replay failed: " + std::string(error.what()));
     }
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_loaded_event);
 }

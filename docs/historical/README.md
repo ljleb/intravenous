@@ -74,6 +74,8 @@ These documents are retained because they record deleted architectures, supersed
 
 ## Completed migrations, experiments, and checkpoints
 
+- [Event Source Marking Before Event Source Scopes (2026-11-12)](./event_source_marking_before_event_source_scopes_2026-11-12.md) preserves the single-raise `IV_INVOKE_LINKER_EVENT_SOURCE` primitive and its unchecked top-level raises; the replacement is `IV_EVENT_SOURCE` in [Event Propagation Tree Constraint](../event_propagation_tree_constraint.md).
+
 - [Event Flows Before Root-Batched Publication (2026-11-12)](./event_flows_before_root_batched_publication_2026-11-12.md) preserves the implemented propagation trees in which modules notified `SocketRpcServer` partway through a cause; the replacement trees are in [Event Flows](../event_flows/README.md).
 
 - [Node State And Lifecycle Before Tick/Tock Authored-State Unification (2026-11-12)](./node_state_lifecycle_before_unification_2026-11-12.md)

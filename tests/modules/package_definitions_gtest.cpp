@@ -1,4 +1,5 @@
 #include "../module_test_utils.h"
+#include "../event_source_test_support.h"
 
 #include <intravenous/bridge.h>
 #include <intravenous/runtime/package_definitions.h>
@@ -19,7 +20,7 @@ void refresh_packages(
     iv::PackageDefinitions& packages,
     iv::PackageRefreshTransaction transaction)
 {
-    packages.handle_package_refresh(transaction);
+    in_event_source([&] { return packages.handle_package_refresh(transaction); });
 }
 
 struct FakeNodeDefinitions {

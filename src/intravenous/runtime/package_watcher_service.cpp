@@ -13,21 +13,23 @@
 
 namespace iv {
 namespace {
-// rebuildStarted is its own cause, before the refresh cause and its build: it
-// reports progress at a different moment than the refresh's one outcome report
-// (PackageRefreshPublication, sent by PackageWatcher).
+// rebuildStarted is its own event source entry, before the refresh entry and
+// its build: it reports progress at a different moment than the refresh's one
+// outcome report (PackageRefreshPublication, sent by PackageWatcher).
 void publish_build_started(PackageWatcherRefreshPlan const& plan)
 {
-    IV_INVOKE_LINKER_EVENT_SOURCE(
-        iv_runtime_project_notification_event,
-        ProjectNotification(ProjectStatusNotification{
-            .level = "info",
-            .code = "rebuildStarted",
-            .message = plan.build_count == 1
-                ? "Building IV package"
-                : "Building " + std::to_string(plan.build_count) + " IV packages",
-            .package_root = plan.single_package_root,
-        }));
+    IV_EVENT_SOURCE(PackageWatcherService, "rebuild started") {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_notification_event,
+            ProjectNotification(ProjectStatusNotification{
+                .level = "info",
+                .code = "rebuildStarted",
+                .message = plan.build_count == 1
+                    ? "Building IV package"
+                    : "Building " + std::to_string(plan.build_count) + " IV packages",
+                .package_root = plan.single_package_root,
+            }));
+    }
 }
 
 std::vector<std::filesystem::path> discovery_roots(
@@ -84,13 +86,15 @@ void PackageWatcherService::report_discovery_error(std::string message)
         }
         last_discovery_error_ = message;
     }
-    IV_INVOKE_LINKER_EVENT_SOURCE(
-        iv_runtime_project_notification_event,
-        ProjectNotification(ProjectStatusNotification{
-            .level = "error",
-            .code = "packageDiscoveryFailed",
-            .message = "IV package discovery failed: " + std::move(message),
-        }));
+    IV_EVENT_SOURCE(PackageWatcherService, "package discovery failure") {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_notification_event,
+            ProjectNotification(ProjectStatusNotification{
+                .level = "error",
+                .code = "packageDiscoveryFailed",
+                .message = "IV package discovery failed: " + std::move(message),
+            }));
+    }
 }
 
 void PackageWatcherService::report_service_error(std::string message)
@@ -102,13 +106,15 @@ void PackageWatcherService::report_service_error(std::string message)
         }
         last_service_error_ = message;
     }
-    IV_INVOKE_LINKER_EVENT_SOURCE(
-        iv_runtime_project_notification_event,
-        ProjectNotification(ProjectStatusNotification{
-            .level = "error",
-            .code = "packageWatcherServiceFailed",
-            .message = "IV package watcher service failed: " + std::move(message),
-        }));
+    IV_EVENT_SOURCE(PackageWatcherService, "package watcher service failure") {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_project_notification_event,
+            ProjectNotification(ProjectStatusNotification{
+                .level = "error",
+                .code = "packageWatcherServiceFailed",
+                .message = "IV package watcher service failed: " + std::move(message),
+            }));
+    }
 }
 
 bool PackageWatcherService::synchronize_discovered_packages()
@@ -142,9 +148,11 @@ void PackageWatcherService::process_pending_refresh()
         if (plan->build_count > 0) publish_build_started(*plan);
 
         PackageWatcherRefreshRequest request;
-        IV_INVOKE_LINKER_EVENT_SOURCE(
-            iv_runtime_package_watcher_refresh_requested_event,
-            request);
+        IV_EVENT_SOURCE(PackageWatcherService, "package refresh") {
+            IV_INVOKE_LINKER_EVENT(
+                iv_runtime_package_watcher_refresh_requested_event,
+                request);
+        }
         {
             std::scoped_lock lock(failure_mutex_);
             if (request.changed) {

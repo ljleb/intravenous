@@ -81,6 +81,7 @@ namespace {
         };
     }
 
+    // Stands in for IvModuleSourceIntrospection.
     struct SocketRpcTestState {
         iv::SocketRpcServer *current_server = nullptr;
 
@@ -113,6 +114,16 @@ namespace {
         builder.succeed(graph_query_result);
         }
 
+    };
+
+    SocketRpcTestState socket_rpc_test_state;
+
+    // session.snapshot reaches one module per part of the snapshot, as in the
+    // server, so each stand-in is its own module type: one fake answering
+    // several parts would be entered several times by one request.
+
+    // Stands in for ProjectPersistence.
+    struct SessionProjectStateFake {
         void handle_get_session_project_state(
             iv::SessionSnapshotRequest const&,
             iv::SocketRpcSessionProjectStateResultBuilder& builder)
@@ -123,14 +134,20 @@ namespace {
                     {"instance_id", "snapshot-instance"}},
             }});
         }
+    };
 
+    // Stands in for ProjectAutosave.
+    struct AutosaveStateFake {
         void handle_get_autosave_state(
             iv::SessionSnapshotRequest const&,
             iv::SocketRpcAutosaveStateResultBuilder& builder)
         {
             builder.succeed(true);
         }
+    };
 
+    // Stands in for NodeInstances.
+    struct NodeInstancesFake {
         void handle_get_node_instances(
             iv::GetNodeInstancesRequest const&,
             iv::SocketRpcNodeInstancesResultBuilder& builder)
@@ -142,7 +159,10 @@ namespace {
                 .realized = true,
             }});
         }
+    };
 
+    // Stands in for PackageDefinitions.
+    struct PackageDefinitionsFake {
         void handle_get_package_definitions(
             iv::GetIvPackageDefinitionsRequest const&,
             iv::SocketRpcIvPackageDefinitionsResultBuilder& builder)
@@ -152,7 +172,10 @@ namespace {
                 .package_root = "/tmp/iv-test-snapshot",
             }});
         }
+    };
 
+    // Stands in for ProjectGraph.
+    struct ProjectGraphFake {
         void handle_get_node_event_protocol(
             iv::GetNodeEventProtocolRequest const&,
             iv::SocketRpcNodeEventProtocolResultBuilder& builder)
@@ -163,8 +186,7 @@ namespace {
             });
         }
 
-        // Stands in for ProjectGraph: a mutation answers with the read-model
-        // changes it committed.
+        // A mutation answers with the read-model changes it committed.
         void handle_delete_node_instance(
             iv::DeleteNodeInstanceRequest const&,
             iv::SocketRpcAckResponseBuilder& builder)
@@ -174,10 +196,8 @@ namespace {
             });
             builder.succeed();
         }
-
     };
 
-    SocketRpcTestState socket_rpc_test_state;
 
     IV_DECLARE_BRIDGE(
         socket_rpc_server_test_state_bridge,
@@ -189,30 +209,55 @@ namespace {
         socket_rpc_server_test_state_bridge,
         iv_socket_rpc_graph_query_by_spans_event,
         &SocketRpcTestState::handle_graph_query_by_spans)
+    IV_DECLARE_BRIDGE(
+        socket_rpc_server_test_session_project_state_bridge,
+        iv::SocketRpcServer,
+        SessionProjectStateFake);
+    IV_DEFINE_BRIDGE(socket_rpc_server_test_session_project_state_bridge)
     IV_SUBSCRIBE_LINKER_EVENT(
-        socket_rpc_server_test_state_bridge,
+        socket_rpc_server_test_session_project_state_bridge,
         iv_socket_rpc_get_session_project_state_event,
-        &SocketRpcTestState::handle_get_session_project_state)
+        &SessionProjectStateFake::handle_get_session_project_state)
+    IV_DECLARE_BRIDGE(
+        socket_rpc_server_test_autosave_state_bridge,
+        iv::SocketRpcServer,
+        AutosaveStateFake);
+    IV_DEFINE_BRIDGE(socket_rpc_server_test_autosave_state_bridge)
     IV_SUBSCRIBE_LINKER_EVENT(
-        socket_rpc_server_test_state_bridge,
+        socket_rpc_server_test_autosave_state_bridge,
         iv_socket_rpc_get_autosave_state_event,
-        &SocketRpcTestState::handle_get_autosave_state)
+        &AutosaveStateFake::handle_get_autosave_state)
+    IV_DECLARE_BRIDGE(
+        socket_rpc_server_test_node_instances_bridge,
+        iv::SocketRpcServer,
+        NodeInstancesFake);
+    IV_DEFINE_BRIDGE(socket_rpc_server_test_node_instances_bridge)
     IV_SUBSCRIBE_LINKER_EVENT(
-        socket_rpc_server_test_state_bridge,
+        socket_rpc_server_test_node_instances_bridge,
         iv_socket_rpc_get_node_instances_event,
-        &SocketRpcTestState::handle_get_node_instances)
+        &NodeInstancesFake::handle_get_node_instances)
+    IV_DECLARE_BRIDGE(
+        socket_rpc_server_test_package_definitions_bridge,
+        iv::SocketRpcServer,
+        PackageDefinitionsFake);
+    IV_DEFINE_BRIDGE(socket_rpc_server_test_package_definitions_bridge)
     IV_SUBSCRIBE_LINKER_EVENT(
-        socket_rpc_server_test_state_bridge,
+        socket_rpc_server_test_package_definitions_bridge,
         iv_socket_rpc_get_iv_package_definitions_event,
-        &SocketRpcTestState::handle_get_package_definitions)
+        &PackageDefinitionsFake::handle_get_package_definitions)
+    IV_DECLARE_BRIDGE(
+        socket_rpc_server_test_project_graph_bridge,
+        iv::SocketRpcServer,
+        ProjectGraphFake);
+    IV_DEFINE_BRIDGE(socket_rpc_server_test_project_graph_bridge)
     IV_SUBSCRIBE_LINKER_EVENT(
-        socket_rpc_server_test_state_bridge,
+        socket_rpc_server_test_project_graph_bridge,
         iv_socket_rpc_get_node_event_protocol_event,
-        &SocketRpcTestState::handle_get_node_event_protocol)
+        &ProjectGraphFake::handle_get_node_event_protocol)
     IV_SUBSCRIBE_LINKER_EVENT(
-        socket_rpc_server_test_state_bridge,
+        socket_rpc_server_test_project_graph_bridge,
         iv_socket_rpc_delete_node_instance_event,
-        &SocketRpcTestState::handle_delete_node_instance)
+        &ProjectGraphFake::handle_delete_node_instance)
     std::filesystem::path make_server_workspace()
     {
         auto const* info = ::testing::UnitTest::GetInstance()->current_test_info();
@@ -352,6 +397,16 @@ namespace {
         iv::SocketRpcServer server;
         iv::SystemAudioDevices system_audio_devices;
         socket_rpc_server_test_state_bridge::scope test_state_scope;
+        SessionProjectStateFake session_project_state;
+        AutosaveStateFake autosave_state;
+        NodeInstancesFake node_instances;
+        PackageDefinitionsFake package_definitions;
+        ProjectGraphFake project_graph;
+        socket_rpc_server_test_session_project_state_bridge::scope session_project_state_scope;
+        socket_rpc_server_test_autosave_state_bridge::scope autosave_state_scope;
+        socket_rpc_server_test_node_instances_bridge::scope node_instances_scope;
+        socket_rpc_server_test_package_definitions_bridge::scope package_definitions_scope;
+        socket_rpc_server_test_project_graph_bridge::scope project_graph_scope;
         iv::socket_rpc_system_audio_devices_bridge::scope system_audio_devices_scope;
         std::string response_buffer;
 
@@ -360,6 +415,11 @@ namespace {
               server(workspace, fds[1]),
               system_audio_devices(48000, 8, make_audio_backend()),
               test_state_scope(server, socket_rpc_test_state),
+              session_project_state_scope(server, session_project_state),
+              autosave_state_scope(server, autosave_state),
+              node_instances_scope(server, node_instances),
+              package_definitions_scope(server, package_definitions),
+              project_graph_scope(server, project_graph),
               system_audio_devices_scope(server, system_audio_devices)
         {
             socket_rpc_test_state.current_server = &server;

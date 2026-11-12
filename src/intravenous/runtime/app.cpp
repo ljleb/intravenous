@@ -90,23 +90,33 @@ public:
         , persistence_(&persistence)
     {}
 
+    // One autosave attempt, including its failure report, is one event source
+    // entry: the save completes work scheduled by earlier project changes.
+    bool save_once()
+    {
+        bool saved = false;
+        IV_EVENT_SOURCE(ProjectAutosave, "autosave") {
+            try {
+                persistence_->save();
+                autosave_->save_succeeded();
+                saved = true;
+            } catch (std::exception const& exception) {
+                autosave_->save_failed();
+                persistence_->report_autosave_failure(exception.what());
+            } catch (...) {
+                autosave_->save_failed();
+                persistence_->report_autosave_failure("unknown failure");
+            }
+        }
+        return saved;
+    }
+
     void start()
     {
         if (thread_.has_value()) return;
         thread_.emplace([this](std::stop_token stop_token) {
             while (!stop_token.stop_requested()) {
-                if (autosave_->take_due_save()) {
-                    try {
-                        persistence_->save();
-                        autosave_->save_succeeded();
-                    } catch (std::exception const& exception) {
-                        autosave_->save_failed();
-                        persistence_->report_autosave_failure(exception.what());
-                    } catch (...) {
-                        autosave_->save_failed();
-                        persistence_->report_autosave_failure("unknown failure");
-                    }
-                }
+                if (autosave_->take_due_save()) (void)save_once();
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
         });
@@ -122,18 +132,7 @@ public:
         request_shutdown();
         thread_.reset();
         while (autosave_->take_pending_save()) {
-            try {
-                persistence_->save();
-                autosave_->save_succeeded();
-            } catch (std::exception const& exception) {
-                autosave_->save_failed();
-                persistence_->report_autosave_failure(exception.what());
-                break;
-            } catch (...) {
-                autosave_->save_failed();
-                persistence_->report_autosave_failure("unknown failure");
-                break;
-            }
+            if (!save_once()) break;
         }
     }
 };
@@ -414,7 +413,12 @@ int run_server_mode(int argc, char** argv)
         socket_rpc_project_autosave_bridge::bind(server, project_autosave);
 
     startup_log("loading project persistence");
-    project_persistence.load();
+    // No client is attached during replay, so its messages go to the log.
+    for (auto const& message : project_persistence.load()) {
+        diagnostic_stream() << "project replay " << message.level << ": "
+                            << message.message << '\n';
+    }
+    flush_diagnostic_stream();
     project_autosave_service.start();
     runtime_execution_service.start();
 

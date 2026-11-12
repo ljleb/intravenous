@@ -64,12 +64,48 @@ struct GraphConnectionsProjectGraphRequest {
     bool handled = false;
 };
 
+class GraphConnections;
+
+// The GraphConnections transaction of one node-message interaction. ProjectGraph
+// enters GraphConnections once, through
+// iv_runtime_project_graph_connections_interaction_requested_event, to open
+// it. Each later run applies the unchanged desired connection set to one
+// preview or final root builder, exactly as a GraphConnectionsProjectGraphRequest
+// without a mutation would, but as part of the opening entry instead of
+// entering GraphConnections again. An interaction never changes desired
+// connections.
+class GraphConnectionsInteraction {
+    GraphConnections* owner_ = nullptr;
+    EventModuleVisit visit_{};
+
+public:
+    GraphConnectionsInteraction() = default;
+    GraphConnectionsInteraction(GraphConnections& owner, EventModuleVisit visit)
+        : owner_(&owner)
+        , visit_(visit)
+    {}
+
+    [[nodiscard]] explicit operator bool() const noexcept { return owner_ != nullptr; }
+
+    void run(GraphConnectionsProjectGraphRequest& request) const;
+};
+
+struct GraphConnectionsInteractionRequest {
+    GraphConnectionsInteraction interaction{};
+    bool handled = false;
+};
+
 // Canonical owner of desired whole-project cross-node connection intent.
 // Matcher resolution and connection application are derived work performed
 // once against a complete fresh root graph in ProjectGraph's transaction.
 class GraphConnections {
     mutable std::mutex mutex_;
     std::unordered_map<std::string, ProjectConnection> desired_connections_{};
+
+    friend class GraphConnectionsInteraction;
+    // The body of one ProjectGraph transaction, shared by the transaction
+    // event and GraphConnectionsInteraction::run.
+    void apply_project_graph_transaction(GraphConnectionsProjectGraphRequest& request);
 
 public:
     GraphConnections() = default;
@@ -79,6 +115,7 @@ public:
 
     [[nodiscard]] std::vector<ProjectConnection> desired_connections() const;
     void handle_project_graph_transaction(GraphConnectionsProjectGraphRequest& request);
+    void handle_project_graph_interaction(GraphConnectionsInteractionRequest& request);
     void handle_project_persistence_collect_state(
         ProjectPersistenceBuilder& builder) const;
 };

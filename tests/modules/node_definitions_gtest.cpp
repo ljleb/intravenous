@@ -1,4 +1,5 @@
 #include "../module_test_utils.h"
+#include "../event_source_test_support.h"
 
 #include <intravenous/bridge.h>
 #include <intravenous/runtime/node_definitions.h>
@@ -88,7 +89,7 @@ iv::PackageDefinitionsPublicationRequest publish(
             std::make_shared<iv::PackageRevision const>(std::move(revision)));
     }
     iv::PackageDefinitionsPublicationRequest request{.snapshot = std::move(snapshot)};
-    definitions.handle_package_definitions_publication(request);
+    in_event_source([&] { return definitions.handle_package_definitions_publication(request); });
     return request;
 }
 
@@ -337,7 +338,7 @@ TEST(NodeDefinitions, InitializeLoadedDefinitionUsesAcceptedRevisionPublicationP
     auto const workspace = fresh_module_fixture_workspace("node_definitions_initialize");
     iv::NodeDefinitions definitions;
     auto definition = make_loaded_definition(workspace, "iv.test.initialized");
-    definitions.initialize_loaded_definition(std::move(definition));
+    in_event_source([&] { return definitions.initialize_loaded_definition(std::move(definition)); });
 
     auto const loaded = definitions.loaded_module_definitions();
     ASSERT_EQ(loaded.size(), 1u);
@@ -363,7 +364,7 @@ TEST(NodeDefinitions, NullPackageSnapshotIsRejectedWithoutMutatingPublishedNames
 
     iv::PackageDefinitionsPublicationRequest request;
     EXPECT_THROW(
-        definitions.handle_package_definitions_publication(request),
+        in_event_source([&] { return definitions.handle_package_definitions_publication(request); }),
         std::invalid_argument);
     EXPECT_EQ(definitions.snapshot(), before);
 }

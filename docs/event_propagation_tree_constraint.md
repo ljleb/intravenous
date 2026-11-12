@@ -229,17 +229,20 @@ concern.
 ### Runtime propagation context
 
 Debug builds thread a **propagation context** through event invocations. The
-context is created when a root event is raised outside any active propagation,
-and inherited by every event raised as a consequence:
+context is created when an **event source entry** opens, with
+`IV_EVENT_SOURCE(SourceModule, name) { ... }`, and inherited by every event
+raised inside that block:
 
 ```cpp
 struct PropagationContext {
-    EventId root_event;
+    SourceFrame source;            // source module, debugging name, location
     std::unordered_set<ModuleId> visited_modules;
     // causal trace entries
 };
 ```
 
+The source module is recorded as visited when the entry opens, so a
+propagation that comes back to its own source is a re-entry like any other.
 Each subscriber dispatch marks its module visited; raising a further event
 inside a handler reuses the same context rather than creating a new one. The
 invariant enforced dynamically:
@@ -253,9 +256,9 @@ leave `D` off the stack by the time `C` raises into it; the visited set still
 contains it, so the violation is caught.
 
 The context travels via the invocation mechanism: `IV_INVOKE_LINKER_EVENT` and
-its variants initialize or inherit the context around subscriber dispatch, and
-`IV_INVOKE_LINKER_EVENT_SOURCE` marks a member as a propagation root. A
-thread-local current context is sufficient for synchronous propagation and
+`IV_INVOKE_SINGLETON_EVENT` inherit the context of the enclosing source entry
+around subscriber dispatch, and a raise outside any source entry is an error.
+A thread-local current context is sufficient for synchronous propagation and
 adds no cost in release builds, where all of this compiles out.
 
 Because the check observes the branch that actually executed, conditions are
@@ -326,23 +329,34 @@ signatures do not change, and modules never pass provenance objects manually.
 Provenance is an execution concern of the event mechanism, not part of module
 APIs.
 
-### Public API change
+### Public API
 
-Exactly one primitive is added; the existing invocation macro keeps its name
-and meaning:
+_Accepted design change, 2026-11-12: event sources are entered explicitly with
+a scope. The previous single-raise source primitive is preserved in
+[event_source_marking_before_event_source_scopes_2026-11-12.md](./historical/event_source_marking_before_event_source_scopes_2026-11-12.md)._
 
 ```text
-IV_INVOKE_LINKER_EVENT_SOURCE(event_name, ...)
-    - must be called with no linker event being dispatched on this thread
-    - starts a new propagation context
-    - raises the event
-    - destroys the context when the synchronous propagation returns
+IV_EVENT_SOURCE(SourceModule[, name]) { ... }
+    - enters one event source for the block that follows
+    - must not be entered while another event source entry is active on this thread
+    - SourceModule is where control originates; it is recorded as visited, so
+      nothing raised inside the block may enter it again
+    - name is an optional debugging name, printed next to the source module in
+      collision reports (for example the JSON-RPC method of one client message)
+    - everything raised inside the block is one propagation tree
+    - the context is destroyed when the block exits, normally or by exception
 
 IV_INVOKE_LINKER_EVENT(event_name, ...)
-    - raises an ordinary event
-    - if a propagation context exists, inherits it
-    - otherwise behaves as it does today
+IV_INVOKE_SINGLETON_EVENT(event_name, ...)
+    - raise an event as a consequence of the current source entry
+    - raising one outside an event source entry is an error
 ```
+
+One source entry is one tree. A source block that raises several events
+raises them as siblings of that tree, never as several trees. A function may
+enter the same source more than once only for distinct causes, as
+`PackageWatcherService` does when it reports `rebuildStarted` before entering
+the refresh it announces.
 
 The subscriber function type is unchanged: subscribers remain plain
 `void(Args...)`. In particular the event context is not injected as a first
@@ -354,29 +368,13 @@ pointers; the templated bridge function already knows the concrete subscriber
 type at exactly the point where module identity is needed, so there is no
 reason to widen the section's ABI with metadata.
 
-### Two thread-local concepts
+### Thread-local state
 
-```cpp
-thread_local event_stack;            // every event invocation, tracked or not
-thread_local propagation_context*;   // only underneath a marked source
-```
-
-The event stack exists for every invocation — including currently untracked
-ones — because nesting is the fact that decides whether a raise can be a root:
-
-> Calling `IV_INVOKE_LINKER_EVENT_SOURCE` while any event invocation is active
-> on this thread is an error — even if the enclosing event is itself
-> untracked.
-
-An untracked enclosing event is still a synchronously preceding application
-cause, so a source nested under it is not a source. The check is therefore
-against the event stack, not merely against the propagation pointer:
-
-```text
-IV_INVOKE_LINKER_EVENT(A)
-    -> subscriber
-       -> IV_INVOKE_LINKER_EVENT_SOURCE(B)   // error: nested under A
-```
+Every event is raised inside a source entry, so one thread-local pointer to the
+current propagation context is enough: it is null exactly when no source entry
+is active on the thread. A raise with a null context fails, and a source entry
+opened with a non-null context fails. A source therefore cannot nest under an
+event either: the event's own source entry is still active.
 
 ### Invocation mechanics
 
@@ -384,12 +382,14 @@ The macro bodies move into internal helpers so RAII can maintain state and
 exceptions cannot corrupt it:
 
 ```text
-IV_INVOKE_LINKER_EVENT:   push event frame -> dispatch subscribers -> pop
-IV_INVOKE_LINKER_EVENT_SOURCE:
-    assert event stack empty and no active propagation
-    create propagation context
-    push event frame -> dispatch subscribers -> pop
+IV_EVENT_SOURCE:
+    assert no active propagation
+    create propagation context; record the source module as visited
+    run the block
     destroy context
+IV_INVOKE_LINKER_EVENT / IV_INVOKE_SINGLETON_EVENT:
+    assert an active propagation
+    push event frame -> dispatch subscribers -> pop
 ```
 
 Subscriber wrappers record module entry. The bridge subscriber template
@@ -409,6 +409,41 @@ bridges connect types, not instances. If two semantically distinct module
 instances of the same C++ type ever need distinguishing, identity would switch
 to something instance-based — but type identity matches the architecture
 today.
+
+### Module transactions
+
+_Accepted design change, 2026-11-12._
+
+Application-event propagation and transactional computation are different.
+The tree constraint governs the first: two event paths may not reach one
+module for one cause, because the module would perform redundant work or
+observe incomplete intermediate state. A module may still perform several
+computational steps for one cause when those steps form one transaction whose
+intermediate state is not published as independent application changes.
+
+A module transaction is opened by one event delivery. The handler keeps its
+entry with `EventModuleVisit::current<Module>()` and returns a transaction
+object on the request record. Each later operation runs inside
+`EventModuleVisitScope(visit)`: it continues the opening entry instead of
+entering the module again, and whatever it raises is still checked, as raised
+by that module. Using the transaction outside the propagation that opened it
+is an error.
+
+A transaction:
+
+- works on transaction-local data; its intermediate steps change no durable
+  state and raise nothing;
+- commits its accepted result once and raises the consolidated changes once;
+- exposes narrowly defined operations and does not re-raise the events that
+  opened it; and
+- does not hold module mutexes across its lifetime unless its ownership and
+  synchronization design explicitly justify it.
+
+Node-message interactions use this: `ProjectGraph` opens one
+`NodeInstancesInteraction` and one `GraphConnectionsInteraction` for an
+interaction, and runs every replacement preview and the final replacement set
+through them. See
+[Node message interaction](./event_flows/node_message_interaction.md).
 
 ### Provenance traces
 
@@ -444,47 +479,47 @@ second entry:
 The runtime checker therefore doubles as an architecture debugger: every
 failure reports the exact subscriber -> raise chains that collided.
 
-### Migration of unmarked roots
+### Every raise has a source
 
-Initially:
-
-```text
-IV_INVOKE_LINKER_EVENT_SOURCE          checked propagation
-IV_INVOKE_LINKER_EVENT under a source  checked propagation
-IV_INVOKE_LINKER_EVENT at top level    today's behavior + event stack only
-```
-
-Once every control source is annotated, the natural tightening is: a
-top-level `IV_INVOKE_LINKER_EVENT` (event stack empty, no propagation) becomes
-a debug error demanding the source variant. This prevents new control sources
-from silently bypassing the invariant, and makes the semantic distinction
-load-bearing:
+Every control source is annotated (2026-11-12), and a raise outside a source
+entry is an error, so a new control source cannot bypass the invariant:
 
 ```cpp
-IV_INVOKE_LINKER_EVENT_SOURCE(E, ...)  // external/new cause
-IV_INVOKE_LINKER_EVENT(E, ...)         // consequence of the current cause
+IV_EVENT_SOURCE(Source, "cause") { IV_INVOKE_LINKER_EVENT(E, ...); }  // new cause
+IV_INVOKE_LINKER_EVENT(E, ...)  // consequence of the current cause
 ```
 
-Neither macro is interchangeable inside a subscriber.
+The current source entries are:
+
+| Source module | Entry | Opened in |
+| --- | --- | --- |
+| `SocketRpcServer` | one client message, named by its JSON-RPC method | the request command handler |
+| `SocketRpcServer` | one client connection cleanup | the client cleanup command |
+| `PackageWatcherService` | one package refresh; `rebuildStarted`; a discovery or service failure report | its worker |
+| `ProjectPersistence` | one project-file replay | `ProjectPersistence::load` |
+| `ProjectAutosave` | one autosave attempt, including its failure report | the autosave service thread |
+| `ProjectGraph` | one finished control compile | its control-compile worker |
 
 ### Asynchronous boundaries
 
-The nested-source rule is unconditional in debug builds: a source nested under
-any active event invocation fails, because "source" means *no preceding
-application-level event cause on this thread*, and a handler on the stack
+The nested-source rule is unconditional in debug builds: an event source entry
+opened inside another fails, because "source" means *no preceding
+application-level event cause on this thread*, and an active entry
 demonstrably contradicts that.
 
 The sanctioned escape is a deliberately defined cause-breaking boundary. Work
-scheduled for later (task runner, deferred queue) executes when the event
-stack is empty, so a source invocation there is genuinely a new cause and the
-model accepts it naturally. If queued work must instead retain the original
-cause, that requires an explicit movable propagation token; that mechanism
-should not be built until a concrete requirement exists.
+scheduled for later (task runner, deferred queue, worker thread) executes
+outside any source entry, so it enters a source of its own: the completion is
+genuinely a new cause. `ProjectGraph`'s control-compile completion and
+`ProjectAutosave`'s save are such entries. If queued work must instead retain
+the original cause, that requires an explicit movable propagation token; that
+mechanism should not be built until a concrete requirement exists.
 
 ## Implementation notes
 
-- `linker_event.h`: thread-local event stack, propagation context, RAII scopes
-  around both invocation macros, `IV_INVOKE_LINKER_EVENT_SOURCE` primitive;
+- `linker_event.h`: thread-local propagation context, RAII scopes around
+  `IV_EVENT_SOURCE` and both invocation macros, and `EventModuleVisit` /
+  `EventModuleVisitScope` for module transactions;
 - `bridge.h`: module-entry guard in `iv_bridge_subscriber::invoke`, which
   already holds the participant type for the visited-set check;
 - no changes to `IV_DECLARE_LINKER_EVENT` / `IV_DEFINE_LINKER_EVENT`, the

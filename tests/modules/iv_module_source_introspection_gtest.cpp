@@ -1,4 +1,5 @@
 #include "../module_test_utils.h"
+#include "../event_source_test_support.h"
 
 #include <intravenous/runtime/node_definitions_project_graph_bridge.h>
 #include <intravenous/runtime/graph_connections.h>
@@ -81,15 +82,15 @@ struct InitializedIvModuleSourceIntrospectionApp {
         // Source introspection learns instance declarations from the
         // ProjectGraph root build that creates the instance.
         auto const module_id = definition.module_id;
-        definitions.initialize_loaded_definition(std::move(definition));
+        in_event_source([&] { return definitions.initialize_loaded_definition(std::move(definition)); });
         iv::ProjectStringBuilder created;
-        project_graph.handle_project_create_node_instance(
+        in_event_source([&] { return project_graph.handle_project_create_node_instance(
             iv::ProjectCreateNodeInstanceRequest{
                 .instance_id = "instance:1",
                 .definition_id = module_id,
                 .package_root = module_root,
             },
-            created);
+            created); });
         (void)created.build();
     }
 

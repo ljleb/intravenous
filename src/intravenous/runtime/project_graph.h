@@ -134,10 +134,23 @@ struct SerializedNodeMessage {
 
 // Root-graph transaction coordinator. It deliberately does not own desired
 // instance or connection state. NodeInstances and GraphConnections remain the
-// canonical sibling owners and are each invoked once per transaction through
-// ProjectGraph child edges.
+// canonical sibling owners and are each entered once per cause through
+// ProjectGraph child edges. A node-message interaction that replaces nodes
+// configures several preview graphs within its one cause; it enters each of
+// them once to open an interaction transaction and runs every preview and its
+// final replacement set through that transaction.
 class ProjectGraph {
     struct NodeMessageInteraction;
+    // The NodeInstances and GraphConnections transactions of one node-message
+    // interaction, opened by its first replacement preview.
+    struct InteractionTransactions {
+        NodeInstancesInteraction node_instances{};
+        GraphConnectionsInteraction graph_connections{};
+    };
+    struct ManualControlTargetValue {
+        ManualControlId id{};
+        Sample value{};
+    };
     struct RebuildResult {
         // Null when the configuration pass failed.
         std::shared_ptr<ProjectGraphGeneration const> generation{};
@@ -195,11 +208,15 @@ class ProjectGraph {
 
     // `package_definitions` is the module-definition change of the
     // definitions publication this build follows, if any.
+    // `interaction_transactions`, when set, routes the NodeInstances and
+    // GraphConnections steps through that node-message interaction's
+    // transactions, opening them first if needed.
     RebuildResult rebuild_locked(
         NodeInstancesMutation instance_mutation,
         GraphConnectionsMutation connection_mutation,
         bool publish_execution = true,
-        IvPackageDefinitionsChanged const* package_definitions = nullptr);
+        IvPackageDefinitionsChanged const* package_definitions = nullptr,
+        InteractionTransactions* interaction_transactions = nullptr);
     void dispatch_node_message_locked(
         NodeAddress const& target,
         OwnedNodeMessage message,
@@ -217,12 +234,16 @@ class ProjectGraph {
     void control_compile_worker(std::stop_token stop);
     [[nodiscard]] ProjectManualControl* find_manual_control_locked(
         ManualControlId const& id);
-    [[nodiscard]] bool stage_ready_control_code_locked(
-        std::span<ManualControlId const> dynamic_inputs);
-    void set_manual_control_target_locked(
-        ManualControlId const& id, Sample value);
+    // Sends GraphExecutor one control update: the optional target, then the
+    // ready same-layout code when it matches `code_inputs`. Returns whether
+    // that code was staged.
+    [[nodiscard]] bool update_graph_executor_controls_locked(
+        std::optional<ManualControlTargetValue> target,
+        std::optional<std::span<ManualControlId const>> code_inputs);
+    // `target`, when set, joins the same GraphExecutor control update.
     void reconcile_manual_control_activity_locked(
-        bool settled_dynamic_input);
+        bool settled_dynamic_input,
+        std::optional<ManualControlTargetValue> target = std::nullopt);
 
 public:
     ProjectGraph();

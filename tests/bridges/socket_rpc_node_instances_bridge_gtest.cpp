@@ -1,4 +1,5 @@
 #include "../module_test_utils.h"
+#include "../event_source_test_support.h"
 
 #include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
@@ -32,7 +33,7 @@ void refresh_packages(
     iv::PackageDefinitions& packages,
     iv::PackageRefreshTransaction transaction)
 {
-    packages.handle_package_refresh(transaction);
+    in_event_source([&] { return packages.handle_package_refresh(transaction); });
 }
 
 using Json = nlohmann::ordered_json;
@@ -47,12 +48,12 @@ TEST(SocketRpcNodeInstancesBridge, UnboundCreateEventLeavesResponseUnbuilt)
 {
     iv::SocketRpcCreateNodeInstanceResultBuilder builder;
 
-    IV_INVOKE_LINKER_EVENT(
+    in_event_source([&] { IV_INVOKE_LINKER_EVENT(
         iv::iv_socket_rpc_create_node_instance_event,
         iv::CreateNodeInstanceRequest{
             .definition_id = "iv.test.module_a",
         },
-        builder);
+        builder); });
 
     EXPECT_THROW(static_cast<void>(builder.build(1)), std::runtime_error);
 }
@@ -248,7 +249,7 @@ TEST(SocketRpcNodeInstancesBridge, BoundEventsCreateAndDeleteInstances)
     auto definition = iv::test_support::make_loaded_definition(
         module_root, "iv.test.local_cmake");
     definition.package_id = std::filesystem::weakly_canonical(module_root).generic_string();
-    definitions.initialize_loaded_definition(std::move(definition));
+    in_event_source([&] { return definitions.initialize_loaded_definition(std::move(definition)); });
     auto iv_module_instances_iv_module_source_introspection_scope =
         iv::node_instances_iv_module_source_introspection_bridge::bind(
             instances,
@@ -259,25 +260,25 @@ TEST(SocketRpcNodeInstancesBridge, BoundEventsCreateAndDeleteInstances)
         iv::socket_rpc_node_instances_bridge::bind(server, instances);
 
     iv::SocketRpcCreateNodeInstanceResultBuilder create_builder;
-    IV_INVOKE_LINKER_EVENT(
+    in_event_source([&] { IV_INVOKE_LINKER_EVENT(
         iv::iv_socket_rpc_create_node_instance_event,
         iv::CreateNodeInstanceRequest{
             .instance_id = "instance:stable",
             .definition_id = "iv.test.local_cmake",
         },
-        create_builder);
+        create_builder); });
     auto const create_response = parse_json_line(create_builder.build(2));
     auto const created_instance_id =
         create_response["result"]["instanceId"].get<std::string>();
     EXPECT_EQ(created_instance_id, "instance:stable");
 
     iv::SocketRpcAckResponseBuilder delete_builder;
-    IV_INVOKE_LINKER_EVENT(
+    in_event_source([&] { IV_INVOKE_LINKER_EVENT(
         iv::iv_socket_rpc_delete_node_instance_event,
         iv::DeleteNodeInstanceRequest{
             .instance_id = created_instance_id,
         },
-        delete_builder);
+        delete_builder); });
     auto const delete_response = parse_json_line(delete_builder.build(3));
     EXPECT_EQ(delete_response["result"]["ok"], true);
 
@@ -304,7 +305,7 @@ TEST(SocketRpcNodeInstancesBridge, BoundUpdateRenamesInstance)
     auto definition = iv::test_support::make_loaded_definition(
         module_root, "iv.test.local_cmake");
     definition.package_id = std::filesystem::weakly_canonical(module_root).generic_string();
-    definitions.initialize_loaded_definition(std::move(definition));
+    in_event_source([&] { return definitions.initialize_loaded_definition(std::move(definition)); });
     auto iv_module_instances_iv_module_source_introspection_scope =
         iv::node_instances_iv_module_source_introspection_bridge::bind(
             instances,
@@ -315,18 +316,18 @@ TEST(SocketRpcNodeInstancesBridge, BoundUpdateRenamesInstance)
         iv::socket_rpc_node_instances_bridge::bind(server, instances);
 
     iv::SocketRpcCreateNodeInstanceResultBuilder create_builder;
-    IV_INVOKE_LINKER_EVENT(
+    in_event_source([&] { IV_INVOKE_LINKER_EVENT(
         iv::iv_socket_rpc_create_node_instance_event,
         iv::CreateNodeInstanceRequest{
             .definition_id = "iv.test.local_cmake",
         },
-        create_builder);
+        create_builder); });
     auto const create_response = parse_json_line(create_builder.build(2));
     auto const created_instance_id =
         create_response["result"]["instanceId"].get<std::string>();
 
     iv::SocketRpcAckResponseBuilder update_builder;
-    IV_INVOKE_LINKER_EVENT(
+    in_event_source([&] { IV_INVOKE_LINKER_EVENT(
         iv::iv_socket_rpc_update_node_instances_event,
         iv::UpdateNodeInstancesRequest{
             .updates = {iv::UpdateNodeInstance{
@@ -335,7 +336,7 @@ TEST(SocketRpcNodeInstancesBridge, BoundUpdateRenamesInstance)
                 .configuration_source = " ",
             }},
         },
-        update_builder);
+        update_builder); });
     auto const update_response = parse_json_line(update_builder.build(4));
     EXPECT_EQ(update_response["result"]["ok"], true);
 
@@ -362,7 +363,7 @@ TEST(SocketRpcProjectGraphBridge, BoundEventsPreserveAndDeleteDanglingConnection
         iv::socket_rpc_project_graph_bridge::bind(server, project_graph);
 
     iv::SocketRpcAckResponseBuilder upsert_builder;
-    IV_INVOKE_LINKER_EVENT(
+    in_event_source([&] { IV_INVOKE_LINKER_EVENT(
         iv::iv_socket_rpc_upsert_graph_connection_event,
         iv::UpsertGraphConnectionRequest{
             .connection = iv::ProjectEventConnection{
@@ -379,15 +380,15 @@ TEST(SocketRpcProjectGraphBridge, BoundEventsPreserveAndDeleteDanglingConnection
                 }},
             },
         },
-        upsert_builder);
+        upsert_builder); });
     EXPECT_EQ(parse_json_line(upsert_builder.build(5))["result"]["ok"], true);
     ASSERT_EQ(graph_connections.desired_connections().size(), 1u);
 
     iv::SocketRpcAckResponseBuilder delete_builder;
-    IV_INVOKE_LINKER_EVENT(
+    in_event_source([&] { IV_INVOKE_LINKER_EVENT(
         iv::iv_socket_rpc_delete_graph_connection_event,
         iv::DeleteGraphConnectionRequest{.connection_id = "event:dangling"},
-        delete_builder);
+        delete_builder); });
     EXPECT_EQ(parse_json_line(delete_builder.build(6))["result"]["ok"], true);
     EXPECT_TRUE(graph_connections.desired_connections().empty());
 }

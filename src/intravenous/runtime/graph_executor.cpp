@@ -1178,6 +1178,20 @@ ProjectGraphGraphExecutorResult GraphExecutor::handle_project_graph_transaction(
     };
 }
 
+void GraphExecutor::handle_project_graph_controls(
+    ProjectGraphGraphExecutorControlsRequest& request)
+{
+    if (request.target) {
+        request.target_applied = set_manual_control_target(
+            request.target->project_generation,
+            request.target->id,
+            request.target->value);
+    }
+    if (request.realtime_code) {
+        request.realtime_code_result = stage_realtime_code(request.realtime_code);
+    }
+}
+
 bool GraphExecutor::activate_pending(GlobalIndex sample_index)
 {
     if (accepted_chain_guard_.test_and_set(std::memory_order_acquire)) {

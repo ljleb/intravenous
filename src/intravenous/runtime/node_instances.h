@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/graph/builder.h>
+#include <intravenous/linker_event.h>
 #include <intravenous/module/configuration_argument.h>
 #include <intravenous/runtime/iv_module_instance_types.h>
 #include <intravenous/runtime/node_definition_types.h>
@@ -186,6 +187,41 @@ struct NodeInstancesProjectGraphRequest {
     bool handled = false;
 };
 
+class NodeInstances;
+
+// The NodeInstances transaction of one node-message interaction. ProjectGraph
+// enters NodeInstances once, through
+// iv_runtime_project_graph_node_instances_interaction_requested_event, to open
+// it. Each later run takes one NodeInstancesProjectGraphRequest carrying a
+// NodeReplacementPreviewMutation, or the interaction's final
+// NodeReplacementsReplaceMutation, and handles it exactly as that request's
+// event would, but as part of the opening entry instead of entering
+// NodeInstances again. A preview changes no desired state and raises nothing;
+// the final replacement set is committed once, and is the only run that can
+// raise NodeInstances' own events.
+class NodeInstancesInteraction {
+    NodeInstances* owner_ = nullptr;
+    EventModuleVisit visit_{};
+    bool committed_ = false;
+
+public:
+    NodeInstancesInteraction() = default;
+    NodeInstancesInteraction(NodeInstances& owner, EventModuleVisit visit);
+    NodeInstancesInteraction(NodeInstancesInteraction&& other) noexcept;
+    NodeInstancesInteraction& operator=(NodeInstancesInteraction&& other) noexcept;
+    NodeInstancesInteraction(NodeInstancesInteraction const&) = delete;
+    NodeInstancesInteraction& operator=(NodeInstancesInteraction const&) = delete;
+
+    [[nodiscard]] explicit operator bool() const noexcept { return owner_ != nullptr; }
+
+    void run(NodeInstancesProjectGraphRequest& request);
+};
+
+struct NodeInstancesInteractionRequest {
+    NodeInstancesInteraction interaction{};
+    bool handled = false;
+};
+
 // Canonical desired-instance owner plus reusable typed configured-graph cache.
 // ProjectGraph owns the write-side transaction surface and invokes this module
 // synchronously with one pinned definition snapshot and one fresh root builder.
@@ -273,6 +309,11 @@ private:
         GraphBuilder& builder,
         std::span<ProjectNodePathSelector const> relative_path);
 
+    friend class NodeInstancesInteraction;
+    // The body of one ProjectGraph transaction, shared by the transaction
+    // event and NodeInstancesInteraction::run.
+    void apply_project_graph_transaction(NodeInstancesProjectGraphRequest& request);
+
 public:
     NodeInstances();
     ~NodeInstances();
@@ -311,6 +352,7 @@ public:
     void handle_node_definitions_snapshot_changed(
         NodeDefinitionsSnapshotChanged const& change);
     void handle_project_graph_transaction(NodeInstancesProjectGraphRequest& request);
+    void handle_project_graph_interaction(NodeInstancesInteractionRequest& request);
     void handle_project_persistence_collect_state(ProjectPersistenceBuilder& builder) const;
     void handle_socket_rpc_get_node_instances(
         GetNodeInstancesRequest const& request,

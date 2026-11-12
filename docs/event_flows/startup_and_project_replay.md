@@ -11,6 +11,9 @@ state.
 flowchart TD
     SRC["Project file load"]
     PP["ProjectPersistence"]
+    PJ["PackageJit"]
+    SAD["SystemAudioDevices"]
+    PA["ProjectAutosave"]
     PG["ProjectGraph"]
     NI["NodeInstances"]
     GC["GraphConnections"]
@@ -19,7 +22,10 @@ flowchart TD
     GE["GraphExecutor"]
 
     SRC --> PP
-    PP -->|"one normalized replay batch ⇄ ProjectGraphPublication (not published)"| PG
+    PP -->|"1. one merged override-settings request"| PJ
+    PP -->|"1. one merged override-settings request"| SAD
+    PP -->|"2. one normalized replay batch ⇄ ProjectGraphPublication (not published)"| PG
+    PP -->|"3. project loaded"| PA
     PG -->|"1. replace/update desired instance batch; populate root builder ⇄ instance changes"| NI
     PG -->|"2. replayed instance declarations ⇄ virtual-node replacements"| IMSI
     PG -->|"3. replace/update desired connection batch; apply against complete embeddings"| GC
@@ -30,6 +36,17 @@ flowchart TD
 Replay runs before any client attaches, so `ProjectPersistence` does not publish
 the rebuild's `ProjectGraphPublication`; clients read the replayed state when
 they connect (see [README](./README.md)).
+
+Replay is one event source entry of `ProjectPersistence` (implemented
+2026-11-12):
+
+- Every `project.overrideSettings` command joins one request, raised once
+  before the graph batch; a later command's setting replaces an earlier one.
+  `PackageJit` and `SystemAudioDevices` are its two subscribers. Replay
+  restores the saved project, so neither reports a project state change.
+- Command failures and warnings are not notified. `ProjectPersistence::load`
+  returns them to its caller, and the server writes them to its diagnostics
+  log.
 
 `ProjectPersistence` reconstructs persistent data but does not become the owner
 of graph intent. `NodeInstances` owns the replayed desired instance state and

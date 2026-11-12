@@ -1,4 +1,5 @@
 #include "../module_test_utils.h"
+#include "../event_source_test_support.h"
 
 #include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/graph_jit/activity_runtime.h>
@@ -60,7 +61,7 @@ void publish_definitions_snapshot(
     iv::ProjectGraph& project_graph,
     iv::NodeDefinitionsSnapshotChanged change)
 {
-    project_graph.handle_node_definitions_snapshot_changed(change);
+    in_event_source([&] { return project_graph.handle_node_definitions_snapshot_changed(change); });
 }
 
 
@@ -20215,7 +20216,7 @@ TEST_F(GraphJitRuntimeFixture,
     auto graph = configured_module_graph(
         *revision, graph_jit_shared_neutral_compensated_module_id);
     ASSERT_TRUE(graph);
-    auto compiled = jit->handle_project_graph_transaction(
+    auto compiled = in_event_source([&] { return jit->handle_project_graph_transaction(
         iv::ProjectGraphGraphJitRequest{
             .successor = {
                 .project_generation = 422,
@@ -20223,7 +20224,7 @@ TEST_F(GraphJitRuntimeFixture,
                 .definitions = definitions,
             },
             .initial_generation = true,
-        });
+        }); });
     ASSERT_TRUE(compiled.succeeded())
         << (compiled.diagnostics.empty()
                 ? ""
@@ -20703,14 +20704,14 @@ TEST_F(GraphJitRuntimeFixture, CompatibleCodeReplacesSteadyCodeOfGenerationWithT
     auto const successor_graph = configured_module_graph_with_arguments(
         *revision, graph_jit_downmixed_rewire_module_id, successor_arguments);
 
-    auto predecessor = jit->handle_project_graph_transaction(
+    auto predecessor = in_event_source([&] { return jit->handle_project_graph_transaction(
         iv::ProjectGraphGraphJitRequest{
             .successor = {
                 .project_generation = 432,
                 .graph = predecessor_graph,
                 .definitions = definitions,
             },
-        });
+        }); });
     ASSERT_TRUE(predecessor.succeeded())
         << (predecessor.diagnostics.empty()
                 ? ""
@@ -20727,11 +20728,11 @@ TEST_F(GraphJitRuntimeFixture, CompatibleCodeReplacesSteadyCodeOfGenerationWithT
         .graph = successor_graph,
         .definitions = definitions,
     };
-    auto cutover = jit->handle_project_graph_transaction(
+    auto cutover = in_event_source([&] { return jit->handle_project_graph_transaction(
         iv::ProjectGraphGraphJitRequest{
             .successor = successor_request,
             .predecessor = predecessor.compiled_graph,
-        });
+        }); });
     ASSERT_TRUE(cutover.succeeded())
         << (cutover.diagnostics.empty()
                 ? ""
@@ -20747,8 +20748,8 @@ TEST_F(GraphJitRuntimeFixture, CompatibleCodeReplacesSteadyCodeOfGenerationWithT
         iv::GraphExecutorStageResult::accepted);
     ASSERT_TRUE(executor.activate_pending(index(64)));
 
-    auto replacement = jit->handle_project_graph_transaction(
-        iv::ProjectGraphGraphJitRequest{.successor = successor_request});
+    auto replacement = in_event_source([&] { return jit->handle_project_graph_transaction(
+        iv::ProjectGraphGraphJitRequest{.successor = successor_request}); });
     ASSERT_TRUE(replacement.succeeded())
         << (replacement.diagnostics.empty()
                 ? ""

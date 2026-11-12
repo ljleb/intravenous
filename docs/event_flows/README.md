@@ -11,6 +11,12 @@ The procedures are:
 - [Package refresh](./package_refresh.md)
 - [User connection mutation](./user_connection_mutation.md)
 - [Startup and project replay](./startup_and_project_replay.md)
+- [Node message interaction](./node_message_interaction.md)
+
+Each tree is rooted at one event source entry, opened with
+`IV_EVENT_SOURCE(SourceModule, name) { ... }`; linker events cannot be raised
+outside one. The current entries are listed in
+[Every raise has a source](../event_propagation_tree_constraint.md#every-raise-has-a-source).
 
 The diagrams describe **control flow**. Data may travel in either direction
 along an event/request edge. In particular, `ProjectGraph` may pass a mutable
@@ -58,6 +64,9 @@ cause's root, which publishes them once (implemented 2026-11-12):
   sent before the build, is a separate cause.
 - Startup replay publishes nothing; clients read the replayed state when they
   connect.
+- One manual-control cause sends `GraphExecutor` one
+  `ProjectGraphGraphExecutorControlsRequest`: the target change, then any
+  ready same-layout code to stage.
 
 The tree rule caught this when a refresh reached `SocketRpcServer` through both
 `NodeInstances` and `IvModuleSourceIntrospection`. The previous trees are

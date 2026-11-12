@@ -13,17 +13,9 @@ ProjectGraphGraphExecutorResult ignore_graph_executor_request(
     return {};
 }
 
-GraphExecutorStageResult ignore_realtime_code_request(
-    std::shared_ptr<CompiledGraph const>)
-{
-    return GraphExecutorStageResult::ignored_stale;
-}
-
-bool ignore_manual_control_target_request(
-    std::uint64_t, ManualControlId const&, Sample)
-{
-    return false;
-}
+void ignore_graph_executor_controls_request(
+    ProjectGraphGraphExecutorControlsRequest&)
+{}
 } // namespace
 IV_DEFINE_LINKER_EVENT(
     ProjectGraphNodeInstancesRequestedEvent,
@@ -43,11 +35,13 @@ IV_DEFINE_SINGLETON_EVENT(
     iv_runtime_project_graph_graph_executor_requested_event,
     &ignore_graph_executor_request)
 IV_DEFINE_SINGLETON_EVENT(
-    ProjectGraphRealtimeCodeRequestedEvent,
-    iv_runtime_project_graph_realtime_code_requested_event,
-    &ignore_realtime_code_request)
-IV_DEFINE_SINGLETON_EVENT(
-    ProjectGraphManualControlTargetRequestedEvent,
-    iv_runtime_project_graph_manual_control_target_requested_event,
-    &ignore_manual_control_target_request)
+    ProjectGraphGraphExecutorControlsRequestedEvent,
+    iv_runtime_project_graph_graph_executor_controls_requested_event,
+    &ignore_graph_executor_controls_request)
+IV_DEFINE_LINKER_EVENT(
+    ProjectGraphNodeInstancesInteractionRequestedEvent,
+    iv_runtime_project_graph_node_instances_interaction_requested_event)
+IV_DEFINE_LINKER_EVENT(
+    ProjectGraphConnectionsInteractionRequestedEvent,
+    iv_runtime_project_graph_connections_interaction_requested_event)
 } // namespace iv

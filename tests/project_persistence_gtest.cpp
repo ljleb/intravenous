@@ -1,4 +1,5 @@
 #include "module_test_utils.h"
+#include "event_source_test_support.h"
 
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/runtime/node_instances.h>
@@ -40,7 +41,7 @@ void publish_definitions_snapshot(
     iv::ProjectGraph& project_graph,
     iv::NodeDefinitionsSnapshotChanged change)
 {
-    project_graph.handle_node_definitions_snapshot_changed(change);
+    in_event_source([&] { return project_graph.handle_node_definitions_snapshot_changed(change); });
 }
 
 using Json = nlohmann::ordered_json;
@@ -177,14 +178,12 @@ iv::StartupConfigState startup_for(std::filesystem::path const &workspace)
     return startup;
 }
 
-struct ProjectNotificationWitness {
-    std::vector<iv::ProjectMessageNotification> messages {};
+struct ProjectOverrideSettingsWitness {
+    std::vector<iv::ProjectOverrideSettingsRequest> requests {};
 
-    void handle_notification(iv::ProjectNotification const &notification)
+    void handle_override_settings(iv::ProjectOverrideSettingsRequest const &request)
     {
-        if (auto const *message = std::get_if<iv::ProjectMessageNotification>(&notification)) {
-            messages.push_back(*message);
-        }
+        requests.push_back(request);
     }
 };
 
@@ -199,20 +198,20 @@ struct ProjectCollectStateContributor {
 
 using namespace iv;
 IV_DECLARE_BRIDGE(
-    project_notification_witness_bridge,
+    project_override_settings_witness_bridge,
     iv::ProjectPersistence,
-    ProjectNotificationWitness);
+    ProjectOverrideSettingsWitness);
 IV_DECLARE_BRIDGE(
     project_collect_state_contributor_bridge,
     iv::ProjectPersistence,
     ProjectCollectStateContributor);
-IV_DEFINE_BRIDGE(project_notification_witness_bridge)
+IV_DEFINE_BRIDGE(project_override_settings_witness_bridge)
 IV_DEFINE_BRIDGE(project_collect_state_contributor_bridge)
 
 IV_SUBSCRIBE_LINKER_EVENT(
-    project_notification_witness_bridge,
-    iv_runtime_project_notification_event,
-    &ProjectNotificationWitness::handle_notification)
+    project_override_settings_witness_bridge,
+    iv_runtime_project_override_settings_requested_event,
+    &ProjectOverrideSettingsWitness::handle_override_settings)
 IV_SUBSCRIBE_LINKER_EVENT(
     project_collect_state_contributor_bridge,
     iv_runtime_project_persistence_collect_state_event,
@@ -442,7 +441,6 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
     iv::NodeInstances instances;
     iv::GraphConnections graph_connections;
     iv::ProjectGraph project_graph;
-    ProjectNotificationWitness witness;
     auto project_graph_scope =
         iv::project_persistence_project_graph_bridge::bind(persistence, project_graph);
     auto project_graph_instances_scope =
@@ -451,9 +449,8 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
         iv::project_graph_graph_connections_bridge::bind(project_graph, graph_connections);
     auto instances_scope =
         iv::project_persistence_node_instances_bridge::bind(persistence, instances);
-    auto witness_scope = project_notification_witness_bridge::bind(persistence, witness);
 
-    persistence.load();
+    auto const messages = persistence.load();
 
     auto const listed = instances.list_instances();
     ASSERT_EQ(listed.size(), 2u);
@@ -504,10 +501,32 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
     EXPECT_EQ(
         manual_controls[0].participation,
         iv::ManualControlParticipation::participate_with_connections);
-    EXPECT_TRUE(std::ranges::any_of(witness.messages, [](auto const &message) {
+    EXPECT_TRUE(std::ranges::any_of(messages, [](auto const &message) {
         return message.level == "error"
             && message.message.contains("unknown project command: removed.timelineCommand");
     }));
+}
+
+TEST(ProjectPersistence, ReplayRaisesEveryOverrideCommandAsOneMergedRequest)
+{
+    auto const workspace = fresh_workspace("project_persistence_merged_overrides");
+    auto startup = startup_for(workspace);
+    write_text(
+        workspace / "iv_project.jsonl",
+        R"({"command":"project.overrideSettings","args":{"cmake_generator":"Ninja","output_device_id":"first-output"}})" "\n"
+        R"({"command":"project.overrideSettings","args":{"output_device_id":"second-output","input_device_id":"second-input"}})" "\n");
+
+    iv::ProjectPersistence persistence(workspace, startup);
+    ProjectOverrideSettingsWitness witness;
+    auto witness_scope = project_override_settings_witness_bridge::bind(persistence, witness);
+
+    (void)persistence.load();
+
+    ASSERT_EQ(witness.requests.size(), 1u);
+    auto const& request = witness.requests.front();
+    EXPECT_EQ(request.cmake_generator, std::optional<std::string>("Ninja"));
+    EXPECT_EQ(request.output_device_id, std::optional<std::string>("second-output"));
+    EXPECT_EQ(request.input_device_id, std::optional<std::string>("second-input"));
 }
 
 TEST(ProjectPersistence, LoadedReplacementConfiguresAfterDefinitionsArrive)
@@ -538,7 +557,7 @@ TEST(ProjectPersistence, LoadedReplacementConfiguresAfterDefinitionsArrive)
             persistence, instances);
     persisted_successor_configure_calls = 0;
 
-    persistence.load();
+    (void)persistence.load();
     ASSERT_EQ(instances.desired_node_replacements().size(), 1u);
     // The definitions have not arrived, so the first configuration pass fails.
     EXPECT_FALSE(project_graph.current_generation());
@@ -572,14 +591,14 @@ TEST(ProjectPersistence, SaveCollectsInstanceMetadataWithoutExecutionState)
     auto instances_scope =
         iv::project_persistence_node_instances_bridge::bind(persistence, instances);
 
-    (void)instances.create_instance(
+    (void)in_event_source([&] { return instances.create_instance(
         "iv.test.persisted",
         workspace / "modules" / "persisted",
         "instance:stable",
         "Persisted",
-        "{.cutoff = 1200}");
+        "{.cutoff = 1200}"); });
 
-    persistence.save();
+    in_event_source([&] { return persistence.save(); });
 
     auto const commands = parse_project_file(workspace / "iv_project.jsonl");
     ASSERT_EQ(commands.size(), 1u);
@@ -623,9 +642,9 @@ TEST(ProjectPersistence, SaveCollectsDanglingStructuredGraphConnections)
             },
         },
     };
-    connections.handle_project_graph_transaction(request);
+    in_event_source([&] { return connections.handle_project_graph_transaction(request); });
 
-    persistence.save();
+    in_event_source([&] { return persistence.save(); });
 
     auto const commands = parse_project_file(workspace / "iv_project.jsonl");
     ASSERT_EQ(commands.size(), 1u);
@@ -642,7 +661,7 @@ TEST(ProjectPersistence, SaveWithNoContributorsWritesEmptyProjectFile)
     auto const workspace = fresh_workspace("project_persistence_empty_save");
     iv::ProjectPersistence persistence(workspace, startup_for(workspace));
 
-    persistence.save();
+    in_event_source([&] { return persistence.save(); });
 
     EXPECT_TRUE(parse_project_file(workspace / "iv_project.jsonl").empty());
 }
@@ -658,7 +677,7 @@ TEST(ProjectPersistence, CollectStateFailureDoesNotReplaceExistingProjectFile)
     auto contributor_scope =
         project_collect_state_contributor_bridge::bind(persistence, contributor);
 
-    EXPECT_THROW(persistence.save(), std::runtime_error);
+    EXPECT_THROW(in_event_source([&] { return persistence.save(); }), std::runtime_error);
 
     std::ifstream in(project_file);
     ASSERT_TRUE(in);

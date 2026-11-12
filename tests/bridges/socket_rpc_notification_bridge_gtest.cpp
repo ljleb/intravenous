@@ -1,4 +1,5 @@
 #include "../module_test_utils.h"
+#include "../event_source_test_support.h"
 
 #include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/node_definitions.h>
@@ -163,7 +164,7 @@ TEST(SocketRpcNotificationBridge, UnboundServerDropsNotifications)
         .message = "hello",
     };
 
-    EXPECT_NO_THROW(IV_INVOKE_LINKER_EVENT(iv_runtime_project_notification_event, notification));
+    EXPECT_NO_THROW(in_event_source([&] { IV_INVOKE_LINKER_EVENT(iv_runtime_project_notification_event, notification); }));
 }
 
 TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
@@ -175,12 +176,12 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
             harness.server,
             persistence);
 
-    IV_INVOKE_LINKER_EVENT(
+    in_event_source([&] { IV_INVOKE_LINKER_EVENT(
         iv_runtime_project_notification_event,
         ProjectNotification(ProjectMessageNotification{
             .level = "warning",
             .message = "bridge message",
-        }));
+        })); });
     auto const message_line = harness.read_line();
     ASSERT_FALSE(message_line.empty());
     auto const message_json = parse_json_line(message_line);
@@ -188,13 +189,13 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
     EXPECT_EQ(message_json["params"]["level"], "warning");
     EXPECT_EQ(message_json["params"]["message"], "bridge message");
 
-    IV_INVOKE_LINKER_EVENT(
+    in_event_source([&] { IV_INVOKE_LINKER_EVENT(
         iv_runtime_project_notification_event,
         ProjectNotification(ProjectStatusNotification{
             .level = "info",
             .code = "rebuildFinished",
             .message = "done",
-        }));
+        })); });
     auto const status_line = harness.read_line();
     ASSERT_FALSE(status_line.empty());
     auto const status_json = parse_json_line(status_line);
@@ -216,37 +217,39 @@ TEST(SocketRpcNotificationBridge, BoundServerPublishesOnePackageRefreshReport)
 
     // PackageWatcher sends one report after a refresh's whole propagation;
     // SocketRpcServer turns it into the existing wire notifications in order.
-    IV_INVOKE_LINKER_EVENT_SOURCE(
-        iv_runtime_package_refresh_published_event,
-        PackageRefreshPublication{
-            .build_status = ProjectStatusNotification{
-                .level = "info",
-                .code = "rebuildFinished",
-                .message = "IV package build ready to apply in 5 ms",
-            },
-            .package_catalog_changed = true,
-            .project = ProjectGraphPublication{
-                .instances = std::vector<IvModuleInstanceInfo>{
-                    IvModuleInstanceInfo{
-                        .instance_id = "instance:1",
-                        .definition_id = "/tmp/module-a",
-                        .package_root = "/tmp/module-a",
-                        .configuration_source = "{.gain = 0.5}",
-                        .realized = true,
-                        .module_id = "module.a",
+    in_event_source([&] {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_package_refresh_published_event,
+            PackageRefreshPublication{
+                .build_status = ProjectStatusNotification{
+                    .level = "info",
+                    .code = "rebuildFinished",
+                    .message = "IV package build ready to apply in 5 ms",
+                },
+                .package_catalog_changed = true,
+                .project = ProjectGraphPublication{
+                    .instances = std::vector<IvModuleInstanceInfo>{
+                        IvModuleInstanceInfo{
+                            .instance_id = "instance:1",
+                            .definition_id = "/tmp/module-a",
+                            .package_root = "/tmp/module-a",
+                            .configuration_source = "{.gain = 0.5}",
+                            .realized = true,
+                            .module_id = "module.a",
+                        },
+                        IvModuleInstanceInfo{
+                            .instance_id = "instance:2",
+                            .definition_id = "/tmp/module-b",
+                            .package_root = "/tmp/module-b",
+                            .realized = false,
+                        },
                     },
-                    IvModuleInstanceInfo{
-                        .instance_id = "instance:2",
-                        .definition_id = "/tmp/module-b",
-                        .package_root = "/tmp/module-b",
-                        .realized = false,
+                    .virtual_nodes = ProjectVirtualNodesNotification{
+                        .replace_instance_ids = {"instance:1"},
                     },
                 },
-                .virtual_nodes = ProjectVirtualNodesNotification{
-                    .replace_instance_ids = {"instance:1"},
-                },
-            },
-        });
+            });
+    });
 
     auto const status = parse_json_line(harness.read_line());
     EXPECT_EQ(status["method"], "server.status");

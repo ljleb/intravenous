@@ -44,6 +44,7 @@
             flamegraph
             valgrind
             gdb
+            zip
           ];
           shell = packages: pkgs.mkShell {
             inherit packages;

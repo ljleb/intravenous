@@ -196,8 +196,9 @@ void PackageJit::handle_project_override_settings(
     assign_path(request.iv_package_pch, &ModuleLoaderToolchainConfig::iv_package_pch);
     if (!touched) return;
 
+    // Only project replay overrides settings, and it restores the saved
+    // project: no project state changes.
     set_toolchain_config(std::move(toolchain));
-    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
 
 void PackageJit::handle_project_persistence_collect_state(

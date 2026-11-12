@@ -1,4 +1,5 @@
 #include "../module_test_utils.h"
+#include "../event_source_test_support.h"
 
 #include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/node_definitions_project_graph_bridge.h>
@@ -28,7 +29,7 @@ TEST(IntrospectionBridges, DefinitionsReachIvModuleSourceIntrospectionOnlyThroug
     iv::NodeDefinitions definitions;
     iv::IvModuleSourceIntrospection introspection;
 
-    definitions.initialize_loaded_definition(make_loaded_definition(workspace));
+    in_event_source([&] { return definitions.initialize_loaded_definition(make_loaded_definition(workspace)); });
     auto const result = introspection.query_active_regions(
         std::filesystem::weakly_canonical(workspace / "module.cpp"));
     EXPECT_TRUE(result.source_spans.empty());
@@ -59,7 +60,7 @@ TEST(IntrospectionBridges, DefinitionsReachIvModuleSourceIntrospectionThroughPro
     auto loaded = iv::test::load_runtime_iv_module_definition(
         startup,
         std::filesystem::weakly_canonical(workspace));
-    definitions.initialize_loaded_definition(iv::PackageModuleDefinition{
+    in_event_source([&] { return definitions.initialize_loaded_definition(iv::PackageModuleDefinition{
         .package_id = loaded.package_id,
         .definition_id = loaded.definition_id,
         .package_root = loaded.package_root,
@@ -68,7 +69,7 @@ TEST(IntrospectionBridges, DefinitionsReachIvModuleSourceIntrospectionThroughPro
         .dependencies = loaded.dependencies,
         .module_refs = std::move(loaded.module_refs),
         .configured_graph = loaded.configured_graph,
-    });
+    }); });
     auto const result = introspection.query_active_regions(
         std::filesystem::weakly_canonical(workspace / "module.cpp"));
 
@@ -83,9 +84,9 @@ TEST(IntrospectionBridges, InstancesToDefinitionsRequiresBinding)
     iv::NodeInstances instances;
     iv::NodeDefinitions definitions;
 
-    (void)instances.create_instance(
+    (void)in_event_source([&] { return instances.create_instance(
         "iv.test.runtime_module_bridges",
-        std::filesystem::weakly_canonical(workspace));
+        std::filesystem::weakly_canonical(workspace)); });
 
     EXPECT_TRUE(definitions.loaded_module_definitions().empty());
 }
@@ -111,11 +112,11 @@ TEST(InstanceDefinitionBridges, InstanceCreatedAfterDefinitionPublicationRealize
         iv::project_graph_graph_connections_bridge::bind(
             project_graph, graph_connections);
 
-    definitions.initialize_loaded_definition(
-        make_loaded_definition(package_root, std::string(module_id)));
+    in_event_source([&] { return definitions.initialize_loaded_definition(
+        make_loaded_definition(package_root, std::string(module_id))); });
     EXPECT_TRUE(instances.list_instances().empty());
 
-    auto const instance_id = instances.create_instance(module_id, package_root);
+    auto const instance_id = in_event_source([&] { return instances.create_instance(module_id, package_root); });
     auto const listed = instances.list_instances();
 
     ASSERT_EQ(listed.size(), 1u);

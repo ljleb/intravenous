@@ -1,4 +1,5 @@
 #include "../module_test_utils.h"
+#include "../event_source_test_support.h"
 
 #include <intravenous/bridge.h>
 #include <intravenous/runtime/node_definitions.h>
@@ -92,7 +93,7 @@ struct PipelineHarness {
     iv::PackageWatcherRefreshRequest refresh_request()
     {
         iv::PackageWatcherRefreshRequest request;
-        watcher.handle_refresh_requested(request);
+        in_event_source([&] { return watcher.handle_refresh_requested(request); });
         return request;
     }
 

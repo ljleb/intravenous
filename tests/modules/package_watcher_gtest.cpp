@@ -1,4 +1,5 @@
 #include "../module_test_utils.h"
+#include "../event_source_test_support.h"
 
 #include <intravenous/bridge.h>
 #include <intravenous/linux_file_descriptor.h>
@@ -176,7 +177,7 @@ struct WatcherHarness {
     bool refresh()
     {
         last_refresh = {};
-        watcher.handle_refresh_requested(last_refresh);
+        in_event_source([&] { return watcher.handle_refresh_requested(last_refresh); });
         return last_refresh.changed;
     }
 };
@@ -498,12 +499,12 @@ TEST(PackageWatcherService, LogicalWorkAfterStartupIsNotStrandedWithoutFilesyste
         << "startup package discovery never completed";
     auto const startup_calls = observer.call_count();
 
-    watcher.handle_required_definitions_changed(iv::IvModuleRequiredDefinitionsChanged{
+    in_event_source([&] { return watcher.handle_required_definitions_changed(iv::IvModuleRequiredDefinitionsChanged{
         .created = {iv::IvModuleRequiredDefinition{
             .definition_id = "iv.test.service.retained",
             .package_root = retained_package,
         }},
-    });
+    }); });
 
     ASSERT_TRUE(observer.wait_for_calls(startup_calls + 1, 2s))
         << "logical package work was stranded after the polling timer was removed";
@@ -798,12 +799,12 @@ TEST(PackageWatcher, RequiredDefinitionChangePublishesWorkAvailable)
     FakePackageWatcherWorkSink sink;
     auto work_scope = package_watcher_fake_work_bridge::bind(harness.watcher, sink);
 
-    harness.watcher.handle_required_definitions_changed(iv::IvModuleRequiredDefinitionsChanged{
+    in_event_source([&] { return harness.watcher.handle_required_definitions_changed(iv::IvModuleRequiredDefinitionsChanged{
         .created = {iv::IvModuleRequiredDefinition{
             .definition_id = "iv.test.work_signal",
             .package_root = root,
         }},
-    });
+    }); });
 
     EXPECT_EQ(sink.calls, 1);
 }
@@ -824,21 +825,21 @@ TEST(PackageWatcher, RequiredDefinitionRetainsDiscoveredArtifactOwnership)
             request.result.revisions.push_back(revision_for(item));
         }
     };
-    harness.watcher.handle_required_definitions_changed(
+    in_event_source([&] { return harness.watcher.handle_required_definitions_changed(
         iv::IvModuleRequiredDefinitionsChanged{
             .created = {iv::IvModuleRequiredDefinition{
                 .definition_id = "iv.test.required_builtin",
                 .package_root = root,
             }},
-        });
+        }); });
     harness.watcher.synchronize_discovered_packages({built_in});
-    harness.watcher.handle_required_definitions_changed(
+    in_event_source([&] { return harness.watcher.handle_required_definitions_changed(
         iv::IvModuleRequiredDefinitionsChanged{
             .updated = {iv::IvModuleRequiredDefinition{
                 .definition_id = "iv.test.required_builtin",
                 .package_root = root,
             }},
-        });
+        }); });
 
     ASSERT_TRUE(harness.refresh());
     ASSERT_EQ(harness.jit.calls.size(), 1u);
@@ -869,12 +870,12 @@ TEST(PackageWatcher, ConflictingDeclarationSourcesThrowWithoutPoisoningFutureMer
     auto const retained_id = std::filesystem::weakly_canonical(retained_root).generic_string();
 
     WatcherHarness harness;
-    harness.watcher.handle_required_definitions_changed(iv::IvModuleRequiredDefinitionsChanged{
+    in_event_source([&] { return harness.watcher.handle_required_definitions_changed(iv::IvModuleRequiredDefinitionsChanged{
         .created = {iv::IvModuleRequiredDefinition{
             .definition_id = "iv.test.retained",
             .package_root = retained_root,
         }},
-    });
+    }); });
 
     EXPECT_THROW(
         harness.watcher.synchronize_discovered_packages({
@@ -882,13 +883,13 @@ TEST(PackageWatcher, ConflictingDeclarationSourcesThrowWithoutPoisoningFutureMer
         }),
         std::runtime_error);
 
-    EXPECT_NO_THROW(harness.watcher.handle_required_definitions_changed(
+    EXPECT_NO_THROW(in_event_source([&] { return harness.watcher.handle_required_definitions_changed(
         iv::IvModuleRequiredDefinitionsChanged{
             .updated = {iv::IvModuleRequiredDefinition{
                 .definition_id = "iv.test.retained",
                 .package_root = retained_root,
             }},
-        }));
+        }); }));
 }
 
 TEST(PackageWatcher, DiscoveryIgnoresMalformedPackagesAndDeduplicatesOverlappingRoots)
