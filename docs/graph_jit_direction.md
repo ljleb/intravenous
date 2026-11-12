@@ -1489,6 +1489,17 @@ compile to restore observations. Persisted-window and sparse background queries
 that do not affect the executable graph are not compilation inputs. See
 [Vue Output Observation And Query Direction](./vue_output_observation_direction.md#accepted-observation-requirements-are-realization-inputs).
 
+This includes control-code recompilation for hover/dynamic inputs and settled
+constant specialization, not only structural edits. The compiled result must
+remain tied to the executable probe requirements used to produce it, so a
+stale control-code result cannot replace probes accepted after compilation
+began. When the structural project generation is unchanged, its identity alone
+does not establish this freshness. Separately, the observation consumer must
+identify the **active compiled execution/probe bindings**, not merely the
+structural project generation, and learn of cutovers even if no observed source
+emits a value. The representation of those checks and activation status is
+left to implementation.
+
 These are planned semantics, not a claim that UI probes already exist in source.
 
 ## Exact-generation consistency

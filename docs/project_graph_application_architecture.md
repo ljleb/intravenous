@@ -1003,6 +1003,15 @@ through the same `ProjectGraph`/`GraphJit`/`GraphExecutor` path, with coalescing
 where possible. Concurrent independent changes may still require separate
 compilations. See the [observation contract](./vue_output_observation_direction.md#accepted-observation-requirements-are-realization-inputs).
 
+This also applies to `ProjectGraph::control_compile_worker()`: its hover and
+constant-specialization compilations must carry a coherent snapshot of the
+accepted executable probes. A pending, in-flight, or ready control-code
+result compiled against an obsolete probe set cannot stage or later activate
+merely because its request ID and structural `project_generation` still match.
+`ProjectGraph` must track enough compilation-input freshness to reject or
+supersede such results, without requiring every observation change to advance
+the structural project generation.
+
 The application-module tree must remain non-reentrant:
 
 - When an interest-change cause enters `Observations` and then `ProjectGraph`,
@@ -1018,8 +1027,14 @@ must not treat staging as cutover. Outcomes refer to resolved aggregate semantic
 sources, not per-client subscription handles; `Observations` maps those sources
 to its own subscriptions. Invalidation and live delivery must respect actual
 generation activation, and unsuccessful staging must not discard valid current
-bindings. The current [event-flow documents](./event_flows/README.md) describe
-the implemented procedures; these observation edges are planned.
+bindings. The active compiled execution/probe identity must distinguish
+control-code replacements that reuse `ProjectGraphGeneration::generation`.
+`Observations` must be able to detect the actual cutover even if the successor
+produces no observation values (for example, when its last source disappears).
+How `GraphExecutor` exposes that activation status is an implementation choice;
+staging notifications alone cannot establish it. The current
+[event-flow documents](./event_flows/README.md) describe the implemented
+procedures; these observation edges are planned.
 
 `SocketRpcServer` remains transport. Observation frames are replaceable and
 batched separately from reliable project-revision replay; versioned range

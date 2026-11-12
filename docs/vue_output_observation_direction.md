@@ -260,6 +260,18 @@ an already running compilation, another compile may still be necessary; the
 single-compile guarantee applies to a structural edit with unchanged accepted
 requirements, not to arbitrary concurrent changes.
 
+**All compilation paths must use a coherent requirement snapshot.** This includes
+`ProjectGraph::control_compile_worker()` for hover/dynamic-control and settled
+constant specializations, not just structural root builds. A result prepared
+with older executable probe requirements must not subsequently stage or
+activate and replace a newer probe plan. Pending, in-flight, and ready control
+code must be checked against the accepted requirements when used, even if the
+structural `project_generation` has not changed. The implementation may use an
+independent requirement revision or advance an existing generation identity,
+but a check of structural `project_generation` alone is insufficient when
+observation-only changes do not advance it. Requirements that affect only
+query results or delivery cadence do not invalidate compiled code.
+
 **Staging and cutover differ.** A root build returns after staging a successor
 in `GraphExecutor`; activation occurs at a later safe boundary. The coordinated
 outcome must provide enough generation identity and **aggregate source**
@@ -284,6 +296,18 @@ replacement arrives, avoiding a blank meter while bindings change. Removed or
 incompatible sources must be invalidated when the applicable generation becomes
 active, not prematurely when it is merely staged. No observation may retain
 pointers into a reclaimed generation.
+
+**Routing needs actual activation identity.** The identity used to validate
+collected values and source invalidations must distinguish the compiled
+execution/probe bindings that actually became active, including control-code
+replacements within one structural project generation. A structural
+`ProjectGraphGeneration::generation` is not enough. The observation service
+must also be able to learn that activation occurred **without receiving a
+nonempty observation update**: a successor can remove the last observable
+source, leaving no value to publish. Activation status may accompany an empty
+collection or use another executor-owned, non-reentrant signal; no particular
+transport or callback is prescribed. Staged source resolutions remain
+provisional until that activation is established.
 
 ## 6. Vue interest and transport semantics
 
