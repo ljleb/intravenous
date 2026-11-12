@@ -13589,6 +13589,9 @@ TEST_F(GraphJitRuntimeFixture, IndependentFeedbackRegionsRunSpecialized)
     ASSERT_EQ(compiled.timings.size(), 1u);
     EXPECT_EQ(compiled.timings.front().region_specializations_compiled, 1u);
     EXPECT_EQ(compiled.timings.front().region_specializations_reused, 1u);
+    EXPECT_GT(
+        compiled.timings.front().region_specialization_retargeted_functions,
+        0u);
     EXPECT_EQ(compiled.timings.front().region_specialization_failures, 0u)
         << compiled.timings.front().region_specialization_failure;
     ASSERT_TRUE(compiled.compiled_graph->root_operations.valid());

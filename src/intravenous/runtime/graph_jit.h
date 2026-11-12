@@ -272,6 +272,19 @@ struct GraphJitCompileTimings {
     // input rings, that compiled specializations replaced with those values.
     std::uint64_t region_specialization_substitutions = 0;
     std::uint64_t region_specialization_us = 0;
+    // Successful cold-specialization work inside region_specialization_us.
+    // prepare locates package bitcode and callback definitions. emit_link
+    // emits the region and links the selected package closure. optimization
+    // includes the repeated substitution pipeline. materialization is ORC
+    // code generation, linking, and lookup. Their sum can be slightly below
+    // region_specialization_us because the outer total also includes cache
+    // insertion and timing overhead.
+    std::uint64_t region_specialization_prepare_us = 0;
+    std::uint64_t region_specialization_emit_link_us = 0;
+    std::uint64_t region_specialization_optimization_us = 0;
+    std::uint64_t region_specialization_materialization_us = 0;
+    // Definitions retargeted after portable package bitcode was linked.
+    std::uint64_t region_specialization_retargeted_functions = 0;
     // Allocated code memory, in whole pages, of the region specializations
     // this compilation created; then the bytes the recent-use cache owns after
     // this compilation, and its budget (GraphJitConfig).

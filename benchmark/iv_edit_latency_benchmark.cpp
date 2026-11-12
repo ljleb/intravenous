@@ -115,6 +115,10 @@ struct Options {
     // After the initial graph activates, run only that graph for this many
     // seconds. This gives a sampling profiler a stable audio-thread workload.
     int profile_seconds = 0;
+    // Keep the initial graph and repeated value changes, but omit the four
+    // structural edits. This isolates one cold value-specialization compile
+    // per iteration without changing the normal benchmark sequence.
+    bool configure_only = false;
     // Zero keeps the project execution configuration.
     std::size_t block_size = 0;
     iv::RealtimeStorageCostModel realtime_storage_cost_model{};
@@ -158,6 +162,7 @@ Options parse_options(int argc, char** argv)
         else if (arg == "--iterations") options.iterations = int_value();
         else if (arg == "--settle-ms") options.settle_ms = int_value();
         else if (arg == "--profile-seconds") options.profile_seconds = int_value();
+        else if (arg == "--configure-only") options.configure_only = true;
         else if (arg == "--block-size") {
             options.block_size = parse_size(arg, text_value());
         } else if (arg == "--stack-budget-bytes") {
@@ -183,7 +188,7 @@ Options parse_options(int argc, char** argv)
             std::cout << "Usage: iv_edit_latency_benchmark"
                          " [--shape voices|chain|mixed|feedback|storage] [--size N]"
                          " [--iterations N] [--settle-ms N]"
-                         " [--profile-seconds N] [--block-size N]"
+                         " [--profile-seconds N] [--configure-only] [--block-size N]"
                          " [--stack-budget-bytes N]"
                          " [--copied-byte-weight N]"
                          " [--ring-addressed-byte-weight N]"
@@ -823,7 +828,20 @@ void write_tsv_header(std::ostream& output)
            "\tcompile_capture_us\tcompile_plan_us"
            "\tcompile_transition_plan_us\tcompile_emit_us"
            "\tcompile_verify_us\tcompile_optimization_us"
-           "\tcompile_materialization_us\tselection_signature"
+           "\tcompile_materialization_us"
+           "\tregion_specializations_compiled"
+           "\tregion_specializations_reused"
+           "\tregion_specializations_skipped"
+           "\tregion_specialization_substitutions"
+           "\tregion_specialization_us"
+           "\tregion_specialization_prepare_us"
+           "\tregion_specialization_emit_link_us"
+           "\tregion_specialization_optimization_us"
+           "\tregion_specialization_materialization_us"
+           "\tregion_specialization_retargeted_functions"
+           "\tregion_specialization_allocated_bytes"
+           "\tregion_specialization_cache_bytes"
+           "\tselection_signature"
            "\tselected_decisions"
            "\ttransient_stack_decisions"
            "\tstack_with_persistent_carry_decisions"
@@ -850,7 +868,7 @@ void write_tsv_record(
         auto const& measured = compile ? *compile : empty_compile;
         auto const& storage = measured.realtime_storage;
         output << std::setprecision(17)
-               << "1\t" << options.shape
+               << "2\t" << options.shape
                << '\t' << options.size
                << '\t' << block_size
                << '\t' << iteration
@@ -885,6 +903,18 @@ void write_tsv_record(
                << '\t' << measured.verify_us
                << '\t' << measured.optimization_us
                << '\t' << measured.materialization_us
+               << '\t' << measured.region_specializations_compiled
+               << '\t' << measured.region_specializations_reused
+               << '\t' << measured.region_specializations_skipped
+               << '\t' << measured.region_specialization_substitutions
+               << '\t' << measured.region_specialization_us
+               << '\t' << measured.region_specialization_prepare_us
+               << '\t' << measured.region_specialization_emit_link_us
+               << '\t' << measured.region_specialization_optimization_us
+               << '\t' << measured.region_specialization_materialization_us
+               << '\t' << measured.region_specialization_retargeted_functions
+               << '\t' << measured.region_specialization_allocated_bytes
+               << '\t' << measured.region_specialization_cache_bytes
                << '\t' << storage.selection_signature
                << '\t' << storage.selected_decisions
                << '\t' << storage.transient_stack_decisions
@@ -975,6 +1005,29 @@ void print_summary(std::vector<EditRecord> const& records, std::string const& la
                       << " + optimize " << compile_phase(transition, [](auto const& c) { return c.optimization_us; })
                       << " + codegen " << compile_phase(transition, [](auto const& c) { return c.materialization_us; })
                       << '\n';
+            auto const specialization = compile_phase(
+                transition,
+                [](auto const& c) { return c.region_specialization_us; });
+            if (specialization != 0) {
+                std::cout << "        region specialization " << specialization
+                          << " = prepare "
+                          << compile_phase(transition, [](auto const& c) {
+                                 return c.region_specialization_prepare_us;
+                             })
+                          << " + emit/link "
+                          << compile_phase(transition, [](auto const& c) {
+                                 return c.region_specialization_emit_link_us;
+                             })
+                          << " + optimize "
+                          << compile_phase(transition, [](auto const& c) {
+                                 return c.region_specialization_optimization_us;
+                             })
+                          << " + codegen "
+                          << compile_phase(transition, [](auto const& c) {
+                                 return c.region_specialization_materialization_us;
+                             })
+                          << '\n';
+            }
         }
     }
 }
@@ -1183,6 +1236,7 @@ int main(int argc, char** argv)
                         builder);
                 });
             });
+            if (options.configure_only) continue;
             run_edit("add_node", iteration, [&] {
                 iv::ProjectStringBuilder builder;
                 project_graph.handle_project_create_node_instance(

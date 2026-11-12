@@ -968,6 +968,39 @@ void internalize_region_specialization(
     }
 }
 
+std::size_t retarget_region_specialization_functions(
+    llvm::Module& module,
+    std::string_view target_cpu,
+    std::string_view target_features)
+{
+    std::size_t updated = 0;
+    std::string const cpu(target_cpu);
+    for (auto& function : module) {
+        if (function.isDeclaration()) continue;
+
+        std::string features(target_features);
+        auto const existing_features = function.getFnAttribute("target-features");
+        // Match iv_package_finalize's host-target operation. The GraphJit
+        // target comes first; a function's own explicit requirements remain
+        // after it and therefore keep their precedence.
+        if (existing_features.isValid()
+            && !existing_features.getValueAsString().empty()) {
+            if (!features.empty()) features += ',';
+            features += existing_features.getValueAsString();
+        }
+
+        function.addFnAttr("target-cpu", cpu);
+        if (features.empty()) {
+            function.removeFnAttr("target-features");
+        } else {
+            function.addFnAttr("target-features", features);
+        }
+        function.removeFnAttr("tune-cpu");
+        ++updated;
+    }
+    return updated;
+}
+
 
 namespace {
 

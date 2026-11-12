@@ -4339,6 +4339,108 @@ The next dependency-ordered Front 16 work is therefore the measured
 `RealtimeStorageCostModel` sweep recorded above, not immediate removal of the
 ABI-sized binding area.
 
+*Host targeting for imported specialization code and cold-compile measurement
+(implemented and verified, 2026-11-12; complete repository-owner test suite
+passed).* The earlier statement that all package code remained
+at baseline `x86-64` is no longer accurate. `iv_package_finalize` already
+retargets the definitions used to emit `<package>.ivpkg.bc.node-code.o` to the
+host CPU, and the package artifact signature includes that CPU and feature set.
+The ordinary native package-callback path was therefore already host-specific.
+
+The remaining defect was limited to `RegionSpecializationCompiler::compile()`.
+It links definitions from the portable finalized bitcode into a new LLVM
+module. Only the generated region entry received the GraphJit target
+attributes, so an imported definition could keep its baseline target through
+inlining or code generation. After all package modules are linked,
+`retarget_region_specialization_functions()` now applies the current GraphJit
+target CPU and features to every definition. As in `iv_package_finalize`, a
+function's existing feature requirements remain after the host feature set,
+and `tune-cpu` is removed. Declarations are unchanged. The generic package
+callback object and the portable package artifact format do not change.
+
+Before deciding whether package-revision preparation should move more work out
+of an interactive graph compilation, the benchmark now measures one cold
+specialization directly:
+
+- `GraphJitCompileTimings` divides successful cold specialization work into
+  package/callback preparation, region emission and package linking,
+  optimization and workspace substitution, and ORC materialization;
+- it also records how many linked definitions received the GraphJit target;
+- `iv_edit_latency_benchmark --configure-only` keeps the initial graph and
+  repeats only its value edit, omitting add, connect, disconnect, and delete;
+- TSV schema 2 writes the aggregate specialization time, every phase, compile
+  and reuse counts, substitutions, allocated code bytes, and retained cache
+  bytes.
+
+Use a `chain` graph with unique configuration values. Each configure edit then
+requests one new value specialization, while the unchanged regions exercise
+cache reuse. The resulting phase distribution selects the next change. In
+particular, package-revision preparation is justified only if preparation or
+repeated package linking is material; this measurement must not be used to
+move graph-dependent substitution or optimization into package construction.
+
+*Cold-specialization result and optimizer preparation pipeline (implemented and
+verified, 2026-11-12; complete repository-owner test suite passed).* Twelve
+size-64 `chain` configuration
+edits each compiled one new value specialization and reused 65 existing
+specializations. Median edit wall time was 68.08 ms, of which GraphJit used
+67.52 ms and the new specialization used 63.93 ms. Its measured phases were:
+
+| Phase | Median | Share of specialization time |
+|---|---:|---:|
+| package/callback preparation | 0.002 ms | less than 0.1% |
+| region emission and package linking | 6.54 ms | 10.2% |
+| optimization and workspace substitution | 44.61 ms | 69.8% |
+| ORC materialization | 12.36 ms | 19.3% |
+
+Every run substituted 60 loads, retargeted 11 definitions, and allocated
+12,288 bytes of code. The preparation result rejects package-revision
+preparation as the next optimization: it cannot materially reduce this
+interactive edit, and even eliminating all repeated package linking would save
+only about 6.5 ms. The measured target is the optimizer pipeline.
+
+The repeated discovery rounds previously ran LLVM's complete O1 per-module
+pipeline before each call to `substitute_region_workspace_values()`, followed
+by the complete O3 pipeline. Their contract is narrower: inline and simplify
+the module, expose fixed workspace loads, and expose loops whose trip counts a
+substitution fixed. They now use LLVM's repeatable
+`buildModuleSimplificationPipeline()` at O1. The complete O3 pipeline still
+runs once after the final substitution, so code generation receives fully
+optimized IR. This removes optimization passes that do not help discovery from
+the repeated rounds; it does not change specialization selection, keys, cache
+ownership, or the native fallback. Existing specialization execution and
+transition tests are the semantic verification boundary.
+
+The verification run repeated the same twelve configuration edits. Every edit
+was accepted, compiled one specialization, and reused 65. The before/after
+medians were:
+
+| Measurement | Complete O1 discovery | Simplification discovery | Change |
+|---|---:|---:|---:|
+| edit wall time | 68.08 ms | 54.79 ms | -19.5% |
+| GraphJit time | 67.52 ms | 54.14 ms | -19.8% |
+| specialization total | 63.93 ms | 50.50 ms | -21.0% |
+| package/callback preparation | 0.002 ms | 0.001 ms | immaterial |
+| region emission and package linking | 6.54 ms | 6.53 ms | unchanged |
+| optimization and workspace substitution | 44.61 ms | 31.51 ms | -29.4% |
+| ORC materialization | 12.36 ms | 12.42 ms | unchanged |
+
+Allocated code remained 12,288 bytes and every specialization still retargeted
+11 definitions. The explicit substitution count changed from 60 to 56. That
+counter measures only replacements made by
+`substitute_region_workspace_values()`; LLVM's preceding simplification can
+fold a known load before the custom pass sees it. The stable allocated code,
+accepted execution, and complete test suite provide the semantic check. The
+initial size-64 graph also improved from 258.12 ms to 206.85 ms, with its five
+specializations' optimization time falling from 172.04 ms to 118.83 ms.
+
+This slice is complete. It rejects package-revision preparation for the current
+interactive bottleneck and leaves the measured remaining costs explicit:
+approximately 31.5 ms in specialization optimization, 12.4 ms in ORC
+materialization, and 6.5 ms in emission/linking. Any later compile-latency work
+must target one of those costs directly and must preserve the higher-priority
+realtime execution results already established by Front 16.
+
 Measurement (implementation status, 2026-11-06): setting `IV_EDIT_TIMING=1` makes
 `ProjectGraph::rebuild_locked()` write one "edit timing" entry per published
 rebuild to the diagnostic log (`IV_LOG_FILE`):

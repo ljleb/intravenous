@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -106,5 +107,18 @@ package_retained_global_definitions(llvm::Module& package);
 void internalize_region_specialization(
     llvm::Module& module,
     std::string const& function_name);
+
+// Applies the GraphJit target to every definition after finalized package
+// bitcode has been linked into a region-specialization module. Finalized
+// package bitcode stays portable and therefore carries Clang's baseline CPU.
+// The node-code object beside it is already compiled for the host by
+// iv_package_finalize; this operation gives the imported LLVM copy the same
+// opportunity to use the current GraphJit target. Existing per-function
+// target features remain appended so an authored function requirement is not
+// weakened. Returns the number of function definitions updated.
+std::size_t retarget_region_specialization_functions(
+    llvm::Module& module,
+    std::string_view target_cpu,
+    std::string_view target_features);
 
 } // namespace iv::graph_jit

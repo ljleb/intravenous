@@ -801,6 +801,11 @@ void write_function_inventory(llvm::Module const& module, std::string const& ste
     }
 }
 
+enum class ProjectModulePipeline {
+    complete,
+    simplification,
+};
+
 // level overrides IV_GRAPH_JIT_OPT_LEVEL. A region specialization unrolls
 // loops: its constant trip counts come from the immutable values GraphJit
 // substitutes, and the module is compiled once per cached region.
@@ -808,7 +813,8 @@ void optimize_project_module(
     llvm::Module& module, llvm::TargetMachine& target_machine,
     std::string const& profile_stem,
     std::optional<llvm::OptimizationLevel> level_override = std::nullopt,
-    bool loop_unrolling = false)
+    bool loop_unrolling = false,
+    ProjectModulePipeline pipeline_kind = ProjectModulePipeline::complete)
 {
     // The project module contains no package code: each revision's package
     // code was compiled once, before any project compilation used it.
@@ -865,6 +871,9 @@ void optimize_project_module(
     auto const level = level_override ? *level_override : project_optimization_level();
     auto pipeline = level == llvm::OptimizationLevel::O0
         ? pass_builder.buildO0DefaultPipeline(level)
+        : pipeline_kind == ProjectModulePipeline::simplification
+        ? pass_builder.buildModuleSimplificationPipeline(
+              level, llvm::ThinOrFullLTOPhase::None)
         : pass_builder.buildPerModuleDefaultPipeline(level);
     pipeline.run(module, modules);
     if (passes_path) {
@@ -1439,6 +1448,21 @@ class RegionSpecializationCompiler final : public graph_jit::RegionSpecializatio
     std::pair<graph_jit::RegionSpecializationFunction, std::shared_ptr<ProjectCodeLifetime>>
     compile(graph_jit::RegionSpecializationRequest const& request)
     {
+        using Clock = std::chrono::steady_clock;
+        auto phase_started = Clock::now();
+        std::uint64_t prepare_us = 0;
+        std::uint64_t emit_link_us = 0;
+        std::uint64_t optimization_us = 0;
+        std::uint64_t materialization_us = 0;
+        std::uint64_t retargeted_functions = 0;
+        auto finish_phase = [&](std::uint64_t& destination) {
+            auto const now = Clock::now();
+            destination += static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    now - phase_started).count());
+            phase_started = now;
+        };
+
         auto& jit = *shared_->jit;
         auto const name = "__iv_region_specialization";
         auto const suffix = std::to_string(cache_.next_name++);
@@ -1483,6 +1507,7 @@ class RegionSpecializationCompiler final : public graph_jit::RegionSpecializatio
             }
             tick_blocks.push_back(renamed->second);
         }
+        finish_phase(prepare_us);
 
         auto context = std::make_unique<llvm::LLVMContext>();
         auto module = std::make_unique<llvm::Module>("iv.region." + suffix, *context);
@@ -1494,9 +1519,6 @@ class RegionSpecializationCompiler final : public graph_jit::RegionSpecializatio
             fail(GraphJitDiagnosticStage::lowering, std::move(emitted.error()));
         }
         auto const workspace_contents = std::move(*emitted);
-        auto* entry = module->getFunction(name);
-        entry->addFnAttr("target-cpu", target_.getTargetCPU());
-        entry->addFnAttr("target-features", target_.getTargetFeatureString());
 
         ImportedNodeCode imported;
         std::unordered_map<std::string, std::size_t> imported_global_sizes;
@@ -1658,6 +1680,11 @@ class RegionSpecializationCompiler final : public graph_jit::RegionSpecializatio
                 }
             }
         }
+        retargeted_functions =
+            graph_jit::retarget_region_specialization_functions(
+                *module,
+                target_.getTargetCPU().str(),
+                target_.getTargetFeatureString().str());
         graph_jit::internalize_region_specialization(*module, name);
         verify_module(
             *module,
@@ -1666,13 +1693,22 @@ class RegionSpecializationCompiler final : public graph_jit::RegionSpecializatio
         auto const profile_stem = "region-" + suffix;
         write_function_inventory(*module, profile_stem + "-before");
         write_module_ir(*module, profile_stem + "-before");
+        finish_phase(emit_link_us);
         // The workspace's values reach node code once its callbacks are
         // inlined: a simplifying pass inlines them, then every read of a field
         // fixed for the call becomes that field's value. A substitution can
         // fix a loop's trip count, so the pair repeats until none remains.
+        // These discovery rounds deliberately use LLVM's repeatable module
+        // simplification pipeline. The complete optimization pipeline runs
+        // once, after the final substitution.
         for (unsigned round = 0; round < 3; ++round) {
             optimize_project_module(
-                *module, target_, profile_stem, llvm::OptimizationLevel::O1, true);
+                *module,
+                target_,
+                profile_stem,
+                llvm::OptimizationLevel::O1,
+                true,
+                ProjectModulePipeline::simplification);
             auto const replaced = graph_jit::substitute_region_workspace_values(
                 *module, name, workspace_contents);
             timings_.region_specialization_substitutions += replaced;
@@ -1687,6 +1723,7 @@ class RegionSpecializationCompiler final : public graph_jit::RegionSpecializatio
             *module,
             GraphJitDiagnosticStage::optimization,
             "optimized region specialization LLVM is invalid");
+        finish_phase(optimization_us);
 
         auto lifetime = std::make_shared<ProjectCodeLifetime>();
         lifetime->shared = shared_;
@@ -1727,6 +1764,13 @@ class RegionSpecializationCompiler final : public graph_jit::RegionSpecializatio
             lifetime->allocated_code_bytes = shared_->allocated_code_sizes
                 ? shared_->allocated_code_sizes->allocated_bytes(lifetime->resources)
                 : 0;
+            finish_phase(materialization_us);
+            timings_.region_specialization_prepare_us += prepare_us;
+            timings_.region_specialization_emit_link_us += emit_link_us;
+            timings_.region_specialization_optimization_us += optimization_us;
+            timings_.region_specialization_materialization_us += materialization_us;
+            timings_.region_specialization_retargeted_functions +=
+                retargeted_functions;
             return {
                 address.toPtr<graph_jit::RegionSpecializationFunction>(),
                 std::move(lifetime),

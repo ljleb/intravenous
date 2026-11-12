@@ -506,6 +506,19 @@ void log_edit_timing(ProjectGraphGeneration const& generation) noexcept
                     << compile.region_specialization_cache_bytes << " / "
                     << compile.region_specialization_cache_budget_bytes
                     << " cache bytes\n";
+                if (compile.region_specializations_compiled != 0) {
+                    out << "    cold specialization: prepare "
+                        << ms(compile.region_specialization_prepare_us)
+                        << " + emit/link "
+                        << ms(compile.region_specialization_emit_link_us)
+                        << " + optimize "
+                        << ms(compile.region_specialization_optimization_us)
+                        << " + codegen "
+                        << ms(compile.region_specialization_materialization_us)
+                        << " ms; "
+                        << compile.region_specialization_retargeted_functions
+                        << " functions retargeted\n";
+                }
                 if (!compile.region_specialization_failure.empty()) {
                     out << "  region specialization failure: "
                         << compile.region_specialization_failure << '\n';

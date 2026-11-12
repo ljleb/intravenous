@@ -185,3 +185,49 @@ TEST(RegionSpecializationSubstitution, KeepsLoadsWhoseAddressesCanReachUnknownBy
     EXPECT_TRUE(llvm::isa<llvm::LoadInst>(reader.stored(2)));
     EXPECT_EQ(constant_value(reader.stored(3)), 7u);
 }
+
+TEST(RegionSpecializationTarget, RetargetsDefinitionsAndPreservesExtraFeatures)
+{
+    llvm::LLVMContext context;
+    llvm::Module module("iv.region.target.test", context);
+    auto* type = llvm::FunctionType::get(llvm::Type::getVoidTy(context), false);
+    auto* imported = llvm::Function::Create(
+        type, llvm::GlobalValue::InternalLinkage, "imported", module);
+    llvm::BasicBlock::Create(context, "entry", imported);
+    llvm::IRBuilder<> imported_builder(&imported->getEntryBlock());
+    imported_builder.CreateRetVoid();
+    imported->addFnAttr("target-cpu", "x86-64");
+    imported->addFnAttr("target-features", "+sse2");
+    imported->addFnAttr("tune-cpu", "generic");
+
+    auto* generated = llvm::Function::Create(
+        type, llvm::GlobalValue::ExternalLinkage, "generated", module);
+    llvm::BasicBlock::Create(context, "entry", generated);
+    llvm::IRBuilder<> generated_builder(&generated->getEntryBlock());
+    generated_builder.CreateRetVoid();
+
+    auto* declaration = llvm::Function::Create(
+        type, llvm::GlobalValue::ExternalLinkage, "external", module);
+    declaration->addFnAttr("target-cpu", "external-cpu");
+
+    EXPECT_EQ(
+        iv::graph_jit::retarget_region_specialization_functions(
+            module, "host-cpu", "+avx2,+fma"),
+        2u);
+    EXPECT_EQ(
+        imported->getFnAttribute("target-cpu").getValueAsString(),
+        "host-cpu");
+    EXPECT_EQ(
+        imported->getFnAttribute("target-features").getValueAsString(),
+        "+avx2,+fma,+sse2");
+    EXPECT_FALSE(imported->hasFnAttribute("tune-cpu"));
+    EXPECT_EQ(
+        generated->getFnAttribute("target-cpu").getValueAsString(),
+        "host-cpu");
+    EXPECT_EQ(
+        generated->getFnAttribute("target-features").getValueAsString(),
+        "+avx2,+fma");
+    EXPECT_EQ(
+        declaration->getFnAttribute("target-cpu").getValueAsString(),
+        "external-cpu");
+}
