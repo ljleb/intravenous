@@ -926,33 +926,39 @@ loading completes. That is a valid initialized state.
 
 ## Presentations
 
-The initial project-graph work does not require a generic automatically-managed
-subgraph/controller layer.
+The initial project-graph work does not require a generic automatically managed
+subgraph/controller layer. Presentation selection belongs to the Vue frontend:
+there is no backend `NodePresentation` registration extension or package-owned
+frontend-provider compatibility contract in the intended architecture. A generic
+Vue presentation is always available, while specialized presentations select nodes
+by stable leaf or module definition ID.
 
-A future presentation system may use:
+A future application module such as `PresentationInstances` may own reconciled
+client observation interests, shared producer activation, collected observation
+results, and batched delivery. It need not be a presentation-component registry
+and does not necessarily require its own thread. This ownership remains subject to
+concrete Vue integration. Subscription changes and observations use the same
+application-module batching discipline as other project operations, but replaceable
+observation frames remain separate from durable graph/semantic notifications.
 
-- `PresentationDefinitions` for available presentation kinds/providers; and
-- `PresentationInstances` for live presentation state and presentation-owned
-  graph requests.
+A presentation requiring structural graph changes routes them through the same
+`ProjectGraph` root-build transaction, not directly through independently converging
+`NodeInstances` and `GraphConnections` paths. A purely visual presentation need not
+own graph state at all.
 
-A presentation that needs structural graph changes should route those changes
-through the same `ProjectGraph` root-build transaction rather than reaching
-`NodeInstances` and `GraphConnections` through a second converging path. A purely
-visual presentation need not own graph state at all.
+A module publishing asynchronous UI updates to `SocketRpcServer` does so as a
+separate source/cause from an incoming JSON-RPC request. `SocketRpcServer` may be a
+request-tree root and a notification-tree sink, but the same cause must not leave and
+then re-enter it.
 
-`PresentationInstances` may later publish asynchronous UI updates to
-`SocketRpcServer` so webviews do not poll. Such a notification is a separate
-source/cause from an incoming JSON-RPC request: `SocketRpcServer` may be a root
-in the request tree and a child/sink in the notification tree, but the same
-cause must never leave and then re-enter it.
-
-Detailed presentation event flows are deferred until the core execution graph
-is implemented. The intended follow-on presentation/manual-control semantics are
-now consolidated in
-[node_presentation_and_manual_controls_direction.md](./node_presentation_and_manual_controls_direction.md):
-one `NodePresentation` extension family, four global display modes, stable
-interaction rebinding, persistent manual-input values, scrub-only interpolation,
-and code-only dynamic-input specialization over one compatible `NodeLayout`.
+The intended four global display modes, stable interaction rebinding, and manual
+control/JIT-specialization semantics remain in
+[node_presentation_and_manual_controls_direction.md](./node_presentation_and_manual_controls_direction.md).
+Reflected state/port observations, type-registered operations, and minimal
+observation-aware GraphJit replanning are described in
+[node_interaction_and_presentation_communication_direction.md](./node_interaction_and_presentation_communication_direction.md).
+The former backend-presentation-module proposal is preserved in
+[historical documentation](./historical/node_presentation_and_live_observation_before_vue_direction_2026-11-12.md).
 
 ## Immediate implementation order
 

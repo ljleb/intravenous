@@ -333,11 +333,16 @@ It owns application state such as:
 - the latest build diagnostics;
 - global-publication diagnostics returned by `NodeDefinitions`.
 
-An accepted `PackageRevision` also retains its `NodePresentationDescriptor` values.
-After `NodeDefinitions` publishes the global definition namespace,
-`IvPackageInfo::node_presentations` exposes only descriptors whose `definition_id` is
-present in that package's published module or leaf IDs. A definition namespace
-conflict cannot publish a presentation descriptor for the rejected definition.
+The current implementation retains `NodePresentationDescriptor` values in an
+accepted `PackageRevision`, and `IvPackageInfo::node_presentations` currently exposes
+descriptors after definition-ID filtering. **This is implementation status, not
+current normative package behavior.** The 2026-11-12 Vue direction removes
+`IV_NODE_PRESENTATION` and the corresponding package finalizer/loader/revision/catalog
+and socket-RPC records. Frontend presentation compatibility is selected from stable
+node definition IDs by frontend-owned registration. Do not add an adapter or maintain
+the old descriptor path as a second compatibility mechanism. See
+[node_presentation_and_manual_controls_direction.md](./node_presentation_and_manual_controls_direction.md)
+and its [preserved previous contract](./historical/node_presentation_and_live_observation_before_vue_direction_2026-11-12.md).
 
 The operational watcher copy of detected declarations is not a competing source
 of application truth: `PackageWatcher` needs source declarations to maintain

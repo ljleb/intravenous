@@ -62,6 +62,8 @@ These documents are retained because they record deleted architectures, supersed
 
 ## Completed migrations, experiments, and checkpoints
 
+- [Presentation And Live Observation Direction Before The 2026-11-12 Vue Revision](./node_presentation_and_live_observation_before_vue_direction_2026-11-12.md)
+
 - [Front 16 Region Specialization Before The First Profile Correction, 2026-11-11](./front_16_region_specialization_before_first_profile_correction_2026-11-11.md)
 - [Front 14 Presentation Contract Before Concrete Records, 2026-11-04](./front_14_presentation_contract_before_concrete_records_2026-11-04.md)
 - [Front 14 Manual-Control JIT Policy Before Demand-Driven Activation, 2026-11-04](./front_14_manual_control_jit_policy_before_demand_activation_2026-11-04.md)

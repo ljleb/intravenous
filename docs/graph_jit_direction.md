@@ -1431,6 +1431,25 @@ Package discovery/build/reload may still be asynchronous because that is a
 different source-build domain. The synchronous rule here applies specifically
 to the final configured project graph -> native graph generation step.
 
+### Planned observation-aware incremental realization
+
+The Vue client may request observations of supported reflected `State` fields and
+resolved port data. `GraphJit` should incorporate their union into the incremental
+realization and place only the needed capture operations at legal production/lifetime
+boundaries. An observation-only change may rebuild/replace the immutable root/capture
+plan at a safe boundary without reconstructing node state or rescheduling unrelated
+work. If observing an otherwise unavailable output genuinely requires production,
+materialization, or specialization changes, perform only those necessary changes.
+Do not retain per-node realtime observation checks when no observation requires them.
+
+These are intended semantics, not a claim that the current GraphJit already provides
+UI observation probes. Reuse Front 16 incremental compilation and unchanged
+realization artifacts wherever compatible; benchmark probe-only edits, native-region
+specialization interactions, and realtime overhead before fixing a particular
+plan/overlay implementation. Viewport movement can legitimately request compilation,
+with client overscan/hysteresis reducing churn. See
+[Node Interaction And Presentation Communication Direction](./node_interaction_and_presentation_communication_direction.md).
+
 ## Exact-generation consistency
 
 `GraphJit` must compile exactly the provider/code generations used to construct

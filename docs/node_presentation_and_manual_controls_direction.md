@@ -1,9 +1,8 @@
 # Node Presentation And Manual Controls Direction
 
-> **Communication model:** backend-node typed events, shared `PresentationState`,
-> Vue `useNode()` semantics, the language-neutral backend protocol plus
-> frontend-owned language bindings, and live
-> presentation-subscription constraints are now consolidated in
+> **Communication model:** backend-node typed events, coherent semantic
+> synchronization, Vue presentation bindings, reflected runtime observations,
+> and batched live-subscription constraints are consolidated in
 > [Node Interaction And Presentation Communication Direction](./node_interaction_and_presentation_communication_direction.md).
 > This document remains the home for display modes, interaction lifetime,
 > persistent manual controls, and control/JIT-specialization direction.
@@ -18,91 +17,39 @@ The superseded JIT scheduling and dependency text is preserved in
 This document consolidates the planned node-presentation, interaction-lifetime,
 manual-control, and control-specialization model.
 
-## One presentation extension type
+## Frontend-owned presentation selection
 
-Every node kind may register zero or more instances of one presentation extension
-type:
+A node can have multiple Vue presentations, and one Vue presentation can represent
+multiple node definition types. There is no backend `NodePresentation` extension
+family and no `IV_NODE_PRESENTATION` registration in the intended design. Package
+finalization, `PackageRevision`, the package catalog, and socket RPC should not
+retain or publish frontend-provider compatibility records. The currently landed
+registration/registry implementation is superseded, not a compatibility surface to
+maintain indefinitely. The old contract is preserved in
+[historical documentation](./historical/node_presentation_and_live_observation_before_vue_direction_2026-11-12.md).
 
-```text
-NodePresentation
-```
+The frontend owns the selection of a registered Vue component, including the choice
+of a specialized component by stable leaf or module definition ID, a generic
+component usable for any node, and a user's preferred component when several are
+available. It must always have a usable generic fallback. The root node uses the
+same presentation host rules as other nodes; it is not a distinct backend provider
+kind. Backend state, GraphJit, and `IV_NODE` / `IV_MODULE` definitions neither name
+Vue components nor depend on presentation selection.
 
-Do not create parallel extension families for root nodes, module nodes, compact
-nodes, or editable nodes. A host selects which registered presentation
-is active for the current context.
-
-The project root is not a special presentation concept. It is one node being
-presented and may use the same host/presentation mechanism as any other node.
-
-A presentation may be generic (for example, a standard subgraph/member
-presentation) or provider-specific. Selection policy belongs to the presentation
-host, not to the execution graph.
-
-A generic presentation can generate controls from Front 9 configuration metadata. It
-can also provide direct source editing when a generated control is not sufficient. A
-provider-specific Vue presentation can update construction arguments through the same
-typed value model. The user does not have to edit the expression source for each
-change. See
+The generic presentation discovers all available ports, including their resolved
+identities, types, channel structure, access semantics, and connection state. It
+can choose which ports to visualize at a particular scale, but **all ports must
+remain discoverable and connectable** in graph-editing contexts. A generic
+presentation may also generate controls from Front 9 configuration metadata and
+provide direct source editing when needed. Specialized Vue presentations use the
+same configuration/typed-value operations; users do not have to edit expression
+source for every construction-argument change. See
 [Configuration Expression Language Direction](./configuration_expression_language_direction.md).
 
-## Package registration and frontend providers
-
-`IV_NODE_PRESENTATION` adds one `PackageNodePresentation` record to an IV package.
-The record has three text fields:
-
-- `definition_id` names an `IV_NODE` or `IV_MODULE` in the same package.
-- `presentation_id` is the compatibility ID for a frontend provider.
-- `display_name` is diagnostic text.
-
-For example:
-
-```cpp
-IV_NODE_PRESENTATION(
-    "iv.example.filter",
-    "iv.example.filter.controls",
-    "Filter controls");
-```
-
-The package finalizer rejects an empty ID, an unknown `definition_id`, and a duplicate
-pair of `definition_id` and `presentation_id`. Different definitions can use the same
-`presentation_id`. This permits one frontend provider to present several compatible
-node definitions.
-
-The finalized package exposes the records through
-`iv_package_node_presentations`. `ModuleLoader` copies each ABI record into an owned
-`NodePresentationDescriptor`. `PackageRevision` retains these descriptors, and
-`IvPackageInfo::node_presentations` exposes them in the package catalog. The JSON field
-is `nodePresentations`.
-
-`IntrospectionVirtualNode::Member::definition_id` exposes the existing
-`RegisteredNodeTypeIdentity::node_type_id` for a registered leaf node. The enclosing
-`IntrospectionVirtualNode::definition_id` has a value only when all concrete members
-have the same non-empty definition ID. `VirtualNodeInfo` and live-graph JSON preserve
-both fields as `definitionId`. For an `IV_MODULE`, the host uses the existing
-`IvModuleInstanceInfo::definition_id`, which socket RPC already exposes as
-`definitionId`. A host therefore matches a descriptor to the same stable definition
-ID that created the leaf node or module instance. It does not match a descriptor to
-`type_identity`.
-
-The backend does not store a Vue component name, a TypeScript import, or another
-frontend implementation detail. A frontend owns its providers. The current VS Code
-frontend stores them in `NodePresentationRegistry` by `presentationId`.
-
-`NodePresentationRegistry::select()` accepts a node definition ID, the backend
-descriptors, and an optional preferred presentation ID. It uses the preferred provider
-when that provider is available. Otherwise, it uses the first available provider in
-stable presentation-ID order. If no provider matches, it uses
-`frameworkDefaultNodePresentationProvider`. Thus, an unavailable package presentation
-cannot make a node impossible to present.
-
-The result is `NodePresentationSelection`. Its `descriptor` is the matching backend
-descriptor or `null` for the default. Its `provider` is the selected frontend object.
-Its `usedDefault` field tells the host whether it used the fallback.
-
-`NodePresentationProvider` contains only `presentationId`. A frontend-specific provider
-type can add its renderer or component fields. `NodePresentationDisplayMode` defines
-the four host modes. Each frontend provider must handle all four modes. The package ABI
-does not select a mode.
+Presentation selection is independent of observation capabilities. A backend node
+need not be altered to support a new Vue presentation of its reflected state or
+ports. The observation mechanism and its limits are specified in
+[Node Interaction And Presentation Communication Direction](./node_interaction_and_presentation_communication_direction.md).
 
 ## Four global display modes
 
@@ -402,18 +349,21 @@ current UI interaction.
 
 ## Live observation is outside Front 14
 
-Front 14 does not define the live-observation API. The capability, subscription,
-representation, and scheduling questions remain unresolved in
-[Node Interaction And Presentation Communication Direction](./node_interaction_and_presentation_communication_direction.md).
-The default presentation can use a later live-observation system, but Front 14 does
-not need that system to implement presentation identity and manual controls.
+Front 14 did not implement the live-observation API. The intended direction is now
+recorded in [Node Interaction And Presentation Communication Direction](./node_interaction_and_presentation_communication_direction.md):
+frontend-selected registered observation operations over reflected state fields and
+ports, selectively planned GraphJit captures, and batched subscriptions and updates.
+The concrete frontend and transport interfaces are intentionally deferred until a
+real Vue presentation requires them. Manual controls do not depend on implementing
+live observation first.
 
 ## Implementation order
 
 Front 14 uses the completed identity, persistence, GraphJit, and executor contracts:
 
-1. Define `NodePresentation`, the framework default presentation, and the four display
-   modes.
+1. Define a frontend-owned presentation registry, generic Vue fallback, and the four
+   display modes; remove the obsolete backend `NodePresentation` registration path
+   when implementing the replacement Vue integration.
 2. Rebind presentation hosts and long-lived interaction contexts through stable
    semantic identities.
 3. Store manual values and participation policies in durable project state.
@@ -449,13 +399,15 @@ value in `ManualControlRuntimeState`.
 bindings are compatible with the accepted structural generation. It changes the
 steady Tick operations at `activate_pending()` without rebuilding `NodeStorage`.
 
-The presentation registration and selection path is implemented and verified (status
-corrected 2026-11-06). `IV_NODE_PRESENTATION` emits a neutral
-package record. The package finalizer, loader, accepted revision, package catalog, and
-socket RPC preserve the record. The VS Code frontend owns
-`NodePresentationRegistry`, its registered providers, and its guaranteed default
-provider. The current implementation does not add live observation. It also does not
-define renderer data for a future Vue or C++ frontend.
+The presentation registration and selection path was implemented and verified
+(status corrected 2026-11-06): `IV_NODE_PRESENTATION` emits a neutral package
+record, and the package finalizer, loader, accepted revision, package catalog,
+socket RPC, and VS Code `NodePresentationRegistry` preserve/select it. **This is a
+historical implementation fact, not the current destination.** The 2026-11-12
+accepted Vue direction removes this backend registration path and allows the
+frontend to select presentations using stable node definition IDs. No source
+removal is claimed here. The currently landed frontend does not implement live
+observation or the intended Vue presentation host.
 
 The key architectural boundary is that presentations and manual controls consume
 stable graph/runtime identities; they do not become an alternate owner of graph

@@ -1,10 +1,11 @@
 # Node Interaction And Presentation Communication Direction
 
-_Status: design direction for the backend-node event model and presentation
-communication contract. The semantic contracts in the first part of this note are
-considered settled enough to guide implementation even where exact API names are
-still provisional. The live-observation section intentionally records constraints
-without standardizing an API that the application requirements do not yet justify._
+_Status: normative direction for semantic backend-node events, coherent application
+synchronization, and Vue-driven live observation. The observation operation
+contract is intentional; its exact C++/TypeScript syntax and transport routes remain
+provisional until exercised by the Vue client. The 2026-11-12 revision supersedes
+backend presentation registration and the unimplemented `PresentationState` API;
+see [the preserved earlier design](./historical/node_presentation_and_live_observation_before_vue_direction_2026-11-12.md)._
 
 This note is about communication with **semantic backend nodes** and their
 presentations. It is not a description of the current VS Code extension transport
@@ -39,8 +40,8 @@ realization change
     safe publication and storage migration at a pass boundary
 
 presentation synchronization
-    authoritative PresentationState after semantic interactions
-    separately, disposable demand-driven live observations
+    authoritative semantic/application data after committed interactions
+    separately, disposable, selectively captured runtime observations
 ```
 
 These mechanisms cooperate, but none is a substitute for another.
@@ -470,112 +471,75 @@ node then coordinates the actual state/data transfer entirely on the backend.
 Large or implementation-specific backend state should not travel through Vue as
 an intermediary merely because the interaction began in the UI.
 
-# `PresentationState`: coherent semantic synchronization
+# Coherent semantic synchronization without a separate `PresentationState`
 
-## Presentation state is distinct from runtime node state
+## Commit authoritative information after the root interaction
 
-A node may expose a presentation-facing semantic schema/projection distinct from
-its internal `State` / `TockState`. This document calls that projection
-`PresentationState`; the exact declaration syntax is not yet fixed.
-
-`PresentationState` is not a serialization of implementation storage. It may omit
-internal fields and include derived semantic fields suitable for presentations.
-
-A node is not required to define custom `PresentationState` merely to have a
-presentation. The framework-provided default presentation described later must
-work for every node from generic graph/port information and future framework
-presentation capabilities.
-
-## All presentations of one backend node share the same presentation state
-
-If several active Vue presentations refer to the same semantic backend node, they
-all receive the same authoritative `PresentationState`.
-
-```text
-                 semantic backend node
-                         |
-                  PresentationState
-                         |
-              +----------+----------+
-              |          |          |
-              v          v          v
-           view A      view B      view C
-```
-
-`PresentationState` is not selected independently per presentation. Its purpose is
-to make every representation of the same semantic node converge on the same
-backend-derived semantic truth.
-
-Presentation-local UI state remains independent. Zoom, hover, expansion, local
-selection, drag state, scroll position, and layout choices may differ between
-views without becoming backend node state.
-
-## Synchronization occurs after the whole root event interaction
-
-Presentation state must not be emitted piecemeal while a root interaction is still
-propagating.
-
-The intended order is:
+A successful semantic node event and any resulting realization change must have a
+coherent, authoritative result visible to all presentations of the same semantic
+node. Presentations must not observe intermediate mutation results while the root
+event is still propagating. The intended order remains:
 
 ```text
 root UI event
-    -> complete ordered backend propagation
-    -> determine the final semantic/realization result
-    -> serialize PresentationState for affected nodes
-    -> publish one coherent presentation update
+    -> complete ordered backend node-event propagation
+    -> determine accepted semantic/realization result
+    -> publish coherent affected application/graph data
 ```
 
-For ordinary node-local mutation, the set of nodes traversed by the event tree is
-also the natural presentation invalidation set because nodes cannot mutate one
-another directly. The runtime already tracks this set to enforce one-delivery-per-
-concrete-node.
+Ordinary node-event handlers should not need `ctx.reply()` or `ctx.notify()` to
+keep Vue consistent. The event tree's affected nodes and structurally changed
+semantic descendants can inform the invalidation/synchronization set. The server
+publishes committed results from the owning application structures rather than
+requiring nodes to manually send presentation messages.
 
-Structural replacement may additionally invalidate semantic descendants that were
-created, removed, or rebound by that replacement; that bookkeeping must be part of
-the resulting presentation commit rather than pretending those changes were
-ordinary direct state mutation.
+## Do not introduce `PresentationState` just to duplicate application data
 
-## Ordinary state synchronization requires no explicit `reply` / `notify`
+`PresentationState` is not implemented. It is no longer a planned distinct C++
+projection or a required generated frontend schema. Configuration, typed
+construction arguments, identities, resolved ports and connections, manual-control
+values, and mutation outcomes are authoritative application/graph information.
+They should be exposed through the appropriate application-owned read model.
 
-Handlers should not have to remember to notify Vue after mutating semantic state.
-After a root interaction succeeds, the runtime automatically produces the relevant
-`PresentationState` and publishes it to every active presentation of each affected
-semantic node.
+`State` and `TockState` retain their existing meanings as node execution state,
+not semantic configuration or automatically authoritative UI state. A presentation
+may separately observe supported reflected runtime fields as *disposable live
+information*. A Vue component may also own local display and interaction state.
+These three categories do not become interchangeable merely because they appear
+inside one component.
 
-Accordingly, an explicit `ctx.reply()` / `ctx.notify()` is not required for this
-ordinary synchronization path. Introducing a separate backend-to-presentation
-message path would weaken the guarantee by making synchronization depend on
-handler discipline.
+If future node-event semantics cannot be reconstructed from the existing
+application's committed data, that concrete gap may justify another projection.
+It does not justify declaring one prematurely. The superseded `PresentationState`
+contract and its rationale are preserved in
+[historical documentation](./historical/node_presentation_and_live_observation_before_vue_direction_2026-11-12.md).
 
 # Vue presentation API
 
 ## Vue holds a semantic `node` object
 
-The presentation-facing abstraction should be intuitive and independent of the
-transport implementation:
+The presentation-facing abstraction is independent of the transport adapter. A
+specialized Vue component may obtain a typed semantic `node` (conceptually through
+`useNode<MyNode>()`); a generic component may obtain a dynamically typed one.
+Its stable capabilities include the conceptual equivalents of:
 
 ```ts
-const node = useNode<MyNode>()
+node.address    // stable semantic NodeAddress
+node.ports      // dynamic, resolved input/output descriptors
+node.send(...)  // reliable, typed semantic node event
 ```
 
-The exact generic/type syntax remains provisional, but the object represents the
-semantic backend node being presented. Its stable surface should include the
-conceptual equivalents of:
+A Vue presentation may also request observation of selected, supported reflected
+`State`/`TockState` fields and port data. Exact observation hook syntax is deferred;
+observations are **not** a permanent `node.state` projection of all implementation
+storage. For a statically known definition, generated bindings may expose supported
+field names and result types. The generic presentation can inspect ports and their
+available operations without any node-specific TypeScript source.
 
-```ts
-node.address
-node.state
-node.send(...)
-```
-
-where:
-
-- `node.address` is the generated/typed semantic `NodeAddress`;
-- `node.state` is the generated `PresentationState` type for this backend node;
-- `node.send(...)` sends a reliable typed semantic event to the node.
-
-Vue should not know concrete node indices, `NodeStorage`, graph generations,
-sockets, JSON-RPC method names, or other transport/runtime plumbing.
+Vue must not see concrete node indices, `NodeStorage` offsets, `NodeCodeKey`,
+compiled realization objects, or socket/JSON-RPC method details. A semantic
+`NodeAddress` survives compatible graph revisions; individual observation capture
+bindings remain generation-specific.
 
 ## Events are strongly typed in frontend bindings
 
@@ -606,8 +570,8 @@ generates or implements the JSON codecs from the neutral schema. Vue authors sho
 neither select event types with raw strings nor manually serialize their payload
 objects. The same rule applies to authors of another frontend.
 
-The same principle applies in the reverse direction to generated presentation
-schemas.
+The same principle applies to generated schemas for supported observations; no
+separate generated `PresentationState` schema is required.
 
 ## The backend publishes a language-neutral event protocol
 
@@ -663,179 +627,212 @@ selectors whose concrete target set cannot be known statically.
 
 # Live backend-to-presentation information
 
-The exact API in this section is deliberately **not settled**. The constraints are
-settled enough to prevent choosing an abstraction that does not fit the application.
+## Separate requirements, capture operations, and delivery
 
-## Live information is not `PresentationState`
+The intended live-observation system is driven by real Vue presentation needs, not
+by speculative RPC routes. A presentation asks for selected observations of a
+semantic node's reflected fields or resolved ports. A registered type provides the
+finite set of observation operations meaningful for that source. GraphJit plans
+only the required executable captures; the application collects and batches their
+results. Concrete routes, public C++ signatures, and Vue binding syntax should be
+settled alongside the first functioning Vue presentation.
 
-`PresentationState` has one authoritative value shared by all active presentations
-of the semantic node after a semantic interaction.
+An observation is not a semantic node mutation: missing intermediate *replaceable*
+snapshots is acceptable, and the reliable node-event/application revision stream
+remains separate. An observation is never an instruction for a node to send a
+socket notification. No default `ctx.publish()`, `on_message`, `on_subscribe`, or
+`on_subscription_change` callback is required on authored leaf or module nodes.
 
-Live information has different semantics:
+## Discovery from existing state reflection and resolved ports
 
-- it is observational rather than a semantic mutation result;
-- losing intermediate updates is acceptable;
-- older updates may be skipped in favor of fresher complete information;
-- one presentation may want a different subset than another presentation of the
-  same backend node;
-- requirements can change while the presentation remains mounted/visible;
-- backend work performed only for observation should be avoidable when nobody
-  currently demands it.
+Use existing `NodeStateStructure`/`NodeStateFieldStructure` reflection for `State`
+(and the appropriate source metadata for `TockState`) together with resolved port
+metadata. Discovery names a field or port and its type; **observability** additionally
+requires a registered, safe capture/transport operation for that type and execution
+context. A discoverable but unsupported field is not an observation error or an
+implicit byte-serialization request. It simply advertises no usable observation
+operation. Do not expose arbitrary pointers or runtime storage-layout details to
+Vue.
 
-There is no corresponding unreliable presentation-to-backend state channel.
-Backend state remains authoritative, and semantic mutations from Vue are reliable.
+Initially support a fixed set of scalar/state-field types through a global
+registered type codec/capture system. Generic implementations can be reused by
+several registered types, with each type explicitly opting in and supplying its
+type-dependent behavior. Unsupported types remain unobservable. Per-field codec or
+serialization overrides and arbitrary custom node-authored producers are deferred.
+The source of a field need not be modified just to add an ordinary observation.
 
-## A presentation dynamically manages its live requirements
+For continuous ports, extend the existing closed registered continuous-value type
+system with **explicitly supported observation operations**. Reusable operation
+implementations may be templated; each value-type extension chooses the operations
+that actually make sense for its value shape, dimensions, channels, and realization.
+The existence of an operation for `Sample` must not imply its existence for
+`FFTBlock`, `FractionalGlobalIndex`, or a future value type. Source access and
+retention semantics further constrain availability: Sequential/Tick/ephemeral
+outputs are not interchangeable with persisted or random-access data.
 
-A visible presentation may change what it needs according to what it is actually
-rendering. Zoom level is an important example: zooming in may reveal expensive
-visualizations; zooming out should permit those subscriptions and their backend
-work to disappear while the presentation remains active.
+## Vue chooses the observation operation reactively
 
-Thus subscription lifetime is finer-grained than presentation lifetime:
+A generic Vue presentation discovers all of a node's input/output ports so users can
+connect them. It may visualize only the relevant subset for its mode and geometry.
+A specialized presentation may refer to supported reflected fields by generated
+static names and types; a generic component discovers supported port operations at
+runtime. Different presentations may request different operations for the same
+source, and the same presentation may revise them when scale, mode, visibility, or
+interaction state changes.
 
-```text
-presentation becomes visible
-    -> may request some live information
+For example, one `Sample` output might offer the distinct operations `latest`,
+`level`, and `waveform` (not necessarily all in the first implementation):
 
-zoom/layout/content changes
-    -> add/remove requirements dynamically
+| Operation | Intended result | Capture behavior |
+| --- | --- | --- |
+| `latest` | A replaceable instantaneous value or bounded current block | Snapshot while valid; suppress unchanged results where meaningful |
+| `level` | A low-cost sample-level measure for a meter | Optional interval reduction (e.g. sample peak and/or RMS) |
+| `waveform` | A bounded recent time-domain window | Capture samples or a useful min/max envelope; reduce for display resolution |
 
-presentation leaves visibility
-    -> remove its remaining live requirements
-```
+These are **type-registered alternatives**, not a universal enum applied to every
+port. `level` does not turn every `Sample` observation into a peak detector;
+`waveform` does not require permanent raw-sample history when unrequested. A future
+`FFTBlock` observation may expose spectrum data using its own type-specific shape.
+Exact initial operation IDs and parameters follow concrete Vue usage.
 
-Different simultaneous presentations of the same node may maintain different
-requirement sets. Shared backend work may be reused where the requirements overlap.
+The frontend host aggregates computed observation requirements; individual Vue
+component mount/unmount events must not become immediate individual RPC requests.
+The host can register the desired requirement set when a node approaches the
+viewport and recalculate it reactively when the component's inputs change. A full
+set replacement or equivalent reconciled batched delta should establish the
+server's intended interest state.
 
-## Generalize subscription machinery, not data representations
+## GraphJit places minimal, optional observation work
 
-The live mechanism must not assume that every useful backend value is one of a
-closed set of visualization enums such as `Peak`, `RMS`, or `Waveform`.
+Capture points must be located where the observed field or port value is valid.
+They cannot all execute at the end of the root Tick callback: ephemeral outputs
+may have been overwritten, native region execution may have hidden intermediate
+values, and some values require a producer or post-operation boundary. `State` and
+`TockState` also have different thread ownership. Non-realtime code must not read
+mutable realtime storage concurrently without a safe snapshot/handoff.
 
-Port contracts are intentionally heterogeneous. Depending on the port and its
-type, meaningful distinctions include:
+A registered observation operation should supply the equivalent of:
 
-- sequential versus order-independent/random-access input behavior;
-- ephemeral versus persisted output behavior;
-- Tick versus Tock production/lifetime;
-- one, two, or future higher channel counts;
-- planar versus interleaved native sample organization;
-- future non-audio port/data contracts.
+1. **Describe:** supported source type/shape, parameters, and result schema.
+2. **Prepare:** select a legal capture point and preallocate any bounded storage.
+3. **Capture:** perform bounded, allocation-free, nonblocking work at the correct
+   execution point, including realtime when necessary.
+4. **Collect:** transfer or read a coherent observation-owned result off realtime,
+   perform type-aware comparison/reduction/serialization, and produce a transportable
+   value when changed.
 
-Those differences affect what data exists, who owns it, how long it remains valid,
-and which representation avoids unnecessary conversion. The presentation layer
-must not erase them by inventing one fake universal "port visualization" contract.
+These are required capabilities of an operation, not necessarily four public virtual
+callbacks. A cheap `latest` snapshot may use a generic implementation; a waveform
+or level reduction may use type-owned code. GraphJit should consume normalized
+operations instead of switching centrally on known visualization kinds. Type
+extensions can share generic templates while registering only valid operations.
 
-The common live architecture should instead generalize mechanisms that really are
-shared, such as:
+The union of currently required observations across clients is an input to
+GraphJit's incremental realization. Adding/removing an observation may replace an
+immutable capture/root plan at a safe execution boundary. Preserve existing node
+instances, `NodeStorage`, `NodeLayout`, scratch allocation, scheduling, and native
+specializations whenever the observation can be attached without changing them.
+Observation-only changes should do the minimum actual compile/replan work; there is
+no blanket rule forbidding recompilation when the viewport changes.
 
-- capability/source discovery;
-- dynamic subscribe/unsubscribe;
-- demand aggregation/reference counting;
-- activation/deactivation of observation work;
-- scheduling/publication at presentation-scale cadence;
-- replaceable/latest-oriented delivery;
-- sharing one produced value with multiple interested presentations.
+Some observations genuinely affect execution: an otherwise unused output may need
+production or materialization, and some probes may require storage or different
+specialization boundaries. Change those parts **only when necessary** for the
+requested observation, instead of pretending every source can be captured with a
+layout-neutral end-of-root read. Activating/deactivating a probe should otherwise
+remove its unused realtime work, not leave checks on every node indefinitely.
+Viewport overscan, interest-set hysteresis, and deferred deactivation should avoid
+frequent recompilations during small or rapid movements.
 
-The payload and production semantics may remain heterogeneous and strongly typed.
+## Batching, shared production, and subscription lifetime
 
-## Framework and node extensions must use the same live mechanism
+Batch in both directions:
 
-The eventual live system should be extensible by both framework/runtime facilities
-and node types. It should not contain a special arbitrary path for port information
-and an unrelated second path for node-specific runtime information.
+- Vue sends reconciled sets of desired observation operations/parameters for each
+  client-owned presentation scope, rather than one RPC per node/component event.
+- The server merges compatible interests across all clients and only changes the
+  effective producer/capture plan when the combined requirements change.
+- The observation service collects changed results and emits bounded,
+  presentation-rate **batches** per client. It does not deliver one socket message
+  per node or enqueue one reliable project-revision notification per meter block.
 
-For example, the framework/runtime may make some information available from port
-contracts without requiring every node author to re-forward its own inputs and
-outputs. A node type may additionally expose node-specific information such as a
-playback cursor or active-voice count. Both kinds of information should participate
-in the same discovery/subscription/lifecycle system even if their internal
-producers are completely different.
+Use replaceable/coalesced data for state-like observations. An unchanged snapshot
+should not require a new client update. Update rates are maximum publication rates,
+not mandatory periodic traffic. Do not sacrifice significant interval information
+when the requested operation's semantics require accumulation: a `level` operation
+can retain the maximum sample magnitude over the collection interval, while
+`waveform` retains an appropriate bounded window. This is **sample peak**, not
+costlier inter-sample *true peak* detection. True peak or other expensive DSP may
+be an explicit node/operation, never a requirement of every generic meter. Event
+histories requiring every occurrence are not silently converted into replaceable
+snapshots.
 
-It is intentionally unresolved whether the right public concept is called a live
-property, source, field, feed, capability, or something else.
+Use three interest tiers as a host policy: **visible** (full requested quality),
+**nearby/predicted** (cheaper prefetch or lower cadence), and **inactive** (no
+observation work, apart from a bounded shutdown grace period). Overscan, viewport
+hysteresis, and predictive prefetch prevent rapid interest churn while panning or
+zooming. Tier changes need not rebuild GraphJit if only the publication cadence or
+frontend reduction changes; different capture operations or resource needs may.
 
-## Do not force port data through one representation
+Subscription correctness must not depend on every Vue component explicitly
+unsubscribing. An authoritative per-client/per-scope desired set, connection-disconnect
+cleanup, scoped lease expiry/reconciliation, and graph-generation rebind/invalidation
+bound interest lifetime. Explicit unsubscribe may release resources sooner but is
+not required for correctness. Do not keep pointers to reclaimed execution
+generations. The server validates all source identities and parameters, applies
+resource/bandwidth limits, and coalesces replaceable frames for slow clients rather
+than filling the reliable replay log or disconnecting them for obsolete telemetry.
 
-A future sample-port observation may need to preserve the port's natural channel
-count and planar/interleaved representation to avoid pointless copies. Other port
-contracts may have no meaningful "recent waveform" at all, or may expose persisted
-or random-access data through a mechanism that should not be treated as live
-telemetry.
-
-The live architecture must therefore be able to express absence of a capability
-and heterogeneous typed data without central enumeration of every representation
-the backend could ever produce.
-
-## Live update cadence is presentation-scale, not audio-block-scale
-
-These updates exist for visual presentation. Their publication should be tied to a
-reasonable UI/display cadence rather than every audio block. A practical cap may
-end up in the approximate 30-60 Hz range or be constrained by the host/browser,
-but the exact scheduling policy is intentionally not part of the semantic API yet.
-
-Realtime accumulation and presentation publication also need not have the same
-cadence. A provider may perform cheap realtime bookkeeping continuously and expose
-a replaceable snapshot only when an active presentation update is due.
+The application-module ownership of the observation registry and batching is not
+fixed yet. A presentation/observation owner such as the prospective
+`PresentationInstances` may collect results and hand frames to `SocketRpcServer`,
+without introducing a dedicated thread unless actual scheduling/concurrency needs
+justify one. It must respect the application event-tree constraint: an asynchronous
+outgoing batch is a distinct cause, not re-entry into the incoming request's tree.
 
 # Default presentation
 
 ## Every node has a useful default presentation
 
-A node must remain presentable even if its type defines no custom presentation
-schema and no custom Vue presentation.
+The frontend always provides a generic Vue presentation, even if the node type has
+no custom Vue component or observable runtime fields. It discovers and renders
+**all available ports** for graph editing, including arbitrary port counts and
+channels, with stable semantic endpoint identities. Ports stay connectable even
+when their live visualizations are hidden at a given scale. The host can choose
+which observations to activate from registered capabilities rather than requiring
+authored nodes to forward port values.
 
-The framework therefore provides a default presentation that adapts to the node's
-defined ports and relies on framework-provided presentation capabilities rather
-than forcing each node type to explicitly forward its own input/output information.
+For `nano`, `mini`, `compact`, and `editable` modes, choose representations that
+fit the geometry and source capabilities. Examples include an activity indication,
+scalar numeric value, sample-level meter, waveform, or persisted-data view. Do not
+require all ports to have a waveform or meter, and do not special-case only the
+first input and first output as the generic representation of a node. The actual
+visualization policy should be tested in Vue rather than frozen as a universal
+port-observation rule.
 
-The current desired default behavior is to consider only the first output, if one
-exists, and the first input, if one exists, and render each approximately as:
+# Deferred implementation choices
 
-| Presentation mode | Default first-port visualization |
-| --- | --- |
-| `nano` | presence/activity indicator |
-| `mini` | dB Vue meter |
-| `compact` | presence/activity indicator because width is constrained |
-| largest/full mode | waveform or short-term waveform |
+The direction intentionally does **not** settle:
 
-The older presentation document currently calls the largest/full editing profile
-`editable`; the final mode name is not important to this communication contract.
+- the first Vue observation hook signature or any new RPC route, before a real
+  component needs it;
+- the exact C++ registration template/descriptor layout for type observation
+  operations and the exact first set of transport-supported field types;
+- field-specific serialization overrides, arbitrary user-defined producers, or
+  observation-lifecycle callbacks on authored nodes;
+- whether a given observation-plan change is represented as a separate immutable
+  overlay or an updated `RealtimeRootPlan`, and which native-region boundaries
+  can be probed with no specialization change;
+- detailed persisted/random-access observation/query integration, buffer sizing,
+  and publication cadence, including frontend-driven resolution changes;
+- the TypeScript code-generation/tooling workflow for observing optional fields
+  and operation-specific result types;
+- the exact transaction/journal representation for ordered root semantic events,
+  partial/successor `NodeStorage` migration, and frontend regeneration of typed
+  event bindings.
 
-This table specifies the desired presentation behavior, **not** a settled backend
-port-observation API. Different port contracts may require different providers or
-may not support every visualization in the same way. Determining the faithful live
-capability model remains open.
-
-# What remains deliberately unresolved
-
-The following should not be accidentally standardized while implementing the
-settled contracts above:
-
-- the exact transaction/journal representation used to prepare and replay one
-  ordered root interaction at a pass boundary;
-- partial/successor `NodeStorage` migration details;
-- exact C++ declaration/projection syntax for `PresentationState`;
-- exact language-specific construction syntax for event values. This belongs to each
-  frontend adapter or supplementary binding-generator plugin, not the backend;
-- how a Vue adapter watches `projectGraphGeneration` / `definitionsGeneration`,
-  regenerates or reloads bindings during development, and integrates them into its
-  build tool. These are frontend integration choices over the settled neutral
-  package/runtime protocol;
-- the exact live-subscription API and terminology;
-- the catalog/discovery representation for framework-provided and node-provided
-  live capabilities;
-- which information each existing port contract can faithfully expose;
-- when UI-facing signal processing belongs in backend providers versus Vue;
-- exact handling of planar/interleaved and future multi-channel live sample data;
-- how persisted/random-access port data should be divided between live observation
-  and ordinary data access;
-- the exact presentation refresh cadence and host-specific scheduling limits.
-
-The next live-observation design step should therefore begin from concrete
-application jobs and information ownership rather than from a universal waveform /
-meter enum. For each desired UI datum, identify who owns it, its lifetime/time
-semantics, whether missing an update affects correctness, whether producing it
-requires observation-specific work, and which representation already exists
-natively.
+Begin the Vue presentation host and use the first reflected scalar-field
+observation plus a real `Sample` output observation to drive the smallest complete
+end-to-end implementation. Measure observation-only incremental compile latency,
+realtime overhead, specialization effects, and subscription churn before creating
+new node-facing hooks or a general-purpose speculative transport API.

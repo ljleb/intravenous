@@ -2505,15 +2505,21 @@ the target definition ID, a nominal presentation ID, and a diagnostic display na
 The package finalizer and loader preserve this record. `PackageRevision`,
 `IvPackageInfo`, and socket RPC publish it without a frontend component name.
 
-The VS Code frontend owns `NodePresentationRegistry`. The registry intersects package
-descriptors with installed frontend providers and uses
+The VS Code frontend currently owns `NodePresentationRegistry`. The registry
+intersects package descriptors with installed frontend providers and uses
 `frameworkDefaultNodePresentationProvider` when no provider matches. The display mode
-is one of `compact`, `nano`, `mini`, or `editable`. The backend does not select the
-mode or import a frontend implementation.
+is one of `compact`, `nano`, `mini`, or `editable`. This describes the verified
+2026-11-06 implementation, **not** the accepted 2026-11-12 destination. The
+replacement Vue client will own component registration and selection by stable
+node definition ID without backend `IV_NODE_PRESENTATION` descriptors. Removing the
+old package/loader/RPC/frontend presentation path is outstanding work, not already
+completed by Front 14. See
+[node_presentation_and_manual_controls_direction.md](./node_presentation_and_manual_controls_direction.md).
 
 This front owns:
 
-- `NodePresentation` and framework default presentation;
+- frontend-owned presentation selection and guaranteed generic Vue presentation
+  (supersedes Front 14's implemented backend `NodePresentation` records);
 - global display modes;
 - authored/scoped semantic rebinding;
 - presentation lifetime independent of frontend component lifetime;
@@ -2529,8 +2535,11 @@ This front owns:
 - an explicit idle/debounce policy for return to constant specialization;
 - compatible code-only activation with no state reconstruction.
 
-Front 14 does not own the undefined live-observation API. Its capability,
-subscription, representation, and scheduling questions remain future design work.
+Front 14 did not implement live observation. The newly accepted observation direction
+uses reflected fields and ports, type-registered operations, minimal GraphJit capture
+planning, and batched/reactive Vue interests and updates. Its concrete interfaces
+remain future implementation work driven by a real Vue client, not new speculative
+Front 14 routes or node callbacks.
 Front 14 also does not add a cache of old control specializations. The prior policy is
 preserved in
 [historical documentation](./historical/front_14_manual_control_jit_policy_before_demand_activation_2026-11-04.md).

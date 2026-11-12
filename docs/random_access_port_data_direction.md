@@ -414,6 +414,28 @@ recompute eligible Tick producers for arbitrary requested coverage. A possible
 future `tack()`/`tack_block()` split may make replayability explicit, but it is not the
 current direction.
 
+### Type-registered live observation operations (planned)
+
+The same closed registered continuous-value type system should also advertise a
+finite set of **optional** observation operations suitable for each type. The
+operation's supported source shape, resolved dimensions/channels, capture contract,
+and output schema are type-specific. An implementation shared by multiple types may
+be expressed once as a generic template, but each type explicitly opts in; there is
+no universal `Peak`/`Waveform` switch and no implicit transformation between
+continuous value types.
+
+For example, `Sample` may support latest-value, sample-level, and bounded waveform
+observations as distinct operations; `FFTBlock` may support a spectrum projection,
+while `FractionalGlobalIndex` may only support latest-value observation. The set
+actually implemented should be driven by concrete Vue usage. Availability may also
+depend on whether the resolved source is ephemeral Sequential, persisted, or
+random-access. Observation operations do not change the existing authored-port,
+connection, storage, or value-conversion semantics just by being registered.
+
+The operation interface, selective capture placement, and collection/batching
+lifecycle are specified in
+[Node Interaction And Presentation Communication Direction](./node_interaction_and_presentation_communication_direction.md).
+
 ### Type-dependent `size()` is a realization fact
 
 Each registered continuous value type has a fixed rank known from its type definition,
