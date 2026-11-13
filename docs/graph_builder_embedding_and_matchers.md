@@ -182,6 +182,29 @@ and:
 The first selects a tiled child node before selecting a port. The second stays
 on the current matched node and selects a port channel.
 
+### Member ports of the tiled channel type (planned)
+
+_Direction stated by the repository owner on 2026-11-13; not implemented._
+
+Today every sample port of a tiled member must be mono: each member's mono
+output becomes one channel of the tiled node's output, and each mono input one
+channel of its input. Tiling a module node whose output is already stereo is
+therefore rejected.
+
+A member may also expose sample ports of the **tiled channel type itself**:
+
+- such an output of the tiled node is the **channel-wise sum** of the members'
+  outputs, for example two stereo pan voices tiled to stereo produce one stereo
+  output; and
+- such an input of the tiled node is **broadcast channel-wise** to the same
+  input of every member.
+
+Sample ports of any other non-mono channel type stay rejected, so the semantics
+are not extended further before a requirement calls for it. The validation that
+enforces the mono rule today is in `GraphBuilderState` (tiled module members)
+and `GraphBuilderNodeBundles` (tiled bundles); the sum and broadcast also reach
+connection resolution and lowering.
+
 ## `ProjectNodePortMatcher`
 
 Persistent whole-project connections use `ProjectNodePortMatcher` as the named

@@ -1,20 +1,20 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
-import type { VirtualNode } from "../../src/graphModel";
 import { effectiveDisplayMode, type NodeDisplayMode, type NodeViewChoice } from "./displayMode";
 import { provideNode } from "./nodeContext";
 import { presentations } from "./presentations";
-import { semanticNodeFromVirtualNode } from "./semanticNode";
+import type { SemanticNode } from "./semanticNode";
 
 // Hosts one node: selects its presentation, provides its semantic node, and
 // supplies the one display mode that presentation receives.
 const props = defineProps<{
-    node: VirtualNode;
+    node: SemanticNode;
     viewChoice: NodeViewChoice;
+    scale?: number;
 }>();
 
-const semanticNode = computed(() => semanticNodeFromVirtualNode(props.node));
+const semanticNode = computed(() => props.node);
 provideNode(semanticNode);
 
 const selection = computed(() => presentations.select(semanticNode.value.definitionId));
@@ -24,9 +24,9 @@ const width = ref<number | null>(null);
 const mode = ref<NodeDisplayMode>(props.viewChoice);
 
 watch(
-    [width, () => props.viewChoice],
-    ([availableWidth, viewChoice]) => {
-        mode.value = effectiveDisplayMode(availableWidth, viewChoice, mode.value);
+    [width, () => props.viewChoice, () => props.scale ?? 1],
+    ([availableWidth, viewChoice, scale]) => {
+        mode.value = effectiveDisplayMode(availableWidth === null ? null : availableWidth * scale, viewChoice, mode.value);
     },
     { immediate: true },
 );

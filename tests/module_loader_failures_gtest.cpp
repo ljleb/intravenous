@@ -140,6 +140,37 @@ void common_artifact_owner(iv::GraphBuilder& g) { g.outputs(); }
     EXPECT_NE(changed_artifact, artifact);
 }
 
+TEST(ModuleLoaderPackages, ReloadingUnchangedCodeReportsTheCurrentSourceStamp)
+{
+    auto const package_root = iv::test_support::make_inline_module_workspace(
+        "module_loader_unchanged_save_stamp",
+        R"cpp(
+#include <intravenous/dsl.h>
+void unchanged_save_stamp(iv::GraphBuilder& g) { g.outputs(); }
+)cpp");
+    auto loader = iv::test::make_loader();
+    auto const request = iv::test::project_package_request(package_root);
+    (void)iv::test::load_package(loader, request);
+
+    // Save the source again without changing it: its newest write moves while
+    // the compiled package stays the same. The package watcher compares this
+    // stamp with the sources, so a stale one would report a change forever.
+    auto const source_path = package_root / "module.cpp";
+    auto const saved_at =
+        std::filesystem::last_write_time(source_path) + std::chrono::seconds(5);
+    std::filesystem::last_write_time(source_path, saved_at);
+
+    auto const reloaded = iv::test::load_package(loader, request);
+    auto const canonical_root = std::filesystem::weakly_canonical(package_root);
+    auto const own = std::ranges::find_if(
+        reloaded.dependencies,
+        [&](iv::ModuleDependency const& dependency) {
+            return std::filesystem::weakly_canonical(dependency.module_dir) == canonical_root;
+        });
+    ASSERT_NE(own, reloaded.dependencies.end());
+    EXPECT_EQ(own->package_stamp, saved_at);
+}
+
 TEST(ModuleLoaderPackages, ScalarSourceOutputResolvesShippedBuiltinConstant)
 {
     auto const package_root = iv::test::runtime_modules_root()

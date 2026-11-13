@@ -8,6 +8,7 @@ import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
 import { WorkspaceSessionFactory } from "./workspaceSessionFactory";
 import { ModulesViewProvider } from "./modulesViewProvider";
 import { timestampOutput } from "./outputLog";
+import { GraphEditorProvider } from "./graphEditorProvider";
 
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -38,6 +39,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         highlighter,
     );
     modulesProvider.setControlHandler((message) => session.dispatchModulesControl(message));
+
+    const graphEditor = new GraphEditorProvider(context.extensionUri, session);
+    context.subscriptions.push(graphEditor);
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.openGraphEditor", () => graphEditor.open()));
+    context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("intravenous.graphEditor", {
+        async deserializeWebviewPanel(panel) { graphEditor.revive(panel); },
+    }));
 
     context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("intravenous.modules", {
         async deserializeWebviewPanel(panel) {

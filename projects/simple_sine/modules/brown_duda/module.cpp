@@ -30,12 +30,12 @@ inline float wrap_degrees(float degrees)
 // frame=10, samples_ago=3  -> current block frame 7
 // frame=2,  samples_ago=5  -> 3 samples before current block
 inline Sample read_ago(
-    InputPort const& input,
+    auto const& input,
     size_t frame,
     size_t samples_ago)
 {
     if (samples_ago <= frame) {
-        return input.get_frame(frame - samples_ago);
+        return input.get_value(frame - samples_ago);
     }
 
     return input.get(samples_ago - frame);
@@ -43,7 +43,7 @@ inline Sample read_ago(
 
 template<size_t MaxDelay>
 inline Sample read_fractional_delay(
-    InputPort const& input,
+    auto const& input,
     size_t frame,
     float delay)
 {
@@ -603,14 +603,17 @@ struct OnePoleOneZero
         };
     }
 
-    void constrain_ports(ConstrainPortsContext<OnePoleOneZero>& ctx) const
-    {
-        ctx.input<"in">().history() = 1;
-    }
-
     static constexpr auto outputs()
     {
         return std::array{output<Sample>("out", OutputProduction::tick)};
+    }
+
+    // After outputs(): naming an output port needs its deduced return type.
+    void constrain_ports(ConstrainPortsContext<OnePoleOneZero>& ctx) const
+    {
+        ctx.input<"in">().history() = 1;
+        // The recursion reads the previous block's last output.
+        ctx.output<"out">().history() = 1;
     }
 
     void tick_block(
@@ -632,10 +635,10 @@ struct OnePoleOneZero
             ctx.template output<"out">();
 
         auto previous_input =
-            ctx.inputs[0].get(1);
+            input.get(1);
 
         auto previous_output =
-            ctx.outputs[0].get();
+            output.get();
 
         for (size_t i = 0; i < ctx.block_size; ++i) {
             auto const current_input =
@@ -699,8 +702,8 @@ struct SampleDelay
         auto output =
             ctx.template output<"out">();
 
-        auto const& input =
-            ctx.inputs[0];
+        auto const input =
+            ctx.input<"in">();
 
         for (size_t i = 0; i < ctx.block_size; ++i) {
             auto const delay =
@@ -788,12 +791,12 @@ struct BrownDudaPinna
         auto output =
             ctx.template output<"out">();
 
-        auto const& input =
-            ctx.inputs[0];
+        auto const input =
+            ctx.input<"in">();
 
         for (size_t i = 0; i < ctx.block_size; ++i) {
             Sample y =
-                input.get_frame(i);
+                input.get_value(i);
 
             y += 0.50f
                 * read_fractional_delay<

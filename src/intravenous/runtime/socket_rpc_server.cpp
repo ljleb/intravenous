@@ -746,6 +746,9 @@ struct SocketRpcServer::Impl {
                 "graph.nodesUpdated",
                 virtual_nodes_updated_json(*publication.virtual_nodes));
         }
+        if (publication.graph_changed) {
+            publish("graph.changed", Json::object());
+        }
     }
 
     void publish(std::string method, Json params)

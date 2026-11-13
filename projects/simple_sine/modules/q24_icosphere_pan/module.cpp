@@ -1326,14 +1326,14 @@ private:
 
     // ---------- existing HRTF decoder / DSP ----------
 
-    static Sample read_ago(InputPort const& input, size_t frame, size_t samples_ago)
+    static Sample read_ago(auto const& input, size_t frame, size_t samples_ago)
     {
         if (samples_ago <= frame)
-            return input.get_frame(frame - samples_ago);
+            return input.get_value(frame - samples_ago);
         return input.get(samples_ago - frame);
     }
 
-    static Sample read_fractional_delay(InputPort const& input, size_t frame, float delay)
+    static Sample read_fractional_delay(auto const& input, size_t frame, float delay)
     {
         auto const whole = static_cast<size_t>(delay);
         auto const fraction = delay - static_cast<float>(whole);
@@ -1555,11 +1555,6 @@ struct BaselineFir256
         };
     }
 
-    void constrain_ports(ConstrainPortsContext<BaselineFir256>& ctx) const
-    {
-        ctx.input<"in">().history() = input_history;
-    }
-
     static constexpr auto outputs()
     {
         return std::array {
@@ -1567,6 +1562,11 @@ struct BaselineFir256
                 .channel_layout = { .channel_type = ChannelTypeId::stereo },
             }),
         };
+    }
+
+    void constrain_ports(ConstrainPortsContext<BaselineFir256>& ctx) const
+    {
+        ctx.input<"in">().history() = input_history;
     }
 
     struct State
@@ -1615,7 +1615,7 @@ struct BaselineFir256
                 float sum = 0.0f;
 
                 for (size_t tap = 0; tap < current_taps; ++tap)
-                    sum += state.taps[tap] * input.get_frame(frame - tap, channel);
+                    sum += state.taps[tap] * input.get_value(frame - tap, channel);
 
                 for (size_t tap = current_taps; tap < tap_count; ++tap)
                     sum += state.taps[tap] * input.get(tap - frame, channel);
@@ -1659,22 +1659,15 @@ void module_main(GraphBuilder& g)
     auto const az = g.tile<stereo>(center - spread * 0.5, center + spread * 0.5);
     auto const fir = g.node<"iv.project.q24_icosphere_pan.baseline_fir_256">();
 
-    auto const v_l = g.node<"iv.project.q24_icosphere_pan.single_pan">();
-    auto const v_r = g.node<"iv.project.q24_icosphere_pan.single_pan">();
+    auto const v = g.node<"iv.project.q24_icosphere_pan.single_pan", stereo>();
 
-    auto const v_l_out = v_l(
-        "in"_P = in[stereo::left],
-        "azimuth"_P = az[stereo::left],
+    auto const v_out = v(
+        "in"_P = in,
+        "azimuth"_P = az,
         "elevation"_P = el
     );
 
-    auto const v_r_out = v_r(
-        "in"_P = in[stereo::right],
-        "azimuth"_P = az[stereo::right],
-        "elevation"_P = el
-    );
-
-    fir(v_l_out + v_r_out);
+    fir(v_out);
 
     g.outputs("main"_P = fir);
 }

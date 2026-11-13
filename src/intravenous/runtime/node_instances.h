@@ -186,6 +186,13 @@ struct NodeInstancesProjectGraphRequest {
     bool handled = false;
 };
 
+// ProjectGraph's read of the desired instances, for one graph scope read made
+// under ProjectGraph's lock.
+struct NodeInstancesProjectGraphRead {
+    std::vector<IvModuleInstanceInfo> instances{};
+    bool handled = false;
+};
+
 class NodeInstances;
 
 // The NodeInstances transaction of one node-message interaction. ProjectGraph
@@ -342,6 +349,7 @@ public:
 
     void handle_project_graph_transaction(NodeInstancesProjectGraphRequest& request);
     void handle_project_graph_interaction(NodeInstancesInteractionRequest& request);
+    void handle_project_graph_read(NodeInstancesProjectGraphRead& read) const;
     void handle_project_persistence_collect_state(ProjectPersistenceBuilder& builder) const;
     void handle_socket_rpc_get_node_instances(
         GetNodeInstancesRequest const& request,

@@ -1025,6 +1025,12 @@ void select_builder_package(BuilderSession* session, std::size_t package_index)
     session->configuration->used_packages[package_index] = true;
 }
 
+std::optional<std::string> builtin_definition_alias(std::string_view id)
+{
+    if (id.empty() || id.find('.') != std::string_view::npos) return std::nullopt;
+    return "iv.builtin." + std::string(id);
+}
+
 BuilderDefinition find_builder_definition(
     BuilderSession const* session, std::string_view id)
 {
@@ -1058,9 +1064,8 @@ BuilderDefinition find_builder_definition(
     // ordinary package source.  Resolve a bare name only after exact lookup,
     // so a package's deliberately registered `saw_oscillator` still wins over
     // the convenience alias for `iv.builtin.saw_oscillator`.
-    if (id.find('.') == std::string_view::npos) {
-        auto const builtin_id = "iv.builtin." + std::string(id);
-        if (auto found = find_exact(builtin_id)) return *found;
+    if (auto const builtin_id = builtin_definition_alias(id)) {
+        if (auto found = find_exact(*builtin_id)) return *found;
     }
     throw std::runtime_error(
         "IV package definition '" + std::string(id)

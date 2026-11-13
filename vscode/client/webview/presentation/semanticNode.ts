@@ -8,6 +8,8 @@ import type {
     VirtualPortBinding,
     VirtualPortConnectivity,
 } from "../../src/graphModel";
+import type { GraphScope, GraphScopeNode, GraphScopePort, NodeAddress } from "../../src/graphScope";
+import { resolveScopePorts } from "../../src/graphScope";
 
 export type SemanticPortDirection = "input" | "output";
 
@@ -39,12 +41,14 @@ export type SemanticNodeMember = {
     ports: SemanticPort[];
 };
 
-// The node object a presentation reads through useNode(). It is built from
-// the backend's source-introspection VirtualNode record. That record carries
-// no NodeAddress, so this object has no `address` until the graph-editor
-// projection supplies one (Vue client stage 2).
+// The node object a presentation reads through useNode(). Source inspection
+// supplies VirtualNode metadata; the graph editor supplies a stable address
+// and the desired instance's ports from GraphScope.
 export type SemanticNode = {
-    // Source-introspection virtual-node ID.
+    address?: NodeAddress;
+    // Present only when this presentation hosts an opened graph scope.
+    scope?: GraphScope;
+    // Source-introspection virtual-node ID or project instance ID.
     id: string;
     instanceId: string;
     definitionId: string;
@@ -56,6 +60,38 @@ export type SemanticNode = {
     members: SemanticNodeMember[];
     sourceSpans: SourceSpan[];
 };
+
+export function semanticNodeFromScopeChild(child: GraphScopeNode, scope: GraphScope): SemanticNode {
+    const port = (entry: GraphScopePort, kind: "continuous" | "event", direction: SemanticPortDirection): SemanticPort => {
+        const connected = scope.connections.some(({ connection }) => {
+            if (connection.kind !== (kind === "continuous" ? "sample" : "event")) return false;
+            const matchers = direction === "input" ? connection.inputs : connection.outputs;
+            return matchers.some((matcher) => {
+                return resolveScopePorts(scope, matcher, connection.kind, direction)
+                    .some((resolved) => resolved.node === child && resolved.port.index === entry.index);
+            });
+        });
+        const base: SemanticPortFields = {
+            index: entry.index, name: entry.name, direction,
+            connectivity: connected ? "connected" : "disconnected", binding: "interface",
+        };
+        return kind === "continuous"
+            ? { ...base, kind, valueTypes: entry.valueTypes ?? [], channelType: entry.channelType ?? null }
+            : { ...base, kind, eventType: entry.eventType ?? "" };
+    };
+    return {
+        address: child.address, id: child.instance.instanceId,
+        instanceId: child.instance.instanceId, definitionId: child.instance.definitionId,
+        kind: child.instance.definitionId, sourceIdentity: "", memberCount: 1,
+        members: [], sourceSpans: [],
+        ports: [
+            ...child.sampleInputs.map((entry) => port(entry, "continuous", "input")),
+            ...child.eventInputs.map((entry) => port(entry, "event", "input")),
+            ...child.sampleOutputs.map((entry) => port(entry, "continuous", "output")),
+            ...child.eventOutputs.map((entry) => port(entry, "event", "output")),
+        ],
+    };
+}
 
 type PortRecord = {
     continuousInputs?: VirtualContinuousPort[];

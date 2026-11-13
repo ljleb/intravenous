@@ -198,9 +198,107 @@ the whole Vue client to be finished.
 
 ## Current stage
 
-Stage 1, started 2026-11-12.
+Stage 2, started 2026-11-12. Stage 1 is complete.
 
-### Stage 1 implementation status (2026-11-12, written, not yet built or tested)
+### Stage 2 plan (2026-11-12)
+
+The owner settled the editor surface: an editor is opened on one node, its
+root, and opening a node as a root opens a new editor; node positions survive a
+reload. See
+[The graph editor is opened on one node](./node_presentation_and_manual_controls_direction.md#the-graph-editor-is-opened-on-one-node).
+Stage 1 put the Vue application in the side panel instead, where it shows the
+nodes of the active source file; the editor replaces it as the Vue host.
+
+Order:
+
+1. **Graph scope read model.** One read for one node address, the project root
+   when absent: the scope's children with their node addresses, definitions,
+   realization state, and ports (type, channel layout, direction); the
+   connections among them, including unrealized instances and connections with
+   a missing endpoint; and whether the scope is editable. `ProjectGraph` builds
+   it under its lock from its current generation plus the desired state of
+   `NodeInstances` and `GraphConnections`, so one read is one consistent
+   revision. A committed change sends one notification that the graph changed,
+   riding the existing `ProjectGraphPublication`; editors re-read their scopes.
+   The project-root scope comes first; module-instance scopes, whose children
+   come from the configured graph and are not editable, follow.
+2. **Graph editor surface.** An editor tab per root hosts the Vue application.
+   The root's presentation lays out its children with pan and zoom; each child's
+   display mode follows its region. Positions are kept in a frontend-owned
+   layout file in the project directory, keyed by node address. Without a saved
+   position, children are placed in their authored order.
+3. **Editing through existing routes:** `nodeInstances.create` from the package
+   catalog, `nodeInstances.delete`, `graphConnections.upsert` /
+   `graphConnections.delete` by dragging between ports,
+   `nodeInstances.update` for configuration source, and `project.save`. A
+   window reload restarts the server and replays the project. Hearing the
+   result means connecting to an `iv.builtin.system_audio_output` instance.
+4. **Retire `ModulesViewProvider`,** whose instance management the editor
+   takes over.
+5. **The first undo/redo slice** described above.
+
+Not scheduled yet: project-authored groups, collapsible subgraphs with their
+own inputs and outputs, defined in the project rather than in a C++ module
+(see the editor section linked above). The scope read model treats a scope as
+a node address with children so that a group can become one more scope.
+
+### Stage 2 implementation status
+
+Updated 2026-11-12. The project-root canvas and its tests are written;
+compilation, tests, and the UI checks below remain for the repository owner.
+The previous checkpoint is preserved in
+[Vue Stage 2 Before The Project Graph Canvas](./historical/vue_stage_2_before_project_graph_canvas_2026-11-12.md).
+
+- Step 1, project root scope: `graph.getScope` returns `ProjectGraphScope`
+  (`project_graph_scope_types.h`), built by
+  `ProjectGraph::handle_socket_rpc_get_graph_scope` from the current generation
+  and the desired state it reads from `NodeInstances` and `GraphConnections`
+  (see [Graph scope read](./event_flows/graph_scope_read.md)). Every root build
+  marks its `ProjectGraphPublication` with `graph_changed`, which
+  `SocketRpcServer` publishes as `graph.changed`. Module-instance scopes are not
+  implemented yet.
+- Step 2, project root: `Intravenous: Open Graph Editor` opens a Vue editor tab.
+  `GraphEditorProvider` reads the scope through the existing `WorkspaceSession`,
+  refreshes on `graph.changed`, and reloads after a server restart. Reads are
+  serialized; a change during a read discards that response and requests a new
+  snapshot. Each restored editor tab uses the same window-owned session.
+- The root uses the generic presentation's graph-scope view. Child nodes use
+  the frontend presentation registry, with stable addresses and continuous value
+  metadata from the scope API. Pan, cursor-centered zoom, draggable node titles,
+  and a fit command operate on frontend geometry. New nodes receive positions
+  in their returned order, without moving already placed nodes.
+- Positions and viewport are saved to `.intravenous/graph-layout.json`, separate
+  from `iv_project.jsonl`. Saves are serialized and replace the layout file
+  atomically. Positions survive temporary removal and restoration of a node.
+  An unreadable layout is reported and is not overwritten automatically.
+- Missing or interior endpoints stay visible in the connection list. Lines are
+  drawn only for endpoints that resolve to ports in the root scope. A matcher
+  with no port name or index selects all ports, as `GraphConnections` does.
+  Unapplied connections and unrealized instances remain visible.
+- Step 2 remains incomplete for opening module-instance scopes. Their backend
+  read model still needs implementation; this pass does not expose an open
+  button that cannot work. The source-inspection side panel remains available.
+- Steps 3-5 are not started: graph mutation gestures, retirement of
+  `ModulesViewProvider`, and the first undo/redo slice.
+
+#### Verify the project-root canvas
+
+After rebuilding the server and the extension:
+
+1. Open `projects/simple_sine` and run `Intravenous: Open Graph Editor` from
+   the command palette. Check that the project instances and their ports appear.
+2. Drag a node title, pan the background, and zoom with the wheel. Check that
+   zoom stays centered on the cursor and that connection lines follow the nodes.
+3. Reload the VS Code window. Check that the editor tab, positions, and viewport
+   return. Open a second graph tab and check that both see package refreshes.
+4. Use the existing Modules panel to create or delete an instance. Check that
+   the canvas refreshes without moving other nodes. A retained connection with
+   a missing endpoint must remain in the connection list.
+5. Check a project with event connections and a connection matcher that selects
+   multiple ports. Event port indices must not be treated as continuous port
+   indices. Selectors into module interiors must not attach to guessed root ports.
+
+### Stage 1 implementation status (2026-11-12; built, tests pass)
 
 Removed from source:
 
@@ -258,7 +356,6 @@ Corrected along the way: the client read `packageIdentity` from virtual nodes, b
 the backend sends `sourceIdentity`, so the old panel's identity summary always fell
 back to the raw node ID.
 
-Remaining before the stage 1 completion criterion can be checked: run `npm install`
-in `vscode/client` (this updates `package-lock.json`, which `install_client.sh`
-needs for `npm ci`), build, typecheck, run the client and C++ tests, and open an
-existing project, including a window reload and a server restart.
+Resolved 2026-11-12: the client is installed and built, all tests pass, and the
+owner runs it against existing projects, including window reloads and server
+restarts.

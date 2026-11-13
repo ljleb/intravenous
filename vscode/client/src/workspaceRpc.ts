@@ -1,5 +1,6 @@
 import { JsonRpcSocketClient } from "./rpcClient";
 import { VirtualNode, SourceSpan } from "./graphModel";
+import type { GraphScope } from "./graphScope";
 
 export type SourceQueryRange = {
     start: { line: number; column: number };
@@ -40,6 +41,10 @@ export class WorkspaceRpc {
 
     snapshot(): Promise<Record<string, unknown> & { sessionRevision?: number }> {
         return this.client.request("session.snapshot", {});
+    }
+
+    getGraphScope(): Promise<GraphScope> {
+        return this.client.request("graph.getScope", {});
     }
 
     getNodeInstances(sourceFilePath: string | null = null): Promise<{ instances?: Array<Record<string, unknown>> }> {

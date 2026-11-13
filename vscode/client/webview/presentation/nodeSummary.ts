@@ -89,7 +89,7 @@ export function nodeIdentitySummary(node: SemanticNode): string {
 
 export function nodeDescription(node: SemanticNode): string {
     const identity = nodeIdentitySummary(node);
-    const parts = ["virtual"];
+    const parts = [node.address ? "instance" : "virtual"];
     if (identity) {
         parts.push(identity);
     }

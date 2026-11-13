@@ -64,6 +64,13 @@ struct GraphConnectionsProjectGraphRequest {
     bool handled = false;
 };
 
+// ProjectGraph's read of the desired connections, for one graph scope read made
+// under ProjectGraph's lock.
+struct GraphConnectionsProjectGraphRead {
+    std::vector<ProjectConnection> connections{};
+    bool handled = false;
+};
+
 class GraphConnections;
 
 // The GraphConnections transaction of one node-message interaction. ProjectGraph
@@ -116,6 +123,7 @@ public:
     [[nodiscard]] std::vector<ProjectConnection> desired_connections() const;
     void handle_project_graph_transaction(GraphConnectionsProjectGraphRequest& request);
     void handle_project_graph_interaction(GraphConnectionsInteractionRequest& request);
+    void handle_project_graph_read(GraphConnectionsProjectGraphRead& read) const;
     void handle_project_persistence_collect_state(
         ProjectPersistenceBuilder& builder) const;
 };

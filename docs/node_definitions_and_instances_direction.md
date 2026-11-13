@@ -148,6 +148,24 @@ new app-module event.
 A new definitions generation arriving concurrently can only affect a later
 batch. It cannot alter the definition world halfway through the current batch.
 
+### Built-in definition names are imported
+
+Every `g.node<"id">(...)` lookup uses one rule, whether it resolves through a
+`BuilderSession`'s own package tables or through `NodeInstances`' snapshot: an
+exact definition ID wins, and otherwise a bare ID (one without a `.`) names the
+built-in definition `iv.builtin.<id>`. Scalar sugar depends on it: `osc * 0.1`
+creates `g.node<"constant">`. (Restated 2026-11-12, after `NodeInstances`'
+resolution was found to skip the built-in names.)
+
+**Planned (requested by the repository owner on 2026-11-12, not scheduled):**
+authored code can import a namespace into a `GraphBuilder` from a chosen
+point, either by changing that builder or by opening a scope in which
+`g.node` lookups also search the imported namespace. A name collision is
+reported when the namespace is imported, never resolved silently. The built-in
+import then becomes one such import that every builder starts with; whether an
+exact ID may still shadow a built-in name, as it does today, is part of that
+design.
+
 ## Project configuration source
 
 The initial generic project configuration surface stores one restricted C++-like

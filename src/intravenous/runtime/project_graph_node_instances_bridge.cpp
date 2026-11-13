@@ -13,4 +13,8 @@ IV_SUBSCRIBE_LINKER_EVENT(
     project_graph_node_instances_bridge,
     iv_runtime_project_graph_node_instances_interaction_requested_event,
     &NodeInstances::handle_project_graph_interaction)
+IV_SUBSCRIBE_LINKER_EVENT(
+    project_graph_node_instances_bridge,
+    iv_runtime_project_graph_node_instances_read_event,
+    &NodeInstances::handle_project_graph_read)
 } // namespace iv

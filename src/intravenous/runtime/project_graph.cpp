@@ -613,6 +613,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     // configured graph. Previews change no read model.
     ProjectGraphPublication publication;
     if (publish_execution) {
+        publication.graph_changed = true;
         if (request.instances_list_changed) publication.instances = request.instances;
         if (package_definitions || request.instance_declarations_changed) {
             IvModuleSourceIntrospectionProjectGraphRequest introspection{};
@@ -2047,6 +2048,111 @@ void ProjectGraph::handle_socket_rpc_get_node_event_protocol(
 {
     try {
         builder.succeed(node_event_protocol());
+    } catch (std::exception const& error) {
+        builder.fail(error.what());
+    }
+}
+
+namespace {
+// The realized ports of one placed instance root, read through the same port
+// tables GraphConnections resolves a ProjectPortMatcher against.
+void fill_graph_scope_ports(
+    ConfiguredGraph const& graph,
+    NodeBundleHandle root,
+    ProjectGraphScopeNode& node)
+{
+    auto const& bundles = graph.node_bundles;
+    auto const& bundle = bundles.bundle(root);
+    for (std::size_t index = 0; index < bundle.sample_input_count(); ++index) {
+        auto const config = bundles.resolve_sample_input({root, PortKind::sample, index}).config;
+        node.sample_inputs.push_back({
+            .name = config.name,
+            .index = index,
+            .channel_type = config.channel_layout.channel_type,
+            .value_types = std::visit([](auto const& access) {
+                return continuous_introspection_metadata(access.value_metadata);
+            }, config.access),
+        });
+    }
+    for (std::size_t index = 0; index < bundle.sample_output_count(); ++index) {
+        auto const config = bundles.resolve_sample_output({root, PortKind::sample, index}).config;
+        node.sample_outputs.push_back({
+            .name = config.name,
+            .index = index,
+            .channel_type = config.channel_layout.channel_type,
+            .value_types = std::visit([](auto const& production) {
+                return continuous_introspection_metadata(production.value_metadata);
+            }, config.production),
+        });
+    }
+    for (std::size_t index = 0; index < bundle.event_input_count(); ++index) {
+        auto const config = bundles.resolve_event_input({root, PortKind::event, index}).config;
+        node.event_inputs.push_back({
+            .name = config.name,
+            .index = index,
+            .event_type = config.type,
+        });
+    }
+    for (std::size_t index = 0; index < bundle.event_output_count(); ++index) {
+        auto const config = bundles.resolve_event_output({root, PortKind::event, index}).config;
+        node.event_outputs.push_back({
+            .name = config.name,
+            .index = index,
+            .event_type = config.type,
+        });
+    }
+    node.has_children = bundle.is_subgraph();
+}
+} // namespace
+
+void ProjectGraph::handle_socket_rpc_get_graph_scope(
+    GetGraphScopeRequest const&,
+    SocketRpcGraphScopeResultBuilder& builder)
+{
+    try {
+        // Every project mutation also holds this lock while it changes
+        // NodeInstances and GraphConnections, so the three reads below
+        // describe one revision.
+        std::scoped_lock lock(mutex_);
+        NodeInstancesProjectGraphRead instances{};
+        IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_node_instances_read_event, instances);
+        GraphConnectionsProjectGraphRead connections{};
+        IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_connections_read_event, connections);
+        if (!instances.handled || !connections.handled) {
+            builder.fail("the graph scope needs NodeInstances and GraphConnections");
+            return;
+        }
+
+        ProjectGraphScope scope;
+        auto const generation = current_generation_;
+        if (generation) scope.generation = generation->generation;
+        for (auto& instance : instances.instances) {
+            ProjectGraphScopeNode node{
+                .address = NodeAddress{.instance_id = instance.instance_id},
+            };
+            if (generation && generation->graph) {
+                auto const placement = generation->placements.find(instance.instance_id);
+                if (placement != generation->placements.end()) {
+                    fill_graph_scope_ports(*generation->graph, placement->second.root, node);
+                }
+            }
+            node.instance = std::move(instance);
+            scope.nodes.push_back(std::move(node));
+        }
+        std::unordered_set<std::string> applied;
+        if (generation) {
+            applied.insert(
+                generation->applied_connection_ids.begin(),
+                generation->applied_connection_ids.end());
+        }
+        for (auto& connection : connections.connections) {
+            auto const is_applied = applied.contains(project_connection_id(connection));
+            scope.connections.push_back(ProjectGraphScopeConnection{
+                .connection = std::move(connection),
+                .applied = is_applied,
+            });
+        }
+        builder.succeed(std::move(scope));
     } catch (std::exception const& error) {
         builder.fail(error.what());
     }

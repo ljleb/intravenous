@@ -10,9 +10,11 @@ import type {
 // reloaded. It never reaches the backend.
 export type WebviewLocalState = {
     viewChoice?: string;
+    surface?: "graphEditor";
 };
 
 const vscode = acquireVsCodeApi<WebviewLocalState>();
+export const webviewApi = vscode;
 
 // The latest complete state from the extension host. It is replaced, never
 // mutated, so a shallow ref is enough.

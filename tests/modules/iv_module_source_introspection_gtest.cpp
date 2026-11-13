@@ -516,9 +516,54 @@ namespace {
     EXPECT_TRUE(has_kind(
         query_at("\"gate\"_F", std::string_view("\"gate\"").size()),
         "TriggerSink"));
-    EXPECT_TRUE(query_at("frequency);", 2).nodes.empty());
-    EXPECT_TRUE(query_at("\"main\"_P", 2).nodes.empty());
-    EXPECT_TRUE(query_at("\"trigger\"_F", 2).nodes.empty());
+    // The scope's public ports now have their own introspection records.
+    // An input identifier selects that input, and an output binding name
+    // selects the public output, without making the surrounding call active.
+    auto const public_input = query_at("frequency);", 2);
+    auto const input_node = std::ranges::find_if(public_input.nodes, [](auto const& node) {
+        return node.type_identity == "public-input" && node.kind == "input";
+    });
+    ASSERT_NE(input_node, public_input.nodes.end());
+    ASSERT_EQ(input_node->continuous_outputs.size(), 1u);
+    EXPECT_TRUE(input_node->continuous_inputs.empty());
+    EXPECT_TRUE(input_node->event_inputs.empty());
+    EXPECT_TRUE(input_node->event_outputs.empty());
+    EXPECT_TRUE(std::ranges::any_of(input_node->source_spans, [](auto const& span) {
+        return source_text(span) == "frequency";
+    }));
+
+    auto const sample_output = query_at("\"main\"_P", 2);
+    auto const sample_output_node = std::ranges::find_if(sample_output.nodes, [](auto const& node) {
+        return node.type_identity == "public-output" && node.kind == "output";
+    });
+    ASSERT_NE(sample_output_node, sample_output.nodes.end());
+    ASSERT_EQ(sample_output_node->continuous_inputs.size(), 1u);
+    EXPECT_EQ(sample_output_node->continuous_inputs.front().name, "main");
+    EXPECT_TRUE(sample_output_node->continuous_outputs.empty());
+    EXPECT_TRUE(sample_output_node->event_inputs.empty());
+    EXPECT_TRUE(sample_output_node->event_outputs.empty());
+    EXPECT_TRUE(std::ranges::any_of(sample_output_node->source_spans, [](auto const& span) {
+        return source_text(span) == "\"main\"";
+    }));
+
+    auto const event_output = query_at("\"trigger\"_F", 2);
+    auto const event_output_node = std::ranges::find_if(event_output.nodes, [](auto const& node) {
+        return node.type_identity == "public-output" && node.kind == "output";
+    });
+    ASSERT_NE(event_output_node, event_output.nodes.end());
+    ASSERT_EQ(event_output_node->event_inputs.size(), 1u);
+    EXPECT_EQ(event_output_node->event_inputs.front().name, "trigger");
+    EXPECT_TRUE(event_output_node->continuous_inputs.empty());
+    EXPECT_TRUE(event_output_node->continuous_outputs.empty());
+    EXPECT_TRUE(event_output_node->event_outputs.empty());
+    EXPECT_TRUE(std::ranges::any_of(event_output_node->source_spans, [](auto const& span) {
+        return source_text(span) == "\"trigger\"";
+    }));
+
+    // Move past the inclusive end of each name token: the UDL suffix itself
+    // must not become a highlighted source range.
+    EXPECT_TRUE(query_at("\"main\"_P", std::string_view("\"main\"").size() + 1).nodes.empty());
+    EXPECT_TRUE(query_at("\"trigger\"_F", std::string_view("\"trigger\"").size() + 1).nodes.empty());
 }
 
 TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedVirtualNodeIdStableAcrossReload)

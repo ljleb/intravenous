@@ -261,6 +261,9 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
         return parsed(GetVirtualNodesRequest{
             .node_ids = parse_string_array_param(params, "nodeIds")});
     }
+    if (method == "graph.getScope") {
+        return parsed(GetGraphScopeRequest{});
+    }
     if (method == "nodeInstances.create") {
         auto configuration_source = parse_optional_nullable_string_param(
             params, "configurationSource");

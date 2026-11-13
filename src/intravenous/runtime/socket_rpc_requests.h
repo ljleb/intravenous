@@ -26,6 +26,8 @@ struct GraphQueryBySpansRequest {
 struct GraphQueryActiveRegionsRequest { std::filesystem::path file_path{}; };
 struct GetVirtualNodeRequest { std::string node_id{}; };
 struct GetVirtualNodesRequest { std::vector<std::string> node_ids{}; };
+// The graph editor's project root scope; see ProjectGraphScope.
+struct GetGraphScopeRequest {};
 
 struct CreateNodeInstanceRequest {
     std::optional<std::string> instance_id{};
@@ -103,6 +105,7 @@ using SocketRpcRequestPayload = std::variant<
     GraphQueryActiveRegionsRequest,
     GetVirtualNodeRequest,
     GetVirtualNodesRequest,
+    GetGraphScopeRequest,
     CreateNodeInstanceRequest,
     GetIvPackageDefinitionsRequest,
     CreateIvPackageRequest,

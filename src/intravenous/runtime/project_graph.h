@@ -32,6 +32,7 @@ class SocketRpcAckResponseBuilder;
 class SocketRpcCreateNodeInstanceResultBuilder;
 class SocketRpcNodeMessageResultBuilder;
 class SocketRpcNodeEventProtocolResultBuilder;
+class SocketRpcGraphScopeResultBuilder;
 struct CreateNodeInstanceRequest;
 struct DeleteNodeInstanceRequest;
 struct NodeDefinitionsSnapshotChanged;
@@ -58,6 +59,7 @@ struct UpdateManualControlInteractionRequest;
 struct EndManualControlInteractionRequest;
 struct DispatchNodeMessageRequest;
 struct GetNodeEventProtocolRequest;
+struct GetGraphScopeRequest;
 
 // Wall-clock microseconds of the rebuild that produced a generation, from the
 // rebuild's start to GraphExecutor accepting (or refusing) the compiled graph.
@@ -347,5 +349,11 @@ public:
     void handle_socket_rpc_get_node_event_protocol(
         GetNodeEventProtocolRequest const& request,
         SocketRpcNodeEventProtocolResultBuilder& builder);
+    // The graph editor's project root scope, read under this module's lock:
+    // the desired instances with their realized ports, and the desired
+    // connections with whether the current generation applied them.
+    void handle_socket_rpc_get_graph_scope(
+        GetGraphScopeRequest const& request,
+        SocketRpcGraphScopeResultBuilder& builder);
 };
 } // namespace iv

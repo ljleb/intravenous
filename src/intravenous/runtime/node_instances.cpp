@@ -936,7 +936,15 @@ NodeRef NodeInstances::resolve_builder_definition(
         child_address.path.end(), relative_path.begin(), relative_path.end());
 
     std::optional<EvaluatedConfigurationArguments> replacement_arguments;
+    // The same lookup rule as a builder's own package tables: the exact ID,
+    // then the built-in name a bare ID imports (`constant` for scalar sugar).
     auto configured_definition_id = std::string(definition_id);
+    if (!context.snapshot->by_id.contains(configured_definition_id)) {
+        if (auto alias = details::builtin_definition_alias(definition_id);
+            alias && context.snapshot->by_id.contains(*alias)) {
+            configured_definition_id = std::move(*alias);
+        }
+    }
     auto configured_arguments = arguments;
     auto const replacement = std::ranges::find(
         context.replacements,
@@ -1367,6 +1375,12 @@ void NodeInstances::handle_project_graph_interaction(
     request.handled = true;
     request.interaction = NodeInstancesInteraction(
         *this, EventModuleVisit::current<NodeInstances>());
+}
+
+void NodeInstances::handle_project_graph_read(NodeInstancesProjectGraphRead& read) const
+{
+    read.handled = true;
+    read.instances = list_instances();
 }
 
 void NodeInstances::handle_project_graph_transaction(

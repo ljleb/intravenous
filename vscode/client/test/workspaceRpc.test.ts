@@ -27,3 +27,12 @@ test("workspace mutations include the current project session revision", async (
         },
     }]);
 });
+
+test("graph scope reads use the existing session without a mutation revision", async () => {
+    const calls: unknown[] = [];
+    const scope = { generation: 4, editable: true, nodes: [], connections: [] };
+    const client = { request: async (method, params) => { calls.push({ method, params }); return scope; } } as unknown as JsonRpcSocketClient;
+    const rpc = new WorkspaceRpc(client, () => 17);
+    assert.deepEqual(await rpc.getGraphScope(), scope);
+    assert.deepEqual(calls, [{ method: "graph.getScope", params: {} }]);
+});

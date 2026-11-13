@@ -39,6 +39,12 @@ IV_DEFINE_SINGLETON_EVENT(
     iv_runtime_project_graph_graph_executor_controls_requested_event,
     &ignore_graph_executor_controls_request)
 IV_DEFINE_LINKER_EVENT(
+    ProjectGraphNodeInstancesReadEvent,
+    iv_runtime_project_graph_node_instances_read_event)
+IV_DEFINE_LINKER_EVENT(
+    ProjectGraphConnectionsReadEvent,
+    iv_runtime_project_graph_connections_read_event)
+IV_DEFINE_LINKER_EVENT(
     ProjectGraphNodeInstancesInteractionRequestedEvent,
     iv_runtime_project_graph_node_instances_interaction_requested_event)
 IV_DEFINE_LINKER_EVENT(

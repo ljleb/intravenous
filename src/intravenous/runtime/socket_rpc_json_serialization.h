@@ -22,6 +22,8 @@ namespace iv {
 
     SocketRpcJson virtual_continuous_port_json(
         VirtualContinuousPortInfo const& port);
+    SocketRpcJson continuous_value_types_json(
+        std::vector<ContinuousValueIntrospectionMetadata> const& metadata);
     SocketRpcJson virtual_continuous_ports_json(
         std::vector<VirtualContinuousPortInfo> const& ports);
     SocketRpcJson virtual_event_port_json(VirtualEventPortInfo const& port);

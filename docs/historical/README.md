@@ -110,3 +110,8 @@ These documents are retained because they record deleted architectures, supersed
 - [Phase 4 constexpr migration scope](./phase4_constexpr_migration_scope.md)
 - [IV module compile-time profiling record](./iv_sample_lowering_complexity.md)
 - [Last Two Commits Testing Plan](./last_two_commits_testing_plan.md)
+
+## Vue Stage 2 project-root canvas checkpoint
+
+- [Vue Stage 2 Before The Project Graph Canvas](./vue_stage_2_before_project_graph_canvas_2026-11-12.md)
+  preserves the implementation status before the project-root editor was written.

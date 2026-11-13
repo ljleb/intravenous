@@ -9,6 +9,7 @@ import type { NodeDisplayMode } from "./displayMode";
 import { useNode } from "./nodeContext";
 import { nodeDescription, portDescription, portGroups, portKey } from "./nodeSummary";
 import PortRow from "./PortRow.vue";
+import GraphScopePresentation from "../graph/GraphScopePresentation.vue";
 
 // The presentation every node has. It works from the node's reflected ports
 // alone and shows every port in every mode: compact and nano summarize them,
@@ -43,7 +44,8 @@ function toggleMember(index: number): void {
 </script>
 
 <template>
-    <div class="generic-node" :class="`mode-${mode}`">
+    <GraphScopePresentation v-if="node.scope" />
+    <div v-else class="generic-node" :class="`mode-${mode}`">
         <div class="node-header" :title="`${node.kind} • ${description}`">
             <span class="node-icon" v-html="icon" />
             <span class="node-kind">{{ node.kind }}</span>

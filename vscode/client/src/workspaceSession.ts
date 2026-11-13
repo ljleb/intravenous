@@ -96,6 +96,14 @@ type GraphNodesUpdatedNotification = {
 };
 
 export class WorkspaceSession {
+    private readonly graphChanges = new vscode.EventEmitter<void>();
+    readonly onDidChangeGraph = this.graphChanges.event;
+    graphSessionStatus: LiveGraphSessionStatus = "starting";
+
+    async readGraphScope() {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        return this.rpc.getGraphScope();
+    }
     private readonly workspaceFolder: vscode.WorkspaceFolder;
     private readonly outputChannel: vscode.OutputChannel;
     readonly provider: LiveGraphProviderLike;
@@ -111,7 +119,6 @@ export class WorkspaceSession {
     private lastQuery: QueryShape | null = null;
     private startInFlight: Promise<boolean> | null = null;
     private lastTerminalStatusMessage = "";
-    private readonly maxCapturedServerLogLines = 20;
     private serverDiagnosticLogOffset = 0;
     private readonly serverDiagnosticLogPath = process.env.IV_LOG_FILE
         || path.join(
@@ -165,6 +172,7 @@ export class WorkspaceSession {
     }
 
     private registerNotificationHandlers(): void {
+        this.notifications.subscribe("graph.changed", () => this.graphChanges.fire());
         this.notifications.subscribe<ServerMessageNotification>("server.message", (params) => {
             if (!params.message) {
                 return;
@@ -241,8 +249,9 @@ export class WorkspaceSession {
             }
 
             if (params.code === "rebuildFailed") {
-                this.logServerState("Intravenous rebuild failed", params);
                 this.logCapturedServerFailureContext();
+                // Keep the actionable failure below compiler output and traces.
+                this.logServerState("Intravenous rebuild failed", params);
                 this.showRebuildFailure(params);
                 await this.refreshModulesPanel();
                 return;
@@ -825,6 +834,8 @@ export class WorkspaceSession {
             : Math.min(this.restartDelayMs * 2, this.maxRestartDelayMs);
         this.connectedAtMs = null;
         this.provider.setSessionStatus("restarting");
+        this.graphSessionStatus = "restarting";
+        this.graphChanges.fire();
         this.outputChannel.appendLine(
             `Intravenous server connection lost: ${error.message}; restarting the server`,
         );
@@ -875,6 +886,8 @@ export class WorkspaceSession {
             `Intravenous instances after ready: total=${this.ivModuleInstances.length} realized=${realizedCount} selected=${this.selectedInstanceId ?? "[none]"}`,
         );
         this.provider.setSessionStatus("running");
+        this.graphSessionStatus = "running";
+        this.graphChanges.fire();
     }
 
     private async waitForServerReady(timeoutMs: number): Promise<void> {
@@ -1279,15 +1292,19 @@ export class WorkspaceSession {
     private logCapturedServerFailureContext(): void {
         let text = "";
         try {
-            text = fs.readFileSync(this.serverDiagnosticLogPath, "utf8")
-                .slice(this.serverDiagnosticLogOffset);
+            // The offset is a byte size (fs.statSync), so cut before decoding.
+            text = fs.readFileSync(this.serverDiagnosticLogPath)
+                .subarray(this.serverDiagnosticLogOffset)
+                .toString("utf8");
         } catch {
             return;
         }
-        const lines = text.split(/\r?\n/)
-            .map((line) => line.trim())
-            .filter((line) => line.length > 0)
-            .slice(-this.maxCapturedServerLogLines);
+        // Everything the server logged since the last report, unabridged and
+        // with its indentation: a compiler error or a configuration failure's
+        // message precedes its long stack trace.
+        const lines = text.split(/\r?\n/).map((line) => line.trimEnd());
+        while (lines.length > 0 && lines[0].length === 0) lines.shift();
+        while (lines.length > 0 && lines[lines.length - 1].length === 0) lines.pop();
         if (lines.length > 0) {
             this.outputChannel.appendLine("Intravenous server failure details:");
             for (const line of lines) this.outputChannel.appendLine(`  ${line}`);
@@ -1319,6 +1336,7 @@ export class WorkspaceSession {
     }
 
     async shutdown(): Promise<void> {
+        this.graphChanges.dispose();
         this.shuttingDown = true;
         this.rebuildStatusBar.dispose();
         this.clangdDatabaseWatcher.dispose();

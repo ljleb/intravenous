@@ -2664,6 +2664,14 @@ principle, because that compilation pays the cost.
 4. Resolve or explicitly assign the remaining sample/event transition-planning
    cleanup recorded below.
 5. Select any further optimization candidate only from the new measurements.
+6. **Cold multi-package package build (added by the repository owner,
+   2026-11-13).** Opening `projects/simple_sine` builds its 7 IV packages in
+   22.7 s cold (observed 2026-11-13; warm, the same refresh takes about 0.9 s).
+   Copy its packages into a benchmark fixture and add a cold multi-package case
+   beside `benchmark/iv_module_build_benchmark.cpp`, reporting per package the
+   phases the build already times (CMake configure, Ninja build, package
+   finalize, ORC load, definition configuration) for a cold and a warm cache,
+   to find where the cold time goes before optimizing it.
 
 **Precompiled realtime root (implementation status, 2026-11-10; built by the
 repository owner, all tests pass).**

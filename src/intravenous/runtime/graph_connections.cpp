@@ -578,6 +578,12 @@ void GraphConnections::handle_project_graph_interaction(
         *this, EventModuleVisit::current<GraphConnections>());
 }
 
+void GraphConnections::handle_project_graph_read(GraphConnectionsProjectGraphRead& read) const
+{
+    read.handled = true;
+    read.connections = desired_connections();
+}
+
 void GraphConnections::handle_project_graph_transaction(
     GraphConnectionsProjectGraphRequest& request)
 {

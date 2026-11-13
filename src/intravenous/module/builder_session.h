@@ -208,6 +208,10 @@ std::size_t builder_package_index(
 std::size_t builder_selected_package(BuilderSession const*) noexcept;
 void restore_builder_package(BuilderSession*, std::size_t package_index) noexcept;
 void select_builder_package(BuilderSession*, std::size_t package_index);
+// The built-in definition a bare ID (one without a '.') also names:
+// `iv.builtin.<id>`. Every definition lookup tries the exact ID first and this
+// alias second, so built-in names are imported into authored code.
+[[nodiscard]] std::optional<std::string> builtin_definition_alias(std::string_view id);
 BuilderDefinition find_builder_definition(
     BuilderSession const*, std::string_view id);
 std::vector<std::size_t> builder_used_packages(BuilderSession const*);

@@ -149,6 +149,15 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
             }
             return builder.build(id);
         });
+    impl_->add<GetGraphScopeRequest>(
+        "graph.getScope", "project.read", false, false,
+        [](auto const& request, int id, Context const&) {
+            SocketRpcGraphScopeResultBuilder builder;
+            IV_INVOKE_LINKER_EVENT(
+                iv_socket_rpc_get_graph_scope_event, request, builder);
+            if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            return builder.build(id);
+        });
     impl_->add<CreateNodeInstanceRequest>(
         "nodeInstances.create", "project.write", true, false,
         [](auto const& request, int id, Context const& context) {

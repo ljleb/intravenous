@@ -12,6 +12,7 @@ The procedures are:
 - [User connection mutation](./user_connection_mutation.md)
 - [Startup and project replay](./startup_and_project_replay.md)
 - [Node message interaction](./node_message_interaction.md)
+- [Graph scope read](./graph_scope_read.md)
 
 Each tree is rooted at one event source entry, opened with
 `IV_EVENT_SOURCE(SourceModule, name) { ... }`; linker events cannot be raised

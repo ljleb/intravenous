@@ -310,8 +310,23 @@ constexpr void append_configured_virtual_node_metadata(
 
         if (record.type_identity == "sample-port"
             || record.type_identity == "event-port") {
-            node.kind = record.type_identity == "sample-port"
-                ? "Sample port"
+            // An annotated port whose values come from the scope's boundary is
+            // one of the scope's own inputs.
+            bool from_boundary = false;
+            for (auto const& mapping : record.sample_outputs) {
+                for (auto const& channel : mapping.channels) {
+                    if (node_bundles.bundle(channel.bundle).is_boundary()) from_boundary = true;
+                }
+            }
+            for (auto const& mapping : record.event_outputs) {
+                for (auto const& port : mapping.node_bundle_ports) {
+                    if (node_bundles.bundle(port.node_bundle_handle).is_boundary()) {
+                        from_boundary = true;
+                    }
+                }
+            }
+            node.kind = from_boundary ? "input"
+                : record.type_identity == "sample-port" ? "Sample port"
                 : "Event port";
             auto const backing_id = record.type_identity + ":" + record.id;
             node.backing_node_ids.push_back(backing_id);
@@ -336,7 +351,17 @@ constexpr void append_configured_virtual_node_metadata(
             auto const type = std::string(bundle.type_identity());
             auto const* registered =
                 node_bundles.registered_node_type_identity(handle);
-            if (node.kind.empty()) node.kind = type;
+            // What authored source calls the node, never its lowering form:
+            // the scope's own boundary is its inputs and outputs, and a
+            // subgraph is its authored kind.
+            auto const kind = bundle.is_boundary()
+                ? std::string(
+                    !record.sample_outputs.empty() || !record.event_outputs.empty()
+                        ? "input"
+                        : "output")
+                : bundle.is_subgraph() ? std::string(bundle.subgraph_kind())
+                : type;
+            if (node.kind.empty()) node.kind = kind;
             if (node.type_identity.empty()) node.type_identity = type;
             auto const backing_id = "node-bundle:" + record.id + ":"
                 + introspection_decimal_string(bundle_index);
@@ -344,7 +369,7 @@ constexpr void append_configured_virtual_node_metadata(
             node.members.push_back(IntrospectionVirtualNode::Member{
                 .index = bundle_index,
                 .backing_node_id = backing_id,
-                .kind = type,
+                .kind = kind,
                 .type_identity = type,
                 .definition_id = registered
                     ? registered->node_type_id
@@ -427,6 +452,79 @@ constexpr GraphIntrospectionMetadata build_graph_introspection_metadata(
     metadata.public_event_outputs =
         configured.public_ports.collected_event_outputs(
             configured.node_bundles);
+
+    // The definition's own inputs and outputs. Inside a caller, their source
+    // annotations move onto the call's ports; at the definition's root they
+    // stay on the public ports. They become nodes here, where the side panel
+    // and source highlighting look for annotated source.
+    auto const connectivity_of = [](bool connected) {
+        return connected ? VirtualPortConnectivity::connected
+                         : VirtualPortConnectivity::disconnected;
+    };
+    for (auto const& family : metadata.public_continuous_inputs) {
+        if (family.source_infos.empty()) continue;
+        IntrospectionVirtualNode node{
+            .id = "public-input:" + family.family_name,
+            .kind = "input",
+            .type_identity = "public-input",
+            .source_spans = details::introspection_source_spans_for(family.source_infos),
+        };
+        node.continuous_outputs.push_back(IntrospectionContinuousPortInfo{
+            .name = family.family_name,
+            .connectivity = connectivity_of(family.configured_connected),
+            .index = family.family_index,
+            .value_types = details::introspection_value_types(family.output_config),
+            .channel_type = family.channel_type,
+        });
+        metadata.virtual_nodes.push_back(std::move(node));
+    }
+    for (auto const& input : metadata.public_event_inputs) {
+        if (input.source_infos.empty()) continue;
+        IntrospectionVirtualNode node{
+            .id = "public-input:" + input.config.name,
+            .kind = "input",
+            .type_identity = "public-input",
+            .source_spans = details::introspection_source_spans_for(input.source_infos),
+        };
+        node.event_outputs.push_back(IntrospectionEventPortInfo{
+            .name = input.config.name,
+            .connectivity = connectivity_of(input.graph_connected),
+            .index = input.port_index,
+            .type = input.config.type,
+        });
+        metadata.virtual_nodes.push_back(std::move(node));
+    }
+    for (auto const& family : metadata.public_continuous_outputs) {
+        if (family.source_infos.empty()) continue;
+        IntrospectionVirtualNode node{
+            .id = "public-output:" + family.family_name,
+            .kind = "output",
+            .type_identity = "public-output",
+            .source_spans = details::introspection_source_spans_for(family.source_infos),
+        };
+        node.continuous_inputs.push_back(IntrospectionContinuousPortInfo{
+            .name = family.family_name,
+            .index = family.family_index,
+            .value_types = details::introspection_value_types(family.input_config),
+            .channel_type = family.channel_type,
+        });
+        metadata.virtual_nodes.push_back(std::move(node));
+    }
+    for (auto const& output : metadata.public_event_outputs) {
+        if (output.source_infos.empty()) continue;
+        IntrospectionVirtualNode node{
+            .id = "public-output:" + output.config.name,
+            .kind = "output",
+            .type_identity = "public-output",
+            .source_spans = details::introspection_source_spans_for(output.source_infos),
+        };
+        node.event_inputs.push_back(IntrospectionEventPortInfo{
+            .name = output.config.name,
+            .index = output.port_index,
+            .type = output.config.type,
+        });
+        metadata.virtual_nodes.push_back(std::move(node));
+    }
     return metadata;
 }
 

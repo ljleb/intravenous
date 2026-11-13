@@ -182,10 +182,10 @@ struct LearnedHrtfSource
     }
 
 private:
-    static Sample read_ago(InputPort const& input, size_t frame, size_t samples_ago)
+    static Sample read_ago(auto const& input, size_t frame, size_t samples_ago)
     {
         if (samples_ago <= frame)
-            return input.get_frame(frame - samples_ago);
+            return input.get_value(frame - samples_ago);
 
         return input.get(samples_ago - frame);
     }
@@ -441,7 +441,7 @@ private:
         return output;
     }
 
-    static Sample read_fractional_delay(InputPort const& input, size_t frame, float delay)
+    static Sample read_fractional_delay(auto const& input, size_t frame, float delay)
     {
         auto const whole = static_cast<size_t>(delay);
         auto const fraction = delay - static_cast<float>(whole);
@@ -598,13 +598,13 @@ struct BaselineFir256
         TickBlockContext<BaselineFir256> const& ctx) const
     {
         auto const& state = ctx.state();
-        auto const& input = ctx.inputs[0];
+        auto const input = ctx.input<"in">();
         auto output = ctx.output<"out">();
 
         for (size_t frame = 0; frame < ctx.block_size; ++frame)
         {
             // Taps 0..frame are already in the current block.
-            // Remaining taps live in InputPort history.
+            // Remaining taps live in the input history.
             auto const current_taps =
                 std::min(frame + 1, tap_count);
 
@@ -619,7 +619,7 @@ struct BaselineFir256
                 {
                     sum +=
                         state.taps[tap]
-                        * input.get_frame(
+                        * input.get_value(
                             frame - tap,
                             channel);
                 }

@@ -6,6 +6,7 @@
 #include <intravenous/runtime/node_event_protocol_types.h>
 #include <intravenous/runtime/package_definitions.h>
 #include <intravenous/runtime/project_graph_publication.h>
+#include <intravenous/runtime/project_graph_scope_types.h>
 #include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/devices/audio_device.h>
@@ -171,6 +172,23 @@ namespace iv {
         void succeed(VirtualNodeInfo value);
         void fail(std::string message);
         void fail(int code, std::string message);
+
+        [[nodiscard]] bool has_response() const noexcept
+        {
+            return result.has_value() || !error_message.empty();
+        }
+
+        [[nodiscard]] std::string build(int request_id) const;
+    };
+
+    class SocketRpcGraphScopeResultBuilder {
+        int error_code = -32000;
+        std::string error_message;
+        std::optional<ProjectGraphScope> result;
+
+    public:
+        void succeed(ProjectGraphScope value);
+        void fail(std::string message);
 
         [[nodiscard]] bool has_response() const noexcept
         {

@@ -21,6 +21,8 @@ using ProjectGraphGraphExecutorRequestedEvent =
         std::shared_ptr<CompiledGraph const> const&);
 using ProjectGraphGraphExecutorControlsRequestedEvent =
     void (*)(ProjectGraphGraphExecutorControlsRequest&);
+using ProjectGraphNodeInstancesReadEvent = void (*)(NodeInstancesProjectGraphRead&);
+using ProjectGraphConnectionsReadEvent = void (*)(GraphConnectionsProjectGraphRead&);
 using ProjectGraphNodeInstancesInteractionRequestedEvent =
     void (*)(NodeInstancesInteractionRequest&);
 using ProjectGraphConnectionsInteractionRequestedEvent =
@@ -44,6 +46,13 @@ IV_DECLARE_SINGLETON_EVENT(
 IV_DECLARE_SINGLETON_EVENT(
     ProjectGraphGraphExecutorControlsRequestedEvent,
     iv_runtime_project_graph_graph_executor_controls_requested_event);
+// Reads of the desired instances and connections for one graph scope read.
+IV_DECLARE_LINKER_EVENT(
+    ProjectGraphNodeInstancesReadEvent,
+    iv_runtime_project_graph_node_instances_read_event);
+IV_DECLARE_LINKER_EVENT(
+    ProjectGraphConnectionsReadEvent,
+    iv_runtime_project_graph_connections_read_event);
 // Opens the NodeInstances and GraphConnections transactions of one node-message
 // interaction; see NodeInstancesInteraction and GraphConnectionsInteraction.
 IV_DECLARE_LINKER_EVENT(

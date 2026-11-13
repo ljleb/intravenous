@@ -58,6 +58,41 @@ hot-reload/versioning, and the binding-generation workflow for rebuilt packages
 are future integration questions, **not** reasons to restore backend presentation
 registration or require package authors to modify C++ node definitions.
 
+#### The graph editor is opened on one node
+
+_Settled by the repository owner on 2026-11-12._
+
+The Vue client is a graph editor opened on one node, the editor's **root**. VS
+Code shows each such editor as an editor tab. Opening a node as a root never
+changes the root of an existing editor; it opens a new editor. An editor's
+initial root is the project's root graph, whose children are the project
+instances.
+
+The root is displayed by the first compatible presentation for its definition,
+by the same selection rules as any other node. A subgraph's presentation
+displays its children and gives each one the display region its zoom level
+implies; each child's presentation then receives the display mode for that
+region. The children of a project-local module instance come from authored C++,
+so inside a module instance the editor shows structure it cannot edit; project
+instances and project connections are the editable graph.
+
+**Project-authored groups (planned; requested by the repository owner on
+2026-11-12, not yet scheduled).** A project can nest its own nodes into
+groups: subgraphs defined in the project, not hard-coded in a C++ module node.
+A group defines its own inputs and outputs, like a module node or subgraph. It
+can be expanded, to manage its contents, or collapsed, to be used as a node
+itself, so a large project stays tidy while it is maintained. A group is
+therefore one more editable scope of the graph editor; its durable record,
+addressing, and realization are to be designed when the feature is scheduled.
+Groups replace filtering as the way to organize the visible graph: the editor
+shows the scope tree unfiltered.
+
+Node positions are frontend-owned presentation layout, and they **survive a
+reload**: the frontend persists them in the project directory, keyed by stable
+node addresses, so a project's organization stays with the project. The
+backend neither reads nor validates them, and they are not part of
+`iv_project.jsonl`.
+
 For the initial client, user-selected preferred presentations are frontend-owned
 workspace preferences, not canonical `ProjectPersistence` graph data. Store a
 preference only for a stable frontend component identity and applicable node

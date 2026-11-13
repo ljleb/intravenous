@@ -15,6 +15,8 @@
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
+#include <intravenous/runtime/socket_rpc_requests.h>
+#include <intravenous/runtime/socket_rpc_response_builders.h>
 
 #include <atomic>
 #include <array>
@@ -1996,6 +1998,103 @@ TEST_F(ProjectGraphFixture, ConnectionMutationRebuildsWholeRootAndDanglingIntent
     EXPECT_EQ(generation->applied_connection_ids,
               std::vector<std::string>{"connection:main"});
     EXPECT_TRUE(generation->connection_diagnostics.empty());
+}
+
+namespace {
+nlohmann::ordered_json read_graph_scope(iv::ProjectGraph& project_graph)
+{
+    iv::SocketRpcGraphScopeResultBuilder builder;
+    in_event_source([&] {
+        project_graph.handle_socket_rpc_get_graph_scope(iv::GetGraphScopeRequest{}, builder);
+    });
+    return nlohmann::ordered_json::parse(builder.build(1)).at("result");
+}
+
+nlohmann::ordered_json const& scope_node(
+    nlohmann::ordered_json const& scope,
+    std::string_view instance_id)
+{
+    for (auto const& node : scope.at("nodes")) {
+        if (node.at("instance").at("instanceId") == std::string(instance_id)) return node;
+    }
+    throw std::runtime_error("graph scope has no node " + std::string(instance_id));
+}
+} // namespace
+
+TEST_F(ProjectGraphFixture, GraphScopeListsInstancesWithRealizedPortsAndConnectionState)
+{
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    for (auto const* instance_id : {"instance:source", "instance:sink"}) {
+        iv::ProjectStringBuilder builder;
+        in_event_source([&] { return project_graph.handle_project_create_node_instance(
+            iv::ProjectCreateNodeInstanceRequest{
+                .instance_id = std::string(instance_id),
+                .definition_id = definition_id,
+            },
+            builder); });
+        EXPECT_EQ(builder.build(), instance_id);
+    }
+    iv::ProjectAckBuilder connect_builder;
+    in_event_source([&] { return project_graph.handle_project_upsert_graph_connection(
+        iv::ProjectUpsertGraphConnectionRequest{
+            .connection = iv::ProjectSampleConnection{
+                .connection_id = "connection:main",
+                .outputs = {{.instance_id = "instance:source", .port = {.name = "main"}}},
+                .inputs = {{.instance_id = "instance:sink", .port = {.name = "main"}}},
+            },
+        },
+        connect_builder); });
+    EXPECT_NO_THROW(connect_builder.build());
+
+    auto scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope.at("generation"), project_graph.current_generation()->generation);
+    EXPECT_TRUE(scope.at("editable").get<bool>());
+    ASSERT_EQ(scope.at("nodes").size(), 2u);
+    auto const& source = scope_node(scope, "instance:source");
+    EXPECT_EQ(source.at("address").at("instanceId"), "instance:source");
+    EXPECT_TRUE(source.at("instance").at("realized").get<bool>());
+    auto const outputs = source.at("sampleOutputs");
+    ASSERT_FALSE(outputs.empty());
+    bool has_main_output = false;
+    for (auto const& port : outputs) {
+        if (port.at("name") == "main" && port.contains("channelType")) {
+            has_main_output = true;
+            ASSERT_FALSE(port.at("valueTypes").empty());
+            EXPECT_TRUE(port.at("valueTypes")[0].contains("type"));
+        }
+    }
+    EXPECT_TRUE(has_main_output);
+    ASSERT_EQ(scope.at("connections").size(), 1u);
+    EXPECT_EQ(scope.at("connections")[0].at("id"), "connection:main");
+    EXPECT_TRUE(scope.at("connections")[0].at("applied").get<bool>());
+
+    // Deleting the sink keeps the desired connection, which now dangles.
+    iv::ProjectAckBuilder delete_builder;
+    in_event_source([&] { return project_graph.handle_project_delete_node_instance(
+        iv::ProjectDeleteNodeInstanceRequest{.instance_id = "instance:sink"},
+        delete_builder); });
+    EXPECT_NO_THROW(delete_builder.build());
+
+    scope = read_graph_scope(project_graph);
+    ASSERT_EQ(scope.at("nodes").size(), 1u);
+    ASSERT_EQ(scope.at("connections").size(), 1u);
+    EXPECT_FALSE(scope.at("connections")[0].at("applied").get<bool>());
+}
+
+TEST_F(ProjectGraphFixture, RootBuildPublicationMarksTheGraphChanged)
+{
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    iv::ProjectStringBuilder builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:changed",
+            .definition_id = definition_id,
+        },
+        builder); });
+    EXPECT_EQ(builder.build(), "instance:changed");
+    EXPECT_TRUE(builder.take_publication().graph_changed);
 }
 
 TEST_F(ProjectGraphFixture, ReplaceGraphReplaysNodesAndConnectionsInOneGeneration)

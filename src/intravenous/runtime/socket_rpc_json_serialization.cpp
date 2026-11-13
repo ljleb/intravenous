@@ -178,6 +178,8 @@ SocketRpcJson continuous_value_type_json(
     return json;
 }
 
+} // namespace
+
 SocketRpcJson continuous_value_types_json(
     std::vector<ContinuousValueIntrospectionMetadata> const& metadata)
 {
@@ -187,8 +189,6 @@ SocketRpcJson continuous_value_types_json(
     }
     return json;
 }
-
-} // namespace
 
 SocketRpcJson virtual_continuous_port_json(
     VirtualContinuousPortInfo const& port)

@@ -12,7 +12,8 @@
     ],
     "activationEvents": [
         "workspaceContains:iv_project.jsonl",
-        "onWebviewPanel:intravenous.modules"
+        "onWebviewPanel:intravenous.modules",
+        "onWebviewPanel:intravenous.graphEditor"
     ],
     "main": "./dist/extension.js",
     "scripts": {
@@ -65,6 +66,10 @@
             ]
         },
         "commands": [
+            {
+                "command": "intravenous.openGraphEditor",
+                "title": "Intravenous: Open Graph Editor"
+            },
             {
                 "command": "intravenous.openModules",
                 "title": "Intravenous: Open Modules"

@@ -1461,6 +1461,12 @@ public:
                         std::chrono::steady_clock::now() - load_started_at).count()));
             }
         }
+        // Reused code still reports this load's source stamp. A save that moves
+        // the newest source write without changing the compiled package (a
+        // save without edits, or an edit undone) otherwise leaves the watched
+        // stamp older than the sources, and every refresh finds the package
+        // changed again. Every reader of `dependency` holds this loader's lock.
+        package->dependency.package_stamp = root.package_stamp;
 
         std::vector<LoadedNodeType> loaded_node_types;
         std::unordered_set<std::string> node_type_ids;

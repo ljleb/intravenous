@@ -16,10 +16,14 @@ struct ProjectGraphPublication {
     std::optional<std::vector<IvModuleInstanceInfo>> instances{};
     // Source-introspection virtual-node replacements, when there are any.
     std::optional<ProjectVirtualNodesNotification> virtual_nodes{};
+    // The build changed what a graph editor scope shows: desired instances or
+    // connections, or the generation their ports come from. Editors re-read
+    // their scopes (graph.getScope).
+    bool graph_changed = false;
 
     [[nodiscard]] bool empty() const noexcept
     {
-        return !instances.has_value() && !virtual_nodes.has_value();
+        return !instances.has_value() && !virtual_nodes.has_value() && !graph_changed;
     }
 };
 } // namespace iv

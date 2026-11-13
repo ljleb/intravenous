@@ -2,6 +2,9 @@
 #include <intravenous/runtime/socket_rpc_json_serialization.h>
 #include <intravenous/runtime/project_connection_json.h>
 
+#include <intravenous/channel_type.h>
+#include <intravenous/graph/names.h>
+
 #include <nlohmann/json.hpp>
 
 #include <stdexcept>
@@ -426,6 +429,70 @@ std::string SocketRpcVirtualNodeResultBuilder::build(int request_id) const {
         throw_unbuilt_response("SocketRpcVirtualNodeResultBuilder");
     }
     return jsonrpc_result(request_id, virtual_node_json(*result));
+}
+
+void SocketRpcGraphScopeResultBuilder::succeed(ProjectGraphScope value) {
+    result = std::move(value);
+}
+
+void SocketRpcGraphScopeResultBuilder::fail(std::string message) {
+    error_code = -32000;
+    error_message = std::move(message);
+}
+
+namespace {
+Json graph_scope_ports_json(std::vector<ProjectGraphScopePort> const& ports)
+{
+    auto json = Json::array();
+    for (auto const& port : ports) {
+        Json entry{{"name", port.name}, {"index", port.index}};
+        if (port.channel_type) {
+            entry["channelType"] = std::string(channel_type_info(*port.channel_type).wire_name);
+            entry["valueTypes"] = continuous_value_types_json(port.value_types);
+        }
+        if (port.event_type) {
+            entry["eventType"] = std::string(details::event_type_name(*port.event_type));
+        }
+        json.push_back(std::move(entry));
+    }
+    return json;
+}
+} // namespace
+
+std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
+    if (!error_message.empty()) {
+        return jsonrpc_error(request_id, error_code, error_message);
+    }
+    if (!result.has_value()) {
+        throw_unbuilt_response("SocketRpcGraphScopeResultBuilder");
+    }
+    auto nodes = Json::array();
+    for (auto const& node : result->nodes) {
+        nodes.push_back(Json{
+            {"address", node_address_json(node.address, ProjectConnectionJsonNames::socket_rpc)},
+            {"instance", iv_module_instance_json(node.instance)},
+            {"sampleInputs", graph_scope_ports_json(node.sample_inputs)},
+            {"sampleOutputs", graph_scope_ports_json(node.sample_outputs)},
+            {"eventInputs", graph_scope_ports_json(node.event_inputs)},
+            {"eventOutputs", graph_scope_ports_json(node.event_outputs)},
+            {"hasChildren", node.has_children},
+        });
+    }
+    auto connections = Json::array();
+    for (auto const& entry : result->connections) {
+        connections.push_back(Json{
+            {"id", project_connection_id(entry.connection)},
+            {"connection", project_connection_json(
+                entry.connection, ProjectConnectionJsonNames::socket_rpc)},
+            {"applied", entry.applied},
+        });
+    }
+    return jsonrpc_result(request_id, Json{
+        {"generation", result->generation ? Json(*result->generation) : Json(nullptr)},
+        {"editable", result->editable},
+        {"nodes", std::move(nodes)},
+        {"connections", std::move(connections)},
+    });
 }
 
 void SocketRpcVirtualNodesResultBuilder::succeed(std::vector<VirtualNodeInfo> value) {

@@ -5,6 +5,7 @@ import { hostState, loadLocalState, postToHost, saveLocalState } from "./host";
 import { instanceLabel, visibleNodes } from "./liveGraphView";
 import { isNodeViewChoice, nodeViewChoices, type NodeViewChoice } from "./presentation/displayMode";
 import PresentationHost from "./presentation/PresentationHost.vue";
+import { semanticNodeFromVirtualNode } from "./presentation/semanticNode";
 
 const storedViewChoice = loadLocalState().viewChoice;
 const viewChoice = ref<NodeViewChoice>(
@@ -90,7 +91,7 @@ function createInstance(): void {
         <PresentationHost
             v-for="(node, position) in nodes"
             :key="node.id ?? `position:${position}`"
-            :node="node"
+            :node="semanticNodeFromVirtualNode(node)"
             :view-choice="viewChoice"
         />
     </div>
