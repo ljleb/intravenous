@@ -17,6 +17,8 @@ void ignore_graph_executor_controls_request(
     ProjectGraphGraphExecutorControlsRequest&)
 {}
 } // namespace
+IV_DEFINE_LINKER_EVENT(ProjectGraphAudioSelectionRequestedEvent, iv_runtime_project_graph_audio_selection_requested_event)
+IV_DEFINE_LINKER_EVENT(ProjectGraphToolchainRequestedEvent, iv_runtime_project_graph_toolchain_requested_event)
 IV_DEFINE_LINKER_EVENT(
     ProjectGraphNodeInstancesRequestedEvent,
     iv_runtime_project_graph_node_instances_requested_event)

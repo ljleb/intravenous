@@ -36,15 +36,59 @@ ModuleLoader& PackageJit::ensure_loader()
             startup_config_.discovery_start,
             startup_config_.toolchain,
             ModuleLoader::LogSink{});
+    } else if (loader_toolchain_dirty_) {
+        loader_->set_toolchain_config(startup_config_.toolchain);
     }
+    loader_toolchain_dirty_ = false;
     return *loader_;
 }
 
 void PackageJit::set_toolchain_config(ModuleLoaderToolchainConfig toolchain)
 {
     std::scoped_lock lock(mutex_);
-    startup_config_.toolchain = toolchain;
-    if (loader_) loader_->set_toolchain_config(std::move(toolchain));
+    set_toolchain_config_locked(std::move(toolchain));
+}
+
+void PackageJit::set_toolchain_config_locked(ModuleLoaderToolchainConfig toolchain)
+{
+    startup_config_.toolchain = std::move(toolchain);
+    loader_toolchain_dirty_ = true;
+}
+
+ProjectToolchainTransaction::ProjectToolchainTransaction(PackageJit& owner, EventModuleVisit visit)
+    : owner_(&owner), visit_(visit), lock_(owner.mutex_)
+{}
+
+ProjectToolchainSettings ProjectToolchainTransaction::record() const
+{
+    if (!owner_ || !lock_.owns_lock()) throw std::logic_error("toolchain transaction is not open");
+    EventModuleVisitScope entry(visit_);
+    auto const& value = owner_->startup_config_.toolchain;
+    return {value.c_compiler, value.cxx_compiler, value.cmake_program,
+        value.cmake_generator, value.make_program, value.juce_dir, value.iv_package_pch};
+}
+
+void ProjectToolchainTransaction::commit(ProjectToolchainSettings const& settings)
+{
+    if (!owner_ || !lock_.owns_lock() || committed_) throw std::logic_error("toolchain transaction commits once");
+    EventModuleVisitScope entry(visit_);
+    auto value = owner_->startup_config_.toolchain;
+    value.c_compiler = settings.c_compiler;
+    value.cxx_compiler = settings.cxx_compiler;
+    value.cmake_program = settings.cmake_program;
+    value.cmake_generator = settings.cmake_generator;
+    value.make_program = settings.make_program;
+    value.juce_dir = settings.juce_dir;
+    value.iv_package_pch = settings.iv_package_pch;
+    owner_->set_toolchain_config_locked(std::move(value));
+    committed_ = true;
+}
+
+void PackageJit::handle_project_graph_toolchain(ProjectToolchainTransactionRequest& request)
+{
+    if (request.handled) throw std::logic_error("toolchain transaction was handled twice");
+    request.handled = true;
+    request.transaction = ProjectToolchainTransaction(*this, EventModuleVisit::current<PackageJit>());
 }
 
 ModuleLoaderToolchainConfig PackageJit::toolchain_config() const
@@ -56,14 +100,12 @@ ModuleLoaderToolchainConfig PackageJit::toolchain_config() const
 PackageJitBatchResult PackageJit::build(
     std::vector<IvPackageDeclaration> const& declarations)
 {
+    PackageJitBatchResult results;
+    if (declarations.empty()) return results;
+    auto& loader = ensure_loader();
 #if IV_ENABLE_JUCE_VST
     warmup_juce_vst_scan_cache();
 #endif
-
-    PackageJitBatchResult results;
-    if (declarations.empty()) return results;
-
-    auto& loader = ensure_loader();
     std::vector<PackageBuildRequest> packages;
     packages.reserve(declarations.size());
     for (auto const& declaration : declarations) {
@@ -158,13 +200,25 @@ PackageJitBatchResult PackageJit::build(
 
 void PackageJit::handle_build_request(PackageJitBatchRequest& request)
 {
-    if (!request.removed_package_roots.empty()) {
-        auto& loader = ensure_loader();
-        for (auto const& package_root : request.removed_package_roots) {
-            loader.remove_package(package_root);
+    try {
+        if (!request.removed_package_roots.empty()) {
+            // Removing cached packages does not need a new build toolchain.
+            std::scoped_lock lock(mutex_);
+            if (loader_) {
+                for (auto const& package_root : request.removed_package_roots) loader_->remove_package(package_root);
+            }
         }
+        request.result = build(request.declarations);
+    } catch (std::exception const& error) {
+        // Invalid accepted toolchain settings fail the requested builds rather
+        // than changing the accepted settings or discarding loaded revisions.
+        request.result = {};
+        for (auto const& declaration : request.declarations) request.result.failed.push_back({
+            .package_id = declaration.package_id, .package_root = declaration.package_root,
+            .provenance = declaration.provenance, .message = error.what(),
+        });
+        if (request.declarations.empty()) throw;
     }
-    request.result = build(request.declarations);
 }
 
 void PackageJit::handle_project_override_settings(
@@ -174,26 +228,28 @@ void PackageJit::handle_project_override_settings(
     auto toolchain = toolchain_config();
     auto const assign_path = [&](std::optional<std::filesystem::path> const& value,
                                  std::optional<std::filesystem::path>
-                                     ModuleLoaderToolchainConfig::*field) {
-        if (!value.has_value() || value == toolchain.*field) return;
+                                     ModuleLoaderToolchainConfig::*field,
+                                 ProjectSettingField key) {
+        if ((!value.has_value() && !request.specifies(key)) || value == toolchain.*field) return;
         toolchain.*field = value;
         touched = true;
     };
     auto const assign_string = [&](std::optional<std::string> const& value,
                                    std::optional<std::string>
-                                       ModuleLoaderToolchainConfig::*field) {
-        if (!value.has_value() || value == toolchain.*field) return;
+                                       ModuleLoaderToolchainConfig::*field,
+                                   ProjectSettingField key) {
+        if ((!value.has_value() && !request.specifies(key)) || value == toolchain.*field) return;
         toolchain.*field = value;
         touched = true;
     };
 
-    assign_path(request.c_compiler, &ModuleLoaderToolchainConfig::c_compiler);
-    assign_path(request.cxx_compiler, &ModuleLoaderToolchainConfig::cxx_compiler);
-    assign_path(request.cmake_program, &ModuleLoaderToolchainConfig::cmake_program);
-    assign_string(request.cmake_generator, &ModuleLoaderToolchainConfig::cmake_generator);
-    assign_path(request.make_program, &ModuleLoaderToolchainConfig::make_program);
-    assign_path(request.juce_dir, &ModuleLoaderToolchainConfig::juce_dir);
-    assign_path(request.iv_package_pch, &ModuleLoaderToolchainConfig::iv_package_pch);
+    assign_path(request.c_compiler, &ModuleLoaderToolchainConfig::c_compiler, ProjectSettingField::c_compiler);
+    assign_path(request.cxx_compiler, &ModuleLoaderToolchainConfig::cxx_compiler, ProjectSettingField::cxx_compiler);
+    assign_path(request.cmake_program, &ModuleLoaderToolchainConfig::cmake_program, ProjectSettingField::cmake_program);
+    assign_string(request.cmake_generator, &ModuleLoaderToolchainConfig::cmake_generator, ProjectSettingField::cmake_generator);
+    assign_path(request.make_program, &ModuleLoaderToolchainConfig::make_program, ProjectSettingField::make_program);
+    assign_path(request.juce_dir, &ModuleLoaderToolchainConfig::juce_dir, ProjectSettingField::juce_dir);
+    assign_path(request.iv_package_pch, &ModuleLoaderToolchainConfig::iv_package_pch, ProjectSettingField::iv_package_pch);
     if (!touched) return;
 
     // Only project replay overrides settings, and it restores the saved

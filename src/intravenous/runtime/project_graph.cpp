@@ -578,12 +578,13 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     IvPackageDefinitionsChanged const* package_definitions,
     InteractionTransactions* interaction_transactions,
     std::vector<ProjectManualControl> const* previous_controls,
-    bool record_history)
+    bool record_history,
+    ProjectEditEffect* accepted_effect)
 {
     using Clock = std::chrono::steady_clock;
     auto const rebuild_begin = Clock::now();
     auto const controls_before = previous_controls ? *previous_controls : manual_controls_;
-    bool const capture_effect = publish_execution && record_history
+    bool const capture_effect = publish_execution && (record_history || accepted_effect)
         && (!std::holds_alternative<std::monostate>(instance_mutation)
             || !std::holds_alternative<std::monostate>(connection_mutation) || previous_controls);
     GraphBuilder root_builder;
@@ -723,12 +724,14 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
             if (!remaining_instances.contains(value.instance_id)) removed_instances.insert(value.instance_id);
         }
         std::erase_if(manual_controls_, [&](auto const& control) { return removed_instances.contains(control.id.node.instance_id); });
-        record_edit_locked({
+        ProjectEditEffect effect{
             .instances = project_record_changes(request.before.instances, request.after.instances),
             .replacements = project_record_changes(request.before.replacements, request.after.replacements),
             .connections = project_record_changes(connections_request.before, connections_request.after),
             .manual_controls = project_record_changes(controls_before, manual_controls_),
-        });
+        };
+        if (accepted_effect) *accepted_effect = std::move(effect);
+        else record_edit_locked(std::move(effect));
     }
     if (publish_execution) {
         std::erase_if(manual_interactions_, [&](auto const& interaction) {
@@ -1456,7 +1459,7 @@ void ProjectGraph::record_manual_edit_locked(ProjectManualControl before,
         && history_position_ == edit_history_.size()) {
         auto& effect = edit_history_.back();
         if (effect.instances.empty() && effect.replacements.empty() && effect.connections.empty()
-            && effect.manual_controls.size() == 1 && effect.manual_controls[0].after == before) {
+            && !effect.audio_devices && !effect.toolchain && effect.manual_controls.size() == 1 && effect.manual_controls[0].after == before) {
             effect.manual_controls[0].after = after;
             if (effect.manual_controls[0].before == effect.manual_controls[0].after) {
                 edit_history_.pop_back();
@@ -1484,81 +1487,127 @@ void ProjectGraph::open_transactions_locked(InteractionTransactions& transaction
 }
 
 ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
-    ProjectEditBatch const& batch, bool record_history, std::optional<bool> history_undo)
+    ProjectEditBatch const& batch, bool record_history, std::optional<bool> history_undo,
+    std::function<void()> const& authorize_audio)
 {
     if (history_undo && !manual_interactions_.empty())
         throw std::runtime_error("finish the active manual-control interaction before editing project history");
     if (history_undo && (*history_undo ? history_position_ == 0 : history_position_ == edit_history_.size()))
         throw std::runtime_error(*history_undo ? "nothing to undo" : "nothing to redo");
-    InteractionTransactions transactions;
-    open_transactions_locked(transactions);
-    auto instances = transactions.node_instances.records();
-    auto connections = transactions.graph_connections.records();
-    auto controls = manual_controls_;
+    auto const* historical = history_undo
+        ? &edit_history_[*history_undo ? history_position_ - 1 : history_position_] : nullptr;
     ProjectEditBatch edit = batch;
-    if (history_undo) {
-        bool const undo = *history_undo;
-        auto const& effect = edit_history_[undo ? history_position_ - 1 : history_position_];
-        edit.instances = project_history_edits<ProjectNodeInstanceDeclaration, std::string>(instances.instances, effect.instances, undo);
-        edit.replacements = project_history_edits<ProjectNodeReplacement, NodeAddress>(instances.replacements, effect.replacements, undo);
-        edit.connections = project_history_edits<ProjectConnection, std::string>(connections, effect.connections, undo);
-        edit.manual_controls = project_history_edits<ProjectManualControl, ManualControlId>(controls, effect.manual_controls, undo);
+    bool const needs_audio = historical ? historical->audio_devices.has_value() : edit.audio_devices.has_value();
+    bool const needs_toolchain = historical ? historical->toolchain.has_value() : edit.toolchain.has_value();
+    if (needs_audio && authorize_audio) authorize_audio();
+    AudioDeviceSelectionTransactionRequest audio;
+    ProjectToolchainTransactionRequest toolchain;
+    std::optional<ProjectAudioDeviceSelection> before_audio;
+    std::optional<ProjectToolchainSettings> before_toolchain;
+    if (needs_audio) {
+        IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_audio_selection_requested_event, audio);
+        if (!audio.handled) throw std::runtime_error("audio selection service is unavailable");
+        before_audio = audio.transaction.record();
+        if (historical) edit.audio_devices = project_history_setting(*before_audio, *historical->audio_devices, *history_undo);
     }
-    std::unordered_map<std::string, ProjectNodeInstanceDeclaration const*> existing_instances;
-    for (auto const& value : instances.instances) existing_instances.emplace(value.instance_id, &value);
-    for (auto const& id : edit.require_absent_instances) {
-        if (existing_instances.contains(id))
-            throw std::invalid_argument("duplicate node instance id: " + id);
+    if (needs_toolchain) {
+        IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_toolchain_requested_event, toolchain);
+        if (!toolchain.handled) throw std::runtime_error("toolchain settings service is unavailable");
+        before_toolchain = toolchain.transaction.record();
+        if (historical) edit.toolchain = project_history_setting(*before_toolchain, *historical->toolchain, *history_undo);
     }
-    for (auto const& update : edit.instance_updates) {
-        auto found = existing_instances.find(update.instance_id);
-        if (found == existing_instances.end()) throw std::invalid_argument("unknown node instance id: " + update.instance_id);
-        auto value = *found->second;
-        if (update.display_name) value.display_name = update.display_name;
-        if (update.configuration_source) value.configuration_source = *update.configuration_source;
-        edit.instances.push_back({update.instance_id, std::move(value)});
+    bool const needs_graph = historical
+        ? !historical->instances.empty() || !historical->replacements.empty()
+            || !historical->connections.empty() || !historical->manual_controls.empty()
+        : !edit.instances.empty() || !edit.instance_updates.empty() || !edit.replacements.empty()
+            || !edit.connections.empty() || !edit.manual_controls.empty();
+    RebuildResult rebuilt;
+    ProjectEditEffect effect;
+    if (needs_graph) {
+        InteractionTransactions transactions;
+        open_transactions_locked(transactions);
+        auto instances = transactions.node_instances.records();
+        auto connections = transactions.graph_connections.records();
+        auto controls = manual_controls_;
+        if (history_undo) {
+            bool const undo = *history_undo;
+            auto const& effect = edit_history_[undo ? history_position_ - 1 : history_position_];
+            edit.instances = project_history_edits<ProjectNodeInstanceDeclaration, std::string>(instances.instances, effect.instances, undo);
+            edit.replacements = project_history_edits<ProjectNodeReplacement, NodeAddress>(instances.replacements, effect.replacements, undo);
+            edit.connections = project_history_edits<ProjectConnection, std::string>(connections, effect.connections, undo);
+            edit.manual_controls = project_history_edits<ProjectManualControl, ManualControlId>(controls, effect.manual_controls, undo);
+        }
+        std::unordered_map<std::string, ProjectNodeInstanceDeclaration const*> existing_instances;
+        for (auto const& value : instances.instances) existing_instances.emplace(value.instance_id, &value);
+        for (auto const& id : edit.require_absent_instances) {
+            if (existing_instances.contains(id))
+                throw std::invalid_argument("duplicate node instance id: " + id);
+        }
+        for (auto const& update : edit.instance_updates) {
+            auto found = existing_instances.find(update.instance_id);
+            if (found == existing_instances.end()) throw std::invalid_argument("unknown node instance id: " + update.instance_id);
+            auto value = *found->second;
+            if (update.display_name) value.display_name = update.display_name;
+            if (update.configuration_source) value.configuration_source = *update.configuration_source;
+            edit.instances.push_back({update.instance_id, std::move(value)});
+        }
+        auto const before_instances = instances;
+        auto const before_connections = connections;
+        apply_project_record_edits(instances.instances, edit.instances);
+        apply_project_record_edits(instances.replacements, edit.replacements);
+        apply_project_record_edits(connections, edit.connections);
+        apply_project_record_edits(controls, edit.manual_controls);
+        std::unordered_set<std::string> remaining_instances;
+        for (auto const& value : instances.instances) remaining_instances.insert(value.instance_id);
+        std::unordered_set<std::string> removed_instances;
+        for (auto const& value : before_instances.instances) {
+            if (!remaining_instances.contains(value.instance_id)) removed_instances.insert(value.instance_id);
+        }
+        std::erase_if(instances.replacements, [&](auto const& value) { return removed_instances.contains(value.address.instance_id); });
+        std::erase_if(controls, [&](auto const& value) { return removed_instances.contains(value.id.node.instance_id); });
+        for (auto const& control : controls) {
+            if (control.id.input_name.empty() || control.id.node.instance_id.empty())
+                throw std::invalid_argument("project manual control requires a node address and input name");
+            if (!remaining_instances.contains(control.id.node.instance_id))
+                throw std::invalid_argument("project manual control addresses an unknown instance");
+        }
+        NodeInstanceReplaceAllMutation nodes{instances.instances, instances.replacements};
+        GraphConnectionReplaceAllMutation wires{connections};
+        GraphBuilder validation_builder;
+        NodeInstancesProjectGraphRequest node_validation{
+            .snapshot = definitions_snapshot_, .root_builder = &validation_builder,
+            .mutation = nodes, .validate_only = true,
+        };
+        transactions.node_instances.run(node_validation);
+        GraphConnectionsProjectGraphRequest connection_validation{
+            .mutation = wires, .validate_only = true,
+        };
+        transactions.graph_connections.run(connection_validation);
+        bool const changed = !project_record_changes(before_instances.instances, instances.instances).empty()
+            || !project_record_changes(before_instances.replacements, instances.replacements).empty()
+            || !project_record_changes(before_connections, connections).empty()
+            || !project_record_changes(manual_controls_, controls).empty();
+        if (changed) {
+            auto previous_controls = manual_controls_;
+            manual_controls_ = std::move(controls);
+            rebuilt = rebuild_locked(std::move(nodes), std::move(wires), true, nullptr,
+                &transactions, &previous_controls, false, &effect);
+        }
     }
-    auto const before_instances = instances;
-    auto const before_connections = connections;
-    apply_project_record_edits(instances.instances, edit.instances);
-    apply_project_record_edits(instances.replacements, edit.replacements);
-    apply_project_record_edits(connections, edit.connections);
-    apply_project_record_edits(controls, edit.manual_controls);
-    std::unordered_set<std::string> remaining_instances;
-    for (auto const& value : instances.instances) remaining_instances.insert(value.instance_id);
-    std::unordered_set<std::string> removed_instances;
-    for (auto const& value : before_instances.instances) {
-        if (!remaining_instances.contains(value.instance_id)) removed_instances.insert(value.instance_id);
+    // All record applicability and batch validation has succeeded. Settings
+    // commits report activation failures as status, not rejected durable edits.
+    if (edit.toolchain) {
+        if (*before_toolchain != *edit.toolchain) {
+            toolchain.transaction.commit(*edit.toolchain);
+            effect.toolchain = ProjectRecordChange<ProjectToolchainSettings>{*before_toolchain, *edit.toolchain};
+        }
     }
-    std::erase_if(instances.replacements, [&](auto const& value) { return removed_instances.contains(value.address.instance_id); });
-    std::erase_if(controls, [&](auto const& value) { return removed_instances.contains(value.id.node.instance_id); });
-    for (auto const& control : controls) {
-        if (control.id.input_name.empty() || control.id.node.instance_id.empty())
-            throw std::invalid_argument("project manual control requires a node address and input name");
-        if (!remaining_instances.contains(control.id.node.instance_id))
-            throw std::invalid_argument("project manual control addresses an unknown instance");
+    if (edit.audio_devices) {
+        rebuilt.audio_devices = audio.transaction.commit(*edit.audio_devices);
+        if (*before_audio != *edit.audio_devices)
+            effect.audio_devices = ProjectRecordChange<ProjectAudioDeviceSelection>{*before_audio, *edit.audio_devices};
     }
-    NodeInstanceReplaceAllMutation nodes{instances.instances, instances.replacements};
-    GraphConnectionReplaceAllMutation wires{connections};
-    GraphBuilder validation_builder;
-    NodeInstancesProjectGraphRequest node_validation{
-        .snapshot = definitions_snapshot_, .root_builder = &validation_builder,
-        .mutation = nodes, .validate_only = true,
-    };
-    transactions.node_instances.run(node_validation);
-    GraphConnectionsProjectGraphRequest connection_validation{
-        .mutation = wires, .validate_only = true,
-    };
-    transactions.graph_connections.run(connection_validation);
-    if (project_record_changes(before_instances.instances, instances.instances).empty()
-        && project_record_changes(before_instances.replacements, instances.replacements).empty()
-        && project_record_changes(before_connections, connections).empty()
-        && project_record_changes(manual_controls_, controls).empty()) return {};
-
-    auto previous_controls = manual_controls_;
-    manual_controls_ = std::move(controls);
-    auto rebuilt = rebuild_locked(std::move(nodes), std::move(wires), true, nullptr,
-        &transactions, &previous_controls, record_history);
+    if (record_history) record_edit_locked(std::move(effect));
     if (history_undo) {
         if (*history_undo) --history_position_;
         else ++history_position_;
@@ -1577,22 +1626,22 @@ void ProjectGraph::handle_project_apply_edit(ProjectEditBatch const& batch, Proj
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
 
-void ProjectGraph::handle_project_undo(ProjectAckBuilder& builder)
+void ProjectGraph::handle_project_undo(ProjectAckBuilder& builder, std::function<void()> const& authorize_audio)
 {
     {
         std::scoped_lock lock(mutex_);
-        auto rebuilt = apply_edit_locked({}, false, true);
+        auto rebuilt = apply_edit_locked({}, false, true, authorize_audio);
         builder.set_publication(std::move(rebuilt.publication));
     }
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
 
-void ProjectGraph::handle_project_redo(ProjectAckBuilder& builder)
+void ProjectGraph::handle_project_redo(ProjectAckBuilder& builder, std::function<void()> const& authorize_audio)
 {
     {
         std::scoped_lock lock(mutex_);
-        auto rebuilt = apply_edit_locked({}, false, false);
+        auto rebuilt = apply_edit_locked({}, false, false, authorize_audio);
         builder.set_publication(std::move(rebuilt.publication));
     }
     builder.succeed();
@@ -2019,6 +2068,45 @@ void ProjectGraph::handle_project_persistence_collect_state(
     builder.add_manual_controls(manual_controls_);
 }
 
+void ProjectGraph::handle_socket_rpc_set_audio_devices(SetAudioDevicesRequest const& request,
+    SocketRpcAudioDevicesResultBuilder& builder)
+{
+    try {
+        std::scoped_lock lock(mutex_);
+        ProjectEditBatch edit;
+        edit.audio_devices = ProjectAudioDeviceSelection{request.output_device_id, request.input_device_id};
+        auto result = apply_edit_locked(edit, true);
+        builder.succeed(std::move(*result.audio_devices));
+    } catch (std::exception const& error) { builder.fail(error.what()); return; }
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void ProjectGraph::handle_project_set_audio_devices(ProjectSetAudioDevicesRequest const& request,
+    ProjectAudioDevicesBuilder& builder)
+{
+    {
+        std::scoped_lock lock(mutex_);
+        ProjectEditBatch edit;
+        edit.audio_devices = ProjectAudioDeviceSelection{request.output_device_id, request.input_device_id};
+        auto result = apply_edit_locked(edit, true);
+        builder.succeed(std::move(*result.audio_devices));
+    }
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void ProjectGraph::handle_socket_rpc_set_project_toolchain(SetProjectToolchainRequest const& request,
+    SocketRpcAckResponseBuilder& builder)
+{
+    try {
+        ProjectEditBatch edit;
+        edit.toolchain = request.settings;
+        ProjectAckBuilder project_builder;
+        handle_project_apply_edit(edit, project_builder);
+        project_builder.build();
+        builder.succeed();
+    } catch (std::exception const& error) { builder.fail(error.what()); }
+}
+
 void ProjectGraph::handle_socket_rpc_apply_project_edit(
     ApplyProjectEditRequest const& request, SocketRpcAckResponseBuilder& builder)
 {
@@ -2032,11 +2120,11 @@ void ProjectGraph::handle_socket_rpc_apply_project_edit(
 }
 
 void ProjectGraph::handle_socket_rpc_undo_project_edit(
-    UndoProjectEditRequest const& /*request*/, SocketRpcAckResponseBuilder& builder)
+    UndoProjectEditRequest const& request, SocketRpcAckResponseBuilder& builder)
 {
     try {
         ProjectAckBuilder project_builder;
-        handle_project_undo(project_builder);
+        handle_project_undo(project_builder, request.authorize_audio_control);
         builder.set_publication(project_builder.take_publication());
         project_builder.build();
         builder.succeed();
@@ -2044,11 +2132,11 @@ void ProjectGraph::handle_socket_rpc_undo_project_edit(
 }
 
 void ProjectGraph::handle_socket_rpc_redo_project_edit(
-    RedoProjectEditRequest const& /*request*/, SocketRpcAckResponseBuilder& builder)
+    RedoProjectEditRequest const& request, SocketRpcAckResponseBuilder& builder)
 {
     try {
         ProjectAckBuilder project_builder;
-        handle_project_redo(project_builder);
+        handle_project_redo(project_builder, request.authorize_audio_control);
         builder.set_publication(project_builder.take_publication());
         project_builder.build();
         builder.succeed();

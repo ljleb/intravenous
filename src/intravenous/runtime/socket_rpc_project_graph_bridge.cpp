@@ -6,6 +6,10 @@
 namespace iv {
 IV_DEFINE_BRIDGE(socket_rpc_project_graph_bridge)
 IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_project_graph_bridge,
+    iv_socket_rpc_set_audio_devices_event, &ProjectGraph::handle_socket_rpc_set_audio_devices)
+IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_project_graph_bridge,
+    iv_socket_rpc_set_project_toolchain_event, &ProjectGraph::handle_socket_rpc_set_project_toolchain)
+IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_project_graph_bridge,
     iv_socket_rpc_apply_project_edit_event, &ProjectGraph::handle_socket_rpc_apply_project_edit)
 IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_project_graph_bridge,
     iv_socket_rpc_undo_project_edit_event, &ProjectGraph::handle_socket_rpc_undo_project_edit)

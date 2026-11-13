@@ -104,17 +104,18 @@ void assign_if_present(
     has_any = true;
 }
 
-bool is_recognized_project_override_key(std::string const &key)
+std::optional<ProjectSettingField> project_override_field(std::string const& key)
 {
-    return key == "c_compiler"
-        || key == "cxx_compiler"
-        || key == "cmake_program"
-        || key == "cmake_generator"
-        || key == "make_program"
-        || key == "juce_dir"
-        || key == "iv_package_pch"
-        || key == "output_device_id"
-        || key == "input_device_id";
+    if (key == "c_compiler") return ProjectSettingField::c_compiler;
+    if (key == "cxx_compiler") return ProjectSettingField::cxx_compiler;
+    if (key == "cmake_program") return ProjectSettingField::cmake_program;
+    if (key == "cmake_generator") return ProjectSettingField::cmake_generator;
+    if (key == "make_program") return ProjectSettingField::make_program;
+    if (key == "juce_dir") return ProjectSettingField::juce_dir;
+    if (key == "iv_package_pch") return ProjectSettingField::iv_package_pch;
+    if (key == "output_device_id") return ProjectSettingField::output_device_id;
+    if (key == "input_device_id") return ProjectSettingField::input_device_id;
+    return std::nullopt;
 }
 
 std::optional<ProjectOverrideSettingsRequest> parse_project_override_settings_request(
@@ -126,11 +127,13 @@ std::optional<ProjectOverrideSettingsRequest> parse_project_override_settings_re
     bool has_any = false;
 
     for (auto const &[key, value] : args.items()) {
-        if (!is_recognized_project_override_key(key)) {
+        auto field = project_override_field(key);
+        if (!field) {
             emit_warning(
                 "project override setting key is not recognized and will be ignored: " + key);
             continue;
         }
+        request.specified_fields.push_back(*field);
 
         if (key == "cmake_generator") {
             if (!value.is_null() && !value.is_string()) {
@@ -151,7 +154,7 @@ std::optional<ProjectOverrideSettingsRequest> parse_project_override_settings_re
                 throw std::runtime_error(
                     "project audio device id override settings must be strings or null");
             }
-            auto parsed = (value.is_string() && value.get<std::string>() != "default")
+            auto parsed = value.is_string()
                 ? std::optional<std::string>(value.get<std::string>())
                 : std::optional<std::string>{};
             if (key == "output_device_id") {
@@ -277,18 +280,21 @@ void ProjectPersistence::replay(std::vector<ProjectMessageNotification>& message
                     });
                 if (request) {
                     if (!override_settings) override_settings.emplace();
-                    auto const merge = [](auto& into, auto const& from) {
-                        if (from) into = from;
+                    auto const merge = [&](auto& into, auto const& from, ProjectSettingField field) {
+                        if (from || request->specifies(field)) {
+                            into = from;
+                            if (!override_settings->specifies(field)) override_settings->specified_fields.push_back(field);
+                        }
                     };
-                    merge(override_settings->c_compiler, request->c_compiler);
-                    merge(override_settings->cxx_compiler, request->cxx_compiler);
-                    merge(override_settings->cmake_program, request->cmake_program);
-                    merge(override_settings->cmake_generator, request->cmake_generator);
-                    merge(override_settings->make_program, request->make_program);
-                    merge(override_settings->juce_dir, request->juce_dir);
-                    merge(override_settings->iv_package_pch, request->iv_package_pch);
-                    merge(override_settings->output_device_id, request->output_device_id);
-                    merge(override_settings->input_device_id, request->input_device_id);
+                    merge(override_settings->c_compiler, request->c_compiler, ProjectSettingField::c_compiler);
+                    merge(override_settings->cxx_compiler, request->cxx_compiler, ProjectSettingField::cxx_compiler);
+                    merge(override_settings->cmake_program, request->cmake_program, ProjectSettingField::cmake_program);
+                    merge(override_settings->cmake_generator, request->cmake_generator, ProjectSettingField::cmake_generator);
+                    merge(override_settings->make_program, request->make_program, ProjectSettingField::make_program);
+                    merge(override_settings->juce_dir, request->juce_dir, ProjectSettingField::juce_dir);
+                    merge(override_settings->iv_package_pch, request->iv_package_pch, ProjectSettingField::iv_package_pch);
+                    merge(override_settings->output_device_id, request->output_device_id, ProjectSettingField::output_device_id);
+                    merge(override_settings->input_device_id, request->input_device_id, ProjectSettingField::input_device_id);
                 }
             } else if (command.command == "nodeInstances.upsert") {
                 ProjectNodeInstanceDeclaration declaration{

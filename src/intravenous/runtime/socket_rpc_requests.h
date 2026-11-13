@@ -7,6 +7,7 @@
 #include <intravenous/node/manual_control.h>
 
 #include <filesystem>
+#include <functional>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -31,8 +32,8 @@ struct GetVirtualNodesRequest { std::vector<std::string> node_ids{}; };
 // The graph editor's project root scope; see ProjectGraphScope.
 struct GetGraphScopeRequest {};
 struct ApplyProjectEditRequest { ProjectEditBatch batch{}; };
-struct UndoProjectEditRequest {};
-struct RedoProjectEditRequest {};
+struct UndoProjectEditRequest { std::function<void()> authorize_audio_control{}; };
+struct RedoProjectEditRequest { std::function<void()> authorize_audio_control{}; };
 
 struct CreateNodeInstanceRequest {
     std::optional<std::string> instance_id{};
@@ -85,6 +86,7 @@ struct DispatchNodeMessageRequest {
 struct GetNodeEventProtocolRequest {};
 
 struct GetAudioDevicesRequest {};
+struct SetProjectToolchainRequest { ProjectToolchainSettings settings{}; };
 struct SetAudioDevicesRequest {
     std::optional<std::string> output_device_id {};
     std::optional<std::string> input_device_id {};
@@ -131,6 +133,7 @@ using SocketRpcRequestPayload = std::variant<
     GetNodeEventProtocolRequest,
     DispatchNodeMessageRequest,
     GetAudioDevicesRequest,
+    SetProjectToolchainRequest,
     SetAudioDevicesRequest,
     SaveProjectRequest,
     EnableProjectAutosaveRequest,

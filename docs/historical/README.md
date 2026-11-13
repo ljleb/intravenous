@@ -175,3 +175,7 @@ These documents are retained because they record deleted architectures, supersed
 - [Undo/Redo Direction Before The First Implementation](./project_undo_redo_before_first_implementation_2026-11-13.md)
   retains the accepted contract and original unimplemented status before the
   first server-owned session history was added.
+
+- [Project History Before Durable Settings](./project_history_before_settings_2026-11-13.md)
+  preserves the initial graph-history scope before audio selections and persisted
+  toolchain settings joined the same session history.

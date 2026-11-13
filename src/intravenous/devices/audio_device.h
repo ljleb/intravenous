@@ -47,6 +47,7 @@ namespace iv {
         std::optional<std::string> device_id {};
         std::optional<std::string> name {};
         bool available = false;
+        std::optional<std::string> error{};
     };
 
     struct AudioDevicesSnapshot {

@@ -64,6 +64,7 @@ Json audio_device_selection_json(AudioDeviceSelectionState const &selection)
         {"deviceId", selection.device_id.has_value() ? Json(*selection.device_id) : Json(nullptr)},
         {"name", selection.name.has_value() ? Json(*selection.name) : Json(nullptr)},
         {"available", selection.available},
+        {"error", selection.error ? Json(*selection.error) : Json(nullptr)},
     };
     return json;
 }

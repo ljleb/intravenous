@@ -1,5 +1,7 @@
 #pragma once
 
+#include <intravenous/runtime/project_settings.h>
+
 #include <intravenous/runtime/project_node_instance_types.h>
 #include <intravenous/runtime/project_node_replacement_types.h>
 #include <intravenous/runtime/project_connection_types.h>
@@ -43,6 +45,8 @@ struct ProjectEditBatch {
     std::vector<ProjectRecordEdit<ProjectNodeReplacement, NodeAddress>> replacements{};
     std::vector<ProjectRecordEdit<ProjectConnection, std::string>> connections{};
     std::vector<ProjectRecordEdit<ProjectManualControl, ManualControlId>> manual_controls{};
+    std::optional<ProjectAudioDeviceSelection> audio_devices{};
+    std::optional<ProjectToolchainSettings> toolchain{};
 };
 
 // Temporary owner-provided snapshots, never a second canonical project model.
@@ -61,8 +65,11 @@ struct ProjectEditEffect {
     std::vector<ProjectRecordChange<ProjectNodeReplacement>> replacements{};
     std::vector<ProjectRecordChange<ProjectConnection>> connections{};
     std::vector<ProjectRecordChange<ProjectManualControl>> manual_controls{};
+    std::optional<ProjectRecordChange<ProjectAudioDeviceSelection>> audio_devices{};
+    std::optional<ProjectRecordChange<ProjectToolchainSettings>> toolchain{};
     [[nodiscard]] bool empty() const {
-        return instances.empty() && replacements.empty() && connections.empty() && manual_controls.empty();
+        return instances.empty() && replacements.empty() && connections.empty() && manual_controls.empty()
+            && !audio_devices && !toolchain;
     }
 };
 
@@ -163,4 +170,14 @@ std::vector<ProjectRecordEdit<Record, Key>> project_history_edits(
     }
     return edits;
 }
+template<class Record>
+Record project_history_setting(Record const& current, ProjectRecordChange<Record> const& change, bool undo)
+{
+    auto const& expected = undo ? change.after : change.before;
+    auto const& desired = undo ? change.before : change.after;
+    if (!expected || !desired || current != *expected)
+        throw std::runtime_error("project history no longer matches the accepted setting");
+    return *desired;
+}
+
 } // namespace iv

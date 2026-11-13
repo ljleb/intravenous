@@ -127,8 +127,7 @@ SystemAudioDevices::SystemAudioDevices(
         throw std::invalid_argument("system audio devices backend is incomplete");
     }
 
-    replace_output_device(create_output_device(selected_output_device_id_));
-    replace_input_device(create_input_device(selected_input_device_id_));
+    (void)set_selected_devices(selected_output_device_id_, selected_input_device_id_);
 }
 
 SystemAudioDevices::~SystemAudioDevices()
@@ -147,7 +146,7 @@ std::vector<AudioDeviceDescriptor> SystemAudioDevices::list_input_devices_unlock
 }
 
 std::shared_ptr<SystemAudioDevices::ActiveOutputDevice>
-SystemAudioDevices::create_output_device(std::optional<std::string> const &device_id) const
+SystemAudioDevices::create_output_device(std::optional<std::string> const &device_id, std::optional<std::string>* error) const
 {
     auto descriptor = device_id
         ? find_device_descriptor(list_output_devices_unlocked(), *device_id)
@@ -158,8 +157,13 @@ SystemAudioDevices::create_output_device(std::optional<std::string> const &devic
                 *descriptor,
                 backend_.make_output_device(*device_id, output_render_config_),
                 true);
-        } catch (std::exception const &) {
+        } catch (std::exception const& failure) {
+            if (error) *error = failure.what();
+        } catch (...) {
+            if (error) *error = "unknown output device activation failure";
         }
+    } else if (device_id && error) {
+        *error = "selected output device is unavailable";
     }
     return std::make_shared<ActiveOutputDevice>(
         descriptor.value_or(AudioDeviceDescriptor{
@@ -172,7 +176,7 @@ SystemAudioDevices::create_output_device(std::optional<std::string> const &devic
 }
 
 std::shared_ptr<SystemAudioDevices::ActiveInputDevice>
-SystemAudioDevices::create_input_device(std::optional<std::string> const &device_id) const
+SystemAudioDevices::create_input_device(std::optional<std::string> const &device_id, std::optional<std::string>* error) const
 {
     if (!device_id.has_value()) {
         return nullptr;
@@ -180,6 +184,7 @@ SystemAudioDevices::create_input_device(std::optional<std::string> const &device
 
     auto const descriptor = find_device_descriptor(list_input_devices_unlocked(), *device_id);
     if (!descriptor.has_value()) {
+        if (error) *error = "selected input device is unavailable";
         return nullptr;
     }
 
@@ -197,7 +202,11 @@ SystemAudioDevices::create_input_device(std::optional<std::string> const &device
             *descriptor,
             std::move(device),
             std::move(synchronizer));
-    } catch (std::exception const &) {
+    } catch (std::exception const& failure) {
+        if (error) *error = failure.what();
+        return nullptr;
+    } catch (...) {
+        if (error) *error = "unknown input device activation failure";
         return nullptr;
     }
 }
@@ -460,27 +469,45 @@ AudioDeviceSelectionState SystemAudioDevices::selection_state_for(
     return selection;
 }
 
+ProjectAudioDeviceSelection SystemAudioDevices::selected_devices() const
+{
+    std::scoped_lock lock(mutex_);
+    return {selected_output_device_id_, selected_input_device_id_};
+}
+
 AudioDevicesSnapshot SystemAudioDevices::audio_devices_snapshot() const
 {
     std::shared_ptr<ActiveOutputDevice> active_output;
     std::shared_ptr<ActiveInputDevice> active_input;
-    std::optional<std::string> selected_output;
-    std::optional<std::string> selected_input;
+    ProjectAudioDeviceSelection selection;
+    std::optional<std::string> output_error;
+    std::optional<std::string> input_error;
     {
         std::scoped_lock lock(mutex_);
         active_output = active_output_device_;
         active_input = active_input_device_;
-        selected_output = selected_output_device_id_;
-        selected_input = selected_input_device_id_;
+        selection = {selected_output_device_id_, selected_input_device_id_};
+        output_error = output_activation_error_;
+        input_error = input_activation_error_;
     }
-
     AudioDevicesSnapshot snapshot;
-    snapshot.output_devices = list_output_devices_unlocked();
-    snapshot.input_devices = list_input_devices_unlocked();
-    snapshot.selected_output =
-        selection_state_for(selected_output, active_output, snapshot.output_devices);
-    snapshot.selected_input =
-        selection_state_for(selected_input, active_input, snapshot.input_devices);
+    // Status reads and saves must remain usable if backend enumeration fails.
+    try { snapshot.output_devices = list_output_devices_unlocked(); }
+    catch (std::exception const& error) { if (!output_error) output_error = error.what(); }
+    catch (...) { if (!output_error) output_error = "cannot enumerate output devices"; }
+    try { snapshot.input_devices = list_input_devices_unlocked(); }
+    catch (std::exception const& error) { if (!input_error) input_error = error.what(); }
+    catch (...) { if (!input_error) input_error = "cannot enumerate input devices"; }
+    snapshot.selected_output = selection_state_for(selection.output_device_id, active_output, snapshot.output_devices);
+    snapshot.selected_input = selection_state_for(selection.input_device_id, active_input, snapshot.input_devices);
+    if (output_render_failed_.load(std::memory_order_acquire)) {
+        snapshot.selected_output.available = false;
+        if (!output_error) output_error = "output rendering failed";
+    }
+    if (active_input && active_input->failed.load(std::memory_order_acquire) && !input_error)
+        input_error = "input capture failed";
+    snapshot.selected_output.error = std::move(output_error);
+    snapshot.selected_input.error = std::move(input_error);
     return snapshot;
 }
 
@@ -521,6 +548,7 @@ void SystemAudioDevices::replace_output_device(
         } else {
             active_output_device_ = output_device;
             refresh_active_bindings_locked();
+            output_render_failed_.store(false, std::memory_order_release);
             try {
                 start_output_render_thread(output_device);
             } catch (...) {
@@ -639,23 +667,81 @@ ResourceContext SystemAudioDevices::resources() noexcept
     return result;
 }
 
+AudioDeviceSelectionTransaction::AudioDeviceSelectionTransaction(SystemAudioDevices& owner, EventModuleVisit visit)
+    : owner_(&owner), visit_(visit), lock_(owner.selection_mutex_)
+{}
+
+ProjectAudioDeviceSelection AudioDeviceSelectionTransaction::record() const
+{
+    if (!owner_ || !lock_.owns_lock()) throw std::logic_error("audio selection transaction is not open");
+    EventModuleVisitScope entry(visit_);
+    return owner_->selected_devices();
+}
+
+AudioDevicesSnapshot AudioDeviceSelectionTransaction::commit(ProjectAudioDeviceSelection selection)
+{
+    if (!owner_ || !lock_.owns_lock() || committed_) throw std::logic_error("audio selection transaction commits once");
+    EventModuleVisitScope entry(visit_);
+    committed_ = true;
+    return owner_->apply_selected_devices_locked(std::move(selection));
+}
+
+void SystemAudioDevices::handle_project_graph_audio_selection(AudioDeviceSelectionTransactionRequest& request)
+{
+    if (request.handled) throw std::logic_error("audio selection transaction was handled twice");
+    request.handled = true;
+    request.transaction = AudioDeviceSelectionTransaction(*this, EventModuleVisit::current<SystemAudioDevices>());
+}
+
 AudioDevicesSnapshot SystemAudioDevices::set_selected_devices(
-    std::optional<std::string> output_device_id,
-    std::optional<std::string> input_device_id)
+    std::optional<std::string> output_device_id, std::optional<std::string> input_device_id)
 {
     std::scoped_lock selection_lock(selection_mutex_);
-    std::optional<std::string> selected_output;
-    std::optional<std::string> selected_input;
+    return apply_selected_devices_locked({std::move(output_device_id), std::move(input_device_id)});
+}
+
+AudioDevicesSnapshot SystemAudioDevices::apply_selected_devices_locked(ProjectAudioDeviceSelection selection)
+{
+    auto const previous = selected_devices();
+    bool const output_changed = previous.output_device_id != selection.output_device_id || !selection_initialized_;
+    bool const input_changed = previous.input_device_id != selection.input_device_id || !selection_initialized_;
     {
         std::scoped_lock lock(mutex_);
-        selected_output_device_id_ = std::move(output_device_id);
-        selected_input_device_id_ = std::move(input_device_id);
-        selected_output = selected_output_device_id_;
-        selected_input = selected_input_device_id_;
+        selected_output_device_id_ = selection.output_device_id;
+        selected_input_device_id_ = selection.input_device_id;
+        if (output_changed) output_activation_error_.reset();
+        if (input_changed) input_activation_error_.reset();
     }
-
-    replace_output_device(create_output_device(selected_output));
-    replace_input_device(create_input_device(selected_input));
+    selection_initialized_ = true;
+    std::optional<std::string> output_error;
+    std::optional<std::string> input_error;
+    if (output_changed) {
+        bool failed = false;
+        try { replace_output_device(create_output_device(selection.output_device_id, &output_error)); }
+        catch (std::exception const& error) { output_error = error.what(); failed = true; }
+        catch (...) { output_error = "unknown output device activation failure"; failed = true; }
+        if (failed) {
+            // A failed hardware activation must not stop Tick's fallback clock.
+            try { replace_output_device(create_output_device(std::nullopt)); }
+            catch (std::exception const& error) { *output_error += std::string("; fallback failed: ") + error.what(); }
+            catch (...) { *output_error += "; fallback failed"; }
+        }
+    }
+    if (input_changed) {
+        bool failed = false;
+        try { replace_input_device(create_input_device(selection.input_device_id, &input_error)); }
+        catch (std::exception const& error) { input_error = error.what(); failed = true; }
+        catch (...) { input_error = "unknown input device activation failure"; failed = true; }
+        if (failed) {
+            try { replace_input_device(nullptr); }
+            catch (...) { *input_error += "; input shutdown failed"; }
+        }
+    }
+    {
+        std::scoped_lock lock(mutex_);
+        if (output_changed) output_activation_error_ = std::move(output_error);
+        if (input_changed) input_activation_error_ = std::move(input_error);
+    }
     return audio_devices_snapshot();
 }
 
@@ -666,55 +752,22 @@ void SystemAudioDevices::handle_socket_rpc_get_audio_devices(
     builder.succeed(audio_devices_snapshot());
 }
 
-void SystemAudioDevices::handle_socket_rpc_set_audio_devices(
-    SetAudioDevicesRequest const &request,
-    SocketRpcAudioDevicesResultBuilder &builder)
+void SystemAudioDevices::handle_project_override_settings(ProjectOverrideSettingsRequest const& request)
 {
-    try {
-        builder.succeed(set_selected_devices(
-            request.output_device_id,
-            request.input_device_id));
-        IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
-    } catch (std::exception const &error) {
-        builder.fail(error.what());
-    }
-}
-
-void SystemAudioDevices::handle_project_set_audio_devices(
-    ProjectSetAudioDevicesRequest const &request,
-    ProjectAudioDevicesBuilder &builder)
-{
-    builder.succeed(set_selected_devices(
-        request.output_device_id,
-        request.input_device_id));
-    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
-}
-
-void SystemAudioDevices::handle_project_override_settings(
-    ProjectOverrideSettingsRequest const &request)
-{
-    if (!request.output_device_id.has_value() && !request.input_device_id.has_value()) {
-        return;
-    }
-    auto const current = audio_devices_snapshot();
-    (void)set_selected_devices(
-        request.output_device_id.has_value()
-            ? request.output_device_id
-            : current.selected_output.device_id,
-        request.input_device_id.has_value()
-            ? request.input_device_id
-            : current.selected_input.device_id);
-    // Only project replay overrides settings, and it restores the saved
-    // project: no project state changes.
+    bool const output = request.output_device_id.has_value() || request.specifies(ProjectSettingField::output_device_id);
+    bool const input = request.input_device_id.has_value() || request.specifies(ProjectSettingField::input_device_id);
+    if (!output && !input) return;
+    auto const current = selected_devices();
+    (void)set_selected_devices(output ? request.output_device_id : current.output_device_id,
+        input ? request.input_device_id : current.input_device_id);
+    // Replay restores accepted intent; it does not append a user-history entry.
 }
 
 void SystemAudioDevices::handle_project_persistence_collect_state(
     ProjectPersistenceBuilder &builder) const
 {
-    auto const snapshot = audio_devices_snapshot();
-    builder.add_project_audio_device_selection(
-        snapshot.selected_output.device_id,
-        snapshot.selected_input.device_id);
+    auto const selection = selected_devices();
+    builder.add_project_audio_device_selection(selection.output_device_id, selection.input_device_id);
 }
 
 } // namespace iv

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <intravenous/runtime/project_settings.h>
+
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/graph_connections.h>
 #include <intravenous/runtime/graph_jit.h>
@@ -9,6 +11,10 @@
 #include <intravenous/runtime/package_definitions.h>
 
 namespace iv {
+using ProjectGraphAudioSelectionRequestedEvent = void (*)(AudioDeviceSelectionTransactionRequest&);
+using ProjectGraphToolchainRequestedEvent = void (*)(ProjectToolchainTransactionRequest&);
+IV_DECLARE_LINKER_EVENT(ProjectGraphAudioSelectionRequestedEvent, iv_runtime_project_graph_audio_selection_requested_event);
+IV_DECLARE_LINKER_EVENT(ProjectGraphToolchainRequestedEvent, iv_runtime_project_graph_toolchain_requested_event);
 using ProjectGraphNodeInstancesRequestedEvent =
     void (*)(NodeInstancesProjectGraphRequest&);
 using ProjectGraphConnectionsRequestedEvent =

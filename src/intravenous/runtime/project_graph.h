@@ -1,5 +1,7 @@
 #pragma once
 
+#include <intravenous/runtime/project_edit.h>
+
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/runtime/graph_connections.h>
 #include <intravenous/runtime/graph_jit.h>
@@ -10,6 +12,7 @@
 #include <intravenous/node/message.h>
 
 #include <cstdint>
+#include <functional>
 #include <chrono>
 #include <condition_variable>
 #include <memory>
@@ -63,6 +66,11 @@ struct GetGraphScopeRequest;
 struct ApplyProjectEditRequest;
 struct UndoProjectEditRequest;
 struct RedoProjectEditRequest;
+struct SetProjectToolchainRequest;
+struct SetAudioDevicesRequest;
+class SocketRpcAudioDevicesResultBuilder;
+class ProjectAudioDevicesBuilder;
+struct ProjectSetAudioDevicesRequest;
 
 // Wall-clock microseconds of the rebuild that produced a generation, from the
 // rebuild's start to GraphExecutor accepting (or refusing) the compiled graph.
@@ -164,6 +172,7 @@ class ProjectGraph {
         std::shared_ptr<ProjectGraphConfigurationFailure const> failure{};
         // Read-model changes of the build, also when configuration failed.
         ProjectGraphPublication publication{};
+        std::optional<AudioDevicesSnapshot> audio_devices{};
     };
     struct ActiveManualControlInteraction {
         ManualControlInteractionId interaction{};
@@ -198,7 +207,8 @@ class ProjectGraph {
     void record_edit_locked(ProjectEditEffect effect);
     void open_transactions_locked(InteractionTransactions& transactions);
     RebuildResult apply_edit_locked(ProjectEditBatch const& batch, bool record_history,
-        std::optional<bool> history_undo = std::nullopt);
+        std::optional<bool> history_undo = std::nullopt,
+        std::function<void()> const& authorize_audio = {});
 
     mutable std::mutex mutex_;
     std::shared_ptr<NodeDefinitionsSnapshot const> definitions_snapshot_{};
@@ -235,7 +245,8 @@ class ProjectGraph {
         IvPackageDefinitionsChanged const* package_definitions = nullptr,
         InteractionTransactions* interaction_transactions = nullptr,
         std::vector<ProjectManualControl> const* previous_controls = nullptr,
-        bool record_history = true);
+        bool record_history = true,
+        ProjectEditEffect* accepted_effect = nullptr);
     void dispatch_node_message_locked(
         NodeAddress const& target,
         OwnedNodeMessage message,
@@ -287,8 +298,11 @@ public:
     // changes in `change.publication`.
     void handle_node_definitions_snapshot_changed(NodeDefinitionsSnapshotChanged& change);
     void handle_project_apply_edit(ProjectEditBatch const& batch, ProjectAckBuilder& builder);
-    void handle_project_undo(ProjectAckBuilder& builder);
-    void handle_project_redo(ProjectAckBuilder& builder);
+    void handle_project_undo(ProjectAckBuilder& builder, std::function<void()> const& authorize_audio = {});
+    void handle_project_redo(ProjectAckBuilder& builder, std::function<void()> const& authorize_audio = {});
+    void handle_socket_rpc_set_audio_devices(SetAudioDevicesRequest const&, SocketRpcAudioDevicesResultBuilder&);
+    void handle_project_set_audio_devices(ProjectSetAudioDevicesRequest const&, ProjectAudioDevicesBuilder&);
+    void handle_socket_rpc_set_project_toolchain(SetProjectToolchainRequest const&, SocketRpcAckResponseBuilder&);
     void handle_socket_rpc_apply_project_edit(ApplyProjectEditRequest const&, SocketRpcAckResponseBuilder&);
     void handle_socket_rpc_undo_project_edit(UndoProjectEditRequest const&, SocketRpcAckResponseBuilder&);
     void handle_socket_rpc_redo_project_edit(RedoProjectEditRequest const&, SocketRpcAckResponseBuilder&);

@@ -264,6 +264,22 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
     if (method == "graph.getScope") {
         return parsed(GetGraphScopeRequest{});
     }
+    if (method == "project.setToolchain") {
+        auto const settings = params.find("toolchain");
+        if (settings == params.end() || !settings->is_object())
+            throw std::invalid_argument("project.setToolchain requires a toolchain object");
+        auto path = [&](char const* name) -> std::optional<std::filesystem::path> {
+            auto value = parse_optional_nullable_string_param(*settings, name);
+            return value ? std::optional<std::filesystem::path>(*value) : std::nullopt;
+        };
+        return parsed(SetProjectToolchainRequest{{
+            .c_compiler = path("cCompiler"), .cxx_compiler = path("cxxCompiler"),
+            .cmake_program = path("cmakeProgram"),
+            .cmake_generator = parse_optional_nullable_string_param(*settings, "cmakeGenerator"),
+            .make_program = path("makeProgram"), .juce_dir = path("juceDir"),
+            .iv_package_pch = path("ivPackagePch"),
+        }});
+    }
     if (method == "project.undo") return parsed(UndoProjectEditRequest{});
     if (method == "project.redo") return parsed(RedoProjectEditRequest{});
     if (method == "project.applyEdit") {
@@ -299,6 +315,12 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
                     batch.manual_controls.push_back({value.control.id, value.control});
                 } else if constexpr (std::same_as<Request, DeleteManualControlRequest>) {
                     batch.manual_controls.push_back({value.id, std::nullopt});
+                } else if constexpr (std::same_as<Request, SetAudioDevicesRequest>) {
+                    if (batch.audio_devices) throw std::invalid_argument("project batch edits audio selection twice");
+                    batch.audio_devices = ProjectAudioDeviceSelection{value.output_device_id, value.input_device_id};
+                } else if constexpr (std::same_as<Request, SetProjectToolchainRequest>) {
+                    if (batch.toolchain) throw std::invalid_argument("project batch edits toolchain settings twice");
+                    batch.toolchain = value.settings;
                 } else throw std::invalid_argument("operation is not supported in a project edit batch");
             }, nested.payload);
         }

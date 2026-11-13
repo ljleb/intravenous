@@ -31,6 +31,8 @@
 #include <intravenous/runtime/project_persistence_system_audio_devices_bridge.h>
 #include <intravenous/runtime/project_graph.h>
 #include <intravenous/runtime/project_graph_graph_connections_bridge.h>
+#include <intravenous/runtime/project_graph_system_audio_devices_bridge.h>
+#include <intravenous/runtime/project_graph_package_jit_bridge.h>
 #include <intravenous/runtime/project_graph_graph_executor_bridge.h>
 #include <intravenous/runtime/project_graph_graph_jit_bridge.h>
 #include <intravenous/runtime/project_graph_iv_module_source_introspection_bridge.h>
@@ -360,6 +362,10 @@ int run_server_mode(int argc, char** argv)
         project_graph_node_instances_bridge::bind(project_graph, node_instances);
     auto project_graph_packages_scope =
         project_graph_package_definitions_bridge::bind(project_graph, package_definitions);
+    auto project_graph_audio_scope =
+        project_graph_system_audio_devices_bridge::bind(project_graph, system_audio_devices);
+    auto project_graph_toolchain_scope =
+        project_graph_package_jit_bridge::bind(project_graph, package_jit);
     auto project_graph_connections_scope =
         project_graph_graph_connections_bridge::bind(project_graph, graph_connections);
     auto project_graph_graph_jit_scope =

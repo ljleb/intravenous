@@ -1,7 +1,8 @@
 # Project Undo, Redo, And Backup Direction
 
-_Status: accepted design direction, 2026-11-12. The first implementation is now
-in source and awaits owner build/test verification; see
+_Status: accepted design direction, 2026-11-12. The initial graph-edit implementation
+has passed owner verification. The audio-selection and toolchain-settings extension
+is in source and awaits owner build/test verification; see
 [Vue Client Implementation Stages](./vue_client_implementation_stages.md).
 This document specifies reversible user edits and their ownership, not a backup
 format. The preceding version is retained under
@@ -169,7 +170,7 @@ compiled generations or package code solely for undo.
 `project.applyEdit` accepts one `operations` array containing existing
 `nodeInstances.create`, `nodeInstances.update`, `nodeInstances.delete`,
 `graphConnections.upsert`, `graphConnections.delete`, `manualControls.upsert`,
-and `manualControls.delete` requests. Each operation has `method` and `params`.
+`manualControls.delete`, `audioDevices.set`, and `project.setToolchain` requests. Each operation has `method` and `params`.
 Batch creation requires explicit stable instance IDs. Duplicate edits to the
 same record are rejected; nested batches and side-effecting requests such as
 package creation or save are excluded. The internal typed batch also supports
@@ -180,7 +181,9 @@ records through their normal semantic interaction path.
 through one normal realization. All three routes require `project.write` and
 use the existing `expectedRevision` check. History also verifies each changed
 record against the actual owner's current record before modifying any owner.
-One accepted action produces one normal graph publication and session revision.
+One accepted action produces one session revision. Graph-record changes use the
+normal graph publication; settings-only actions do not rebuild or publish a new
+graph generation.
 Project replay clears session history rather than entering it.
 
 Deleting an instance removes its owned replacement records and manual values.
@@ -198,3 +201,56 @@ The extension provides Undo Project Edit and Redo Project Edit commands.
 Ctrl/Command+Z and Ctrl/Command+Shift+Z act on project history only inside the
 graph webview outside editable text fields; Ctrl+Y also performs redo. Ordinary
 VS Code source editors and text fields retain their own undo/redo behaviour.
+
+## Durable audio and toolchain settings (2026-11-13)
+
+The owner accepted extending the same global history to the settings serialized
+as `project.overrideSettings`. `SystemAudioDevices` owns
+`ProjectAudioDeviceSelection` (the selected input and output IDs); `PackageJit`
+owns the seven persisted fields represented by `ProjectToolchainSettings`.
+History holds only their complete accepted before/after values. Active devices,
+threads, loaded code, and runtime diagnostics are not history records.
+
+`audioDevices.set` enters `ProjectGraph`, which opens one
+`AudioDeviceSelectionTransaction`. The transaction reads and commits within its
+one owner visit and excludes competing selection writers while checking/applying
+the record. Changing both IDs is one action. `audioDevices.get` continues to read
+`SystemAudioDevices` directly. Graph-only requests need no settings-owner visit.
+Audio-only and toolchain-only requests need no NodeInstances, GraphConnections,
+GraphJit, or GraphExecutor visit and leave the graph generation unchanged.
+Mixed batches validate all affected records before committing one history entry.
+
+The accepted selection is separate from hardware activation. An unavailable or
+failed device remains selected; each selection status reports `deviceId`,
+`available`, and nullable `error`. An unavailable output uses the existing
+fallback clock. An input failure does not reject a valid output selection, nor
+does output failure prevent the input from being applied. An identical selection
+does not restart the devices or create a history entry. Undo restores the IDs
+and applies normal device selection; it cannot restore a physical device that
+has been unplugged. Save reads the selected IDs without enumerating hardware.
+
+`audioDevices.set` retains its `audio.control` requirement. A `project.applyEdit`
+containing audio selection also requires it in addition to `project.write`.
+Undo/redo checks `audio.control` only when the selected history entry changes
+audio selection. Denial leaves both records and history position unchanged.
+
+`project.setToolchain` takes a complete `toolchain` object with nullable fields
+`cCompiler`, `cxxCompiler`, `cmakeProgram`, `cmakeGenerator`, `makeProgram`,
+`juceDir`, and `ivPackagePch`; omitted fields reset to null. It requires
+`project.write`, uses the existing session-revision check, and is also allowed
+in a project edit batch. There is no new settings UI. PackageJit preserves its
+non-persisted diagnostic flags. It accepts the desired toolchain immediately
+and updates an existing ModuleLoader when a subsequent build is requested.
+Missing compiler/PCH files fail that build through the normal build-result path;
+they do not reject an accepted settings edit or erase loaded package revisions.
+Package-cache removal does not require a valid new build toolchain.
+
+Replay still creates no history. In persisted override records, omission leaves
+a value alone and explicit null clears it. Later override records can therefore
+clear an earlier non-null value. The audio ID `"default"` is an ordinary stable
+device ID, as specified by the application architecture; the replayer does not
+convert it to an omitted selection. This distinction makes cleared values and
+literal default selections survive save/reload.
+
+The preceding graph-only implementation contract is retained in
+[Project History Before Durable Settings](./historical/project_history_before_settings_2026-11-13.md).

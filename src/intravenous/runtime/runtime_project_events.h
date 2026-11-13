@@ -1,5 +1,8 @@
 #pragma once
 
+#include <intravenous/runtime/project_settings.h>
+#include <algorithm>
+
 #include <intravenous/devices/audio_device.h>
 #include <intravenous/linker_event.h>
 #include <intravenous/runtime/project_connection_types.h>
@@ -143,6 +146,12 @@ struct ProjectOverrideSettingsRequest {
     std::optional<std::filesystem::path> iv_package_pch {};
     std::optional<std::string> output_device_id {};
     std::optional<std::string> input_device_id {};
+    // Presence is separate from the optional value so JSON null can clear an
+    // override while an omitted field leaves the current value alone.
+    std::vector<ProjectSettingField> specified_fields{};
+    [[nodiscard]] bool specifies(ProjectSettingField field) const {
+        return std::ranges::find(specified_fields, field) != specified_fields.end();
+    }
 };
 
 struct ProjectSetAutosaveEnabledRequest {

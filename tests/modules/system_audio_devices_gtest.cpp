@@ -1,6 +1,18 @@
 #include <intravenous/runtime/audio_input_synchronizer.h>
 #include <intravenous/runtime/graph_executor.h>
 #include <intravenous/runtime/system_audio_devices.h>
+#include "../event_source_test_support.h"
+#include <intravenous/runtime/project_graph.h>
+#include <intravenous/runtime/runtime_project_events.h>
+#include <intravenous/runtime/project_graph_system_audio_devices_bridge.h>
+#include <intravenous/runtime/project_graph_package_jit_bridge.h>
+#include <intravenous/runtime/project_graph_node_instances_bridge.h>
+#include <intravenous/runtime/project_graph_graph_connections_bridge.h>
+#include <intravenous/runtime/package_jit.h>
+#include <intravenous/runtime/project_persistence_builder.h>
+#include <intravenous/runtime/socket_rpc_requests.h>
+#include <intravenous/runtime/socket_rpc_response_builders.h>
+#include <nlohmann/json.hpp>
 
 #include <gtest/gtest.h>
 
@@ -446,3 +458,324 @@ TEST(SystemAudioDevices, LogicalOutputBindingFollowsDeviceSelection)
     }
 }
 } // namespace
+
+namespace {
+struct SelectionBackendState {
+    bool fail_output = false;
+    bool fail_input = false;
+    bool hide_default = false;
+    bool fail_enumeration = false;
+    std::size_t output_creates = 0;
+    std::size_t input_creates = 0;
+};
+
+iv::SystemAudioDevicesBackend history_backend(std::shared_ptr<DeviceLifetimeState> lifetime,
+    std::shared_ptr<SelectionBackendState> state)
+{
+    auto backend = make_backend(lifetime);
+    auto outputs = backend.list_output_devices;
+    auto inputs = backend.list_input_devices;
+    backend.list_output_devices = [state, outputs] {
+        if (state->fail_enumeration) throw std::runtime_error("output enumeration failed");
+        auto result = outputs();
+        if (state->hide_default) std::erase_if(result, [](auto const& value) { return value.device_id == "default"; });
+        return result;
+    };
+    backend.list_input_devices = [state, inputs] {
+        if (state->fail_enumeration) throw std::runtime_error("input enumeration failed");
+        auto result = inputs();
+        if (state->hide_default) std::erase_if(result, [](auto const& value) { return value.device_id == "default"; });
+        return result;
+    };
+    auto make_output = backend.make_output_device;
+    auto make_input = backend.make_input_device;
+    backend.make_output_device = [state, make_output](std::string const& id, iv::RenderConfig const& config) {
+        ++state->output_creates;
+        if (state->fail_output && id == "out-1") throw std::runtime_error("output open failed");
+        return make_output(id, config);
+    };
+    backend.make_input_device = [state, make_input](std::string const& id, iv::RenderConfig const& config) {
+        ++state->input_creates;
+        if (state->fail_input && id == "in-1") throw std::runtime_error("input open failed");
+        return make_input(id, config);
+    };
+    return backend;
+}
+
+struct AudioSettingsHistory : ::testing::Test {
+    std::shared_ptr<DeviceLifetimeState> lifetime = std::make_shared<DeviceLifetimeState>();
+    std::shared_ptr<SelectionBackendState> backend = std::make_shared<SelectionBackendState>();
+    iv::ProjectGraph graph;
+    iv::SystemAudioDevices devices{48000, 64, history_backend(lifetime, backend)};
+    iv::PackageJit jit{iv::StartupConfigState{}};
+    iv::project_graph_system_audio_devices_bridge::scope audio_scope{graph, devices};
+    iv::project_graph_package_jit_bridge::scope toolchain_scope{graph, jit};
+
+    iv::ProjectGraphPublication apply(iv::ProjectEditBatch const& edit) {
+        iv::ProjectAckBuilder result;
+        in_event_source([&] { graph.handle_project_apply_edit(edit, result); });
+        result.build();
+        return result.take_publication();
+    }
+    void undo(std::function<void()> const& authorize = {}) {
+        iv::ProjectAckBuilder result;
+        in_event_source([&] { graph.handle_project_undo(result, authorize); });
+        result.build();
+    }
+    void redo() {
+        iv::ProjectAckBuilder result;
+        in_event_source([&] { graph.handle_project_redo(result); });
+        result.build();
+    }
+    iv::ProjectEditBatch selection(std::optional<std::string> output = "out-1",
+        std::optional<std::string> input = "in-1") {
+        iv::ProjectEditBatch edit;
+        edit.audio_devices = iv::ProjectAudioDeviceSelection{std::move(output), std::move(input)};
+        return edit;
+    }
+};
+} // namespace
+
+TEST_F(AudioSettingsHistory, SelectionAndUndoRedoNeedNoGraphServicesOrCompilation)
+{
+    auto const original = devices.selected_devices();
+    auto edit = selection();
+    auto publication = apply(edit);
+    EXPECT_FALSE(publication.graph_changed);
+    EXPECT_FALSE(graph.current_generation());
+    EXPECT_EQ(devices.selected_devices(), *edit.audio_devices);
+    undo();
+    EXPECT_EQ(devices.selected_devices(), original);
+    redo();
+    EXPECT_EQ(devices.selected_devices(), *edit.audio_devices);
+    EXPECT_FALSE(graph.current_generation());
+    // No NodeInstances, GraphConnections, GraphJit or GraphExecutor bridge is
+    // installed. Any attempt to rebuild would fail this test.
+}
+
+TEST_F(AudioSettingsHistory, UndoRestoresAnUnpluggedSelectionAndReportsAvailabilitySeparately)
+{
+    apply(selection());
+    backend->hide_default = true;
+    EXPECT_NO_THROW(undo());
+    auto status = devices.audio_devices_snapshot();
+    EXPECT_EQ(status.selected_output.device_id, std::optional<std::string>{"default"});
+    EXPECT_EQ(status.selected_input.device_id, std::optional<std::string>{"default"});
+    EXPECT_FALSE(status.selected_output.available);
+    EXPECT_FALSE(status.selected_input.available);
+    EXPECT_TRUE(status.selected_output.error);
+    EXPECT_TRUE(status.selected_input.error);
+    EXPECT_NO_THROW(redo());
+    status = devices.audio_devices_snapshot();
+    EXPECT_TRUE(status.selected_output.available);
+    EXPECT_TRUE(status.selected_input.available);
+    EXPECT_FALSE(status.selected_output.error);
+    EXPECT_FALSE(status.selected_input.error);
+}
+
+TEST_F(AudioSettingsHistory, HardwareFailureAcceptsBothIdsAndRemainsOneUndoStep)
+{
+    backend->fail_output = true;
+    iv::SocketRpcAudioDevicesResultBuilder response;
+    in_event_source([&] { graph.handle_socket_rpc_set_audio_devices({"out-1", "in-1"}, response); });
+    auto json = nlohmann::ordered_json::parse(response.build(1));
+    ASSERT_FALSE(json.contains("error"));
+    EXPECT_EQ(json["result"]["selectedOutput"]["deviceId"], "out-1");
+    EXPECT_EQ(json["result"]["selectedOutput"]["error"], "output open failed");
+    EXPECT_EQ(json["result"]["selectedOutput"]["available"], false);
+    EXPECT_EQ(json["result"]["selectedInput"]["deviceId"], "in-1");
+    EXPECT_EQ(json["result"]["selectedInput"]["available"], true);
+    undo();
+    EXPECT_EQ(devices.selected_devices(), (iv::ProjectAudioDeviceSelection{"default", "default"}));
+    redo();
+    EXPECT_EQ(devices.selected_devices(), (iv::ProjectAudioDeviceSelection{"out-1", "in-1"}));
+    EXPECT_TRUE(devices.audio_devices_snapshot().selected_input.available);
+}
+
+TEST_F(AudioSettingsHistory, InputActivationFailureDoesNotRejectOrDisableTheSelectedOutput)
+{
+    backend->fail_input = true;
+    apply(selection());
+    auto status = devices.audio_devices_snapshot();
+    EXPECT_TRUE(status.selected_output.available);
+    EXPECT_FALSE(status.selected_output.error);
+    EXPECT_FALSE(status.selected_input.available);
+    EXPECT_EQ(status.selected_input.error, std::optional<std::string>{"input open failed"});
+    undo();
+    EXPECT_TRUE(devices.audio_devices_snapshot().selected_input.available);
+}
+
+TEST_F(AudioSettingsHistory, NoopSelectionDoesNotRestartHardwareOrDiscardRedo)
+{
+    apply(selection());
+    undo();
+    auto const outputs = backend->output_creates;
+    auto const inputs = backend->input_creates;
+    apply(selection("default", "default"));
+    EXPECT_EQ(backend->output_creates, outputs);
+    EXPECT_EQ(backend->input_creates, inputs);
+    EXPECT_NO_THROW(redo());
+    EXPECT_EQ(devices.selected_devices(), (iv::ProjectAudioDeviceSelection{"out-1", "in-1"}));
+}
+
+TEST_F(AudioSettingsHistory, AudioUndoRequiresPermissionAndChecksTheActualOwnerRecord)
+{
+    apply(selection());
+    EXPECT_THROW(undo([] { throw std::runtime_error("audio.control denied"); }), std::runtime_error);
+    EXPECT_EQ(devices.selected_devices(), (iv::ProjectAudioDeviceSelection{"out-1", "in-1"}));
+    (void)devices.set_selected_devices("out-1", std::nullopt);
+    EXPECT_THROW(undo(), std::runtime_error);
+    EXPECT_EQ(devices.selected_devices(), (iv::ProjectAudioDeviceSelection{"out-1", std::nullopt}));
+    (void)devices.set_selected_devices("out-1", "in-1");
+    EXPECT_NO_THROW(undo()); // Neither rejected undo advanced history.
+    EXPECT_EQ(devices.selected_devices(), (iv::ProjectAudioDeviceSelection{"default", "default"}));
+}
+
+TEST_F(AudioSettingsHistory, SavesAcceptedSelectionEvenWhenEnumerationFails)
+{
+    apply(selection());
+    backend->fail_enumeration = true;
+    iv::ProjectPersistenceBuilder builder(std::filesystem::temp_directory_path(), {});
+    EXPECT_NO_THROW(devices.handle_project_persistence_collect_state(builder));
+    auto commands = builder.build();
+    ASSERT_EQ(commands.size(), 1u);
+    EXPECT_EQ(commands[0].command, "project.overrideSettings");
+    EXPECT_EQ(commands[0].args["output_device_id"], "out-1");
+    EXPECT_EQ(commands[0].args["input_device_id"], "in-1");
+    EXPECT_NO_THROW(undo());
+    EXPECT_EQ(devices.selected_devices(), (iv::ProjectAudioDeviceSelection{"default", "default"}));
+    EXPECT_TRUE(devices.audio_devices_snapshot().selected_output.error);
+}
+
+TEST_F(AudioSettingsHistory, ToolchainSettingsShareHistoryButDoNotChangeRuntimeFlagsOrBuild)
+{
+    auto config = jit.toolchain_config();
+    config.source_introspection = false;
+    config.clang_time_trace = true;
+    jit.set_toolchain_config(config);
+    iv::ProjectEditBatch edit;
+    edit.toolchain = iv::ProjectToolchainSettings{.cxx_compiler = "/missing/compiler",
+        .iv_package_pch = "/missing/pch"};
+    apply(edit);
+    EXPECT_EQ(jit.toolchain_config().cxx_compiler, std::optional<std::filesystem::path>{"/missing/compiler"});
+    EXPECT_FALSE(jit.toolchain_config().source_introspection);
+    EXPECT_TRUE(jit.toolchain_config().clang_time_trace);
+    EXPECT_FALSE(graph.current_generation());
+    apply(selection());
+    undo(); // Audio selection is the latest global action.
+    EXPECT_EQ(jit.toolchain_config().cxx_compiler, edit.toolchain->cxx_compiler);
+    undo();
+    EXPECT_EQ(jit.toolchain_config().cxx_compiler, config.cxx_compiler);
+    EXPECT_EQ(jit.toolchain_config().iv_package_pch, config.iv_package_pch);
+    redo();
+    EXPECT_EQ(jit.toolchain_config().iv_package_pch, edit.toolchain->iv_package_pch);
+    EXPECT_FALSE(jit.toolchain_config().source_introspection);
+    EXPECT_TRUE(jit.toolchain_config().clang_time_trace);
+    EXPECT_FALSE(graph.current_generation());
+    iv::PackageJitBatchRequest build{.declarations = {{.package_id = "requested-build", .package_root = "/missing/package"}}};
+    EXPECT_NO_THROW(jit.handle_build_request(build));
+    ASSERT_EQ(build.result.failed.size(), 1u);
+    EXPECT_TRUE(build.result.revisions.empty());
+    EXPECT_EQ(build.result.failed[0].package_id, "requested-build");
+    EXPECT_EQ(jit.toolchain_config().iv_package_pch, edit.toolchain->iv_package_pch);
+}
+
+TEST_F(AudioSettingsHistory, MixedGraphAndSettingsBatchValidatesAllRecordsBeforeCommit)
+{
+    iv::NodeInstances instances;
+    iv::GraphConnections connections;
+    iv::project_graph_node_instances_bridge::scope nodes_scope{graph, instances};
+    iv::project_graph_graph_connections_bridge::scope connections_scope{graph, connections};
+    auto const original = devices.selected_devices();
+    auto edit = selection();
+    edit.toolchain = iv::ProjectToolchainSettings{.cxx_compiler = "/other/compiler"};
+    edit.instances = {{"pending", iv::ProjectNodeInstanceDeclaration{
+        .instance_id = "pending", .definition_id = "pending.definition", .package_root = "/missing/package"}}};
+    edit.connections = {{"bad", iv::ProjectSampleConnection{.connection_id = "bad"}}};
+    EXPECT_THROW(apply(edit), std::invalid_argument);
+    EXPECT_TRUE(instances.desired_instances().empty());
+    EXPECT_EQ(devices.selected_devices(), original);
+    EXPECT_FALSE(jit.toolchain_config().cxx_compiler);
+    edit.connections.clear();
+    EXPECT_NO_THROW(apply(edit)); // The unavailable definition is accepted intent.
+    EXPECT_EQ(instances.desired_instances().size(), 1u);
+    EXPECT_EQ(devices.selected_devices(), *edit.audio_devices);
+    undo();
+    EXPECT_TRUE(instances.desired_instances().empty());
+    EXPECT_EQ(devices.selected_devices(), original);
+    EXPECT_FALSE(jit.toolchain_config().cxx_compiler);
+    redo();
+    EXPECT_EQ(instances.desired_instances().size(), 1u);
+    EXPECT_EQ(devices.selected_devices(), *edit.audio_devices);
+}
+
+TEST_F(AudioSettingsHistory, StaleToolchainRejectsTheWholeMixedSettingsUndoBeforeDeviceChanges)
+{
+    auto edit = selection();
+    edit.toolchain = iv::ProjectToolchainSettings{.cxx_compiler = "/accepted/compiler"};
+    apply(edit);
+    auto actual = jit.toolchain_config();
+    actual.cxx_compiler = "/external/compiler";
+    jit.set_toolchain_config(actual);
+    auto const outputs = backend->output_creates;
+    auto const inputs = backend->input_creates;
+    EXPECT_THROW(undo(), std::runtime_error);
+    EXPECT_EQ(backend->output_creates, outputs);
+    EXPECT_EQ(backend->input_creates, inputs);
+    EXPECT_EQ(devices.selected_devices(), *edit.audio_devices);
+    actual.cxx_compiler = edit.toolchain->cxx_compiler;
+    jit.set_toolchain_config(actual);
+    EXPECT_NO_THROW(undo());
+    EXPECT_EQ(devices.selected_devices(), (iv::ProjectAudioDeviceSelection{"default", "default"}));
+    EXPECT_FALSE(jit.toolchain_config().cxx_compiler);
+}
+
+TEST_F(AudioSettingsHistory, ReplayStartsWithoutAnImpliedSettingsHistory)
+{
+    iv::NodeInstances instances;
+    iv::GraphConnections connections;
+    iv::project_graph_node_instances_bridge::scope nodes_scope{graph, instances};
+    iv::project_graph_graph_connections_bridge::scope connections_scope{graph, connections};
+    apply(selection());
+    iv::ProjectAckBuilder replay;
+    in_event_source([&] { graph.handle_project_replace_graph({}, replay); });
+    ASSERT_NO_THROW(replay.build());
+    EXPECT_THROW(undo(), std::runtime_error);
+    EXPECT_EQ(devices.selected_devices(), (iv::ProjectAudioDeviceSelection{"out-1", "in-1"}));
+}
+
+TEST_F(AudioSettingsHistory, ReplayAppliesExplicitClearsWithoutChangingOmittedSettings)
+{
+    auto config = jit.toolchain_config();
+    config.cxx_compiler = "/before/compiler";
+    config.cmake_generator = "Keep this generator";
+    jit.set_toolchain_config(config);
+    (void)devices.set_selected_devices("out-1", "in-1");
+    iv::ProjectOverrideSettingsRequest request{
+        .output_device_id = "default",
+        .specified_fields = {iv::ProjectSettingField::cxx_compiler,
+            iv::ProjectSettingField::output_device_id, iv::ProjectSettingField::input_device_id},
+    };
+    in_event_source([&] { jit.handle_project_override_settings(request); });
+    in_event_source([&] { devices.handle_project_override_settings(request); });
+    EXPECT_FALSE(jit.toolchain_config().cxx_compiler);
+    EXPECT_EQ(jit.toolchain_config().cmake_generator, config.cmake_generator);
+    EXPECT_EQ(devices.selected_devices(), (iv::ProjectAudioDeviceSelection{"default", std::nullopt}));
+    EXPECT_THROW(undo(), std::runtime_error); // Replay itself created no history.
+}
+
+TEST_F(AudioSettingsHistory, GraphOnlyHistoryDoesNotAskForAudioPermission)
+{
+    iv::NodeInstances instances;
+    iv::GraphConnections connections;
+    iv::project_graph_node_instances_bridge::scope nodes_scope{graph, instances};
+    iv::project_graph_graph_connections_bridge::scope connections_scope{graph, connections};
+    iv::ProjectEditBatch edit;
+    edit.instances = {{"pending", iv::ProjectNodeInstanceDeclaration{
+        .instance_id = "pending", .definition_id = "missing.definition", .package_root = "/missing/package"}}};
+    apply(edit);
+    bool asked = false;
+    EXPECT_NO_THROW(undo([&] { asked = true; throw std::runtime_error("audio.control denied"); }));
+    EXPECT_FALSE(asked);
+    EXPECT_TRUE(instances.desired_instances().empty());
+}

@@ -425,6 +425,8 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/project_connection_json.cpp
     runtime/project_node_path_resolver.cpp
     runtime/project_graph.cpp
+    runtime/project_graph_system_audio_devices_bridge.cpp
+    runtime/project_graph_package_jit_bridge.cpp
     runtime/project_graph_graph_connections_bridge.cpp
     runtime/project_graph_graph_executor_bridge.cpp
     runtime/project_graph_graph_jit_bridge.cpp

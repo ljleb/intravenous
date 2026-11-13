@@ -740,10 +740,11 @@ TEST(SocketRpcAudioDevicesResultBuilder, SerializesSnapshot)
 TEST(SocketRpcProjectHistory, RequiresProjectWriteAndChecksRevisionBeforeInvokingEveryMutationRoute)
 {
     iv::SocketRpcRouteRegistry routes;
-    for (auto const* method : {"project.undo", "project.redo", "project.applyEdit"}) {
+    for (auto const* method : {"project.undo", "project.redo", "project.applyEdit", "project.setToolchain"}) {
         Json params = Json::object();
         params["expectedRevision"] = 17;
         if (std::string_view(method) == "project.applyEdit") params["operations"] = Json::array();
+        if (std::string_view(method) == "project.setToolchain") params["toolchain"] = Json::object();
         auto request = iv::parse_socket_rpc_request(Json{{"id", 1}, {"method", method}, {"params", params}}.dump());
         bool checked_revision = false;
         std::string capability;
@@ -762,4 +763,20 @@ TEST(SocketRpcProjectHistory, RequiresProjectWriteAndChecksRevisionBeforeInvokin
             .before_invoke = [](bool) { ADD_FAILURE() << "authorization must precede revision checks"; },
         }), std::runtime_error);
     }
+}
+
+TEST(SocketRpcProjectHistory, ParsesCompleteSettingsRecordsAndRejectsDuplicateSingletonEdits)
+{
+    auto parsed = iv::parse_socket_rpc_request(R"({"id":1,"method":"project.applyEdit","params":{"expectedRevision":23,"operations":[{"method":"audioDevices.set","params":{"outputDeviceId":"out","inputDeviceId":null}},{"method":"project.setToolchain","params":{"toolchain":{"cxxCompiler":"/other/clang++","ivPackagePch":null}}}]}})");
+    auto const& batch = std::get<iv::ApplyProjectEditRequest>(parsed.payload).batch;
+    ASSERT_TRUE(batch.audio_devices);
+    EXPECT_EQ(batch.audio_devices->output_device_id, "out");
+    EXPECT_FALSE(batch.audio_devices->input_device_id);
+    ASSERT_TRUE(batch.toolchain);
+    EXPECT_EQ(batch.toolchain->cxx_compiler, std::optional<std::filesystem::path>{"/other/clang++"});
+    EXPECT_FALSE(batch.toolchain->iv_package_pch);
+    EXPECT_FALSE(batch.toolchain->c_compiler); // Omitted fields reset in this complete record.
+    EXPECT_EQ(parsed.expected_revision, 23u);
+    EXPECT_THROW(iv::parse_socket_rpc_request(R"({"id":1,"method":"project.applyEdit","params":{"operations":[{"method":"audioDevices.set","params":{}},{"method":"audioDevices.set","params":{}}]}})"), std::invalid_argument);
+    EXPECT_THROW(iv::parse_socket_rpc_request(R"({"id":1,"method":"project.applyEdit","params":{"operations":[{"method":"project.setToolchain","params":{"toolchain":{}}},{"method":"project.setToolchain","params":{"toolchain":{}}}]}})"), std::invalid_argument);
 }

@@ -2,6 +2,8 @@
 
 #include <intravenous/bridge.h>
 #include <intravenous/runtime/system_audio_devices.h>
+#include <intravenous/runtime/project_graph.h>
+#include <intravenous/runtime/project_graph_system_audio_devices_bridge.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_system_audio_devices_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
@@ -258,6 +260,14 @@ namespace {
         socket_rpc_server_test_project_graph_bridge,
         iv_socket_rpc_delete_node_instance_event,
         &ProjectGraphFake::handle_delete_node_instance)
+    IV_DECLARE_BRIDGE(socket_rpc_server_test_audio_graph_bridge, iv::SocketRpcServer, iv::ProjectGraph);
+    IV_DEFINE_BRIDGE(socket_rpc_server_test_audio_graph_bridge)
+    IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_server_test_audio_graph_bridge,
+        iv_socket_rpc_set_audio_devices_event, &iv::ProjectGraph::handle_socket_rpc_set_audio_devices)
+    IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_server_test_audio_graph_bridge,
+        iv_socket_rpc_undo_project_edit_event, &iv::ProjectGraph::handle_socket_rpc_undo_project_edit)
+    IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_server_test_audio_graph_bridge,
+        iv_socket_rpc_redo_project_edit_event, &iv::ProjectGraph::handle_socket_rpc_redo_project_edit)
     std::filesystem::path make_server_workspace()
     {
         auto const* info = ::testing::UnitTest::GetInstance()->current_test_info();
@@ -402,6 +412,9 @@ namespace {
         NodeInstancesFake node_instances;
         PackageDefinitionsFake package_definitions;
         ProjectGraphFake project_graph;
+        iv::ProjectGraph audio_project_graph;
+        iv::project_graph_system_audio_devices_bridge::scope audio_owner_scope;
+        socket_rpc_server_test_audio_graph_bridge::scope audio_history_scope;
         socket_rpc_server_test_session_project_state_bridge::scope session_project_state_scope;
         socket_rpc_server_test_autosave_state_bridge::scope autosave_state_scope;
         socket_rpc_server_test_node_instances_bridge::scope node_instances_scope;
@@ -415,6 +428,8 @@ namespace {
               server(workspace, fds[1]),
               system_audio_devices(48000, 8, make_audio_backend()),
               test_state_scope(server, socket_rpc_test_state),
+              audio_owner_scope(audio_project_graph, system_audio_devices),
+              audio_history_scope(server, audio_project_graph),
               session_project_state_scope(server, session_project_state),
               autosave_state_scope(server, autosave_state),
               node_instances_scope(server, node_instances),
@@ -838,4 +853,29 @@ TEST(SocketRpcServer, PublishesProtectedLocalDescriptorAndElectsOneOwner)
         server.wait();
     }
     EXPECT_FALSE(std::filesystem::exists(descriptor_path));
+}
+
+TEST(SocketRpcServer, AudioSelectionParticipatesInRevisionStampedProjectUndoRedo)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+    harness.write_request(R"({"id":90,"method":"audioDevices.set","params":{"outputDeviceId":"out-1","inputDeviceId":null}})" "\n");
+    auto selected = nlohmann::ordered_json::parse(harness.read_response(90));
+    ASSERT_FALSE(selected.contains("error"));
+    EXPECT_EQ(selected["result"]["selectedOutput"]["deviceId"], "out-1");
+    harness.write_request(R"({"id":91,"method":"project.undo","params":{}})" "\n");
+    auto undone = nlohmann::ordered_json::parse(harness.read_response(91));
+    ASSERT_FALSE(undone.contains("error"));
+    EXPECT_GT(undone["result"]["sessionRevision"].get<std::uint64_t>(), selected["result"]["sessionRevision"].get<std::uint64_t>());
+    harness.write_request(R"({"id":92,"method":"audioDevices.get","params":{}})" "\n");
+    auto state = nlohmann::ordered_json::parse(harness.read_response(92));
+    EXPECT_EQ(state["result"]["selectedOutput"]["deviceId"], "default");
+    harness.write_request(R"({"id":93,"method":"project.redo","params":{}})" "\n");
+    auto redone = nlohmann::ordered_json::parse(harness.read_response(93));
+    ASSERT_FALSE(redone.contains("error"));
+    EXPECT_GT(redone["result"]["sessionRevision"].get<std::uint64_t>(), undone["result"]["sessionRevision"].get<std::uint64_t>());
+    harness.write_request(R"({"id":94,"method":"audioDevices.get","params":{}})" "\n");
+    state = nlohmann::ordered_json::parse(harness.read_response(94));
+    EXPECT_EQ(state["result"]["selectedOutput"]["deviceId"], "out-1");
 }

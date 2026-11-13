@@ -1,5 +1,7 @@
 #pragma once
 
+#include <intravenous/runtime/project_settings.h>
+
 #include <intravenous/devices/audio_device.h>
 #include <intravenous/runtime/audio_input_synchronizer.h>
 #include <intravenous/node/resources.h>
@@ -86,6 +88,8 @@ class SystemAudioDevices {
     RenderConfig input_render_config_ {};
     std::optional<std::string> selected_output_device_id_ {};
     std::optional<std::string> selected_input_device_id_ {};
+    std::optional<std::string> output_activation_error_{};
+    std::optional<std::string> input_activation_error_{};
     std::shared_ptr<ActiveOutputDevice> active_output_device_ {};
     std::shared_ptr<ActiveInputDevice> active_input_device_ {};
     std::atomic<bool> shutdown_requested_ = false;
@@ -96,6 +100,7 @@ class SystemAudioDevices {
     std::atomic<LogicalInputBinding*> active_input_binding_ = nullptr;
     std::atomic<LogicalOutputBinding*> active_output_binding_ = nullptr;
     std::mutex selection_mutex_;
+    bool selection_initialized_ = false;
     mutable std::mutex mutex_;
     std::unordered_map<std::string, std::unique_ptr<LogicalInputBinding>>
         input_bindings_{};
@@ -106,12 +111,14 @@ class SystemAudioDevices {
     std::vector<Sample> input_render_buffer_{};
     GlobalIndex realtime_cursor_{};
 
+    friend class AudioDeviceSelectionTransaction;
+    AudioDevicesSnapshot apply_selected_devices_locked(ProjectAudioDeviceSelection selection);
     [[nodiscard]] std::vector<AudioDeviceDescriptor> list_output_devices_unlocked() const;
     [[nodiscard]] std::vector<AudioDeviceDescriptor> list_input_devices_unlocked() const;
     [[nodiscard]] std::shared_ptr<ActiveOutputDevice> create_output_device(
-        std::optional<std::string> const &device_id) const;
+        std::optional<std::string> const &device_id, std::optional<std::string>* error = nullptr) const;
     [[nodiscard]] std::shared_ptr<ActiveInputDevice> create_input_device(
-        std::optional<std::string> const &device_id) const;
+        std::optional<std::string> const &device_id, std::optional<std::string>* error = nullptr) const;
     void start_input_capture_thread(std::shared_ptr<ActiveInputDevice> input_device);
     void start_output_render_thread(std::shared_ptr<ActiveOutputDevice> output_device);
     void input_capture_loop(std::shared_ptr<ActiveInputDevice> input_device);
@@ -157,6 +164,8 @@ public:
     [[nodiscard]] bool output_render_failed() const noexcept;
     [[nodiscard]] ResourceContext resources() noexcept;
     [[nodiscard]] AudioDevicesSnapshot audio_devices_snapshot() const;
+    [[nodiscard]] ProjectAudioDeviceSelection selected_devices() const;
+    void handle_project_graph_audio_selection(AudioDeviceSelectionTransactionRequest& request);
     AudioDevicesSnapshot set_selected_devices(
         std::optional<std::string> output_device_id,
         std::optional<std::string> input_device_id);
@@ -164,12 +173,6 @@ public:
     void handle_socket_rpc_get_audio_devices(
         GetAudioDevicesRequest const &request,
         SocketRpcAudioDevicesResultBuilder &builder) const;
-    void handle_socket_rpc_set_audio_devices(
-        SetAudioDevicesRequest const &request,
-        SocketRpcAudioDevicesResultBuilder &builder);
-    void handle_project_set_audio_devices(
-        ProjectSetAudioDevicesRequest const &request,
-        ProjectAudioDevicesBuilder &builder);
     void handle_project_override_settings(ProjectOverrideSettingsRequest const &request);
     void handle_project_persistence_collect_state(ProjectPersistenceBuilder &builder) const;
 };

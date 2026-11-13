@@ -685,3 +685,24 @@ TEST(ProjectPersistence, CollectStateFailureDoesNotReplaceExistingProjectFile)
     std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     EXPECT_EQ(contents, "sentinel\n");
 }
+
+TEST(ProjectPersistence, ExplicitNullOverridesSurviveMergingAndDefaultAudioIdStaysLiteral)
+{
+    auto const workspace = fresh_workspace("project_settings_explicit_clears");
+    auto startup = startup_for(workspace);
+    write_text(workspace / "iv_project.jsonl",
+        R"({"command":"project.overrideSettings","args":{"cxx_compiler":"/old/compiler","output_device_id":"out-1","input_device_id":"in-1"}})" "\n"
+        R"({"command":"project.overrideSettings","args":{"cxx_compiler":null,"output_device_id":"default","input_device_id":null}})" "\n");
+    iv::ProjectPersistence persistence(workspace, startup);
+    ProjectOverrideSettingsWitness witness;
+    auto scope = project_override_settings_witness_bridge::bind(persistence, witness);
+    (void)persistence.load();
+    ASSERT_EQ(witness.requests.size(), 1u);
+    auto const& request = witness.requests[0];
+    EXPECT_FALSE(request.cxx_compiler);
+    EXPECT_TRUE(request.specifies(iv::ProjectSettingField::cxx_compiler));
+    EXPECT_EQ(request.output_device_id, std::optional<std::string>{"default"});
+    EXPECT_FALSE(request.input_device_id);
+    EXPECT_TRUE(request.specifies(iv::ProjectSettingField::input_device_id));
+    EXPECT_FALSE(request.specifies(iv::ProjectSettingField::c_compiler));
+}

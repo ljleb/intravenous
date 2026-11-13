@@ -198,10 +198,19 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
             if (!builder.has_response()) builder.fail("node instance service is unavailable");
             return builder.build(id);
         });
+    impl_->add<SetProjectToolchainRequest>(
+        "project.setToolchain", "project.write", true, false,
+        [](auto const& request, int id, Context const&) {
+            SocketRpcAckResponseBuilder builder;
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_set_project_toolchain_event, request, builder);
+            if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            return builder.build(id);
+        });
     impl_->add<ApplyProjectEditRequest>(
         "project.applyEdit", "project.write", true, false,
         [](auto const& request, int id, Context const& context) {
             SocketRpcAckResponseBuilder builder;
+            if (request.batch.audio_devices && context.authorize) context.authorize("audio.control");
             IV_INVOKE_LINKER_EVENT(iv_socket_rpc_apply_project_edit_event, request, builder);
             if (!builder.has_response()) builder.fail("project graph service is unavailable");
             if (context.publish_project_graph) context.publish_project_graph(builder.take_publication());
@@ -211,7 +220,9 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
         "project.undo", "project.write", true, false,
         [](auto const& request, int id, Context const& context) {
             SocketRpcAckResponseBuilder builder;
-            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_undo_project_edit_event, request, builder);
+            auto authorized = request;
+            authorized.authorize_audio_control = [&context] { if (context.authorize) context.authorize("audio.control"); };
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_undo_project_edit_event, authorized, builder);
             if (!builder.has_response()) builder.fail("project graph service is unavailable");
             if (context.publish_project_graph) context.publish_project_graph(builder.take_publication());
             return builder.build(id);
@@ -220,7 +231,9 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
         "project.redo", "project.write", true, false,
         [](auto const& request, int id, Context const& context) {
             SocketRpcAckResponseBuilder builder;
-            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_redo_project_edit_event, request, builder);
+            auto authorized = request;
+            authorized.authorize_audio_control = [&context] { if (context.authorize) context.authorize("audio.control"); };
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_redo_project_edit_event, authorized, builder);
             if (!builder.has_response()) builder.fail("project graph service is unavailable");
             if (context.publish_project_graph) context.publish_project_graph(builder.take_publication());
             return builder.build(id);

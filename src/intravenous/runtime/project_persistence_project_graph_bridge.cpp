@@ -6,6 +6,8 @@
 
 namespace iv {
 IV_DEFINE_BRIDGE(project_persistence_project_graph_bridge)
+IV_SUBSCRIBE_LINKER_EVENT(project_persistence_project_graph_bridge,
+    iv_runtime_project_set_audio_devices_requested_event, &ProjectGraph::handle_project_set_audio_devices)
 IV_SUBSCRIBE_LINKER_EVENT(
     project_persistence_project_graph_bridge,
     iv_runtime_project_create_node_instance_requested_event,

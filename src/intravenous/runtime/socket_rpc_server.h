@@ -44,6 +44,7 @@ namespace iv {
         void (*)(CreateIvPackageRequest const &, SocketRpcIvPackageResultBuilder &);
     using SocketRpcGetNodeInstancesEvent =
         void (*)(GetNodeInstancesRequest const &, SocketRpcNodeInstancesResultBuilder &);
+    using SocketRpcSetProjectToolchainEvent = void (*)(SetProjectToolchainRequest const&, SocketRpcAckResponseBuilder&);
     using SocketRpcApplyProjectEditEvent = void (*)(ApplyProjectEditRequest const&, SocketRpcAckResponseBuilder&);
     using SocketRpcUndoProjectEditEvent = void (*)(UndoProjectEditRequest const&, SocketRpcAckResponseBuilder&);
     using SocketRpcRedoProjectEditEvent = void (*)(RedoProjectEditRequest const&, SocketRpcAckResponseBuilder&);
@@ -99,6 +100,7 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcGetIvPackageDefinitionsEvent, iv_socket_rpc_get_iv_package_definitions_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvPackageEvent, iv_socket_rpc_create_iv_package_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetNodeInstancesEvent, iv_socket_rpc_get_node_instances_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcSetProjectToolchainEvent, iv_socket_rpc_set_project_toolchain_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcApplyProjectEditEvent, iv_socket_rpc_apply_project_edit_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcUndoProjectEditEvent, iv_socket_rpc_undo_project_edit_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcRedoProjectEditEvent, iv_socket_rpc_redo_project_edit_event);

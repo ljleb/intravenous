@@ -965,3 +965,60 @@ Manual checks after rebuilding/installing:
 6. Save and restart: the project must restore its current durable state, with
    an empty session history. Package creation and other filesystem effects
    remain outside history.
+
+### Durable settings history extension in progress (2026-11-13)
+
+The owner accepted extending history to every persisted project setting:
+
+1. Keep selected audio-device IDs owned by SystemAudioDevices, separately from
+   hardware activation and availability. Record accepted IDs even when activation
+   fails; return the failure as status rather than rejecting an accepted selection.
+2. Add complete audio-selection and persisted toolchain records to the existing
+   history/batch mechanism. PackageJit remains the toolchain owner.
+3. Route audio selection through ProjectGraph's history coordination, with one
+   visit to each affected owner and no NodeInstances/GraphConnections/GraphJit
+   work for settings-only actions. Preserve audio.control authorization for changes
+   and reversals affecting audio selections.
+4. Restore settings through their normal owners. An unplugged requested output
+   remains selected and unavailable, using the existing fallback. Toolchain undo
+   affects future builds; it does not remove existing compiled artifacts.
+5. Exercise normal edits, unavailable/failed devices, input/output atomicity,
+   mixed graph/settings actions, no-op/redo, stale history, replay/save, and
+   unchanged GraphJit/generation counts using fake backends and light tests.
+
+No settings UI is requested. This records accepted direction and implementation
+order, not a completed feature. Owner build/test execution remains unchanged.
+
+### Settings-history source checkpoint (2026-11-13; owner verification pending)
+
+The owner reported all tests passing for the graph-history slice. The accepted
+settings extension above is now in source, with these concrete changes:
+
+- Audio selection writes enter ProjectGraph and then SystemAudioDevices once,
+  through `project_graph_system_audio_devices_bridge`. Reads stay direct.
+- PackageJit settings use `project_graph_package_jit_bridge`; PackageJit retains
+  canonical ownership and applies dirty loader settings on the next requested
+  build. Existing loaded package revisions survive settings changes.
+- ProjectEditBatch/ProjectEditEffect carry complete audio-selection and persisted
+  toolchain values. Mixed actions capture one combined effect; settings-only
+  actions skip all graph owners, compilation, and graph-generation publication.
+- Activation and enumeration errors are returned in per-side audio status.
+  Selected IDs stay accepted and saveable independently of those errors. Output
+  fallback preserves Tick's clock; input and output activation are independent.
+- Audio-specific authorization also applies to batch and history requests when
+  they affect selection. Graph-only undo does not require audio.control.
+- Explicit null overrides survive replay merging and are applied by the owner.
+  The literal audio ID `"default"` is preserved. This corrects a pre-existing
+  inability to round-trip those settings.
+
+New light regressions cover availability and activation errors, atomic input/
+output restoration, no-op hardware work/redo, stale settings and permissions,
+saving despite enumeration errors, runtime-flag preservation, invalid future
+build settings, mixed graph/settings validation and undo, replay reset, explicit
+clears, parser duplicates, and the revision-stamped socket route. The transport
+harness now uses real ProjectGraph audio history for those requests.
+
+No agent build or test run is claimed. After rebuilding, run the C++ suite and
+client checks as usual. Manual validation should include switching devices,
+undo/redo after unplugging a selected device, and save/reload with disabled
+input and a literal `"default"` output. No new frontend settings UI was added.
