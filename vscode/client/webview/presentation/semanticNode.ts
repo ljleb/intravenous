@@ -1,3 +1,4 @@
+import type { ManualControlDescriptor } from "../../src/manualControls";
 import type {
     ContinuousValueAlternative,
     SourceSpan,
@@ -25,6 +26,7 @@ export type SemanticContinuousPort = SemanticPortFields & {
     kind: "continuous";
     valueTypes: ContinuousValueAlternative[];
     channelType: string | null;
+    manualControl?: ManualControlDescriptor;
 };
 
 export type SemanticEventPort = SemanticPortFields & {
@@ -80,7 +82,7 @@ export function semanticNodeFromScopeChild(child: GraphScopeNode, scope: GraphSc
             connectivity: connected ? "connected" : "disconnected", binding: "interface",
         };
         return kind === "continuous"
-            ? { ...base, kind, valueTypes: entry.valueTypes ?? [], channelType: entry.channelType ?? null }
+            ? { ...base, kind, valueTypes: entry.valueTypes ?? [], channelType: entry.channelType ?? null, manualControl: entry.manualControl }
             : { ...base, kind, eventType: entry.eventType ?? "" };
     };
     return {

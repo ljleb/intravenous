@@ -229,7 +229,8 @@ std::vector<ManualControlId> ProjectGraph::desired_dynamic_inputs_locked(
     bool include_predictive_hover) const
 {
     std::vector<ManualControlId> result;
-    for (auto const& control : manual_controls_) {
+    if (!current_generation_ || !current_generation_->graph) return result;
+    for (auto const& control : current_generation_->graph->manual_controls) {
         auto const required = std::ranges::any_of(
             manual_interactions_,
             [&](ActiveManualControlInteraction const& interaction) {
@@ -245,7 +246,7 @@ std::vector<ManualControlId> ProjectGraph::desired_dynamic_inputs_locked(
             && current_generation_->graph
             && manual_control_participates(
                 *current_generation_->graph, control.id)) {
-            result.push_back(control.id);
+            if (!std::ranges::contains(result, control.id)) result.push_back(control.id);
         }
     }
     return result;
@@ -288,7 +289,7 @@ void ProjectGraph::schedule_control_compile_locked(
     for (auto& configured : graph->manual_controls) {
         configured.dynamic = std::ranges::contains(
             dynamic_inputs, configured.id);
-        if (auto const* durable = find_manual_control_locked(configured.id)) {
+        if (auto const* durable = find_manual_control_locked(configured.id); durable && durable->enabled) {
             configured.settled_value = durable->stored_value;
             configured.participation = durable->participation;
         }
@@ -785,13 +786,28 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         std::move(request.realized_node_replacements);
     generation->manual_controls = manual_controls_;
 
-    for (auto const& control : manual_controls_) {
-        if (!control.enabled) continue;
+    // Authored defaults are already constants. Give eligible public inputs the
+    // same manual binding without inventing saved state or an undo action.
+    auto effective_controls = manual_controls_;
+    std::unordered_map<std::string, std::unordered_set<std::string>> explicit_root_controls;
+    for (auto const& control : manual_controls_)
+        if (control.id.node.path.empty()) explicit_root_controls[control.id.node.instance_id].insert(control.id.input_name);
+    for (auto const& [instance_id, placement] : generation->placements) {
+        auto const interface = read_node_instance_interface(finished_graph.node_bundles, placement.root);
+        for (auto const& port : interface.sample_inputs) {
+            if (!port.manual_default) continue;
+            ManualControlId id{.node = NodeAddress{.instance_id = instance_id}, .input_name = port.name};
+            if (explicit_root_controls[instance_id].contains(port.name)) continue;
+            effective_controls.push_back({.id = std::move(id), .stored_value = *port.manual_default});
+        }
+    }
+    for (auto const& control : effective_controls) {
         auto const matches = resolve_node_address(
             finished_graph, generation->placements, control.id.node);
         auto const bundles = concrete_node_address_matches(
             finished_graph, matches);
         if (bundles.empty()) {
+            if (!control.enabled) continue;
             generation->manual_control_diagnostics.push_back({
                 .id = control.id,
                 .message = "manual control address does not select a concrete node",
@@ -801,11 +817,14 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         for (std::size_t selection_index = 0;
              selection_index < bundles.size(); ++selection_index) {
             auto const bundle = bundles[selection_index];
-            auto const sample_inputs =
-                finished_graph.node_bundles.typed_ports(bundle).sample_inputs();
+            if (!control.enabled && !finished_graph.node_bundles.bundle(bundle).is_subgraph()) continue;
+            std::vector<ContinuousInputConfig> sample_inputs;
+            for (std::size_t port = 0; port < finished_graph.node_bundles.bundle(bundle).sample_input_count(); ++port)
+                sample_inputs.push_back(finished_graph.node_bundles.resolve_sample_input({bundle, PortKind::sample, port}).config);
             auto const found = std::ranges::find(
                 sample_inputs, control.id.input_name, &ContinuousInputConfig::name);
             if (found == sample_inputs.end()) {
+                if (!control.enabled) continue;
                 generation->manual_control_diagnostics.push_back({
                     .id = control.id,
                     .message = "manual control input name does not select a continuous input",
@@ -813,20 +832,23 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
                 continue;
             }
             if (!is_sequential(*found)) {
+                if (!control.enabled) continue;
                 generation->manual_control_diagnostics.push_back({
                     .id = control.id,
-                    .message = "manual controls require a Sequential continuous input",
+                    .message = "manual controls require a Sequential Sample input",
                 });
                 continue;
             }
             auto const port = static_cast<std::size_t>(
                 std::distance(sample_inputs.begin(), found));
+            auto const fallback = manual_control_default_value(*found);
+            if (!control.enabled && !fallback) continue;
             finished_graph.manual_controls.push_back(ConfiguredManualControl{
                 .id = control.id,
                 .input = NodeBundlePortId{bundle, PortKind::sample, port},
                 .concrete_selection_index = selection_index,
-                .settled_value = control.stored_value,
-                .participation = control.participation,
+                .settled_value = control.enabled ? control.stored_value : *fallback,
+                .participation = control.enabled ? control.participation : ManualControlParticipation::disconnected_only,
             });
         }
     }
@@ -850,7 +872,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
             return !is_available(entry.second);
         });
         next_dynamic_inputs.clear();
-        for (auto const& control : manual_controls_) {
+        for (auto const& control : effective_controls) {
             auto const required = std::ranges::any_of(
                 next_manual_interactions,
                 [&](ActiveManualControlInteraction const& interaction) {
@@ -1451,8 +1473,8 @@ void ProjectGraph::record_edit_locked(ProjectEditEffect effect)
     ++history_serial_;
 }
 
-void ProjectGraph::record_manual_edit_locked(ProjectManualControl before,
-    ProjectManualControl after, ActiveManualControlInteraction& interaction)
+void ProjectGraph::record_manual_edit_locked(std::optional<ProjectManualControl> before,
+    std::optional<ProjectManualControl> after, ActiveManualControlInteraction& interaction)
 {
     if (before == after) return;
     if (interaction.history_serial == history_serial_ && history_position_ != 0
@@ -1472,6 +1494,46 @@ void ProjectGraph::record_manual_edit_locked(ProjectManualControl before,
     }
     record_edit_locked({.manual_controls = {{std::move(before), std::move(after)}}});
     interaction.history_serial = history_serial_;
+}
+
+void ProjectGraph::set_interaction_value_locked(ActiveManualControlInteraction& interaction, Sample value)
+{
+    auto* current = find_manual_control_locked(interaction.control);
+    std::optional<ProjectManualControl> before = current ? std::optional(*current) : std::nullopt;
+    ProjectManualControl next;
+    if (current) {
+        if (!current->enabled) throw std::invalid_argument("manual control is disabled");
+        next = *current;
+    } else {
+        if (!current_generation_ || !current_generation_->graph)
+            throw std::invalid_argument("manual control is unavailable");
+        auto const& configured = current_generation_->graph->manual_controls;
+        auto found = std::ranges::find(configured, interaction.control, &ConfiguredManualControl::id);
+        if (found == configured.end()) throw std::invalid_argument("manual control is unavailable");
+        next = {.id = interaction.control, .stored_value = found->settled_value,
+            .participation = found->participation};
+        if (next.stored_value == value) return; // Untouched implicit default.
+    }
+    next.stored_value = value;
+    // Returning to an implicit default within the same uninterrupted action
+    // restores absence as well as the number. An intervening edit seals history.
+    bool restore_absence = false;
+    if (!interaction.initial_control && interaction.history_serial == history_serial_
+        && history_position_ != 0 && history_position_ == edit_history_.size()
+        && current_generation_ && current_generation_->graph) {
+        auto const& configured = current_generation_->graph->manual_controls;
+        auto found = std::ranges::find(configured, interaction.control, &ConfiguredManualControl::id);
+        restore_absence = found != configured.end()
+            && manual_control_default_value(current_generation_->graph->node_bundles.resolve_sample_input(found->input).config) == value;
+    }
+    if (restore_absence) {
+        std::erase_if(manual_controls_, [&](auto const& entry) { return entry.id == interaction.control; });
+        record_manual_edit_locked(before, std::nullopt, interaction);
+    } else {
+        if (current) *current = next;
+        else manual_controls_.push_back(next);
+        record_manual_edit_locked(before, next, interaction);
+    }
 }
 
 void ProjectGraph::open_transactions_locked(InteractionTransactions& transactions)
@@ -1905,7 +1967,7 @@ void ProjectGraph::handle_project_set_manual_control_hover(
         std::scoped_lock lock(mutex_);
         if (request.id) {
             auto const* control = find_manual_control_locked(*request.id);
-            if (!control || !control->enabled
+            if ((control && !control->enabled)
                 || !current_generation_ || !current_generation_->graph
                 || !manual_control_is_available(
                     *current_generation_->graph, *request.id)) {
@@ -1956,7 +2018,7 @@ void ProjectGraph::handle_project_begin_manual_control_interaction(
     {
         std::scoped_lock lock(mutex_);
         auto* control = find_manual_control_locked(request.id);
-        if (!control || !control->enabled
+        if ((control && !control->enabled)
             || !current_generation_ || !current_generation_->graph
             || !manual_control_is_available(
                 *current_generation_->graph, request.id)) {
@@ -1971,13 +2033,12 @@ void ProjectGraph::handle_project_begin_manual_control_interaction(
             throw std::invalid_argument(
                 "manual-control interaction id is already active");
         }
-        auto const before = *control;
-        control->stored_value = request.value;
         manual_interactions_.push_back({
             .interaction = request.interaction,
             .control = request.id,
+            .initial_control = control ? std::optional(*control) : std::nullopt,
         });
-        record_manual_edit_locked(before, *control, manual_interactions_.back());
+        set_interaction_value_locked(manual_interactions_.back(), request.value);
         constant_specialization_deadline_.reset();
         dynamic_inputs_ = desired_dynamic_inputs_locked(false);
         auto const requested_inputs = desired_dynamic_inputs_locked(true);
@@ -2008,14 +2069,7 @@ void ProjectGraph::handle_project_update_manual_control_interaction(
             throw std::invalid_argument(
                 "manual-control interaction id is not active");
         }
-        auto* control = find_manual_control_locked(interaction->control);
-        if (!control || !control->enabled) {
-            throw std::logic_error(
-                "active manual-control interaction lost its durable control");
-        }
-        auto const before = *control;
-        control->stored_value = request.value;
-        record_manual_edit_locked(before, *control, *interaction);
+        set_interaction_value_locked(*interaction, request.value);
         (void)update_graph_executor_controls_locked(
             ManualControlTargetValue{
                 .id = interaction->control,
@@ -2042,14 +2096,7 @@ void ProjectGraph::handle_project_end_manual_control_interaction(
                 "manual-control interaction id is not active");
         }
         auto const control_id = interaction->control;
-        auto* control = find_manual_control_locked(control_id);
-        if (!control || !control->enabled) {
-            throw std::logic_error(
-                "active manual-control interaction lost its durable control");
-        }
-        auto const before = *control;
-        control->stored_value = request.value;
-        record_manual_edit_locked(before, *control, *interaction);
+        set_interaction_value_locked(*interaction, request.value);
         auto const settled_dynamic_input = std::ranges::contains(
             dynamic_inputs_, control_id);
         manual_interactions_.erase(interaction);
@@ -2527,6 +2574,18 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
             }
             classify_scope_node(node, definitions_snapshot_ && definitions_snapshot_->by_id.contains(node.instance.definition_id),
                 package, packages.publication_pending);
+            for (auto const& port : node.interface.sample_inputs) {
+                if (!port.manual_default) continue;
+                ManualControlId id{.node = node.address, .input_name = port.name};
+                auto const* saved = find_manual_control_locked(id);
+                bool const available = node.load_state == ProjectGraphScopeNodeState::ready
+                    && generation && generation->graph && manual_control_is_available(*generation->graph, id);
+                node.manual_controls.push_back({
+                    .control = saved ? *saved : ProjectManualControl{.id = id, .stored_value = *port.manual_default},
+                    .available = available,
+                    .participates = available && (!saved || saved->enabled) && manual_control_participates(*generation->graph, id),
+                });
+            }
             scope.nodes.push_back(std::move(node));
         }
         std::unordered_set<std::string> applied;

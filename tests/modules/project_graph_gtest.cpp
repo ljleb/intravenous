@@ -2997,3 +2997,113 @@ TEST_F(ProjectGraphFixture, SuccessiveProvisionalReplacementsCommitOnlyOneHistor
     EXPECT_EQ(nlohmann::ordered_json::parse(instances.desired_node_replacements()[0].configuration_arguments_json),
         nlohmann::ordered_json::array({71}));
 }
+
+TEST_F(ProjectGraphFixture, ImplicitManualDefaultIsVisibleButHoverAndNoopGestureCreateNoSavedRecord)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectAckBuilder load;
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {{.instance_id = "manual", .definition_id = manual_control_leaf_definition_id}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    iv::ManualControlId id{.node = {.instance_id = "manual"}, .input_name = "gain"};
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    auto before = project_graph.current_generation();
+    ASSERT_TRUE(before);
+    ASSERT_EQ(before->graph->manual_controls.size(), 1u);
+    auto scope = read_graph_scope(project_graph);
+    auto const& port = scope_node(scope, "manual").at("sampleInputs").at(0);
+    EXPECT_EQ(port.at("manualControl").at("value"), 0);
+    EXPECT_TRUE(port.at("manualControl").at("available").get<bool>());
+    EXPECT_TRUE(port.at("manualControl").at("participates").get<bool>());
+    iv::ProjectAckBuilder hover;
+    in_event_source([&] { project_graph.handle_project_set_manual_control_hover({.client_id = "ui", .id = id}, hover); });
+    ASSERT_NO_THROW(hover.build());
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "noop"};
+    iv::ProjectAckBuilder begin, end;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, 0.f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({gesture, 0.f}, end); });
+    ASSERT_NO_THROW(end.build());
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    EXPECT_EQ(project_graph.current_generation(), before);
+    iv::ProjectAckBuilder undo;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(undo); }), std::runtime_error);
+}
+
+TEST_F(ProjectGraphFixture, FirstManualGestureCreatesOneHistoryEntryAndUndoRestoresImplicitDefault)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectAckBuilder load;
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {{.instance_id = "manual", .definition_id = manual_control_leaf_definition_id}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    iv::ManualControlId id{.node = {.instance_id = "manual"}, .input_name = "gain"};
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "first-drag"};
+    iv::ProjectAckBuilder begin, update, end;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, .2f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    in_event_source([&] { project_graph.handle_project_update_manual_control_interaction({gesture, .4f}, update); });
+    ASSERT_NO_THROW(update.build());
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({gesture, .6f}, end); });
+    ASSERT_NO_THROW(end.build());
+    ASSERT_EQ(project_graph.manual_controls().size(), 1u);
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.6f});
+    auto scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(scope, "manual").at("sampleInputs").at(0).at("manualControl").at("value"), float(.6f));
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    iv::ProjectAckBuilder no_more;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(no_more); }), std::runtime_error);
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    ASSERT_EQ(project_graph.manual_controls().size(), 1u);
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.6f});
+}
+
+TEST_F(ProjectGraphFixture, ReturningToImplicitDefaultRemovesTheUninterruptedGestureHistory)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectAckBuilder load;
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {{.instance_id = "manual", .definition_id = manual_control_leaf_definition_id}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    iv::ManualControlId id{.node = {.instance_id = "manual"}, .input_name = "gain"};
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "round-trip"};
+    iv::ProjectAckBuilder begin, end;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, .4f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({gesture, 0.f}, end); });
+    ASSERT_NO_THROW(end.build());
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    iv::ProjectAckBuilder undo;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(undo); }), std::runtime_error);
+}
+
+TEST_F(ProjectGraphFixture, DisabledModuleManualValueKeepsTheAuthoredDefaultAndItsStoredOverride)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1)});
+    iv::ProjectAckBuilder load;
+    iv::ManualControlId id{.node = {.instance_id = "module"}, .input_name = "main"};
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {{.instance_id = "module", .definition_id = definition_id}},
+        .manual_controls = {{.id = id, .stored_value = .75f, .enabled = false}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    auto generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    ASSERT_EQ(generation->graph->manual_controls.size(), 1u);
+    EXPECT_EQ(generation->graph->manual_controls[0].settled_value, iv::Sample{0});
+    auto scope = read_graph_scope(project_graph);
+    auto const& control = scope_node(scope, "module").at("sampleInputs").at(0).at("manualControl");
+    EXPECT_EQ(control.at("value"), .75f);
+    EXPECT_FALSE(control.at("enabled").get<bool>());
+    EXPECT_FALSE(control.at("participates").get<bool>());
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.75f});
+}

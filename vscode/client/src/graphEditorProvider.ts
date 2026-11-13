@@ -8,6 +8,8 @@ import type { WorkspaceSession } from "./workspaceSession";
 
 export class GraphEditorProvider implements vscode.Disposable {
     private readonly panels = new Set<vscode.WebviewPanel>();
+    private readonly controlOwners = new Map<vscode.WebviewPanel, string>();
+    private readonly controlsChanged: vscode.Disposable;
     private readonly ready = new Set<vscode.WebviewPanel>();
     private lastActivePanel: vscode.WebviewPanel | null = null;
     private readonly pendingActions = new Map<vscode.WebviewPanel, GraphEditorAction[]>();
@@ -32,6 +34,9 @@ export class GraphEditorProvider implements vscode.Disposable {
                 this.state.error = this.layoutError;
             });
         this.changed = session.onDidChangeGraph(() => { void this.refresh(); });
+        this.controlsChanged = session.onDidChangeManualControls(() => {
+            for (const panel of this.ready) this.postControls(panel);
+        });
         this.windowFocusChanged = vscode.window.onDidChangeWindowState(({ focused }) => {
             for (const panel of this.ready) void panel.webview.postMessage({ type: "graphWindowFocus", focused });
         });
@@ -59,6 +64,7 @@ export class GraphEditorProvider implements vscode.Disposable {
         }
         const [scope, definitions] = await Promise.all([this.session.readGraphScope(), this.session.graphDefinitions()]);
         if (!this.panels.has(panel)) return;
+        this.session.manualControls.reconcile(scope);
         this.state = { ...this.state, scope, definitions, sessionStatus: this.session.graphSessionStatus };
         this.post(panel);
         if (action === "addNode" || action === "createPackage") {
@@ -113,6 +119,7 @@ export class GraphEditorProvider implements vscode.Disposable {
 
     private attach(panel: vscode.WebviewPanel): void {
         this.panels.add(panel);
+        this.controlOwners.set(panel, crypto.randomUUID());
         if (panel.active) this.lastActivePanel = panel;
         const viewState = panel.onDidChangeViewState(() => {
             if (panel.active) this.lastActivePanel = panel;
@@ -123,7 +130,12 @@ export class GraphEditorProvider implements vscode.Disposable {
             if (message?.type === "graphReady") {
                 await this.layoutLoaded;
                 if (!this.panels.has(panel)) return;
+                if (this.ready.has(panel)) {
+                    const owner = this.controlOwners.get(panel);
+                    if (owner) this.session.manualControls.releaseOwner(owner);
+                }
                 this.ready.add(panel);
+                this.postControls(panel);
                 void panel.webview.postMessage({ type: "graphWindowFocus", focused: vscode.window.state.focused });
                 this.post(panel);
                 await this.refresh();
@@ -132,6 +144,19 @@ export class GraphEditorProvider implements vscode.Disposable {
                 for (const action of pending) {
                     try { await this.runAction(action, panel); }
                     catch (error) { void vscode.window.showErrorMessage(`Cannot edit project: ${error.message}`); }
+                }
+            } else if (message?.type === "manualControlAction") {
+                const owner = this.controlOwners.get(panel);
+                if (!owner) return;
+                try { this.session.manualControls.action(owner, message.action); }
+                catch (error) {
+                    if (message.action.action === "begin") void panel.webview.postMessage({
+                        type: "manualControlState", interactions: [...this.session.manualControls.states(owner), {
+                            interactionId: message.action.interactionId, control: message.action.control,
+                            value: message.action.value, phase: "failed", error: error.message,
+                        }],
+                    });
+                    void vscode.window.showErrorMessage(`Cannot edit manual input: ${error.message}`);
                 }
             } else if (message?.type === "projectHistory") {
                 try {
@@ -180,6 +205,9 @@ export class GraphEditorProvider implements vscode.Disposable {
             }
         });
         panel.onDidDispose(() => {
+            const owner = this.controlOwners.get(panel);
+            if (owner) this.session.manualControls.releaseOwner(owner);
+            this.controlOwners.delete(panel);
             messages.dispose(); viewState.dispose(); this.panels.delete(panel); this.ready.delete(panel);
             this.pendingActions.delete(panel);
             if (this.lastActivePanel === panel) this.lastActivePanel = null;
@@ -192,6 +220,13 @@ export class GraphEditorProvider implements vscode.Disposable {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${panel.webview.cspSource} data:; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'">
 <link rel="stylesheet" href="${css}"></head><body data-surface="graphEditor"><div id="app"></div>
 <script type="module" nonce="${nonce}" src="${script}"></script></body></html>`;
+    }
+
+    private postControls(panel: vscode.WebviewPanel): void {
+        const owner = this.controlOwners.get(panel);
+        if (owner && this.ready.has(panel)) void panel.webview.postMessage({
+            type: "manualControlState", interactions: this.session.manualControls.states(owner),
+        });
     }
 
     private post(panel: vscode.WebviewPanel): void {
@@ -218,6 +253,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                         // A change while reading requires another complete read.
                         // Do not show a stale response, especially after restart.
                         if (this.dirty || this.disposed) continue;
+                        this.session.manualControls.reconcile(scope);
                         this.state.scope = scope;
                         this.state.definitions = definitions;
                         this.state.error = this.layoutError;
@@ -234,6 +270,7 @@ export class GraphEditorProvider implements vscode.Disposable {
     dispose(): void {
         this.disposed = true;
         this.changed.dispose();
+        this.controlsChanged.dispose();
         this.windowFocusChanged.dispose();
         for (const panel of this.panels) panel.dispose();
         this.panels.clear();

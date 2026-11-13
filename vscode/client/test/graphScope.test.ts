@@ -141,3 +141,18 @@ test("copied debug details preserve identity, diagnostics, arbitrary ports, and 
     assert.equal(copied.connections[1].connection.inputs[0].path[0].name, "left");
     assert.equal(semanticNodeFromScopeChild(sink, scope).ports.filter((port) => port.kind === "event").length, 100);
 });
+
+test("semantic ports retain backend manual eligibility and values without guessing from Sample", () => {
+    const scope = graph();
+    scope.nodes[0].sampleInputs[0].manualControl = {
+        value: .375, enabled: true, participation: "disconnectedOnly", available: true, participates: false,
+    };
+    const source = semanticNodeFromScopeChild(scope.nodes[0], scope);
+    const sink = semanticNodeFromScopeChild(scope.nodes[1], scope);
+    const sourceInput = source.ports.find((entry) => entry.kind === "continuous" && entry.direction === "input");
+    const sinkInput = sink.ports.find((entry) => entry.kind === "continuous" && entry.direction === "input");
+    assert.equal(sourceInput?.kind, "continuous");
+    assert.equal(sinkInput?.kind, "continuous");
+    if (sourceInput?.kind === "continuous") assert.deepEqual(sourceInput.manualControl, scope.nodes[0].sampleInputs[0].manualControl);
+    if (sinkInput?.kind === "continuous") assert.equal(sinkInput.manualControl, undefined);
+});

@@ -198,7 +198,9 @@ the whole Vue client to be finished.
 
 ## Current stage
 
-Stage 2, started 2026-11-12. Stage 1 is complete.
+Stage 3, started 2026-11-13. The owner has verified Stages 1–2, including
+project history and durable settings history. Earlier checkpoints below retain
+their original dates and are superseded by the later verification updates.
 
 ### Stage 2 plan (2026-11-12)
 
@@ -1022,3 +1024,167 @@ No agent build or test run is claimed. After rebuilding, run the C++ suite and
 client checks as usual. Manual validation should include switching devices,
 undo/redo after unplugging a selected device, and save/reload with disabled
 input and a literal `"default"` output. No new frontend settings UI was added.
+
+### Stage 3 start and verification update (2026-11-13)
+
+The owner reports that all tests pass for the graph-edit history and its durable
+settings extension. The earlier pending-verification checkpoints above record
+prior states; this update supersedes their verification status.
+
+The accepted Stage 3 order is:
+
+1. Connect Vue manual controls to the existing backend hover, interaction,
+   dynamic-input preparation, settled specialization, and grouped history paths.
+2. Keep interactions in a host-owned context across component remounts,
+   presentation-mode changes, and compatible graph revisions. End an interaction
+   when its target disappears or becomes incompatible; release it on disconnect.
+3. Generate frontend-owned TypeScript bindings from the language-independent
+   node-event protocol and expose typed `node.send(event)`.
+4. Exercise controls and typed events in a bundled specialized presentation,
+   retaining the generic lane fallback.
+
+The first coherent feature is manual control editing together with its durable
+interaction context. A component must not own a server gesture that is lost when
+that component unmounts. Live meters, waveform observation, and playback work
+remain in their planned stages. No new settings UI is part of this feature.
+
+Implementation is starting; no new build/test result is claimed. The owner
+continues to run builds and tests.
+
+#### Manual-control integration findings
+
+The backend currently configures only explicit ProjectManualControl records.
+Consequently a default-valued free input cannot be hovered or dragged without
+first creating a durable record, which would make a frontend initialization
+request appear as a separate undo action. The implementation will configure
+eligible authored Sample defaults as implicit controls, retaining the same
+constant specialization when idle. Only a changed manual value needs a durable
+record. Hover and a no-op gesture must not create project state or history.
+Eligibility and current stored values will be published in graph.getScope;
+Vue must not infer eligibility from a type name alone.
+
+#### Stage 3 module-input lowering friction (2026-11-13; unresolved)
+
+The first implementation is in progress and has not been built or tested.
+The backend's existing `ConfiguredManualControl.input` can name a public module
+input, but `build_sample_port_binding_plan` in `graph_jit/lowering_plan.cpp`
+requires that input to belong directly to a concrete Tick primitive. A subgraph
+boundary has no entry in `analysis.primitives`, so it is rejected. Sequential
+inputs of Tock leaves likewise cannot use that Tick-only lowering.
+
+For example, `Module.cutoff` can be connected to a conversion and then to a
+filter. Injecting its manual value into the filter instead of at the module's
+public input skips the module's conversion. A module input may also fan out to
+several consumers, each with its own other sources and combine operation.
+Simply copying a scalar to each final input does not preserve those semantics.
+
+The proposed next step is to lower the manual value at the public module input
+and preserve its internal routing/conversions. An alternative is to deliver
+direct Tick-leaf controls first and explicitly defer module inputs. This choice
+has been sent to the owner; no decision is inferred from implementation ease.
+Do not interpret the in-progress implicit-default bindings as verified support
+for module or Tock inputs. The current working tree is an unfinished feature;
+full suite success is not expected until this lowering issue is resolved.
+
+Independent frontend work now in source includes a workspace-owned control
+request queue, coalesced unsent values, panel-owned interaction identities,
+webview-root pointer tracking, numeric inputs and scrub handles in generic
+lanes, and semantic `useManualInput` access for specialized components. Tests
+for these lifetimes and failure boundaries are in source but have not been run.
+
+#### Module-input decision (2026-11-13)
+
+The owner selected support for module inputs now. The feature therefore includes
+GraphJit lowering of manual values at public module inputs, preserving internal
+routing and conversions. A direct-leaf-only release is not the accepted scope.
+The earlier friction record is retained to explain this expanded prerequisite.
+
+#### Stage 3 manual-control source checkpoint (2026-11-13; owner verification pending)
+
+This checkpoint supersedes the earlier unresolved module-input finding. The
+accepted module-input extension is now in source. No agent build or test run
+is claimed.
+
+- `ProjectGraph` configures implicit authored defaults for eligible public
+  Sequential Sample inputs. Hover and an unchanged gesture do not create saved
+  records. A changed first gesture records absence-to-value as one history
+  entry; undo restores the authored default. A round trip to that implicit
+  default within an uninterrupted gesture removes its new record/history.
+- `graph.getScope` exposes manual-control eligibility, availability, stored value,
+  participation policy, and whether the value currently participates. Vue uses
+  this metadata rather than guessing eligibility from a Sample type name.
+  Direct Tock-leaf controls remain outside the existing Tick control backend.
+- Structural routing retains module-input manual contributions through internal
+  conversion, projection, nested boundaries, and detach operations. Concrete
+  destinations receive those connection contributions before any direct leaf
+  manual contribution uses the leaf's authored combine operation. No authored
+  control nodes are inserted.
+- Uniform settled module-input contributions can use immutable input bindings.
+  Timeline and delay storage is planned before execution; constant/dynamic
+  code variants retain the same NodeLayout. Compatible source/target route
+  identities preserve their state through existing raw-region migration.
+- The realtime root latches each semantic control's target once per audio
+  callback, including fanout to several destinations and primitive slices.
+- `WorkspaceSession.manualControls` owns queued control requests and interaction
+  identities independently of Vue. Unsent pointer values coalesce, mutations
+  use the latest acknowledged revision, and rejected mutations are not replayed.
+  Closing a panel finalizes its last desired value; socket loss discards local
+  gestures, while the backend retains the last accepted durable value.
+- The graph webview owns pointer/keyboard gestures outside presentation widgets.
+  Generic mini/editable lanes expose numeric fields and scrub handles. A mode
+  change or widget remount does not end a drag. `useManualInput(name)` exposes
+  the same semantic capability to future specialized components.
+- Scope refreshes preserve compatible gestures and explicitly invalidate
+  removed/incompatible inputs. Acknowledged values remain visible until the
+  read model catches up; other clients' later edits and undo are authoritative.
+
+Added source tests cover queue ordering/coalescing, late replies after
+connection loss, owner isolation, rejected updates and initial grabs, removal,
+component remounts, pointer bounds, RPC revisions, implicit-default history,
+module channel conversion, ordinary-source participation, detach fanout, and
+constant-to-dynamic execution using the same storage. The runtime regression
+reuses the existing package fixture; it adds no package build fixture.
+
+Owner verification:
+
+1. Run the normal C++ build and test suite.
+2. In `vscode/client`, run `npm run typecheck`, `npm test`, and the normal client
+   build/install procedure.
+3. In a generic mini/editable lane, edit an eligible input numerically and drag
+   its scrub handle while audio runs. Undo should reverse one complete gesture.
+4. Change vertical zoom/display mode during a drag, then release it. The final
+   value must persist and undo once. Removing the target must end the gesture.
+5. Exercise a module's public input and its internal routing. Connecting an
+   external source in disconnected-only mode retains the stored value without
+   adding it; disconnecting restores that stored value.
+
+Remaining Stage 3 work is unchanged: generate frontend-owned typed node-event
+bindings from the neutral protocol, expose typed `node.send(event)`, and exercise
+both events and manual controls in a bundled specialized presentation. Stage 3
+is not marked complete by this manual-control checkpoint.
+
+#### Manual-control verification follow-up (2026-11-13)
+
+The owner built the feature and reported 921 of 923 C++ tests passing. The two
+failures identified test-fixture mistakes: an acyclic detach in the planner
+fixture, and a shorthand Constant alias absent from the runtime fixture's
+package definitions. Both fixtures now use real feedback cycles; the runtime
+fixture explicitly uses its already registered Constant and FeedbackGain nodes.
+Its immutable-input variant remains ordinary fanout without a temporal cut.
+
+Review also found that manual-only contributions could disappear from the
+ordinary detach validation after routing. A manual route now retains the
+ordinary source bundles in its same detached expression, and validation checks
+that those dependencies actually close a cycle. This retains the cycle proof
+through target-projection normalization and rejects acyclic manual-only detach.
+A light regression covers that rejection. These fixes have not been built or
+run by the agent; owner verification remains pending.
+
+The next owner run passed 923 of 924 tests. The remaining runtime fixture
+failed during construction, before GraphJit: its host-side FeedbackGain
+arguments had no finalized configuration type identities. Its explicit Constant
+arguments had the same issue. The fixture now takes parameter identities from
+each registered provider signature, following the existing
+`configured_module_graph_with_arguments()` host-test pattern, and supplies the
+exact C++ parameter types. Production argument validation is unchanged. This
+fixture correction awaits the owner's build and runtime verification.

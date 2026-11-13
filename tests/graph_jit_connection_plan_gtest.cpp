@@ -4384,3 +4384,95 @@ TEST(GraphJitConnectionPlan, RejectsContextualReplayCycles)
     EXPECT_NE(plan.error().find("contextual replay dependency cycle"),
         std::string::npos);
 }
+
+TEST(GraphJitConnectionPlan, ModuleManualInputKeepsItsInternalChannelConversion)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    NodeBundleHandle sink_handle = 0;
+    auto module = graph.subgraph([&](SubgraphBuilder& boundary) {
+        auto input = boundary.input<"gain", stereo>();
+        auto sink = details::configure_concrete_node<PlainSamplePass>(graph);
+        sink_handle = sink.node_bundle_handle();
+        sink(input);
+        boundary.outputs();
+    }, "manual-module");
+    graph.outputs();
+    auto configured = std::move(graph).finish();
+    configured.manual_controls.push_back({
+        .id = {.node = {.instance_id = "module"}, .input_name = "gain"},
+        .input = {module.node_bundle_handle(), PortKind::sample, 0},
+        .settled_value = .5f,
+    });
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan) << plan.error();
+    EXPECT_EQ(plan->nodes.size(), 1u); // No synthetic authored control node.
+    EXPECT_TRUE(plan->sample_connections.empty());
+    ASSERT_EQ(plan->manual_sample_routes.size(), 2u);
+    for (auto const& route : plan->manual_sample_routes) {
+        EXPECT_EQ(route.target.node_bundle_handle, sink_handle);
+        EXPECT_EQ(route.target_channel, 0u);
+        EXPECT_FLOAT_EQ(route.coefficient, .5f); // Stereo averaging, not two full copies.
+    }
+}
+
+TEST(GraphJitConnectionPlan, ModuleManualFanoutPreservesDetachAndOrdinarySourcePolicy)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    NodeBundleHandle delayed_handle = 0;
+    auto module = graph.subgraph([&](SubgraphBuilder& boundary) {
+        auto input = boundary.input<"gain">();
+        auto direct = details::configure_concrete_node<PlainSamplePass>(graph);
+        auto delayed = details::configure_concrete_node<PlainSamplePass>(graph);
+        delayed_handle = delayed.node_bundle_handle();
+        direct(input);
+        delayed(static_cast<SamplePortRef>(input).detach(3, Sample{-1}));
+        boundary.outputs("feedback"_P = delayed);
+    }, "manual-fanout");
+    auto source = details::configure_concrete_node<PlainSamplePass>(graph);
+    module(source);
+    source(module); // The detached route closes delayed -> source -> module -> delayed.
+    graph.outputs();
+    auto configured = std::move(graph).finish();
+    configured.manual_controls.push_back({
+        .id = {.node = {.instance_id = "module"}, .input_name = "gain"},
+        .input = {module.node_bundle_handle(), PortKind::sample, 0}, .settled_value = .5f,
+    });
+    auto disconnected_only = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(disconnected_only) << disconnected_only.error();
+    EXPECT_TRUE(disconnected_only->manual_sample_routes.empty());
+    configured.manual_controls[0].participation = ManualControlParticipation::participate_with_connections;
+    auto combined = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(combined) << combined.error();
+    ASSERT_EQ(combined->manual_sample_routes.size(), 2u);
+    auto delayed = std::ranges::find_if(combined->manual_sample_routes,
+        [&](auto const& route) { return route.target.node_bundle_handle == delayed_handle; });
+    ASSERT_NE(delayed, combined->manual_sample_routes.end());
+    EXPECT_EQ(delayed->delay, 3u);
+    // The ordinary detached expression already owns the one initial override.
+    EXPECT_FLOAT_EQ(delayed->initial_coefficient, 0.f);
+    EXPECT_FALSE(combined->sample_connections.empty());
+}
+
+TEST(GraphJitConnectionPlan, RejectsAcyclicDetachOfAModuleManualInput)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto module = graph.subgraph([&](SubgraphBuilder& boundary) {
+        auto input = boundary.input<"gain">();
+        auto sink = details::configure_concrete_node<PlainSamplePass>(graph);
+        sink(static_cast<SamplePortRef>(input).detach(3));
+        boundary.outputs();
+    }, "acyclic-manual-detach");
+    auto const handle = module.node_bundle_handle();
+    graph.outputs();
+    auto configured = std::move(graph).finish();
+    configured.manual_controls.push_back({
+        .id = {.node = {.instance_id = "module"}, .input_name = "gain"},
+        .input = {handle, PortKind::sample, 0}, .settled_value = .5f,
+    });
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_FALSE(plan);
+    EXPECT_NE(plan.error().find("breaks an acyclic dependency"), std::string::npos);
+}

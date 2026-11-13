@@ -7,6 +7,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -442,7 +444,8 @@ void SocketRpcGraphScopeResultBuilder::fail(std::string message) {
 }
 
 namespace {
-Json graph_scope_ports_json(std::vector<NodeInstancePortInfo> const& ports)
+Json graph_scope_ports_json(std::vector<NodeInstancePortInfo> const& ports,
+    std::span<ProjectGraphScopeManualControl const> controls = {})
 {
     auto json = Json::array();
     for (auto const& port : ports) {
@@ -454,6 +457,13 @@ Json graph_scope_ports_json(std::vector<NodeInstancePortInfo> const& ports)
         if (port.event_type) {
             entry["eventType"] = std::string(details::event_type_name(*port.event_type));
         }
+        auto control = std::ranges::find_if(controls, [&](auto const& value) { return value.control.id.input_name == port.name; });
+        if (control != controls.end()) entry["manualControl"] = Json{
+            {"value", control->control.stored_value.value}, {"enabled", control->control.enabled},
+            {"participation", control->control.participation == ManualControlParticipation::disconnected_only
+                ? "disconnectedOnly" : "participateWithConnections"},
+            {"available", control->available}, {"participates", control->participates},
+        };
         json.push_back(std::move(entry));
     }
     return json;
@@ -483,7 +493,7 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
         nodes.push_back(Json{
             {"address", node_address_json(node.address, ProjectConnectionJsonNames::socket_rpc)},
             {"instance", iv_module_instance_json(node.instance)},
-            {"sampleInputs", graph_scope_ports_json(node.interface.sample_inputs)},
+            {"sampleInputs", graph_scope_ports_json(node.interface.sample_inputs, node.manual_controls)},
             {"sampleOutputs", graph_scope_ports_json(node.interface.sample_outputs)},
             {"eventInputs", graph_scope_ports_json(node.interface.event_inputs)},
             {"eventOutputs", graph_scope_ports_json(node.interface.event_outputs)},

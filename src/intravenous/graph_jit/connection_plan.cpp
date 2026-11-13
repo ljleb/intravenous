@@ -539,7 +539,8 @@ std::expected<ChannelTypeId, std::string> channel_type_with_count(
 }
 
 std::expected<std::vector<RoutedSampleConnection>, std::string>
-build_structural_sample_routes(ConfiguredGraph const& graph)
+build_structural_sample_routes(ConfiguredGraph const& graph,
+    std::vector<ManualSampleRoutePlan>& manual_routes)
 {
     auto const authored = graph.connections.configured_sample_connections();
     auto const root_boundary = graph.public_ports.boundary_handle();
@@ -586,6 +587,25 @@ build_structural_sample_routes(ConfiguredGraph const& graph)
     auto is_terminal_target = [&](SampleInputChannelId target) {
         auto const& bundle = graph.node_bundles.bundle(target.bundle);
         return bundle.is_concrete() || target.bundle == root_boundary;
+    };
+
+    std::map<std::pair<NodeBundleHandle, std::size_t>, std::size_t> boundary_controls;
+    for (std::size_t index = 0; index < graph.manual_controls.size(); ++index) {
+        auto const& control = graph.manual_controls[index];
+        if (!graph.node_bundles.bundle(control.input.node_bundle_handle).is_subgraph()) continue;
+        if (!boundary_controls.emplace(std::pair{control.input.node_bundle_handle, control.input.port_index}, index).second)
+            return std::unexpected("GraphJit manual controls contain two values for one module input");
+    }
+    std::map<std::pair<NodeBundleHandle, std::size_t>, bool> connected_module_inputs;
+    for (auto const& connection : authored) for (auto const target : connection.target_channels) {
+        auto expanded = expand_target(expand_target, target);
+        if (!expanded) return std::unexpected(std::move(expanded.error()));
+        for (auto const channel : *expanded) connected_module_inputs[{channel.bundle, channel.port}] = true;
+    }
+    auto manual_source = [&](SampleOutputChannelId source) -> std::optional<std::size_t> {
+        if (source.bundle >= boundary_owner.size() || !boundary_owner[source.bundle]) return std::nullopt;
+        auto found = boundary_controls.find({*boundary_owner[source.bundle], source.port});
+        return found == boundary_controls.end() ? std::nullopt : std::optional(found->second);
     };
 
     std::vector<SampleOutputChannelId> resolving;
@@ -683,13 +703,18 @@ build_structural_sample_routes(ConfiguredGraph const& graph)
                 incoming_target_channel = target_channel;
             }
         }
-        if (!incoming) {
-            pop();
-            return std::unexpected(
-                "GraphJit structural sample boundary route has no source");
-        }
         ResolvedSampleChannel result;
         result.crossed_structure = true;
+        auto const control_index = manual_source(output);
+        if (control_index && (!connected_module_inputs.contains({upstream_target.bundle, upstream_target.port})
+            || graph.manual_controls[*control_index].participation == ManualControlParticipation::participate_with_connections)) {
+            result.contributions.push_back({.source_terms = {{output, 1.0f}}});
+        }
+        if (!incoming) {
+            pop();
+            if (!result.contributions.empty()) return result;
+            return std::unexpected("GraphJit structural sample boundary route has no source");
+        }
         for (std::size_t source_channel = 0;
              source_channel < incoming->source_channels.size();
              ++source_channel) {
@@ -773,6 +798,45 @@ build_structural_sample_routes(ConfiguredGraph const& graph)
             });
             continue;
         }
+
+        for (std::size_t source_index = 0; source_index < resolved_sources.size(); ++source_index) {
+            auto& resolved = resolved_sources[source_index];
+            for (auto& contribution : resolved.contributions) {
+                std::vector<NodeBundleHandle> ordinary_sources;
+                for (auto const& [source, coefficient] : contribution.source_terms) {
+                    if (coefficient != 0 && !manual_source(source) && !std::ranges::contains(ordinary_sources, source.bundle))
+                        ordinary_sources.push_back(source.bundle);
+                }
+                bool initial_assigned = !ordinary_sources.empty();
+                for (auto const& [source, coefficient] : contribution.source_terms) {
+                    auto control = manual_source(source);
+                    if (!control || coefficient == 0) continue;
+                    for (std::size_t target_index = 0; target_index < expanded_targets.size(); ++target_index) {
+                        auto const edge = channel_conversion_coefficient(connection.source_type,
+                            connection.target_type, source_index, target_index) * contribution.output_coefficient;
+                        if (edge == 0) continue;
+                        for (auto const target : expanded_targets[target_index]) {
+                            if (!is_terminal_target(target)) continue;
+                            manual_routes.push_back({
+                                .configured_connection_index = connection_index,
+                                .control_index = *control,
+                                .target = {target.bundle, PortKind::sample, target.port},
+                                .target_channel = target.channel,
+                                .coefficient = coefficient * edge,
+                                .delay = contribution.detach ? contribution.detach->loop_extra_latency : 0,
+                                .initial_value = contribution.detach ? contribution.detach->initial_value_override : std::nullopt,
+                                .initial_coefficient = contribution.detach && !initial_assigned ? edge : 0,
+                                .detach_sources = contribution.detach ? ordinary_sources : std::vector<NodeBundleHandle>{},
+                            });
+                        }
+                    }
+                    initial_assigned = true;
+                }
+                std::erase_if(contribution.source_terms, [&](auto const& term) { return manual_source(term.first).has_value(); });
+            }
+            std::erase_if(resolved.contributions, [](auto const& term) { return term.source_terms.empty(); });
+        }
+        if (std::ranges::all_of(resolved_sources, [](auto const& source) { return source.contributions.empty(); })) continue;
 
         auto const has_routed_detach = std::ranges::any_of(
             resolved_sources,
@@ -3787,6 +3851,18 @@ std::expected<void, std::string> validate_detached_connections(
                 !result) return result;
         }
     }
+    for (auto const& route : plan.manual_sample_routes) {
+        if (route.delay == 0) continue;
+        // A manual value has no upstream execution dependency of its own.
+        // It may share a temporal cut with a cyclic ordinary contribution,
+        // but cannot turn detach into an arbitrary feed-forward delay.
+        if (route.detach_sources.empty()) return std::unexpected(
+            "GraphJit manual sample detach on connection " + std::to_string(route.configured_connection_index)
+            + " breaks an acyclic dependency");
+        std::array<NodeBundleHandle, 1> targets{route.target.node_bundle_handle};
+        if (auto result = validate(route.detach_sources, targets, "manual sample", route.configured_connection_index); !result)
+            return result;
+    }
     for (auto const& connection : plan.event_connections) {
         std::vector<NodeBundleHandle> targets;
         targets.reserve(connection.targets.size());
@@ -4227,6 +4303,15 @@ std::expected<void, std::string> append_sample_incoming_paths(
     NodeBundleHandle bundle,
     std::vector<IncomingStreamPath>& paths)
 {
+    for (auto& route : plan.manual_sample_routes) {
+        // Like the ordinary detached part of this expression, a detached
+        // manual contribution keeps its authored delay rather than acquiring
+        // feed-forward alignment across the temporal cut.
+        if (route.delay == 0 && route.target.node_bundle_handle == bundle) paths.push_back({
+            .source_bundle = plan.boundary_bundle, .source_latency = 0,
+            .read_latency = &route.read_latency,
+        });
+    }
     for (auto& connection : plan.sample_connections) {
         if (!is_entirely_realtime_delivery(connection)
             || has_detached_source(connection)
@@ -6128,7 +6213,7 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     auto routed_samples = [&]()
         -> std::expected<std::vector<RoutedSampleConnection>, std::string> {
         try {
-            return build_structural_sample_routes(graph);
+            return build_structural_sample_routes(graph, plan.manual_sample_routes);
         } catch (std::exception const& error) {
             return std::unexpected(
                 "GraphJit structural sample routing failed: "

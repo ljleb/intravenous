@@ -19,10 +19,10 @@ struct ConfiguredGraph {
   GraphBuilderPublicPorts public_ports{0};
   GraphBuilderAnnotations annotations{};
   GraphBuilderVirtualNodes virtual_nodes{};
-  // ProjectGraph resolves durable ManualControlId values into concrete input
-  // ports after GraphBuilder::finish(). GraphJit consumes these records as
-  // input contributions; authored graphs do not contain synthetic control
-  // nodes.
+  // ProjectGraph resolves ManualControlId values into authored input ports
+  // after GraphBuilder::finish(), including implicit defaults. GraphJit routes
+  // module inputs through their boundaries before lowering contributions at
+  // concrete consumers; authored graphs do not contain synthetic control nodes.
   std::vector<ConfiguredManualControl> manual_controls{};
 };
 

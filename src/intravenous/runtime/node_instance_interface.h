@@ -4,6 +4,7 @@
 #include <intravenous/continuous_value.h>
 #include <intravenous/ports.h>
 
+#include <algorithm>
 #include <optional>
 #include <cstddef>
 #include <string>
@@ -18,7 +19,20 @@ struct NodeInstancePortInfo {
     std::optional<ChannelTypeId> channel_type{};
     std::optional<EventTypeId> event_type{};
     std::vector<ContinuousValueIntrospectionMetadata> value_types{};
+    // Present only for the scalar Sample Sequential input supported by the
+    // manual-control backend. Other continuous types are not numeric knobs.
+    std::optional<Sample> manual_default{};
 };
+
+inline std::optional<Sample> manual_control_default_value(ContinuousInputConfig const& config)
+{
+    if (!is_sequential(config)) return std::nullopt;
+    auto const& metadata = sequential_input_properties(config).value_metadata;
+    if (metadata.size() != 1) return std::nullopt;
+    if (auto const* sample = std::get_if<ContinuousValueType<Sample>::SequentialInputMetadata>(&metadata.front()))
+        return sample->default_value;
+    return std::nullopt;
+}
 
 struct NodeInstanceInterface {
     std::vector<NodeInstancePortInfo> sample_inputs{};
@@ -35,6 +49,13 @@ inline NodeInstanceInterface read_node_instance_interface(
 {
     NodeInstanceInterface result;
     auto const& bundle = bundles.bundle(root);
+    auto tick_input_owner = [&](auto&& self, NodeBundleHandle handle) -> bool {
+        auto const& candidate = bundles.bundle(handle);
+        if (candidate.is_concrete()) return bundles.materialize_concrete_description(handle).operations.runtime.tick_block != nullptr;
+        if (candidate.is_tiled()) return std::ranges::all_of(candidate.tiled_members(), [&](auto member) { return self(self, member); });
+        return candidate.is_subgraph();
+    };
+    bool const manual_owner = tick_input_owner(tick_input_owner, root);
     for (std::size_t index = 0; index < bundle.sample_input_count(); ++index) {
         auto const config = bundles.resolve_sample_input({root, PortKind::sample, index}).config;
         result.sample_inputs.push_back({
@@ -43,6 +64,7 @@ inline NodeInstanceInterface read_node_instance_interface(
             .value_types = std::visit([](auto const& access) {
                 return continuous_introspection_metadata(access.value_metadata);
             }, config.access),
+            .manual_default = manual_owner ? manual_control_default_value(config) : std::nullopt,
         });
     }
     for (std::size_t index = 0; index < bundle.sample_output_count(); ++index) {

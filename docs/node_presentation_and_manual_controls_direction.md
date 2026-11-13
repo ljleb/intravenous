@@ -790,3 +790,17 @@ in [Vue Client Implementation Stages](./vue_client_implementation_stages.md)).
 The key architectural boundary is that presentations and manual controls consume
 stable graph/runtime identities; they do not become an alternate owner of graph
 construction or runtime state.
+
+### Public module inputs and implicit defaults (2026-11-13)
+
+The owner selected module-input support as part of the first Vue manual-control
+feature. A manual value on a module's public input enters at that input, before
+its internal routing and channel conversions. It is not a replacement for the
+values of whichever internal leaf inputs happen to consume it. Internal fanout,
+projection, conversions, and detach operations retain their semantics.
+
+An eligible input's authored default is an implicit manual value until a user
+changes it. Hover and an unchanged gesture do not create persisted overrides or
+undo entries. Undoing the first changed gesture can restore absence of an
+override, allowing the authored default to apply again. Runtime control bindings
+can exist for such implicit defaults without requiring saved project records.

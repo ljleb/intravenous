@@ -215,6 +215,15 @@ struct ManualControlPlan {
     std::size_t input_index = 0;
     bool participates = false;
     bool stages_timeline = false;
+    // Routed module-input values are added within the connection composition,
+    // before a direct leaf manual control uses the leaf's combine operation.
+    bool boundary_source = false;
+    bool first_for_input = true;
+    std::vector<float> channel_coefficients{};
+    std::size_t delay = 0;
+    std::size_t delay_capacity = 0;
+    std::vector<Sample> delay_initial_values{};
+    std::size_t delay_storage_offset = 0;
     NodeLayout::RegionHandle state_region{};
     std::size_t state_storage_offset = 0;
 };

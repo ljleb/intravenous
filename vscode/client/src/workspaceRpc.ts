@@ -1,3 +1,4 @@
+import type { ManualControlId } from "./manualControls";
 import { JsonRpcSocketClient } from "./rpcClient";
 import { VirtualNode, SourceSpan } from "./graphModel";
 import type { GraphScope } from "./graphScope";
@@ -106,6 +107,19 @@ export class WorkspaceRpc {
 
     projectHistory(direction: "undo" | "redo"): Promise<void> {
         return this.client.request(`project.${direction}`, this.mutationParams({}));
+    }
+
+    hoverManualControl(control: ManualControlId | null): Promise<void> {
+        return this.client.request("manualControls.hover", control ? { ...control } : {});
+    }
+    beginManualControl(interactionId: string, control: ManualControlId, value: number): Promise<void> {
+        return this.client.request("manualControls.begin", this.mutationParams({ interactionId, ...control, value }));
+    }
+    updateManualControl(interactionId: string, value: number): Promise<void> {
+        return this.client.request("manualControls.update", this.mutationParams({ interactionId, value }));
+    }
+    endManualControl(interactionId: string, value: number): Promise<void> {
+        return this.client.request("manualControls.end", this.mutationParams({ interactionId, value }));
     }
 
     getIvPackageDefinitions(): Promise<{ packages?: Array<Record<string, unknown>> }> {

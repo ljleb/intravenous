@@ -1,3 +1,4 @@
+import type { ManualControlAction, ManualControlInteractionState } from "./manualControls";
 import type { GraphLayout, GraphScope } from "./graphScope";
 import type { LiveGraphSessionStatus } from "./liveGraphProtocol";
 import type { GraphConnectionEdit, GraphPortEndpoint } from "./graphConnectionEditing";
@@ -11,9 +12,11 @@ export type GraphEditorState = {
 };
 export type GraphEditorAction = "addNode" | "editNode" | "deleteNode" | "openNodeSource" | "createPackage" | "deleteConnection" | "undo" | "redo";
 export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorState }
+    | { type: "manualControlState"; interactions: ManualControlInteractionState[] }
     | { type: "graphWindowFocus"; focused: boolean }
     | { type: "graphAction"; action: "addNode" | "editNode" | "createPackage"; instanceId?: string };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
+    | { type: "manualControlAction"; action: ManualControlAction }
     | { type: "projectHistory"; direction: "undo" | "redo" }
     | { type: "copyNodeDebugDetails"; nodeKey: string }
     | { type: "connectGraphPorts"; first: GraphPortEndpoint; second: GraphPortEndpoint }

@@ -11,6 +11,8 @@ import { fixedConnectionPorts, type GraphConnectionEnd, type GraphPortEndpoint }
 import { beginPortConnection, canDropPortConnection, finishPortConnection, movePortConnection, type PortConnectionDrag } from "../../src/portConnectionGesture";
 import { initialPortHoverShift, keyboardPortHoverShift, pointerPortHoverShift } from "../../src/portHoverShift";
 import { connectionCursorOutputFraction, type PortColorColumns } from "../../src/connectionPreview";
+import { ManualControlGestures } from "../../src/manualControlGesture";
+import { provideManualControls } from "../presentation/manualControlContext";
 import { projectHistoryShortcut } from "../../src/projectHistoryShortcut";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
 import { connectionEndKey, connectionWirePath, portEndpointKey, portSlotKey, selectedLaneConnections, selectedLaneWirePath,
@@ -21,6 +23,26 @@ type PreviewAnchor = PortWireAnchor & { direction: "input" | "output" };
 
 const state = shallowRef<GraphEditorState>({ sessionStatus: "starting", scope: null, layout: readLayout(null), definitions: [], error: "" });
 const layout = ref(readLayout(null));
+const manualVersion = ref(0);
+const manualGestures = new ManualControlGestures(
+    (action) => webviewApi.postMessage({ type: "manualControlAction", action }),
+    () => crypto.randomUUID(), () => { ++manualVersion.value; });
+provideManualControls({ gestures: manualGestures, version: manualVersion });
+function moveManual(event: PointerEvent) {
+    const id = manualGestures.pointerControl();
+    if (!id) return;
+    const port = state.value.scope?.nodes.find((entry) => addressKey(entry.address) === addressKey(id.node))
+        ?.sampleInputs.find((entry) => entry.name === id.inputName);
+    const metadata = port?.valueTypes?.[0];
+    const finite = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : undefined;
+    manualGestures.move(event.pointerId, event.clientX, finite(metadata?.minValue), finite(metadata?.maxValue));
+}
+function releaseManual(event: PointerEvent) { manualGestures.release(event.pointerId); }
+function clickOutsideManual(event: PointerEvent) {
+    if (!(event.target as HTMLElement)?.closest?.(".manual-input")) manualGestures.finish();
+}
+function blurManual() { manualGestures.finish(); manualGestures.hover(null); }
+
 let initializedLayout = false;
 const surface = ref<HTMLElement | null>(null);
 const connectionDrag = shallowRef<PortConnectionDrag | null>(null);
@@ -299,6 +321,10 @@ function createPackage() {
     creatingPackage.value = false;
 }
 function receive(event: MessageEvent<GraphEditorHostMessage>) {
+    if (event.data?.type === "manualControlState") {
+        manualGestures.receive(event.data.interactions);
+        return;
+    }
     if (event.data?.type === "graphAction") {
         cancelConnection();
         const action = event.data;
@@ -312,6 +338,7 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     }
     if (event.data?.type !== "graphState") return;
     state.value = event.data.state;
+    if (state.value.sessionStatus !== "running") manualGestures.disconnected();
     cancelConnection(); // A new authoritative scope can change port identities.
     if (selectedLane.value && state.value.scope
         && !state.value.scope.nodes.some((node) => addressKey(node.address) === selectedLane.value)) selectedLane.value = null;
@@ -329,6 +356,11 @@ onMounted(() => {
     webviewApi.setState({ ...webviewApi.getState(), surface: "graphEditor" });
     window.addEventListener("message", receive);
     window.addEventListener("pointermove", moveConnection, true);
+    window.addEventListener("pointermove", moveManual, true);
+    window.addEventListener("pointerup", releaseManual, true);
+    window.addEventListener("pointercancel", releaseManual, true);
+    window.addEventListener("pointerdown", clickOutsideManual, true);
+    window.addEventListener("blur", blurManual);
     window.addEventListener("pointerdown", observePointerShift, true);
     window.addEventListener("pointerup", releaseConnection, true);
     window.addEventListener("pointercancel", pointerCancelled, true);
@@ -349,6 +381,11 @@ onBeforeUnmount(() => {
     window.removeEventListener("message", receive);
     cancelConnection();
     window.removeEventListener("pointermove", moveConnection, true);
+    window.removeEventListener("pointermove", moveManual, true);
+    window.removeEventListener("pointerup", releaseManual, true);
+    window.removeEventListener("pointercancel", releaseManual, true);
+    window.removeEventListener("pointerdown", clickOutsideManual, true);
+    window.removeEventListener("blur", blurManual);
     window.removeEventListener("pointerdown", observePointerShift, true);
     window.removeEventListener("pointerup", releaseConnection, true);
     window.removeEventListener("pointercancel", pointerCancelled, true);

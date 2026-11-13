@@ -74,3 +74,23 @@ test("project history and a multi-node edit use one revision-checked request eac
         { method: "project.redo", params: { expectedRevision: 23 } },
     ]);
 });
+
+test("manual control requests retain server client identity and use fresh mutation revisions", async () => {
+    const calls: unknown[] = [];
+    let revision = 1;
+    const client = { request: async (method, params) => { calls.push({ method, params }); ++revision; } } as unknown as JsonRpcSocketClient;
+    const rpc = new WorkspaceRpc(client, () => revision);
+    const control = { node: { instanceId: "filter", path: [{ name: "inner" }] }, inputName: "cutoff" };
+    await rpc.hoverManualControl(control);
+    await rpc.beginManualControl("drag", control, .2);
+    await rpc.updateManualControl("drag", .3);
+    await rpc.endManualControl("drag", .4);
+    await rpc.hoverManualControl(null);
+    assert.deepEqual(calls, [
+        { method: "manualControls.hover", params: control },
+        { method: "manualControls.begin", params: { interactionId: "drag", ...control, value: .2, expectedRevision: 2 } },
+        { method: "manualControls.update", params: { interactionId: "drag", value: .3, expectedRevision: 3 } },
+        { method: "manualControls.end", params: { interactionId: "drag", value: .4, expectedRevision: 4 } },
+        { method: "manualControls.hover", params: {} },
+    ]);
+});

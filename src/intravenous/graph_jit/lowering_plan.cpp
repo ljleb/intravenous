@@ -659,7 +659,17 @@ std::string manual_control_migration_identity(
         << migration_identity_fields(*planned.stable_identity)
         << ":input=" << control.id.input_name.size() << ':'
         << control.id.input_name
-        << ":port=" << control.input.port_index;
+        << ":port=" << control.input.port_index
+        << ":source=" << control.id.node.instance_id.size() << ':' << control.id.node.instance_id;
+    for (auto const& selector : control.id.node.path) std::visit([&](auto const& entry) {
+        using T = std::remove_cvref_t<decltype(entry)>;
+        if constexpr (std::same_as<T, ProjectVirtualNodeSelector>) {
+            out << ":virtual=" << entry.source_identity.size() << ':' << entry.source_identity;
+            if (entry.type_identity) out << ":type=" << entry.type_identity->size() << ':' << *entry.type_identity;
+        } else if constexpr (std::same_as<T, ProjectVirtualMemberSelector>) out << ":member=" << entry.index;
+        else out << ":child=" << entry.name.size() << ':' << entry.name;
+    }, selector);
+    out << ":selection=" << control.concrete_selection_index;
     return std::move(out).str();
 }
 
@@ -894,12 +904,41 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             .target_bits = bits,
             .effective_bits = bits,
         };
-        std::vector<std::byte> initial_bytes(sizeof(initial));
+        auto const channels = control.channel_coefficients.size();
+        if (control.delay != 0) {
+            auto const pace = sample_ports.primitives[control.primitive_index].inputs[control.input_index].absolute_pace_exponent;
+            auto values = input.specialization.block_size;
+            if (pace >= 0) {
+                if (static_cast<unsigned>(pace) >= sizeof(std::size_t) * 8 || values > (std::numeric_limits<std::size_t>::max() >> pace))
+                    return std::unexpected("GraphJit manual source pace overflows its delay capacity");
+                values <<= pace;
+            } else {
+                auto const shift = static_cast<unsigned>(-pace);
+                values = shift >= sizeof(std::size_t) * 8 ? 1 : (values >> shift) + 1;
+            }
+            if (control.delay > std::numeric_limits<std::size_t>::max() - values
+                || control.delay + values > (std::size_t{1} << (sizeof(std::size_t) * 8 - 1)))
+                return std::unexpected("GraphJit manual source delay capacity overflows");
+            control.delay_capacity = std::bit_ceil(control.delay + values);
+        }
+        if (channels != 0 && control.delay_capacity > (std::numeric_limits<std::size_t>::max() - sizeof(initial)) / sizeof(Sample) / channels)
+            return std::unexpected("GraphJit manual source delay storage overflows");
+        auto const size = sizeof(initial) + control.delay_capacity * channels * sizeof(Sample);
+        std::vector<std::byte> initial_bytes(size);
         std::memcpy(initial_bytes.data(), &initial, sizeof(initial));
+        for (std::size_t channel = 0; channel < channels; ++channel)
+            for (std::size_t index = 0; index < control.delay_capacity; ++index)
+                std::memcpy(initial_bytes.data() + sizeof(initial) + (channel * control.delay_capacity + index) * sizeof(Sample),
+                    &control.delay_initial_values[channel], sizeof(Sample));
+        auto identity = manual_control_migration_identity(*planned, control.configured);
+        if (control.boundary_source && !identity.empty()) {
+            identity += ":boundary_delay=" + std::to_string(control.delay);
+            for (auto coefficient : control.channel_coefficients) identity += ':' + std::to_string(std::bit_cast<std::uint32_t>(coefficient));
+        }
         control.state_region = layout_builder.declare_raw_region(
-            sizeof(ManualControlRuntimeState),
+            size,
             alignof(ManualControlRuntimeState),
-            manual_control_migration_identity(*planned, control.configured),
+            std::move(identity),
             initialize_copy_raw_region,
             std::move(initial_bytes));
     }
@@ -1288,15 +1327,15 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         }
         auto const& region = node_layout.regions[control.state_region.index];
         if (region.kind != NodeLayout::Region::Kind::raw
-            || region.size != sizeof(ManualControlRuntimeState)
+            || region.size != sizeof(ManualControlRuntimeState) + control.delay_capacity * control.channel_coefficients.size() * sizeof(Sample)
             || region.alignment != alignof(ManualControlRuntimeState)
             || region.raw_initialize_fn != initialize_copy_raw_region
-            || region.raw_initialize_data.size()
-                != sizeof(ManualControlRuntimeState)) {
+            || region.raw_initialize_data.size() != region.size) {
             return std::unexpected(
                 "GraphJit manual control state disagrees with finalized NodeLayout");
         }
         control.state_storage_offset = region.storage_offset;
+        control.delay_storage_offset = region.storage_offset + sizeof(ManualControlRuntimeState);
     }
 
 
@@ -3217,6 +3256,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             });
     };
     for (auto const& configured : input.graph.manual_controls) {
+        if (input.graph.node_bundles.bundle(configured.input.node_bundle_handle).is_subgraph()) continue;
         auto const primitive = primitive_index_for_bundle(
             configured.input.node_bundle_handle);
         if (!primitive || configured.input.port_kind != PortKind::sample
@@ -3245,12 +3285,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             return std::unexpected(
                 "GraphJit manual controls currently require a scalar Sample input");
         }
-        if (std::ranges::any_of(
-                plan.manual_controls,
-                [&](ManualControlPlan const& previous) {
-                    return previous.primitive_index == *primitive
-                        && previous.input_index == port;
-                })) {
+        if (plan.primitives[*primitive].inputs[port].manual_control) {
             return std::unexpected(
                 "GraphJit manual controls contain two values for one concrete input");
         }
@@ -3270,10 +3305,91 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                     || realization.input(
                         configured.input.node_bundle_handle, port).history != 0),
         });
-        if (participates) {
-            plan.primitives[*primitive].inputs[port].manual_control =
-                control_index;
+        plan.primitives[*primitive].inputs[port].manual_control = control_index;
+    }
+
+    // Lower module-input contributions before any direct leaf control of
+    // the same destination. Several public controls may contribute to one
+    // concrete input without pretending they are one semantic control.
+    std::vector<ManualControlPlan> boundary_controls;
+    for (auto const& route : connections.manual_sample_routes) {
+        if (route.control_index >= input.graph.manual_controls.size())
+            return std::unexpected("GraphJit manual route lost its source control");
+        auto const primitive = primitive_index_for_bundle(route.target.node_bundle_handle);
+        if (!primitive || route.target.port_index >= plan.primitives[*primitive].inputs.size())
+            return std::unexpected("GraphJit module manual input requires a Sequential Tick consumer");
+        auto const& target = plan.primitives[*primitive].inputs[route.target.port_index];
+        if (target.geometry.value_type != ContinuousValueTypeId::sample || target.geometry.elements_per_value != 1)
+            return std::unexpected("GraphJit module manual route requires scalar Sample values");
+        if (route.delay > std::numeric_limits<std::size_t>::max() - route.read_latency)
+            return std::unexpected("GraphJit module manual route delay overflows");
+        auto configured = input.graph.manual_controls[route.control_index];
+        configured.input = route.target;
+        ManualControlPlan lowered{
+            .configured = std::move(configured), .primitive_index = *primitive,
+            .input_index = route.target.port_index, .participates = true,
+            .boundary_source = true,
+            .channel_coefficients = std::vector<float>(channel_count(input.graph.node_bundles.resolve_sample_input(route.target).config.channel_layout), 0),
+            .delay = route.delay + route.read_latency,
+        };
+        if (route.target_channel >= lowered.channel_coefficients.size())
+            return std::unexpected("GraphJit module manual route has an invalid target channel");
+        lowered.channel_coefficients[route.target_channel] = route.coefficient;
+        lowered.delay_initial_values.resize(lowered.channel_coefficients.size());
+        auto const neutral = sequential_input_metadata<Sample>(sequential_input_properties(
+            input.graph.node_bundles.resolve_sample_input(route.target).config)).neutral_value;
+        lowered.delay_initial_values[route.target_channel] = Sample{
+            route.initial_coefficient * route.initial_value.value_or(neutral).value};
+        auto existing = std::ranges::find_if(boundary_controls, [&](auto const& candidate) {
+            return candidate.configured.id == lowered.configured.id && candidate.configured.input == lowered.configured.input
+                && candidate.delay == lowered.delay;
+        });
+        if (existing == boundary_controls.end()) boundary_controls.push_back(std::move(lowered));
+        else for (std::size_t channel = 0; channel < lowered.channel_coefficients.size(); ++channel) {
+            existing->channel_coefficients[channel] += lowered.channel_coefficients[channel];
+            existing->delay_initial_values[channel].value += lowered.delay_initial_values[channel].value;
         }
+    }
+    boundary_controls.insert(boundary_controls.end(), std::make_move_iterator(plan.manual_controls.begin()),
+        std::make_move_iterator(plan.manual_controls.end()));
+    plan.manual_controls = std::move(boundary_controls);
+    for (auto& primitive : plan.primitives) for (auto& binding : primitive.inputs) binding.manual_control.reset();
+    for (std::size_t index = 0; index < plan.manual_controls.size(); ++index) {
+        auto& control = plan.manual_controls[index];
+        auto& binding = plan.primitives[control.primitive_index].inputs[control.input_index];
+        control.first_for_input = !binding.manual_control;
+        if (control.participates && !binding.manual_control) binding.manual_control = index;
+    }
+    std::vector<std::vector<std::vector<std::size_t>>> controls_for_input(plan.primitives.size());
+    for (std::size_t primitive = 0; primitive < plan.primitives.size(); ++primitive)
+        controls_for_input[primitive].resize(plan.primitives[primitive].inputs.size());
+    for (std::size_t index = 0; index < plan.manual_controls.size(); ++index) {
+        auto const& control = plan.manual_controls[index];
+        controls_for_input[control.primitive_index][control.input_index].push_back(index);
+    }
+    auto boundary_constant = [&](std::size_t primitive, std::size_t port) -> std::optional<Sample> {
+        std::vector<float> channels;
+        bool found = false;
+        for (auto const index : controls_for_input[primitive][port]) {
+            auto const& control = plan.manual_controls[index];
+            if (!control.participates) continue;
+            if (!control.boundary_source || control.configured.dynamic || control.delay != 0) return std::nullopt;
+            if (channels.empty()) channels.resize(control.channel_coefficients.size());
+            for (std::size_t channel = 0; channel < channels.size(); ++channel)
+                channels[channel] += control.channel_coefficients[channel] * control.configured.settled_value.value;
+            found = true;
+        }
+        if (!found || channels.empty() || !std::ranges::all_of(channels, [&](float value) { return value == channels.front(); }))
+            return std::nullopt;
+        return Sample{channels.front()};
+    };
+    for (auto& control : plan.manual_controls) {
+        if (!control.participates) continue;
+        bool const boundary = std::ranges::any_of(controls_for_input[control.primitive_index][control.input_index],
+            [&](auto index) { return plan.manual_controls[index].boundary_source; });
+        if (boundary) control.stages_timeline = has_authored_connection(control.primitive_index, control.input_index)
+            || realization.input(control.configured.input.node_bundle_handle, control.input_index).history != 0
+            || !boundary_constant(control.primitive_index, control.input_index).has_value();
     }
 
     auto initialized_input_value = [&](
@@ -3414,8 +3530,8 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             }
             auto const manual_control =
                 plan.primitives[primitive_index].inputs[port].manual_control;
-            if (manual_control
-                && plan.manual_controls[*manual_control].configured.dynamic) {
+            if (manual_control && (plan.manual_controls[*manual_control].configured.dynamic
+                || (plan.manual_controls[*manual_control].boundary_source && !boundary_constant(primitive_index, port)))) {
                 auto& binding = plan.primitives[primitive_index].inputs[port];
                 binding.channel_layout = config.channel_layout;
                 binding.history = realization.input(bundle, port).history;
@@ -3446,8 +3562,8 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 return std::unexpected(std::move(default_value.error()));
             }
             if (manual_control) {
-                auto const value = plan.manual_controls[*manual_control]
-                    .configured.settled_value;
+                auto const value = boundary_constant(primitive_index, port).value_or(
+                    plan.manual_controls[*manual_control].configured.settled_value);
                 std::memcpy(
                     default_value->data(), &value, sizeof(value));
             }
@@ -3531,8 +3647,8 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
     // existing invocation staging has written their ordinary contribution.
     for (auto const& control : plan.manual_controls) {
         if (!control.participates
-            || !has_authored_connection(
-                control.primitive_index, control.input_index)) {
+            || (!control.boundary_source && !has_authored_connection(
+                control.primitive_index, control.input_index))) {
             continue;
         }
         auto& binding = plan.primitives[control.primitive_index]
@@ -3546,8 +3662,10 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         auto const position = execution_position_for_bundle(
             control.configured.input.node_bundle_handle);
         if (!position) return std::unexpected(std::move(position.error()));
+        bool const bind = has_authored_connection(control.primitive_index, control.input_index)
+            || !boundary_constant(control.primitive_index, control.input_index).has_value();
         auto requested = request_input_timeline(
-            control.primitive_index, control.input_index, *position);
+            control.primitive_index, control.input_index, *position, bind);
         if (!requested) return std::unexpected(std::move(requested.error()));
     }
 
@@ -3846,7 +3964,9 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         if (binding.combines_invocation_supplied) {
             binding.realtime_operand_channels = std::move(binding.channels);
         } else if (binding.manual_control && !binding.invocation_supplied) {
-            binding.manual_operand_channels = std::move(binding.channels);
+            bool const boundary_only = plan.manual_controls[*binding.manual_control].boundary_source
+                && !has_authored_connection(timeline_input.primitive, timeline_input.port);
+            if (!boundary_only) binding.manual_operand_channels = std::move(binding.channels);
         }
         binding.channels.clear();
         binding.read_latency = 0;

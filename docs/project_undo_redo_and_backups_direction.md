@@ -1,8 +1,8 @@
 # Project Undo, Redo, And Backup Direction
 
 _Status: accepted design direction, 2026-11-12. The initial graph-edit implementation
-has passed owner verification. The audio-selection and toolchain-settings extension
-is in source and awaits owner build/test verification; see
+and the audio-selection and toolchain-settings extension have passed owner
+build/test verification; see
 [Vue Client Implementation Stages](./vue_client_implementation_stages.md).
 This document specifies reversible user edits and their ownership, not a backup
 format. The preceding version is retained under

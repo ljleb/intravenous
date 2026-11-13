@@ -25814,3 +25814,166 @@ TEST_F(GraphJitRuntimeFixture, RevisionMovesEventHistoryAcrossDeliveryKinds)
         recorded_times(now_realtime_fed->count, now_realtime_fed->times),
         (std::vector<std::uint64_t>{100, 131, 191}));
 }
+
+namespace {
+std::shared_ptr<iv::ConfiguredGraph const> configured_module_manual_fanout(
+    iv::PackageRevision const& revision, bool dynamic, bool convert = true)
+{
+    using namespace iv;
+    using Session = std::unique_ptr<iv::details::BuilderSession, decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(iv::details::iv_builder_session_create(), iv::details::iv_builder_session_destroy);
+    if (!session) throw std::runtime_error("could not create module manual-control test session");
+    auto const root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = root, .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+    iv::GraphBuilder graph(session.get());
+    auto configure = [&]<class... Args>(std::string_view id, Args&&... values) {
+        auto const definition = std::ranges::find_if(
+            revision.provider_definitions, [&](auto const& entry) {
+                return std::string_view(entry.id, entry.id_size) == id;
+            });
+        if (definition == revision.provider_definitions.end() || !definition->signature) {
+            throw std::runtime_error("module manual-control fixture definition has no signature");
+        }
+        auto const* signature = definition->signature();
+        auto arguments = iv::details::configuration_arguments(std::forward<Args>(values)...);
+        if (!signature || signature->argument_count != arguments.size()) {
+            throw std::runtime_error("module manual-control fixture argument count mismatch");
+        }
+        // As in configured_module_graph_with_arguments(), host code has no
+        // finalized type identities. These callers supply each parameter's
+        // exact C++ type and use the package's identity for that parameter.
+        for (std::size_t i = 0; i < arguments.size(); ++i) {
+            arguments[i].type = signature->parameter_types[i];
+        }
+        return iv::details::configure_package_definition_provider(
+            graph, id, std::nullopt, arguments);
+    };
+    auto module = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+        auto value = boundary.input<"value">(iv::Sample{.25f});
+        auto converted = iv::details::configure_package_definition_provider(graph,
+            "iv.test.graph_jit.state_context.manual_control_slice_probe", std::nullopt, {});
+        auto delayed = iv::details::configure_package_definition_provider(graph,
+            "iv.test.graph_jit.state_context.manual_control_slice_probe", std::nullopt, {});
+        if (convert) {
+            // A real feedback cycle carries a zero ordinary contribution. The
+            // knob is added at the module input before conversion or detach.
+            // Both probe nodes were created first to keep their state indices.
+            auto feedback = configure("iv.test.graph_jit.state_context.feedback_gain",
+                std::uint64_t{0}, static_cast<std::uint64_t const*>(nullptr));
+            auto zero_feedback = configure("iv.test.graph_jit.state_context.feedback_gain",
+                std::uint64_t{0}, static_cast<std::uint64_t const*>(nullptr));
+            auto zero = configure("iv.test.graph_jit.state_context.constant", iv::Sample{0});
+            auto one = configure("iv.test.graph_jit.state_context.constant", iv::Sample{1});
+            converted(graph.tile<iv::stereo>(value, zero));
+            feedback.connect_input("in", static_cast<iv::SamplePortRef>(value).detach(2, iv::Sample{-1}));
+            feedback.connect_input("gain", static_cast<iv::SamplePortRef>(one));
+            zero_feedback.connect_input("in", static_cast<iv::SamplePortRef>(feedback));
+            zero_feedback.connect_input("gain", static_cast<iv::SamplePortRef>(zero));
+            delayed(feedback); // Read the delayed output outside the cycle.
+            boundary.outputs(iv::PortName<"feedback", iv::NamedPortKind::sample>{} = zero_feedback);
+        } else {
+            converted(value);
+            delayed(value);
+            boundary.outputs();
+        }
+    }, "manual-module");
+    if (convert) module(static_cast<iv::SamplePortRef>(module));
+    auto const module_handle = module.node_bundle_handle();
+    graph.outputs();
+    auto configured = iv::details::take_built_graph(session.get());
+    configured.manual_controls.push_back({
+        .id = {.node = {.instance_id = "module"}, .input_name = "value"},
+        .input = {module_handle, iv::PortKind::sample, 0}, .settled_value = .25f,
+        .participation = iv::ManualControlParticipation::participate_with_connections,
+        .dynamic = dynamic,
+    });
+    return std::make_shared<iv::ConfiguredGraph const>(std::move(configured));
+}
+} // namespace
+
+TEST_F(GraphJitRuntimeFixture, ModuleManualControlPreservesConversionFanoutAndDetachAcrossCodeActivation)
+{
+    auto constant = compile_graph(configured_module_manual_fanout(*revision, false), 390);
+    ASSERT_TRUE(constant.succeeded()) << (constant.diagnostics.empty() ? "" : constant.diagnostics.front().message);
+    auto dynamic = compile_graph(configured_module_manual_fanout(*revision, true), 390);
+    ASSERT_TRUE(dynamic.succeeded()) << (dynamic.diagnostics.empty() ? "" : dynamic.diagnostics.front().message);
+    auto const& steady = *constant.compiled_graph;
+    auto const& live = *dynamic.compiled_graph;
+    ASSERT_EQ(steady.manual_controls.size(), 2u);
+    ASSERT_EQ(live.manual_controls.size(), 2u);
+    ASSERT_EQ(steady.node_layout.regions.size(), live.node_layout.regions.size());
+    EXPECT_EQ(steady.node_layout.storage_size, live.node_layout.storage_size);
+    for (std::size_t index = 0; index < steady.node_layout.regions.size(); ++index) {
+        auto const& a = steady.node_layout.regions[index];
+        auto const& b = live.node_layout.regions[index];
+        EXPECT_EQ(a.storage_offset, b.storage_offset);
+        EXPECT_EQ(a.size, b.size);
+        EXPECT_EQ(a.migration_identity, b.migration_identity);
+    }
+    auto storage = steady.node_layout.create_storage(resources);
+    storage.initialize();
+    auto* converted = static_cast<ManualControlSliceProbeStateMirror*>(storage.state_ptr(0));
+    auto* delayed = static_cast<ManualControlSliceProbeStateMirror*>(storage.state_ptr(1));
+    ASSERT_NE(converted, nullptr);
+    ASSERT_NE(delayed, nullptr);
+    steady.root_operations.tick_block(storage.buffer().data(), &empty_tick_invocation, index(0), 4);
+    ASSERT_EQ(converted->value_count, 4u);
+    ASSERT_EQ(delayed->value_count, 4u);
+    for (std::size_t i = 0; i < 4; ++i) EXPECT_FLOAT_EQ(converted->values[i], .125f);
+    EXPECT_FLOAT_EQ(delayed->values[0], -1.f);
+    EXPECT_FLOAT_EQ(delayed->values[1], -1.f);
+    EXPECT_FLOAT_EQ(delayed->values[2], .25f);
+    EXPECT_FLOAT_EQ(delayed->values[3], .25f);
+    for (auto const& binding : live.manual_controls) {
+        auto* state = reinterpret_cast<iv::ManualControlRuntimeState*>(storage.buffer().data() + binding.state_storage_offset);
+        std::atomic_ref<std::uint32_t>(state->target_bits).store(std::bit_cast<std::uint32_t>(1.f), std::memory_order_relaxed);
+    }
+    live.root_operations.tick_block(storage.buffer().data(), &empty_tick_invocation, index(4), 4);
+    std::array expected_converted{.21875f, .3125f, .40625f, .5f};
+    std::array expected_delayed{.25f, .25f, .4375f, .625f};
+    ASSERT_EQ(converted->value_count, 8u);
+    ASSERT_EQ(delayed->value_count, 8u);
+    for (std::size_t i = 0; i < 4; ++i) {
+        EXPECT_FLOAT_EQ(converted->values[4 + i], expected_converted[i]);
+        EXPECT_FLOAT_EQ(delayed->values[4 + i], expected_delayed[i]);
+    }
+    live.root_operations.tick_block(storage.buffer().data(), &empty_tick_invocation, index(8), 4);
+    EXPECT_FLOAT_EQ(delayed->values[8], .8125f);
+    EXPECT_FLOAT_EQ(delayed->values[9], 1.f);
+    EXPECT_FLOAT_EQ(delayed->values[10], 1.f);
+    EXPECT_FLOAT_EQ(delayed->values[11], 1.f);
+}
+
+TEST_F(GraphJitRuntimeFixture, UniformSettledModuleManualInputKeepsImmutableInputBinding)
+{
+    auto compiled = compile_graph(configured_module_manual_fanout(*revision, false, false), 391);
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    ASSERT_EQ(graph.manual_controls.size(), 2u);
+    // This fixture variant is ordinary fanout without the feedback branch.
+    auto const target = graph.manual_controls[0].configured.input;
+    auto const& requirements = graph.realtime_port_state_requirements.states;
+    auto const& realizations = graph.realtime_port_state_realizations.sample_states;
+    auto requirement = std::ranges::find_if(requirements, [&](auto const& entry) {
+        return entry.configured_port == target && entry.direction == iv::graph_jit::PortDirection::input;
+    });
+    ASSERT_NE(requirement, requirements.end());
+    auto const index_in_requirements = static_cast<std::size_t>(std::distance(requirements.begin(), requirement));
+    auto realization = std::ranges::find_if(realizations, [&](auto const& entry) {
+        return entry.requirement_index == index_in_requirements;
+    });
+    ASSERT_NE(realization, realizations.end());
+    EXPECT_EQ(realization->retained_access, iv::graph_jit::SampleRealtimePortStateAccess::immutable_constant);
+    auto storage = graph.node_layout.create_storage(resources);
+    storage.initialize();
+    graph.root_operations.tick_block(storage.buffer().data(), &empty_tick_invocation, index(0), 4);
+    auto* state = static_cast<ManualControlSliceProbeStateMirror*>(storage.state_ptr(0));
+    ASSERT_EQ(state->value_count, 4u);
+    for (std::size_t value = 0; value < 4; ++value) EXPECT_FLOAT_EQ(state->values[value], .25f);
+}

@@ -2,6 +2,7 @@
 
 #include <intravenous/channel_type.h>
 #include <intravenous/node/address.h>
+#include <intravenous/node/manual_control.h>
 #include <intravenous/ports.h>
 #include <intravenous/runtime/iv_module_instance_types.h>
 #include <intravenous/runtime/node_instance_interface.h>
@@ -20,6 +21,11 @@ enum class ProjectGraphScopeNodeState {
     ready,
     failed,
 };
+struct ProjectGraphScopeManualControl {
+    ProjectManualControl control{};
+    bool available = false;
+    bool participates = false;
+};
 // One child of a graph editor scope. In the project root scope, each child is
 // one desired project instance.
 struct ProjectGraphScopeNode {
@@ -32,6 +38,7 @@ struct ProjectGraphScopeNode {
     // The desired configuration's interface. A failed build can supply this
     // independently of the previous executable generation.
     NodeInstanceInterface interface{};
+    std::vector<ProjectGraphScopeManualControl> manual_controls{};
 };
 
 struct ProjectGraphScopeConnection {

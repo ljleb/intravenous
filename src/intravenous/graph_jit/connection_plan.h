@@ -432,7 +432,26 @@ struct ConnectionStoragePlan {
     std::vector<ConnectionStorageRegionRequirement> regions{};
 };
 
+// A public module input is a source at its inward-facing boundary. Structural
+// routing preserves its channel transforms and temporal cuts before lowering
+// its contribution alongside ordinary producers at a concrete destination.
+struct ManualSampleRoutePlan {
+    std::size_t configured_connection_index = 0;
+    std::size_t control_index = 0;
+    NodeBundlePortId target{};
+    std::size_t target_channel = 0;
+    float coefficient = 0;
+    std::size_t delay = 0;
+    std::size_t read_latency = 0;
+    std::optional<Sample> initial_value{};
+    float initial_coefficient = 0;
+    // Ordinary sources in the same detached scalar expression. They retain
+    // the cycle proof even when target-projection normalization merges routes.
+    std::vector<NodeBundleHandle> detach_sources{};
+};
+
 struct ConnectionAnalysisPlan {
+    std::vector<ManualSampleRoutePlan> manual_sample_routes{};
     NodeBundleHandle boundary_bundle = 0;
     std::vector<PlannedGraphNode> nodes{};
     std::vector<DependencyEdgePlan> dependencies{};

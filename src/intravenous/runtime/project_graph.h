@@ -178,6 +178,7 @@ class ProjectGraph {
         ManualControlInteractionId interaction{};
         ManualControlId control{};
         std::uint64_t history_serial = 0;
+        std::optional<ProjectManualControl> initial_control{};
     };
     struct ControlCompileRequest {
         std::uint64_t request_id = 0;
@@ -202,8 +203,10 @@ class ProjectGraph {
     std::vector<ProjectEditEffect> edit_history_{};
     std::size_t history_position_ = 0;
     std::uint64_t history_serial_ = 0;
-    void record_manual_edit_locked(ProjectManualControl before, ProjectManualControl after,
+    void record_manual_edit_locked(std::optional<ProjectManualControl> before,
+        std::optional<ProjectManualControl> after,
         ActiveManualControlInteraction& interaction);
+    void set_interaction_value_locked(ActiveManualControlInteraction& interaction, Sample value);
     void record_edit_locked(ProjectEditEffect effect);
     void open_transactions_locked(InteractionTransactions& transactions);
     RebuildResult apply_edit_locked(ProjectEditBatch const& batch, bool record_history,

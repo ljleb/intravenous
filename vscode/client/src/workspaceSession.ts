@@ -1,3 +1,4 @@
+import { ManualControlInteractions } from "./manualControls";
 import * as vscode from "vscode";
 import * as childProcess from "child_process";
 import * as crypto from "crypto";
@@ -95,6 +96,9 @@ export class WorkspaceSession {
     private readonly graphChanges = new vscode.EventEmitter<void>();
     readonly onDidChangeGraph = this.graphChanges.event;
     graphSessionStatus: LiveGraphSessionStatus = "starting";
+    private readonly manualChanges = new vscode.EventEmitter<void>();
+    readonly onDidChangeManualControls = this.manualChanges.event;
+    readonly manualControls = new ManualControlInteractions(() => this.rpc, () => this.manualChanges.fire());
 
     async readGraphScope() {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
@@ -164,6 +168,7 @@ export class WorkspaceSession {
 
     async projectHistory(direction: "undo" | "redo"): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        await this.manualControls.settled();
         await this.rpc.projectHistory(direction);
     }
 
@@ -248,6 +253,8 @@ export class WorkspaceSession {
 
     private registerNotificationHandlers(): void {
         this.notifications.subscribe("graph.changed", () => this.graphChanges.fire());
+        // Live manual values change durable state without a graph publication.
+        this.notifications.subscribe("session.revisionChanged", () => this.graphChanges.fire());
         this.notifications.subscribe<ServerMessageNotification>("server.message", (params) => {
             if (!params.message) {
                 return;
@@ -862,6 +869,7 @@ export class WorkspaceSession {
         error: Error,
     ): void {
         if (this.client !== client) return;
+        this.manualControls.disconnect();
         this.client = null;
         this.rpc = null;
         this.serverReadyReceived = false;
@@ -1320,6 +1328,8 @@ export class WorkspaceSession {
     }
 
     async shutdown(): Promise<void> {
+        this.manualControls.disconnect();
+        this.manualChanges.dispose();
         this.graphChanges.dispose();
         this.shuttingDown = true;
         this.rebuildStatusBar.dispose();

@@ -1,3 +1,4 @@
+import type { ManualControlDescriptor } from "./manualControls";
 import type { ContinuousValueAlternative } from "./graphModel";
 import { readTimelineViewport, type TimelineViewport } from "./timelineViewport";
 
@@ -8,6 +9,7 @@ export type GraphScopePort = {
     channelType?: string;
     eventType?: string;
     valueTypes?: ContinuousValueAlternative[];
+    manualControl?: ManualControlDescriptor;
 };
 export type GraphScopeNode = {
     loadState: "waitingForDefinition" | "waitingForGraph" | "ready" | "failed";

@@ -306,7 +306,13 @@ struct PrimitiveActivityDecision {
 
 // Offsets of the per-call arrays that follow the root scratch. All are
 // relative to the aligned scratch base.
+struct ManualControlLatch {
+    std::uint32_t target_bits = 0;
+    std::uint32_t effective_bits = 0;
+};
+
 struct RootFrameLayout {
+    std::size_t manual_control_latches = 0;
     std::size_t sample_representations = 0;
     std::size_t event_representations = 0;
     std::size_t authored_extents = 0;
@@ -330,6 +336,7 @@ struct RootFrameLayout {
 struct RealtimeRootPlan {
     // Plan sections only the realtime root reads, taken from the LoweringPlan.
     detail::SamplePortBindingPlan sample_ports{};
+    std::vector<std::size_t> manual_target_latches{};
     detail::EventPortBindingPlan event_ports{};
     detail::ExecutionPlan execution{};
     detail::RootStackBufferPlan root_stack{};
@@ -493,6 +500,7 @@ struct RootFrame {
     std::byte* storage_base = nullptr;
     std::byte* scratch = nullptr;
     std::span<std::byte*> sample_representations{};
+    std::span<ManualControlLatch> manual_control_latches{};
     std::span<std::byte*> event_representations{};
     std::span<std::size_t> producer_authored_extents{};
     std::span<std::uint64_t> sequential_pace_cursors{};
@@ -1590,13 +1598,8 @@ void stage_manual_control_sample_timelines(
         auto const pace = input.absolute_pace_exponent;
         auto const values = project_lattice(slice_index, slice_size, pace).value_count;
         if (values == 0) continue;
-        auto const target_bits = control.configured.dynamic
-            ? std::atomic_ref<std::uint32_t>{state->target_bits}.load(
-                  std::memory_order_relaxed)
-            : settled_bits;
-        auto const effective_bits = control.configured.dynamic
-            ? state->effective_bits
-            : settled_bits;
+        auto const target_bits = frame.manual_control_latches[control_index].target_bits;
+        auto const effective_bits = frame.manual_control_latches[control_index].effective_bits;
         auto const target_value = std::bit_cast<float>(target_bits);
         auto const effective_value = std::bit_cast<float>(effective_bits);
         auto const callback_values = project_lattice(
@@ -1604,7 +1607,7 @@ void stage_manual_control_sample_timelines(
         auto const callback_prefix = projected_prefix(callback_index, slice_index, pace);
         auto const timeline_begin = pace_begin_index(frame, pace, slice_index);
         auto const has_existing_value = input.invocation_supplied
-            || !input.manual_operand_channels.empty();
+            || !input.manual_operand_channels.empty() || !control.first_for_input;
         for (std::size_t channel = 0;
              channel < channel_count(input.channel_layout);
              ++channel) {
@@ -1615,7 +1618,7 @@ void stage_manual_control_sample_timelines(
                     target.storage,
                     timeline_begin + value_index - target.frame_delay,
                     target.representation_channel);
-                if (!input.manual_operand_channels.empty()) {
+                if (control.first_for_input && !input.manual_operand_channels.empty()) {
                     auto const& operand = input.manual_operand_channels[channel];
                     std::memcpy(
                         destination,
@@ -1632,6 +1635,20 @@ void stage_manual_control_sample_timelines(
                         = static_cast<float>(callback_prefix + value_index + 1)
                         / static_cast<float>(callback_values);
                     value = effective_value + (target_value - effective_value) * ratio;
+                }
+                if (control.boundary_source) {
+                    value *= control.channel_coefficients[channel];
+                    if (control.delay_capacity) {
+                        auto* ring = reinterpret_cast<Sample*>(frame.storage_base + control.delay_storage_offset)
+                            + channel * control.delay_capacity;
+                        auto const write_index = timeline_begin + value_index;
+                        ring[write_index & (control.delay_capacity - 1)] = Sample{value};
+                        value = ring[(write_index - control.delay) & (control.delay_capacity - 1)].value;
+                    }
+                    if (has_existing_value) value += reinterpret_cast<Sample const*>(destination)->value;
+                    Sample const manual{value};
+                    std::memcpy(destination, &manual, sizeof(manual));
+                    continue;
                 }
                 Sample const manual{value};
                 if (has_existing_value) {
@@ -3562,7 +3579,7 @@ private:
                     && input.manual_operand_channels.size() != channels)) {
                 return invalid("GraphJit manual control lost its target timeline");
             }
-            if ((input.invocation_supplied || !input.manual_operand_channels.empty())
+            if (!control.boundary_source && (input.invocation_supplied || !input.manual_operand_channels.empty() || !control.first_for_input)
                 && !primitive.callbacks.combine_sequential_input_values) {
                 return invalid("GraphJit manual input has no combination callback");
             }
@@ -4966,6 +4983,19 @@ private:
             plan_.tracks_activity ? plan_.event_ports.ports.size() : 0,
             sizeof(EventActivitySummary),
             alignof(EventActivitySummary));
+        layout.manual_control_latches = take(plan_.sample_ports.manual_controls.size(), sizeof(ManualControlLatch), alignof(ManualControlLatch));
+        plan_.manual_target_latches.resize(plan_.sample_ports.manual_controls.size());
+        for (std::size_t index = 0; index < plan_.sample_ports.manual_controls.size(); ++index) {
+            plan_.manual_target_latches[index] = index;
+            if (!plan_.sample_ports.manual_controls[index].stages_timeline) continue;
+            for (std::size_t previous = 0; previous < index; ++previous) {
+                if (plan_.sample_ports.manual_controls[previous].stages_timeline
+                    && plan_.sample_ports.manual_controls[previous].configured.id == plan_.sample_ports.manual_controls[index].configured.id) {
+                    plan_.manual_target_latches[index] = plan_.manual_target_latches[previous];
+                    break;
+                }
+            }
+        }
         layout.tick_lanes = take(
             plan_.maximum_batch_lanes,
             sizeof(ReflectedNodeTickBatchLane),
@@ -5062,6 +5092,7 @@ void execute_realtime_root(
         .scratch = scratch,
         .sample_representations = frame_array<std::byte*>(
             scratch, layout.sample_representations, storage.representations.size()),
+        .manual_control_latches = frame_array<ManualControlLatch>(scratch, layout.manual_control_latches, plan.sample_ports.manual_controls.size()),
         .event_representations = frame_array<std::byte*>(
             scratch, layout.event_representations, plan.event_ports.ports.size()),
         .producer_authored_extents = frame_array<std::size_t>(
@@ -5120,6 +5151,19 @@ void execute_realtime_root(
     for (std::size_t index = 0; index < storage.sequential_pace_cursors.size(); ++index) {
         frame.sequential_pace_cursors[index] = load_raw<std::uint64_t>(
             storage_base, storage.sequential_pace_cursors[index].storage_offset);
+    }
+    for (std::size_t index = 0; index < plan.sample_ports.manual_controls.size(); ++index) {
+        auto const& control = plan.sample_ports.manual_controls[index];
+        if (!control.stages_timeline) continue;
+        auto* state = reinterpret_cast<ManualControlRuntimeState*>(storage_base + control.state_storage_offset);
+        auto const settled = std::bit_cast<std::uint32_t>(control.configured.settled_value.value);
+        auto const target_index = plan.manual_target_latches[index];
+        frame.manual_control_latches[index] = {
+            .target_bits = !control.configured.dynamic ? settled : target_index < index
+                ? frame.manual_control_latches[target_index].target_bits
+                : std::atomic_ref<std::uint32_t>{state->target_bits}.load(std::memory_order_relaxed),
+            .effective_bits = control.configured.dynamic ? state->effective_bits : settled,
+        };
     }
     initialize_bindings(frame);
     initialize_tick_slots(frame);
