@@ -11,6 +11,7 @@ import { fixedConnectionPorts, type GraphConnectionEnd, type GraphPortEndpoint }
 import { beginPortConnection, canDropPortConnection, finishPortConnection, movePortConnection, type PortConnectionDrag } from "../../src/portConnectionGesture";
 import { initialPortHoverShift, keyboardPortHoverShift, pointerPortHoverShift } from "../../src/portHoverShift";
 import { connectionCursorOutputFraction, type PortColorColumns } from "../../src/connectionPreview";
+import { projectHistoryShortcut } from "../../src/projectHistoryShortcut";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
 import { connectionEndKey, connectionWirePath, portEndpointKey, portSlotKey, selectedLaneConnections, selectedLaneWirePath,
     type PortWireAnchor, type RevealedConnectionEnd, type SelectedLaneWire } from "../../src/selectedLaneConnections";
@@ -263,6 +264,15 @@ function pointerLeftWindow(event: PointerEvent) {
         || event.clientX >= window.innerWidth || event.clientY >= window.innerHeight)) pointerCancelled(event);
 }
 function keyDown(event: KeyboardEvent) {
+    const history = projectHistoryShortcut(event,
+        event.target instanceof Element && !!event.target.closest("input, textarea, select, [contenteditable]:not([contenteditable=false]), [role=textbox]"));
+    if (history) {
+        event.preventDefault();
+        event.stopPropagation();
+        cancelConnection();
+        webviewApi.postMessage({ type: "projectHistory", direction: history });
+        return;
+    }
     hoverShift.value = keyboardPortHoverShift(hoverShift.value, event.shiftKey);
     if (event.key === "Escape") cancelConnection();
 }

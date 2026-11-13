@@ -565,8 +565,10 @@ source-selection side panel remains, including its filtering.
 Client regressions cover endpoint identity, channel/event conversion metadata,
 read-only/stale endpoints, pointer ownership, drag versus click, and invalid
 or cancelled releases. No tests or builds were run by the coding agent.
-The first server-owned undo/redo slice remains unimplemented. Stage 3 has not
-started.
+The first server-owned undo/redo slice is now in source; see the implementation
+checkpoint below for its scope and pending verification. Stage 3 has not started.
+The preceding status is preserved in
+[Historical Undo/Redo Direction](./historical/project_undo_redo_before_first_implementation_2026-11-13.md).
 
 Shift-drag disconnection and endpoint movement are implemented in source.
 Shift-hover opens a chooser for any port with at least one connection. Pressing
@@ -893,3 +895,73 @@ back to the raw node ID.
 Resolved 2026-11-12: the client is installed and built, all tests pass, and the
 owner runs it against existing projects, including window reloads and server
 restarts.
+
+### Undo/redo implementation in progress (2026-11-13)
+
+The first Stage 2 history feature is now being implemented in this order:
+
+1. Capture accepted before/after records inside the existing owner transactions;
+   retain only changed records in history.
+2. Validate a complete batch in the existing module-local transactions before
+   committing it through one normal ProjectGraph rebuild.
+3. Keep one session-global history in ProjectGraph, with record applicability
+   checks, no-op handling, redo invalidation, and no history during project replay.
+4. Expose revision-checked batch/undo/redo requests and extension commands, scoped
+   to the graph editor rather than ordinary source-editor Ctrl+Z.
+5. Add light tests for multi-node restore, retained dangling connections, changed
+   replacements/controls, failed or stale actions, semantic replacements, and
+   one publication/event-tree traversal per accepted action.
+
+Canonical records stay with NodeInstances, GraphConnections, and ProjectGraph's
+manual-control records. Configuration failure still accepts durable intent and
+keeps the previous executable generation; history follows durable acceptance.
+Build/test execution remains with the owner. This paragraph records work in
+progress, not completion of the feature.
+
+### First undo/redo implementation checkpoint (2026-11-13; not yet built/tested)
+
+The implementation above is now present in source. `ProjectGraph` retains
+`ProjectEditEffect` records and a history position. Owner transactions capture
+accepted before/after snapshots; history retains only changed durable records.
+`NodeInstancesInteraction` and `GraphConnectionsInteraction` now support reading
+and validating a complete proposed batch before their single final commit.
+No extra read event re-enters either owner in the action's event tree.
+
+`project.applyEdit`, `project.undo`, and `project.redo` use the existing
+permission/revision checks and publication path. The extension's Delete Node
+command permits multiple selections and submits one batch. Undo/redo commands
+and graph-local keyboard shortcuts use the same server-owned history for all
+clients. Text controls keep their own shortcuts. Failing or stale validation
+keeps records and history position unchanged; no-op edits preserve redo.
+Configuration/finalization failure after durable acceptance is an undoable edit
+while the previous executable generation stays active. Normalized replay resets
+history, and the saved project format is unchanged.
+
+The backend manual-control interaction path also coalesces consecutive updates
+while preserving order across intervening accepted actions. Undo/redo is refused
+until active manual-control interactions finish; client disconnect finalizes
+the last accepted value. Vue manual controls and their longer-lived interaction
+context still belong to Stage 3. Stage 3 itself has not started.
+
+Added light regressions cover multi-node deletion/restoration (including owned
+replacements and controls and retained dangling matchers), generation/publication
+counts, failed validation, existing connection upserts, no-op/redo branching,
+accepted configuration failure, replay reset, semantic replacement history,
+manual gesture grouping/interleaving, and owner-record applicability checks.
+Client tests cover revision-checked batch/history requests and text-safe shortcut
+selection. The owner runs builds and tests; no pass is claimed here.
+
+Manual checks after rebuilding/installing:
+
+1. Delete two nodes through one Delete Node action. Undo once restores both;
+   redo once removes both. Existing dangling connection records must survive.
+2. Create, configure, connect, move an endpoint, and disconnect. Undo/redo each
+   action once. A connection-end move must remain one step.
+3. Undo, then make a different accepted edit. Redo must report no available step.
+4. Edit from two attached clients. Either client must reverse the latest global
+   action and both must refresh to the same accepted project revision.
+5. Ctrl/Command+Z in a configuration text field or ordinary source editor must
+   edit text. In the graph surface it must undo the latest project edit.
+6. Save and restart: the project must restore its current durable state, with
+   an empty session history. Package creation and other filesystem effects
+   remain outside history.

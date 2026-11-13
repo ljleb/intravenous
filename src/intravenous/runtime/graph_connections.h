@@ -60,6 +60,10 @@ struct GraphConnectionsProjectGraphRequest {
     GraphBuilder* root_builder = nullptr;
     std::unordered_map<std::string, NodeInstancePlacement> const* placements = nullptr;
     GraphConnectionsMutation mutation{};
+    bool validate_only = false;
+    bool capture_effect = false;
+    std::vector<ProjectConnection> before{};
+    std::vector<ProjectConnection> after{};
     GraphConnectionsBatchResult result{};
     bool handled = false;
 };
@@ -73,17 +77,13 @@ struct GraphConnectionsProjectGraphRead {
 
 class GraphConnections;
 
-// The GraphConnections transaction of one node-message interaction. ProjectGraph
-// enters GraphConnections once, through
-// iv_runtime_project_graph_connections_interaction_requested_event, to open
-// it. Each later run applies the unchanged desired connection set to one
-// preview or final root builder, exactly as a GraphConnectionsProjectGraphRequest
-// without a mutation would, but as part of the opening entry instead of
-// entering GraphConnections again. An interaction never changes desired
-// connections.
+// Module-local transaction opened through one ProjectGraph event visit. A node
+// message can realize several previews without changing desired connections;
+// a project edit can validate records before its one final commit/rebuild.
 class GraphConnectionsInteraction {
     GraphConnections* owner_ = nullptr;
     EventModuleVisit visit_{};
+    bool committed_ = false;
 
 public:
     GraphConnectionsInteraction() = default;
@@ -94,7 +94,8 @@ public:
 
     [[nodiscard]] explicit operator bool() const noexcept { return owner_ != nullptr; }
 
-    void run(GraphConnectionsProjectGraphRequest& request) const;
+    void run(GraphConnectionsProjectGraphRequest& request);
+    [[nodiscard]] std::vector<ProjectConnection> records() const;
 };
 
 struct GraphConnectionsInteractionRequest {

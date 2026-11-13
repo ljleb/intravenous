@@ -52,6 +52,11 @@ export class GraphEditorProvider implements vscode.Disposable {
             this.pendingActions.set(panel, [...(this.pendingActions.get(panel) ?? []), action]);
             return;
         }
+        if (action === "undo" || action === "redo") {
+            await this.session.projectHistory(action);
+            await this.refresh();
+            return;
+        }
         const [scope, definitions] = await Promise.all([this.session.readGraphScope(), this.session.graphDefinitions()]);
         if (!this.panels.has(panel)) return;
         this.state = { ...this.state, scope, definitions, sessionStatus: this.session.graphSessionStatus };
@@ -72,11 +77,22 @@ export class GraphEditorProvider implements vscode.Disposable {
             if (selected) { await this.session.deleteGraphConnection(selected.id); await this.refresh(); }
             return;
         }
+        if (action === "deleteNode") {
+            const selected = await vscode.window.showQuickPick(scope.nodes.map((node) => ({
+                label: node.instance.displayName || node.instance.definitionId.split(".").pop() || node.instance.definitionId,
+                description: node.instance.definitionId, instanceId: node.instance.instanceId,
+            })), { title: "Intravenous: Delete Nodes", placeHolder: "Select nodes to delete", canPickMany: true });
+            if (selected?.length && this.panels.has(panel)) {
+                await this.session.deleteGraphNodes(selected.map((node) => node.instanceId));
+                await this.refresh();
+            }
+            return;
+        }
         const selected = await vscode.window.showQuickPick(scope.nodes.map((node, index) => ({
             label: node.instance.displayName || node.instance.definitionId.split(".").pop() || node.instance.definitionId,
             description: node.instance.definitionId, instanceId: node.instance.instanceId,
             detail: `Lane ${index + 1}${node.instance.configurationSource ? ` · ${node.instance.configurationSource}` : ""}`,
-        })), { title: `Intravenous: ${action === "editNode" ? "Edit Node" : action === "deleteNode" ? "Delete Node" : "Open Node Source"}`,
+        })), { title: `Intravenous: ${action === "editNode" ? "Edit Node" : "Open Node Source"}`,
             placeHolder: "Select a node" });
         if (!selected || !this.panels.has(panel)) return;
         if (action === "editNode") {
@@ -87,9 +103,6 @@ export class GraphEditorProvider implements vscode.Disposable {
             this.state.scope = current;
             this.post(panel);
             void panel.webview.postMessage({ type: "graphAction", action, instanceId: selected.instanceId });
-        } else if (action === "deleteNode") {
-            await this.session.deleteGraphNode(selected.instanceId);
-            await this.refresh();
         } else {
             await this.session.openGraphNodeSource(selected.instanceId);
         }
@@ -120,6 +133,11 @@ export class GraphEditorProvider implements vscode.Disposable {
                     try { await this.runAction(action, panel); }
                     catch (error) { void vscode.window.showErrorMessage(`Cannot edit project: ${error.message}`); }
                 }
+            } else if (message?.type === "projectHistory") {
+                try {
+                    await this.session.projectHistory(message.direction);
+                    await this.refresh();
+                } catch (error) { void vscode.window.showErrorMessage(`Cannot ${message.direction} project edit: ${error.message}`); }
             } else if (message?.type === "copyNodeDebugDetails") {
                 const scope = this.state.scope;
                 const node = scope?.nodes.find((entry) => addressKey(entry.address) === message.nodeKey);

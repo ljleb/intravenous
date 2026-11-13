@@ -59,3 +59,18 @@ test("connection edits retain the revision captured before the scope read", asyn
         { method: "graphConnections.upsert", params: { connection, expectedRevision: 18 } },
     ]);
 });
+
+test("project history and a multi-node edit use one revision-checked request each", async () => {
+    const calls: unknown[] = [];
+    const client = { request: async (method, params) => { calls.push({ method, params }); } } as unknown as JsonRpcSocketClient;
+    const rpc = new WorkspaceRpc(client, () => 23);
+    const operations = ["a", "b"].map((instanceId) => ({ method: "nodeInstances.delete", params: { instanceId } }));
+    await rpc.applyProjectEdit(operations, 19);
+    await rpc.projectHistory("undo");
+    await rpc.projectHistory("redo");
+    assert.deepEqual(calls, [
+        { method: "project.applyEdit", params: { operations, expectedRevision: 19 } },
+        { method: "project.undo", params: { expectedRevision: 23 } },
+        { method: "project.redo", params: { expectedRevision: 23 } },
+    ]);
+});

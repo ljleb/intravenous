@@ -100,6 +100,14 @@ export class WorkspaceRpc {
             "graphConnections.delete", this.mutationParams({ connectionId }, expectedRevision));
     }
 
+    applyProjectEdit(operations: Array<{ method: string; params: Record<string, unknown> }>, expectedRevision?: number): Promise<void> {
+        return this.client.request("project.applyEdit", this.mutationParams({ operations }, expectedRevision));
+    }
+
+    projectHistory(direction: "undo" | "redo"): Promise<void> {
+        return this.client.request(`project.${direction}`, this.mutationParams({}));
+    }
+
     getIvPackageDefinitions(): Promise<{ packages?: Array<Record<string, unknown>> }> {
         return this.client.request("ivPackages.list", {});
     }

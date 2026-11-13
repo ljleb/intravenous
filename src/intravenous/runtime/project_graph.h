@@ -60,6 +60,9 @@ struct EndManualControlInteractionRequest;
 struct DispatchNodeMessageRequest;
 struct GetNodeEventProtocolRequest;
 struct GetGraphScopeRequest;
+struct ApplyProjectEditRequest;
+struct UndoProjectEditRequest;
+struct RedoProjectEditRequest;
 
 // Wall-clock microseconds of the rebuild that produced a generation, from the
 // rebuild's start to GraphExecutor accepting (or refusing) the compiled graph.
@@ -165,6 +168,7 @@ class ProjectGraph {
     struct ActiveManualControlInteraction {
         ManualControlInteractionId interaction{};
         ManualControlId control{};
+        std::uint64_t history_serial = 0;
     };
     struct ControlCompileRequest {
         std::uint64_t request_id = 0;
@@ -185,6 +189,16 @@ class ProjectGraph {
         std::vector<ManualControlId> dynamic_inputs{};
         bool activate_on_ready = false;
     };
+
+    std::vector<ProjectEditEffect> edit_history_{};
+    std::size_t history_position_ = 0;
+    std::uint64_t history_serial_ = 0;
+    void record_manual_edit_locked(ProjectManualControl before, ProjectManualControl after,
+        ActiveManualControlInteraction& interaction);
+    void record_edit_locked(ProjectEditEffect effect);
+    void open_transactions_locked(InteractionTransactions& transactions);
+    RebuildResult apply_edit_locked(ProjectEditBatch const& batch, bool record_history,
+        std::optional<bool> history_undo = std::nullopt);
 
     mutable std::mutex mutex_;
     std::shared_ptr<NodeDefinitionsSnapshot const> definitions_snapshot_{};
@@ -219,7 +233,9 @@ class ProjectGraph {
         GraphConnectionsMutation connection_mutation,
         bool publish_execution = true,
         IvPackageDefinitionsChanged const* package_definitions = nullptr,
-        InteractionTransactions* interaction_transactions = nullptr);
+        InteractionTransactions* interaction_transactions = nullptr,
+        std::vector<ProjectManualControl> const* previous_controls = nullptr,
+        bool record_history = true);
     void dispatch_node_message_locked(
         NodeAddress const& target,
         OwnedNodeMessage message,
@@ -270,6 +286,13 @@ public:
     // Rebuilds from a published snapshot and returns the build's read-model
     // changes in `change.publication`.
     void handle_node_definitions_snapshot_changed(NodeDefinitionsSnapshotChanged& change);
+    void handle_project_apply_edit(ProjectEditBatch const& batch, ProjectAckBuilder& builder);
+    void handle_project_undo(ProjectAckBuilder& builder);
+    void handle_project_redo(ProjectAckBuilder& builder);
+    void handle_socket_rpc_apply_project_edit(ApplyProjectEditRequest const&, SocketRpcAckResponseBuilder&);
+    void handle_socket_rpc_undo_project_edit(UndoProjectEditRequest const&, SocketRpcAckResponseBuilder&);
+    void handle_socket_rpc_redo_project_edit(RedoProjectEditRequest const&, SocketRpcAckResponseBuilder&);
+
     void handle_project_create_node_instance(
         ProjectCreateNodeInstanceRequest const& request,
         ProjectStringBuilder& builder);

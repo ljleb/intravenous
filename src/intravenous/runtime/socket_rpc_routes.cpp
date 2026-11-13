@@ -198,6 +198,33 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
             if (!builder.has_response()) builder.fail("node instance service is unavailable");
             return builder.build(id);
         });
+    impl_->add<ApplyProjectEditRequest>(
+        "project.applyEdit", "project.write", true, false,
+        [](auto const& request, int id, Context const& context) {
+            SocketRpcAckResponseBuilder builder;
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_apply_project_edit_event, request, builder);
+            if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            if (context.publish_project_graph) context.publish_project_graph(builder.take_publication());
+            return builder.build(id);
+        });
+    impl_->add<UndoProjectEditRequest>(
+        "project.undo", "project.write", true, false,
+        [](auto const& request, int id, Context const& context) {
+            SocketRpcAckResponseBuilder builder;
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_undo_project_edit_event, request, builder);
+            if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            if (context.publish_project_graph) context.publish_project_graph(builder.take_publication());
+            return builder.build(id);
+        });
+    impl_->add<RedoProjectEditRequest>(
+        "project.redo", "project.write", true, false,
+        [](auto const& request, int id, Context const& context) {
+            SocketRpcAckResponseBuilder builder;
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_redo_project_edit_event, request, builder);
+            if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            if (context.publish_project_graph) context.publish_project_graph(builder.take_publication());
+            return builder.build(id);
+        });
     impl_->add<DeleteNodeInstanceRequest>(
         "nodeInstances.delete", "project.write", true, false,
         [](auto const& request, int id, Context const& context) {

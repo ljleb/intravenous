@@ -150,12 +150,21 @@ export class WorkspaceSession {
         await this.rpc!.updateNodeInstances([{ instanceId, displayName, configurationSource }]);
     }
 
-    async deleteGraphNode(instanceId: string): Promise<void> {
-        const scope = await this.readGraphScope();
-        if (!scope.editable || !scope.nodes.some((entry) => entry.instance.instanceId === instanceId)) {
-            throw new Error("The selected node is no longer available");
+    async deleteGraphNodes(instanceIds: string[]): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        const rpc = this.rpc;
+        const revision = this.lastSessionRevision;
+        const scope = await rpc.getGraphScope();
+        if (!scope.editable || instanceIds.some((id) => !scope.nodes.some((node) => node.instance.instanceId === id))) {
+            throw new Error("A selected node is no longer available");
         }
-        await this.rpc!.deleteNodeInstance(instanceId);
+        if (!instanceIds.length) return;
+        await rpc.applyProjectEdit(instanceIds.map((instanceId) => ({ method: "nodeInstances.delete", params: { instanceId } })), revision);
+    }
+
+    async projectHistory(direction: "undo" | "redo"): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        await this.rpc.projectHistory(direction);
     }
 
     async openGraphNodeSource(instanceId: string): Promise<void> {

@@ -1462,20 +1462,23 @@ void NodeInstancesInteraction::run(NodeInstancesProjectGraphRequest& request)
         throw std::logic_error("NodeInstances ProjectGraph request was handled more than once");
     }
     bool const commit =
-        std::holds_alternative<NodeReplacementsReplaceMutation>(request.mutation);
-    if (!commit
-        && !std::holds_alternative<NodeReplacementPreviewMutation>(request.mutation)) {
-        throw std::logic_error(
-            "a NodeInstances interaction only previews and commits node replacements");
-    }
+        !request.validate_only
+        && !std::holds_alternative<NodeReplacementPreviewMutation>(request.mutation);
     if (committed_) {
         throw std::logic_error(
-            "a NodeInstances interaction commits its node replacements once");
+            "a NodeInstances transaction commits its durable records once");
     }
     EventModuleVisitScope entry(visit_);
     request.handled = true;
     owner_->apply_project_graph_transaction(request);
     committed_ = commit;
+}
+
+ProjectInstanceRecords NodeInstancesInteraction::records() const
+{
+    if (!owner_) throw std::logic_error("NodeInstances transaction is not open");
+    EventModuleVisitScope entry(visit_);
+    return {owner_->desired_instances(), owner_->desired_node_replacements()};
 }
 
 void NodeInstances::handle_project_graph_interaction(
@@ -1515,16 +1518,23 @@ void NodeInstances::apply_project_graph_transaction(
         throw std::invalid_argument("ProjectGraph transaction requires a root GraphBuilder");
     }
 
+    if (request.validate_only && !std::holds_alternative<NodeInstanceReplaceAllMutation>(request.mutation)) {
+        throw std::logic_error("NodeInstances validation requires a complete replacement batch");
+    }
+
     Changes changes;
     bool install_snapshot = false;
     {
         std::scoped_lock lock(mutex_);
         install_snapshot = definitions_snapshot_.get() != request.snapshot.get();
     }
-    if (install_snapshot) {
+    if (install_snapshot && !request.validate_only) {
         install_definitions_snapshot(changes, request.snapshot);
     }
 
+    if (request.capture_effect && !request.validate_only) {
+        request.before = {desired_instances(), desired_node_replacements()};
+    }
     std::visit(
         [&](auto const& mutation) {
             using Mutation = std::remove_cvref_t<decltype(mutation)>;
@@ -1672,6 +1682,8 @@ void NodeInstances::apply_project_graph_transaction(
                     }
                     replacements.push_back(std::move(replacement));
                 }
+
+                if (request.validate_only) return;
 
                 IvModuleRequiredDefinitionsChanged required_diff;
                 bool list_changed = false;
@@ -1842,6 +1854,11 @@ void NodeInstances::apply_project_graph_transaction(
             }
         },
         request.mutation);
+
+    if (request.validate_only) return;
+    if (request.capture_effect) {
+        request.after = {desired_instances(), desired_node_replacements()};
+    }
 
     std::vector<ProjectNodeReplacement> replacements_for_realization;
     if (auto const* preview = std::get_if<NodeReplacementPreviewMutation>(

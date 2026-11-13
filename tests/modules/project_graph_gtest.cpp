@@ -77,6 +77,7 @@ struct ReplaceWithValue {
 };
 
 struct ReplaceWithoutArguments {};
+struct ReplaceTwice { int value = 0; };
 
 struct ReplaceThenSend {
     int value = 0;
@@ -263,6 +264,12 @@ struct ReplacingModule {
     {
         context.replace<"iv.test.project_graph.successor">(
             preserved + event.value);
+    }
+
+    void on_message(iv::ModuleMessageContext<ReplacingModule>& context, ReplaceTwice const& event) const
+    {
+        context.replace<"iv.test.project_graph.successor">(event.value);
+        context.replace<"iv.test.project_graph.successor">(event.value + 1);
     }
 
     void on_message(
@@ -699,6 +706,11 @@ std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_replacement_snapshot(
         *revision,
         replacing_definition_id,
         sizeof(replacing_definition_id) - 1);
+    add_module_message_handler<
+        ReplacingModule, ReplaceTwice,
+        static_cast<void (ReplacingModule::*)(iv::ModuleMessageContext<ReplacingModule>&,
+            ReplaceTwice const&) const>(&ReplacingModule::on_message)>(
+        *revision, replacing_definition_id, sizeof(replacing_definition_id) - 1);
     add_module_message_handler<
         ReplacingModule,
         ReplaceWithoutArguments,
@@ -2152,9 +2164,9 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsHealthyInterfacesBeforeTheFirstSucces
     EXPECT_EQ(healthy.at("sampleOutputs")[0].at("name"), "main");
     EXPECT_FALSE(healthy.at("sampleOutputs")[0].at("valueTypes").empty());
     EXPECT_TRUE(scope_node(scope, "missing").at("sampleOutputs").empty());
-    auto const calls = configure_calls;
+    auto const calls = configure_calls.load();
     (void)read_graph_scope(project_graph);
-    EXPECT_EQ(configure_calls, calls); // Scope reads run no constructors.
+    EXPECT_EQ(configure_calls.load(), calls); // Scope reads run no constructors.
 
     iv::ProjectAckBuilder remove;
     in_event_source([&] {
@@ -2671,4 +2683,317 @@ TEST_F(ProjectGraphFixture, InvalidReplacementDoesNotChangeEitherDesiredOwner)
     EXPECT_EQ(project_graph.current_generation(), generation_before);
     EXPECT_EQ(instances.desired_instances(), instances_before);
     EXPECT_EQ(connections.desired_connections(), connections_before);
+}
+
+TEST_F(ProjectGraphFixture, HistoryRestoresMultiNodeDeletionAndOwnedRecordsButRetainsDanglingConnections)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectConnection wire = iv::ProjectSampleConnection{
+        .connection_id = "retained-wire",
+        .outputs = {{.instance_id = "a", .port = {.name = "main"}}},
+        .inputs = {{.instance_id = "b", .port = {.name = "main"}}},
+    };
+    iv::ProjectAckBuilder load;
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {
+            {.instance_id = "a", .definition_id = definition_id, .display_name = "Source"},
+            {.instance_id = "b", .definition_id = definition_id},
+            {.instance_id = "manual", .definition_id = manual_control_leaf_definition_id},
+        },
+        .node_replacements = {{.address = {.instance_id = "a"},
+            .definition_id = definition_id, .configuration_arguments_json = "[]"}},
+        .connections = {wire},
+        .manual_controls = {{.id = {.node = {.instance_id = "manual"}, .input_name = "gain"}, .stored_value = .75f}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    auto const before_nodes = instances.desired_instances();
+    auto const before_replacements = instances.desired_node_replacements();
+    auto const before_controls = project_graph.manual_controls();
+    auto const generation = project_graph.current_generation()->generation;
+    iv::ProjectEditBatch remove;
+    remove.instances = {{"a", std::nullopt}, {"manual", std::nullopt}};
+    iv::ProjectAckBuilder deleted;
+    // This source's whole propagation includes both owners only once, despite
+    // preparing and committing several records. Re-entry is checked at runtime.
+    in_event_source([&] { project_graph.handle_project_apply_edit(remove, deleted); });
+    ASSERT_NO_THROW(deleted.build());
+    EXPECT_TRUE(deleted.take_publication().graph_changed);
+    EXPECT_EQ(project_graph.current_generation()->generation, generation + 1);
+    ASSERT_EQ(instances.desired_instances().size(), 1u);
+    EXPECT_TRUE(instances.desired_node_replacements().empty());
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    EXPECT_EQ(connections.desired_connections(), std::vector<iv::ProjectConnection>{wire});
+
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_TRUE(undo.take_publication().graph_changed);
+    EXPECT_EQ(project_graph.current_generation()->generation, generation + 2);
+    EXPECT_EQ(instances.desired_instances(), before_nodes);
+    EXPECT_EQ(instances.desired_node_replacements(), before_replacements);
+    EXPECT_EQ(project_graph.manual_controls(), before_controls);
+    EXPECT_EQ(connections.desired_connections(), std::vector<iv::ProjectConnection>{wire});
+
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    EXPECT_EQ(project_graph.current_generation()->generation, generation + 3);
+    EXPECT_EQ(instances.desired_instances().size(), 1u);
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    EXPECT_EQ(connections.desired_connections().size(), 1u);
+}
+
+TEST_F(ProjectGraphFixture, HistoryRejectsAnInvalidBatchBeforeAnyOwnerCommits)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1)});
+    iv::ProjectStringBuilder created;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "a", .definition_id = definition_id}, created); });
+    ASSERT_EQ(created.build(), "a");
+    auto const before = instances.desired_instances();
+    auto const generation = project_graph.current_generation();
+    iv::ProjectEditBatch invalid;
+    invalid.instances = {{"a", std::nullopt}};
+    invalid.connections = {{"broken", iv::ProjectSampleConnection{.connection_id = "broken"}}};
+    iv::ProjectAckBuilder rejected;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_apply_edit(invalid, rejected); }), std::invalid_argument);
+    EXPECT_EQ(instances.desired_instances(), before);
+    EXPECT_TRUE(connections.desired_connections().empty());
+    EXPECT_EQ(project_graph.current_generation(), generation);
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_TRUE(instances.desired_instances().empty()); // Still reverses creation.
+}
+
+TEST_F(ProjectGraphFixture, HistoryRestoresExistingConnectionUpsertAndKeepsRedoAcrossNoopEdits)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1)});
+    iv::ProjectConnection first = iv::ProjectSampleConnection{
+        .connection_id = "wire", .outputs = {{.instance_id = "missing-source"}},
+        .inputs = {{.instance_id = "missing-target"}},
+    };
+    iv::ProjectAckBuilder insert;
+    in_event_source([&] { project_graph.handle_project_upsert_graph_connection({first}, insert); });
+    ASSERT_NO_THROW(insert.build());
+    auto second = first;
+    std::get<iv::ProjectSampleConnection>(second).inputs[0].instance_id = "another-target";
+    iv::ProjectAckBuilder update;
+    in_event_source([&] { project_graph.handle_project_upsert_graph_connection({second}, update); });
+    ASSERT_NO_THROW(update.build());
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_EQ(connections.desired_connections(), std::vector<iv::ProjectConnection>{first});
+    iv::ProjectAckBuilder noop;
+    in_event_source([&] { project_graph.handle_project_upsert_graph_connection({first}, noop); });
+    ASSERT_NO_THROW(noop.build());
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    EXPECT_EQ(connections.desired_connections(), std::vector<iv::ProjectConnection>{second});
+    iv::ProjectAckBuilder undo_again;
+    in_event_source([&] { project_graph.handle_project_undo(undo_again); });
+    iv::ProjectStringBuilder unrelated;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "new-action", .definition_id = definition_id}, unrelated); });
+    iv::ProjectAckBuilder no_redo;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_redo(no_redo); }), std::runtime_error);
+    EXPECT_EQ(connections.desired_connections(), std::vector<iv::ProjectConnection>{first});
+}
+
+TEST_F(ProjectGraphFixture, HistoryFollowsAcceptedDesiredStateWhenConfigurationFailsAndReplayClearsHistory)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1)});
+    auto const executable = project_graph.current_generation();
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "missing", .definition_id = "unavailable.definition",
+        .package_root = std::filesystem::path(package_root)}, create); });
+    ASSERT_EQ(create.build(), "missing");
+    ASSERT_TRUE(project_graph.configuration_failure());
+    EXPECT_EQ(project_graph.current_generation(), executable);
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_TRUE(instances.desired_instances().empty());
+    EXPECT_FALSE(project_graph.configuration_failure());
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    EXPECT_EQ(instances.desired_instances().size(), 1u);
+    EXPECT_TRUE(project_graph.configuration_failure());
+    iv::ProjectAckBuilder replay;
+    in_event_source([&] { project_graph.handle_project_replace_graph({}, replay); });
+    ASSERT_NO_THROW(replay.build());
+    iv::ProjectAckBuilder empty;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(empty); }), std::runtime_error);
+}
+
+TEST_F(ProjectGraphFixture, HistoryRecordsFinalSemanticReplacementWithoutReplayingTheMessage)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "replaceable", .definition_id = replacing_definition_id,
+        .configuration_source = "30"}, create); });
+    ASSERT_EQ(create.build(), "replaceable");
+    auto first = in_event_source([&] { return project_graph.dispatch_node_message(
+        {.instance_id = "replaceable"}, iv::OwnedNodeMessage(ReplaceWithValue{.value = 12})); });
+    ASSERT_TRUE(first.project_state_changed);
+    auto const first_replacements = instances.desired_node_replacements();
+    auto second = in_event_source([&] { return project_graph.dispatch_node_message(
+        {.instance_id = "replaceable"}, iv::OwnedNodeMessage(ReplaceWithValue{.value = 99})); });
+    ASSERT_TRUE(second.project_state_changed);
+    auto const final_replacements = instances.desired_node_replacements();
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_EQ(instances.desired_node_replacements(), first_replacements);
+    EXPECT_EQ(nlohmann::ordered_json::parse(instances.desired_node_replacements()[0].configuration_arguments_json),
+        nlohmann::ordered_json::array({42}));
+    iv::ProjectAckBuilder undo_first;
+    in_event_source([&] { project_graph.handle_project_undo(undo_first); });
+    ASSERT_NO_THROW(undo_first.build());
+    EXPECT_TRUE(instances.desired_node_replacements().empty());
+    for (int step = 0; step < 2; ++step) {
+        iv::ProjectAckBuilder redo;
+        in_event_source([&] { project_graph.handle_project_redo(redo); });
+        ASSERT_NO_THROW(redo.build());
+    }
+    EXPECT_EQ(instances.desired_node_replacements(), final_replacements);
+    EXPECT_EQ(nlohmann::ordered_json::parse(instances.desired_node_replacements()[0].configuration_arguments_json),
+        nlohmann::ordered_json::array({99}));
+}
+
+TEST_F(ProjectGraphFixture, HistoryGroupsManualGestureAndSealsItAtAnInterveningAcceptedAction)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ManualControlId id{.node = {.instance_id = "manual"}, .input_name = "gain"};
+    iv::ProjectAckBuilder load;
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {{.instance_id = "manual", .definition_id = manual_control_leaf_definition_id}},
+        .manual_controls = {{.id = id, .stored_value = .1f}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    iv::ManualControlInteractionId gesture{.client_id = "client-a", .interaction_id = "drag"};
+    iv::ProjectAckBuilder begin;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, .2f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    iv::ProjectAckBuilder update;
+    in_event_source([&] { project_graph.handle_project_update_manual_control_interaction({gesture, .3f}, update); });
+    ASSERT_NO_THROW(update.build());
+    iv::ProjectAckBuilder blocked;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(blocked); }), std::runtime_error);
+    iv::ProjectAckBuilder end;
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({gesture, .4f}, end); });
+    ASSERT_NO_THROW(end.build());
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    ASSERT_EQ(project_graph.manual_controls().size(), 1u);
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.1f});
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.4f});
+
+    iv::ProjectAckBuilder begin_again;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, .5f}, begin_again); });
+    iv::ProjectAckBuilder other_client;
+    in_event_source([&] { project_graph.handle_project_update_node_instances({
+        .updates = {{.instance_id = "manual", .display_name = "Other client"}}}, other_client); });
+    ASSERT_NO_THROW(other_client.build());
+    iv::ProjectAckBuilder finish;
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({gesture, .6f}, finish); });
+    ASSERT_NO_THROW(finish.build());
+    iv::ProjectAckBuilder undo_tail;
+    in_event_source([&] { project_graph.handle_project_undo(undo_tail); });
+    ASSERT_NO_THROW(undo_tail.build());
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.5f});
+    EXPECT_EQ(instances.desired_instances()[0].display_name, "Other client");
+    iv::ProjectAckBuilder undo_name;
+    in_event_source([&] { project_graph.handle_project_undo(undo_name); });
+    ASSERT_NO_THROW(undo_name.build());
+    EXPECT_FALSE(instances.desired_instances()[0].display_name);
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.5f});
+}
+
+TEST_F(ProjectGraphFixture, ProjectEditParserRejectsNestedOrUnsupportedOperationsAndKeepsOneBatch)
+{
+    auto parsed = iv::parse_socket_rpc_request(R"({"id":1,"method":"project.applyEdit","params":{"expectedRevision":17,"operations":[{"method":"nodeInstances.delete","params":{"instanceId":"a"}},{"method":"nodeInstances.delete","params":{"instanceId":"b"}}]}})");
+    ASSERT_TRUE(std::holds_alternative<iv::ApplyProjectEditRequest>(parsed.payload));
+    auto const& batch = std::get<iv::ApplyProjectEditRequest>(parsed.payload).batch;
+    ASSERT_EQ(batch.instances.size(), 2u);
+    EXPECT_EQ(batch.instances[0].key, "a");
+    EXPECT_EQ(batch.instances[1].key, "b");
+    EXPECT_FALSE(batch.instances[0].value);
+    EXPECT_EQ(parsed.expected_revision, 17u);
+    EXPECT_THROW(iv::parse_socket_rpc_request(R"({"id":1,"method":"project.applyEdit","params":{"operations":[{"method":"project.applyEdit","params":{"operations":[]}}]}})"), std::invalid_argument);
+    EXPECT_THROW(iv::parse_socket_rpc_request(R"({"id":1,"method":"project.applyEdit","params":{"operations":[{"method":"project.save","params":{}}]}})"), std::invalid_argument);
+    EXPECT_TRUE(std::holds_alternative<iv::UndoProjectEditRequest>(iv::parse_socket_rpc_request(R"({"id":1,"method":"project.undo","params":{}})").payload));
+    EXPECT_TRUE(std::holds_alternative<iv::RedoProjectEditRequest>(iv::parse_socket_rpc_request(R"({"id":1,"method":"project.redo","params":{}})").payload));
+}
+
+TEST_F(ProjectGraphFixture, StaleHistoryDoesNotOverwriteAnOwnersNewerAcceptedRecord)
+{
+    auto snapshot = make_snapshot(1);
+    publish_definitions_snapshot(project_graph, {.snapshot = snapshot});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "a", .definition_id = definition_id}, create); });
+    ASSERT_EQ(create.build(), "a");
+    // Exercise an out-of-history owner update. A reverse transaction must
+    // verify the actual owner record, not assume its cached effect still fits.
+    iv::GraphBuilder root;
+    iv::NodeInstancesProjectGraphRequest changed{
+        .snapshot = snapshot, .root_builder = &root,
+        .mutation = iv::NodeInstanceUpdateMutation{
+            .updates = {{.instance_id = "a", .display_name = "Newer"}}},
+    };
+    in_event_source([&] { instances.handle_project_graph_transaction(changed); });
+    auto const before = instances.desired_instances();
+    auto const generation = project_graph.current_generation();
+    iv::ProjectAckBuilder rejected;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(rejected); }), std::runtime_error);
+    EXPECT_EQ(instances.desired_instances(), before);
+    EXPECT_EQ(project_graph.current_generation(), generation);
+    iv::GraphBuilder restore_root;
+    iv::NodeInstancesProjectGraphRequest restored{
+        .snapshot = snapshot, .root_builder = &restore_root,
+        .mutation = iv::NodeInstanceUpdateMutation{
+            .updates = {{.instance_id = "a", .display_name = std::string{}}}},
+    };
+    in_event_source([&] { instances.handle_project_graph_transaction(restored); });
+    iv::ProjectAckBuilder retry;
+    in_event_source([&] { project_graph.handle_project_undo(retry); });
+    ASSERT_NO_THROW(retry.build()); // Failed undo did not move the position.
+    EXPECT_TRUE(instances.desired_instances().empty());
+}
+
+TEST_F(ProjectGraphFixture, SuccessiveProvisionalReplacementsCommitOnlyOneHistoryEntry)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "replaceable", .definition_id = replacing_definition_id,
+        .configuration_source = "30"}, create); });
+    ASSERT_EQ(create.build(), "replaceable");
+    auto const before = project_graph.current_generation()->generation;
+    auto result = in_event_source([&] { return project_graph.dispatch_node_message(
+        {.instance_id = "replaceable"}, iv::OwnedNodeMessage(ReplaceTwice{.value = 70})); });
+    ASSERT_TRUE(result.project_state_changed);
+    EXPECT_TRUE(result.publication.graph_changed);
+    EXPECT_EQ(project_graph.current_generation()->generation, before + 1);
+    EXPECT_EQ(nlohmann::ordered_json::parse(instances.desired_node_replacements()[0].configuration_arguments_json),
+        nlohmann::ordered_json::array({71}));
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_TRUE(instances.desired_node_replacements().empty()); // No intermediate 70 entry.
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    EXPECT_EQ(nlohmann::ordered_json::parse(instances.desired_node_replacements()[0].configuration_arguments_json),
+        nlohmann::ordered_json::array({71}));
 }

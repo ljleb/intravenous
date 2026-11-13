@@ -65,6 +65,8 @@
             ]
         },
         "commands": [
+            { "command": "intravenous.undo", "title": "Intravenous: Undo Project Edit" },
+            { "command": "intravenous.redo", "title": "Intravenous: Redo Project Edit" },
             {
                 "command": "intravenous.openGraphEditor",
                 "title": "Intravenous: Open Graph Editor"

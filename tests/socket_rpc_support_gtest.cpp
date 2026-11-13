@@ -1,5 +1,6 @@
 #include <intravenous/runtime/server_options.h>
 #include <intravenous/runtime/socket_rpc_requests.h>
+#include <intravenous/runtime/socket_rpc_routes.h>
 #include <intravenous/runtime/socket_rpc_response_builders.h>
 
 #include <gtest/gtest.h>
@@ -734,4 +735,31 @@ TEST(SocketRpcAudioDevicesResultBuilder, SerializesSnapshot)
     EXPECT_EQ(response["result"]["selectedOutput"]["name"], "Output 1");
     EXPECT_EQ(response["result"]["selectedInput"]["deviceId"], "missing");
     EXPECT_EQ(response["result"]["selectedInput"]["available"], false);
+}
+
+TEST(SocketRpcProjectHistory, RequiresProjectWriteAndChecksRevisionBeforeInvokingEveryMutationRoute)
+{
+    iv::SocketRpcRouteRegistry routes;
+    for (auto const* method : {"project.undo", "project.redo", "project.applyEdit"}) {
+        Json params = Json::object();
+        params["expectedRevision"] = 17;
+        if (std::string_view(method) == "project.applyEdit") params["operations"] = Json::array();
+        auto request = iv::parse_socket_rpc_request(Json{{"id", 1}, {"method", method}, {"params", params}}.dump());
+        bool checked_revision = false;
+        std::string capability;
+        EXPECT_THROW((void)routes.dispatch(request, {
+            .authorize = [&](std::string const& required) { capability = required; },
+            .before_invoke = [&](bool mutates) {
+                EXPECT_TRUE(mutates);
+                checked_revision = true;
+                throw std::runtime_error("stale project session revision");
+            },
+        }), std::runtime_error);
+        EXPECT_EQ(capability, "project.write");
+        EXPECT_TRUE(checked_revision);
+        EXPECT_THROW((void)routes.dispatch(request, {
+            .authorize = [](std::string const&) { throw std::runtime_error("permission denied"); },
+            .before_invoke = [](bool) { ADD_FAILURE() << "authorization must precede revision checks"; },
+        }), std::runtime_error);
+    }
 }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <intravenous/runtime/project_edit.h>
+
 #include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/runtime/project_connection_types.h>
 #include <intravenous/node/manual_control.h>
@@ -28,6 +30,9 @@ struct GetVirtualNodeRequest { std::string node_id{}; };
 struct GetVirtualNodesRequest { std::vector<std::string> node_ids{}; };
 // The graph editor's project root scope; see ProjectGraphScope.
 struct GetGraphScopeRequest {};
+struct ApplyProjectEditRequest { ProjectEditBatch batch{}; };
+struct UndoProjectEditRequest {};
+struct RedoProjectEditRequest {};
 
 struct CreateNodeInstanceRequest {
     std::optional<std::string> instance_id{};
@@ -106,6 +111,9 @@ using SocketRpcRequestPayload = std::variant<
     GetVirtualNodeRequest,
     GetVirtualNodesRequest,
     GetGraphScopeRequest,
+    ApplyProjectEditRequest,
+    UndoProjectEditRequest,
+    RedoProjectEditRequest,
     CreateNodeInstanceRequest,
     GetIvPackageDefinitionsRequest,
     CreateIvPackageRequest,

@@ -576,16 +576,23 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     GraphConnectionsMutation connection_mutation,
     bool publish_execution,
     IvPackageDefinitionsChanged const* package_definitions,
-    InteractionTransactions* interaction_transactions)
+    InteractionTransactions* interaction_transactions,
+    std::vector<ProjectManualControl> const* previous_controls,
+    bool record_history)
 {
     using Clock = std::chrono::steady_clock;
     auto const rebuild_begin = Clock::now();
+    auto const controls_before = previous_controls ? *previous_controls : manual_controls_;
+    bool const capture_effect = publish_execution && record_history
+        && (!std::holds_alternative<std::monostate>(instance_mutation)
+            || !std::holds_alternative<std::monostate>(connection_mutation) || previous_controls);
     GraphBuilder root_builder;
     NodeInstancesProjectGraphRequest request{
         .snapshot = definitions_snapshot_,
         .root_builder = &root_builder,
         .mutation = std::move(instance_mutation),
         .prepare_failure_interfaces = publish_execution,
+        .capture_effect = capture_effect,
     };
     if (interaction_transactions) {
         auto& transaction = interaction_transactions->node_instances;
@@ -680,6 +687,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         .root_builder = instances_failed ? nullptr : &root_builder,
         .placements = &request.result.placements,
         .mutation = std::move(connection_mutation),
+        .capture_effect = capture_effect,
     };
     auto const instances_end = Clock::now();
     if (interaction_transactions) {
@@ -705,6 +713,29 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     if (!connections_request.handled) {
         throw std::runtime_error("ProjectGraph cannot rebuild without GraphConnections");
     }
+    if (capture_effect) {
+        // Removing an instance removes its owned replacements (NodeInstances)
+        // and manual values. Cross-node connections deliberately remain desired.
+        std::unordered_set<std::string> remaining_instances;
+        for (auto const& value : request.after.instances) remaining_instances.insert(value.instance_id);
+        std::unordered_set<std::string> removed_instances;
+        for (auto const& value : request.before.instances) {
+            if (!remaining_instances.contains(value.instance_id)) removed_instances.insert(value.instance_id);
+        }
+        std::erase_if(manual_controls_, [&](auto const& control) { return removed_instances.contains(control.id.node.instance_id); });
+        record_edit_locked({
+            .instances = project_record_changes(request.before.instances, request.after.instances),
+            .replacements = project_record_changes(request.before.replacements, request.after.replacements),
+            .connections = project_record_changes(connections_request.before, connections_request.after),
+            .manual_controls = project_record_changes(controls_before, manual_controls_),
+        });
+    }
+    if (publish_execution) {
+        std::erase_if(manual_interactions_, [&](auto const& interaction) {
+            auto const* control = find_manual_control_locked(interaction.control);
+            return !control || !control->enabled;
+        });
+    }
     if (instances_failed) {
         return fail(ProjectGraphConfigurationFailure{
             .definitions_generation = definitions_generation,
@@ -719,8 +750,25 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         });
     }
 
-    root_builder.outputs();
-    auto configured_graph = std::move(root_builder).finish();
+    std::string finish_failure;
+    auto configured_graph = [&]() -> std::optional<ConfiguredGraph> {
+        try {
+            root_builder.outputs();
+            return std::move(root_builder).finish();
+        } catch (std::exception const& error) {
+            finish_failure = error.what();
+            return std::nullopt;
+        }
+    }();
+    if (!configured_graph) {
+        return fail(ProjectGraphConfigurationFailure{
+            .definitions_generation = definitions_generation,
+            .connection_failure = GraphConnectionDiagnostic{
+                .message = "project graph finalization failed: " + finish_failure,
+            },
+        });
+    }
+    auto finished_graph = std::move(*configured_graph);
     auto generation = std::make_shared<ProjectGraphGeneration>();
     generation->generation = next_generation_;
     generation->definitions_generation = definitions_snapshot_->generation;
@@ -737,9 +785,9 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     for (auto const& control : manual_controls_) {
         if (!control.enabled) continue;
         auto const matches = resolve_node_address(
-            configured_graph, generation->placements, control.id.node);
+            finished_graph, generation->placements, control.id.node);
         auto const bundles = concrete_node_address_matches(
-            configured_graph, matches);
+            finished_graph, matches);
         if (bundles.empty()) {
             generation->manual_control_diagnostics.push_back({
                 .id = control.id,
@@ -751,7 +799,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
              selection_index < bundles.size(); ++selection_index) {
             auto const bundle = bundles[selection_index];
             auto const sample_inputs =
-                configured_graph.node_bundles.typed_ports(bundle).sample_inputs();
+                finished_graph.node_bundles.typed_ports(bundle).sample_inputs();
             auto const found = std::ranges::find(
                 sample_inputs, control.id.input_name, &ContinuousInputConfig::name);
             if (found == sample_inputs.end()) {
@@ -770,7 +818,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
             }
             auto const port = static_cast<std::size_t>(
                 std::distance(sample_inputs.begin(), found));
-            configured_graph.manual_controls.push_back(ConfiguredManualControl{
+            finished_graph.manual_controls.push_back(ConfiguredManualControl{
                 .id = control.id,
                 .input = NodeBundlePortId{bundle, PortKind::sample, port},
                 .concrete_selection_index = selection_index,
@@ -785,7 +833,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     if (publish_execution) {
         auto const is_available = [&](ManualControlId const& id) {
             return std::ranges::any_of(
-                configured_graph.manual_controls,
+                finished_graph.manual_controls,
                 [&](ConfiguredManualControl const& configured) {
                     return configured.id == id;
                 });
@@ -806,17 +854,17 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
                     return interaction.control == control.id;
                 });
             if (required
-                && manual_control_participates(configured_graph, control.id)) {
+                && manual_control_participates(finished_graph, control.id)) {
                 next_dynamic_inputs.push_back(control.id);
             }
         }
-        for (auto& configured : configured_graph.manual_controls) {
+        for (auto& configured : finished_graph.manual_controls) {
             configured.dynamic = std::ranges::contains(
                 next_dynamic_inputs, configured.id);
         }
     }
     generation->graph = std::make_shared<ConfiguredGraph const>(
-        std::move(configured_graph));
+        std::move(finished_graph));
     for (auto const& [instance_id, placement] : generation->placements) {
         if (!placement.configured) continue;
         for (auto const& handler : placement.configured->message_handlers) {
@@ -1391,6 +1439,166 @@ void ProjectGraph::handle_node_definitions_snapshot_changed(
     }
 }
 
+void ProjectGraph::record_edit_locked(ProjectEditEffect effect)
+{
+    if (effect.empty()) return;
+    edit_history_.resize(history_position_);
+    edit_history_.push_back(std::move(effect));
+    history_position_ = edit_history_.size();
+    ++history_serial_;
+}
+
+void ProjectGraph::record_manual_edit_locked(ProjectManualControl before,
+    ProjectManualControl after, ActiveManualControlInteraction& interaction)
+{
+    if (before == after) return;
+    if (interaction.history_serial == history_serial_ && history_position_ != 0
+        && history_position_ == edit_history_.size()) {
+        auto& effect = edit_history_.back();
+        if (effect.instances.empty() && effect.replacements.empty() && effect.connections.empty()
+            && effect.manual_controls.size() == 1 && effect.manual_controls[0].after == before) {
+            effect.manual_controls[0].after = after;
+            if (effect.manual_controls[0].before == effect.manual_controls[0].after) {
+                edit_history_.pop_back();
+                --history_position_;
+                ++history_serial_;
+                interaction.history_serial = 0;
+            }
+            return;
+        }
+    }
+    record_edit_locked({.manual_controls = {{std::move(before), std::move(after)}}});
+    interaction.history_serial = history_serial_;
+}
+
+void ProjectGraph::open_transactions_locked(InteractionTransactions& transactions)
+{
+    NodeInstancesInteractionRequest nodes{};
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_node_instances_interaction_requested_event, nodes);
+    if (!nodes.handled) throw std::runtime_error("project editing requires NodeInstances");
+    transactions.node_instances = std::move(nodes.interaction);
+    GraphConnectionsInteractionRequest connections{};
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_connections_interaction_requested_event, connections);
+    if (!connections.handled) throw std::runtime_error("project editing requires GraphConnections");
+    transactions.graph_connections = std::move(connections.interaction);
+}
+
+ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
+    ProjectEditBatch const& batch, bool record_history, std::optional<bool> history_undo)
+{
+    if (history_undo && !manual_interactions_.empty())
+        throw std::runtime_error("finish the active manual-control interaction before editing project history");
+    if (history_undo && (*history_undo ? history_position_ == 0 : history_position_ == edit_history_.size()))
+        throw std::runtime_error(*history_undo ? "nothing to undo" : "nothing to redo");
+    InteractionTransactions transactions;
+    open_transactions_locked(transactions);
+    auto instances = transactions.node_instances.records();
+    auto connections = transactions.graph_connections.records();
+    auto controls = manual_controls_;
+    ProjectEditBatch edit = batch;
+    if (history_undo) {
+        bool const undo = *history_undo;
+        auto const& effect = edit_history_[undo ? history_position_ - 1 : history_position_];
+        edit.instances = project_history_edits<ProjectNodeInstanceDeclaration, std::string>(instances.instances, effect.instances, undo);
+        edit.replacements = project_history_edits<ProjectNodeReplacement, NodeAddress>(instances.replacements, effect.replacements, undo);
+        edit.connections = project_history_edits<ProjectConnection, std::string>(connections, effect.connections, undo);
+        edit.manual_controls = project_history_edits<ProjectManualControl, ManualControlId>(controls, effect.manual_controls, undo);
+    }
+    std::unordered_map<std::string, ProjectNodeInstanceDeclaration const*> existing_instances;
+    for (auto const& value : instances.instances) existing_instances.emplace(value.instance_id, &value);
+    for (auto const& id : edit.require_absent_instances) {
+        if (existing_instances.contains(id))
+            throw std::invalid_argument("duplicate node instance id: " + id);
+    }
+    for (auto const& update : edit.instance_updates) {
+        auto found = existing_instances.find(update.instance_id);
+        if (found == existing_instances.end()) throw std::invalid_argument("unknown node instance id: " + update.instance_id);
+        auto value = *found->second;
+        if (update.display_name) value.display_name = update.display_name;
+        if (update.configuration_source) value.configuration_source = *update.configuration_source;
+        edit.instances.push_back({update.instance_id, std::move(value)});
+    }
+    auto const before_instances = instances;
+    auto const before_connections = connections;
+    apply_project_record_edits(instances.instances, edit.instances);
+    apply_project_record_edits(instances.replacements, edit.replacements);
+    apply_project_record_edits(connections, edit.connections);
+    apply_project_record_edits(controls, edit.manual_controls);
+    std::unordered_set<std::string> remaining_instances;
+    for (auto const& value : instances.instances) remaining_instances.insert(value.instance_id);
+    std::unordered_set<std::string> removed_instances;
+    for (auto const& value : before_instances.instances) {
+        if (!remaining_instances.contains(value.instance_id)) removed_instances.insert(value.instance_id);
+    }
+    std::erase_if(instances.replacements, [&](auto const& value) { return removed_instances.contains(value.address.instance_id); });
+    std::erase_if(controls, [&](auto const& value) { return removed_instances.contains(value.id.node.instance_id); });
+    for (auto const& control : controls) {
+        if (control.id.input_name.empty() || control.id.node.instance_id.empty())
+            throw std::invalid_argument("project manual control requires a node address and input name");
+        if (!remaining_instances.contains(control.id.node.instance_id))
+            throw std::invalid_argument("project manual control addresses an unknown instance");
+    }
+    NodeInstanceReplaceAllMutation nodes{instances.instances, instances.replacements};
+    GraphConnectionReplaceAllMutation wires{connections};
+    GraphBuilder validation_builder;
+    NodeInstancesProjectGraphRequest node_validation{
+        .snapshot = definitions_snapshot_, .root_builder = &validation_builder,
+        .mutation = nodes, .validate_only = true,
+    };
+    transactions.node_instances.run(node_validation);
+    GraphConnectionsProjectGraphRequest connection_validation{
+        .mutation = wires, .validate_only = true,
+    };
+    transactions.graph_connections.run(connection_validation);
+    if (project_record_changes(before_instances.instances, instances.instances).empty()
+        && project_record_changes(before_instances.replacements, instances.replacements).empty()
+        && project_record_changes(before_connections, connections).empty()
+        && project_record_changes(manual_controls_, controls).empty()) return {};
+
+    auto previous_controls = manual_controls_;
+    manual_controls_ = std::move(controls);
+    auto rebuilt = rebuild_locked(std::move(nodes), std::move(wires), true, nullptr,
+        &transactions, &previous_controls, record_history);
+    if (history_undo) {
+        if (*history_undo) --history_position_;
+        else ++history_position_;
+    }
+    return rebuilt;
+}
+
+void ProjectGraph::handle_project_apply_edit(ProjectEditBatch const& batch, ProjectAckBuilder& builder)
+{
+    {
+        std::scoped_lock lock(mutex_);
+        auto rebuilt = apply_edit_locked(batch, true);
+        builder.set_publication(std::move(rebuilt.publication));
+    }
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void ProjectGraph::handle_project_undo(ProjectAckBuilder& builder)
+{
+    {
+        std::scoped_lock lock(mutex_);
+        auto rebuilt = apply_edit_locked({}, false, true);
+        builder.set_publication(std::move(rebuilt.publication));
+    }
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
+void ProjectGraph::handle_project_redo(ProjectAckBuilder& builder)
+{
+    {
+        std::scoped_lock lock(mutex_);
+        auto rebuilt = apply_edit_locked({}, false, false);
+        builder.set_publication(std::move(rebuilt.publication));
+    }
+    builder.succeed();
+    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+}
+
 void ProjectGraph::handle_project_create_node_instance(
     ProjectCreateNodeInstanceRequest const& request,
     ProjectStringBuilder& builder)
@@ -1567,7 +1775,10 @@ void ProjectGraph::handle_project_replace_graph(
                 },
                 GraphConnectionReplaceAllMutation{
                     .connections = request.connections,
-                });
+                }, true, nullptr, nullptr, nullptr, false);
+            edit_history_.clear();
+            history_position_ = 0;
+            ++history_serial_;
             builder.set_publication(std::move(rebuilt.publication));
         } catch (...) {
             manual_controls_ = std::move(previous_manual_controls);
@@ -1600,7 +1811,7 @@ void ProjectGraph::handle_project_upsert_manual_control(
             *found = request.control;
         }
         try {
-            auto rebuilt = rebuild_locked(std::monostate{}, std::monostate{});
+            auto rebuilt = rebuild_locked(std::monostate{}, std::monostate{}, true, nullptr, nullptr, &previous_manual_controls);
             builder.set_publication(std::move(rebuilt.publication));
         } catch (...) {
             manual_controls_ = std::move(previous_manual_controls);
@@ -1622,7 +1833,7 @@ void ProjectGraph::handle_project_delete_manual_control(
             return control.id == request.id;
         });
         try {
-            auto rebuilt = rebuild_locked(std::monostate{}, std::monostate{});
+            auto rebuilt = rebuild_locked(std::monostate{}, std::monostate{}, true, nullptr, nullptr, &previous_manual_controls);
             builder.set_publication(std::move(rebuilt.publication));
         } catch (...) {
             manual_controls_ = std::move(previous_manual_controls);
@@ -1711,11 +1922,13 @@ void ProjectGraph::handle_project_begin_manual_control_interaction(
             throw std::invalid_argument(
                 "manual-control interaction id is already active");
         }
+        auto const before = *control;
         control->stored_value = request.value;
         manual_interactions_.push_back({
             .interaction = request.interaction,
             .control = request.id,
         });
+        record_manual_edit_locked(before, *control, manual_interactions_.back());
         constant_specialization_deadline_.reset();
         dynamic_inputs_ = desired_dynamic_inputs_locked(false);
         auto const requested_inputs = desired_dynamic_inputs_locked(true);
@@ -1751,7 +1964,9 @@ void ProjectGraph::handle_project_update_manual_control_interaction(
             throw std::logic_error(
                 "active manual-control interaction lost its durable control");
         }
+        auto const before = *control;
         control->stored_value = request.value;
+        record_manual_edit_locked(before, *control, *interaction);
         (void)update_graph_executor_controls_locked(
             ManualControlTargetValue{
                 .id = interaction->control,
@@ -1783,7 +1998,9 @@ void ProjectGraph::handle_project_end_manual_control_interaction(
             throw std::logic_error(
                 "active manual-control interaction lost its durable control");
         }
+        auto const before = *control;
         control->stored_value = request.value;
+        record_manual_edit_locked(before, *control, *interaction);
         auto const settled_dynamic_input = std::ranges::contains(
             dynamic_inputs_, control_id);
         manual_interactions_.erase(interaction);
@@ -1800,6 +2017,42 @@ void ProjectGraph::handle_project_persistence_collect_state(
 {
     std::scoped_lock lock(mutex_);
     builder.add_manual_controls(manual_controls_);
+}
+
+void ProjectGraph::handle_socket_rpc_apply_project_edit(
+    ApplyProjectEditRequest const& request, SocketRpcAckResponseBuilder& builder)
+{
+    try {
+        ProjectAckBuilder project_builder;
+        handle_project_apply_edit(request.batch, project_builder);
+        builder.set_publication(project_builder.take_publication());
+        project_builder.build();
+        builder.succeed();
+    } catch (std::exception const& error) { builder.fail(error.what()); }
+}
+
+void ProjectGraph::handle_socket_rpc_undo_project_edit(
+    UndoProjectEditRequest const& /*request*/, SocketRpcAckResponseBuilder& builder)
+{
+    try {
+        ProjectAckBuilder project_builder;
+        handle_project_undo(project_builder);
+        builder.set_publication(project_builder.take_publication());
+        project_builder.build();
+        builder.succeed();
+    } catch (std::exception const& error) { builder.fail(error.what()); }
+}
+
+void ProjectGraph::handle_socket_rpc_redo_project_edit(
+    RedoProjectEditRequest const& /*request*/, SocketRpcAckResponseBuilder& builder)
+{
+    try {
+        ProjectAckBuilder project_builder;
+        handle_project_redo(project_builder);
+        builder.set_publication(project_builder.take_publication());
+        project_builder.build();
+        builder.succeed();
+    } catch (std::exception const& error) { builder.fail(error.what()); }
 }
 
 void ProjectGraph::handle_socket_rpc_create_node_instance(

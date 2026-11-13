@@ -1,8 +1,11 @@
 # Project Undo, Redo, And Backup Direction
 
-_Status: accepted design direction, 2026-11-12; not yet implemented. This document
-specifies reversible user edits and their ownership, not concrete RPC routes, C++
-record types, or a backup format._
+_Status: accepted design direction, 2026-11-12. The first implementation is now
+in source and awaits owner build/test verification; see
+[Vue Client Implementation Stages](./vue_client_implementation_stages.md).
+This document specifies reversible user edits and their ownership, not a backup
+format. The preceding version is retained under
+[Historical Undo/Redo Direction](./historical/project_undo_redo_before_first_implementation_2026-11-13.md)._
 
 Related: [Project Graph Application Architecture](./project_graph_application_architecture.md),
 [Project File Serialization Direction](./project_file_serialization_direction.md),
@@ -155,3 +158,43 @@ Then group manual-control gestures as one step, including cancel/disconnect,
 component remounts, and multiple clients. Verify stale-action rejection and the
 single global history order. Backup persistence, per-user selective history, and
 non-project side-effect reversal are deferred.
+
+## First implementation contract (2026-11-13)
+
+`ProjectGraph` owns the session history and its current position; the existing
+record owners remain canonical. An ordinary accepted edit retains only changed
+records, each with a complete before/after value or absence. It does not retain
+compiled generations or package code solely for undo.
+
+`project.applyEdit` accepts one `operations` array containing existing
+`nodeInstances.create`, `nodeInstances.update`, `nodeInstances.delete`,
+`graphConnections.upsert`, `graphConnections.delete`, `manualControls.upsert`,
+and `manualControls.delete` requests. Each operation has `method` and `params`.
+Batch creation requires explicit stable instance IDs. Duplicate edits to the
+same record are rejected; nested batches and side-effecting requests such as
+package creation or save are excluded. The internal typed batch also supports
+complete replacement-record edits. Node messages continue to establish those
+records through their normal semantic interaction path.
+
+`project.undo` and `project.redo` apply the next applicable record difference
+through one normal realization. All three routes require `project.write` and
+use the existing `expectedRevision` check. History also verifies each changed
+record against the actual owner's current record before modifying any owner.
+One accepted action produces one normal graph publication and session revision.
+Project replay clears session history rather than entering it.
+
+Deleting an instance removes its owned replacement records and manual values.
+Desired connections retain their matchers, including dangling ones, unless
+the same action explicitly changes them. Undo restores the exact records that
+changed rather than deleting or recreating inferred connections.
+
+Manual-control updates coalesce only while that interaction owns the latest
+history entry. An intervening accepted edit seals that entry; the next control
+update begins a new entry after the intervening edit. Disconnect finalizes the
+last accepted stored value. Undo/redo requires active manual-control interactions
+to finish first; it does not rewind a pointer gesture still being operated.
+
+The extension provides Undo Project Edit and Redo Project Edit commands.
+Ctrl/Command+Z and Ctrl/Command+Shift+Z act on project history only inside the
+graph webview outside editable text fields; Ctrl+Y also performs redo. Ordinary
+VS Code source editors and text fields retain their own undo/redo behaviour.

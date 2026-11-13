@@ -264,6 +264,46 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
     if (method == "graph.getScope") {
         return parsed(GetGraphScopeRequest{});
     }
+    if (method == "project.undo") return parsed(UndoProjectEditRequest{});
+    if (method == "project.redo") return parsed(RedoProjectEditRequest{});
+    if (method == "project.applyEdit") {
+        ProjectEditBatch batch;
+        auto const operations = params.find("operations");
+        if (operations == params.end() || !operations->is_array())
+            throw std::invalid_argument("project.applyEdit requires an operations array");
+        for (auto const& operation : *operations) {
+            if (!operation.is_object()) throw std::invalid_argument("project batch operation must be an object");
+            auto const operation_method = parse_string_param(operation, "method");
+            if (operation_method == "project.applyEdit" || operation_method == "project.undo" || operation_method == "project.redo")
+                throw std::invalid_argument("project batches cannot contain history or nested batches");
+            auto const nested = parse_socket_rpc_request(Json{{"id", 0}, {"method", operation_method},
+                {"params", operation.value("params", Json::object())}}.dump());
+            std::visit([&](auto const& value) {
+                using Request = std::remove_cvref_t<decltype(value)>;
+                if constexpr (std::same_as<Request, CreateNodeInstanceRequest>) {
+                    if (!value.instance_id) throw std::invalid_argument("batch instance creation requires an explicit instanceId");
+                    batch.require_absent_instances.push_back(*value.instance_id);
+                    batch.instances.push_back({*value.instance_id, ProjectNodeInstanceDeclaration{
+                        .instance_id = *value.instance_id, .definition_id = value.definition_id,
+                        .display_name = value.display_name, .configuration_source = value.configuration_source}});
+                } else if constexpr (std::same_as<Request, UpdateNodeInstancesRequest>) {
+                    for (auto const& update : value.updates) batch.instance_updates.push_back({
+                        update.instance_id, update.display_name, update.configuration_source});
+                } else if constexpr (std::same_as<Request, DeleteNodeInstanceRequest>) {
+                    batch.instances.push_back({value.instance_id, std::nullopt});
+                } else if constexpr (std::same_as<Request, UpsertGraphConnectionRequest>) {
+                    batch.connections.push_back({project_connection_id(value.connection), value.connection});
+                } else if constexpr (std::same_as<Request, DeleteGraphConnectionRequest>) {
+                    batch.connections.push_back({value.connection_id, std::nullopt, true});
+                } else if constexpr (std::same_as<Request, UpsertManualControlRequest>) {
+                    batch.manual_controls.push_back({value.control.id, value.control});
+                } else if constexpr (std::same_as<Request, DeleteManualControlRequest>) {
+                    batch.manual_controls.push_back({value.id, std::nullopt});
+                } else throw std::invalid_argument("operation is not supported in a project edit batch");
+            }, nested.payload);
+        }
+        return parsed(ApplyProjectEditRequest{std::move(batch)});
+    }
     if (method == "nodeInstances.create") {
         auto configuration_source = parse_optional_nullable_string_param(
             params, "configurationSource");

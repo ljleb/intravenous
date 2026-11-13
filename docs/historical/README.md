@@ -171,3 +171,7 @@ These documents are retained because they record deleted architectures, supersed
 - [Removed Port Grab Recorder](./vue_port_grab_recorder_removed_2026-11-13.md)
   preserves the temporary JSON recording command after its trace led to the
   confirmed native-window focus fix.
+
+- [Undo/Redo Direction Before The First Implementation](./project_undo_redo_before_first_implementation_2026-11-13.md)
+  retains the accepted contract and original unimplemented status before the
+  first server-owned session history was added.

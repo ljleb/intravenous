@@ -1,5 +1,7 @@
 #pragma once
 
+#include <intravenous/runtime/project_edit.h>
+
 #include <intravenous/graph/builder.h>
 #include <intravenous/linker_event.h>
 #include <intravenous/module/configuration_argument.h>
@@ -183,6 +185,10 @@ struct NodeInstancesProjectGraphRequest {
     NodeInstancesMutation mutation{};
     // False for provisional node-message previews and ordinary direct callers.
     bool prepare_failure_interfaces = false;
+    bool validate_only = false;
+    bool capture_effect = false;
+    ProjectInstanceRecords before{};
+    ProjectInstanceRecords after{};
     std::shared_ptr<NodeInstanceFailureInterfaces const> failure_interfaces{};
     NodeInstancesBatchResult result{};
     std::vector<std::string> created_instance_ids{};
@@ -208,16 +214,10 @@ struct NodeInstancesProjectGraphRead {
 
 class NodeInstances;
 
-// The NodeInstances transaction of one node-message interaction. ProjectGraph
-// enters NodeInstances once, through
-// iv_runtime_project_graph_node_instances_interaction_requested_event, to open
-// it. Each later run takes one NodeInstancesProjectGraphRequest carrying a
-// NodeReplacementPreviewMutation, or the interaction's final
-// NodeReplacementsReplaceMutation, and handles it exactly as that request's
-// event would, but as part of the opening entry instead of entering
-// NodeInstances again. A preview changes no desired state and raises nothing;
-// the final replacement set is committed once, and is the only run that can
-// raise NodeInstances' own events.
+// Module-local transaction opened through one ProjectGraph event visit. Node
+// messages can realize provisional replacements before one final commit.
+// Project edits can read and validate durable records before their one final
+// commit/rebuild. Each run stays inside that original event visit.
 class NodeInstancesInteraction {
     NodeInstances* owner_ = nullptr;
     EventModuleVisit visit_{};
@@ -234,6 +234,7 @@ public:
     [[nodiscard]] explicit operator bool() const noexcept { return owner_ != nullptr; }
 
     void run(NodeInstancesProjectGraphRequest& request);
+    [[nodiscard]] ProjectInstanceRecords records() const;
 };
 
 struct NodeInstancesInteractionRequest {
