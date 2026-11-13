@@ -2108,6 +2108,7 @@ TEST_F(ProjectGraphFixture, GraphScopeReportsInstanceConfigurationFailureAndClea
         iv::ProjectCreateNodeInstanceRequest{
             .instance_id = "instance:failure",
             .definition_id = definition_id,
+            .package_root = std::filesystem::path(package_root),
         }, create); });
     EXPECT_EQ(create.build(), "instance:failure");
     auto failed_scope = read_graph_scope(project_graph);

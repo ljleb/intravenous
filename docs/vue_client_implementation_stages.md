@@ -364,6 +364,42 @@ The extension also refreshes the scope on the existing `ivPackages.updated`
 notification. A failed package build need not create a graph generation or emit
 `graph.changed`. No new public RPC route or diagnostic-string matching was added.
 
+#### Ruler labels and playback-position investigation
+
+The owner reported 882 of 883 C++ tests passing after the viewport changes.
+The remaining scope-recovery test threw before reading the scope: its create
+request omitted `package_root` while the definition was still unavailable.
+The fixture now supplies that path, as the other pending-definition test does.
+This correction awaits the owner's next test run.
+
+Ruler labels now remove trailing decimal zeros after rounding floating-point
+multiplication noise. A shared mark stays `1 s` across tick-spacing changes.
+A client regression covers shared labels across zoom levels, fractional labels,
+negative positions, and zero. This also awaits the owner's test run.
+
+**Observed implementation:** `SystemAudioDevices::output_render_loop()` owns
+`realtime_cursor_`, advances it for each rendered block, and passes it to
+`GraphExecutor::tick_block(sample_index, block_size)`. The cursor advances even
+when there is no active graph. The current `SocketRpcRouteRegistry` and request
+types expose no playback-position read, play/pause, or seek operation. The
+existing `server.status` notification reports build/status messages, not position.
+The frontend ruler therefore still describes viewport coordinates only.
+
+**Existing design:** [Global Indexing](./global_indexing.md#sequential-execution-order)
+requires Tick execution to continue while playback is paused; resume or seek
+can select a different global coordinate. Stopping audio rendering to implement
+pause would contradict that requirement. The current device callback does not
+yet implement those playback controls.
+
+**Proposed next design discussion:** define the playback-position owner and
+play/pause/seek behavior before exposing a moving playhead. Seconds and project
+sample indices can display the same position using the project sample rate;
+they do not require separate clocks. Beats remain undecided. An explicit node
+that produces periodic beat events does not require a built-in tempo map.
+No playback API, control gesture, or tempo policy is introduced by this pass.
+After this bounded discussion, resume Stage 2's remaining scope/port and editing
+work rather than treating ruler navigation as a replacement for those steps.
+
 #### Shared lane UI in the source-selection panel
 
 The owner wants the source-selection side panel to become a filtered host of

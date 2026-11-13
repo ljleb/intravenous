@@ -116,6 +116,10 @@ has one output that can stand for the whole node as a single meter, sample
 buffer, or event buffer. A shared time ruler in the enclosing presentation
 does not imply that every child renders time-dependent data.
 
+Ruler labels keep the same numeric spelling across horizontal zoom levels.
+For example, the mark at one second stays `1 s`; finer tick spacing must not
+change it to `1.0 s`. Fractional positions still receive fractional labels.
+
 Lane names should be readable. Do not display UUIDs as ordinary lane text.
 Keep full semantic identity and diagnostic information available through a
 small copy-debug-details button in the left area. Use a compact visual failure

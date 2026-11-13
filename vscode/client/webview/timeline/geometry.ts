@@ -18,8 +18,11 @@ export function timelineTicks(window: TimelineWindow, width: number) {
     for (let offset = 0; offset < count; ++offset) {
         const seconds = (first + offset) * step;
         if (ticks.length && ticks[ticks.length - 1].seconds === seconds) continue;
+        // Round away multiplication noise, then remove trailing zeros so a
+        // position keeps the same label when zoom changes the tick spacing.
+        const labelSeconds = Number(seconds.toFixed(Math.min(12, digits)));
         ticks.push({ seconds, x: (seconds - window.beginSeconds) / duration * width,
-            label: `${seconds.toFixed(Math.min(12, digits))} s` });
+            label: `${labelSeconds} s` });
     }
     return ticks;
 }

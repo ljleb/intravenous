@@ -10,8 +10,8 @@
     }
   },
   "timeline": {
-    "beginSeconds": 0,
-    "secondsPerPixel": 0.01,
+    "beginSeconds": 0.05796650460412342,
+    "secondsPerPixel": 0.005134171326334994,
     "laneHeight": 123.2201118320397,
     "scrollTop": 0
   },
