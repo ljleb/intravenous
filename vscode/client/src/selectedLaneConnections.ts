@@ -1,4 +1,4 @@
-import { addressKey, resolveScopePorts, type GraphScope, type NodeAddress } from "./graphScope";
+import { addressKey, resolveScopePorts, type GraphScope, type NodeAddress, type Point } from "./graphScope";
 import type { GraphPortEndpoint } from "./graphConnectionEditing";
 
 export type PortWireAnchor = { id: string; x: number; y: number };
@@ -9,8 +9,6 @@ export type SelectedLaneWire = {
     target: PortWireAnchor;
     connectionIds: string[];
     applied: boolean;
-    // Defined only for connections whose visible ends belong to the same node.
-    selfLoopY?: number;
 };
 
 export function portEndpointKey(port: GraphPortEndpoint): string {
@@ -53,7 +51,7 @@ export function selectedLaneConnections(scope: GraphScope, selected: string | nu
                     ports.set(portEndpointKey(port), port);
                 }
             }
-            const visible = new Map<string, { anchor: PortWireAnchor; selected: boolean; revealed: boolean; nodeKey: string }>();
+            const visible = new Map<string, { anchor: PortWireAnchor; selected: boolean; revealed: boolean }>();
             for (const port of ports.values()) {
                 const anchor = anchorFor(port, entry.id);
                 if (!anchor) continue;
@@ -63,7 +61,7 @@ export function selectedLaneConnections(scope: GraphScope, selected: string | nu
                 if (existing) {
                     existing.selected ||= isSelected;
                     existing.revealed ||= isRevealed;
-                } else visible.set(anchor.id, { anchor, selected: isSelected, revealed: isRevealed, nodeKey: addressKey(port.address) });
+                } else visible.set(anchor.id, { anchor, selected: isSelected, revealed: isRevealed });
             }
             return [...visible.values()];
         };
@@ -80,30 +78,19 @@ export function selectedLaneConnections(scope: GraphScope, selected: string | nu
                     if (!existing.connectionIds.includes(entry.id)) existing.connectionIds.push(entry.id);
                     existing.applied = existing.applied && entry.applied;
                 } else {
-                    wires.set(key, { key, source, target, connectionIds: [entry.id], applied: entry.applied,
-                        ...(output.nodeKey === input.nodeKey ? { selfLoopY: Math.max(source.y, target.y) } : {}) });
+                    wires.set(key, { key, source, target, connectionIds: [entry.id], applied: entry.applied });
                 }
             }
         }
     }
-    const result = [...wires.values()];
-    const selfWires = result.filter((wire) => wire.selfLoopY !== undefined);
-    const lowestPortY = selfWires.reduce((lowest, wire) => Math.max(lowest, wire.selfLoopY!), -Infinity);
-    selfWires.forEach((wire, index) => { wire.selfLoopY = lowestPortY + 18 + index * 6; });
-    return result;
+    return [...wires.values()];
 }
 
 export function selectedLaneWirePath(wire: SelectedLaneWire): string {
-    const { source, target } = wire;
-    if (wire.selfLoopY !== undefined || source.y === target.y) {
-        // Keep a return arc for self-connections and equal-height endpoints;
-        // a single collinear cubic would otherwise retrace the port row.
-        const loopY = wire.selfLoopY ?? source.y + 24;
-        const middleX = (source.x + target.x) / 2;
-        const bend = Math.min(24, Math.abs(source.x - target.x) * 0.25 || 12);
-        return `M ${source.x} ${source.y} C ${source.x - bend} ${source.y}, ${source.x - bend} ${loopY}, ${middleX} ${loopY}`
-            + ` C ${target.x + bend} ${loopY}, ${target.x + bend} ${target.y}, ${target.x} ${target.y}`;
-    }
-    const bend = Math.min(100, Math.max(24, Math.abs(target.y - source.y) * 0.4));
-    return `M ${source.x} ${source.y} C ${source.x - bend} ${source.y}, ${target.x + bend} ${target.y}, ${target.x} ${target.y}`;
+    return connectionWirePath(wire.source, wire.target);
+}
+
+export function connectionWirePath(first: Point, second: Point): string {
+    const middleX = (first.x + second.x) / 2;
+    return `M ${first.x} ${first.y} C ${middleX} ${first.y}, ${middleX} ${second.y}, ${second.x} ${second.y}`;
 }

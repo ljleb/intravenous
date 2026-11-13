@@ -382,9 +382,11 @@ Each side uses a direct handle for one port and a grouped slot for more than
 one. Input and output slots remain separate. Grouped ports use overlapping
 circles, without a visible arrow/count label. Hover extends a panel directly from that slot. The panel
 keeps a bounded scrollable list and does not change lane height. During a
-connection drag, grouped destinations expand the opposite port direction.
-Direct handles stay exposed instead of acquiring an expansion over the drop
-target.
+connection drag, `NodePorts.hoverGroup` requires the hovered direction to match
+the destination direction and `groupAccepts` to find at least one candidate.
+It never expands a different side merely because the pointer passed over an
+unavailable group. Direct handles stay exposed. Slot focus/Enter uses the same
+checks while a drag is active.
 
 The native HTML drag-and-drop path is replaced by a pointer gesture owned by
 `GraphEditor`. It captures the pointer on the editor surface and hit-tests
@@ -393,6 +395,17 @@ the actual element under the pointer. Release on a compatible handle submits
 A click, release outside a handle, incompatible port kind/direction, Escape,
 lost capture, pointer cancellation, or window blur submits no connection.
 Middle-button navigation is unchanged.
+
+`NodePorts` closes its popover when `connectionDrag.port` changes at accepted
+pointer-down, and closes destination popovers when the gesture ends. This
+applies to both ordinary port rows and connection-chooser rows. Capturing the
+pointer in `GraphEditor` keeps the gesture active after the row is removed.
+`GraphEditor.sourceGroupToLeave` stores the source node key and input/output
+direction. It prevents that group from being exposed again until the pointer
+leaves it; later re-entry is allowed for moving an end to another port in the
+same group. During a drag, `NodePorts.hoverGroup` accepts the editor's current
+hit-test result rather than reopening from a layout-generated mouse-enter.
+Source popovers therefore expose covered destinations before mouse release.
 
 Applied connections fill their port circles. Unapplied desired connections
 use dashed circles. Port tooltips identify their connections and application
@@ -432,16 +445,122 @@ rejects queued alignment after the list closes or is replaced. The removed
 cap and summary checkpoint is preserved in
 [Vue Port Lists Before First-Item Alignment](./historical/vue_port_lists_before_first_item_alignment_2026-11-13.md).
 
-`SelectedLaneWire.selfLoopY` distinguishes self-connections from connections
-to other nodes, even if their port rows have identical screen coordinates.
-Output tangents point left and input control points sit to the right. Wires
-between different rows use one cubic curve. Self-connections and equal-height
-endpoints use two cubic segments through a lower return arc, so their
-horizontal tangents do not collapse into a retraced line.
-These changes affect drawing only; they do not change connection records or
-lane dimensions. Previous routing is retained in
-[Vue Ports Before Single-Connection Choosers](./historical/vue_ports_before_single_connection_choosers_2026-11-13.md)
-and [Vue Chooser Before Held Shift And Vertical Curves](./historical/vue_chooser_before_held_shift_and_vertical_curves_2026-11-13.md).
+The owner reported a first-open connection chooser appearing at the screen
+origin when Shift-hovering a grouped slot whose first port was connected.
+The prior code accepted detached or zero-sized row rectangles as popup origins
+and allowed nested hover during positioning. `NodePorts` now rejects those
+rectangles and keeps a panel hidden and noninteractive until its first-row
+alignment is committed. It rechecks the version after reading geometry as
+well. This prevents a nested chooser from using an unpositioned port row.
+Confirmation of the reported first-open sequence remains a manual UI check.
+
+`GraphEditor.connectionStartAnchor` holds the port-circle position for a new
+connection preview. It refreshes with the measured port or its grouped-slot
+fallback after panel and viewport changes. `PortConnectionDrag.start` retains
+the original press coordinates for the movement threshold. Clicking elsewhere
+inside the row therefore does not move the preview's starting point or make a
+stationary click count as a drag.
+
+Connection previews are SVG paths with per-wire gradients. `connectionWirePath`
+generates both their curves and the finished `selectedLaneWirePath` curves.
+`GraphEditor.previewWires` keeps each fixed anchor's input/output direction,
+including every fixed end when reattaching a multi-ended connection. Its
+gradient starts with that direction's theme color and ends with a CSS blend
+of the same input-yellow and output-blue theme colors at the cursor.
+
+`connectionCursorOutputFraction` uses only the cursor position and the closest
+measured row's input/output column centers. It has no hovered-direction input.
+`GraphEditor` caches those columns when geometry changes; pointer movement
+interpolates cached coordinates. Hovering an input or output popover does not
+force an endpoint colour. The gradient still starts with the fixed port's
+actual theme colour. Colour does not select control-point direction or routing.
+Light tests cover interpolation bounds, different row layouts, reversal of
+curve endpoints, and the shared rule for self-connections and aligned ports.
+Build, test execution, and manual colour checks remain for the owner.
+
+`NodePorts` now marks unavailable destination-side handles, port rows, and grouped icons with
+`.unavailable`, replacing the previous target rings. Its local `--port-color`
+is a 25% normal-colour / 75% `--vscode-disabledForeground` mix; filled circles
+and dashed outlines preserve connection state. Unavailable row text is also
+muted. Ports on the other side retain their normal colour. Destination groups
+remain active-looking when at least one underlying port can receive the drag.
+The appearance does not disable hit-testing or change
+connection validation.
+
+For a new connection, `acceptsPortConnection` still checks opposite directions
+and equal sample/event kinds; it does not establish that a converter exists.
+For moving an existing end, `canMoveConnectionEnd` still applies its additional
+record/type rules. The previous ring and opposite-side expansion are retained
+in [Vue Port Targets Before Muted Unavailable Ports](./historical/vue_port_targets_before_muted_unavailable_ports_2026-11-13.md).
+
+`GraphEditor.startConnection` captures source geometry, focuses the editor,
+and takes pointer capture before assigning `connectionDrag`. The owner's
+recording now identifies the first-press failure: the press reached the port,
+started the gesture and acquired capture; a webview blur cancelled it about
+1 ms later. The primary button remained held and webview focus returned about
+50 ms later. The preceding status and relevant trace times are preserved in
+[Vue Port Grab Before Native Window Focus Reporting](./historical/vue_port_grab_before_native_window_focus_2026-11-13.md).
+
+`GraphEditorProvider` now forwards VS Code's `onDidChangeWindowState` as
+`graphWindowFocus`, including the current state when a panel becomes ready.
+`listenPortConnectionFocus` connects document blur and host messages to separate
+callbacks. Document blur resets hover modifier state without cancelling the
+captured gesture. Native window focus loss cancels it. Pointer cancellation,
+lost capture, lost primary button, Escape, and scope replacement still cancel.
+The listener and host subscription are removed with their owners.
+
+`portConnectionFocus.test.ts` replays the owner's focus/down/blur/held-move/
+focus/release event order through the production focus listener and gesture
+functions. It checks that this sequence can complete a connection and that a
+native-window blur still cancels without revival on focus gain. It does not
+reproduce the operating system's activation itself. Build, test execution, and
+manual verification remain with the owner.
+
+The opt-in **Intravenous: Record First Port Grab** command records input in the
+actual webview. `GraphEditor` reports focus/blur, pointer and compatibility mouse
+events, pointer capture, accepted gesture starts, first drag motion, and
+cancellation reasons. No recording listeners are installed until the command
+runs. `PortGrabRecorder` keeps at most 256 events, removes repetitive motion,
+and retains the initial 128 events when the limit is reached. The extension
+opens the report in an unsaved JSON editor after the first primary release;
+running the command again exports a recording if no release arrived. It does
+not write a project file or change the graph.
+
+`portGrabRecording.test.ts` checks the report classification, reset, and bounded
+storage. It does **not** reproduce native activation or verify browser event
+delivery. The event-order regression described above uses the owner's subsequent
+recording. `pointerdown-not-observed` means no primary pointer press
+reached the recorder despite held movement or release; `gesture-not-started`
+means the press reached a port but no gesture began. `gesture-cancelled` retains
+the reason that ended an accepted gesture. `grab-observed` requires accepted
+start and drag motion without unexpected cancellation; it does not prove that
+a connection was committed. Focus flags describe what this webview observed,
+not events delivered elsewhere in VS Code or the operating system.
+
+`GraphEditor.dropPreviewWires` adds a faint, attached preview for the individual
+eligible port under the pointer while preserving the free cursor cable. The
+destination popover stays open. Anchor measurement rejects hidden, clipped,
+and still-positioning rows; layout, scroll, and popover changes refresh the
+preview as well as pointer motion. `canDropPortConnection` supplies the shared
+hover and release checks, including reattachment's record/type rules and
+rejection of its original port. Eligibility tests cover both drag directions,
+kind/direction mismatches, read-only scopes, no-op reattachment, stale records,
+and shared type constraints. These checks do not prove converter availability.
+
+`connectionWirePath` uses one cubic with both control points at the horizontal
+midpoint between endpoints and with their respective endpoint Y coordinates.
+It accepts only the two points. `selectedLaneWirePath` and drag previews use
+that same function. `SelectedLaneWire` no longer contains self-connection
+routing fields, and wire planning no longer assigns separate return paths.
+
+`GraphEditor.measureWireAnchor` measures the right edge of an input circle or
+the left edge of an output circle at its vertical midpoint. Established wires,
+connection entries, pickup anchors, and faint destination previews share this
+measurement. Collapsed slots use the same function with the outer circle on
+their cable side. The cursor end of a free cable continues to follow the mouse.
+
+The previous routing is retained in
+[Vue Wires Before The Single Cubic Rule](./historical/vue_wires_before_single_cubic_rule_2026-11-13.md).
 
 Selection-display regressions cover both directions, unrelated edges, grouped
 slots and expansion, distinct visible ports, wildcard fan-in/fan-out, missing
@@ -477,11 +596,37 @@ The connection chooser requires held Shift. Key release hides it; for a grouped
 port slot, the ordinary port list remains available. Releasing Shift after an
 entry has been picked up does not cancel its captured drag.
 
-Keyboard events reach the focused webview. With focus elsewhere, a stationary
-Shift press cannot open the chooser through its keydown handler. Pointer entry
-and movement over a port also check `shiftKey`, so the next pointer movement
-opens it if Shift is held. Pointer movement within the chooser checks the same
-flag to recover a missed release. Hovering does not take keyboard focus.
+`GraphEditor.hoverShift` is the shared Shift state for port interaction.
+Keyboard events and explicit pointer-button events update it. Pointer movement
+updates it when the pointer ID or client coordinates change. Replacing rows
+under a stationary pointer does not count as a modifier change: enter/leave
+events and unchanged-position movement do not overwrite the state.
+`NodePorts` reads `GraphEditorContext.shiftHeld` and watches it to open or close
+the connection chooser. It no longer infers a Shift release from a separate
+local pointer modifier handler. Its leave handler also checks the current element under the
+pointer when a boundary event refers to a row that has been replaced.
+
+The owner then reported port popovers remaining open after slow right-side
+or bottom-side exits. The previous leave path could return during positioning
+or accept a boundary hit without receiving another leave event. It also
+counted the full `.node-ports` area, including the gap between groups, as owned
+hover space. `NodePorts.checkPopoverPointer` now checks the opening
+`.port-group` and the popover itself. Temporary window pointer-move and
+pointer-out listeners are attached only while a popover is open and removed
+on close or unmount. Movement records the latest pointer position even during
+positioning; a post-layout check consumes that position once the panel is
+visible. Boundary events request the same check without replacing the recorded
+movement coordinates. Captured connection drags retain the editor's hover
+handling. Confirmation of slow edge exits remains a manual UI check.
+
+This addresses the reported held-Shift, first-entry flicker path. Light tests
+cover row-replacement event sequences, keyboard press/release, real movement,
+button events, and reset after blur. The unfocused webview sequence still
+requires manual confirmation. Keyboard events reach the focused webview;
+with focus elsewhere, a stationary key change remains unavailable until actual
+pointer movement or a button event reports it. Hovering does not take focus.
+The previous per-event handling is retained in
+[Vue Shift Before Shared Modifier State](./historical/vue_shift_before_shared_modifier_state_2026-11-13.md).
 
 Chooser entries expose connection-specific wire anchors through
 `data-connection-end`. `selectedLaneConnections` uses both the connection ID
@@ -643,6 +788,71 @@ After rebuilding the server and extension:
     original lane stays selected. Scroll or zoom vertically and check that the
     endpoints follow their controls. Port dragging and copy-debug clicks must
     retain their original actions.
+13. Reload the webview. Hold Shift and hover a grouped slot whose first port
+    has a connection. Its port list and connection chooser must stay at the
+    opening control on the first attempt, without appearing at the screen
+    origin. Close and reopen both lists; repeat with several connections.
+14. Press near the text of a port row and drag to create a connection. The
+    preview must start at the port circle, not the press coordinates. A
+    stationary click must still submit nothing. If the source list closes,
+    the preview must follow the source's grouped slot.
+15. Focus another editor, then hold Shift before entering a grouped port whose
+    first port is connected. The chooser must remain stable through the port
+    list and connection-list transitions. Repeat without releasing Shift.
+    Release Shift and move slightly to report the release to the unfocused
+    webview. With keyboard focus in the webview, release must hide the chooser
+    immediately, without reopening from a stationary boundary event.
+16. Start a new connection from a port list that overlaps another lane. The
+    list must close on press, and the uncovered destination must be usable
+    before release. Repeat from a connection chooser. The source group must
+    stay closed while the pointer remains on it; leave and re-enter it while
+    moving an input end, then choose a different input in that same group.
+    Destination lists must still open on hover. A click without movement and
+    Escape must make no connection change.
+17. Without clicking or using the keyboard, open a port popover and leave
+    slowly through its right and bottom borders. Repeat at higher speed,
+    across the gap between input and output groups, and during its first
+    opening. It must close outside its own group and panel, stay open over
+    either, and close when the pointer leaves the webview. Repeat with a
+    connection popover while holding Shift; nested transitions must not flicker.
+18. Start a new connection at an input. Its fixed end must stay yellow and
+    the preview must use the same simple curve as a finished wire. Move across
+    the input/output columns, including through an expanded popover: the
+    cursor colour must follow its position without switching merely because
+    it crossed a popover boundary. Repeat from an output and while moving an
+    existing connection end. Self-connections must use the same cubic rule;
+    aligned endpoints may be straight. Theme changes must update the gradient.
+19. Focus another editor or window, then press a port once and drag. That
+    first press must start the gesture and retain pointer capture while the
+    source popover closes. Repeat from an individual handle, a port row, and
+    a connection row. Genuine focus loss, Escape, and lost pointer capture
+    must still cancel the gesture.
+20. Drag a new connection from an output and pass over other output groups.
+    They must retain their normal colour and must not open input popovers. Hover a compatible
+    input group; it must retain its colour and open its own inputs. Rows of a
+    different sample/event kind must be muted. Repeat from an input toward
+    outputs and while moving an existing end. Cancel the drag and check that
+    normal colours return, with filled and dashed states preserved.
+21. Run **Intravenous: Record First Port Grab** from the Command Palette, then
+    switch to another application or native window. Return with one press on
+    a port, drag into empty editor space without Shift, and release. Do not
+    make a second attempt before saving the JSON report. If no report opens,
+    run the command again to export it. Save both a failing attempt and a
+    working attempt for comparison. Releasing a new connection in empty space
+    leaves the graph unchanged; do not use Shift for this diagnostic, since
+    releasing an existing connection in empty space disconnects it.
+22. Drag over an eligible individual port, including one exposed in a destination
+    popover. A faint cable must show the completed connection at its circle
+    while the original cable follows the pointer. The popover must stay open.
+    Move between rows and away from the list: only the current eligible row
+    receives this preview. Check both drag directions, self-connections, and
+    reattachment. Incompatible targets must not receive a preview. Release or
+    cancel: both temporary cables must disappear, with no edit on cancellation.
+23. Check cable endpoints on inputs and outputs, including collapsed groups,
+    exposed port rows, and connection-chooser entries. Each cable must meet
+    the right edge of an input circle or the left edge of an output circle
+    without crossing its interior. Repeat for the fixed end while dragging
+    and both ends of the faint destination preview.
 
 ### Stage 1 implementation status (2026-11-12; built, tests pass)
 

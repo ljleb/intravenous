@@ -1,4 +1,5 @@
-import { sameGraphPort, type GraphConnectionEnd, type GraphConnectionEdit, type GraphPortEndpoint } from "./graphConnectionEditing";
+import { canMoveConnectionEnd, sameGraphPort, type GraphConnectionEnd, type GraphConnectionEdit, type GraphPortEndpoint } from "./graphConnectionEditing";
+import type { GraphScope } from "./graphScope";
 
 export type PortPointerPosition = { x: number; y: number };
 export type PortConnectionDrag = {
@@ -30,6 +31,14 @@ export function movePortConnection(drag: PortConnectionDrag, pointerId: number,
 
 export function acceptsPortConnection(source: GraphPortEndpoint, target: GraphPortEndpoint, editing = false): boolean {
     return source.kind === target.kind && (editing ? source.direction === target.direction : source.direction !== target.direction);
+}
+
+// Shared by hover feedback and release. Converter availability is still checked
+// by the backend; these are the editor's current connection eligibility checks.
+export function canDropPortConnection(scope: GraphScope | null, drag: PortConnectionDrag,
+    target: GraphPortEndpoint | null): boolean {
+    if (!scope?.editable || !target || !acceptsPortConnection(drag.port, target, !!drag.edit)) return false;
+    return !drag.edit || (!sameGraphPort(drag.port, target) && canMoveConnectionEnd(scope, drag.edit, target));
 }
 
 export function finishPortConnection(drag: PortConnectionDrag, pointerId: number,

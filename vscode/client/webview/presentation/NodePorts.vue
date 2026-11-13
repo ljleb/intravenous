@@ -11,13 +11,14 @@ import { portSlotKey } from "../../src/selectedLaneConnections";
 
 const node = useNode();
 const editor = useOptionalGraphEditor();
-const area = ref<HTMLElement | null>(null);
 const panel = ref<HTMLElement | null>(null);
 const expanded = ref<SemanticPortDirection | null>(null);
 const chooserPort = ref<SemanticPort | null>(null);
 const hoveredPort = ref<SemanticPort | null>(null);
 let hoveredPortRect: DOMRect | null = null;
+let popoverPointer: { x: number; y: number } | null = null;
 let panelPositionVersion = 0;
+const panelPositioned = ref(false);
 const panelPosition = ref<Record<string, string>>({ left: "0px", top: "0px" });
 const above = ref(false);
 const groups: Partial<Record<SemanticPortDirection, HTMLElement>> = {};
@@ -25,9 +26,12 @@ const nodeKey = computed(() => node.value.address ? addressKey(node.value.addres
 const directions: SemanticPortDirection[] = ["input", "output"];
 const ports = (direction: SemanticPortDirection) => node.value.ports.filter((port) => port.direction === direction);
 const editable = computed(() => !!editor?.scope.value?.editable && !!node.value.address);
+const shiftHeld = computed(() => editor?.shiftHeld.value ?? false);
 // Pointer coordinates change on every move; port controls only need the source.
 const dragPort = computed(() => editor?.connectionDrag.value?.port ?? null);
 const dragEdit = computed(() => editor?.connectionDrag.value?.edit);
+const destinationDirection = computed(() => !dragPort.value ? null : dragEdit.value
+    ? dragPort.value.direction : dragPort.value.direction === "input" ? "output" : "input");
 const choices = computed(() => chooserPort.value && editor?.scope.value
     ? connectionEndsAtPort(editor.scope.value, endpoint(chooserPort.value)) : []);
 const shownPorts = computed(() => expanded.value ? ports(expanded.value) : []);
@@ -65,9 +69,11 @@ function setGroup(direction: SemanticPortDirection, element: unknown) {
 }
 function expand(direction: SemanticPortDirection, origin?: DOMRect | null) {
     const group = groups[direction];
-    if (!group || !ports(direction).length) return;
-    const version = ++panelPositionVersion;
+    if (!group?.isConnected || !ports(direction).length) return;
     const rect = origin ?? group.getBoundingClientRect();
+    if (!validOrigin(rect)) return;
+    const version = ++panelPositionVersion;
+    panelPositioned.value = false;
     const width = Math.min(340, window.innerWidth - 8);
     above.value = window.innerHeight - rect.top < 180;
     panelPosition.value = {
@@ -88,6 +94,8 @@ function alignFirstRow(origin: DOMRect, version: number) {
         if (!firstCircle) return;
         const circle = firstCircle.getBoundingClientRect();
         const popup = panel.value.getBoundingClientRect();
+        if (!firstCircle.isConnected || !validOrigin(circle) || !validOrigin(popup)
+            || version !== panelPositionVersion) return;
         const dx = origin.left + origin.width / 2 - circle.left - circle.width / 2;
         const dy = origin.top + origin.height / 2 - circle.top - circle.height / 2;
         const left = Math.max(4, popup.left + dx);
@@ -101,8 +109,18 @@ function alignFirstRow(origin: DOMRect, version: number) {
             panelPosition.value = { left: `${left}px`, top: `${top}px`, width: `${width}px`,
                 maxHeight: `${Math.max(24, Math.min(360, window.innerHeight - top - 4))}px` };
         }
+        panelPositioned.value = true;
         editor?.portsChanged();
+        // The pointer may have left while layout events were being deferred.
+        // Wait for the positioned style to reach the DOM before hit-testing.
+        void nextTick(() => {
+            if (version === panelPositionVersion) checkPopoverPointer();
+        });
     });
+}
+function validOrigin(rect: DOMRect | null): rect is DOMRect {
+    return !!rect && rect.width > 0 && rect.height > 0
+        && Number.isFinite(rect.left) && Number.isFinite(rect.top);
 }
 function hoverGroup(direction: SemanticPortDirection) {
     if (chooserPort.value && !dragPort.value) return;
@@ -110,20 +128,41 @@ function hoverGroup(direction: SemanticPortDirection) {
         if (ports(direction).length > 1) expand(direction);
         return;
     }
-    // Retain the source group's contents until the pointer reaches a target.
-    if (!dragEdit.value && addressKey(dragPort.value.address) === nodeKey.value && direction === dragPort.value.direction) return;
-    const targetDirection = dragEdit.value ? dragPort.value.direction : dragPort.value.direction === "input" ? "output" : "input";
+    // During a captured drag, GraphEditor owns hover hit-testing. A layout
+    // boundary event must not reopen the popover that the press just closed.
+    const hover = editor?.hoveredPortGroup.value;
+    if (!hover || hover.nodeKey !== nodeKey.value || hover.direction !== direction) return;
+    if (direction !== destinationDirection.value || !groupAccepts(direction)) {
+        closePanel();
+        return;
+    }
     // Do not cover a direct handle with a port list.
-    if (ports(targetDirection).length > 1) expand(targetDirection);
-    else expanded.value = null;
+    if (ports(direction).length > 1) expand(direction);
+    else closePanel();
 }
-function leave(event: MouseEvent) {
-    const target = event.relatedTarget;
-    if (target instanceof Node && (area.value?.contains(target) || panel.value?.contains(target))) return;
+function leave() {
+    // Boundary events only request a check. A row replacement must not
+    // overwrite the pointer position recorded by actual movement.
+    checkPopoverPointer();
+}
+function checkPopoverPointer() {
+    if (!expanded.value || !panelPositioned.value || !popoverPointer || dragPort.value) return;
+    const current = document.elementFromPoint(popoverPointer.x, popoverPointer.y);
+    const group = groups[expanded.value];
+    if (current && (group?.contains(current) || panel.value?.contains(current))) return;
     closePanel();
+}
+function movePopoverPointer(event: PointerEvent) {
+    popoverPointer = { x: event.clientX, y: event.clientY };
+    checkPopoverPointer();
+}
+function leavePopoverWindow(event: PointerEvent) {
+    if (!event.relatedTarget && (event.clientX <= 0 || event.clientY <= 0
+        || event.clientX >= window.innerWidth || event.clientY >= window.innerHeight)) closePanel();
 }
 function closePanel() {
     ++panelPositionVersion;
+    panelPositioned.value = false;
     expanded.value = null; chooserPort.value = null; hoveredPort.value = null; hoveredPortRect = null;
 }
 function closeConnectionChooser() {
@@ -140,7 +179,7 @@ function endpoint(port: SemanticPort): GraphPortEndpoint {
         kind: port.kind === "continuous" ? "sample" : "event", index: port.index, name: port.name };
 }
 function openConnectionChooser(port: SemanticPort, origin = hoveredPortRect) {
-    if (!editable.value || dragPort.value || !editor?.scope.value
+    if (!validOrigin(origin) || !editable.value || dragPort.value || !editor?.scope.value
         || (chooserPort.value && portKey(chooserPort.value) === portKey(port))
         || connectionEndsAtPort(editor.scope.value, endpoint(port)).length < 1) return;
     chooserPort.value = port;
@@ -148,13 +187,16 @@ function openConnectionChooser(port: SemanticPort, origin = hoveredPortRect) {
 }
 function portIconRect(event: PointerEvent): DOMRect | null {
     const handle = event.currentTarget;
-    if (!(handle instanceof HTMLElement)) return null;
-    return (handle.querySelector<HTMLElement>(".port-circle") ?? handle).getBoundingClientRect();
+    if (!(handle instanceof HTMLElement) || !handle.isConnected || handle.closest(".port-panel.positioning")) return null;
+    const rect = (handle.querySelector<HTMLElement>(".port-circle") ?? handle).getBoundingClientRect();
+    return validOrigin(rect) ? rect : null;
 }
 function enterPort(event: PointerEvent, port: SemanticPort) {
+    const rect = portIconRect(event);
+    if (!rect) return;
     hoveredPort.value = port;
-    hoveredPortRect = portIconRect(event);
-    if (event.shiftKey) openConnectionChooser(port, hoveredPortRect);
+    hoveredPortRect = rect;
+    if (shiftHeld.value) openConnectionChooser(port, hoveredPortRect);
 }
 function start(event: PointerEvent, port: SemanticPort) {
     if (!editable.value || event.button !== 0 || !editor?.scope.value) return;
@@ -167,12 +209,14 @@ function start(event: PointerEvent, port: SemanticPort) {
 function pickConnection(event: PointerEvent, end: GraphConnectionEnd) {
     if (event.button !== 0) return;
     editor?.startConnection(event, end.port, end);
-    closePanel();
 }
 function accepts(port: SemanticPort) {
     if (!editable.value || !dragPort.value) return false;
     return dragEdit.value ? !!editor?.scope.value && canMoveConnectionEnd(editor.scope.value, dragEdit.value, endpoint(port))
         : acceptsPortConnection(dragPort.value, endpoint(port));
+}
+function groupAccepts(direction: SemanticPortDirection) {
+    return ports(direction).some(accepts);
 }
 function connectionLabel(connection: GraphScopeConnection["connection"]) {
     const label = (matcher: typeof connection.outputs[number]) => {
@@ -189,10 +233,25 @@ function portTitle(port: SemanticPort) {
 watch(() => editor?.hoveredPortGroup.value, (group) => {
     if (!dragPort.value) return;
     if (group?.nodeKey === nodeKey.value) hoverGroup(group.direction);
-    else expanded.value = null;
+    else closePanel();
 });
-watch(dragPort, (value) => { if (!value) expanded.value = null; });
+watch(dragPort, closePanel);
+watch(expanded, (direction, previous) => {
+    if (direction && !previous) {
+        popoverPointer = null;
+        window.addEventListener("pointermove", movePopoverPointer, true);
+        window.addEventListener("pointerout", leavePopoverWindow, true);
+    } else if (!direction) {
+        window.removeEventListener("pointermove", movePopoverPointer, true);
+        window.removeEventListener("pointerout", leavePopoverWindow, true);
+        popoverPointer = null;
+    }
+}, { flush: "sync" });
 watch(() => editor?.scope.value, closePanel);
+watch(shiftHeld, (held) => {
+    if (!held) closeConnectionChooser();
+    else if (hoveredPort.value) openConnectionChooser(hoveredPort.value);
+});
 watch([expanded, chooserPort], () => editor?.portsChanged(), { flush: "post" });
 function viewportChanged(event: Event) {
     if (event.target instanceof Node && panel.value?.contains(event.target)) return;
@@ -200,51 +259,44 @@ function viewportChanged(event: Event) {
 }
 function dismissPanel(event: KeyboardEvent) {
     if (event.key === "Escape") closePanel();
-    else if (!event.shiftKey) closeConnectionChooser();
-    else if (event.key === "Shift" && hoveredPort.value) openConnectionChooser(hoveredPort.value);
-}
-function releasedModifier(event: KeyboardEvent) {
-    if (!event.shiftKey) closeConnectionChooser();
-}
-function pointerModifier(event: PointerEvent) {
-    // Pointer events carry modifier state even when keyboard focus is in a
-    // different editor. No focus change is needed to recover a missed keyup.
-    if (!event.shiftKey) closeConnectionChooser();
 }
 onMounted(() => {
     editor?.portsChanged();
     window.addEventListener("resize", viewportChanged);
     window.addEventListener("scroll", viewportChanged, true);
     window.addEventListener("keydown", dismissPanel);
-    window.addEventListener("keyup", releasedModifier);
     window.addEventListener("blur", closePanel);
 });
 onBeforeUnmount(() => {
+    window.removeEventListener("pointermove", movePopoverPointer, true);
+    window.removeEventListener("pointerout", leavePopoverWindow, true);
     editor?.portsChanged();
     window.removeEventListener("resize", viewportChanged);
     window.removeEventListener("scroll", viewportChanged, true);
     window.removeEventListener("keydown", dismissPanel);
-    window.removeEventListener("keyup", releasedModifier);
     window.removeEventListener("blur", closePanel);
     if (dragPort.value && addressKey(dragPort.value.address) === nodeKey.value) editor?.cancelConnection();
 });
 </script>
 
 <template>
-    <div ref="area" class="node-ports" @mouseleave="leave" @pointermove="pointerModifier">
+    <div class="node-ports" @mouseleave="leave">
         <div v-for="direction in directions" :key="direction" :ref="(element) => setGroup(direction, element)"
             class="port-group" :data-port-group="direction" :data-node-key="nodeKey" :data-direction="direction"
+            :class="{ unavailable: destinationDirection === direction && !groupAccepts(direction) }"
             @mouseenter="hoverGroup(direction)">
             <div v-if="ports(direction).length > 1" class="port-slot" role="button" tabindex="0"
                 :data-connection-state="groupConnections[direction].state" :class="{ pending: groupConnections[direction].pending }"
                 :data-port-slot="node.address ? portSlotKey(node.address, direction) : undefined"
                 :aria-label="`${ports(direction).length} ${direction} ports; ${groupConnections[direction].connected} connected`" :aria-expanded="expanded === direction"
-                :title="`${ports(direction).length} ${direction} ports; ${groupConnections[direction].connected} connected`" @focus="expand(direction)" @keydown.enter="expand(direction)">
+                :aria-disabled="destinationDirection === direction && !groupAccepts(direction)"
+                :title="`${ports(direction).length} ${direction} ports; ${groupConnections[direction].connected} connected`" @focus="hoverGroup(direction)" @keydown.enter="hoverGroup(direction)">
                 <span class="port-circle stacked-first" /><span class="port-circle stacked-second" />
             </div>
             <button v-for="port in ports(direction).length <= 1 ? ports(direction) : []"
                 :key="`${port.kind}:${port.index}`" type="button" class="port-handle"
-                :class="{ connected: applied(port), pending: pending(port), target: accepts(port) }"
+                :class="{ connected: applied(port), pending: pending(port), unavailable: destinationDirection === port.direction && !accepts(port) }"
+                :aria-disabled="destinationDirection === port.direction && !accepts(port)"
                 :data-port-endpoint="JSON.stringify(endpoint(port))"
                 :title="portTitle(port)"
                 :aria-label="`${port.direction} ${port.name || port.index + 1}`"
@@ -255,9 +307,10 @@ onBeforeUnmount(() => {
         </div>
     </div>
     <Teleport to="body">
-        <div v-if="expanded" ref="panel" class="port-panel" :class="{ above }" :style="panelPosition"
+        <div v-if="expanded" ref="panel" class="port-panel" :class="{ above, positioning: !panelPositioned }" :style="panelPosition"
+            :aria-hidden="!panelPositioned"
             :data-port-group="expanded" :data-node-key="nodeKey" :data-direction="expanded"
-            @mouseleave="leave" @pointermove="pointerModifier" @keydown.esc="closePanel">
+            @mouseleave="leave" @keydown.esc="closePanel">
             <div class="expansion-body">
             <template v-if="chooserPort">
                 <button v-for="end in choices" :key="end.connection.id" type="button" class="port-entry connection-choice"
@@ -270,7 +323,8 @@ onBeforeUnmount(() => {
             </template>
             <template v-else>
             <button v-for="port in shownPorts" :key="`${port.direction}:${port.kind}:${port.index}`" type="button"
-                class="port-entry" :class="{ target: accepts(port), connected: applied(port), pending: pending(port) }"
+                class="port-entry" :class="{ unavailable: destinationDirection === port.direction && !accepts(port), connected: applied(port), pending: pending(port) }"
+                :aria-disabled="destinationDirection === port.direction && !accepts(port)"
                 :data-port-endpoint="JSON.stringify(endpoint(port))" :title="portTitle(port)"
                 @pointerenter="enterPort($event, port)" @pointermove="enterPort($event, port)" @pointerleave="hoveredPort = null"
                 @pointerdown="start($event, port)">
@@ -286,13 +340,12 @@ onBeforeUnmount(() => {
 <style scoped>
 .node-ports { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 5px; }
 .port-group { display: flex; gap: 3px; min-height: 20px; }
-[data-direction="input"] { --port-color: var(--vscode-terminal-ansiYellow); }
-[data-direction="output"] { --port-color: var(--vscode-terminal-ansiBlue); }
+[data-direction="input"] { --port-base-color: var(--vscode-terminal-ansiYellow); --port-color: var(--port-base-color); }
+[data-direction="output"] { --port-base-color: var(--vscode-terminal-ansiBlue); --port-color: var(--port-base-color); }
 .port-handle { display: grid; place-items: center; padding: 0; height: 22px; width: 22px; border: 0; background: transparent; cursor: crosshair; touch-action: none; }
 .port-circle { display: inline-block; flex: 0 0 10px; width: 10px; height: 10px; box-sizing: border-box; border: 2px solid var(--port-color); border-radius: 50%; }
 .connected .port-circle { background: var(--port-color); }
 .pending .port-circle { border-style: dashed; }
-.target .port-circle { box-shadow: 0 0 0 2px var(--vscode-editor-background), 0 0 0 3px var(--vscode-focusBorder); }
 .port-slot { position: relative; width: 28px; height: 20px; box-sizing: border-box; border: 1px solid var(--vscode-panel-border); border-radius: 7px; }
 .stacked-first { position: absolute; left: 5px; top: 4px; }
 .stacked-second { position: absolute; left: 12px; top: 4px; background: var(--vscode-editor-background); }
@@ -300,10 +353,13 @@ onBeforeUnmount(() => {
 .port-slot[data-connection-state="full"] .port-circle { background: var(--port-color); }
 .port-handle:focus-visible, .port-slot:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
 .port-panel { position: fixed; z-index: 20; display: flex; flex-direction: column; box-sizing: border-box; border: 1px solid var(--vscode-panel-border); border-radius: 7px; background: var(--vscode-editorWidget-background); color: var(--vscode-foreground); box-shadow: 0 3px 12px #0005; }
+.port-panel.positioning { visibility: hidden; pointer-events: none; }
 .expansion-body { overflow-y: auto; min-height: 0; padding: 3px; }
 .above .expansion-body { display: flex; flex-direction: column-reverse; }
 .port-entry { display: flex; flex-shrink: 0; gap: 10px; align-items: center; width: 100%; padding: 5px; border: 0; background: transparent; color: inherit; text-align: left; cursor: crosshair; touch-action: none; }
 .port-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .port-entry small { max-width: 45%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); text-align: right; }
 .port-entry:hover { background: var(--vscode-list-hoverBackground); }
+.unavailable { --port-color: color-mix(in srgb, var(--port-base-color) 25%, var(--vscode-disabledForeground) 75%); color: var(--vscode-disabledForeground); }
+.unavailable small { color: var(--vscode-disabledForeground); }
 </style>

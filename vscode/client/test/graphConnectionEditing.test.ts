@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { canMoveConnectionEnd, connectionEndMutation, connectionEndsAtPort, connectionFromPorts, fixedConnectionPorts,
     type GraphConnectionEnd, type GraphPortEndpoint } from "../src/graphConnectionEditing";
 import type { GraphPortMatcher, GraphScope, GraphScopeConnection, GraphScopeNode } from "../src/graphScope";
+import { beginPortConnection, canDropPortConnection, finishPortConnection, movePortConnection } from "../src/portConnectionGesture";
 
 function scope(): GraphScope {
     const node = (id: string): GraphScopeNode => ({
@@ -66,6 +67,43 @@ function replacement(graph: GraphScope, end: GraphConnectionEnd, target: GraphPo
     assert.ok(mutation?.type === "upsert");
     return mutation.connection as GraphScopeConnection["connection"];
 }
+
+test("hover feedback permits either drag direction without changing the graph", () => {
+    const graph = scope();
+    const before = structuredClone(graph);
+    for (const [first, second] of [[output, input], [input, output]]) {
+        const drag = movePortConnection(beginPortConnection(first, 1, 0, { x: 0, y: 0 })!, 1, 1, { x: 100, y: 50 })!;
+        assert.equal(canDropPortConnection(graph, drag, second), true);
+        assert.ok(finishPortConnection(drag, 1, drag.end, second));
+        assert.equal(canDropPortConnection(graph, drag, first), false);
+        assert.equal(canDropPortConnection(graph, drag, { ...second, kind: "event" }), false);
+        assert.equal(canDropPortConnection(graph, drag, null), false);
+        assert.equal(canDropPortConnection({ ...graph, editable: false }, drag, second), false);
+    }
+    assert.deepEqual(graph, before);
+});
+
+test("reattachment feedback rejects the original port, stale records and shared type changes", () => {
+    const graph = connectedScope();
+    const end = selectedEnd(graph);
+    const drag = beginPortConnection(input, 1, 0, { x: 0, y: 0 }, end)!;
+    assert.equal(canDropPortConnection(graph, drag, cInput), true);
+    assert.equal(canDropPortConnection(graph, drag, input), false);
+    assert.equal(canDropPortConnection(graph, drag, cOutput), false);
+    assert.equal(canDropPortConnection(graph, drag, { ...cInput, name: "renamed" }), false);
+    graph.nodes[2].sampleInputs[0].channelType = "stereo";
+    assert.equal(canDropPortConnection(graph, drag, cInput), true); // Whole-end conversion remains possible.
+    // Give the current connection another input. Its shared target type can
+    // no longer change for just the moved end. Capture that new record anew.
+    graph.connections[0].connection.inputs.push(matcher(cInput));
+    const shared = beginPortConnection(input, 1, 0, { x: 0, y: 0 }, selectedEnd(graph))!;
+    assert.equal(canDropPortConnection(graph, shared, cInput), false);
+    const originalGraph = connectedScope();
+    const originalDrag = beginPortConnection(input, 1, 0, { x: 0, y: 0 }, selectedEnd(originalGraph))!;
+    const staleGraph = structuredClone(originalGraph);
+    staleGraph.connections[0].connection.sourceType = "mono";
+    assert.equal(canDropPortConnection(staleGraph, originalDrag, cInput), false);
+});
 
 test("pickup returns all connection choices for the clicked port without selecting one", () => {
     const graph = connectedScope();

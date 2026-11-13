@@ -1,6 +1,7 @@
 import type { GraphLayout, GraphScope } from "./graphScope";
 import type { LiveGraphSessionStatus } from "./liveGraphProtocol";
 import type { GraphConnectionEdit, GraphPortEndpoint } from "./graphConnectionEditing";
+import type { PortGrabRecording } from "./portGrabRecording";
 
 export type GraphEditorState = {
     sessionStatus: LiveGraphSessionStatus;
@@ -9,10 +10,14 @@ export type GraphEditorState = {
     definitions: string[];
     error: string;
 };
-export type GraphEditorAction = "addNode" | "editNode" | "deleteNode" | "openNodeSource" | "createPackage" | "deleteConnection";
+export type GraphEditorAction = "addNode" | "editNode" | "deleteNode" | "openNodeSource" | "createPackage" | "deleteConnection" | "recordPortGrab";
 export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorState }
+    | { type: "graphWindowFocus"; focused: boolean }
+    | { type: "recordPortGrab" }
     | { type: "graphAction"; action: "addNode" | "editNode" | "createPackage"; instanceId?: string };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
+    | { type: "portGrabRecordingStarted" }
+    | { type: "portGrabRecording"; recording: PortGrabRecording }
     | { type: "copyNodeDebugDetails"; nodeKey: string }
     | { type: "connectGraphPorts"; first: GraphPortEndpoint; second: GraphPortEndpoint }
     | { type: "editGraphConnectionEnd"; edit: GraphConnectionEdit }

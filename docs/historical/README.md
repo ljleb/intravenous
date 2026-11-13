@@ -147,3 +147,23 @@ These documents are retained because they record deleted architectures, supersed
 - [Vue Port Lists Before First-Item Alignment](./vue_port_lists_before_first_item_alignment_2026-11-13.md)
   preserves grouped-icon caps and connection summaries before ordinary port
   lists adopted the same first-item alignment as connection choosers.
+
+- [Vue Shift Before Shared Modifier State](./vue_shift_before_shared_modifier_state_2026-11-13.md)
+  preserves per-event modifier handling before port lists shared the editor's
+  Shift state across nested hover transitions.
+
+- [Vue Wires Before The Single Cubic Rule](./vue_wires_before_single_cubic_rule_2026-11-13.md)
+  preserves self-connection detours, hover-based colour overrides, and
+  colour-dependent cursor tangents before drawing was simplified.
+
+- [Vue Port Targets Before Muted Unavailable Ports](./vue_port_targets_before_muted_unavailable_ports_2026-11-13.md)
+  preserves candidate rings and automatic opposite-side popovers before
+  unavailable ports were muted and destination hover was restricted to its own side.
+
+- [Vue Port Muting Before Destination-Side Feedback](./vue_port_muting_before_destination_side_only_2026-11-13.md)
+  preserves the broader muting rule and the first-press focus-order attempt
+  before the owner confirmed that native window activation still failed.
+
+- [Vue Port Grab Before Native Window Focus Reporting](./vue_port_grab_before_native_window_focus_2026-11-13.md)
+  preserves the unresolved recorder status and the owner's trace that identified
+  webview blur as the cancellation source after an accepted first press.

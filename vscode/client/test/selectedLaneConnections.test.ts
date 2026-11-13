@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { addressKey, type GraphScope, type GraphScopeNode, type GraphScopeConnection } from "../src/graphScope";
-import { connectionEndKey, portEndpointKey, portSlotKey, selectedLaneConnections } from "../src/selectedLaneConnections";
+import { connectionEndKey, portEndpointKey, portSlotKey, selectedLaneConnections, selectedLaneWirePath } from "../src/selectedLaneConnections";
 import type { GraphPortEndpoint } from "../src/graphConnectionEditing";
 
 function node(id: string): GraphScopeNode {
@@ -164,7 +164,7 @@ test("revealing one input end does not reveal the other inputs of a multi-ended 
     assert.ok(wires.every((wire) => wire.connectionIds.length === 1 && wire.connectionIds[0] === "many"));
 });
 
-test("chooser attachments retain selected-lane wires and detect self-connections without lane selection", () => {
+test("chooser attachments retain selected-lane wires and use the same geometry for self-connections", () => {
     const graph = scope([connection("self", "a", 0, "a", 0), connection("external", "a", 0, "b", 0),
         connection("selected", "c", 0, "b", 1)]);
     const port: GraphPortEndpoint = { address: { instanceId: "a" }, direction: "output", kind: "sample", index: 0, name: "out0" };
@@ -172,8 +172,10 @@ test("chooser attachments retain selected-lane wires and detect self-connections
     const ordinary = anchors([]); // Every physical port is at the same screen height.
     const opened = selectedLaneConnections(graph, addressKey({ instanceId: "c" }), ordinary, revealed);
     assert.deepEqual(opened.flatMap((wire) => wire.connectionIds).sort(), ["external", "selected", "self"]);
-    assert.ok(opened.find((wire) => wire.connectionIds.includes("self"))!.selfLoopY !== undefined);
-    assert.equal(opened.find((wire) => wire.connectionIds.includes("external"))!.selfLoopY, undefined);
+    const self = opened.find((wire) => wire.connectionIds.includes("self"))!;
+    const external = opened.find((wire) => wire.connectionIds.includes("external"))!;
+    assert.notEqual(self.key, external.key);
+    assert.equal(selectedLaneWirePath(self), selectedLaneWirePath(external));
     const closed = selectedLaneConnections(graph, addressKey({ instanceId: "c" }), ordinary);
     assert.deepEqual(closed.flatMap((wire) => wire.connectionIds), ["selected"]);
 });

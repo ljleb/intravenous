@@ -14,6 +14,7 @@ export class GraphEditorProvider implements vscode.Disposable {
     private readonly store: GraphLayoutStore;
     private readonly layoutLoaded: Promise<void>;
     private readonly changed: vscode.Disposable;
+    private readonly windowFocusChanged: vscode.Disposable;
     private state: GraphEditorState = {
         sessionStatus: "starting", scope: null, layout: readLayout(null), definitions: [], error: "",
     };
@@ -31,6 +32,9 @@ export class GraphEditorProvider implements vscode.Disposable {
                 this.state.error = this.layoutError;
             });
         this.changed = session.onDidChangeGraph(() => { void this.refresh(); });
+        this.windowFocusChanged = vscode.window.onDidChangeWindowState(({ focused }) => {
+            for (const panel of this.ready) void panel.webview.postMessage({ type: "graphWindowFocus", focused });
+        });
     }
 
     open(): vscode.WebviewPanel {
@@ -46,6 +50,10 @@ export class GraphEditorProvider implements vscode.Disposable {
         panel.reveal(panel.viewColumn, false);
         if (!this.ready.has(panel)) {
             this.pendingActions.set(panel, [...(this.pendingActions.get(panel) ?? []), action]);
+            return;
+        }
+        if (action === "recordPortGrab") {
+            void panel.webview.postMessage({ type: "recordPortGrab" });
             return;
         }
         const [scope, definitions] = await Promise.all([this.session.readGraphScope(), this.session.graphDefinitions()]);
@@ -107,6 +115,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                 await this.layoutLoaded;
                 if (!this.panels.has(panel)) return;
                 this.ready.add(panel);
+                void panel.webview.postMessage({ type: "graphWindowFocus", focused: vscode.window.state.focused });
                 this.post(panel);
                 await this.refresh();
                 const pending = this.pendingActions.get(panel) ?? [];
@@ -115,6 +124,11 @@ export class GraphEditorProvider implements vscode.Disposable {
                     try { await this.runAction(action, panel); }
                     catch (error) { void vscode.window.showErrorMessage(`Cannot edit project: ${error.message}`); }
                 }
+            } else if (message?.type === "portGrabRecordingStarted") {
+                void vscode.window.showInformationMessage("Recording port input. Switch to another window, then drag a port once. Run the recording command again to finish if no report appears.");
+            } else if (message?.type === "portGrabRecording") {
+                const document = await vscode.workspace.openTextDocument({ language: "json", content: JSON.stringify(message.recording, null, 2) });
+                await vscode.window.showTextDocument(document, { preview: false });
             } else if (message?.type === "copyNodeDebugDetails") {
                 const scope = this.state.scope;
                 const node = scope?.nodes.find((entry) => addressKey(entry.address) === message.nodeKey);
@@ -211,6 +225,7 @@ export class GraphEditorProvider implements vscode.Disposable {
     dispose(): void {
         this.disposed = true;
         this.changed.dispose();
+        this.windowFocusChanged.dispose();
         for (const panel of this.panels) panel.dispose();
         this.panels.clear();
     }

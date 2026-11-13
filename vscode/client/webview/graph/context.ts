@@ -9,6 +9,7 @@ type GraphEditorContext = {
     save: () => void;
     copyNodeDebugDetails: (address: NodeAddress) => void;
     scope: Readonly<Ref<GraphScope | null>>;
+    shiftHeld: Readonly<Ref<boolean>>;
     selectedLane: Readonly<Ref<string | null>>;
     selectLane: (address: NodeAddress) => void;
     portsChanged: () => void;

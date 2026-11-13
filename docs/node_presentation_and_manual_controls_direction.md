@@ -167,9 +167,44 @@ the first port remains at the opening control. Port details remain available
 in tooltips. The preceding layout is retained in
 [Vue Port Lists Before First-Item Alignment](./historical/vue_port_lists_before_first_item_alignment_2026-11-13.md).
 
-During a connection drag, hovering another node's port area exposes the
-appropriate destination side. Grouping changes presentation only. Each port
-retains its identity, and there is no limit on the underlying port count.
+`NodePorts` renders these temporary lists as `.port-panel` elements. In UI
+discussion, a **popover** means a temporary panel above the existing display:
+the ordinary list is a port popover, and the connection chooser is a connection
+popover. Inputs and outputs remain separate in either form.
+
+During pointer interaction, a popover stays open while the pointer is over
+that popover or the port group that opened it. Leaving both closes it. Empty
+space between the input and output groups is outside both groups. A layout
+transition must not discard the final check of where the pointer ended up.
+
+When a row press starts a connection gesture, close the open popovers before
+release. Keep the captured drag active so the pointer can reach ports that
+were covered by the source popover. Do not reopen the starting port group
+until the pointer leaves it. Compatible destination groups can still open on
+hover; leaving and returning also permits another port in the starting group
+to be selected when moving an existing connection end. Graph mutations still
+occur only on release, and a quick click alone makes no connection change.
+
+During a connection drag, a destination popover opens only over its own port
+group, when that group contains a candidate target. Starting at an output and
+passing over another output must not open that node's inputs. Hover its input
+group to open them. Starting a new connection at an input uses the reverse
+rule. Moving an existing connection end uses the direction of the end being
+moved. Grouping changes presentation only: each port retains its identity,
+and there is no limit on the underlying port count.
+
+Only ports on the destination side rejected by the current drop checks are
+muted during the drag, using a blend of their normal colour and the theme's
+disabled grey. Candidate ports and ports on the other side retain their normal
+colour. For example, dragging a new connection from an output leaves other
+outputs blue; incompatible inputs are muted. A destination-side grouped icon
+is muted when none of its ports is a candidate. Filled and dashed connection states remain visible through
+the colour change. This feedback uses the existing direction/kind and
+reattachment checks; it does not add converter discovery. The preceding ring
+and automatic opposite-side expansion are retained in
+[Vue Port Targets Before Muted Unavailable Ports](./historical/vue_port_targets_before_muted_unavailable_ports_2026-11-13.md).
+The preceding broader muting rule is retained in
+[Vue Port Muting Before Destination-Side Feedback](./historical/vue_port_muting_before_destination_side_only_2026-11-13.md).
 The earlier fit-based proposal is retained in
 [Vue Ports Before Single-Connection Choosers](./historical/vue_ports_before_single_connection_choosers_2026-11-13.md).
 
@@ -197,13 +232,21 @@ means every port in the group has at least one connection. These states count
 desired connections; dashed outlines continue to identify pending connections.
 The grouped icon is replaced by the first port while the list is open.
 
-A connection between an output and an input of the same node must form a loop
-away from the port row. It must not double back through its output port.
-Separate visible self-connections use separate return paths. Grouped endpoints
-still share one drawn wire until the slot opens.
-By default, the output's Bezier control point lies to its left and the
-input's control point lies to its right. Self-connections and equal-height
-endpoints retain an arc away from the port row instead of a retraced curve.
+All wires use one cubic Bezier rule. For endpoints `(x1, y1)` and `(x2, y2)`,
+both control points use `middle_x = (x1 + x2) / 2`: the first is
+`(middle_x, y1)` and the second is `(middle_x, y2)`. This applies to established
+connections, self-connections, and drag previews. Aligned ports can appear
+straight. Node identity and other cables do not change the path.
+
+Cable endpoints attach to the outside edge of each port circle, halfway up:
+the right edge for inputs and the left edge for outputs. This applies to
+established connections, the fixed end of the cursor cable, and both ends of
+the faint destination preview. A collapsed two-circle icon uses its rightmost
+circle for inputs and its leftmost circle for outputs. Opening a popover uses
+the same edge rule on each exposed port or connection-entry circle.
+
+The preceding self-connection routing is preserved in
+[Vue Wires Before The Single Cubic Rule](./historical/vue_wires_before_single_cubic_rule_2026-11-13.md).
 
 ### Disconnection and endpoint movement
 
@@ -220,6 +263,31 @@ circle's position; it replaces the chooser's decorative icon. Its entry can
 therefore be picked up without moving down the list. Other entries remain
 available for explicit selection. Near the bottom of the viewport, the remaining
 entries grow upward with the first connection still at the hovered port.
+
+The fixed end of a new connection's preview starts at the port circle, even
+when the press is on another part of its row. If that port's list closes, the
+preview follows its grouped slot. The mouse press position determines the
+drag threshold, not the cable's starting point.
+
+The preview uses the same Bezier rule as a finished connection. Its fixed
+end keeps that port's color: yellow for an input and blue for an output. The
+cursor-end color depends only on mouse position relative to the closest port
+row's measured input and output columns. It blends continuously from yellow
+to blue across those columns and clamps to those colors outside them.
+Hovering a port or popover does not override the positional color, and color
+does not affect the curve's shape. These rules also apply when moving an
+existing connection end. Preview color does not change connection compatibility
+or commit a connection before release. The owner retained the fixed-to-cursor
+gradient when clarifying these rules on 2026-11-13.
+
+Hovering an eligible destination port also shows a faint preview of the completed
+connection, attached to that port's circle. The cursor cable remains visible
+and keeps following the pointer; its position-based colour rule stays unchanged.
+The attached preview uses the actual endpoint colours and the same cubic as the
+completed connection. The destination popover stays open while hovered. Moving
+away removes the attached preview. Both previews end on release or cancellation;
+only a valid release can edit the graph. The editor's existing eligibility checks
+still apply; this display does not add converter discovery.
 
 Drag a chooser entry with the primary button to move that connection end.
 Direct Shift-drag can still pick up a sole connection. Shift-click remains a
