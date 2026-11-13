@@ -108,6 +108,7 @@ struct ProjectGraphGeneration {
 // pass.
 struct ProjectGraphConfigurationFailure {
     std::uint64_t definitions_generation = 0;
+    std::shared_ptr<NodeInstanceFailureInterfaces const> instance_interfaces{};
     // Every problem found before construction, or the first construction
     // failure.
     std::vector<NodeInstanceDiagnostic> node_instance_diagnostics{};

@@ -4,6 +4,7 @@ import { useLane } from "./laneContext";
 import { computed } from "vue";
 import { nodeDisplayName, portDescription } from "./nodeSummary";
 import type { NodeDisplayMode } from "./displayMode";
+import NodePorts from "./NodePorts.vue";
 
 defineProps<{ mode?: NodeDisplayMode }>();
 
@@ -28,7 +29,8 @@ const outputSummary = computed(() => outputs.value.map((port) => `${port.name}: 
                 <button v-if="lane" type="button" class="copy-debug" title="Copy node debug details"
                     aria-label="Copy node debug details" @click="lane.copyDebugDetails()">⧉</button>
             </div>
-            <div class="port-summary">
+            <NodePorts v-if="node.address" />
+            <div v-else class="port-summary">
                 <span :title="inputSummary" :aria-label="`${inputs.length} inputs`">→ {{ inputs.length }}</span>
                 <span :title="outputSummary" :aria-label="`${outputs.length} outputs`">{{ outputs.length }} →</span>
             </div>
@@ -43,6 +45,9 @@ const outputSummary = computed(() => outputs.value.map((port) => `${port.name}: 
 .lane-heading { display: flex; align-items: flex-start; gap: 6px; }
 .port-summary { display: flex; gap: 16px; margin-top: 6px; font-size: .9em; color: var(--vscode-descriptionForeground); }
 .node-lane[data-mode="nano"] .lane-label { padding-top: 2px; padding-bottom: 2px; }
+.node-lane[data-mode="nano"] .lane-label, .node-lane[data-mode="compact"] .lane-label { display: flex; align-items: center; gap: 4px; }
+.node-lane[data-mode="nano"] .lane-heading, .node-lane[data-mode="compact"] .lane-heading { flex: 1; min-width: 0; }
+.node-lane[data-mode="nano"] :deep(.node-ports), .node-lane[data-mode="compact"] :deep(.node-ports) { margin-top: 0; flex-shrink: 0; }
 .node-lane[data-mode="nano"] .port-summary, .node-lane[data-mode="compact"] .port-summary { display: none; }
 .lane-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lane-name.failed { color: var(--vscode-errorForeground, #f14c4c); }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
-import { addressKey } from "../../src/graphScope";
+import { addressKey, type NodeAddress } from "../../src/graphScope";
 import { useNode } from "../presentation/nodeContext";
 import { semanticNodeFromScopeChild } from "../presentation/semanticNode";
 import PresentationHost from "../presentation/PresentationHost.vue";
@@ -15,7 +15,13 @@ const scope = computed(() => node.value.scope!);
 const children = computed(() => scope.value.nodes.map((child) => ({
     child, semantic: semanticNodeFromScopeChild(child, scope.value),
 })));
-const { layout, save, copyNodeDebugDetails } = useGraphEditor();
+const { layout, save, copyNodeDebugDetails, selectedLane, selectLane } = useGraphEditor();
+function clickedLane(event: MouseEvent, address: NodeAddress) {
+    if (event.button !== 0 || event.defaultPrevented) return;
+    if (event.target instanceof Element
+        && event.target.closest("button, input, textarea, select, a, [role='button'], [contenteditable='true']")) return;
+    selectLane(address);
+}
 const viewport = computed({ get: () => layout.value.timeline,
     set: (value) => { layout.value.timeline = value; } });
 const laneHeight = computed(() => viewport.value.laneHeight);
@@ -130,7 +136,11 @@ onBeforeUnmount(() => {
         </header>
         <div class="lanes">
             <section v-for="{ child, semantic } in children" :key="addressKey(child.address)"
-                class="lane" :style="{ height: `${laneHeight}px` }" :aria-label="nodeDisplayName(semantic)">
+                class="lane" :class="{ selected: selectedLane === addressKey(child.address) }"
+                :style="{ height: `${laneHeight}px` }" :aria-label="nodeDisplayName(semantic)" tabindex="0"
+                :aria-current="selectedLane === addressKey(child.address) ? 'true' : undefined"
+                @click="clickedLane($event, child.address)" @keydown.enter.self="selectLane(child.address)"
+                @keydown.space.self.prevent="selectLane(child.address)">
                 <PresentationHost :node="semantic" :region-height="laneHeight - 1" lane
                     @copy-debug-details="copyNodeDebugDetails(child.address)" />
             </section>
@@ -148,5 +158,7 @@ onBeforeUnmount(() => {
 .node-column { box-sizing: border-box; min-width: 0; padding: 8px 12px; border-right: 1px solid var(--vscode-panel-border); }
 .lanes { flex: 0 0 auto; min-height: 0; }
 .lane { box-sizing: border-box; border-bottom: 1px solid var(--vscode-panel-border); }
+.lane.selected { background: var(--vscode-list-inactiveSelectionBackground); outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.lane:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 .empty { padding: 12px; }
 </style>

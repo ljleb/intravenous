@@ -4,6 +4,7 @@
 #include <intravenous/node/address.h>
 #include <intravenous/ports.h>
 #include <intravenous/runtime/iv_module_instance_types.h>
+#include <intravenous/runtime/node_instance_interface.h>
 #include <intravenous/runtime/project_connection_types.h>
 
 #include <cstddef>
@@ -19,18 +20,6 @@ enum class ProjectGraphScopeNodeState {
     ready,
     failed,
 };
-// One port of a scope child. `index` counts ports of the same kind and
-// direction, as a ProjectPortMatcher's index does, so a connection can name
-// the port by either. A sample port has a channel type; an event port has an
-// event type.
-struct ProjectGraphScopePort {
-    std::string name{};
-    std::size_t index = 0;
-    std::optional<ChannelTypeId> channel_type{};
-    std::optional<EventTypeId> event_type{};
-    std::vector<ContinuousValueIntrospectionMetadata> value_types{};
-};
-
 // One child of a graph editor scope. In the project root scope, each child is
 // one desired project instance.
 struct ProjectGraphScopeNode {
@@ -40,14 +29,9 @@ struct ProjectGraphScopeNode {
     // realization. The previous executable generation may still be running.
     std::string error_message{};
     ProjectGraphScopeNodeState load_state = ProjectGraphScopeNodeState::waiting_for_definition;
-    // The realized ports of the instance's root in the current generation.
-    // Empty while the instance has no placement in that generation.
-    std::vector<ProjectGraphScopePort> sample_inputs{};
-    std::vector<ProjectGraphScopePort> sample_outputs{};
-    std::vector<ProjectGraphScopePort> event_inputs{};
-    std::vector<ProjectGraphScopePort> event_outputs{};
-    // The instance's root is a subgraph, which an editor can open as its root.
-    bool has_children = false;
+    // The desired configuration's interface. A failed build can supply this
+    // independently of the previous executable generation.
+    NodeInstanceInterface interface{};
 };
 
 struct ProjectGraphScopeConnection {
@@ -61,8 +45,8 @@ struct ProjectGraphScopeConnection {
 // the connections among them, read under ProjectGraph's lock so that they
 // describe one revision.
 struct ProjectGraphScope {
-    // The ProjectGraph generation the ports come from; absent before the first
-    // successful configuration pass.
+    // The current successful ProjectGraph generation, which can differ from
+    // the desired configuration whose interfaces are displayed.
     std::optional<std::uint64_t> generation{};
     bool editable = true;
     std::vector<ProjectGraphScopeNode> nodes{};

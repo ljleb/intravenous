@@ -120,6 +120,13 @@ Ruler labels keep the same numeric spelling across horizontal zoom levels.
 For example, the mark at one second stays `1 s`; finer tick spacing must not
 change it to `1.0 s`. Fractional positions still receive fractional labels.
 
+The playhead displays backend playback position independently of viewport
+navigation. Samples and seconds display the same position. The playback
+contract and the separate proposal for grids from node outputs are in
+[Project Playback And Presentation Grids](./project_playback_and_presentation_grids_direction.md).
+Neither requires every lane to display a timeline or every project to define
+a tempo map.
+
 Lane names should be readable. Do not display UUIDs as ordinary lane text.
 Keep full semantic identity and diagnostic information available through a
 small copy-debug-details button in the left area. Use a compact visual failure
@@ -134,24 +141,133 @@ output visualization for the node.
 
 ### Proposed port area and temporary expansion
 
-The owner proposed the following interaction on 2026-11-12. It is a direction
-for the connection-editing stage, not a claim that these gestures are implemented
-or that all details are settled:
+The owner clarified the appearance on 2026-11-13. Inputs use yellow circles
+and outputs use blue circles, with the same theme colors as the side panel.
+A grouped slot has no visible arrow/count label. Its panel extends from the
+slot on hover, over the lane's display area. It does not require a permanent
+lane-height increase or a separate action button.
 
-- The lane's left area can expose individual port icons while they fit.
-- When the ports do not fit, group their visible controls. Grouping changes
-  presentation only; each underlying port retains its own identity.
-- Hover can expand a temporary panel over the lane's display area, exposing all
-  ports without permanently increasing the lane's size.
-- A user can select an individual port and drag a connection from it.
-- While dragging from an output, hovering a destination port area expands its
-  inputs. While dragging from an input, it expands the outputs.
+Creation, configuration, deletion, package creation, source navigation, and save
+are extension actions available through the Command Palette or user shortcuts.
+Do not add a permanent toolbar or lane edit button for those actions. The
+previously requested copy-debug button remains separate from these actions.
 
-Any earlier connection-editing subset must preserve arbitrary port counts,
-stable endpoint identity, and space for this expansion. Do not commit to a
-fixed number of connection handles, merge ports semantically, or require a
-permanently taller lane. Opening/closing timing and the rest of the input
-interactions remain to be decided with the owner.
+The owner settled the grouping rule on 2026-11-13. Input and output controls
+always occupy separate locations. For each side, one port has a direct handle;
+more than one port uses a grouped slot. A side with no ports has no handle.
+Hovering the grouped slot immediately exposes all ports on that side in a
+temporary panel over the display area. This does not require Shift, increase
+lane height, or depend on how many icons could fit beside one another.
+
+The first port circle occupies the grouped icon's position, using the same
+first-item alignment as a connection chooser. The list has no decorative
+header or connection summaries beneath its ports. It contains only the port
+rows. Near the bottom of the viewport, the remaining rows grow upward while
+the first port remains at the opening control. Port details remain available
+in tooltips. The preceding layout is retained in
+[Vue Port Lists Before First-Item Alignment](./historical/vue_port_lists_before_first_item_alignment_2026-11-13.md).
+
+During a connection drag, hovering another node's port area exposes the
+appropriate destination side. Grouping changes presentation only. Each port
+retains its identity, and there is no limit on the underlying port count.
+The earlier fit-based proposal is retained in
+[Vue Ports Before Single-Connection Choosers](./historical/vue_ports_before_single_connection_choosers_2026-11-13.md).
+
+### Lane selection and connection display
+
+The owner requested this display on 2026-11-13. Selecting a lane displays its
+incoming and outgoing connections. Hovering another lane's grouped port slot
+does not transfer selection to that lane.
+
+If a connected port is hidden inside a grouped slot, draw that wire endpoint
+at the slot. Connections with the same visible endpoints share one drawn wire.
+When the slot opens, separate the wire into branches to its exposed connected
+ports. Closing the slot combines those branches again. Distinct visible ports
+of the selected lane retain distinct wires to the same collapsed destination.
+
+This changes the presentation only. It preserves each port and connection's
+semantic identity and does not create a new graph connection or fan-in operation.
+Selection and hovering do not request graph compilation or an undo entry.
+The wires must not intercept port dragging or hover expansion.
+
+The owner added two display rules on 2026-11-13. A grouped input or output
+slot uses its two circles to show how many of its ports have connections:
+both empty means none; only the right circle filled means some; both filled
+means every port in the group has at least one connection. These states count
+desired connections; dashed outlines continue to identify pending connections.
+The grouped icon is replaced by the first port while the list is open.
+
+A connection between an output and an input of the same node must form a loop
+away from the port row. It must not double back through its output port.
+Separate visible self-connections use separate return paths. Grouped endpoints
+still share one drawn wire until the slot opens.
+By default, the output's Bezier control point lies to its left and the
+input's control point lies to its right. Self-connections and equal-height
+endpoints retain an arc away from the port row instead of a retraced curve.
+
+### Disconnection and endpoint movement
+
+The owner accepted these gestures on 2026-11-13. The earlier proposal is
+preserved in [Connection Gestures Before The Shift-Only Chooser](./historical/vue_connection_gestures_before_shift_only_chooser_2026-11-13.md).
+A left click below means a primary press-drag-release gesture. A quick click
+alone does not commit a connection edit.
+
+A normal primary drag starts a new connection, including when the port already
+has connections. Shift-hover over any connected port opens a chooser, including
+when the port has exactly one connection. Pressing Shift while already hovering
+the port also opens it. The first connection circle occupies the hovered port
+circle's position; it replaces the chooser's decorative icon. Its entry can
+therefore be picked up without moving down the list. Other entries remain
+available for explicit selection. Near the bottom of the viewport, the remaining
+entries grow upward with the first connection still at the hovered port.
+
+Drag a chooser entry with the primary button to move that connection end.
+Direct Shift-drag can still pick up a sole connection. Shift-click remains a
+fallback, not a required opening click. Opening the chooser does not select a
+connection or change the graph. Right-click receives no new menu.
+The connection chooser stays open only while Shift is held. Releasing Shift
+hides it. An ordinary grouped-port list remains governed by its normal hover
+rules. Once a chooser entry has been picked up, releasing Shift does not
+cancel that drag.
+
+While the chooser is open, each visible entry receives its connection's wire
+at its own port circle, like the individual ports in an expanded grouped slot.
+These attachments use the connection ID and port identity, not display names.
+Opening a chooser shows the connections of that port even if its lane is not
+selected, and does not change lane selection. Other ends of a multi-ended
+record are not revealed unless they connect to that port or the selected lane.
+
+The other end stays fixed. For `A.out → B.in`, moving the `B.in` end to `C.in`
+produces `A.out → C.in`. Moving the `A.out` end to `D.out` produces
+`D.out → B.in`. Sample and event ports follow the same gesture rules.
+
+The graph stays unchanged during the drag. Release in empty editor space
+removes the chosen end. Release on a compatible port of the same direction
+moves it there. Release on the original port does nothing. Release on an
+incompatible port, a grouped slot without a chosen individual port, another
+control, or outside the editor cancels. Escape, lost pointer capture,
+pointer cancellation, or window blur also cancels.
+
+The editor operates on the selected connection record and port, not an
+aggregate drawn wire. Other connections and endpoints remain unchanged.
+For a record connecting `A.out` to both `B.in` and `C.in`, removing the `B.in`
+end retains `A.out → C.in`. Removing the last end on one side deletes the
+record. A selector that matches several visible ports is expanded into exact
+port matchers when one of those ports moves; its other matched ports and
+channel selections remain in order. Unrelated matchers remain unchanged.
+
+An endpoint move preserves its connection ID and uses one
+`graphConnections.upsert`. It must not submit a deletion followed by a separate
+upsert and expose an intermediate disconnected generation. The editor checks
+the current record before submission and rejects a stale gesture. Any future
+edit that needs several record changes must use one coordinated project action.
+The completed gesture is one future undo entry.
+
+Each connection record has one `sourceType` and one `targetType`. Moving a
+whole-port end can update its side's type when it is the only end on that
+side. Ends that share a side must keep its type. Moving an end with a selected
+channel preserves that channel selection and requires the same port type.
+Type conversion between the output and input sides remains a backend decision.
 
 ### Subgraph presentation layout
 

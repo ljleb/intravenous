@@ -1,13 +1,23 @@
 import type { GraphLayout, GraphScope } from "./graphScope";
 import type { LiveGraphSessionStatus } from "./liveGraphProtocol";
+import type { GraphConnectionEdit, GraphPortEndpoint } from "./graphConnectionEditing";
 
 export type GraphEditorState = {
     sessionStatus: LiveGraphSessionStatus;
     scope: GraphScope | null;
     layout: GraphLayout;
+    definitions: string[];
     error: string;
 };
-export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorState };
+export type GraphEditorAction = "addNode" | "editNode" | "deleteNode" | "openNodeSource" | "createPackage" | "deleteConnection";
+export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorState }
+    | { type: "graphAction"; action: "addNode" | "editNode" | "createPackage"; instanceId?: string };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "copyNodeDebugDetails"; nodeKey: string }
+    | { type: "connectGraphPorts"; first: GraphPortEndpoint; second: GraphPortEndpoint }
+    | { type: "editGraphConnectionEnd"; edit: GraphConnectionEdit }
+    | { type: "createGraphNode"; definitionId: string; displayName: string; configurationSource: string }
+    | { type: "updateGraphNode"; instanceId: string; displayName: string; configurationSource: string;
+        previousDisplayName: string; previousConfigurationSource: string }
+    | { type: "createGraphPackage"; name: string }
     | { type: "saveGraphLayout"; layout: GraphLayout };

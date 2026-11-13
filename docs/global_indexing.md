@@ -73,6 +73,12 @@ instead make the next `FractionalGlobalIndex` jump to any global coordinate. The
 graph continues running while playback is paused; on resume it observes the selected
 global coordinate immediately.
 
+The selected playback position, its seconds/sample display, and the planned
+control boundary are specified in
+[Project Playback And Presentation Grids](./project_playback_and_presentation_grids_direction.md).
+That contract does not replace the node-visible coordinate or the physical
+Sequential cursor described here.
+
 The global coordinate and Sequential order are intentionally different facts:
 
 ```text

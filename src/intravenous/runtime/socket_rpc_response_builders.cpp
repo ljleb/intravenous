@@ -441,7 +441,7 @@ void SocketRpcGraphScopeResultBuilder::fail(std::string message) {
 }
 
 namespace {
-Json graph_scope_ports_json(std::vector<ProjectGraphScopePort> const& ports)
+Json graph_scope_ports_json(std::vector<NodeInstancePortInfo> const& ports)
 {
     auto json = Json::array();
     for (auto const& port : ports) {
@@ -482,11 +482,11 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
         nodes.push_back(Json{
             {"address", node_address_json(node.address, ProjectConnectionJsonNames::socket_rpc)},
             {"instance", iv_module_instance_json(node.instance)},
-            {"sampleInputs", graph_scope_ports_json(node.sample_inputs)},
-            {"sampleOutputs", graph_scope_ports_json(node.sample_outputs)},
-            {"eventInputs", graph_scope_ports_json(node.event_inputs)},
-            {"eventOutputs", graph_scope_ports_json(node.event_outputs)},
-            {"hasChildren", node.has_children},
+            {"sampleInputs", graph_scope_ports_json(node.interface.sample_inputs)},
+            {"sampleOutputs", graph_scope_ports_json(node.interface.sample_outputs)},
+            {"eventInputs", graph_scope_ports_json(node.interface.event_inputs)},
+            {"eventOutputs", graph_scope_ports_json(node.interface.event_outputs)},
+            {"hasChildren", node.interface.has_children},
             {"errorMessage", node.error_message},
             {"loadState", graph_scope_node_state_json(node.load_state)},
         });

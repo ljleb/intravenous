@@ -24,11 +24,11 @@ import { LiveGraphControlMessage, LiveGraphSessionStatus } from "./liveGraphProt
 import { Duplex } from "stream";
 
 import { JsonRpcSocketClient } from "./rpcClient";
+import { connectionEndMutation, connectionFromPorts, type GraphConnectionEdit, type GraphPortEndpoint } from "./graphConnectionEditing";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
 import { autoDetectedServerDirectoriesForWorkspaceRoot } from "./serverBinaryPaths";
 import { WorkspaceNotificationRouter } from "./workspaceNotifications";
 import { WorkspaceRpc } from "./workspaceRpc";
-import { IvModuleInfo, ModuleInstanceInfo, ModulesControlMessage } from "./modulesViewProvider";
 
 declare const __INTRAVENOUS_DEFAULT_DIR__: string;
 
@@ -42,10 +42,6 @@ type LiveGraphProviderLike = {
     upsertNodes(nodes: VirtualNode[], replaceInstanceIds?: string[]): void;
     setSelectedInstanceId(instanceId: string | null): void;
     setPackageRoot(packageRoot: string | null): void;
-};
-
-type ModulesProviderLike = {
-    setState(modules: IvModuleInfo[], instances: ModuleInstanceInfo[], selectedInstanceId: string | null): void;
 };
 
 type IvPackageInfo = {
@@ -104,10 +100,82 @@ export class WorkspaceSession {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
         return this.rpc.getGraphScope();
     }
+
+    async connectGraphPorts(id: string, first: GraphPortEndpoint, second: GraphPortEndpoint): Promise<void> {
+        const scope = await this.readGraphScope();
+        const connection = connectionFromPorts(scope, id, first, second);
+        await this.rpc!.upsertGraphConnection(connection);
+    }
+
+    async deleteGraphConnection(id: string): Promise<void> {
+        const scope = await this.readGraphScope();
+        if (!scope.editable || !scope.connections.some((entry) => entry.id === id)) {
+            throw new Error("The selected connection is no longer available");
+        }
+        await this.rpc!.deleteGraphConnection(id);
+    }
+
+    async editGraphConnectionEnd(edit: GraphConnectionEdit): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        const rpc = this.rpc;
+        // Bind the mutation to a revision from before the read. A notification
+        // arriving between the read and the write must not validate an old edit.
+        const revision = this.lastSessionRevision;
+        const mutation = connectionEndMutation(await rpc.getGraphScope(), edit);
+        if (mutation?.type === "delete") await rpc.deleteGraphConnection(mutation.id, revision);
+        else if (mutation?.type === "upsert") await rpc.upsertGraphConnection(mutation.connection, revision);
+    }
+
+    async graphDefinitions(): Promise<string[]> {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        const result = await this.rpc.getIvPackageDefinitions();
+        const packages = this.parseIvPackageDefinitions(result.packages);
+        return [...new Set(packages.flatMap((entry) => [...entry.moduleIds, ...entry.nodeTypeIds]))].sort();
+    }
+
+    async createGraphNode(definitionId: string, displayName: string, configurationSource: string): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        await this.rpc.createNodeInstance(definitionId, displayName, configurationSource);
+    }
+
+    async updateGraphNode(instanceId: string, displayName: string, configurationSource: string,
+        previousDisplayName: string, previousConfigurationSource: string): Promise<void> {
+        const scope = await this.readGraphScope();
+        const node = scope.nodes.find((entry) => entry.instance.instanceId === instanceId);
+        if (!scope.editable || !node) throw new Error("The selected node is no longer available");
+        if ((node.instance.displayName ?? "") !== previousDisplayName
+            || (node.instance.configurationSource ?? "") !== previousConfigurationSource) {
+            throw new Error("The node configuration changed; reopen the editor before saving");
+        }
+        await this.rpc!.updateNodeInstances([{ instanceId, displayName, configurationSource }]);
+    }
+
+    async deleteGraphNode(instanceId: string): Promise<void> {
+        const scope = await this.readGraphScope();
+        if (!scope.editable || !scope.nodes.some((entry) => entry.instance.instanceId === instanceId)) {
+            throw new Error("The selected node is no longer available");
+        }
+        await this.rpc!.deleteNodeInstance(instanceId);
+    }
+
+    async openGraphNodeSource(instanceId: string): Promise<void> {
+        const scope = await this.readGraphScope();
+        const instance = scope.nodes.find((entry) => entry.instance.instanceId === instanceId)?.instance;
+        if (!instance?.packageRoot) throw new Error("The node's package source is unavailable");
+        this.selectedInstanceId = instanceId;
+        this.syncSelectedInstanceViews();
+        await this.revealPackageSource(instance.packageRoot);
+    }
+
+    async createGraphPackage(name: string): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        const result = await this.rpc.createIvPackage(name);
+        const info = this.parseIvPackage(result.package);
+        if (info) await this.revealPackageSource(info.packageRoot);
+    }
     private readonly workspaceFolder: vscode.WorkspaceFolder;
     private readonly outputChannel: vscode.OutputChannel;
     readonly provider: LiveGraphProviderLike;
-    private readonly modulesProvider: ModulesProviderLike;
     private readonly highlighter: NodeSpanHighlighter;
     private readonly rebuildStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     private readonly clangdDatabaseWatcher: vscode.FileSystemWatcher;
@@ -155,13 +223,11 @@ export class WorkspaceSession {
         workspaceFolder: vscode.WorkspaceFolder,
         outputChannel: vscode.OutputChannel,
         provider: LiveGraphProviderLike,
-        modulesProvider: ModulesProviderLike,
         highlighter: NodeSpanHighlighter,
     ) {
         this.workspaceFolder = workspaceFolder;
         this.outputChannel = outputChannel;
         this.provider = provider;
-        this.modulesProvider = modulesProvider;
         this.highlighter = highlighter;
         this.clangdDatabaseWatcher = vscode.workspace.createFileSystemWatcher(
             new vscode.RelativePattern(this.workspaceFolder, "compile_commands.json"),
@@ -201,13 +267,11 @@ export class WorkspaceSession {
                 void this.rpc.getNodeInstances(this.activeSourceFilePath).then((result) => {
                     this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
                     this.refreshVisibleInstances();
-                    this.refreshModulesPanelState();
                 });
                 return;
             }
             this.ivModuleInstances = this.projectModuleInstances;
             this.refreshVisibleInstances();
-            this.refreshModulesPanelState();
         });
 
         this.notifications.subscribe<GraphNodesUpdatedNotification>("graph.nodesUpdated", async (params) => {
@@ -237,14 +301,14 @@ export class WorkspaceSession {
                 this.resetCapturedServerLogs();
                 this.logServerState("Intravenous rebuild started", params);
                 this.showRebuildStatus(params);
-                await this.refreshModulesPanel();
+                await this.refreshProjectCatalog();
                 return;
             }
 
             if (params.code === "rebuildFinished") {
                 this.logServerState("Intravenous rebuild finished", params);
                 this.rebuildStatusBar.hide();
-                await this.refreshModulesPanel();
+                await this.refreshProjectCatalog();
                 return;
             }
 
@@ -253,7 +317,7 @@ export class WorkspaceSession {
                 // Keep the actionable failure below compiler output and traces.
                 this.logServerState("Intravenous rebuild failed", params);
                 this.showRebuildFailure(params);
-                await this.refreshModulesPanel();
+                await this.refreshProjectCatalog();
                 return;
             }
 
@@ -264,7 +328,7 @@ export class WorkspaceSession {
             // A failed build can change node availability without producing a
             // graph generation or graph.changed notification.
             this.graphChanges.fire();
-            await this.refreshModulesPanel();
+            await this.refreshProjectCatalog();
         });
     }
 
@@ -364,37 +428,6 @@ export class WorkspaceSession {
         if (!Array.isArray(payload)) return [];
         return payload.map((packageInfo) => this.parseIvPackage(packageInfo))
             .filter((packageInfo): packageInfo is IvPackageInfo => packageInfo !== null);
-    }
-
-    private modulePanelInstances(): ModuleInstanceInfo[] {
-        return this.projectModuleInstances.flatMap((instance) => {
-            if (typeof instance.instanceId !== "string" || typeof instance.definitionId !== "string" || typeof instance.packageRoot !== "string") return [];
-            return [{
-                instanceId: instance.instanceId,
-                definitionId: instance.definitionId,
-                displayName: typeof instance.displayName === "string" && instance.displayName.length > 0
-                    ? instance.displayName
-                    : instance.definitionId,
-                configurationSource: typeof instance.configurationSource === "string"
-                    ? instance.configurationSource
-                    : "",
-                moduleId: instance.moduleId,
-                packageRoot: instance.packageRoot,
-                realized: instance.realized === true,
-            }];
-        });
-    }
-
-    private modulePanelModules(): IvModuleInfo[] {
-        return this.ivPackages.flatMap((packageInfo) => packageInfo.moduleIds.map((moduleId) => ({
-            moduleId,
-            packageRoot: packageInfo.packageRoot,
-            provenance: packageInfo.provenance,
-        })));
-    }
-
-    private refreshModulesPanelState(): void {
-        this.modulesProvider.setState(this.modulePanelModules(), this.modulePanelInstances(), this.selectedInstanceId);
     }
 
     private parseSourcePosition(payload: unknown): SourcePosition | null {
@@ -938,7 +971,7 @@ export class WorkspaceSession {
         }
     }
 
-    async refreshModulesPanel(): Promise<void> {
+    async refreshProjectCatalog(): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) return;
         const [packages, instances] = await Promise.all([
             this.rpc.getIvPackageDefinitions(),
@@ -946,66 +979,6 @@ export class WorkspaceSession {
         ]);
         this.ivPackages = this.parseIvPackageDefinitions(packages.packages);
         this.projectModuleInstances = this.parseIvModuleInstances(instances.instances);
-        this.refreshModulesPanelState();
-    }
-
-    async dispatchModulesControl(message: ModulesControlMessage): Promise<void> {
-        // Instance selection is client-side presentation state.  In
-        // particular, do not put rapid row clicks behind server readiness or
-        // any RPC work.
-        if (message.type === "select") {
-            const selectedInstanceId = this.resolveSelectedInstanceId(
-                this.visibleInstances(),
-                message.instanceId,
-            );
-            if (selectedInstanceId === this.selectedInstanceId) {
-                return;
-            }
-            this.selectedInstanceId = selectedInstanceId;
-            this.rememberSelectedInstance();
-            this.syncSelectedInstanceViews();
-            return;
-        }
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        switch (message.type) {
-        case "createPackage": {
-            const result = await this.rpc.createIvPackage(message.name);
-            const packageInfo = this.parseIvPackage(result.package);
-            await this.refreshModulesPanel();
-            if (packageInfo) await this.revealPackageSource(packageInfo.packageRoot);
-            return;
-        }
-        case "instantiate":
-        case "duplicate": {
-            const created = await this.rpc.createNodeInstance(
-                message.moduleId,
-            );
-            this.selectedInstanceId = created.instanceId;
-            await this.refreshModulesPanel();
-            return;
-        }
-        case "open":
-            this.selectedInstanceId = message.instanceId;
-            this.syncSelectedInstanceViews();
-            await this.revealPackageSource(message.packageRoot);
-            await this.refreshModulesPanel();
-            return;
-        case "rename":
-            await this.rpc.updateNodeInstances([{
-                instanceId: message.instanceId,
-                displayName: message.displayName,
-            }]);
-            await this.refreshModulesPanel();
-            return;
-        case "delete":
-            await this.rpc.deleteNodeInstance(message.instanceId);
-            if (this.selectedInstanceId === message.instanceId) this.selectedInstanceId = null;
-            await this.refreshModulesPanel();
-            return;
-        case "reveal":
-            await this.revealPackageSource(message.packageRoot);
-            return;
-        }
     }
 
     private async revealPackageSource(packageRoot: string): Promise<void> {
@@ -1114,7 +1087,6 @@ export class WorkspaceSession {
 
     private syncSelectedInstanceViews(): void {
         this.provider.setSelectedInstanceId(this.selectedInstanceId);
-        this.refreshModulesPanelState();
     }
 
     async saveProject(): Promise<void> {

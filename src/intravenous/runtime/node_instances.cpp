@@ -1261,6 +1261,118 @@ std::size_t NodeInstances::configuration_cache_size() const
     return configuration_cache_.size();
 }
 
+std::shared_ptr<NodeInstanceFailureInterfaces const>
+NodeInstances::prepare_failure_interfaces(
+    std::shared_ptr<NodeDefinitionsSnapshot const> const& snapshot,
+    std::span<NodeInstanceConfigurationRequest const> requests,
+    std::vector<ProjectNodeReplacement> const& replacements,
+    std::span<NodeInstanceDiagnostic const> failures)
+{
+    auto output = std::make_shared<NodeInstanceFailureInterfaces>();
+    output->definitions = snapshot;
+    output->diagnostics.assign(failures.begin(), failures.end());
+    std::unordered_map<std::string, std::size_t> indices;
+    for (std::size_t index = 0; index < requests.size(); ++index) {
+        indices.emplace(requests[index].instance_id, index);
+    }
+    std::vector<bool> unavailable(requests.size(), false);
+    auto diagnose = [&](std::size_t index, std::string message) {
+        unavailable[index] = true;
+        output->diagnostics.push_back({
+            .instance_id = requests[index].instance_id,
+            .definition_id = requests[index].definition_id,
+            .message = std::move(message),
+        });
+    };
+    for (auto const& failure : failures) {
+        if (auto found = indices.find(failure.instance_id); found != indices.end()) {
+            unavailable[found->second] = true;
+        }
+    }
+
+    // Only constructor NodeRef arguments join sessions. Ordinary project
+    // connections do not prevent independent interface preparation.
+    std::vector<std::vector<std::string>> references(requests.size());
+    std::vector<std::vector<std::size_t>> neighbours(requests.size());
+    for (std::size_t index = 0; index < requests.size(); ++index) {
+        if (unavailable[index] || !requests[index].configuration_source) continue;
+        try {
+            references[index] = configuration_referenced_instance_ids(
+                parse_configuration_expression_list(*requests[index].configuration_source));
+            for (auto const& reference : references[index]) {
+                if (auto found = indices.find(reference); found != indices.end()) {
+                    neighbours[index].push_back(found->second);
+                    neighbours[found->second].push_back(index);
+                }
+            }
+        } catch (std::exception const& error) {
+            diagnose(index, error.what());
+        }
+    }
+
+    std::vector<bool> visited(requests.size(), false);
+    for (std::size_t first = 0; first < requests.size(); ++first) {
+        if (visited[first]) continue;
+        std::vector<std::size_t> group{first};
+        visited[first] = true;
+        for (std::size_t next = 0; next < group.size(); ++next) {
+            for (auto const neighbour : neighbours[group[next]]) {
+                if (!visited[neighbour]) {
+                    visited[neighbour] = true;
+                    group.push_back(neighbour);
+                }
+            }
+        }
+        std::ranges::sort(group);
+        for (;;) {
+            // Remove failed nodes and their transitive dependents before
+            // constructing anything. Successful ancestors remain useful.
+            bool changed;
+            do {
+                changed = false;
+                for (auto const index : group) {
+                    if (unavailable[index]) continue;
+                    for (auto const& reference : references[index]) {
+                        auto const found = indices.find(reference);
+                        if (found == indices.end() || unavailable[found->second]) {
+                            diagnose(index, "configuration reference names unavailable node instance '"
+                                + reference + "'");
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+            } while (changed);
+            std::vector<NodeInstanceConfigurationRequest> remaining;
+            for (auto const index : group) {
+                if (!unavailable[index]) remaining.push_back(requests[index]);
+            }
+            if (remaining.empty()) break;
+
+            // A failed session is always discarded. Each retry removes at
+            // least one failed node; no rollback touches the successful path.
+            GraphBuilder builder;
+            auto result = configure_and_embed(snapshot, builder, remaining, &replacements);
+            if (!result.diagnostics.empty()) {
+                for (auto& diagnostic : result.diagnostics) {
+                    unavailable[indices.at(diagnostic.instance_id)] = true;
+                    output->diagnostics.push_back(std::move(diagnostic));
+                }
+                continue;
+            }
+            auto const& bundles = details::builder_session_state(
+                builder._builder_session()).node_bundles();
+            for (auto const& [id, placement] : result.placements) {
+                output->interfaces.emplace(id,
+                    read_node_instance_interface(bundles, placement.root));
+                output->configuration_lifetimes.push_back(placement.configured);
+            }
+            break;
+        }
+    }
+    return output;
+}
+
 void NodeInstances::install_definitions_snapshot(
     Changes& changes,
     std::shared_ptr<NodeDefinitionsSnapshot const> const& snapshot)
@@ -1775,6 +1887,11 @@ void NodeInstances::apply_project_graph_transaction(
         *request.root_builder,
         configuration_requests,
         &replacements_for_realization);
+    if (request.prepare_failure_interfaces && !request.result.diagnostics.empty()) {
+        request.failure_interfaces = prepare_failure_interfaces(
+            request.snapshot, configuration_requests, replacements_for_realization,
+            request.result.diagnostics);
+    }
 
     request.instances_list_changed = changes.instances_list_changed;
     request.instance_declarations_changed = changes.instance_declarations_changed;

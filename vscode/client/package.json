@@ -12,7 +12,6 @@
     ],
     "activationEvents": [
         "workspaceContains:iv_project.jsonl",
-        "onWebviewPanel:intravenous.modules",
         "onWebviewPanel:intravenous.graphEditor"
     ],
     "main": "./dist/extension.js",
@@ -71,8 +70,28 @@
                 "title": "Intravenous: Open Graph Editor"
             },
             {
-                "command": "intravenous.openModules",
-                "title": "Intravenous: Open Modules"
+                "command": "intravenous.addNode",
+                "title": "Intravenous: Add Node"
+            },
+            {
+                "command": "intravenous.editNode",
+                "title": "Intravenous: Edit Node"
+            },
+            {
+                "command": "intravenous.deleteNode",
+                "title": "Intravenous: Delete Node"
+            },
+            {
+                "command": "intravenous.openNodeSource",
+                "title": "Intravenous: Open Node Source"
+            },
+            {
+                "command": "intravenous.createPackage",
+                "title": "Intravenous: New Package"
+            },
+            {
+                "command": "intravenous.deleteConnection",
+                "title": "Intravenous: Delete Connection"
             },
             {
                 "command": "intravenous.saveProject",

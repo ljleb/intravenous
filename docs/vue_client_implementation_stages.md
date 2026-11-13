@@ -322,15 +322,195 @@ lane changes described below still require compilation, tests, and UI checks.
   incomplete. Steps 3–5 also remain: graph mutation interactions, retirement of
   `ModulesViewProvider`, and the first undo/redo slice.
 
-#### Known scope-port defect
+#### Interface availability after a failed build
 
-`ProjectGraph::handle_socket_rpc_get_graph_scope` fills ports only from
-`current_generation_->placements`. If one invalid instance prevents the first
-successful whole-project generation, the scope has no ports even for a valid
-definition such as `iv.project.saw`. The editor must distinguish availability
-of a configured node interface from whole-project execution success. Do not
-pretend that changing the timeline presentation fixes this backend defect, or
-relax whole-project execution atomicity merely to expose UI metadata.
+The owner selected failure-only construction on 2026-11-13. Separate sessions
+for every successful module build were also considered. The current import
+path copies node bundles, remaps connections, and imports virtual-node records.
+It would add work on cache misses, and constructor `NodeRef` arguments can
+cross package boundaries. Successful builds therefore retain direct construction
+in the root session. No rollback log or per-instance interface preparation is
+added to that path.
+
+Implemented in source, awaiting owner compilation and tests:
+
+- `NodeInstancesProjectGraphRequest` enables diagnostic preparation only for
+  committed rebuilds. Provisional node-message previews leave it disabled.
+- After an instance batch fails, `NodeInstances` groups requests by constructor
+  references. Ordinary audio/event connections do not join these groups.
+  Failed nodes and their transitive dependents are excluded. Successful
+  ancestors and independent instances can still supply interfaces.
+- Each group uses a fresh builder session and the existing configuration cache.
+  A newly failing constructor discards that session and removes at least one
+  request before another attempt. Multiple failures in one reference group can
+  repeat construction. Worst-case construction work within that failing group
+  is quadratic in its size. This cost occurs only during failure handling.
+- `NodeInstanceFailureInterfaces` pins definitions and configuration lifetimes
+  for copied port metadata. `ProjectGraphConfigurationFailure` owns that result.
+  It is never submitted to GraphJit or GraphExecutor. Scope reads run no
+  constructors and do not substitute ports from an older configuration.
+- A later connection failure can use already configured instance results for
+  current interfaces. An invalidated session cannot supply a non-reusable
+  result, so that interface stays unavailable instead of showing stale ports.
+- A successful rebuild clears the failure result through the existing path.
+  The previous executable generation remains current throughout failed builds.
+
+Light regressions cover initial interface availability despite a missing
+definition, stale-port exclusion, error recovery, constructor-reference chains,
+failed-constructor dependents, and disabled preparation for successful builds
+or provisional callers. The original defect and alternatives are preserved in
+[Scope Interface Availability Before Failure-Only Construction](./historical/scope_interface_availability_before_failure_only_2026-11-13.md).
+
+#### Connection-editing implementation checkpoint
+
+The owner requested these refinements on 2026-11-13. Implementation is written
+but awaits compilation, tests, and UI verification by the owner. The earlier
+button/native-drag checkpoint is preserved in
+[Vue Port Actions Before Pointer Capture](./historical/vue_port_actions_before_pointer_capture_2026-11-13.md).
+
+The root toolbar and lane edit button are removed. The extension contributes
+commands for Add Node, Edit Node, Delete Node, Open Node Source, New Package,
+and Delete Connection. Save remains the existing Save Project Now command.
+These commands are available through the Command Palette and can receive user
+keybindings. Node and connection commands use a picker for their target.
+The copy-debug button requested earlier remains. Configuration/package forms
+retain their completion controls. No default editing shortcut is invented.
+
+Input handles are circles using `--vscode-terminal-ansiYellow`; output handles
+use `--vscode-terminal-ansiBlue`, matching the source-selection side panel.
+Each side uses a direct handle for one port and a grouped slot for more than
+one. Input and output slots remain separate. Grouped ports use overlapping
+circles, without a visible arrow/count label. Hover extends a panel directly from that slot. The panel
+keeps a bounded scrollable list and does not change lane height. During a
+connection drag, grouped destinations expand the opposite port direction.
+Direct handles stay exposed instead of acquiring an expansion over the drop
+target.
+
+The native HTML drag-and-drop path is replaced by a pointer gesture owned by
+`GraphEditor`. It captures the pointer on the editor surface and hit-tests
+the actual element under the pointer. Release on a compatible handle submits
+`graphConnections.upsert` through the existing revision-checked RPC path.
+A click, release outside a handle, incompatible port kind/direction, Escape,
+lost capture, pointer cancellation, or window blur submits no connection.
+Middle-button navigation is unchanged.
+
+Applied connections fill their port circles. Unapplied desired connections
+use dashed circles. Port tooltips identify their connections and application
+state. The ordinary port list contains only its port rows, without connection
+summaries or a grouped-icon cap. Deletion is an extension command.
+Type conversion remains a backend decision.
+
+Lane selection and connection display were requested on 2026-11-13 and are
+implemented in source. Primary-clicking a lane's non-control area selects it.
+Enter or Space selects a keyboard-focused lane. Port gestures and copy-debug
+controls do not change selection. Selection is local to each editor and survives
+scope revisions while its stable node address remains present.
+
+`selectedLaneConnections()` projects incoming and outgoing connections into
+visible endpoint pairs. A collapsed slot receives one wire per visible pair.
+Opening that slot uses the exposed port-row anchors, so the wire separates into
+the connected branches. Closing it merges the drawing again. Distinct visible
+selected ports retain distinct wires. This never changes graph connections.
+
+The SVG overlay is pointer-transparent. It measures anchors after scope, size,
+selection, zoom-height, scroll, or port-panel changes. It uses animation frames
+only to combine pending measurements, not as a continuous rendering loop.
+Clipped rows in a scrollable port panel fall back to the slot anchor. Unresolved
+interior selectors and absent interfaces do not acquire guessed endpoints.
+Collapsed fan-in/fan-out groups ports by visible anchors before pairing them,
+so collapsed groups do not enumerate all hidden source/target combinations.
+
+Grouped input and output icons show empty, partly connected, and fully
+connected states. The right circle fills when any port has a desired connection;
+both fill when every port has one. Pending desired connections retain dashed
+outlines. Opening the list replaces the grouped icon with its first port row.
+
+`NodePorts.expand` and `alignFirstRow` position both ordinary port lists and
+connection choosers. The first row's circle aligns with the opening control;
+upward-growing lists keep their first row at the bottom. A version check
+rejects queued alignment after the list closes or is replaced. The removed
+cap and summary checkpoint is preserved in
+[Vue Port Lists Before First-Item Alignment](./historical/vue_port_lists_before_first_item_alignment_2026-11-13.md).
+
+`SelectedLaneWire.selfLoopY` distinguishes self-connections from connections
+to other nodes, even if their port rows have identical screen coordinates.
+Output tangents point left and input control points sit to the right. Wires
+between different rows use one cubic curve. Self-connections and equal-height
+endpoints use two cubic segments through a lower return arc, so their
+horizontal tangents do not collapse into a retraced line.
+These changes affect drawing only; they do not change connection records or
+lane dimensions. Previous routing is retained in
+[Vue Ports Before Single-Connection Choosers](./historical/vue_ports_before_single_connection_choosers_2026-11-13.md)
+and [Vue Chooser Before Held Shift And Vertical Curves](./historical/vue_chooser_before_held_shift_and_vertical_curves_2026-11-13.md).
+
+Selection-display regressions cover both directions, unrelated edges, grouped
+slots and expansion, distinct visible ports, wildcard fan-in/fan-out, missing
+anchors, pending state, event ports, and collapsed-group work. Compilation,
+tests, and UI verification remain with the owner. The preceding display rule
+is preserved in
+[Vue Connection Display Before Lane Selection](./historical/vue_connection_display_before_lane_selection_2026-11-13.md).
+
+Instance/configuration editing, package creation, source navigation, and save
+use the Vue forms and existing routes. The host rereads scopes before mutations.
+Configuration updates compare the form's starting values with the current
+accepted record before submitting through the revision-checked RPC path.
+`ModulesViewProvider` and its old command/serializer remain removed. The
+source-selection side panel remains, including its filtering.
+
+Client regressions cover endpoint identity, channel/event conversion metadata,
+read-only/stale endpoints, pointer ownership, drag versus click, and invalid
+or cancelled releases. No tests or builds were run by the coding agent.
+The first server-owned undo/redo slice remains unimplemented. Stage 3 has not
+started.
+
+Shift-drag disconnection and endpoint movement are implemented in source.
+Shift-hover opens a chooser for any port with at least one connection. Pressing
+Shift while already over the port works too. `NodePorts` measures the hovered
+circle, then aligns the first connection's circle with it after rendering.
+The connection chooser has no decorative cap. If it grows upward, its first
+entry is at the bottom, under the pointer. Connection labels stay on one line
+with their full text and port information in the tooltip. Queued positioning
+is discarded if the chooser closes or another chooser replaces it.
+Direct Shift-drag still picks up a sole connection; Shift-click remains a
+fallback. Right-click receives no new menu.
+The connection chooser requires held Shift. Key release hides it; for a grouped
+port slot, the ordinary port list remains available. Releasing Shift after an
+entry has been picked up does not cancel its captured drag.
+
+Keyboard events reach the focused webview. With focus elsewhere, a stationary
+Shift press cannot open the chooser through its keydown handler. Pointer entry
+and movement over a port also check `shiftKey`, so the next pointer movement
+opens it if Shift is held. Pointer movement within the chooser checks the same
+flag to recover a missed release. Hovering does not take keyboard focus.
+
+Chooser entries expose connection-specific wire anchors through
+`data-connection-end`. `selectedLaneConnections` uses both the connection ID
+and port identity to attach wires to visible entry circles. Opening or closing
+the chooser splits or combines those attachments without changing the records.
+Chooser connections are visible even without a selected lane. A multi-ended
+record exposes only the pairs involving the chosen port or the selected lane.
+The graph changes only on release. Empty editor space removes the chosen end;
+a compatible port replaces it. Invalid drops and cancellation leave the graph
+unchanged. The preview stays anchored at the opposite end, including grouped
+port slots and multiple opposite endpoints.
+
+`WorkspaceSession.editGraphConnectionEnd` reads the current scope before
+submission and captures the session revision before that read. A notification
+between the read and submission cannot make an old edit pass the revision
+check. `connectionEndMutation` rejects stale records, preserves other
+endpoints and channel selections, and returns either one upsert with the same
+ID or a deletion when one side becomes empty. It never submits delete followed
+by upsert. Undo remains unimplemented; each completed gesture is intended to
+be one future undo entry.
+
+The agreed rules are in
+[Disconnection And Endpoint Movement](./node_presentation_and_manual_controls_direction.md#disconnection-and-endpoint-movement).
+The earlier proposal and checkpoint are retained in
+[Connection Gestures Before The Shift-Only Chooser](./historical/vue_connection_gestures_before_shift_only_chooser_2026-11-13.md).
+Light TypeScript tests cover release decisions, both moved directions, multiple
+connection choices, stale records, channel selections, wildcard port selectors,
+and preservation of other endpoints. Build, test execution, and manual pointer
+checks remain for the owner.
 
 #### Classified scope state
 
@@ -391,14 +571,26 @@ can select a different global coordinate. Stopping audio rendering to implement
 pause would contradict that requirement. The current device callback does not
 yet implement those playback controls.
 
-**Proposed next design discussion:** define the playback-position owner and
-play/pause/seek behavior before exposing a moving playhead. Seconds and project
-sample indices can display the same position using the project sample rate;
-they do not require separate clocks. Beats remain undecided. An explicit node
-that produces periodic beat events does not require a built-in tempo map.
-No playback API, control gesture, or tempo policy is introduced by this pass.
-After this bounded discussion, resume Stage 2's remaining scope/port and editing
-work rather than treating ruler navigation as a replacement for those steps.
+The owner agreed to settle the playback contract on 2026-11-13. Its destination
+is now recorded in
+[Project Playback And Presentation Grids](./project_playback_and_presentation_grids_direction.md).
+The core contract separates the selected project position from continued Tick
+execution, uses samples and seconds for the same position, and assigns applied
+playback state to `GraphExecutor`. The owner selected a builtin callback
+structure for nodes that need playback state. Ordinary Tock/persisted clip
+sources do not need it: the existing contract supplies neutral/empty Tick
+input views while paused. The initial playhead does not depend on adding a
+node-facing accessor. No implementation or mouse/keyboard playback gesture is
+claimed by this document change.
+
+The same document records the owner's proposed grid source: a node output
+projected into timeline marks through output observation. Grid selection does
+not require new root graph ports or a project-wide tempo map. It follows a
+concrete observation/editing feature and does not block the playhead.
+
+After the playback contract is resolved, resume Stage 2's remaining scope/port
+and editing work. The previous discussion text is preserved in
+[Playback Discussion Before The Initial Contract](./historical/playback_design_discussion_before_contract_2026-11-13.md).
 
 #### Shared lane UI in the source-selection panel
 
@@ -431,6 +623,26 @@ After rebuilding the server and extension:
 7. Start with uncached packages, then introduce a real build failure and recover.
    Waiting definitions must stay neutral. Confirmed failures must turn red and
    clear after recovery, including when an older graph remains active.
+8. Use the Command Palette for Add Node, Edit Node, Delete Node, New Package,
+   Open Node Source, Delete Connection, and Save Project Now. The editor has
+   no permanent action toolbar or lane edit button. The copy-debug button remains.
+9. Check yellow input circles and blue output circles against the side panel.
+   Hover a grouped slot. Its panel must extend from the slot without an arrow/count
+   label or a change in lane height.
+10. Drag from an individual port to a compatible port, in both directions.
+    A grouped destination must expose the opposite direction. Direct targets
+    must remain available under the pointer. After release, check the filled
+    applied-state circle and connection tooltip. An unapplied desired connection
+    has a dashed circle. Select a lane to inspect its incoming and outgoing wires.
+11. Cancel a drag with Escape, release outside a port, or switch away from the
+    webview. These actions must submit no connection. A quick primary click
+    must also submit nothing. Middle-button scrolling must still work.
+12. Select a lane with incoming and outgoing connections. Hover a connected
+    grouped slot in another lane. A wire to that slot must separate into wires
+    to the exposed connected rows, then combine again when it closes. The
+    original lane stays selected. Scroll or zoom vertically and check that the
+    endpoints follow their controls. Port dragging and copy-debug clicks must
+    retain their original actions.
 
 ### Stage 1 implementation status (2026-11-12; built, tests pass)
 

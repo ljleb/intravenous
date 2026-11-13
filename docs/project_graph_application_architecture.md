@@ -83,6 +83,11 @@ its activation follows the first end-to-end observation feature. It has no
 inherent dedicated-thread requirement. See
 [Vue Output Observation And Query Direction](./vue_output_observation_direction.md).
 
+The planned playback contract assigns applied position and running/paused state
+to `GraphExecutor`. `SystemAudioDevices` continues to supply clock pacing and
+device buffers. This feature is not yet implemented. See
+[Project Playback And Presentation Grids](./project_playback_and_presentation_grids_direction.md).
+
 ### Implementation checkpoints
 
 The package-side app-module migration specified in

@@ -6,15 +6,14 @@ import { container } from "tsyringe";
 import { LiveGraphViewProvider } from "./liveGraphViewProvider";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
 import { WorkspaceSessionFactory } from "./workspaceSessionFactory";
-import { ModulesViewProvider } from "./modulesViewProvider";
 import { timestampOutput } from "./outputLog";
 import { GraphEditorProvider } from "./graphEditorProvider";
+import type { GraphEditorAction } from "./graphEditorProtocol";
 
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const outputChannel = timestampOutput(vscode.window.createOutputChannel("Intravenous"));
     const provider = new LiveGraphViewProvider(context.extensionUri);
-    const modulesProvider = new ModulesViewProvider();
     const highlighter = new NodeSpanHighlighter();
     const sessionFactory = container.resolve(WorkspaceSessionFactory);
 
@@ -35,37 +34,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         workspaceFolder,
         outputChannel,
         provider,
-        modulesProvider,
         highlighter,
     );
-    modulesProvider.setControlHandler((message) => session.dispatchModulesControl(message));
 
     const graphEditor = new GraphEditorProvider(context.extensionUri, session);
     context.subscriptions.push(graphEditor);
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.openGraphEditor", () => graphEditor.open()));
+    const graphActions: GraphEditorAction[] = ["addNode", "editNode", "deleteNode", "openNodeSource", "createPackage", "deleteConnection"];
+    for (const action of graphActions) {
+        context.subscriptions.push(vscode.commands.registerCommand(`intravenous.${action}`, async () => {
+            try { await graphEditor.runAction(action); }
+            catch (error) { void vscode.window.showErrorMessage(`Cannot edit project: ${error.message}`); }
+        }));
+    }
     context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("intravenous.graphEditor", {
         async deserializeWebviewPanel(panel) { graphEditor.revive(panel); },
     }));
 
-    context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("intravenous.modules", {
-        async deserializeWebviewPanel(panel) {
-            modulesProvider.revive(panel);
-            try {
-                await session.refreshModulesPanel();
-            } catch (error: any) {
-                outputChannel.appendLine(`Intravenous modules restore failed: ${error.message}`);
-            }
-        },
-    }));
-
-    context.subscriptions.push(vscode.commands.registerCommand("intravenous.openModules", async () => {
-        modulesProvider.open();
-        try {
-            await session.refreshModulesPanel();
-        } catch (error: any) {
-            outputChannel.appendLine(`Intravenous modules refresh failed: ${error.message}`);
-        }
-    }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.saveProject", async () => {
         try {
             await session.saveProject();

@@ -2126,6 +2126,83 @@ TEST_F(ProjectGraphFixture, GraphScopeReportsInstanceConfigurationFailureAndClea
     EXPECT_EQ(recovered.at("loadState"), "ready");
 }
 
+TEST_F(ProjectGraphFixture, GraphScopeShowsHealthyInterfacesBeforeTheFirstSuccessfulGraph)
+{
+    iv::ProjectAckBuilder replace;
+    in_event_source([&] {
+        project_graph.handle_project_replace_graph(iv::ProjectReplaceGraphRequest{
+            .instances = {
+                {.instance_id = "healthy", .definition_id = definition_id,
+                 .package_root = std::filesystem::path(package_root)},
+                {.instance_id = "missing", .definition_id = "iv.test.unavailable",
+                 .package_root = std::filesystem::path(package_root)},
+            },
+        }, replace);
+    });
+    EXPECT_NO_THROW(replace.build());
+    EXPECT_FALSE(project_graph.current_generation());
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    EXPECT_FALSE(project_graph.current_generation());
+    auto scope = read_graph_scope(project_graph);
+    auto const& healthy = scope_node(scope, "healthy");
+    ASSERT_EQ(healthy.at("sampleInputs").size(), 1u);
+    ASSERT_EQ(healthy.at("sampleOutputs").size(), 1u);
+    EXPECT_EQ(healthy.at("sampleInputs")[0].at("name"), "main");
+    EXPECT_EQ(healthy.at("sampleOutputs")[0].at("name"), "main");
+    EXPECT_FALSE(healthy.at("sampleOutputs")[0].at("valueTypes").empty());
+    EXPECT_TRUE(scope_node(scope, "missing").at("sampleOutputs").empty());
+    auto const calls = configure_calls;
+    (void)read_graph_scope(project_graph);
+    EXPECT_EQ(configure_calls, calls); // Scope reads run no constructors.
+
+    iv::ProjectAckBuilder remove;
+    in_event_source([&] {
+        project_graph.handle_project_delete_node_instance(
+            iv::ProjectDeleteNodeInstanceRequest{.instance_id = "missing"}, remove);
+    });
+    EXPECT_NO_THROW(remove.build());
+    ASSERT_TRUE(project_graph.current_generation());
+    EXPECT_FALSE(project_graph.configuration_failure());
+    EXPECT_EQ(scope_node(read_graph_scope(project_graph), "healthy").at("sampleInputs").size(), 1u);
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeDoesNotUseOldPortsForAnInvalidDesiredConfiguration)
+{
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] {
+        project_graph.handle_project_create_node_instance(iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "changed", .definition_id = definition_id,
+        }, create);
+    });
+    ASSERT_EQ(create.build(), "changed");
+    auto const previous = project_graph.current_generation();
+    ASSERT_TRUE(previous);
+
+    iv::ProjectAckBuilder replace;
+    in_event_source([&] {
+        project_graph.handle_project_replace_graph(iv::ProjectReplaceGraphRequest{
+            .instances = {
+                {.instance_id = "changed", .definition_id = definition_id,
+                 .package_root = std::filesystem::path(package_root),
+                 .configuration_source = "invalid configuration expression"},
+                {.instance_id = "healthy", .definition_id = definition_id,
+                 .package_root = std::filesystem::path(package_root)},
+            },
+        }, replace);
+    });
+    EXPECT_NO_THROW(replace.build());
+    EXPECT_EQ(project_graph.current_generation(), previous);
+    auto const scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(scope, "healthy").at("sampleOutputs").size(), 1u);
+    auto const& changed = scope_node(scope, "changed");
+    EXPECT_TRUE(changed.at("sampleInputs").empty());
+    EXPECT_TRUE(changed.at("sampleOutputs").empty());
+    EXPECT_EQ(changed.at("loadState"), "failed");
+}
+
 TEST_F(ProjectGraphFixture, GraphScopeReportsConfirmedPackageFailureWhilePreviousGenerationStaysActive)
 {
     publish_definitions_snapshot(project_graph,

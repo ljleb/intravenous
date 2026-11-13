@@ -18,6 +18,7 @@ export type GraphScopeNode = {
         displayName?: string;
         realized: boolean;
         configurationSource?: string;
+        packageRoot?: string;
     };
     sampleInputs: GraphScopePort[];
     sampleOutputs: GraphScopePort[];
@@ -33,7 +34,10 @@ export type GraphScopeConnection = {
     id: string;
     applied: boolean;
     connection: {
+        connectionId?: string;
         kind: "sample" | "event";
+        sourceType?: string;
+        targetType?: string;
         outputs: GraphPortMatcher[];
         inputs: GraphPortMatcher[];
     };

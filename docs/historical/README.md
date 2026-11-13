@@ -74,6 +74,14 @@ These documents are retained because they record deleted architectures, supersed
 
 ## Completed migrations, experiments, and checkpoints
 
+- [Vue Connection Display Before Lane Selection (2026-11-13)](./vue_connection_display_before_lane_selection_2026-11-13.md) preserves the temporary-wire-only checkpoint before selected lanes gained connection display and grouped-slot expansion.
+
+- [Vue Port Actions Before Pointer Capture (2026-11-13)](./vue_port_actions_before_pointer_capture_2026-11-13.md) preserves the toolbar/lane-button checkpoint and native-drag implementation before the owner's interaction refinements.
+
+- [Scope Interface Availability Before Failure-Only Construction (2026-11-13)](./scope_interface_availability_before_failure_only_2026-11-13.md) preserves the missing-port defect and configuration alternatives. The owner selected extra construction only after a failed build.
+
+- [Playback Discussion Before The Initial Contract (2026-11-13)](./playback_design_discussion_before_contract_2026-11-13.md) preserves the initial coordination note. The playback contract and proposed output-derived grids are in [Project Playback And Presentation Grids](../project_playback_and_presentation_grids_direction.md).
+
 - [Event Source Marking Before Event Source Scopes (2026-11-12)](./event_source_marking_before_event_source_scopes_2026-11-12.md) preserves the single-raise `IV_INVOKE_LINKER_EVENT_SOURCE` primitive and its unchecked top-level raises; the replacement is `IV_EVENT_SOURCE` in [Event Propagation Tree Constraint](../event_propagation_tree_constraint.md).
 
 - [Event Flows Before Root-Batched Publication (2026-11-12)](./event_flows_before_root_batched_publication_2026-11-12.md) preserves the implemented propagation trees in which modules notified `SocketRpcServer` partway through a cause; the replacement trees are in [Event Flows](../event_flows/README.md).
@@ -123,3 +131,19 @@ These documents are retained because they record deleted architectures, supersed
   preserves the canvas status before the confirmed primary timeline layout.
 - [Vue Stage 2 Before The Project Graph Canvas](./vue_stage_2_before_project_graph_canvas_2026-11-12.md)
   preserves the implementation status before the project-root editor was written.
+
+- [Connection Gestures Before The Shift-Only Chooser](./vue_connection_gestures_before_shift_only_chooser_2026-11-13.md)
+  preserves the proposed right-click menu and the checkpoint before Shift-only
+  connection pickup, disconnection, and endpoint movement.
+
+- [Vue Chooser Before Held Shift And Vertical Curves](./vue_chooser_before_held_shift_and_vertical_curves_2026-11-13.md)
+  preserves the tap-to-open chooser checkpoint and the previous horizontal
+  wire endpoint tangents.
+
+- [Vue Ports Before Single-Connection Choosers](./vue_ports_before_single_connection_choosers_2026-11-13.md)
+  preserves the fit-based grouping proposal, two-direct-port checkpoint, and
+  chooser placement before its first entry replaced the hovered port circle.
+
+- [Vue Port Lists Before First-Item Alignment](./vue_port_lists_before_first_item_alignment_2026-11-13.md)
+  preserves grouped-icon caps and connection summaries before ordinary port
+  lists adopted the same first-item alignment as connection choosers.

@@ -16,8 +16,9 @@ export class WorkspaceRpc {
 
     private mutationParams(
         params: Record<string, unknown>,
+        expectedRevision: number = this.currentRevision(),
     ): Record<string, unknown> {
-        return {...params, expectedRevision: this.currentRevision()};
+        return {...params, expectedRevision};
     }
 
     hello(clientId: string, localCapability: string): Promise<{
@@ -89,14 +90,14 @@ export class WorkspaceRpc {
             "nodeInstances.update", this.mutationParams({ updates }));
     }
 
-    upsertGraphConnection(connection: Record<string, unknown>): Promise<void> {
+    upsertGraphConnection(connection: Record<string, unknown>, expectedRevision?: number): Promise<void> {
         return this.client.request(
-            "graphConnections.upsert", this.mutationParams({ connection }));
+            "graphConnections.upsert", this.mutationParams({ connection }, expectedRevision));
     }
 
-    deleteGraphConnection(connectionId: string): Promise<void> {
+    deleteGraphConnection(connectionId: string, expectedRevision?: number): Promise<void> {
         return this.client.request(
-            "graphConnections.delete", this.mutationParams({ connectionId }));
+            "graphConnections.delete", this.mutationParams({ connectionId }, expectedRevision));
     }
 
     getIvPackageDefinitions(): Promise<{ packages?: Array<Record<string, unknown>> }> {

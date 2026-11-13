@@ -5,6 +5,7 @@
 #include <intravenous/module/configuration_argument.h>
 #include <intravenous/runtime/iv_module_instance_types.h>
 #include <intravenous/runtime/node_definition_types.h>
+#include <intravenous/runtime/node_instance_interface.h>
 #include <intravenous/runtime/project_node_instance_types.h>
 #include <intravenous/runtime/project_node_replacement_types.h>
 
@@ -110,6 +111,15 @@ struct NodeInstanceDiagnostic {
     std::string stacktrace{};
 };
 
+// Allocated only after a failed execution build. Definitions outlive metadata
+// that can refer to registered value/event types. No executable graph is retained.
+struct NodeInstanceFailureInterfaces {
+    std::shared_ptr<NodeDefinitionsSnapshot const> definitions{};
+    std::vector<std::shared_ptr<ConfiguredNodeInstance const>> configuration_lifetimes{};
+    std::unordered_map<std::string, NodeInstanceInterface> interfaces{};
+    std::vector<NodeInstanceDiagnostic> diagnostics{};
+};
+
 // Any diagnostic means the batch failed: it then holds every problem found
 // before construction, or the first construction failure, and no placements.
 struct NodeInstancesBatchResult {
@@ -171,6 +181,9 @@ struct NodeInstancesProjectGraphRequest {
     std::shared_ptr<NodeDefinitionsSnapshot const> snapshot{};
     GraphBuilder* root_builder = nullptr;
     NodeInstancesMutation mutation{};
+    // False for provisional node-message previews and ordinary direct callers.
+    bool prepare_failure_interfaces = false;
+    std::shared_ptr<NodeInstanceFailureInterfaces const> failure_interfaces{};
     NodeInstancesBatchResult result{};
     std::vector<std::string> created_instance_ids{};
     std::vector<ProjectNodeReplacement> realized_node_replacements{};
@@ -319,6 +332,11 @@ private:
     // The body of one ProjectGraph transaction, shared by the transaction
     // event and NodeInstancesInteraction::run.
     void apply_project_graph_transaction(NodeInstancesProjectGraphRequest& request);
+    std::shared_ptr<NodeInstanceFailureInterfaces const> prepare_failure_interfaces(
+        std::shared_ptr<NodeDefinitionsSnapshot const> const& snapshot,
+        std::span<NodeInstanceConfigurationRequest const> requests,
+        std::vector<ProjectNodeReplacement> const& replacements,
+        std::span<NodeInstanceDiagnostic const> failures);
 
 public:
     NodeInstances();

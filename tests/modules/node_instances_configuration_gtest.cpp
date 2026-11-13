@@ -1411,6 +1411,98 @@ TEST(NodeInstancesConfiguration, ProjectNodeSelfReferenceIsACycle)
     EXPECT_NE(result.diagnostics.front().message.find("cycle"), std::string::npos);
 }
 
+namespace {
+iv::NodeInstancesProjectGraphRequest configure_interface_test(
+    iv::NodeInstances& instances,
+    std::shared_ptr<iv::NodeDefinitionsSnapshot const> snapshot,
+    std::vector<iv::ProjectNodeInstanceDeclaration> declarations,
+    bool prepare = true)
+{
+    iv::GraphBuilder root;
+    iv::NodeInstancesProjectGraphRequest transaction{
+        .snapshot = std::move(snapshot),
+        .root_builder = &root,
+        .mutation = iv::NodeInstanceReplaceAllMutation{.instances = std::move(declarations)},
+        .prepare_failure_interfaces = prepare,
+    };
+    in_event_source([&] { instances.handle_project_graph_transaction(transaction); });
+    transaction.root_builder = nullptr;
+    return transaction;
+}
+} // namespace
+
+TEST(NodeInstancesConfiguration, FailureInterfacesKeepLiveConstructorReferencesInOneSession)
+{
+    leaf_calls = 0;
+    iv::NodeInstances instances;
+    auto transaction = configure_interface_test(instances,
+        make_snapshot(1, {leaf_spec(), receiver_spec()}), {
+            {.instance_id = uuid_c, .definition_id = receiver_id,
+             .package_root = package_root_text, .configuration_source = "&" + uuid_b},
+            {.instance_id = uuid_b, .definition_id = receiver_id,
+             .package_root = package_root_text, .configuration_source = "&" + uuid_a},
+            {.instance_id = uuid_a, .definition_id = leaf_id, .package_root = package_root_text},
+            {.instance_id = uuid_d, .definition_id = "iv.test.missing", .package_root = package_root_text},
+        });
+    EXPECT_TRUE(transaction.result.placements.empty());
+    ASSERT_TRUE(transaction.failure_interfaces);
+    auto const& interfaces = transaction.failure_interfaces->interfaces;
+    ASSERT_EQ(interfaces.size(), 3u);
+    for (auto const& id : {uuid_a, uuid_b, uuid_c}) {
+        EXPECT_EQ(interfaces.at(id).sample_outputs.size(), 1u);
+    }
+    EXPECT_EQ(leaf_calls.load(), 1);
+}
+
+TEST(NodeInstancesConfiguration, FailureInterfacesExcludeFailedConstructorAndItsDependents)
+{
+    iv::NodeInstances instances;
+    auto transaction = configure_interface_test(instances,
+        make_snapshot(1, {leaf_spec(), receiver_spec(), failing_spec()}), {
+            {.instance_id = uuid_a, .definition_id = failing_id, .package_root = package_root_text},
+            {.instance_id = uuid_b, .definition_id = receiver_id,
+             .package_root = package_root_text, .configuration_source = "&" + uuid_a},
+            {.instance_id = uuid_c, .definition_id = leaf_id, .package_root = package_root_text},
+        });
+    EXPECT_TRUE(transaction.result.placements.empty());
+    ASSERT_TRUE(transaction.failure_interfaces);
+    auto const& prepared = *transaction.failure_interfaces;
+    ASSERT_EQ(prepared.interfaces.size(), 1u);
+    EXPECT_EQ(prepared.interfaces.at(uuid_c).sample_outputs.size(), 1u);
+    EXPECT_TRUE(std::ranges::any_of(prepared.diagnostics, [&](auto const& diagnostic) {
+        return diagnostic.instance_id == uuid_b
+            && diagnostic.message.find(uuid_a) != std::string::npos;
+    }));
+}
+
+TEST(NodeInstancesConfiguration, SuccessfulBuildDoesNotPrepareFailureInterfaces)
+{
+    leaf_calls = 0;
+    iv::NodeInstances instances;
+    auto transaction = configure_interface_test(instances,
+        make_snapshot(1, {leaf_spec()}), {
+            {.instance_id = uuid_a, .definition_id = leaf_id, .package_root = package_root_text},
+        });
+    EXPECT_TRUE(transaction.result.diagnostics.empty());
+    EXPECT_EQ(transaction.result.placements.size(), 1u);
+    EXPECT_FALSE(transaction.failure_interfaces);
+    EXPECT_EQ(leaf_calls.load(), 1);
+}
+
+TEST(NodeInstancesConfiguration, ProvisionalFailureCanLeaveInterfacePreparationDisabled)
+{
+    leaf_calls = 0;
+    iv::NodeInstances instances;
+    auto transaction = configure_interface_test(instances,
+        make_snapshot(1, {leaf_spec()}), {
+            {.instance_id = uuid_a, .definition_id = leaf_id, .package_root = package_root_text},
+            {.instance_id = uuid_b, .definition_id = "iv.test.missing", .package_root = package_root_text},
+        }, false);
+    EXPECT_FALSE(transaction.result.diagnostics.empty());
+    EXPECT_FALSE(transaction.failure_interfaces);
+    EXPECT_EQ(leaf_calls.load(), 0);
+}
+
 TEST(NodeInstancesConfiguration, ProjectNodeReferenceMustSelectExactlyOneNode)
 {
     auto snapshot = make_snapshot(1, {leaf_spec(), annotated_spec(), receiver_spec()});

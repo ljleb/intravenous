@@ -2,6 +2,8 @@
 
 #include <intravenous/compat.h>
 #include <intravenous/graph/builder.h>
+#include <intravenous/graph/builder/state.h>
+#include <intravenous/module/builder_session.h>
 #include <intravenous/runtime/node_definitions_events.h>
 #include <intravenous/runtime/configuration_expression.h>
 #include <intravenous/runtime/package_pipeline_types.h>
@@ -583,6 +585,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         .snapshot = definitions_snapshot_,
         .root_builder = &root_builder,
         .mutation = std::move(instance_mutation),
+        .prepare_failure_interfaces = publish_execution,
     };
     if (interaction_transactions) {
         auto& transaction = interaction_transactions->node_instances;
@@ -631,6 +634,31 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     // A failed configuration pass discards the root builder and publishes no
     // generation; the previous generation stays current and keeps running.
     auto fail = [&](ProjectGraphConfigurationFailure failure) {
+        if (publish_execution && !failure.instance_interfaces) {
+            // A later connection/finish failure can also leave the desired
+            // interfaces newer than the executable generation. Read already
+            // configured results, never ports from that older generation.
+            auto interfaces = std::make_shared<NodeInstanceFailureInterfaces>();
+            interfaces->definitions = request.snapshot;
+            for (auto const& [id, placement] : request.result.placements) {
+                interfaces->configuration_lifetimes.push_back(placement.configured);
+                if (auto const& graph = placement.configured->graph) {
+                    interfaces->interfaces.emplace(id, read_node_instance_interface(
+                        graph->node_bundles, placement.configured->local_root));
+                } else {
+                    // A NodeRef-dependent result has no closed reusable graph.
+                    // Its original session can supply metadata only while valid.
+                    try {
+                        interfaces->interfaces.emplace(id, read_node_instance_interface(
+                            details::builder_session_state(root_builder._builder_session()).node_bundles(),
+                            placement.root));
+                    } catch (std::logic_error const&) {
+                        // Unavailable is preferable to a stale desired interface.
+                    }
+                }
+            }
+            failure.instance_interfaces = std::move(interfaces);
+        }
         auto shared = std::make_shared<ProjectGraphConfigurationFailure const>(
             std::move(failure));
         if (publish_execution) {
@@ -680,6 +708,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     if (instances_failed) {
         return fail(ProjectGraphConfigurationFailure{
             .definitions_generation = definitions_generation,
+            .instance_interfaces = std::move(request.failure_interfaces),
             .node_instance_diagnostics = std::move(request.result.diagnostics),
         });
     }
@@ -2054,56 +2083,6 @@ void ProjectGraph::handle_socket_rpc_get_node_event_protocol(
 }
 
 namespace {
-// The realized ports of one placed instance root, read through the same port
-// tables GraphConnections resolves a ProjectPortMatcher against.
-void fill_graph_scope_ports(
-    ConfiguredGraph const& graph,
-    NodeBundleHandle root,
-    ProjectGraphScopeNode& node)
-{
-    auto const& bundles = graph.node_bundles;
-    auto const& bundle = bundles.bundle(root);
-    for (std::size_t index = 0; index < bundle.sample_input_count(); ++index) {
-        auto const config = bundles.resolve_sample_input({root, PortKind::sample, index}).config;
-        node.sample_inputs.push_back({
-            .name = config.name,
-            .index = index,
-            .channel_type = config.channel_layout.channel_type,
-            .value_types = std::visit([](auto const& access) {
-                return continuous_introspection_metadata(access.value_metadata);
-            }, config.access),
-        });
-    }
-    for (std::size_t index = 0; index < bundle.sample_output_count(); ++index) {
-        auto const config = bundles.resolve_sample_output({root, PortKind::sample, index}).config;
-        node.sample_outputs.push_back({
-            .name = config.name,
-            .index = index,
-            .channel_type = config.channel_layout.channel_type,
-            .value_types = std::visit([](auto const& production) {
-                return continuous_introspection_metadata(production.value_metadata);
-            }, config.production),
-        });
-    }
-    for (std::size_t index = 0; index < bundle.event_input_count(); ++index) {
-        auto const config = bundles.resolve_event_input({root, PortKind::event, index}).config;
-        node.event_inputs.push_back({
-            .name = config.name,
-            .index = index,
-            .event_type = config.type,
-        });
-    }
-    for (std::size_t index = 0; index < bundle.event_output_count(); ++index) {
-        auto const config = bundles.resolve_event_output({root, PortKind::event, index}).config;
-        node.event_outputs.push_back({
-            .name = config.name,
-            .index = index,
-            .event_type = config.type,
-        });
-    }
-    node.has_children = bundle.is_subgraph();
-}
-
 void classify_scope_node(
     ProjectGraphScopeNode& node,
     bool definition_available,
@@ -2171,6 +2150,11 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                 if (!message.empty()) message += '\n';
                 message += diagnostic.message;
             }
+            if (auto const& prepared = configuration_failure_->instance_interfaces) {
+                for (auto const& diagnostic : prepared->diagnostics) {
+                    instance_errors.try_emplace(diagnostic.instance_id, diagnostic.message);
+                }
+            }
         }
         for (auto& instance : instances.instances) {
             ProjectGraphScopeNode node{
@@ -2179,10 +2163,17 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
             if (auto error = instance_errors.find(instance.instance_id); error != instance_errors.end()) {
                 node.error_message = std::move(error->second);
             }
-            if (generation && generation->graph) {
+            if (configuration_failure_ && configuration_failure_->instance_interfaces) {
+                auto const& prepared = *configuration_failure_->instance_interfaces;
+                if (auto found = prepared.interfaces.find(instance.instance_id);
+                    found != prepared.interfaces.end()) {
+                    node.interface = found->second;
+                }
+            } else if (generation && generation->graph) {
                 auto const placement = generation->placements.find(instance.instance_id);
                 if (placement != generation->placements.end()) {
-                    fill_graph_scope_ports(*generation->graph, placement->second.root, node);
+                    node.interface = read_node_instance_interface(
+                        generation->graph->node_bundles, placement->second.root);
                 }
             }
             node.instance = std::move(instance);
