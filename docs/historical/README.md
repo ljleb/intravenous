@@ -167,3 +167,7 @@ These documents are retained because they record deleted architectures, supersed
 - [Vue Port Grab Before Native Window Focus Reporting](./vue_port_grab_before_native_window_focus_2026-11-13.md)
   preserves the unresolved recorder status and the owner's trace that identified
   webview blur as the cancellation source after an accepted first press.
+
+- [Removed Port Grab Recorder](./vue_port_grab_recorder_removed_2026-11-13.md)
+  preserves the temporary JSON recording command after its trace led to the
+  confirmed native-window focus fix.

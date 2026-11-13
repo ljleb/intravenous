@@ -94,10 +94,6 @@
                 "title": "Intravenous: Delete Connection"
             },
             {
-                "command": "intravenous.recordPortGrab",
-                "title": "Intravenous: Record First Port Grab"
-            },
-            {
                 "command": "intravenous.saveProject",
                 "title": "Intravenous: Save Project Now"
             },

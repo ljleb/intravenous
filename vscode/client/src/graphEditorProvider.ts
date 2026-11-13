@@ -52,10 +52,6 @@ export class GraphEditorProvider implements vscode.Disposable {
             this.pendingActions.set(panel, [...(this.pendingActions.get(panel) ?? []), action]);
             return;
         }
-        if (action === "recordPortGrab") {
-            void panel.webview.postMessage({ type: "recordPortGrab" });
-            return;
-        }
         const [scope, definitions] = await Promise.all([this.session.readGraphScope(), this.session.graphDefinitions()]);
         if (!this.panels.has(panel)) return;
         this.state = { ...this.state, scope, definitions, sessionStatus: this.session.graphSessionStatus };
@@ -124,11 +120,6 @@ export class GraphEditorProvider implements vscode.Disposable {
                     try { await this.runAction(action, panel); }
                     catch (error) { void vscode.window.showErrorMessage(`Cannot edit project: ${error.message}`); }
                 }
-            } else if (message?.type === "portGrabRecordingStarted") {
-                void vscode.window.showInformationMessage("Recording port input. Switch to another window, then drag a port once. Run the recording command again to finish if no report appears.");
-            } else if (message?.type === "portGrabRecording") {
-                const document = await vscode.workspace.openTextDocument({ language: "json", content: JSON.stringify(message.recording, null, 2) });
-                await vscode.window.showTextDocument(document, { preview: false });
             } else if (message?.type === "copyNodeDebugDetails") {
                 const scope = this.state.scope;
                 const node = scope?.nodes.find((entry) => addressKey(entry.address) === message.nodeKey);

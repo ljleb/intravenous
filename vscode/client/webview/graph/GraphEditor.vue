@@ -11,7 +11,6 @@ import { fixedConnectionPorts, type GraphConnectionEnd, type GraphPortEndpoint }
 import { beginPortConnection, canDropPortConnection, finishPortConnection, movePortConnection, type PortConnectionDrag } from "../../src/portConnectionGesture";
 import { initialPortHoverShift, keyboardPortHoverShift, pointerPortHoverShift } from "../../src/portHoverShift";
 import { connectionCursorOutputFraction, type PortColorColumns } from "../../src/connectionPreview";
-import { PortGrabRecorder } from "../../src/portGrabRecording";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
 import { connectionEndKey, connectionWirePath, portEndpointKey, portSlotKey, selectedLaneConnections, selectedLaneWirePath,
     type PortWireAnchor, type RevealedConnectionEnd, type SelectedLaneWire } from "../../src/selectedLaneConnections";
@@ -38,54 +37,6 @@ let wireFrame = 0;
 let disposed = false;
 let wireResizeObserver: ResizeObserver | null = null;
 let stopListeningForFocus: (() => void) | undefined;
-const portGrabRecorder = new PortGrabRecorder();
-const recordedPointerEvents = ["pointerdown", "pointermove", "pointerup", "pointercancel", "gotpointercapture", "lostpointercapture", "mousedown", "mouseup"];
-let recordingFinishTimer: ReturnType<typeof setTimeout> | undefined;
-
-function recordPortInput(type: string, event?: Event, reason?: string) {
-    if (!portGrabRecorder.active) return;
-    const target = event?.target instanceof Element ? event.target : null;
-    const handle = target?.closest<HTMLElement>("[data-port-endpoint], [data-connection-end]");
-    const pointer = event instanceof PointerEvent ? event : null;
-    const mouse = event instanceof MouseEvent ? event : null;
-    const pointerId = pointer?.pointerId ?? connectionDrag.value?.pointerId;
-    portGrabRecorder.record({ type, reason, focused: document.hasFocus(),
-        target: target ? `${target.tagName}.${target.getAttribute("class") ?? ""}` : undefined,
-        port: handle?.dataset.portEndpoint ?? handle?.dataset.connectionEnd,
-        pointerId, button: mouse?.button, buttons: mouse?.buttons, x: mouse?.clientX, y: mouse?.clientY,
-        capture: pointerId === undefined ? false : surface.value?.hasPointerCapture(pointerId) ?? false,
-        gesture: !!connectionDrag.value, moved: connectionDrag.value?.moved ?? false });
-}
-function observeRecordedInput(event: Event) {
-    recordPortInput(event.type, event);
-    if ((event.type === "pointerup" || event.type === "mouseup") && (event as MouseEvent).button === 0
-        && recordingFinishTimer === undefined) {
-        // Export after release handlers and compatibility mouse events finish.
-        recordingFinishTimer = setTimeout(finishPortRecording, 0);
-    }
-}
-function observeRecordedFocus(event: Event) { recordPortInput(event.type); }
-function removeRecordingListeners() {
-    for (const type of recordedPointerEvents) window.removeEventListener(type, observeRecordedInput, true);
-    window.removeEventListener("focus", observeRecordedFocus);
-    window.removeEventListener("blur", observeRecordedFocus);
-    clearTimeout(recordingFinishTimer);
-    recordingFinishTimer = undefined;
-}
-function finishPortRecording() {
-    removeRecordingListeners();
-    const recording = portGrabRecorder.finish();
-    if (recording) webviewApi.postMessage({ type: "portGrabRecording", recording });
-}
-function togglePortRecording() {
-    if (portGrabRecorder.active) { finishPortRecording(); return; }
-    portGrabRecorder.start(navigator.userAgent);
-    for (const type of recordedPointerEvents) window.addEventListener(type, observeRecordedInput, true);
-    window.addEventListener("focus", observeRecordedFocus);
-    window.addEventListener("blur", observeRecordedFocus);
-    recordPortInput("recording-start");
-    webviewApi.postMessage({ type: "portGrabRecordingStarted" });
-}
 const editing = ref<string | null>(null); // Empty string creates an instance.
 const creatingPackage = ref(false);
 const packageName = ref("");
@@ -218,24 +169,19 @@ function scheduleWireUpdate() {
 }
 watch([selectedLane, () => state.value.scope, () => layout.value.timeline.laneHeight], scheduleWireUpdate, { flush: "post" });
 function startConnection(event: PointerEvent, port: GraphPortEndpoint, edit?: GraphConnectionEnd) {
-    recordPortInput("start-request", event);
-    if (!surface.value || !state.value.scope?.editable || connectionDrag.value) {
-        recordPortInput("start-rejected", event, "unavailable-scope-or-active-drag"); return;
-    }
+    if (!surface.value || !state.value.scope?.editable || connectionDrag.value) return;
     const handle = event.currentTarget;
-    if (!(handle instanceof HTMLElement)) { recordPortInput("start-rejected", event, "no-handle"); return; }
+    if (!(handle instanceof HTMLElement)) return;
     const anchor = measureWireAnchor(handle, `port:${portEndpointKey(port)}`, port.direction);
-    if (!anchor) { recordPortInput("start-rejected", event, "source-not-visible"); return; }
+    if (!anchor) return;
     const drag = beginPortConnection(port, event.pointerId, event.button, { x: event.clientX, y: event.clientY }, edit);
-    if (!drag) { recordPortInput("start-rejected", event, "not-primary-button"); return; }
+    if (!drag) return;
     event.preventDefault();
     event.stopPropagation();
     // Capture source geometry before focus and before the source popover closes.
     surface.value.focus({ preventScroll: true });
-    try { surface.value.setPointerCapture(event.pointerId); }
-    catch (error) { recordPortInput("capture-error", event, String(error)); throw error; }
+    surface.value.setPointerCapture(event.pointerId);
     connectionDrag.value = drag;
-    recordPortInput("gesture-start", event);
     connectionStartAnchor.value = edit ? null : anchor;
     sourceGroupToLeave = { nodeKey: addressKey(port.address), direction: port.direction };
     hoveredPortGroup.value = null;
@@ -261,9 +207,8 @@ function moveConnection(event: PointerEvent) {
     if (!drag || event.pointerId !== drag.pointerId) return;
     event.preventDefault();
     const next = movePortConnection(drag, event.pointerId, event.buttons, { x: event.clientX, y: event.clientY });
-    if (!next) { cancelConnection("buttons-lost"); return; }
+    if (!next) { cancelConnection(); return; }
     connectionDrag.value = next;
-    if (!drag.moved && next.moved) recordPortInput("gesture-move", event);
     updateDropPreview();
     const hovered = portGroupAt(next.end);
     if (sourceGroupToLeave) {
@@ -282,23 +227,22 @@ function releaseConnection(event: PointerEvent) {
     const drag = connectionDrag.value;
     if (!drag || event.pointerId !== drag.pointerId) return;
     event.preventDefault();
-    if (event.button !== 0) { cancelConnection("non-primary-release"); return; }
+    if (event.button !== 0) { cancelConnection(); return; }
     const hit = document.elementFromPoint(event.clientX, event.clientY);
     const target = portAt({ x: event.clientX, y: event.clientY });
     if (target && !canDropPortConnection(state.value.scope, drag, target)) {
-        cancelConnection("release"); return;
+        cancelConnection(); return;
     }
     const emptyEditorSpace = !!hit && !!surface.value?.contains(hit)
         && !hit.closest("[data-port-group], .port-panel, button, input, select, textarea, a, label, summary, [contenteditable], [role=button], [role=slider], [role=dialog], .package-dialog-backdrop");
     const connection = finishPortConnection(drag, event.pointerId,
         { x: event.clientX, y: event.clientY }, target, emptyEditorSpace);
-    cancelConnection("release");
+    cancelConnection();
     if (connection?.type === "create") webviewApi.postMessage({ type: "connectGraphPorts", first: connection.first, second: connection.second });
     else if (connection?.type === "edit") webviewApi.postMessage({ type: "editGraphConnectionEnd", edit: connection.edit });
 }
-function cancelConnection(reason = "cancel") {
+function cancelConnection() {
     const pointerId = connectionDrag.value?.pointerId;
-    if (pointerId !== undefined) recordPortInput("gesture-cancel", undefined, reason);
     connectionDrag.value = null;
     connectionStartAnchor.value = null;
     dropPreviewAnchor.value = null;
@@ -312,7 +256,7 @@ function cancelConnection(reason = "cancel") {
 }
 function pointerCancelled(event: PointerEvent) {
     if (event.type === "lostpointercapture" && surface.value?.hasPointerCapture(event.pointerId)) return;
-    if (connectionDrag.value?.pointerId === event.pointerId) cancelConnection(event.type);
+    if (connectionDrag.value?.pointerId === event.pointerId) cancelConnection();
 }
 function pointerLeftWindow(event: PointerEvent) {
     if (!event.relatedTarget && (event.clientX <= 0 || event.clientY <= 0
@@ -320,7 +264,7 @@ function pointerLeftWindow(event: PointerEvent) {
 }
 function keyDown(event: KeyboardEvent) {
     hoverShift.value = keyboardPortHoverShift(hoverShift.value, event.shiftKey);
-    if (event.key === "Escape") cancelConnection("escape");
+    if (event.key === "Escape") cancelConnection();
 }
 function keyUp(event: KeyboardEvent) {
     hoverShift.value = keyboardPortHoverShift(hoverShift.value, event.shiftKey);
@@ -335,10 +279,9 @@ function windowBlurred() {
     // immediately after a successful pointerdown; the host reports real exits.
 }
 function nativeWindowFocusChanged(focused: boolean) {
-    recordPortInput(focused ? "native-window-focus" : "native-window-blur");
     if (!focused) {
         hoverShift.value = initialPortHoverShift();
-        cancelConnection("native-window-blur");
+        cancelConnection();
     }
 }
 function createPackage() {
@@ -346,9 +289,8 @@ function createPackage() {
     creatingPackage.value = false;
 }
 function receive(event: MessageEvent<GraphEditorHostMessage>) {
-    if (event.data?.type === "recordPortGrab") { togglePortRecording(); return; }
     if (event.data?.type === "graphAction") {
-        cancelConnection("editor-action");
+        cancelConnection();
         const action = event.data;
         if (action.action === "addNode") editing.value = "";
         if (action.action === "editNode" && action.instanceId
@@ -360,7 +302,7 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     }
     if (event.data?.type !== "graphState") return;
     state.value = event.data.state;
-    cancelConnection("scope-update"); // A new authoritative scope can change port identities.
+    cancelConnection(); // A new authoritative scope can change port identities.
     if (selectedLane.value && state.value.scope
         && !state.value.scope.nodes.some((node) => addressKey(node.address) === selectedLane.value)) selectedLane.value = null;
     if (editing.value && !state.value.scope?.nodes.some((entry) => entry.instance.instanceId === editing.value)) {
@@ -391,7 +333,6 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
     disposed = true;
-    removeRecordingListeners();
     cancelAnimationFrame(wireFrame);
     wireResizeObserver?.disconnect();
     window.removeEventListener("scroll", scheduleWireUpdate, true);

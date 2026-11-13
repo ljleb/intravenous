@@ -516,26 +516,12 @@ native-window blur still cancels without revival on focus gain. It does not
 reproduce the operating system's activation itself. Build, test execution, and
 manual verification remain with the owner.
 
-The opt-in **Intravenous: Record First Port Grab** command records input in the
-actual webview. `GraphEditor` reports focus/blur, pointer and compatibility mouse
-events, pointer capture, accepted gesture starts, first drag motion, and
-cancellation reasons. No recording listeners are installed until the command
-runs. `PortGrabRecorder` keeps at most 256 events, removes repetitive motion,
-and retains the initial 128 events when the limit is reached. The extension
-opens the report in an unsaved JSON editor after the first primary release;
-running the command again exports a recording if no release arrived. It does
-not write a project file or change the graph.
-
-`portGrabRecording.test.ts` checks the report classification, reset, and bounded
-storage. It does **not** reproduce native activation or verify browser event
-delivery. The event-order regression described above uses the owner's subsequent
-recording. `pointerdown-not-observed` means no primary pointer press
-reached the recorder despite held movement or release; `gesture-not-started`
-means the press reached a port but no gesture began. `gesture-cancelled` retains
-the reason that ended an accepted gesture. `grab-observed` requires accepted
-start and drag motion without unexpected cancellation; it does not prove that
-a connection was committed. Focus flags describe what this webview observed,
-not events delivered elsewhere in VS Code or the operating system.
+The owner confirmed that native-window activation and the connection previews
+worked. The temporary recording command, protocol messages, instrumentation,
+recorder, and recorder-only tests have been removed at the owner's request.
+The focus fix and its event-order regression tests remain. The removed diagnostic
+and its manual check are preserved in
+[Removed Port Grab Recorder](./historical/vue_port_grab_recorder_removed_2026-11-13.md).
 
 `GraphEditor.dropPreviewWires` adds a faint, attached preview for the individual
 eligible port under the pointer while preserving the free cursor cable. The
@@ -833,22 +819,14 @@ After rebuilding the server and extension:
     different sample/event kind must be muted. Repeat from an input toward
     outputs and while moving an existing end. Cancel the drag and check that
     normal colours return, with filled and dashed states preserved.
-21. Run **Intravenous: Record First Port Grab** from the Command Palette, then
-    switch to another application or native window. Return with one press on
-    a port, drag into empty editor space without Shift, and release. Do not
-    make a second attempt before saving the JSON report. If no report opens,
-    run the command again to export it. Save both a failing attempt and a
-    working attempt for comparison. Releasing a new connection in empty space
-    leaves the graph unchanged; do not use Shift for this diagnostic, since
-    releasing an existing connection in empty space disconnects it.
-22. Drag over an eligible individual port, including one exposed in a destination
+21. Drag over an eligible individual port, including one exposed in a destination
     popover. A faint cable must show the completed connection at its circle
     while the original cable follows the pointer. The popover must stay open.
     Move between rows and away from the list: only the current eligible row
     receives this preview. Check both drag directions, self-connections, and
     reattachment. Incompatible targets must not receive a preview. Release or
     cancel: both temporary cables must disappear, with no edit on cancellation.
-23. Check cable endpoints on inputs and outputs, including collapsed groups,
+22. Check cable endpoints on inputs and outputs, including collapsed groups,
     exposed port rows, and connection-chooser entries. Each cable must meet
     the right edge of an input circle or the left edge of an output circle
     without crossing its interior. Repeat for the fixed end while dragging
