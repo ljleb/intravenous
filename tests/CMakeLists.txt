@@ -181,9 +181,27 @@ add_iv_gtest(
 add_iv_gtest(
     intravenous_background_storage_realization_tests
     background_storage_realization_gtest.cpp)
+# Keep one executable and one package-build fixture. Each behavior's tests
+# compile separately; test_support and package_fixture own the shared setup.
+set(iv_graph_jit_test_sources
+    modules/graph_jit/test_support.cpp
+    modules/graph_jit/package_fixture.cpp
+    modules/graph_jit/background_gtest.cpp
+    modules/graph_jit/event_feedback_gtest.cpp
+    modules/graph_jit/event_runtime_gtest.cpp
+    modules/graph_jit/events_gtest.cpp
+    modules/graph_jit/manual_control_gtest.cpp
+    modules/graph_jit/playback_gtest.cpp
+    modules/graph_jit/runtime_gtest.cpp
+    modules/graph_jit/sample_feedback_gtest.cpp
+    modules/graph_jit/samples_gtest.cpp
+    modules/graph_jit/specialization_gtest.cpp
+    modules/graph_jit/storage_plan_gtest.cpp
+    modules/graph_jit/transition_gtest.cpp
+)
 add_iv_gtest(
     intravenous_graph_jit_tests
-    modules/graph_jit_gtest.cpp
+    "${iv_graph_jit_test_sources}"
     IV_MODULE_COMPILATION_TESTS
         GraphJitSharedRuntimeFixture.BuildPackage)
 
