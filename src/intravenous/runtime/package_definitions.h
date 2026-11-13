@@ -26,6 +26,15 @@ struct IvPackageInfo {
     std::string publication_message = {};
 };
 
+struct PackageDefinitionsProjectGraphRead {
+    bool handled = false;
+    // Build results are installed before their synchronous definitions/project
+    // publication returns. A scope read during that interval must keep an
+    // unavailable definition pending rather than report a missing publication.
+    bool publication_pending = false;
+    std::vector<IvPackageInfo> packages{};
+};
+
 class PackageDefinitions {
     std::filesystem::path project_root_;
     mutable std::mutex mutex_;
@@ -33,6 +42,7 @@ class PackageDefinitions {
     std::unordered_map<std::string, std::shared_ptr<PackageRevision const>>
         accepted_revisions_by_package_id_;
     std::uint64_t snapshot_generation_ = 0;
+    std::uint64_t completed_publication_generation_ = 0;
     std::shared_ptr<PackageDefinitionsSnapshot const> snapshot_;
 
     [[nodiscard]] IvPackageInfo& ensure_package_locked(
@@ -48,6 +58,7 @@ public:
     [[nodiscard]] std::vector<IvPackageInfo> list_packages() const;
     [[nodiscard]] IvPackageInfo create_project_package(std::string const& name) const;
     [[nodiscard]] std::shared_ptr<PackageDefinitionsSnapshot const> snapshot() const;
+    void handle_project_graph_read(PackageDefinitionsProjectGraphRead& read) const;
 
     // Accepts the refresh and returns the publication's project read-model
     // changes in `transaction.project_publication`.

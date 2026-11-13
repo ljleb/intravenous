@@ -14,7 +14,8 @@ test("graph layout saves serialize, survive a new store, and leave project inten
         const store = new GraphLayoutStore(directory);
         assert.deepEqual(await store.load(), readLayout(null));
         const first = readLayout({ positions: { node: { x: 2, y: 3 } } });
-        const last = readLayout({ positions: { node: { x: 200, y: -300 } }, viewport: { x: 10, y: 20, scale: 0.5 } });
+        const last = readLayout({ positions: { node: { x: 200, y: -300 } }, viewport: { x: 10, y: 20, scale: 0.5 },
+            timeline: { beginSeconds: -5, secondsPerPixel: 0.02, laneHeight: 640, scrollTop: 123 } });
         await Promise.all([store.save(first), store.save(last)]);
         assert.deepEqual(await new GraphLayoutStore(directory).load(), last);
         assert.equal(await fs.readFile(project, "utf8"), "project intent\n");

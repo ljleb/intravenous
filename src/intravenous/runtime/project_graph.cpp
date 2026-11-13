@@ -2103,6 +2103,35 @@ void fill_graph_scope_ports(
     }
     node.has_children = bundle.is_subgraph();
 }
+
+void classify_scope_node(
+    ProjectGraphScopeNode& node,
+    bool definition_available,
+    IvPackageInfo const* package,
+    bool publication_pending)
+{
+    using State = ProjectGraphScopeNodeState;
+    if (package && package->build_state == PackageBuildState::failed) {
+        node.load_state = State::failed;
+        if (!node.error_message.empty()) node.error_message += '\n';
+        node.error_message += package->build_message.empty() ? "Package build failed" : package->build_message;
+    } else if (!definition_available) {
+        if (package && package->build_state == PackageBuildState::built && !publication_pending) {
+            node.load_state = State::failed;
+            if (node.error_message.empty()) node.error_message = package->publication_message.empty()
+                ? "The built package did not publish definition '" + node.instance.definition_id + "'"
+                : package->publication_message;
+        } else {
+            // A missing definition before a package has completed is pending,
+            // even though startup replay produced an availability diagnostic.
+            node.load_state = State::waiting_for_definition;
+        }
+    } else if (!node.error_message.empty()) {
+        node.load_state = State::failed;
+    } else {
+        node.load_state = node.instance.realized ? State::ready : State::waiting_for_graph;
+    }
+}
 } // namespace
 
 void ProjectGraph::handle_socket_rpc_get_graph_scope(
@@ -2118,18 +2147,38 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
         IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_node_instances_read_event, instances);
         GraphConnectionsProjectGraphRead connections{};
         IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_connections_read_event, connections);
-        if (!instances.handled || !connections.handled) {
-            builder.fail("the graph scope needs NodeInstances and GraphConnections");
+        PackageDefinitionsProjectGraphRead packages{};
+        IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_packages_read_event, packages);
+        if (!instances.handled || !connections.handled || !packages.handled) {
+            builder.fail("the graph scope needs NodeInstances, GraphConnections, and PackageDefinitions");
             return;
         }
 
         ProjectGraphScope scope;
         auto const generation = current_generation_;
         if (generation) scope.generation = generation->generation;
+        std::unordered_map<std::string, IvPackageInfo const*> packages_by_root;
+        std::unordered_map<std::string, IvPackageInfo const*> packages_by_definition;
+        for (auto const& package : packages.packages) {
+            if (!package.package_root.empty()) packages_by_root.emplace(package.package_root.lexically_normal().generic_string(), &package);
+            for (auto const& id : package.module_ids) packages_by_definition.emplace(id, &package);
+            for (auto const& id : package.node_type_ids) packages_by_definition.emplace(id, &package);
+        }
+        std::unordered_map<std::string, std::string> instance_errors;
+        if (configuration_failure_) {
+            for (auto const& diagnostic : configuration_failure_->node_instance_diagnostics) {
+                auto& message = instance_errors[diagnostic.instance_id];
+                if (!message.empty()) message += '\n';
+                message += diagnostic.message;
+            }
+        }
         for (auto& instance : instances.instances) {
             ProjectGraphScopeNode node{
                 .address = NodeAddress{.instance_id = instance.instance_id},
             };
+            if (auto error = instance_errors.find(instance.instance_id); error != instance_errors.end()) {
+                node.error_message = std::move(error->second);
+            }
             if (generation && generation->graph) {
                 auto const placement = generation->placements.find(instance.instance_id);
                 if (placement != generation->placements.end()) {
@@ -2137,6 +2186,15 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                 }
             }
             node.instance = std::move(instance);
+            IvPackageInfo const* package = nullptr;
+            if (auto found = packages_by_definition.find(node.instance.definition_id); found != packages_by_definition.end()) {
+                package = found->second;
+            } else if (auto found = packages_by_root.find(node.instance.package_root.lexically_normal().generic_string());
+                       found != packages_by_root.end()) {
+                package = found->second;
+            }
+            classify_scope_node(node, definitions_snapshot_ && definitions_snapshot_->by_id.contains(node.instance.definition_id),
+                package, packages.publication_pending);
             scope.nodes.push_back(std::move(node));
         }
         std::unordered_set<std::string> applied;

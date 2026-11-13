@@ -45,6 +45,9 @@ IV_DEFINE_LINKER_EVENT(
     ProjectGraphConnectionsReadEvent,
     iv_runtime_project_graph_connections_read_event)
 IV_DEFINE_LINKER_EVENT(
+    ProjectGraphPackagesReadEvent,
+    iv_runtime_project_graph_packages_read_event)
+IV_DEFINE_LINKER_EVENT(
     ProjectGraphNodeInstancesInteractionRequestedEvent,
     iv_runtime_project_graph_node_instances_interaction_requested_event)
 IV_DEFINE_LINKER_EVENT(

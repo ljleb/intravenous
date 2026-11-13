@@ -244,59 +244,157 @@ a node address with children so that a group can become one more scope.
 
 ### Stage 2 implementation status
 
-Updated 2026-11-12. The project-root canvas and its tests are written;
-compilation, tests, and the UI checks below remain for the repository owner.
-The previous checkpoint is preserved in
-[Vue Stage 2 Before The Project Graph Canvas](./historical/vue_stage_2_before_project_graph_canvas_2026-11-12.md).
+Updated 2026-11-12. The owner reports that the canvas checkpoint passed tests
+and manual UI checks. The replacement primary timeline and its new geometry
+tests are written but have not been compiled or run by the coding agent.
+The preceding status, including the canvas checks, is preserved in
+[Vue Stage 2 Before The Primary Timeline](./historical/vue_stage_2_before_primary_timeline_2026-11-12.md).
 
-- Step 1, project root scope: `graph.getScope` returns `ProjectGraphScope`
-  (`project_graph_scope_types.h`), built by
-  `ProjectGraph::handle_socket_rpc_get_graph_scope` from the current generation
-  and the desired state it reads from `NodeInstances` and `GraphConnections`
-  (see [Graph scope read](./event_flows/graph_scope_read.md)). Every root build
-  marks its `ProjectGraphPublication` with `graph_changed`, which
-  `SocketRpcServer` publishes as `graph.changed`. Module-instance scopes are not
-  implemented yet.
-- Step 2, project root: `Intravenous: Open Graph Editor` opens a Vue editor tab.
-  `GraphEditorProvider` reads the scope through the existing `WorkspaceSession`,
-  refreshes on `graph.changed`, and reloads after a server restart. Reads are
-  serialized; a change during a read discards that response and requests a new
-  snapshot. Each restored editor tab uses the same window-owned session.
-- The root uses the generic presentation's graph-scope view. Child nodes use
-  the frontend presentation registry, with stable addresses and continuous value
-  metadata from the scope API. Pan, cursor-centered zoom, draggable node titles,
-  and a fit command operate on frontend geometry. New nodes receive positions
-  in their returned order, without moving already placed nodes.
-- Positions and viewport are saved to `.intravenous/graph-layout.json`, separate
-  from `iv_project.jsonl`. Saves are serialized and replace the layout file
-  atomically. Positions survive temporary removal and restoration of a node.
-  An unreadable layout is reported and is not overwritten automatically.
-- Missing or interior endpoints stay visible in the connection list. Lines are
-  drawn only for endpoints that resolve to ports in the root scope. A matcher
-  with no port name or index selects all ports, as `GraphConnections` does.
-  Unapplied connections and unrealized instances remain visible.
-- Step 2 remains incomplete for opening module-instance scopes. Their backend
-  read model still needs implementation; this pass does not expose an open
-  button that cannot work. The source-inspection side panel remains available.
-- Steps 3-5 are not started: graph mutation gestures, retirement of
+Owner follow-up: the primary timeline passed tests. The subsequent reusable
+lane changes described below still require compilation, tests, and UI checks.
+
+- The default frame is now `NodeLane`. The enclosing presentation supplies one
+  lane per child; `PresentationHost` still selects specialized components by
+  definition ID. A specialized component may use `NodeLane` or its own layout.
+- `TimeRuler` and the tick geometry live under `webview/timeline/`, independently
+  of graph nodes. Port identities and metadata remain separate; the default
+  lane uses grouped input/output counts in its left area, with full port metadata
+  on hover. It does not nest the old panel's `PortRow` lists in its content area.
+  No connection gestures are implemented by these metadata summaries.
+- Lane height now comes from fixed initial vertical zoom, independent of the
+  viewport size or visible child count. The current initial height is 240 CSS
+  pixels, a tuning value. Overflow uses a vertical scrollbar. The bindings below
+  change zoom explicitly. The superseded fit-to-height layout is preserved in
+  [Lane Layout Before Fixed Vertical Zoom And Source Selection](./historical/vue_lane_layout_before_fixed_zoom_and_selection_2026-11-12.md).
+- The initial display name is the user label when present, otherwise the last
+  component of the definition ID. Full IDs remain intact for routing and debug
+  details. Ordinary lane text no longer contains the instance UUID.
+- A red name now requires the scope's classified `failed` state. Pending
+  definition availability may still have diagnostic text but does not turn a
+  lane red. See [Classified scope state](#classified-scope-state) below.
+- The small left-side button copies the extension host's latest node snapshot:
+  stable address, definition and configuration, realization state, diagnostic,
+  ports, generation, and related connections. It uses the existing host session
+  and VS Code clipboard API, without a new backend mutation route.
+- The proposed expanding port area is recorded in
+  [Node Presentation And Manual Controls Direction](./node_presentation_and_manual_controls_direction.md#proposed-port-area-and-temporary-expansion).
+  It is not implemented in this pass. The next connection-editing work must
+  retain individual endpoint identities and support arbitrary port counts.
+
+- The accepted primary layout has time on the horizontal axis and one child node
+  per row, ordered vertically. `TimelineScopePresentation` is the generic
+  graph/subgraph presentation. The project root uses the same presentation host
+  as its children.
+- `GraphEditorProvider` still reads `graph.getScope` through the existing
+  `WorkspaceSession`, refreshes on `graph.changed`, and reloads after a server
+  restart. The scope contains desired nodes and connections; continuous ports
+  include value-type metadata. No second server or graph owner was added.
+- The timeline allocates unscaled child display regions. `PresentationHost`
+  selects `compact` from width first; otherwise allocated height selects
+  `nano`, `mini`, or `editable` unless a host supplies an explicit view choice.
+  The height thresholds and initial row heights are provisional layout tuning.
+- The initial horizontal scale is 0.01 seconds per CSS pixel, a tuning value.
+  Resizing changes the visible time extent without changing that scale. The
+  ruler describes display coordinates only, with no fabricated output data or
+  playback position. Output observation remains absent.
+- The ruler and lanes share a scrolling container so their display regions
+  remain aligned when the node list needs a vertical scrollbar. Individual lane
+  contents do not require a time grid; the earlier implementation is recorded in
+  [Primary Timeline Before The Default Lane](./historical/vue_timeline_before_default_lane_2026-11-12.md).
+- The owner's viewport bindings are implemented: native vertical scrolling;
+  Alt+scroll vertical zoom; Shift+scroll horizontal scroll; Ctrl+scroll horizontal
+  zoom; and held middle-button movement to pan both axes. Zoom anchors at the
+  pointer where scroll bounds allow. Wheel line/page units are normalized.
+  When modifiers are combined, Ctrl takes precedence over Alt, then Shift.
+- Middle-button release, cancellation, lost capture, or window blur ends panning.
+  A quick middle click neither changes the viewport nor enables a persistent
+  movement mode. No clip-editing, node-reordering, or connection gestures were
+  added.
+- Horizontal position/scale, lane height, and vertical scroll position are saved
+  in the existing frontend layout file under `timeline`. Navigation neither
+  modifies project intent nor requests graph compilation. The earlier unbound
+  viewport checkpoint is preserved in
+  [Startup Status Before Classified Scope State](./historical/vue_startup_status_before_classified_scope_state_2026-11-12.md).
+- The old `GraphScopePresentation` canvas source and its stored geometry are
+  retained for a future alternative view; the primary timeline neither uses
+  those coordinates nor generates new free-position node locations.
+- Module-instance scope reads and opening a child as another editor root remain
+  incomplete. Steps 3–5 also remain: graph mutation interactions, retirement of
   `ModulesViewProvider`, and the first undo/redo slice.
 
-#### Verify the project-root canvas
+#### Known scope-port defect
 
-After rebuilding the server and the extension:
+`ProjectGraph::handle_socket_rpc_get_graph_scope` fills ports only from
+`current_generation_->placements`. If one invalid instance prevents the first
+successful whole-project generation, the scope has no ports even for a valid
+definition such as `iv.project.saw`. The editor must distinguish availability
+of a configured node interface from whole-project execution success. Do not
+pretend that changing the timeline presentation fixes this backend defect, or
+relax whole-project execution atomicity merely to expose UI metadata.
 
-1. Open `projects/simple_sine` and run `Intravenous: Open Graph Editor` from
-   the command palette. Check that the project instances and their ports appear.
-2. Drag a node title, pan the background, and zoom with the wheel. Check that
-   zoom stays centered on the cursor and that connection lines follow the nodes.
-3. Reload the VS Code window. Check that the editor tab, positions, and viewport
-   return. Open a second graph tab and check that both see package refreshes.
-4. Use the existing Modules panel to create or delete an instance. Check that
-   the canvas refreshes without moving other nodes. A retained connection with
-   a missing endpoint must remain in the connection list.
-5. Check a project with event connections and a connection matcher that selects
-   multiple ports. Event port indices must not be treated as continuous port
-   indices. Selectors into module interiors must not attach to guessed root ports.
+#### Classified scope state
+
+Implemented in source on 2026-11-12; compilation and tests remain for the owner.
+The earlier investigation is preserved in
+[Startup Status Before Classified Scope State](./historical/vue_startup_status_before_classified_scope_state_2026-11-12.md).
+
+`graph.getScope` now returns a typed `loadState` for each node:
+
+| State | Meaning |
+| --- | --- |
+| `waitingForDefinition` | The definition is unavailable and no completed package result confirms failure. |
+| `waitingForGraph` | The definition is available, but the instance has no successful realization. |
+| `ready` | The instance is realized, with no reported configuration or package-build failure. |
+| `failed` | A package build failed, configuration failed with the definition available, or a completed package did not publish the requested definition. |
+
+`ProjectGraph` reads `PackageDefinitionsProjectGraphRead` once in the scope
+read tree, alongside desired instances and connections. The package owner
+copies its catalog and `publication_pending` under one lock. Its
+`completed_publication_generation_` advances only after synchronous
+definitions/project publication returns. A read between installing a build
+result and publishing its definitions therefore keeps an unavailable definition
+pending instead of displaying a transient failure.
+
+The lane uses `loadState == failed` for red styling, not the presence of an
+availability diagnostic in `errorMessage`. Diagnostic text remains available
+for copied debug details. Failure can coexist with a previously realized
+generation that is still running.
+
+The extension also refreshes the scope on the existing `ivPackages.updated`
+notification. A failed package build need not create a graph generation or emit
+`graph.changed`. No new public RPC route or diagnostic-string matching was added.
+
+#### Shared lane UI in the source-selection panel
+
+The owner wants the source-selection side panel to become a filtered host of
+the same lane UI, with shared interaction/selection state across webviews.
+Filtering is required and must not be deprecated. Before this replacement,
+adapt the current `VirtualNodeInfo` source query to the same stable node/port
+identity contract that the editor lanes use; do not carry over one display lane
+per port or lose source-selection focus. The replacement is not implemented in
+this pass.
+
+#### Verify the primary timeline
+
+After rebuilding the server and extension:
+
+1. Run `Intravenous: Open Graph Editor`. Check that child nodes occupy separate
+   rows under one horizontal time ruler.
+2. Resize the editor vertically. Lane heights must stay fixed, with a vertical
+   scrollbar when they do not fit. Width changes can still select `compact`.
+3. Check a node list long enough to scroll vertically. The ruler and lane display
+   regions must remain aligned. Check that the left-side copy button copies the
+   full node identity and diagnostics, while the lane itself has no UUID text.
+4. Reload the VS Code window and trigger a package refresh. The editor must
+   return and refresh its nodes.
+5. Check that there are no permanent interaction hints, spatial zoom percentage,
+   fabricated output graphics, or unassigned editing gestures.
+6. Exercise each viewport binding, then reload the window after navigation is
+   saved. Middle-button release must stop movement immediately; a quick click
+   must never start browser autoscroll or a persistent movement mode.
+7. Start with uncached packages, then introduce a real build failure and recover.
+   Waiting definitions must stay neutral. Confirmed failures must turn red and
+   clear after recovery, including when an older graph remains active.
 
 ### Stage 1 implementation status (2026-11-12; built, tests pass)
 

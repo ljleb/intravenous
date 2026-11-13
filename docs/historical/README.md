@@ -113,5 +113,13 @@ These documents are retained because they record deleted architectures, supersed
 
 ## Vue Stage 2 project-root canvas checkpoint
 
+- [Startup Status Before Classified Scope State](./vue_startup_status_before_classified_scope_state_2026-11-12.md)
+  preserves the startup diagnostic investigation and the initial unbound viewport.
+- [Lane Layout Before Fixed Vertical Zoom And Source Selection](./vue_lane_layout_before_fixed_zoom_and_selection_2026-11-12.md)
+  preserves the fit-to-height implementation and the incorrect filtering prohibition.
+- [Primary Timeline Before The Default Lane](./vue_timeline_before_default_lane_2026-11-12.md)
+  records the status text and per-child time grid replaced by the default lane.
+- [Vue Stage 2 Before The Primary Timeline](./vue_stage_2_before_primary_timeline_2026-11-12.md)
+  preserves the canvas status before the confirmed primary timeline layout.
 - [Vue Stage 2 Before The Project Graph Canvas](./vue_stage_2_before_project_graph_canvas_2026-11-12.md)
   preserves the implementation status before the project-root editor was written.

@@ -10,6 +10,8 @@
 #include <intravenous/runtime/project_graph.h>
 #include <intravenous/runtime/project_graph_events.h>
 #include <intravenous/runtime/project_graph_graph_connections_bridge.h>
+#include <intravenous/runtime/project_graph_package_definitions_bridge.h>
+#include <intravenous/runtime/package_definitions.h>
 #include <intravenous/runtime/project_graph_node_instances_bridge.h>
 #include <intravenous/runtime/runtime_project_events.h>
 
@@ -964,6 +966,8 @@ struct ProjectGraphFixture : ::testing::Test {
     iv::NodeInstances instances;
     iv::GraphConnections connections;
     iv::ProjectGraph project_graph;
+    iv::PackageDefinitions packages{std::filesystem::temp_directory_path()};
+    iv::project_graph_package_definitions_bridge::scope packages_scope{project_graph, packages};
     iv::project_graph_node_instances_bridge::scope instances_scope{
         project_graph, instances};
     iv::project_graph_graph_connections_bridge::scope connections_scope{
@@ -2095,6 +2099,110 @@ TEST_F(ProjectGraphFixture, RootBuildPublicationMarksTheGraphChanged)
         builder); });
     EXPECT_EQ(builder.build(), "instance:changed");
     EXPECT_TRUE(builder.take_publication().graph_changed);
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeReportsInstanceConfigurationFailureAndClearsItOnRecovery)
+{
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:failure",
+            .definition_id = definition_id,
+        }, create); });
+    EXPECT_EQ(create.build(), "instance:failure");
+    auto failed_scope = read_graph_scope(project_graph);
+    auto const& failed = scope_node(failed_scope, "instance:failure");
+    EXPECT_FALSE(failed.at("errorMessage").get<std::string>().empty());
+    EXPECT_EQ(failed.at("loadState"), "waitingForDefinition");
+    EXPECT_FALSE(failed.at("instance").at("realized").get<bool>());
+
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    auto recovered_scope = read_graph_scope(project_graph);
+    auto const& recovered = scope_node(recovered_scope, "instance:failure");
+    EXPECT_TRUE(recovered.at("errorMessage").get<std::string>().empty());
+    EXPECT_TRUE(recovered.at("instance").at("realized").get<bool>());
+    EXPECT_EQ(recovered.at("loadState"), "ready");
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeReportsConfirmedPackageFailureWhilePreviousGenerationStaysActive)
+{
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:build",
+            .definition_id = definition_id,
+            .package_root = std::filesystem::path(package_root),
+        }, create); });
+    ASSERT_EQ(create.build(), "instance:build");
+    auto const active = project_graph.current_generation();
+    ASSERT_TRUE(active);
+
+    iv::PackageRefreshTransaction failed;
+    failed.failed_builds.push_back(iv::PackageJitFailure{
+        .package_id = "iv.test.project_graph.package",
+        .package_root = package_root,
+        .message = "compiler rejected the edited source",
+    });
+    in_event_source([&] { packages.handle_package_refresh(failed); });
+    auto failed_scope = read_graph_scope(project_graph);
+    auto const& node = scope_node(failed_scope, "instance:build");
+    EXPECT_EQ(node.at("loadState"), "failed");
+    EXPECT_NE(node.at("errorMessage").get<std::string>().find("compiler rejected"), std::string::npos);
+    EXPECT_TRUE(node.at("instance").at("realized").get<bool>());
+    EXPECT_EQ(project_graph.current_generation(), active);
+
+    iv::PackageRefreshTransaction recovered;
+    recovered.successful_revisions.push_back(*make_snapshot(2)->package_revisions.front());
+    in_event_source([&] { packages.handle_package_refresh(recovered); });
+    auto recovered_scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(recovered_scope, "instance:build").at("loadState"), "ready");
+    EXPECT_TRUE(scope_node(recovered_scope, "instance:build").at("errorMessage").get<std::string>().empty());
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeDistinguishesWaitingFromMissingDefinitionInACompletedPackage)
+{
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:waiting",
+            .definition_id = definition_id,
+            .package_root = std::filesystem::path(package_root),
+        }, create); });
+    ASSERT_EQ(create.build(), "instance:waiting");
+    auto waiting = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(waiting, "instance:waiting").at("loadState"), "waitingForDefinition");
+
+    // A completed package that does not publish the requested definition is
+    // a confirmed failure, unlike the initial absence of a built package.
+    iv::PackageRefreshTransaction completed;
+    completed.successful_revisions.push_back(iv::PackageRevision{
+        .package_id = "iv.test.project_graph.package",
+        .package_root = package_root,
+        .revision = 1,
+    });
+    in_event_source([&] { packages.handle_package_refresh(completed); });
+    auto missing = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(missing, "instance:waiting").at("loadState"), "failed");
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeMarksInvalidConfigurationAsFailedEvenWhenPackageStatusIsAbsent)
+{
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:invalid",
+            .definition_id = definition_id,
+            .configuration_source = "this is not a configuration expression",
+        }, create); });
+    EXPECT_EQ(create.build(), "instance:invalid");
+    auto invalid = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(invalid, "instance:invalid").at("loadState"), "failed");
+    EXPECT_FALSE(scope_node(invalid, "instance:invalid").at("errorMessage").get<std::string>().empty());
 }
 
 TEST_F(ProjectGraphFixture, ReplaceGraphReplaysNodesAndConnectionsInOneGeneration)

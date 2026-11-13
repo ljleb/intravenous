@@ -1,7 +1,8 @@
 import * as crypto from "node:crypto";
 import * as vscode from "vscode";
 import { GraphLayoutStore } from "./graphLayoutStore";
-import { readLayout, type GraphScope } from "./graphScope";
+import { addressKey, readLayout, type GraphScope } from "./graphScope";
+import { nodeDebugDetails } from "./nodeDebugDetails";
 import type { GraphEditorState, GraphEditorWebviewMessage } from "./graphEditorProtocol";
 import type { WorkspaceSession } from "./workspaceSession";
 
@@ -50,6 +51,12 @@ export class GraphEditorProvider implements vscode.Disposable {
                 this.ready.add(panel);
                 this.post(panel);
                 void this.refresh();
+            } else if (message?.type === "copyNodeDebugDetails") {
+                const scope = this.state.scope;
+                const node = scope?.nodes.find((entry) => addressKey(entry.address) === message.nodeKey);
+                if (!scope || !node) return;
+                try { await vscode.env.clipboard.writeText(nodeDebugDetails(scope, node)); }
+                catch (error) { void vscode.window.showErrorMessage(`Cannot copy node details: ${error.message}`); }
             } else if (message?.type === "saveGraphLayout" && message.layout) {
                 await this.layoutLoaded;
                 if (this.layoutError) return;

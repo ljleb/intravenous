@@ -9,4 +9,5 @@ export type GraphEditorState = {
 };
 export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorState };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
+    | { type: "copyNodeDebugDetails"; nodeKey: string }
     | { type: "saveGraphLayout"; layout: GraphLayout };

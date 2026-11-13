@@ -457,6 +457,17 @@ Json graph_scope_ports_json(std::vector<ProjectGraphScopePort> const& ports)
     }
     return json;
 }
+
+std::string_view graph_scope_node_state_json(ProjectGraphScopeNodeState state)
+{
+    switch (state) {
+    case ProjectGraphScopeNodeState::waiting_for_definition: return "waitingForDefinition";
+    case ProjectGraphScopeNodeState::waiting_for_graph: return "waitingForGraph";
+    case ProjectGraphScopeNodeState::ready: return "ready";
+    case ProjectGraphScopeNodeState::failed: return "failed";
+    }
+    throw std::logic_error("unknown graph scope node state");
+}
 } // namespace
 
 std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
@@ -476,6 +487,8 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
             {"eventInputs", graph_scope_ports_json(node.event_inputs)},
             {"eventOutputs", graph_scope_ports_json(node.event_outputs)},
             {"hasChildren", node.has_children},
+            {"errorMessage", node.error_message},
+            {"loadState", graph_scope_node_state_json(node.load_state)},
         });
     }
     auto connections = Json::array();

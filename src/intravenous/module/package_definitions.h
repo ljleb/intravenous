@@ -582,7 +582,7 @@ RegisteredSignature const* node_constructor_signature()
         requires requires(::iv::GraphBuilder& builder, Args&&... arguments) { \
             Function(builder, std::forward<Args>(arguments)...); \
         } \
-        static void invoke(::iv::GraphBuilder& builder, Args&&... arguments) { \
+        [[maybe_unused]] static void invoke(::iv::GraphBuilder& builder, Args&&... arguments) { \
             Function(builder, std::forward<Args>(arguments)...); \
         } \
     }; \

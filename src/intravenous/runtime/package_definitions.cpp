@@ -138,14 +138,22 @@ std::shared_ptr<PackageDefinitionsSnapshot const> PackageDefinitions::snapshot()
 
 std::vector<IvPackageInfo> PackageDefinitions::list_packages() const
 {
-    std::vector<IvPackageInfo> packages;
+    PackageDefinitionsProjectGraphRead read;
+    handle_project_graph_read(read);
+    return std::move(read.packages);
+}
+
+void PackageDefinitions::handle_project_graph_read(PackageDefinitionsProjectGraphRead& read) const
+{
+    read.packages.clear();
     {
         std::scoped_lock lock(mutex_);
-        packages.reserve(packages_by_id_.size());
-        for (auto const& [_, package] : packages_by_id_) packages.push_back(package);
+        read.publication_pending = snapshot_generation_ > completed_publication_generation_;
+        read.packages.reserve(packages_by_id_.size());
+        for (auto const& [_, package] : packages_by_id_) read.packages.push_back(package);
     }
-    std::ranges::sort(packages, {}, &IvPackageInfo::package_id);
-    return packages;
+    std::ranges::sort(read.packages, {}, &IvPackageInfo::package_id);
+    read.handled = true;
 }
 
 void PackageDefinitions::apply_publication_result(
@@ -166,6 +174,7 @@ void PackageDefinitions::apply_publication_result(
             ? std::string{}
             : message->second;
     }
+    completed_publication_generation_ = std::max(completed_publication_generation_, request.snapshot->generation);
 }
 
 void PackageDefinitions::handle_package_refresh(

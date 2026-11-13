@@ -1,4 +1,5 @@
 import type { ContinuousValueAlternative } from "./graphModel";
+import { readTimelineViewport, type TimelineViewport } from "./timelineViewport";
 
 export type NodeAddress = { instanceId: string; path?: Array<Record<string, unknown>> };
 export type GraphScopePort = {
@@ -9,6 +10,7 @@ export type GraphScopePort = {
     valueTypes?: ContinuousValueAlternative[];
 };
 export type GraphScopeNode = {
+    loadState: "waitingForDefinition" | "waitingForGraph" | "ready" | "failed";
     address: NodeAddress;
     instance: {
         instanceId: string;
@@ -22,6 +24,7 @@ export type GraphScopeNode = {
     eventInputs: GraphScopePort[];
     eventOutputs: GraphScopePort[];
     hasChildren: boolean;
+    errorMessage?: string;
 };
 export type GraphPortMatcher = NodeAddress & {
     port: { name?: string; index?: number; channel?: number };
@@ -45,6 +48,7 @@ export type Point = { x: number; y: number };
 export type GraphLayout = {
     positions: Record<string, Point>;
     viewport: Point & { scale: number };
+    timeline: TimelineViewport;
 };
 export const nodeWidth = 300;
 export const nodeHeight = 320;
@@ -74,6 +78,7 @@ export function readLayout(value: unknown): GraphLayout {
     const view = layout?.viewport;
     return {
         positions,
+        timeline: readTimelineViewport(layout?.timeline),
         viewport: finitePoint(view) && Number.isFinite(view.scale) && view.scale >= 0.1 && view.scale <= 2
             ? { x: view.x, y: view.y, scale: view.scale }
             : { x: 40, y: 40, scale: 1 },
@@ -99,7 +104,7 @@ export function placeNodes(nodes: readonly GraphScopeNode[], saved: GraphLayout)
         positions[key] = point;
         occupied.push(point);
     }
-    return { positions, viewport: { ...saved.viewport } };
+    return { positions, viewport: { ...saved.viewport }, timeline: { ...saved.timeline } };
 }
 
 export function zoomAt(viewport: GraphLayout["viewport"], cursor: Point, scale: number): GraphLayout["viewport"] {

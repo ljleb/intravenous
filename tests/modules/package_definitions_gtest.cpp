@@ -8,6 +8,10 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <chrono>
+#include <future>
+#include <semaphore>
+#include <thread>
 #include <functional>
 #include <memory>
 #include <string>
@@ -88,6 +92,55 @@ iv::IvPackageInfo const& only_package(std::vector<iv::IvPackageInfo> const& pack
     return packages.front();
 }
 } // namespace
+
+TEST(PackageDefinitions, ScopeReadKeepsAnInFlightDefinitionsPublicationPending)
+{
+    auto const project = iv::test_support::fresh_module_fixture_workspace("package_definitions_pending_scope");
+    DefinitionsHarness harness(project);
+    std::binary_semaphore entered(0);
+    std::binary_semaphore release(0);
+    harness.definitions.respond = [&](iv::PackageDefinitionsPublicationRequest&) {
+        entered.release();
+        release.acquire();
+    };
+    iv::PackageRefreshTransaction refresh;
+    refresh.successful_revisions.push_back(iv::PackageRevision{
+        .package_id = "test.pending",
+        .package_root = project,
+        .revision = 1,
+    });
+    std::exception_ptr publication_error;
+    std::jthread publisher([&] {
+        try { refresh_packages(harness.packages, std::move(refresh)); }
+        catch (...) { publication_error = std::current_exception(); }
+    });
+    const bool publication_entered = entered.try_acquire_for(std::chrono::seconds(2));
+    std::promise<iv::PackageDefinitionsProjectGraphRead> result;
+    auto future = result.get_future();
+    std::jthread reader([&] {
+        try {
+            iv::PackageDefinitionsProjectGraphRead read;
+            harness.packages.handle_project_graph_read(read);
+            result.set_value(std::move(read));
+        } catch (...) { result.set_exception(std::current_exception()); }
+    });
+    const bool read_before_completion = future.wait_for(std::chrono::seconds(1)) == std::future_status::ready;
+    // Release and join before assertions, even when synchronization failed.
+    // This test must report a failure rather than leave the suite blocked.
+    release.release();
+    publisher.join();
+    reader.join();
+    if (publication_error) std::rethrow_exception(publication_error);
+    ASSERT_TRUE(publication_entered);
+    ASSERT_TRUE(read_before_completion);
+    auto during = future.get();
+    EXPECT_TRUE(during.publication_pending);
+    ASSERT_EQ(during.packages.size(), 1u);
+    EXPECT_EQ(during.packages.front().build_state, iv::PackageBuildState::built);
+    iv::PackageDefinitionsProjectGraphRead after;
+    harness.packages.handle_project_graph_read(after);
+    EXPECT_FALSE(after.publication_pending);
+}
 
 TEST(PackageDefinitions, SuccessfulRevisionBecomesAcceptedAndPublicationProjectionUpdatesCatalog)
 {

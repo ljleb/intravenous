@@ -430,6 +430,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/project_graph_graph_jit_bridge.cpp
     runtime/project_graph_iv_module_source_introspection_bridge.cpp
     runtime/project_graph_node_instances_bridge.cpp
+    runtime/project_graph_package_definitions_bridge.cpp
     runtime/package_definitions.cpp
     runtime/package_jit.cpp
     runtime/package_watcher.cpp

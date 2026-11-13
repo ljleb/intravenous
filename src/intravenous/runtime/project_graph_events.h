@@ -6,6 +6,7 @@
 #include <intravenous/runtime/graph_executor.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
 #include <intravenous/runtime/node_instances.h>
+#include <intravenous/runtime/package_definitions.h>
 
 namespace iv {
 using ProjectGraphNodeInstancesRequestedEvent =
@@ -23,6 +24,7 @@ using ProjectGraphGraphExecutorControlsRequestedEvent =
     void (*)(ProjectGraphGraphExecutorControlsRequest&);
 using ProjectGraphNodeInstancesReadEvent = void (*)(NodeInstancesProjectGraphRead&);
 using ProjectGraphConnectionsReadEvent = void (*)(GraphConnectionsProjectGraphRead&);
+using ProjectGraphPackagesReadEvent = void (*)(PackageDefinitionsProjectGraphRead&);
 using ProjectGraphNodeInstancesInteractionRequestedEvent =
     void (*)(NodeInstancesInteractionRequest&);
 using ProjectGraphConnectionsInteractionRequestedEvent =
@@ -53,6 +55,9 @@ IV_DECLARE_LINKER_EVENT(
 IV_DECLARE_LINKER_EVENT(
     ProjectGraphConnectionsReadEvent,
     iv_runtime_project_graph_connections_read_event);
+IV_DECLARE_LINKER_EVENT(
+    ProjectGraphPackagesReadEvent,
+    iv_runtime_project_graph_packages_read_event);
 // Opens the NodeInstances and GraphConnections transactions of one node-message
 // interaction; see NodeInstancesInteraction and GraphConnectionsInteraction.
 IV_DECLARE_LINKER_EVENT(

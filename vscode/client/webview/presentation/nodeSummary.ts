@@ -75,6 +75,7 @@ export function portDescription(port: SemanticPort): string {
 // The short source identity after the last '@' of the node's source
 // identity, or of its ID when the source identity is empty.
 export function nodeIdentitySummary(node: SemanticNode): string {
+    if (node.address) return "";
     const identity = node.sourceIdentity || node.id;
     if (!identity) {
         return "";
@@ -88,6 +89,7 @@ export function nodeIdentitySummary(node: SemanticNode): string {
 }
 
 export function nodeDescription(node: SemanticNode): string {
+    if (node.address) return node.memberCount > 1 ? `${node.memberCount} concrete nodes` : "";
     const identity = nodeIdentitySummary(node);
     const parts = [node.address ? "instance" : "virtual"];
     if (identity) {
@@ -97,4 +99,10 @@ export function nodeDescription(node: SemanticNode): string {
         parts.push(`${node.memberCount} concrete nodes`);
     }
     return parts.join(" • ");
+}
+
+export function nodeDisplayName(node: SemanticNode): string {
+    if (node.displayName?.trim()) return node.displayName;
+    if (node.address && node.definitionId) return node.definitionId.split(".").filter(Boolean).at(-1) ?? node.definitionId;
+    return node.kind;
 }

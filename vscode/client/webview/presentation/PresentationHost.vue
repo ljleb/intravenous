@@ -5,14 +5,19 @@ import { effectiveDisplayMode, type NodeDisplayMode, type NodeViewChoice } from 
 import { provideNode } from "./nodeContext";
 import { presentations } from "./presentations";
 import type { SemanticNode } from "./semanticNode";
+import { provideLane } from "./laneContext";
 
 // Hosts one node: selects its presentation, provides its semantic node, and
 // supplies the one display mode that presentation receives.
 const props = defineProps<{
     node: SemanticNode;
-    viewChoice: NodeViewChoice;
+    viewChoice?: NodeViewChoice;
+    regionHeight?: number;
     scale?: number;
+    lane?: boolean;
 }>();
+const emit = defineEmits<{ copyDebugDetails: [] }>();
+provideLane(props.lane ? { copyDebugDetails: () => emit("copyDebugDetails") } : null);
 
 const semanticNode = computed(() => props.node);
 provideNode(semanticNode);
@@ -21,12 +26,13 @@ const selection = computed(() => presentations.select(semanticNode.value.definit
 
 const root = ref<HTMLElement | null>(null);
 const width = ref<number | null>(null);
-const mode = ref<NodeDisplayMode>(props.viewChoice);
+const mode = ref<NodeDisplayMode>(props.viewChoice ?? "mini");
 
 watch(
-    [width, () => props.viewChoice, () => props.scale ?? 1],
-    ([availableWidth, viewChoice, scale]) => {
-        mode.value = effectiveDisplayMode(availableWidth === null ? null : availableWidth * scale, viewChoice, mode.value);
+    [width, () => props.viewChoice, () => props.scale ?? 1, () => props.regionHeight ?? null],
+    ([availableWidth, viewChoice, scale, availableHeight]) => {
+        mode.value = effectiveDisplayMode(availableWidth === null ? null : availableWidth * scale,
+            viewChoice ?? null, mode.value, availableHeight);
     },
     { immediate: true },
 );
@@ -55,6 +61,7 @@ onBeforeUnmount(() => {
         class="presentation-host"
         :data-mode="mode"
         :data-presentation="selection.presentationId"
+        :style="regionHeight === undefined ? undefined : { height: `${regionHeight}px`, overflow: 'auto' }"
     >
         <component :is="selection.component" :mode="mode" />
     </div>

@@ -112,8 +112,6 @@ onBeforeUnmount(() => {
             <strong>Project graph</strong>
             <span>{{ scope.nodes.length }} nodes · {{ scope.connections.length }} connections</span>
             <button type="button" @click="fit">Fit graph</button>
-            <span>{{ Math.round(viewport.scale * 100) }}%</span>
-            <span class="hint">Drag a title to move · drag the background to pan · scroll to zoom</span>
         </header>
         <div ref="canvas" class="canvas" tabindex="0" aria-label="Project graph"
             @pointerdown="down" @pointermove="move" @pointerup="up" @pointercancel="up" @lostpointercapture="up" @wheel="wheel">
@@ -137,7 +135,7 @@ onBeforeUnmount(() => {
                     </div>
                 </article>
             </div>
-            <p v-if="!scope.nodes.length" class="empty">No project instances. Use Intravenous: Open Modules to create an instance.</p>
+            <p v-if="!scope.nodes.length" class="empty">No project instances.</p>
             <details v-if="scope.connections.length" class="connection-list">
                 <summary>Connections ({{ scope.connections.length }})</summary>
                 <div v-for="entry in scope.connections" :key="entry.id" class="connection-record">
@@ -155,7 +153,6 @@ onBeforeUnmount(() => {
 .scope-presentation { height: 100%; display: flex; flex-direction: column; }
 .graph-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border); }
 .graph-toolbar button { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 0; padding: 4px 8px; cursor: pointer; }
-.hint { opacity: .7; }
 .canvas { position: relative; flex: 1; min-height: 200px; overflow: hidden; touch-action: none; background-image: radial-gradient(var(--vscode-editorWhitespace-foreground, #7775) 1px, transparent 1px); background-size: 24px 24px; }
 .world { position: absolute; transform-origin: 0 0; }
 .wires { position: absolute; width: 1px; height: 1px; overflow: visible; pointer-events: none; }

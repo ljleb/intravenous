@@ -261,6 +261,9 @@ export class WorkspaceSession {
         });
 
         this.notifications.subscribe<Record<string, never>>("ivPackages.updated", async () => {
+            // A failed build can change node availability without producing a
+            // graph generation or graph.changed notification.
+            this.graphChanges.fire();
             await this.refreshModulesPanel();
         });
     }

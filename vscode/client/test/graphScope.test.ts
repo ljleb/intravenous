@@ -3,12 +3,15 @@ import assert from "node:assert/strict";
 import { addressKey, placeNodes, readLayout, resolveScopePorts, zoomAt,
     type GraphScope, type GraphScopeNode } from "../src/graphScope";
 import { semanticNodeFromScopeChild } from "../webview/presentation/semanticNode";
+import { nodeDescription, nodeDisplayName, nodeIdentitySummary } from "../webview/presentation/nodeSummary";
+import { nodeDebugDetails } from "../src/nodeDebugDetails";
 
 function node(id: string): GraphScopeNode {
     return {
         address: { instanceId: id, path: [] },
         instance: { instanceId: id, definitionId: "test.filter", realized: true },
         hasChildren: false,
+        loadState: "ready",
         sampleInputs: [{ name: "audio", index: 0, channelType: "stereo", valueTypes: [
             { type: "Sample", rank: 0, channelCapability: "audio" },
         ] }],
@@ -88,4 +91,53 @@ test("scope presentations use stable addresses, real value types, and desired co
     assert.equal(sink.ports[0].connectivity, "connected");
     assert.equal(sink.ports[1].connectivity, "disconnected");
     assert.equal(sink.ports[0].kind === "continuous" && sink.ports[0].valueTypes[0].type, "Sample");
+});
+
+test("default lane names honor user labels without exposing instance identifiers", () => {
+    const scope = graph();
+    const lane = semanticNodeFromScopeChild(scope.nodes[1], scope);
+    assert.equal(nodeDisplayName(lane), "filter");
+    assert.equal(nodeIdentitySummary(lane), "");
+    assert.equal(nodeDescription(lane), "");
+    lane.displayName = "Bass voice";
+    assert.equal(nodeDisplayName(lane), "Bass voice");
+    assert.equal(lane.definitionId, "test.filter");
+    assert.equal(lane.address?.instanceId, "sink");
+});
+
+test("pending realization is distinct from a reported configuration failure", () => {
+    const scope = graph();
+    scope.nodes[1].instance.realized = false;
+    scope.nodes[1].loadState = "waitingForDefinition";
+    scope.nodes[1].errorMessage = "definition unavailable in the initial snapshot";
+    const pending = semanticNodeFromScopeChild(scope.nodes[1], scope);
+    assert.equal(pending.realized, false);
+    assert.equal(pending.loadState, "waitingForDefinition");
+    scope.nodes[1].errorMessage = "Invalid construction argument";
+    scope.nodes[1].loadState = "failed";
+    assert.equal(semanticNodeFromScopeChild(scope.nodes[1], scope).errorMessage, "Invalid construction argument");
+    assert.equal(semanticNodeFromScopeChild(scope.nodes[1], scope).loadState, "failed");
+});
+
+test("copied debug details preserve identity, diagnostics, arbitrary ports, and interior connections", () => {
+    const scope = graph();
+    const sink = scope.nodes[1];
+    sink.errorMessage = "configuration failed";
+    sink.eventInputs = Array.from({ length: 100 }, (_, index) => ({ name: `event${index}`, index, eventType: "trigger" }));
+    scope.connections.push({ id: "interior", applied: false, connection: {
+        kind: "event", outputs: [{ instanceId: "source", port: {} }],
+        inputs: [{ instanceId: "sink", path: [{ kind: "tiledChild", name: "left" }], port: { index: 33 } }],
+    } });
+    scope.connections.push({ id: "unrelated", applied: false, connection: {
+        kind: "event", outputs: [{ instanceId: "other", port: {} }], inputs: [],
+    } });
+    const copied = JSON.parse(nodeDebugDetails(scope, sink));
+    assert.deepEqual(copied.address, sink.address);
+    assert.equal(copied.generation, scope.generation);
+    assert.equal(copied.instance.definitionId, "test.filter");
+    assert.equal(copied.errorMessage, "configuration failed");
+    assert.equal(copied.eventInputs.length, 100);
+    assert.deepEqual(copied.connections.map((entry) => entry.id), ["wire", "interior"]);
+    assert.equal(copied.connections[1].connection.inputs[0].path[0].name, "left");
+    assert.equal(semanticNodeFromScopeChild(sink, scope).ports.filter((port) => port.kind === "event").length, 100);
 });

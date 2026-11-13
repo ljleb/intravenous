@@ -45,6 +45,10 @@ export type SemanticNodeMember = {
 // supplies VirtualNode metadata; the graph editor supplies a stable address
 // and the desired instance's ports from GraphScope.
 export type SemanticNode = {
+    loadState?: GraphScopeNode["loadState"];
+    displayName?: string;
+    realized?: boolean;
+    errorMessage?: string;
     address?: NodeAddress;
     // Present only when this presentation hosts an opened graph scope.
     scope?: GraphScope;
@@ -81,6 +85,10 @@ export function semanticNodeFromScopeChild(child: GraphScopeNode, scope: GraphSc
     };
     return {
         address: child.address, id: child.instance.instanceId,
+        displayName: child.instance.displayName,
+        realized: child.instance.realized,
+        loadState: child.loadState,
+        errorMessage: child.errorMessage,
         instanceId: child.instance.instanceId, definitionId: child.instance.definitionId,
         kind: child.instance.definitionId, sourceIdentity: "", memberCount: 1,
         members: [], sourceSpans: [],

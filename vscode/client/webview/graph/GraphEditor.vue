@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
 import type { GraphEditorHostMessage, GraphEditorState } from "../../src/graphEditorProtocol";
-import { placeNodes, readLayout } from "../../src/graphScope";
+import { addressKey, readLayout } from "../../src/graphScope";
 import { webviewApi } from "../host";
 import PresentationHost from "../presentation/PresentationHost.vue";
 import type { SemanticNode } from "../presentation/semanticNode";
@@ -15,19 +15,15 @@ const root = computed<SemanticNode>(() => ({
     memberCount: 0, ports: [], members: [], sourceSpans: [], scope: state.value.scope ?? undefined,
 }));
 function save() { webviewApi.postMessage({ type: "saveGraphLayout", layout: readLayout(layout.value) }); }
-provideGraphEditor({ layout, save });
+provideGraphEditor({ layout, save,
+    copyNodeDebugDetails: (address) => webviewApi.postMessage({ type: "copyNodeDebugDetails", nodeKey: addressKey(address) }),
+});
 function receive(event: MessageEvent<GraphEditorHostMessage>) {
     if (event.data?.type !== "graphState") return;
     state.value = event.data.state;
     if (!initializedLayout) {
         layout.value = readLayout(state.value.layout);
         initializedLayout = true;
-    }
-    if (state.value.scope) {
-        const placed = placeNodes(state.value.scope.nodes, layout.value);
-        const added = Object.keys(placed.positions).length !== Object.keys(layout.value.positions).length;
-        layout.value = placed;
-        if (added) save();
     }
 }
 onMounted(() => {

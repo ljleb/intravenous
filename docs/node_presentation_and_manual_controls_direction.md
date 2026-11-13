@@ -68,6 +68,89 @@ changes the root of an existing editor; it opens a new editor. An editor's
 initial root is the project's root graph, whose children are the project
 instances.
 
+**Primary presentation clarification (2026-11-12).** The primary project UI
+uses a timeline-like presentation. The current free-position node canvas is an
+implementation checkpoint, not the intended primary presentation. The repository
+owner will specify the timeline interactions; implementing a graph scope read
+or a presentation host does not settle those interactions.
+
+The owner confirmed that a free-position graph editor can later be offered as
+an alternative presentation for graph/subgraph nodes, including the project
+root. It does not replace the primary timeline presentation.
+
+**Confirmed child layout (2026-11-12).** The primary presentation places child
+nodes vertically, one per horizontal row, under a shared horizontal time axis.
+Each row allocates a display region to its child's presentation. This confirms
+the layout; it does not assign new mouse or keyboard interactions for zoom,
+clip editing, or connections.
+
+### Lanes and reusable timeline display
+
+The owner calls each such row a **lane**. The default lane presents any node
+whose stable definition ID has no specialized presentation. Specialized
+presentations may use the same lane frame or provide a different layout.
+
+Vertical zoom stays fixed when the viewport is resized or the visible node list
+changes. If the lanes do not fit, show a vertical scrollbar. Do not change the
+lane heights to fit every node on screen.
+
+The owner specified these viewport interactions on 2026-11-12:
+
+| Input | Action |
+| --- | --- |
+| Scroll | Vertical scroll |
+| Alt + scroll | Vertical zoom |
+| Shift + scroll | Horizontal scroll |
+| Ctrl + scroll | Horizontal zoom |
+| Hold the middle mouse button and move | Simultaneous horizontal and vertical scroll |
+| Quick middle click | No special action; never enter a persistent movement mode |
+
+Middle-button movement ends on release or cancellation. Viewport navigation
+does not modify graph nodes or port data. Zoom preserves the position under the
+pointer where the scroll bounds permit it.
+
+A timeline is a reusable client display feature that a presentation can use
+when appropriate. It is not required for every node. The default lane must
+handle arbitrary input and output port counts; it must not assume that a node
+has one output that can stand for the whole node as a single meter, sample
+buffer, or event buffer. A shared time ruler in the enclosing presentation
+does not imply that every child renders time-dependent data.
+
+Lane names should be readable. Do not display UUIDs as ordinary lane text.
+Keep full semantic identity and diagnostic information available through a
+small copy-debug-details button in the left area. Use a compact visual failure
+indication, such as a red name, outline, or dot, instead of adding a status line
+that changes the lane's layout. A pending realization is not by itself evidence
+of failure.
+
+The default lane is one node presentation, not the old per-port panel nested
+inside another lane system. Port controls belong in a compact port area or its
+temporary expansion. This does not merge port identities or require a single
+output visualization for the node.
+
+### Proposed port area and temporary expansion
+
+The owner proposed the following interaction on 2026-11-12. It is a direction
+for the connection-editing stage, not a claim that these gestures are implemented
+or that all details are settled:
+
+- The lane's left area can expose individual port icons while they fit.
+- When the ports do not fit, group their visible controls. Grouping changes
+  presentation only; each underlying port retains its own identity.
+- Hover can expand a temporary panel over the lane's display area, exposing all
+  ports without permanently increasing the lane's size.
+- A user can select an individual port and drag a connection from it.
+- While dragging from an output, hovering a destination port area expands its
+  inputs. While dragging from an input, it expands the outputs.
+
+Any earlier connection-editing subset must preserve arbitrary port counts,
+stable endpoint identity, and space for this expansion. Do not commit to a
+fixed number of connection handles, merge ports semantically, or require a
+permanently taller lane. Opening/closing timing and the rest of the input
+interactions remain to be decided with the owner.
+
+### Subgraph presentation layout
+
 The root is displayed by the first compatible presentation for its definition,
 by the same selection rules as any other node. A subgraph's presentation
 displays its children and gives each one the display region its zoom level
@@ -84,8 +167,16 @@ can be expanded, to manage its contents, or collapsed, to be used as a node
 itself, so a large project stays tidy while it is maintained. A group is
 therefore one more editable scope of the graph editor; its durable record,
 addressing, and realization are to be designed when the feature is scheduled.
-Groups replace filtering as the way to organize the visible graph: the editor
-shows the scope tree unfiltered.
+Groups organize project structure. Filtering remains a presentation feature:
+source selection can dynamically change the visible lanes without changing the
+project graph. The prior prohibition is preserved in
+[Lane Layout Before Fixed Vertical Zoom And Source Selection](./historical/vue_lane_layout_before_fixed_zoom_and_selection_2026-11-12.md).
+
+The intended side-panel replacement is another host of the same lane UI, filtered
+by source selection. It should share presentation and interaction state with
+editor webviews through the client session, rather than maintain a second lane
+implementation or create a separate graph. This is planned work; the existing
+source-inspection panel has not yet been replaced.
 
 Node positions are frontend-owned presentation layout, and they **survive a
 reload**: the frontend persists them in the project directory, keyed by stable

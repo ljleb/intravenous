@@ -35,6 +35,7 @@
 #include <intravenous/runtime/project_graph_graph_jit_bridge.h>
 #include <intravenous/runtime/project_graph_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/project_graph_node_instances_bridge.h>
+#include <intravenous/runtime/project_graph_package_definitions_bridge.h>
 #include <intravenous/runtime/server_options.h>
 #include <intravenous/runtime/socket_rpc_node_instances_bridge.h>
 #include <intravenous/runtime/socket_rpc_project_graph_bridge.h>
@@ -357,6 +358,8 @@ int run_server_mode(int argc, char** argv)
         node_definitions_project_graph_bridge::bind(node_definitions, project_graph);
     auto project_graph_instances_scope =
         project_graph_node_instances_bridge::bind(project_graph, node_instances);
+    auto project_graph_packages_scope =
+        project_graph_package_definitions_bridge::bind(project_graph, package_definitions);
     auto project_graph_connections_scope =
         project_graph_graph_connections_bridge::bind(project_graph, graph_connections);
     auto project_graph_graph_jit_scope =

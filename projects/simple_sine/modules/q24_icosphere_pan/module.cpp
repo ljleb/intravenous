@@ -1659,15 +1659,22 @@ void module_main(GraphBuilder& g)
     auto const az = g.tile<stereo>(center - spread * 0.5, center + spread * 0.5);
     auto const fir = g.node<"iv.project.q24_icosphere_pan.baseline_fir_256">();
 
-    auto const v = g.node<"iv.project.q24_icosphere_pan.single_pan", stereo>();
+    auto const v_l = g.node<"iv.project.q24_icosphere_pan.single_pan">();
+    auto const v_r = g.node<"iv.project.q24_icosphere_pan.single_pan">();
 
-    auto const v_out = v(
-        "in"_P = in,
-        "azimuth"_P = az,
+    auto const v_l_out = v_l(
+        "in"_P = in[stereo::left],
+        "azimuth"_P = az[stereo::left],
         "elevation"_P = el
     );
 
-    fir(v_out);
+    auto const v_r_out = v_r(
+        "in"_P = in[stereo::right],
+        "azimuth"_P = az[stereo::right],
+        "elevation"_P = el
+    );
+
+    fir(v_l_out + v_r_out);
 
     g.outputs("main"_P = fir);
 }

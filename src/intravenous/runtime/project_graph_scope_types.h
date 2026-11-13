@@ -13,6 +13,12 @@
 #include <vector>
 
 namespace iv {
+enum class ProjectGraphScopeNodeState {
+    waiting_for_definition,
+    waiting_for_graph,
+    ready,
+    failed,
+};
 // One port of a scope child. `index` counts ports of the same kind and
 // direction, as a ProjectPortMatcher's index does, so a connection can name
 // the port by either. A sample port has a channel type; an event port has an
@@ -30,6 +36,10 @@ struct ProjectGraphScopePort {
 struct ProjectGraphScopeNode {
     NodeAddress address{};
     IvModuleInstanceInfo instance{};
+    // A diagnostic from the latest configuration pass, not merely a pending
+    // realization. The previous executable generation may still be running.
+    std::string error_message{};
+    ProjectGraphScopeNodeState load_state = ProjectGraphScopeNodeState::waiting_for_definition;
     // The realized ports of the instance's root in the current generation.
     // Empty while the instance has no placement in that generation.
     std::vector<ProjectGraphScopePort> sample_inputs{};
