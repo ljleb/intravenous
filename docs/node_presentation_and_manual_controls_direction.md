@@ -621,7 +621,11 @@ encoding remains to be chosen with the owner after this stage.
 
 Drag up to increase the value and down to decrease it. Lock and hide the mouse
 pointer during a drag, using relative movement so screen edges do not limit it.
-Release or Escape unlocks it; leaving the application also ends the drag. Each
+Release or Escape unlocks it; leaving the application also ends the drag. _Accepted
+clarification, 2026-11-14:_ after the lock ends, input follows the visible cursor,
+which is at the drag's starting point. Until the pointer actually moves, a host-reported
+displaced position must not change hover or popovers, and the next press, release or
+click acts at that starting point. Each
 wheel event with nonzero vertical movement halves sensitivity when scrolling
 down and doubles it when scrolling up, independent of the event's delta magnitude.
 Use horizontal movement only when the wheel event has no vertical movement.

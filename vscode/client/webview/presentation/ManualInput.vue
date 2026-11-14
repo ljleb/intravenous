@@ -32,7 +32,7 @@ function step(direction: number) {
     <div class="manual-input" :class="{ inactive: !descriptor?.participates, active: control.dragging.value }"
         :data-manual-control="control.key.value"
         @pointerdown.stop @click.stop @contextmenu="control.numeric"
-        @pointerenter="control.hover(true)" @pointerleave="control.hover(false)">
+        @iv-hoverenter="control.hover(true)" @iv-hoverleave="control.hover(false)">
         <span v-if="showName" class="manual-name">{{ name }}</span>
         <button type="button" class="manual-knob" role="slider" :aria-label="name"
             :aria-valuenow="value" :aria-valuemin="limits.min" :aria-valuemax="limits.max"
@@ -69,9 +69,9 @@ function step(direction: number) {
 .knob-body { fill: var(--vscode-editor-background); stroke: currentColor; stroke-width: 1; stroke-opacity: .55; }
 .knob-indicator { stroke: currentColor; stroke-width: 2; stroke-linecap: round; opacity: .8; }
 .knob-track, .knob-body, .knob-indicator { transition: fill 100ms ease, opacity 100ms ease, stroke-opacity 100ms ease; }
-.manual-input:hover .manual-knob:not(:disabled) .knob-body { fill: color-mix(in srgb, currentColor 9%, var(--vscode-editor-background)); stroke-opacity: .9; }
-.manual-input:hover .knob-track { opacity: .55; }
-.manual-input:hover .knob-indicator { opacity: 1; }
+.manual-input[data-hovered] .manual-knob:not(:disabled) .knob-body { fill: color-mix(in srgb, currentColor 9%, var(--vscode-editor-background)); stroke-opacity: .9; }
+.manual-input[data-hovered] .knob-track { opacity: .55; }
+.manual-input[data-hovered] .knob-indicator { opacity: 1; }
 .manual-input.active .manual-knob .knob-body { fill: color-mix(in srgb, currentColor 20%, var(--vscode-editor-background)); stroke-opacity: 1; }
 .manual-input.active .knob-track { opacity: .9; }
 .manual-input.active .knob-indicator { opacity: 1; }

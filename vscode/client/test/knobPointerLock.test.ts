@@ -170,3 +170,26 @@ test("a browser rejection preserves its exception name and leaves the drag avail
     owner.release(1, { x: 999, y: 999 });
     assert.deepEqual(ends, [{ x: 10, y: 20 }]);
 });
+
+test("only a drag whose pointer lock was granted reports the lock origin the cursor returns to", () => {
+    const scenario = (run: (owner: KnobPointerLock, lock: (value: boolean) => void) => void) => {
+        const origins: Array<Point | null> = [];
+        let locked = false;
+        const owner = new KnobPointerLock({ request: () => {}, exit: () => { locked = false; }, locked: () => locked },
+            () => {}, (_id, _point, lockOrigin) => origins.push(lockOrigin), () => {});
+        run(owner, (value) => { locked = value; owner.changed(); });
+        return origins;
+    };
+    // Released before the grant: the cursor never moved.
+    assert.deepEqual(scenario((owner) => { owner.start(1, { x: 20, y: 30 }); owner.release(1, { x: 21, y: 31 }); }), [null]);
+    assert.deepEqual(scenario((owner, lock) => {
+        owner.start(2, { x: 40, y: 50 }); lock(true); owner.release(2, { x: 99, y: 99 });
+    }), [{ x: 40, y: 50 }]);
+    // Escape or the host ended the lock before release.
+    assert.deepEqual(scenario((owner, lock) => {
+        owner.start(3, { x: 60, y: 70 }); lock(true); lock(false);
+    }), [{ x: 60, y: 70 }]);
+    assert.deepEqual(scenario((owner, lock) => {
+        owner.start(4, { x: 80, y: 90 }); lock(true); owner.cancel();
+    }), [{ x: 80, y: 90 }]);
+});

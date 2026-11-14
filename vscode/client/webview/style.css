@@ -59,7 +59,7 @@ body {
     cursor: pointer;
 }
 
-.toolbar-button:hover:not(:disabled) {
+.toolbar-button[data-hovered]:not(:disabled) {
     background: var(--vscode-button-secondaryHoverBackground);
 }
 

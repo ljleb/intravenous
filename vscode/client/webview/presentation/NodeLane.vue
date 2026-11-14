@@ -53,7 +53,7 @@ const outputSummary = computed(() => outputs.value.map((port) => `${port.name}: 
 .lane-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lane-name.failed { color: var(--vscode-errorForeground, #f14c4c); }
 .copy-debug { flex: 0 0 20px; height: 20px; padding: 0; border: 0; border-radius: 3px; color: var(--vscode-icon-foreground); background: transparent; cursor: pointer; font-size: 16px; line-height: 20px; }
-.copy-debug:hover { background: var(--vscode-toolbar-hoverBackground); }
+.copy-debug[data-hovered] { background: var(--vscode-toolbar-hoverBackground); }
 .copy-debug:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
 .lane-content { min-width: 0; min-height: 0; overflow: auto; padding: 4px 0; }
 </style>

@@ -220,7 +220,7 @@ function toggleMember(index: number): void {
     cursor: pointer;
 }
 
-.disclosure-row:hover {
+.disclosure-row[data-hovered] {
     background: var(--vscode-list-hoverBackground);
 }
 

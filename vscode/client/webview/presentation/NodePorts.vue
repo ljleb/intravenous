@@ -216,13 +216,13 @@ function openConnectionChooser(port: SemanticPort, origin = hoveredPortRect) {
     chooserPort.value = port;
     expand(port.direction, origin);
 }
-function portIconRect(event: PointerEvent): DOMRect | null {
+function portIconRect(event: Event): DOMRect | null {
     const handle = event.currentTarget;
     if (!(handle instanceof HTMLElement) || !handle.isConnected || handle.closest(".port-panel.positioning")) return null;
     const rect = (handle.querySelector<HTMLElement>(".port-circle") ?? handle).getBoundingClientRect();
     return validOrigin(rect) ? rect : null;
 }
-function enterPort(event: PointerEvent, port: SemanticPort) {
+function enterPort(event: Event, port: SemanticPort) {
     const rect = portIconRect(event);
     if (!rect) return;
     hoveredPort.value = port;
@@ -334,7 +334,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-    <div ref="portArea" class="node-ports" @mouseleave="leave">
+    <div ref="portArea" class="node-ports" @iv-hoverleave="leave">
         <div v-for="direction in directions" :key="direction" :ref="(element) => setGroup(direction, element)"
             class="port-group" :data-port-group="direction" :data-node-key="nodeKey" :data-direction="direction">
             <div v-for="port in layout[direction].direct" :key="`${port.kind}:${port.index}`"
@@ -345,7 +345,7 @@ onBeforeUnmount(() => {
                     :data-port-endpoint="JSON.stringify(endpoint(port))"
                     :title="portTitle(port)"
                     :aria-label="`${port.direction} ${port.name || port.index + 1}`"
-                    @pointerenter="enterPort($event, port)" @pointermove="enterPort($event, port)" @pointerleave="hoveredPort = null"
+                    @iv-hoverenter="enterPort($event, port)" @pointermove="enterPort($event, port)" @iv-hoverleave="hoveredPort = null"
                     @pointerdown="start($event, port)">
                     <span class="port-circle" />
                 </button>
@@ -360,7 +360,7 @@ onBeforeUnmount(() => {
                 :aria-label="`${layout[direction].folded.length} more ${direction} ports; ${groupConnections[direction].connected} connected`" :aria-expanded="expanded === direction && !chooserPort"
                 :aria-disabled="destinationDirection === direction && !groupAccepts(direction)"
                 :title="`${layout[direction].folded.length} more ${direction} ports; ${groupConnections[direction].connected} connected`"
-                @mouseenter="hoverGroup(direction)" @focus="hoverGroup(direction)" @keydown.enter="hoverGroup(direction)">
+                @iv-hoverenter="hoverGroup(direction)" @focus="hoverGroup(direction)" @keydown.enter="hoverGroup(direction)">
                 <span class="port-circle stacked-first" /><span class="port-circle stacked-second" />
             </div>
         </div>
@@ -369,7 +369,7 @@ onBeforeUnmount(() => {
         <div v-if="expanded" ref="panel" class="port-panel" :class="{ above, positioning: !panelPositioned }" :style="panelPosition"
             :aria-hidden="!panelPositioned"
             :data-port-group="expanded" :data-node-key="nodeKey" :data-direction="expanded"
-            @mouseleave="leave" @keydown.esc="closePanel">
+            @iv-hoverleave="leave" @keydown.esc="closePanel">
             <div class="expansion-body">
                 <template v-if="chooserPort">
                     <div v-for="(end, index) in choices" :key="end.connection.id" class="port-row"
@@ -391,7 +391,7 @@ onBeforeUnmount(() => {
                             :class="{ unavailable: destinationDirection === port.direction && !accepts(port), connected: applied(port), pending: pending(port) }"
                             :aria-disabled="destinationDirection === port.direction && !accepts(port)"
                             :data-port-endpoint="JSON.stringify(endpoint(port))" :title="portTitle(port)"
-                            @pointerenter="enterPort($event, port)" @pointermove="enterPort($event, port)" @pointerleave="hoveredPort = null"
+                            @iv-hoverenter="enterPort($event, port)" @pointermove="enterPort($event, port)" @iv-hoverleave="hoveredPort = null"
                             @pointerdown="start($event, port)">
                             <span class="port-circle" /><span class="port-name">{{ port.name || port.index + 1 }}</span>
                             <small v-if="!hasKnob(port)">{{ portDescription(port) }}</small>
@@ -442,7 +442,7 @@ onBeforeUnmount(() => {
 .port-entry { display: flex; flex-shrink: 0; gap: 10px; align-items: center; width: 100%; padding: 5px; border: 0; background: transparent; color: inherit; text-align: left; cursor: crosshair; touch-action: none; }
 .port-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .port-entry small { max-width: 45%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); text-align: right; }
-.port-entry:hover { background: var(--vscode-list-hoverBackground); }
+.port-entry[data-hovered] { background: var(--vscode-list-hoverBackground); }
 .unavailable { --port-color: color-mix(in srgb, var(--port-base-color) 25%, var(--vscode-disabledForeground) 75%); color: var(--vscode-disabledForeground); }
 .unavailable small { color: var(--vscode-disabledForeground); }
 </style>

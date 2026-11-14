@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 
 import { hostState, loadLocalState, postToHost, saveLocalState } from "./host";
 import { instanceLabel, visibleNodes } from "./liveGraphView";
 import { isNodeViewChoice, nodeViewChoices, type NodeViewChoice } from "./presentation/displayMode";
 import PresentationHost from "./presentation/PresentationHost.vue";
 import { semanticNodeFromVirtualNode } from "./presentation/semanticNode";
+import { TrustedHover } from "../src/trustedHover";
 
 const storedViewChoice = loadLocalState().viewChoice;
 const viewChoice = ref<NodeViewChoice>(
@@ -39,6 +40,9 @@ const statusText = computed(() => {
 function createInstance(): void {
     postToHost({ type: "createInstance" });
 }
+// The presentation components' hover comes from this shared unit.
+const trustedHover = new TrustedHover();
+onBeforeUnmount(() => trustedHover.dispose());
 </script>
 
 <template>

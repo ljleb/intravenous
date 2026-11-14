@@ -6,6 +6,6 @@
 {"command":"manualControls.upsert","args":{"node":{"instance_id":"7bb2a16a-6614-4ffa-9bcc-ffefe80b4bd7","path":[]},"input_name":"elevation","value":0.0,"participation":"disconnected_only","enabled":true}}
 {"command":"manualControls.upsert","args":{"node":{"instance_id":"7bb2a16a-6614-4ffa-9bcc-ffefe80b4bd7","path":[]},"input_name":"in","value":0.0,"participation":"disconnected_only","enabled":true}}
 {"command":"manualControls.upsert","args":{"node":{"instance_id":"7bb2a16a-6614-4ffa-9bcc-ffefe80b4bd7","path":[]},"input_name":"spread","value":80.4000015258789,"participation":"disconnected_only","enabled":true}}
-{"command":"manualControls.upsert","args":{"node":{"instance_id":"c01e1d47-c6fd-4b48-8a1e-ddd2e2a553fb","path":[]},"input_name":"detune","value":0.0,"participation":"disconnected_only","enabled":true}}
-{"command":"manualControls.upsert","args":{"node":{"instance_id":"c01e1d47-c6fd-4b48-8a1e-ddd2e2a553fb","path":[]},"input_name":"freq","value":410.0,"participation":"disconnected_only","enabled":true}}
-{"command":"manualControls.upsert","args":{"node":{"instance_id":"d585c285-e93b-413e-bb83-3f42303a3e9e","path":[]},"input_name":"in","value":0.0,"participation":"disconnected_only","enabled":true}}
+{"command":"manualControls.upsert","args":{"node":{"instance_id":"c01e1d47-c6fd-4b48-8a1e-ddd2e2a553fb","path":[]},"input_name":"detune","value":5.0,"participation":"disconnected_only","enabled":true}}
+{"command":"manualControls.upsert","args":{"node":{"instance_id":"c01e1d47-c6fd-4b48-8a1e-ddd2e2a553fb","path":[]},"input_name":"freq","value":485.0,"participation":"disconnected_only","enabled":true}}
+{"command":"manualControls.upsert","args":{"node":{"instance_id":"d585c285-e93b-413e-bb83-3f42303a3e9e","path":[]},"input_name":"in","value":-0.17000001668930054,"participation":"disconnected_only","enabled":true}}

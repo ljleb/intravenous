@@ -43,7 +43,7 @@ const active = computed(() => props.port.binding !== "none"
     overflow: hidden;
 }
 
-.port-row:hover {
+.port-row[data-hovered] {
     background: var(--vscode-list-hoverBackground);
 }
 

@@ -17,6 +17,9 @@ import ManualValuePopover from "../presentation/ManualValuePopover.vue";
 import { manualControlKey, resolveManualControl } from "../../src/manualControls";
 import { KnobPointerLock } from "../../src/knobPointerLock";
 import { KnobClicks } from "../../src/knobClicks";
+import { PointerLockExitGuard } from "../../src/pointerLockExitGuard";
+import { PointerLockExitRedirect } from "../../src/pointerLockExitRedirect";
+import { TrustedHover } from "../../src/trustedHover";
 import { KnobPointerTrace } from "../../src/knobAudioRecording";
 import { projectHistoryShortcut } from "../../src/projectHistoryShortcut";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
@@ -63,7 +66,8 @@ const manualPointer = new KnobPointerLock({
     request: () => surface.value!.requestPointerLock(),
     exit: () => document.exitPointerLock(),
     locked: () => !!surface.value && document.pointerLockElement === surface.value,
-}, (id, delta) => manualGestures.moveBy(id, delta), (id, point) => {
+}, (id, delta) => manualGestures.moveBy(id, delta), (id, point, lockOrigin) => {
+    if (lockOrigin) beginPointerLockExit(lockOrigin);
     if (!point) knobClicks.cancel();
     const control = manualGestures.pointerControl();
     const knob = point && document.elementFromPoint(point.x, point.y)?.closest<HTMLElement>(".manual-input");
@@ -168,7 +172,40 @@ function clickOutsideManual(event: PointerEvent) {
     if (!target?.closest(".manual-input") || event.button !== 0) knobClicks.cancel();
     if (!target?.closest(".manual-input")) { manualPointer.cancel(); manualGestures.finish(); }
 }
-function blurManual() { traceKnob("blur"); knobClicks.cancel(); manualPointer.cancel(); manualGestures.finish(); manualGestures.cancelEntry(); manualGestures.hover(null); }
+function blurManual() {
+    traceKnob("blur"); knobClicks.cancel(); manualPointer.cancel(); manualGestures.finish(); manualGestures.cancelEntry(); manualGestures.hover(null);
+    // Positions after focus returns come from real movement. The cleared knob
+    // hover must be entered again by the next move, even within the same knob.
+    pointerLockExit.end();
+    trustedHover.reset();
+}
+
+// Until the first real movement after a knob's pointer lock ends, the host
+// reports a displaced position while the cursor is visibly at the lock origin.
+// Moves and boundary events at that position are dropped, and presses, releases
+// and clicks are delivered at the origin. Hover never follows the displaced
+// position because it comes only from TrustedHover, registered after this guard.
+const pointerLockExit = new PointerLockExitGuard();
+const pointerLockExitTypes = [
+    "pointermove", "mousemove", "pointerover", "pointerout", "pointerenter", "pointerleave",
+    "mouseover", "mouseout", "mouseenter", "mouseleave",
+    "pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick", "auxclick", "contextmenu",
+];
+function beginPointerLockExit(origin: Point) { pointerLockExit.begin(origin); }
+const pointerLockExitRedirect = new PointerLockExitRedirect(pointerLockExit, {
+    locked: () => !!document.pointerLockElement,
+    elementAt: (point) => document.elementFromPoint(point.x, point.y),
+    copy: (event, init) => event instanceof PointerEvent
+        ? new PointerEvent(event.type, { ...init, view: window }) : new MouseEvent(event.type, { ...init, view: window }),
+    trace: (action, event) => traceKnob(`lock-exit-${action}`, event),
+});
+function guardPointerLockExit(event: Event) {
+    if (event instanceof MouseEvent) pointerLockExitRedirect.handle(event);
+}
+// Registered before the component's other window listeners, including those
+// added later by port popovers, so no capture handler sees a displaced event.
+for (const type of pointerLockExitTypes) window.addEventListener(type, guardPointerLockExit, true);
+const trustedHover = new TrustedHover();
 
 let initializedLayout = false;
 const surface = ref<HTMLElement | null>(null);
@@ -536,6 +573,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
     disposed = true;
     blurManual();
+    for (const type of pointerLockExitTypes) window.removeEventListener(type, guardPointerLockExit, true);
+    trustedHover.dispose();
     webviewApi.postMessage({ type: "graphInteractionHint", hint: null });
     cancelAnimationFrame(wireFrame);
     wireResizeObserver?.disconnect();

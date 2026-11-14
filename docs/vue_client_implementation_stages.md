@@ -2283,3 +2283,73 @@ before choosing a change. If that improvement is impractical, investigate anothe
 implementation of full spherical panning (the owner's “360d x 360d” requirement)
 using the available datasets and research. No replacement algorithm or quality
 tradeoff is selected. This work is also recorded under Front 16.
+
+_Owner priority decision (2026-11-14):_ the `q24_icosphere_pan` performance work
+follows Stage 6. The ghost-cursor fix comes first, then the remaining Stage 3
+automation presentation, the `Node::State` cleanup, and Stages 4–6.
+
+The owner reports that all tests passed for release-time settled-code preparation
+and control-compilation logging. Those checkpoints are verified.
+
+Ghost-cursor fix (2026-11-14; source checkpoint, not built or tested by the agent):
+
+- Evidence, from `/tmp/iv-knob-audio-b6ed0702-7e0f-4cad-a3ac-05aa7e8022a5.json`:
+  every pointer-lock exit is followed by a move with zero movement whose position
+  is displaced in the drag's direction. Presses made before moving carry that
+  position; two of them hit `detune` while the cursor was visibly over `freq`. The
+  first real movement, for example `movement (-19,-74)`, returns the reported
+  position to the visible cursor. Which host layer displaces it is not established.
+- `KnobPointerLock` now reports the lock origin when a drag whose lock was granted
+  ends, including Escape, host release and cancellation. `PointerLockExitGuard`
+  classifies the unlocked events that follow. Moves without movement and boundary
+  events are dropped; presses, releases and clicks are re-dispatched at the origin.
+  The first move with movement ends the guard. `GraphEditor.vue` then replays the
+  enter/leave transition from the origin's hover chain to the real position, because
+  the browser's own boundary events for that movement were dropped. Focus loss ends
+  the guard. It is registered before every other window listener, so port popovers,
+  knobs and connection gestures never see a displaced event.
+- Consequences: a press after release grabs the knob under the visible cursor; a
+  displaced move no longer closes the popover that hosts that knob or changes knob
+  hover. Neither sends the hover-leave that requested settled code, or the hover
+  that requested a predictive GraphJit compilation for another knob.
+- Light regressions cover the guard's classification, the hover-transition order,
+  and lock-origin reporting. DOM re-dispatch in `GraphEditor.vue` is covered only by
+  typechecking. The temporary recorder now traces `lock-exit-drop`,
+  `lock-exit-retarget` and `lock-exit-settle`; remove it after the owner verifies
+  this fix.
+- Owner verification: the guard fixes the interactions, but CSS `:hover` still
+  highlights other knobs at the displaced position until the next click. Emulating
+  `:hover` per rule was rejected as too convoluted. Experiments come first:
+  `requestPointerLock({ unadjustedMovement: true })` is unsupported in this
+  VSCodium (Chrome 150, Electron 43, Linux) and was reverted. Its fallback request
+  also produced a spurious denial from the first request's `pointerlockerror`.
+  Next, the owner compares `--ozone-platform=x11` and `--ozone-platform=wayland`.
+  If neither avoids the displacement, replace per-component hover handling with one
+  shared position-driven hover unit that knobs, popovers and highlights reuse.
+- Result: both `--ozone-platform=x11` and `--ozone-platform=wayland` still light an
+  unrelated knob after release. Hover is therefore no longer taken from the browser.
+  `webview/trustedHover.ts` (`TrustedHover`) is the one hover source of each webview.
+  It hit-tests positions from the pointer moves it receives, plus re-tests after
+  DOM, scroll and resize changes. It dispatches non-bubbling `iv-hoverenter` and
+  `iv-hoverleave` and marks the hover chain with `data-hovered`. Like a browser,
+  it freezes hover while the pointer is locked or captured. `GraphEditor.vue`
+  installs it after `PointerLockExitGuard`, so dropped displaced moves never reach
+  it; `App.vue` installs it for the side panel.
+- Every native `pointerenter`/`pointerleave`/`mouseenter`/`mouseleave` listener
+  in `ManualInput.vue` and `NodePorts.vue` now uses those events. Every `:hover`
+  rule (knobs, port rows and entries, disclosure rows, the copy button and
+  toolbar buttons) now selects `[data-hovered]`. New webview code must follow the
+  same rule. The guard's hover replay is removed; `hoverTransition` moved to
+  `src/hoverTransition.ts`, which `TrustedHover` uses.
+- Not built, typechecked or tested by the agent. The mouse cursor's shape is
+  still chosen by the browser at its own position; no API changes that.
+- Review corrections (not built or tested by the agent): `blurManual()` clears the
+  knob's semantic hover, so it now also calls `TrustedHover.reset()`. The next move
+  enters its chain again, even within the same knob, and predictive hover
+  compilation recovers without leaving and re-entering. `PointerLockExitGuard`
+  passes touch, pen and touch-generated mouse events, which are not displaced and
+  do not end the mouse's guard. `TrustedHover` (`src/trustedHover.ts`) and the
+  event redirect (`PointerLockExitRedirect` in `src/pointerLockExitRedirect.ts`)
+  now take injected environments, so light Node tests cover hover order,
+  reset recovery, lock and capture freezing, content changes under a resting
+  pointer, window exit, origin re-dispatch, touch/pen pass-through and replay loops.

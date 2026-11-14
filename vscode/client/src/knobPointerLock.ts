@@ -12,7 +12,9 @@ export class KnobPointerLock {
     private exiting = false;
     constructor(private readonly host: Host,
         private readonly moved: (pointerId: number, delta: number) => void,
-        private readonly finished: (pointerId: number, point: Point | null) => void,
+        // lockOrigin is set when a granted pointer lock ends with the drag: the
+        // visible cursor returns there, whatever position the host reports next.
+        private readonly finished: (pointerId: number, point: Point | null, lockOrigin: Point | null) => void,
         private readonly failed: (message: string) => void) {}
 
     start(pointerId: number, origin: Point, mouse = true): void {
@@ -60,7 +62,7 @@ export class KnobPointerLock {
             this.request();
         } else if (session?.granted) {
             this.session = null;
-            this.finished(session.pointerId, null);
+            this.finished(session.pointerId, null, session.origin);
         }
     }
     error(message = "Pointer lock was denied; dragging remains limited to the screen bounds."): void {
@@ -97,13 +99,13 @@ export class KnobPointerLock {
         if (!session || session.pointerId !== pointerId) return;
         const position = session.granted || this.host.locked() ? session.origin : point;
         this.session = null;
-        this.finished(pointerId, position);
+        this.finished(pointerId, position, session.granted ? session.origin : null);
         this.exit();
     }
     cancel(): void {
         const session = this.session;
         this.session = null;
-        if (session) this.finished(session.pointerId, null);
+        if (session) this.finished(session.pointerId, null, session.granted ? session.origin : null);
         this.exit();
     }
     private exit(): void {
