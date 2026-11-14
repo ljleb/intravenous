@@ -400,18 +400,6 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
             if (!builder.has_response()) builder.fail("audio device service is unavailable");
             return builder.build(id);
         });
-    impl_->add<CaptureAudioOutputRequest>(
-        "audioDevices.captureDiagnostic", "audio.control", false, false,
-        [](auto const& request, int id, Context const&) {
-            auto capture = request;
-            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_capture_audio_output_event, capture);
-            if (!capture.handled) throw std::runtime_error("audio capture service is unavailable");
-            return jsonrpc_result(id, Json{
-                {"recording", capture.recording}, {"path", capture.path},
-                {"sampleRate", capture.sample_rate}, {"channels", capture.channels},
-                {"sampleCount", capture.sample_count}, {"blocks", capture.blocks},
-                {"serverTimeMs", capture.server_time_ms}, {"serverSteadyUs", capture.server_steady_us}});
-        });
     impl_->add<SetAudioDevicesRequest>(
         "audioDevices.set", "audio.control", true, false,
         [](auto const& request, int id, Context const&) {

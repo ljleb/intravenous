@@ -132,21 +132,6 @@ test("other views and clients show live gesture values until a read reports the 
     assert.deepEqual(live("b"), []);
 });
 
-test("the recorder observer sees each gesture message in sending order", async () => {
-    const { manager } = harness();
-    const events: Array<[string, number]> = [];
-    manager.observe((event) => events.push([event.kind, event.value]));
-    manager.action("panel", { action: "begin", interactionId: "drag", control, value: 450 });
-    await manager.settled();
-    manager.action("panel", { action: "update", interactionId: "drag", value: 451 });
-    manager.action("panel", { action: "end", interactionId: "drag", value: 452 });
-    await manager.settled();
-    manager.observe(null);
-    manager.action("panel", { action: "begin", interactionId: "again", control, value: 452 });
-    await manager.settled();
-    assert.deepEqual(events, [["begin", 450], ["update", 451], ["end", 452]]);
-});
-
 test("disconnect prevents queued gestures and late begin replies from reaching a replacement session", async () => {
     const begin = deferred();
     const { manager, calls } = harness({ beginManualControl: async () => { calls.push({ action: "begin" }); await begin.promise; } });

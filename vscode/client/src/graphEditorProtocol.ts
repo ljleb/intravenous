@@ -13,12 +13,10 @@ export type GraphEditorState = {
 };
 export type GraphEditorAction = "addNode" | "editNode" | "deleteNode" | "openNodeSource" | "createPackage" | "deleteConnection" | "undo" | "redo";
 export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorState }
-    | { type: "knobTrace"; token: string; action: "start" | "stop" }
     | { type: "manualControlState"; interactions: ManualControlInteractionState[]; live: ManualControlLiveValue[] }
     | { type: "graphWindowFocus"; focused: boolean }
     | { type: "graphAction"; action: "addNode" | "editNode" | "createPackage"; instanceId?: string };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
-    | { type: "knobTrace"; token: string; events: import("./knobAudioRecording").KnobPointerEvent[]; dropped: number }
     | { type: "graphInteractionHint"; hint: ManualControlHint | null }
     | { type: "graphInteractionDiagnostic"; message: string }
     | { type: "manualControlAction"; action: ManualControlAction }

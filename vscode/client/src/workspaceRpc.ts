@@ -1,4 +1,3 @@
-import type { AudioOutputCaptureReply } from "./knobAudioRecording";
 import type { ManualControlId } from "./manualControls";
 import { JsonRpcSocketClient } from "./rpcClient";
 import { VirtualNode, SourceSpan } from "./graphModel";
@@ -57,12 +56,6 @@ export class WorkspaceRpc {
 
     getGraphScope(): Promise<GraphScope> {
         return this.client.request("graph.getScope", {});
-    }
-
-    // Temporary knob-audio recorder: "start" arms an eight-second capture of the
-    // audio callback output; "read" reports progress, then the saved WAV.
-    captureAudioOutput(action: "start" | "read", token: string): Promise<AudioOutputCaptureReply> {
-        return this.client.request("audioDevices.captureDiagnostic", { action, token });
     }
 
     getAudioDevices(): Promise<AudioDevicesSnapshot> {

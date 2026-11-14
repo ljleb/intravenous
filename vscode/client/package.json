@@ -106,10 +106,6 @@
             {
                 "command": "intravenous.disableProjectAutosave",
                 "title": "Intravenous: Disable Project Autosave"
-            },
-            {
-                "command": "intravenous.recordKnobAudio",
-                "title": "Intravenous: Record Knob Audio Diagnostic"
             }
         ]
     },

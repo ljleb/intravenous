@@ -80,7 +80,6 @@ namespace iv {
                  SocketRpcNodeEventProtocolResultBuilder&);
     using SocketRpcGetAudioDevicesEvent =
         void (*)(GetAudioDevicesRequest const &, SocketRpcAudioDevicesResultBuilder &);
-    using SocketRpcCaptureAudioOutputEvent = void (*)(CaptureAudioOutputRequest&);
     using SocketRpcSetAudioDevicesEvent =
         void (*)(SetAudioDevicesRequest const &, SocketRpcAudioDevicesResultBuilder &);
     using SocketRpcSaveProjectEvent =
@@ -123,7 +122,6 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcDispatchNodeMessageEvent, iv_socket_rpc_dispatch_node_message_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetNodeEventProtocolEvent, iv_socket_rpc_get_node_event_protocol_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetAudioDevicesEvent, iv_socket_rpc_get_audio_devices_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcCaptureAudioOutputEvent, iv_socket_rpc_capture_audio_output_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetAudioDevicesEvent, iv_socket_rpc_set_audio_devices_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSaveProjectEvent, iv_socket_rpc_save_project_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcEnableProjectAutosaveEvent, iv_socket_rpc_enable_project_autosave_event);

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <intravenous/devices/audio_device.h>
-#include <intravenous/devices/audio_output_capture.h>
 #include <intravenous/third_party/miniaudio/miniaudio.h>
 
 #include <algorithm>
@@ -136,11 +135,6 @@ namespace iv {
                 _cv.wait(lock, [&] {
                     return _shutdown_requested || _response_ready;
                 });
-
-                if (!_shutdown_requested && _config.output_capture) {
-                    _config.output_capture->write(
-                        {output, _pending_samples}, _config.sample_rate, _config.num_channels);
-                }
 
                 _pending_output = nullptr;
                 _pending_samples = 0;

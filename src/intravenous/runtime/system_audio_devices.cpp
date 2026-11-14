@@ -1,15 +1,11 @@
 #include <intravenous/runtime/system_audio_devices.h>
 
-#include <intravenous/devices/audio_output_capture.h>
-
 #include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/graph_executor.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <algorithm>
-#include <bit>
-#include <fstream>
 #include <chrono>
 #include <condition_variable>
 #include <exception>
@@ -93,8 +89,7 @@ SystemAudioDevices::SystemAudioDevices(
     size_t block_size,
     SystemAudioDevicesBackend backend,
     std::optional<std::string> selected_output_device_id,
-    std::optional<std::string> selected_input_device_id,
-    AudioOutputCapture* output_capture)
+    std::optional<std::string> selected_input_device_id)
     : sample_rate_(sample_rate)
     , block_size_(block_size)
     , backend_(std::move(backend))
@@ -103,7 +98,6 @@ SystemAudioDevices::SystemAudioDevices(
           .num_channels = 2,
           .max_block_frames = std::max<size_t>(block_size * 4, 4096),
           .preferred_block_size = block_size,
-          .output_capture = output_capture,
       })
     , input_render_config_(RenderConfig{
           .sample_rate = sample_rate,
@@ -756,46 +750,6 @@ void SystemAudioDevices::handle_socket_rpc_get_audio_devices(
     SocketRpcAudioDevicesResultBuilder &builder) const
 {
     builder.succeed(audio_devices_snapshot());
-}
-
-void SystemAudioDevices::handle_socket_rpc_capture_audio_output(CaptureAudioOutputRequest& request)
-{
-    auto* capture_owner = output_render_config_.output_capture;
-    if (!capture_owner) throw std::runtime_error("audio output capture is unavailable");
-    request.handled = true;
-    request.server_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    request.server_steady_us = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-    if (request.action == "start") {
-        {
-            std::scoped_lock lock(mutex_);
-            if (!active_output_device_ || !active_output_device_->hardware_available)
-                throw std::runtime_error("select an active hardware output before capturing audio");
-        }
-        capture_owner->arm(request.token, sample_rate_, output_render_config_.num_channels);
-        request.recording = true;
-        return;
-    }
-    request.recording = capture_owner->recording();
-    if (request.recording) return;
-    auto capture = capture_owner->snapshot(request.token);
-    auto path = std::filesystem::temp_directory_path() / ("iv-knob-audio-" + request.token + ".wav");
-    std::ofstream wave(path, std::ios::binary | std::ios::trunc);
-    auto write = [&](std::uint32_t value, unsigned bytes) {
-        for (unsigned i = 0; i < bytes; ++i) wave.put(static_cast<char>((value >> (8 * i)) & 255));
-    };
-    auto const bytes = static_cast<std::uint32_t>(capture.samples.size() * sizeof(float));
-    wave.write("RIFF", 4); write(36 + bytes, 4); wave.write("WAVEfmt ", 8);
-    write(16, 4); write(3, 2); write(capture.channels, 2); // IEEE float, interleaved.
-    write(capture.sample_rate, 4); write(capture.sample_rate * capture.channels * 4, 4);
-    write(capture.channels * 4, 2); write(32, 2); wave.write("data", 4); write(bytes, 4);
-    for (auto value : capture.samples) write(std::bit_cast<std::uint32_t>(value.value), 4);
-    wave.close();
-    if (!wave) throw std::runtime_error("could not save diagnostic WAV: " + path.string());
-    request.path = path.string(); request.sample_rate = capture.sample_rate;
-    request.channels = capture.channels; request.sample_count = capture.samples.size();
-    request.blocks = std::move(capture.blocks);
 }
 
 void SystemAudioDevices::handle_project_override_settings(ProjectOverrideSettingsRequest const& request)

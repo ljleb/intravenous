@@ -7,7 +7,6 @@
 #include <intravenous/node/manual_control.h>
 
 #include <filesystem>
-#include <array>
 #include <functional>
 #include <cstdint>
 #include <memory>
@@ -106,20 +105,6 @@ struct DispatchNodeMessageRequest {
 struct GetNodeEventProtocolRequest {};
 
 struct GetAudioDevicesRequest {};
-// Temporary output diagnostics. This does not mutate the project revision.
-struct CaptureAudioOutputRequest {
-    std::string action{};
-    std::string token{};
-    bool handled = false;
-    bool recording = false;
-    std::string path{};
-    std::size_t sample_rate = 0;
-    std::size_t channels = 0;
-    std::size_t sample_count = 0;
-    std::uint64_t server_time_ms = 0;
-    std::uint64_t server_steady_us = 0;
-    std::vector<std::array<std::uint64_t, 3>> blocks{};
-};
 struct SetProjectToolchainRequest { ProjectToolchainSettings settings{}; };
 struct SetAudioDevicesRequest {
     std::optional<std::string> output_device_id {};
@@ -166,7 +151,6 @@ using SocketRpcRequestPayload = std::variant<
     GetNodeEventProtocolRequest,
     DispatchNodeMessageRequest,
     GetAudioDevicesRequest,
-    CaptureAudioOutputRequest,
     SetProjectToolchainRequest,
     SetAudioDevicesRequest,
     SaveProjectRequest,

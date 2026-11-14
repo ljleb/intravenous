@@ -1,5 +1,4 @@
 import { addressKey, type GraphScope, type NodeAddress } from "./graphScope";
-import type { KnobGestureEvent } from "./knobAudioRecording";
 
 export type ManualControlId = { node: NodeAddress; inputName: string };
 export type ManualControlDescriptor = {
@@ -62,19 +61,12 @@ export class ManualControlInteractions {
     private readonly entries = new Map<string, Interaction>();
     // Relayed by the server from other clients' gestures.
     private readonly remoteLive = new Map<string, ManualControlLiveValue>();
-    // Set only while the knob-audio recorder runs.
-    private observer: ((event: KnobGestureEvent) => void) | null = null;
     private tail: Promise<void> = Promise.resolve();
     private epoch = 0;
     private hovered: { owner: string; control: ManualControlId } | null = null;
     constructor(private readonly transport: () => ManualControlTransport | null,
         private readonly changed: () => void) {}
 
-    observe(observer: ((event: KnobGestureEvent) => void) | null): void { this.observer = observer; }
-    private report(kind: KnobGestureEvent["kind"], entry: Interaction, value: number): void {
-        this.observer?.({ kind, interactionId: entry.interactionId, inputName: entry.control.inputName,
-            value, clientMs: performance.now() });
-    }
     states(owner: string): ManualControlInteractionState[] {
         return [...this.entries.values()].filter((entry) => entry.owner === owner).map((entry) => ({
             interactionId: entry.interactionId, control: entry.control, value: entry.value,
@@ -134,7 +126,6 @@ export class ManualControlInteractions {
                         this.entries.delete(this.key(previous.owner, previous.interactionId));
                     }
                     const value = entry.value;
-                    this.report("begin", entry, value);
                     await rpc.beginManualControl(entry.remoteId, entry.control, value);
                     if (entry.epoch !== this.epoch) return;
                     entry.remoteActive = true; entry.fallbackValue = value; entry.sent = value;
@@ -158,7 +149,7 @@ export class ManualControlInteractions {
         if (!entry.ending) {
             const rpc = this.transport();
             if (!rpc) { this.queue(() => this.fail(entry, new Error("The Intravenous server is unavailable"))); return; }
-            try { rpc.updateManualControl(entry.remoteId, entry.value); this.report("update", entry, entry.value); }
+            try { rpc.updateManualControl(entry.remoteId, entry.value); }
             catch (error) { this.queue(() => this.fail(entry, error)); return; }
             entry.sent = entry.fallbackValue = entry.value;
             return;
@@ -170,7 +161,6 @@ export class ManualControlInteractions {
             try {
                 const rpc = this.transport();
                 if (!rpc) throw new Error("The Intravenous server is unavailable");
-                this.report("end", entry, value);
                 await rpc.endManualControl(entry.remoteId, value);
                 if (entry.epoch !== this.epoch) return;
                 entry.sent = value; entry.fallbackValue = value;

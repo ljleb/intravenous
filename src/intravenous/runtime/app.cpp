@@ -304,8 +304,6 @@ int run_server_mode(int argc, char** argv)
 #if IV_ENABLE_JUCE_VST
     JuceVstRuntimeManager vst_runtime_manager;
 #endif
-    // Destination of the temporary knob-audio recorder; idle unless armed.
-    AudioOutputCapture audio_output_capture;
     SystemAudioDevices system_audio_devices(
         startup.execution.sample_rate,
         startup.execution.block_size,
@@ -320,8 +318,7 @@ int run_server_mode(int argc, char** argv)
             },
         },
         startup.output_device_id,
-        startup.input_device_id,
-        &audio_output_capture);
+        startup.input_device_id);
     auto execution_resources = system_audio_devices.resources();
 #if IV_ENABLE_JUCE_VST
     JuceVstRuntimeSupport vst_runtime_support(

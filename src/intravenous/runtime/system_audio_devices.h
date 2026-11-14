@@ -18,7 +18,6 @@
 
 namespace iv {
 struct GetAudioDevicesRequest;
-struct CaptureAudioOutputRequest;
 class ProjectAudioDevicesBuilder;
 class ProjectPersistenceBuilder;
 struct ProjectOverrideSettingsRequest;
@@ -148,8 +147,7 @@ public:
         size_t block_size,
         SystemAudioDevicesBackend backend,
         std::optional<std::string> selected_output_device_id = std::optional<std::string>("default"),
-        std::optional<std::string> selected_input_device_id = std::optional<std::string>("default"),
-        AudioOutputCapture* output_capture = nullptr);
+        std::optional<std::string> selected_input_device_id = std::optional<std::string>("default"));
     ~SystemAudioDevices();
 
     SystemAudioDevices(SystemAudioDevices const &) = delete;
@@ -175,7 +173,6 @@ public:
     void handle_socket_rpc_get_audio_devices(
         GetAudioDevicesRequest const &request,
         SocketRpcAudioDevicesResultBuilder &builder) const;
-    void handle_socket_rpc_capture_audio_output(CaptureAudioOutputRequest& request);
     void handle_project_override_settings(ProjectOverrideSettingsRequest const &request);
     void handle_project_persistence_collect_state(ProjectPersistenceBuilder &builder) const;
 };

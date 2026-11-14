@@ -498,14 +498,6 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
     if (method == "audioDevices.get") {
         return parsed(GetAudioDevicesRequest{});
     }
-    if (method == "audioDevices.captureDiagnostic") {
-        auto action = parse_string_param(params, "action");
-        auto token = parse_string_param(params, "token");
-        if ((action != "start" && action != "read") || token.empty() || token.size() > 80
-            || token.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != std::string::npos)
-            throw std::invalid_argument("invalid audio diagnostic capture action or token");
-        return parsed(CaptureAudioOutputRequest{.action = std::move(action), .token = std::move(token)});
-    }
     if (method == "audioDevices.set") {
         return parsed(SetAudioDevicesRequest{
             .output_device_id = parse_optional_nullable_string_param(params, "outputDeviceId"),

@@ -2353,3 +2353,20 @@ Ghost-cursor fix (2026-11-14; source checkpoint, not built or tested by the agen
   now take injected environments, so light Node tests cover hover order,
   reset recovery, lock and capture freezing, content changes under a resting
   pointer, window exit, origin re-dispatch, touch/pen pass-through and replay loops.
+
+Temporary recorder removed (2026-11-14; owner request after verifying the
+ghost-cursor fix; not built or tested by the agent):
+
+- Server: `AudioOutputCapture`, `RenderConfig::output_capture` and the miniaudio
+  callback copy, `CaptureAudioOutputRequest`, the `audioDevices.captureDiagnostic`
+  route, its event and bridge subscription,
+  `SystemAudioDevices::handle_socket_rpc_capture_audio_output()`, and the capture
+  owner in `app.cpp`.
+- Client: the "Intravenous: Record Knob Audio Diagnostic" command,
+  `knobAudioRecording.ts` (including its `formatVersion: 2` marker),
+  `WorkspaceSession.recordKnobAudio()`, `WorkspaceRpc.captureAudioOutput()`, the
+  gesture observer in `ManualControlInteractions`, the graph webview's pointer
+  trace and its `knobTrace` protocol messages, and the recorder tests.
+- The recordings analysed above remain dated evidence in this document. The
+  automatic pointer-lock failure messages described in
+  [Knob pointer-lock diagnostics](knob_pointer_lock_diagnostics.md) are unchanged.
