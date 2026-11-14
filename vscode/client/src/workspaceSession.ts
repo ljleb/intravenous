@@ -1,4 +1,5 @@
 import { ManualControlInteractions } from "./manualControls";
+import { ControlCompilationProgress, type ControlCompileStatus } from "./controlCompilation";
 import type { NodeAddress } from "./graphScope";
 import { clientToServerClock, knobAudioRecord, recordingPathFor, type KnobGestureEvent } from "./knobAudioRecording";
 import * as vscode from "vscode";
@@ -199,6 +200,10 @@ export class WorkspaceSession {
     readonly provider: LiveGraphProviderLike;
     private readonly highlighter: NodeSpanHighlighter;
     private readonly rebuildStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    private readonly controlCompilationProgress = new ControlCompilationProgress();
+    private readonly controlCompilationStatus = vscode.window.createStatusBarItem(
+        "intravenous.controlCompilation", vscode.StatusBarAlignment.Left, 99);
+    private controlCompilationTimer: ReturnType<typeof setTimeout> | undefined;
     private readonly clangdDatabaseWatcher: vscode.FileSystemWatcher;
     private readonly notifications = new WorkspaceNotificationRouter();
     private process: childProcess.ChildProcess | null = null;
@@ -259,6 +264,19 @@ export class WorkspaceSession {
     }
 
     private registerNotificationHandlers(): void {
+        this.notifications.subscribe<ControlCompileStatus>("graph.controlCompilation", (status) => {
+            const progress = this.controlCompilationProgress.receive(status);
+            this.outputChannel.appendLine(progress.text);
+            if (this.controlCompilationTimer) clearTimeout(this.controlCompilationTimer);
+            this.controlCompilationStatus.text = progress.queued || progress.compiling
+                ? `$(sync~spin) IV: ${progress.compiling} compiling · ${progress.queued} queued`
+                : `$(${progress.failed ? "error" : "check"}) IV: ${progress.summary}`;
+            this.controlCompilationStatus.tooltip = `${progress.text}\nTimes start when ProjectGraph requests compilation and end at preparation or executor acceptance. They exclude RPC transit and audio activation.`;
+            this.controlCompilationStatus.show();
+            if (!progress.queued && !progress.compiling && !progress.failed) {
+                this.controlCompilationTimer = setTimeout(() => this.controlCompilationStatus.hide(), 3000);
+            }
+        });
         this.notifications.subscribe("graph.changed", () => this.graphChanges.fire());
         // A committed revision without a graph publication, such as a settled
         // manual value or an audio selection.
@@ -892,6 +910,7 @@ export class WorkspaceSession {
     ): void {
         if (this.client !== client) return;
         this.manualControls.disconnect();
+        this.resetControlCompilationStatus();
         this.client = null;
         this.rpc = null;
         this.serverReadyReceived = false;
@@ -1297,6 +1316,13 @@ export class WorkspaceSession {
         return this.rpc !== null;
     }
 
+    private resetControlCompilationStatus(): void {
+        this.controlCompilationProgress.clear();
+        if (this.controlCompilationTimer) clearTimeout(this.controlCompilationTimer);
+        this.controlCompilationTimer = undefined;
+        this.controlCompilationStatus.hide();
+    }
+
     private logServerState(prefix: string, params: ServerStatusNotification): void {
         const parts = [prefix];
         if (params.packageRoot) {
@@ -1389,6 +1415,8 @@ export class WorkspaceSession {
 
     async shutdown(): Promise<void> {
         this.manualControls.disconnect();
+        this.resetControlCompilationStatus();
+        this.controlCompilationStatus.dispose();
         this.manualChanges.dispose();
         this.graphChanges.dispose();
         this.shuttingDown = true;

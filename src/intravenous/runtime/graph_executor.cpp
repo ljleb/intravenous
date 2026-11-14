@@ -401,8 +401,6 @@ GraphExecutor::ExecutionGeneration::ExecutionGeneration(
     RealtimeProducerCapacityConfig const& capacity_policy,
     AsyncWorkSignal& background_work_signal)
     : graph(std::move(compiled_graph))
-    , realtime_code(graph.get())
-    , active_realtime_code_owner(graph)
     , realtime(
         *graph, resources, data, capacity_manager, capacity_policy)
     , background(*graph, resources, realtime, background_work_signal)
@@ -1092,29 +1090,9 @@ GraphExecutorStageResult GraphExecutor::stage(
         production_reservation_failed_,
         producer_capacity_,
         background_executor_.work_signal());
-    // Live gesture targets are resolved before the generation becomes visible,
-    // so realtime copies through stable pointers and never searches.
-    {
-        auto const storage_size = prepared->realtime.storage.buffer().size();
-        prepared->live_targets.reserve(prepared->graph->manual_controls.size());
-        for (auto const& binding : prepared->graph->manual_controls) {
-            auto const offset = binding.state_storage_offset
-                + offsetof(ManualControlRuntimeState, target_bits);
-            if (offset > storage_size
-                || sizeof(std::uint32_t) > storage_size - offset
-                || offset % alignof(std::uint32_t) != 0) {
-                throw std::logic_error(
-                    "GraphExecutor manual-control state lies outside NodeStorage");
-            }
-            auto target = live_target(binding.configured.id);
-            auto const completion = target->completion_sequence.load(std::memory_order_acquire);
-            prepared->live_targets.push_back({
-                .target = std::move(target),
-                .target_storage_offset = offset,
-                .observed_completion = completion,
-            });
-        }
-    }
+    prepared->active_realtime_code_owner = prepare_realtime_code(prepared->graph);
+    prepared->realtime_code.store(
+        prepared->active_realtime_code_owner.get(), std::memory_order_relaxed);
     prepared->background.tick_materialization_demand =
         tick_materialization_demand_;
     prepared->background.tick_materialization_required =
@@ -1171,7 +1149,11 @@ GraphExecutorStageResult GraphExecutor::stage_realtime_code(
         throw std::invalid_argument(
             "GraphExecutor realtime-code replacement is not layout-compatible");
     }
-    target->pending_realtime_code_owner = std::move(compiled_graph);
+    auto prepared = prepare_realtime_code(std::move(compiled_graph));
+    // Activation has finished using the previous code before retiring it.
+    // Reclamation belongs to this control path, never the audio callback.
+    target->retired_realtime_code_owner.reset();
+    target->pending_realtime_code_owner = std::move(prepared);
     return GraphExecutorStageResult::accepted;
 }
 
@@ -1230,6 +1212,36 @@ std::shared_ptr<ManualControlLiveTarget> GraphExecutor::live_target(
     if (found != live_targets_.end()) found->second = target;
     else live_targets_.emplace_back(id, target);
     return target;
+}
+
+std::unique_ptr<GraphExecutor::ExecutionGeneration::RealtimeCode>
+GraphExecutor::prepare_realtime_code(std::shared_ptr<CompiledGraph const> graph)
+{
+    static_assert(std::atomic<ExecutionGeneration::RealtimeCode*>::is_always_lock_free);
+    auto prepared = std::make_unique<ExecutionGeneration::RealtimeCode>();
+    prepared->graph = std::move(graph);
+    auto const& bindings = prepared->graph->manual_controls;
+    prepared->live_targets.reserve(std::ranges::count_if(bindings,
+        [](ManualControlRuntimeBinding const& binding) { return binding.configured.dynamic; }));
+    auto const storage_size = prepared->graph->node_layout.storage_size;
+    for (auto const& binding : bindings) {
+        auto const offset = binding.state_storage_offset
+            + offsetof(ManualControlRuntimeState, target_bits);
+        if (offset > storage_size
+            || sizeof(std::uint32_t) > storage_size - offset
+            || offset % alignof(std::uint32_t) != 0) {
+            throw std::logic_error("GraphExecutor manual-control state lies outside NodeStorage");
+        }
+        if (!binding.configured.dynamic) continue;
+        auto target = live_target(binding.configured.id);
+        auto const completion = target->completion_sequence.load(std::memory_order_acquire);
+        prepared->live_targets.push_back({
+            .target = std::move(target),
+            .target_storage_offset = offset,
+            .observed_completion = completion,
+        });
+    }
+    return prepared;
 }
 
 bool GraphExecutor::set_manual_control_target_in_accepted_chain(
@@ -1346,11 +1358,15 @@ bool GraphExecutor::activate_pending(GlobalIndex sample_index)
                 != CompiledGraphRealtimePhase::steady) {
             return false;
         }
-        generation.realtime_code.store(
-            generation.pending_realtime_code_owner.get(),
-            std::memory_order_release);
+        IV_ASSERT(!generation.retired_realtime_code_owner,
+            "cold code staging must reclaim previously retired code");
+        generation.retired_realtime_code_owner =
+            std::move(generation.active_realtime_code_owner);
         generation.active_realtime_code_owner =
             std::move(generation.pending_realtime_code_owner);
+        generation.realtime_code.store(
+            generation.active_realtime_code_owner.get(),
+            std::memory_order_release);
         return true;
     };
     if (!pending_head_) {
@@ -1697,7 +1713,8 @@ void GraphExecutor::tick_block(GlobalIndex sample_index, std::size_t block_size)
     // An open gesture's latest value reaches the root's per-call latch here,
     // independently of the control path's generation chain and locks.
     auto* const storage_base = generation.realtime.storage.buffer().data();
-    for (auto& live : generation.live_targets) {
+    auto* const realtime_code = generation.realtime_code.load(std::memory_order_acquire);
+    for (auto& live : realtime_code->live_targets) {
         auto const completion = live.target->completion_sequence.load(std::memory_order_acquire);
         if (live.target->open_gestures.load(std::memory_order_acquire) == 0
             && completion == live.observed_completion) continue;
@@ -1719,11 +1736,9 @@ void GraphExecutor::tick_block(GlobalIndex sample_index, std::size_t block_size)
         sample_index,
         block_size};
     auto const phase = generation.realtime_phase.load(std::memory_order_relaxed);
-    auto const* realtime_code = generation.realtime_code.load(
-        std::memory_order_acquire);
     auto const& root_operations = phase == CompiledGraphRealtimePhase::transition
         ? generation.graph->root_operations
-        : realtime_code->root_operations;
+        : realtime_code->graph->root_operations;
     auto const& tick = phase == CompiledGraphRealtimePhase::transition
         ? root_operations.transition_tick_block
         : root_operations.tick_block;

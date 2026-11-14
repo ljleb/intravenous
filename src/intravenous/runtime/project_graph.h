@@ -19,6 +19,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -190,6 +191,10 @@ class ProjectGraph {
         std::shared_ptr<ManualControlLiveTarget> target{};
         Sample value{};
     };
+    struct ControlCompileTrace {
+        ProjectControlCompileStatus status{};
+        std::chrono::steady_clock::time_point requested_at{};
+    };
     struct ControlCompileRequest {
         std::uint64_t request_id = 0;
         std::uint64_t project_generation = 0;
@@ -197,17 +202,23 @@ class ProjectGraph {
         std::shared_ptr<NodeDefinitionsSnapshot const> definitions{};
         std::vector<ManualControlId> dynamic_inputs{};
         bool activate_on_ready = false;
+        std::shared_ptr<ControlCompileTrace> trace{};
+        // A prepared candidate being promoted to staging; skip recompiling it.
+        std::shared_ptr<CompiledGraph const> prepared_graph{};
     };
     struct ReadyControlCode {
         std::uint64_t project_generation = 0;
         std::vector<ManualControlId> dynamic_inputs{};
         std::shared_ptr<CompiledGraph const> graph{};
+        std::shared_ptr<ControlCompileTrace> trace{};
     };
     struct InflightControlCompile {
         std::uint64_t request_id = 0;
         std::uint64_t project_generation = 0;
         std::vector<ManualControlId> dynamic_inputs{};
         bool activate_on_ready = false;
+        std::shared_ptr<ControlCompileTrace> trace{};
+        std::shared_ptr<ConfiguredGraph const> graph{};
     };
 
     std::vector<ProjectEditEffect> edit_history_{};
@@ -239,8 +250,12 @@ class ProjectGraph {
     // A released gesture stays dynamic only while its own client still hovers
     // that input. This does not keep its undo interaction open.
     std::unordered_map<std::string, ManualControlId> hover_retained_inputs_{};
+    // Predict this client's leave after its latest release; other clients'
+    // gestures and retained controls still belong in the prepared dynamic set.
+    std::optional<std::string> settled_preparation_client_{};
     std::shared_ptr<CompiledGraph const> staged_control_graph_{};
     std::optional<ControlCompileRequest> pending_control_compile_{};
+    std::vector<ProjectControlCompileStatus> control_compile_notifications_{};
     std::optional<InflightControlCompile> inflight_control_compile_{};
     std::optional<ReadyControlCode> ready_control_code_{};
     bool settling_controls_ = false;
@@ -274,13 +289,22 @@ class ProjectGraph {
         OwnedNodeMessage message,
         NodeMessageDispatchResult& result);
     [[nodiscard]] std::vector<ManualControlId>
-    desired_dynamic_inputs_locked(bool include_predictive_hover) const;
+    desired_dynamic_inputs_locked(bool include_predictive_hover,
+        std::string_view exclude_retained_client = {}) const;
+    void prepare_released_control_locked();
     void schedule_control_compile_locked(
         std::vector<ManualControlId> dynamic_inputs,
         bool activate_on_ready);
     void control_compile_worker(std::stop_token stop);
-    void compile_control_storage_change(std::uint64_t request_id);
+    void queue_control_compile_status_locked(std::shared_ptr<ControlCompileTrace> const& trace,
+        std::string phase, std::string message = {}, std::uint64_t stage_us = 0);
+    void cancel_pending_control_compile_locked();
+    void publish_control_compile_status();
+    void compile_control_storage_change(std::uint64_t request_id,
+        std::shared_ptr<ControlCompileTrace> const& trace);
     [[nodiscard]] bool control_code_matches_locked(std::span<ManualControlId const> inputs) const;
+    [[nodiscard]] bool control_configuration_matches_locked(ConfiguredGraph const& candidate,
+        std::span<ManualControlId const> inputs) const;
     [[nodiscard]] ProjectManualControl* find_manual_control_locked(
         ManualControlId const& id);
     // Sends GraphExecutor one control update: the targets, then the ready

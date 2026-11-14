@@ -500,6 +500,7 @@ The current source entries are:
 | `ProjectPersistence` | one project-file replay | `ProjectPersistence::load` |
 | `ProjectAutosave` | one autosave attempt, including its failure report | the autosave service thread |
 | `ProjectGraph` | one finished control compile | its control-compile worker |
+| `ProjectGraph` | one batch of queued control-compilation statuses | its control-compile worker, outside request/completion causes |
 
 ### Asynchronous boundaries
 

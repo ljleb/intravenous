@@ -115,6 +115,56 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_module_manual_fanout(
 
 } // namespace
 
+TEST_F(GraphJitRuntimeFixture, DisconnectingModuleInputPreservesHistoryAndStartsItsStoredValue)
+{
+    auto connected = configured_module_manual_fanout(*revision, false, false, true);
+    auto disconnected = std::make_shared<iv::ConfiguredGraph>(*connected);
+    auto const module = disconnected->manual_controls[0].input.node_bundle_handle;
+    auto samples = std::vector<iv::ConfiguredSampleConnection>(
+        connected->connections.configured_sample_connections().begin(),
+        connected->connections.configured_sample_connections().end());
+    auto const erased = std::erase_if(samples, [&](auto const& connection) {
+        return std::ranges::any_of(connection.target_channels, [&](auto const& channel) {
+            return channel.bundle == module;
+        });
+    });
+    ASSERT_EQ(erased, 1u);
+    disconnected->connections = iv::GraphBuilderConnections::from_configured_connections(
+        samples, connected->connections.configured_event_connections());
+    auto before = compile_graph(connected, 395);
+    ASSERT_TRUE(before.succeeded()) << (before.diagnostics.empty() ? "" : before.diagnostics.front().message);
+    auto after = jit->handle_project_graph_transaction({
+        .successor = {.project_generation = 396, .graph = disconnected, .definitions = definitions},
+        .predecessor = before.compiled_graph,
+    });
+    ASSERT_TRUE(after.succeeded()) << (after.diagnostics.empty() ? "" : after.diagnostics.front().message);
+    auto initial = before.compiled_graph->node_layout.create_storage(resources);
+    initial.initialize();
+    before.compiled_graph->root_operations.tick_block(initial.buffer().data(), &empty_tick_invocation, index(0), 4);
+    auto current = after.compiled_graph->node_layout.create_storage(resources);
+    ASSERT_TRUE(after.compiled_graph->cutover);
+    auto migration = current.prepare_migration_from(initial);
+    auto transfer = iv::graph_jit::prepare_realtime_port_state_transfers(
+        after.compiled_graph->cutover->state_transition, initial.buffer(), current.buffer());
+    ASSERT_TRUE(transfer) << transfer.error();
+    migration.commit();
+    iv::graph_jit::execute_realtime_port_state_transfers(*transfer, initial.buffer(), current.buffer(), index(4));
+    auto const& operation = after.compiled_graph->root_operations.transition_tick_block
+        ? after.compiled_graph->root_operations.transition_tick_block : after.compiled_graph->root_operations.tick_block;
+    operation(current.buffer().data(), &empty_tick_invocation, index(4), 4);
+    after.compiled_graph->root_operations.tick_block(current.buffer().data(), &empty_tick_invocation, index(8), 4);
+    for (std::size_t node = 0; node < 2; ++node) {
+        auto const* state = static_cast<ManualControlSliceProbeStateMirror*>(current.state_ptr(node));
+        ASSERT_NE(state, nullptr);
+        EXPECT_FLOAT_EQ(state->history_before_slice[2], .75f);
+        EXPECT_FLOAT_EQ(state->history_before_slice[3], .25f);
+        ASSERT_EQ(state->value_count, 12u);
+        for (std::size_t i = 0; i < 12; ++i) {
+            EXPECT_FLOAT_EQ(state->values[i], i < 4 ? .75f : .25f) << "sample " << i;
+        }
+    }
+}
+
 TEST_F(GraphJitRuntimeFixture, ModuleOverrideMigratesConsumedHistoryAndRestoresItsSharedSource)
 {
     auto ordinary = configured_module_manual_fanout(*revision, false, false, true);

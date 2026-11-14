@@ -29,6 +29,7 @@
 #include <iterator>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -1004,6 +1005,7 @@ struct ManualControlCompileRecord {
     std::uint64_t project_generation = 0;
     std::vector<iv::ManualControlId> dynamic_inputs{};
     bool has_predecessor = false;
+    std::vector<iv::ConfiguredManualControl> controls{};
 };
 
 struct ManualControlTargetRecord {
@@ -1020,6 +1022,7 @@ class ManualControlSchedulerProbe {
     std::vector<ManualControlCompileRecord> stages_{};
     std::vector<ManualControlTargetRecord> targets_{};
     std::vector<ManualControlCompileRecord> structural_stages_{};
+    std::vector<iv::ProjectControlCompileStatus> control_statuses_{};
     bool dynamic_controls_need_storage_ = false;
     bool block_next_compilation_ = false;
     bool compilation_is_blocked_ = false;
@@ -1049,6 +1052,8 @@ public:
                 .project_generation = request.successor.project_generation,
                 .dynamic_inputs = inputs,
                 .has_predecessor = static_cast<bool>(request.predecessor),
+                .controls = request.successor.graph ? request.successor.graph->manual_controls
+                    : std::vector<iv::ConfiguredManualControl>{},
             });
             needs_storage = dynamic_controls_need_storage_ && !inputs.empty();
             auto const block = std::exchange(block_next_compilation_, false);
@@ -1140,6 +1145,7 @@ public:
             stages_.push_back({
                 .project_generation = graph ? graph->project_generation : 0,
                 .dynamic_inputs = std::move(inputs),
+                .controls = graph->configured_graph->manual_controls,
             });
         }
         changed_.notify_all();
@@ -1215,6 +1221,28 @@ public:
             [&] { return stages_.size() >= count; });
     }
 
+    void record_control_status(std::span<iv::ProjectControlCompileStatus const> statuses)
+    {
+        std::scoped_lock lock(mutex_);
+        control_statuses_.insert(control_statuses_.end(), statuses.begin(), statuses.end());
+        changed_.notify_all();
+    }
+
+    bool wait_for_control_status(std::string_view phase, std::size_t count = 1)
+    {
+        std::unique_lock lock(mutex_);
+        return changed_.wait_for(lock, std::chrono::seconds(5), [&] {
+            return static_cast<std::size_t>(std::ranges::count(
+                control_statuses_, phase, &iv::ProjectControlCompileStatus::phase)) >= count;
+        });
+    }
+
+    std::vector<iv::ProjectControlCompileStatus> control_statuses() const
+    {
+        std::scoped_lock lock(mutex_);
+        return control_statuses_;
+    }
+
     [[nodiscard]] std::size_t compilation_count() const
     {
         std::scoped_lock lock(mutex_);
@@ -1267,6 +1295,12 @@ void probe_graph_executor_controls(
     }
 }
 
+IV_DECLARE_BRIDGE(manual_control_status_test_bridge, iv::ProjectGraph, ManualControlSchedulerProbe);
+IV_DEFINE_BRIDGE(manual_control_status_test_bridge)
+using iv::iv_runtime_control_compile_status_event_subscriber_type;
+IV_SUBSCRIBE_LINKER_EVENT(manual_control_status_test_bridge,
+    iv_runtime_control_compile_status_event, &ManualControlSchedulerProbe::record_control_status)
+
 class ScopedManualControlSchedulerEvents {
     iv::ProjectGraphGraphJitRequestedEvent previous_graph_jit_{};
     iv::ProjectGraphGraphExecutorRequestedEvent previous_graph_executor_{};
@@ -1308,17 +1342,49 @@ struct ProjectGraphManualControlSchedulingFixture : ::testing::Test {
     ScopedManualControlSchedulerEvents event_scope{probe};
     iv::NodeInstances instances;
     iv::GraphConnections connections;
+    // Bind after construction, but unbind only after ProjectGraph joins its
+    // worker: a final status batch may still be published during teardown.
+    std::optional<manual_control_status_test_bridge::scope> status_scope;
     iv::ProjectGraph project_graph;
     iv::project_graph_node_instances_bridge::scope instances_scope{
         project_graph, instances};
     iv::project_graph_graph_connections_bridge::scope connections_scope{
         project_graph, connections};
 
+    ProjectGraphManualControlSchedulingFixture()
+    {
+        status_scope.emplace(project_graph, probe);
+    }
+
     void TearDown() override
     {
         // A failed assertion must not leave ProjectGraph's worker blocked while
         // the fixture joins it during destruction.
         probe.release_blocked_compilation();
+    }
+
+    void hover(std::string client, std::optional<iv::ManualControlId> control)
+    {
+        iv::ProjectAckBuilder response;
+        in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
+            {.client_id = std::move(client), .id = std::move(control)}, response); });
+        ASSERT_NO_THROW(response.build());
+    }
+
+    void begin(iv::ManualControlInteractionId const& interaction, iv::ManualControlId const& control, float value)
+    {
+        iv::ProjectAckBuilder response;
+        in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction(
+            {interaction, control, value}, response); });
+        ASSERT_NO_THROW(response.build());
+    }
+
+    void end(iv::ManualControlInteractionId const& interaction, float value)
+    {
+        iv::ProjectAckBuilder response;
+        in_event_source([&] { project_graph.handle_project_end_manual_control_interaction(
+            {interaction, value}, response); });
+        ASSERT_NO_THROW(response.build());
     }
 
     std::vector<iv::ManualControlId> realize_controls(std::size_t count)
@@ -2637,43 +2703,222 @@ TEST_F(ProjectGraphManualControlSchedulingFixture,
     }
 }
 
-TEST_F(ProjectGraphManualControlSchedulingFixture,
-       ReleasedKnobStaysDynamicUntilItsOwnClientLeavesAndRegrabReusesCode)
+TEST_F(ProjectGraphManualControlSchedulingFixture, ControlCompilationReportsSupersessionPreparationAndStaging)
 {
     auto const controls = realize_controls(1);
     ASSERT_EQ(controls.size(), 1u);
-    iv::ProjectAckBuilder hover;
-    in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
-        {.client_id = "ui", .id = controls[0]}, hover); });
-    ASSERT_NO_THROW(hover.build());
-    iv::ManualControlInteractionId first{.client_id = "ui", .interaction_id = "first"};
-    iv::ProjectAckBuilder begin;
+    probe.block_next_compilation();
+    auto hover = [&](bool present) {
+        iv::ProjectAckBuilder response;
+        in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
+            {.client_id = "ui", .id = present ? std::optional{controls[0]} : std::nullopt}, response); });
+        response.build();
+    };
+    hover(true);
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    auto started = probe.control_statuses();
+    ASSERT_GE(started.size(), 2u);
+    EXPECT_EQ(started[0].phase, "queued");
+    EXPECT_EQ(started[1].phase, "compiling");
+    EXPECT_EQ(started[0].request_id, started[1].request_id);
+    EXPECT_TRUE(started[0].predictive);
+    EXPECT_EQ(started[0].inputs, std::vector<std::string>{"gain"});
+    hover(false);
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_control_status("superseded"));
+
+    hover(true);
+    ASSERT_TRUE(probe.wait_for_control_status("prepared"));
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "drag"};
+    iv::ProjectAckBuilder response;
     in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction(
-        {first, controls[0], .25f}, begin); });
-    ASSERT_NO_THROW(begin.build());
+        {gesture, controls[0], .25f}, response); });
+    ASSERT_NO_THROW(response.build());
+    ASSERT_TRUE(probe.wait_for_control_status("staged"));
+    auto statuses = probe.control_statuses();
+    auto const prepared = std::ranges::find(statuses, std::string{"prepared"}, &iv::ProjectControlCompileStatus::phase);
+    auto const staged = std::ranges::find(statuses, std::string{"staged"}, &iv::ProjectControlCompileStatus::phase);
+    ASSERT_NE(prepared, statuses.end());
+    ASSERT_NE(staged, statuses.end());
+    EXPECT_EQ(prepared->request_id, staged->request_id);
+    EXPECT_TRUE(prepared->predictive);
+    EXPECT_FALSE(staged->predictive);
+    EXPECT_GE(prepared->preparation_us, prepared->queue_us);
+    EXPECT_GE(staged->elapsed_us, prepared->preparation_us);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       ReleasePreparesTheLatestConstantAndLeaveReusesItWithoutRecompiling)
+{
+    auto const controls = realize_controls(1);
+    hover("ui", controls[0]);
+    iv::ManualControlInteractionId first{.client_id = "ui", .interaction_id = "first"};
+    begin(first, controls[0], .25f);
     ASSERT_TRUE(probe.wait_for_stages(1));
     auto const before_release = probe.compilation_count();
-    iv::ProjectAckBuilder end;
-    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({first, .5f}, end); });
-    ASSERT_NO_THROW(end.build());
-    EXPECT_EQ(probe.compilation_count(), before_release);
+    end(first, .5f);
+    ASSERT_TRUE(probe.wait_for_control_status("prepared", 2));
+    EXPECT_EQ(probe.compilation_count(), before_release + 1);
+    EXPECT_EQ(probe.stages().size(), 1u);
+    EXPECT_TRUE(probe.compilations().back().dynamic_inputs.empty());
+    EXPECT_FLOAT_EQ(probe.compilations().back().controls[0].settled_value.value, .5f);
 
     iv::ManualControlInteractionId second{.client_id = "ui", .interaction_id = "second"};
-    iv::ProjectAckBuilder regrab, release;
-    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction(
-        {second, controls[0], .75f}, regrab); });
-    ASSERT_NO_THROW(regrab.build());
-    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({second, .9f}, release); });
-    ASSERT_NO_THROW(release.build());
-    EXPECT_EQ(probe.compilation_count(), before_release);
+    begin(second, controls[0], .75f);
+    EXPECT_EQ(probe.compilation_count(), before_release + 1);
+    end(second, .9f);
+    ASSERT_TRUE(probe.wait_for_control_status("prepared", 3));
+    EXPECT_EQ(probe.compilation_count(), before_release + 2);
+    EXPECT_EQ(probe.stages().size(), 1u);
+    EXPECT_FLOAT_EQ(probe.compilations().back().controls[0].settled_value.value, .9f);
 
-    iv::ProjectAckBuilder leave;
-    in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
-        {.client_id = "ui", .id = std::nullopt}, leave); });
-    ASSERT_NO_THROW(leave.build());
+    hover("ui", std::nullopt);
     ASSERT_TRUE(probe.wait_for_stages(2));
     EXPECT_TRUE(probe.stages().back().dynamic_inputs.empty());
+    EXPECT_FLOAT_EQ(probe.stages().back().controls[0].settled_value.value, .9f);
+    EXPECT_EQ(probe.compilation_count(), before_release + 2);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       LeavePromotesTheRunningReleaseCompilationWithoutRestartingIt)
+{
+    auto const controls = realize_controls(1);
+    hover("ui", controls[0]);
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "drag"};
+    begin(gesture, controls[0], .25f);
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    auto const before_release = probe.compilation_count();
+    probe.block_next_compilation();
+    end(gesture, .5f);
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    EXPECT_EQ(probe.stages().size(), 1u);
+    hover("ui", std::nullopt);
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_control_status("staged", 2));
+    ASSERT_EQ(probe.stages().size(), 2u);
+    EXPECT_TRUE(probe.stages().back().dynamic_inputs.empty());
+    EXPECT_FLOAT_EQ(probe.stages().back().controls[0].settled_value.value, .5f);
     EXPECT_EQ(probe.compilation_count(), before_release + 1);
+    auto const statuses = probe.control_statuses();
+    auto const last_id = statuses.back().request_id;
+    EXPECT_EQ(std::ranges::count_if(statuses, [&](auto const& status) {
+        return status.request_id == last_id && status.phase == "compiling";
+    }), 1);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       ASecondReleaseSupersedesAnOlderConstantStillCompiling)
+{
+    auto const controls = realize_controls(1);
+    hover("ui", controls[0]);
+    iv::ManualControlInteractionId first{.client_id = "ui", .interaction_id = "first"};
+    iv::ManualControlInteractionId second{.client_id = "ui", .interaction_id = "second"};
+    begin(first, controls[0], .25f);
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    auto const before_release = probe.compilation_count();
+    probe.block_next_compilation();
+    end(first, .5f);
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    begin(second, controls[0], .75f);
+    end(second, .9f);
+    hover("ui", std::nullopt);
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_control_status("staged", 2));
+    ASSERT_TRUE(probe.wait_for_control_status("superseded"));
+    ASSERT_EQ(probe.stages().size(), 2u);
+    EXPECT_FLOAT_EQ(probe.stages().back().controls[0].settled_value.value, .9f);
+    EXPECT_EQ(probe.compilation_count(), before_release + 2);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       LeavingAtTheOriginalValueRejectsTheUnfinishedDynamicVariant)
+{
+    auto const controls = realize_controls(1);
+    auto const value = project_graph.current_generation()->graph->manual_controls[0].settled_value.value;
+    probe.block_next_compilation();
+    hover("ui", controls[0]);
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "drag"};
+    begin(gesture, controls[0], .25f);
+    end(gesture, value);
+    hover("ui", std::nullopt);
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_control_status("superseded"));
+    EXPECT_TRUE(probe.stages().empty());
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       ReleasePreparationKeepsAnotherClientsGestureDynamic)
+{
+    auto const controls = realize_controls(2);
+    hover("first", controls[0]);
+    iv::ManualControlInteractionId first{.client_id = "first", .interaction_id = "drag"};
+    iv::ManualControlInteractionId other{.client_id = "other", .interaction_id = "drag"};
+    begin(first, controls[0], .25f);
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    begin(other, controls[1], .75f);
+    ASSERT_TRUE(probe.wait_for_stages(2));
+    end(first, .5f);
+    ASSERT_TRUE(probe.wait_for_control_status("prepared", 3));
+    EXPECT_EQ(probe.stages().size(), 2u);
+    EXPECT_EQ(probe.compilations().back().dynamic_inputs,
+        std::vector<iv::ManualControlId>{controls[1]});
+    EXPECT_FLOAT_EQ(probe.compilations().back().controls[0].settled_value.value, .5f);
+    auto const compiled = probe.compilation_count();
+    hover("first", std::nullopt);
+    ASSERT_TRUE(probe.wait_for_stages(3));
+    EXPECT_EQ(probe.stages().back().dynamic_inputs,
+        std::vector<iv::ManualControlId>{controls[1]});
+    EXPECT_EQ(probe.compilation_count(), compiled);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       ReleaseBeforeDynamicCodeIsReadyDoesNotSupersedeItsActivation)
+{
+    auto const controls = realize_controls(1);
+    probe.block_next_compilation();
+    hover("ui", controls[0]);
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "drag"};
+    begin(gesture, controls[0], .25f);
+    end(gesture, .5f);
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_control_status("prepared", 2));
+    ASSERT_EQ(probe.stages().size(), 1u);
+    EXPECT_EQ(probe.stages()[0].dynamic_inputs, controls);
+    EXPECT_TRUE(probe.compilations().back().dynamic_inputs.empty());
+    hover("ui", std::nullopt);
+    ASSERT_TRUE(probe.wait_for_stages(2));
+    EXPECT_FLOAT_EQ(probe.stages().back().controls[0].settled_value.value, .5f);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       StorageChangingSettlementReusesThePreparedSteadyCandidate)
+{
+    auto const controls = realize_controls(1);
+    auto const initial_stages = probe.structural_stage_count();
+    probe.require_storage_for_dynamic_controls();
+    hover("ui", controls[0]);
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "drag"};
+    begin(gesture, controls[0], .25f);
+    ASSERT_TRUE(probe.wait_for_control_status("staged"));
+    ASSERT_EQ(probe.structural_stage_count(), initial_stages + 1);
+    auto const before_release = probe.compilation_count();
+    end(gesture, .5f);
+    // Dynamic preparation and its storage transition each report prepared.
+    ASSERT_TRUE(probe.wait_for_control_status("prepared", 3));
+    EXPECT_EQ(probe.compilation_count(), before_release + 1);
+    EXPECT_EQ(probe.structural_stage_count(), initial_stages + 1);
+
+    hover("ui", std::nullopt);
+    ASSERT_TRUE(probe.wait_for_control_status("staged", 2));
+    EXPECT_EQ(probe.structural_stage_count(), initial_stages + 2);
+    // Leave needs the existing predecessor-aware transition compile, but does
+    // not compile the already prepared steady candidate a second time.
+    EXPECT_EQ(probe.compilation_count(), before_release + 2);
+    EXPECT_TRUE(probe.compilations().back().has_predecessor);
+    EXPECT_TRUE(probe.compilations().back().dynamic_inputs.empty());
+    EXPECT_FLOAT_EQ(probe.compilations().back().controls[0].settled_value.value, .5f);
 }
 
 TEST_F(ProjectGraphManualControlSchedulingFixture,
@@ -2725,6 +2970,7 @@ TEST_F(ProjectGraphManualControlSchedulingFixture,
     begin(first, controls[0], .25f);
     ASSERT_TRUE(probe.wait_for_stages(1));
     end(first, .25f);
+    ASSERT_TRUE(probe.wait_for_control_status("prepared", 2));
 
     // Change a different control before its dynamic variant can activate.
     // Returning to the first dynamic set still needs the new constant value.
@@ -2756,12 +3002,12 @@ TEST_F(ProjectGraphManualControlSchedulingFixture,
         {interaction, controls[0], .25f}, begin); });
     ASSERT_NO_THROW(begin.build());
     ASSERT_TRUE(probe.wait_for_stages(1));
+    probe.block_next_compilation();
     in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({interaction, .5f}, end); });
     ASSERT_NO_THROW(end.build());
-    probe.block_next_compilation();
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
     iv::SocketRpcClientDisconnectedRequest closed{.client_id = "ui"};
     in_event_source([&] { project_graph.handle_socket_rpc_client_disconnected(closed); });
-    ASSERT_TRUE(probe.wait_for_blocked_compilation());
     iv::ProjectAckBuilder predictive;
     in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
         {.client_id = "other", .id = controls[1]}, predictive); });

@@ -174,22 +174,27 @@ class GraphExecutor {
     struct ExecutionGeneration {
         std::shared_ptr<CompiledGraph const> graph{};
         // The structural graph owns layout, background state, and transition
-        // metadata. A compatible steady-code replacement changes only the
-        // generated realtime operations used after the transition phase.
-        std::atomic<CompiledGraph const*> realtime_code{nullptr};
-        std::shared_ptr<CompiledGraph const> active_realtime_code_owner{};
-        std::shared_ptr<CompiledGraph const> pending_realtime_code_owner{};
+        // metadata. A compatible steady-code replacement publishes operations
+        // and their dynamic target bindings for use after the transition phase.
         std::vector<std::pair<ManualControlId, Sample>> manual_control_targets{};
-        // One entry per manual-control binding, resolved off realtime before the
-        // generation becomes visible. Constant and dynamic code variants share
-        // the state offsets, so the binding list follows the structural graph.
         struct LiveTargetBinding {
             std::shared_ptr<ManualControlLiveTarget> target{};
             std::size_t target_storage_offset = 0;
             // Owned by the realtime thread after publication.
             std::uint64_t observed_completion = 0;
         };
-        std::vector<LiveTargetBinding> live_targets{};
+        // Code and its dynamic target list are prepared and published together.
+        // The audio thread never scans the structural graph's idle controls.
+        struct RealtimeCode {
+            std::shared_ptr<CompiledGraph const> graph{};
+            std::vector<LiveTargetBinding> live_targets{};
+        };
+        std::atomic<RealtimeCode*> realtime_code{nullptr};
+        std::unique_ptr<RealtimeCode> active_realtime_code_owner{};
+        std::unique_ptr<RealtimeCode> pending_realtime_code_owner{};
+        // Activation only moves owners. The next cold staging operation (or
+        // generation reclamation) destroys the previous code and binding list.
+        std::unique_ptr<RealtimeCode> retired_realtime_code_owner{};
         RealtimeGeneration realtime;
         BackgroundGeneration background;
         std::unique_ptr<RealtimePersistedState> initial_persisted_state{};
@@ -375,6 +380,8 @@ class GraphExecutor {
         std::uint64_t project_generation) noexcept;
     [[nodiscard]] std::shared_ptr<ManualControlLiveTarget> live_target(
         ManualControlId const& id);
+    [[nodiscard]] std::unique_ptr<ExecutionGeneration::RealtimeCode>
+    prepare_realtime_code(std::shared_ptr<CompiledGraph const> graph);
     // Writes value into every accepted generation that binds id. The caller
     // holds the accepted-chain guard.
     bool set_manual_control_target_in_accepted_chain(

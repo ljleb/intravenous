@@ -2058,3 +2058,206 @@ Cleanup and remaining investigation (2026-11-14; implementation status):
 The owner verified the preceding version. The cleanup, additional trace fields and
 new regressions have only been inspected statically; the agent did not run builds,
 typechecks or tests. `git diff --check` is the mechanical check used for this pass.
+
+
+Follow-up evidence (2026-11-14; unresolved investigation):
+
+- The owner withdrew the one-minute trigger: lowering `iv.project.saw` frequency
+  to zero, then raising it, is the suspected trigger. The previously added long
+  elapsed-phase test remains a cheap arithmetic regression, not a reproduction.
+- `manualControls.end` is sent on pointer release, with the final value.
+  `ProjectGraph` closes that interaction under `live_mutex_`, so subsequent values
+  for its id are dropped. It retains dynamic code through `hover_retained_inputs_`
+  while the released knob remains hovered. Hover leave requests settled code.
+- The recording `/tmp/iv-knob-audio-443616ad-2a86-4ee5-9e86-cb815411d806.json`
+  has about 8.44 seconds of wall time for eight seconds of audio. Event times must
+  be mapped through its block timestamps rather than treated as audio offsets.
+  After that mapping, the stationary regions are clean tones at 500, 525 and
+  210 Hz. A fitted single-tone recurrence leaves residuals around 1e-8. The first
+  zero hold is a constant -0.04837; the second is +0.02037. The 210 Hz tone follows
+  the first zero hold, so this recording does not show a stuck frequency or extra
+  tones. The first interpretation of fixed DC despite positive targets was wrong
+  because it used wall time as an audio offset.
+- A zero-frequency sine oscillator freezes its phase and therefore produces DC;
+  zero frequency does not imply a muted output. No muting or DC-filtering policy
+  has been added. A light regression checks a ramp to zero, phase hold, and ramp
+  back up against the integrated sine reference.
+- The cross-knob recording
+  `/tmp/iv-knob-audio-73faa582-76f0-41a2-8555-50329b253b51.json` again reports the
+  next press on another knob after release. It does not yet contain the newly
+  added screen coordinates or unlocked movement. Diagnostic format version 2
+  marks the current recorder; rebuilding and reinstalling the extension is needed
+  before the next cross-knob capture.
+- Idle polling cost is not measured. For N runtime bindings, the current loop
+  performs two acquire loads per binding per root callback, plus pointer chasing
+  and comparisons. At 48 kHz and 256 frames that is about 375*N atomic loads per
+  second. A module's fanout can produce several bindings for one semantic knob.
+  The recommended next optimization is to prepare the dynamic target bindings
+  off realtime and publish them with the active code. It must also deliver a
+  final target after gesture close; it cannot merely skip bindings with no open
+  gesture. Measure callback time before and after on identical graphs.
+
+The new zero-frequency regression and diagnostic format marker were not built or
+run by the agent. No Git index changes or project-file changes were made.
+
+
+Disconnected input cutover and compact target publication (2026-11-14;
+implementation checkpoint, awaiting owner verification):
+
+- The owner reproduced `GraphJit transition input suffix lost its producer group`
+  by disconnecting the oscillator. `specialize_transition_plan()` treated a
+  successor's immutable input representation as if it must have a producer group.
+  Disconnected defaults do not have one. `lowering.cpp` now schedules a constant
+  source's suffix mirror before its consumer, using the same copy operation and
+  inherited history window. It does not invent a producer or discard history.
+- `DisconnectingModuleInputPreservesHistoryAndStartsItsStoredValue` disconnects a
+  public module input, retains the two consumers' previous .75 history, and checks
+  that their new values become the stored .25 through cutover and steady execution.
+- `ExecutionGeneration::RealtimeCode` owns both a compiled graph and the compact
+  `LiveTargetBinding` list for that variant's dynamic controls. Both are prepared
+  off realtime and published with one pointer. A constant variant has no bindings
+  to poll. The list changes on same-layout code activation as well as structural
+  generation activation, so the structural graph's old dynamic flags cannot cause
+  missing or spurious polling.
+- `completion_sequence` remains checked by dynamic bindings after a gesture closes.
+  Releasing a knob while it stays hovered therefore still delivers the final target
+  after an overlapping stale callback copy. The release/hover-leave split is intact.
+- Code activation moves the previous `RealtimeCode` owner into a retired slot. The
+  next cold code staging call, or normal generation reclamation, destroys it.
+  Activation never destroys the old binding vector or drops its compiled-code
+  ownership. The retired slot is cleared before another pending code is published.
+  The executor regression checks both directions of code activation, final delivery,
+  replacement of an unactivated variant, and retention until cold reclamation.
+- `iv_manual_control_polling_benchmark` runs the current executor on one no-DSP graph
+  and alternates between its compact path and the same path with a reproduction of
+  the former idle all-binding scan. Both modes retain the same legacy binding data
+  and call the same no-inline polling function (empty span for the compact mode).
+  This isolates hot-cache polling overhead; it is not a before/after binary comparison
+  or a prediction of a full DSP graph's saving. The default sweep covers 0, 1, 16,
+  256 and 4096 runtime bindings, alternates order over seven trials, and reports
+  each trial and median nanoseconds per Tick. No timing thresholds enter tests.
+
+After the regular configure/build, run:
+
+```sh
+./build-release/benchmark/iv_manual_control_polling_benchmark | tee build-release/manual-control-polling.tsv
+```
+
+Use `--bindings N`, `--iterations N` and `--trials N` to narrow or extend the sweep.
+No measured speedup is claimed yet. The agent did not run builds or tests.
+
+Pointer evidence from format version 2:
+
+- `/tmp/iv-knob-audio-b6ed0702-7e0f-4cad-a3ac-05aa7e8022a5.json` reports VSCodium
+  1.143.17232, Electron 43.7.7, Chrome 150.0.7871.250 and pixel ratio 1.44.
+- The first post-unlock mouse move has zero movement deltas, but both screen and
+  webview coordinates jump. Examples: client deltas about (10.7,49.3) and
+  (10.3,35.1), screen deltas about (16.5,72.4) and (15.7,51.4). The next press can
+  then hit `detune` instead of the original `freq`. This places the mismatch before
+  the knob's DOM handler; it does not establish which editor/browser/native layer
+  supplied the incorrect position.
+- The owner confirms that resetting editor zoom does not remove the defect.
+  No coordinate-offset correction has been added: distinguishing a synthetic warp
+  from genuine movement is necessary before changing target selection.
+
+
+Owner measurements and deferred presentation requests (2026-11-14):
+
+- The owner reports that all tests pass after compact-target publication and the
+  disconnected-input cutover fix. The idle polling benchmark medians are below.
+  These are hot-cache component measurements with no DSP, not full audio callback
+  improvements. The zero-binding paired delta is noise, and ratios against this
+  near-empty callback must not be presented as whole-engine speedups.
+
+| Runtime bindings | Compact Tick (ns) | Tick plus former scan (ns) | Median paired saving (ns) |
+| ---: | ---: | ---: | ---: |
+| 0 | 16.59 | 16.94 | -0.50 |
+| 1 | 16.35 | 16.83 | 0.30 |
+| 16 | 16.37 | 22.41 | 6.33 |
+| 256 | 16.68 | 123.26 | 106.37 |
+| 4096 | 16.56 | 3159.23 | 3142.72 |
+
+At 4096 bindings the removed scan costs about 3.14 us per callback in this
+experiment, about 0.059% of a 256-frame, 48 kHz block period. Small graphs gain very
+little; the benefit is removing growth with idle bindings.
+
+Active work: report actual manual-control compilation requests in the extension
+log, including queued/running/completed/superseded/failed outcomes and timing.
+Report the measured endpoint explicitly: compile preparation or executor staging
+is not evidence that an audio callback has activated the code. Hover, release and
+hover leave remain separate events: release commits and prepares settled code;
+hover leave permits its activation. The prior checkpoint wording is preserved in
+[the historical note](historical/knob_settling_before_release_preparation_2026-11-14.md). Logging must not reintroduce per-pointer-update project work or audio-thread
+notification costs.
+
+Deferred owner requests; do not implement during this pass:
+
+- A performance reporting page: queued and running rebuild counts, plus per-block
+  processing time and remaining deadline headroom. The useful headroom is
+  `frames / sample_rate - measured processing duration`; callback scheduling delay
+  and underruns should be reported separately, and remaining deadline time is not
+  the same quantity as process-wide CPU utilization.
+- Optional per-node or per-region attribution. Instrumentation must be opt-in and
+  absent from normal execution when disabled. Fused specialized code and inlining
+  mean individual node times cannot always be separated without changing the
+  executable; report that limit rather than inventing precise percentages.
+- Port idle/hover styling should provide the same subtle feedback as knobs while
+  preserving input-yellow and output-blue identities.
+- Cable/popover stacking: a self-connection's cable can float over an input popover
+  while its output endpoint is hidden. Prefer keeping popover chrome above cable
+  curves, with incident cables revealed through the existing individual-port
+  anchors. Consider fading a curve near an obscured endpoint if needed. The owner
+  also suggested fading the popover around crossing curves. These are alternatives
+  for later visual testing, not a settled opacity rule.
+
+Stage 3 remains active; these reporting-page and port-style requests do not replace
+its specialized automation-presentation work or the unresolved pointer-lock defect.
+
+
+Control-compilation logging implementation (2026-11-14; agent static review only):
+
+- Added `ProjectControlCompileStatus` and `graph.controlCompilation`. The existing
+  compile worker publishes queued status records as its own source after releasing
+  the graph mutex. No incoming RPC cause re-enters `SocketRpcServer`; no status
+  publication runs on the audio thread or on each live pointer update.
+- Requests now report queued/running, predictive preparation, executor staging,
+  cancellation/supersession and failure. Storage-changing recompiles report their
+  second compilation. Previously ignored failed GraphJit results now surface the
+  first available diagnostic in the extension log.
+- `ControlCompilationProgress` correlates request ids, tracks queued/running jobs,
+  and formats the log. `WorkspaceSession` displays a separate compiler status bar
+  without replacing package-build or knob-interaction status. Disconnect clears
+  its counts and timer. The new topic causes no graph-scope refresh.
+- The measured interval starts when ProjectGraph creates the compiler request and
+  ends at candidate preparation or executor acceptance. It is deliberately labelled
+  as such. RPC transit and subsequent audio activation are unmeasured. Predictive
+  code can wait for a gesture between those two endpoints.
+- Added light scheduler, RPC serialization and client-progress regressions. The
+  scheduler test blocks one fake compile, cancels its hover, verifies supersession,
+  then checks preparation and staging of a later request. These do not compile an IV
+  package or put timing thresholds in tests.
+- Installation warning: the owner saw Node DEP0169 after a successful VSCodium
+  install. The client's own source and build script contain no calls to the legacy
+  Node `url.parse`, `url.format` or `url.resolve` APIs. The exact installer/dependency
+  call site is not established. A read-only extension-list invocation did not
+  reproduce the deprecation. No dependency downgrade, warning suppression or editor
+  patch was introduced. The upstream API notice is
+  <https://nodejs.org/api/deprecations.html#dep0169-insecure-urlparse>.
+
+The performance page, opt-in attribution, port hover styling and cable/popover
+stacking remain deferred as requested. The agent has not run builds, typechecks
+or tests for this logging pass; `git diff --check` is the mechanical check used.
+
+
+Active change (2026-11-14): release-time settled-code preparation. Release commits
+the final value and predicts the variant needed when that client leaves the knob;
+that prediction does not activate it. Hover leave must reuse ready code or promote
+an already pending/in-flight request. Reuse must compare stored constants as well
+as dynamic-input sets. Active dynamic code remains available for re-grabs. The
+existing structural transition path still applies when layouts differ. Light
+scheduler regressions now cover ready reuse, leave during compilation, repeated
+releases with different values (both prepared and still compiling), concurrent
+held controls, release before dynamic activation, restoration of the original
+constant, and storage-changing activation. Existing blocking tests now arm the
+block before release, since release itself starts preparation. No build/test has
+run for this change yet.

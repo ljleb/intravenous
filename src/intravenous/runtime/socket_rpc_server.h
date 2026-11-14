@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -157,6 +158,7 @@ namespace iv {
 
         void send_server_message(SocketRpcServerMessage const &notification);
         void send_server_status(SocketRpcServerStatus const &notification);
+        void handle_control_compile_status(std::span<ProjectControlCompileStatus const> statuses);
         void send_node_instances_updated(
             std::vector<IvModuleInstanceInfo> const &instances);
         void send_iv_package_definitions_updated();

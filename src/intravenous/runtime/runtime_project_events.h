@@ -14,6 +14,7 @@
 
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -186,6 +187,8 @@ using ProjectOverrideSettingsRequestedEvent =
     void (*)(ProjectOverrideSettingsRequest const&);
 
 IV_DECLARE_LINKER_EVENT(ProjectNotificationEvent, iv_runtime_project_notification_event);
+using ProjectControlCompileStatusEvent = void (*)(std::span<ProjectControlCompileStatus const>);
+IV_DECLARE_LINKER_EVENT(ProjectControlCompileStatusEvent, iv_runtime_control_compile_status_event);
 IV_DECLARE_LINKER_EVENT(ProjectStateChangedEvent, iv_runtime_project_state_changed_event);
 IV_DECLARE_LINKER_EVENT(ProjectLoadedEvent, iv_runtime_project_loaded_event);
 IV_DECLARE_LINKER_EVENT(

@@ -2,6 +2,7 @@
 
 namespace iv {
 IV_DEFINE_LINKER_EVENT(ProjectNotificationEvent, iv_runtime_project_notification_event)
+IV_DEFINE_LINKER_EVENT(ProjectControlCompileStatusEvent, iv_runtime_control_compile_status_event)
 IV_DEFINE_LINKER_EVENT(ProjectStateChangedEvent, iv_runtime_project_state_changed_event)
 IV_DEFINE_LINKER_EVENT(ProjectLoadedEvent, iv_runtime_project_loaded_event)
 IV_DEFINE_LINKER_EVENT(

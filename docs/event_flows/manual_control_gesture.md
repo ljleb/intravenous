@@ -65,6 +65,18 @@ controls request. `GraphExecutor` writes the value into every accepted generatio
 that binds the control, then closes the live target. `SocketRpcServer` discards
 the gesture's unwritten relay frames before publishing the end's revision.
 
+If that client still hovers the released knob, end also schedules a predictive
+GraphJit request for the variant needed when it leaves. The candidate uses the
+committed value while preserving other clients' required dynamic controls. It
+does not activate on completion. Hover leave consumes the matching ready
+candidate, or promotes the matching queued/running request to allow staging.
+A second release with a changed constant supersedes the older candidate.
+
+If the candidate changes storage, leave reuses its steady compilation and then
+uses the existing predecessor-aware graph-transition compilation. Release does
+not pre-stage a structural successor. This is the same boundary used by dynamic
+hover preparation.
+
 ## Disconnect
 
 ```mermaid
@@ -84,3 +96,46 @@ flowchart TD
 Each of the client's open gestures ends at the last value received from it, in
 one controls request. `SocketRpcServer` discards the client's unwritten relay
 frames, then publishes one revision when the record reports a commit.
+
+
+## Compilation progress notifications
+
+Implementation checkpoint (2026-11-14; new logging awaits owner verification):
+`ProjectGraph` queues `ProjectControlCompileStatus` records while holding its own
+lock. Incoming hover/begin/end causes do not call `SocketRpcServer` to publish
+these records. The control-compile worker drains the records after releasing the
+lock and opens a separate `control compilation status` source:
+
+```mermaid
+flowchart TD
+    SRC["queued compiler-status records"]
+    PG["ProjectGraph worker"]
+    RPC["SocketRpcServer"]
+    SRC --> PG
+    PG -->|"one status batch"| RPC
+```
+
+`SocketRpcServer::handle_control_compile_status()` publishes the records on
+`graph.controlCompilation`. These notifications change no project record or
+session revision. They describe queued, compiling, prepared, staged, superseded
+and failed jobs; storage-changing jobs also report `compilingStorage`.
+
+A request id identifies the job across phases. Times begin in
+`ProjectGraph::schedule_control_compile_locked()`, before it copies the configured
+graph. `queueUs` includes that request preparation and the wait until the worker
+starts. `preparationUs` ends when GraphJit returns usable candidate code.
+`stageUs` measures the executor request that accepts it. `elapsedUs` is the job's
+wall-clock age at the reported phase. Predictive hover or release can prepare code long
+before a gesture or hover leave requests staging, so job age can include that deliberate wait.
+Storage-changing jobs prepare a final successor before reporting staging.
+
+None of these times measures RPC transit or the audio callback's later activation.
+Those endpoints need separate observations; clients must not label staging as
+activation or audible latency. Failures keep the previous executable and report
+the available GraphJit diagnostic. Superseded queued/in-flight jobs receive a
+terminal status so client pending counts can clear.
+
+The extension logs every phase and shows queued/running job counts in a separate
+status-bar item. Prepared/staged completion remains visible briefly, and a failure
+remains visible until another status or disconnect. It does not re-read graph
+scopes or add traffic for live `manualControls.update` messages.

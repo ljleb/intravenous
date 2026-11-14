@@ -1,10 +1,13 @@
 #include <intravenous/runtime/socket_rpc_project_graph_bridge.h>
 
 #include <intravenous/runtime/project_graph.h>
+#include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 namespace iv {
 IV_DEFINE_BRIDGE(socket_rpc_project_graph_bridge)
+IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_project_graph_bridge,
+    iv_runtime_control_compile_status_event, &SocketRpcServer::handle_control_compile_status)
 IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_project_graph_bridge,
     iv_socket_rpc_set_audio_devices_event, &ProjectGraph::handle_socket_rpc_set_audio_devices)
 IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_project_graph_bridge,

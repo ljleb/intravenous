@@ -1335,6 +1335,72 @@ TEST_F(GraphExecutorFixture, OpenGestureReachesEveryGenerationThroughOneLiveTarg
     EXPECT_FLOAT_EQ(target_in(second_tick.storage), .2f);
 }
 
+TEST_F(GraphExecutorFixture, CodeActivationPublishesDynamicTargetsAndDefersCodeReclamation)
+{
+    iv::GraphExecutor executor;
+    std::size_t offset = 0;
+    auto constant = std::const_pointer_cast<iv::CompiledGraph>(compiled_graph(
+        1, &observe_first, manual_control_layout(offset)));
+    constant->manual_controls.push_back({
+        .configured = {.id = manual_control_id(), .input = {0, iv::PortKind::sample, 0}},
+        .state_storage_offset = offset, .participates = true,
+    });
+    auto target_value = [&](std::byte const* storage) {
+        iv::ManualControlRuntimeState state{};
+        std::memcpy(&state, storage + offset, sizeof(state));
+        return std::bit_cast<float>(state.target_bits);
+    };
+    ASSERT_EQ(stage_graph(executor, constant), iv::GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+    iv::ProjectGraphGraphExecutorControlsRequest begin;
+    begin.targets.push_back({.project_generation = 1, .id = manual_control_id(),
+        .value = .3f, .gesture = iv::ManualControlGesturePhase::begin});
+    executor.handle_project_graph_controls(begin);
+    auto live = begin.targets[0].live_target;
+    ASSERT_TRUE(live);
+    live->target_bits.store(std::bit_cast<std::uint32_t>(.4f));
+    executor.tick_block(index(0), 16);
+    // An open gesture cannot make constant code poll a target prematurely.
+    EXPECT_FLOAT_EQ(target_value(first_tick.storage), .3f);
+
+    auto dynamic = std::make_shared<iv::CompiledGraph>(*constant);
+    dynamic->manual_controls[0].configured.dynamic = true;
+    dynamic->root_operations.tick_block = {.function = &observe_second};
+    std::weak_ptr<iv::CompiledGraph const> dynamic_lifetime = dynamic;
+    ASSERT_EQ(executor.stage_realtime_code(dynamic), iv::GraphExecutorStageResult::accepted);
+    dynamic.reset();
+    live->target_bits.store(std::bit_cast<std::uint32_t>(.45f));
+    executor.tick_block(index(16), 16);
+    EXPECT_FLOAT_EQ(target_value(first_tick.storage), .3f);
+    ASSERT_TRUE(executor.activate_pending(index(32)));
+    executor.tick_block(index(32), 16);
+    EXPECT_FLOAT_EQ(target_value(second_tick.storage), .45f);
+
+    iv::ProjectGraphGraphExecutorControlsRequest end;
+    end.targets.push_back({.project_generation = 1, .id = manual_control_id(),
+        .value = .5f, .gesture = iv::ManualControlGesturePhase::end});
+    executor.handle_project_graph_controls(end);
+    auto& state_bits = *reinterpret_cast<std::uint32_t*>(second_tick.storage + offset);
+    std::atomic_ref<std::uint32_t>(state_bits).store(std::bit_cast<std::uint32_t>(.45f));
+    executor.tick_block(index(48), 16);
+    EXPECT_FLOAT_EQ(target_value(second_tick.storage), .5f);
+
+    auto settled = std::make_shared<iv::CompiledGraph>(*constant);
+    ASSERT_EQ(executor.stage_realtime_code(settled), iv::GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(64)));
+    EXPECT_FALSE(dynamic_lifetime.expired()); // Activation retires; it cannot destroy code.
+    executor.tick_block(index(64), 16);
+    EXPECT_FLOAT_EQ(target_value(first_tick.storage), .5f);
+    // Another ready variant can replace an unactivated one. Cold staging also
+    // reclaims the retired dynamic variant and its binding list.
+    ASSERT_EQ(executor.stage_realtime_code(settled), iv::GraphExecutorStageResult::accepted);
+    EXPECT_TRUE(dynamic_lifetime.expired());
+    ASSERT_EQ(executor.stage_realtime_code(settled), iv::GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(80)));
+    executor.tick_block(index(80), 16);
+    EXPECT_FLOAT_EQ(target_value(first_tick.storage), .5f);
+}
+
 TEST_F(GraphExecutorFixture, PreservesEveryAcceptedGenerationBeforeActivation)
 {
     iv::GraphExecutor executor;

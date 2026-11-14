@@ -119,6 +119,23 @@ namespace iv {
         std::vector<std::string> deleted_node_ids{};
     };
 
+    // One asynchronous manual-control compilation job. Times use the server's
+    // steady clock and end at preparation or executor acceptance, not at audio
+    // activation. Predictive jobs can wait for a gesture after preparation.
+    struct ProjectControlCompileStatus {
+        std::uint64_t request_id = 0;
+        std::uint64_t project_generation = 0;
+        std::string phase{};
+        bool dynamic = false;
+        bool predictive = false;
+        std::vector<std::string> inputs{};
+        std::uint64_t elapsed_us = 0;
+        std::uint64_t queue_us = 0;
+        std::uint64_t preparation_us = 0;
+        std::uint64_t stage_us = 0;
+        std::string message{};
+    };
+
     struct ProjectVirtualNodesNotification {
         std::vector<VirtualNodeInfo> nodes{};
         std::vector<std::string> replace_instance_ids{};

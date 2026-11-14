@@ -1549,6 +1549,12 @@ specialize_transition_plan(
                     composition->before_execution_position.has_value();
                 source_after_composition =
                     !source_before_consumer_composition;
+            } else if (source.constant_value) {
+                // An immutable default has no producer group or callback.
+                // Its values are available before the consumer reads its
+                // inherited suffix, just like other immutable input values.
+                source_position = target_position;
+                source_before_consumer_materialization = true;
             } else {
                 if (source.producer_group_index
                         >= transition_plan.connections.sample_producer_groups.size()) {

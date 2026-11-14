@@ -713,16 +713,18 @@ for each audio callback while dynamic scrubbing is active:
     to the latched target over the callback
 
 mouse releases while still over the knob:
-    close the undo gesture
-    keep the dynamic graph and latest target active
+    close the undo gesture and commit its final target
+    prepare code specialized on the settled value without activating it
+    keep the existing dynamic variant available for another grab
 
-pointer leaves the knob after release:
-    capture the latest stored value
-    immediately request a settled replacement (no debounce timer)
+mouse leaves the released knob:
+    reuse the prepared settled variant or promote its pending compilation
+    permit activation when ready
 
 settled graph becomes active:
     use the manual value as an exact constant where it participates
     otherwise restore the authored connection
+
 ```
 
 If the pointer already left before release, release requests settled code. Client
@@ -944,3 +946,11 @@ changes it. Hover and an unchanged gesture do not create persisted overrides or
 undo entries. Undoing the first changed gesture can restore absence of an
 override, allowing the authored default to apply again. Runtime control bindings
 can exist for such implicit defaults without requiring saved project records.
+
+Release-time preparation clarification (owner decision, 2026-11-14): preparing
+settled code and permitting its activation are separate. A new release with another
+value invalidates an older settled candidate. Re-grabbing while still hovered reuses
+the active dynamic variant. With concurrent gestures, preparation keeps other held
+or hover-retained controls dynamic. Storage-changing activation follows the normal
+compiled-transition path, as it does for predictive dynamic variants. The earlier
+wording is retained in [historical documentation](historical/knob_settling_before_release_preparation_2026-11-14.md).

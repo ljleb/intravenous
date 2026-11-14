@@ -216,3 +216,7 @@ These documents are retained because they record deleted architectures, supersed
 - [Knob Recording Analysis Before The Direct Oscillator Capture](./knob_recording_analysis_before_direct_oscillator_capture_2026-11-14.md)
   preserves the first panner recording analysis and its incorrect conclusion
   about oscillator phase continuity before the direct recording exposed the bug.
+
+- [Knob Settling Before Release-Time Preparation](./knob_settling_before_release_preparation_2026-11-14.md)
+  preserves the release/leave lifecycle before predictive settled compilation was
+  explicitly requested at release.

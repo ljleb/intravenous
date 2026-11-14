@@ -231,7 +231,7 @@ ProjectGraph::~ProjectGraph()
 }
 
 std::vector<ManualControlId> ProjectGraph::desired_dynamic_inputs_locked(
-    bool include_predictive_hover) const
+    bool include_predictive_hover, std::string_view exclude_retained_client) const
 {
     std::vector<ManualControlId> result;
     if (!current_generation_ || !current_generation_->graph) return result;
@@ -241,7 +241,7 @@ std::vector<ManualControlId> ProjectGraph::desired_dynamic_inputs_locked(
             [&](ActiveManualControlInteraction const& interaction) {
                 return interaction.control == control.id;
             }) || std::ranges::any_of(hover_retained_inputs_, [&](auto const& entry) {
-                return entry.second == control.id;
+                return entry.first != exclude_retained_client && entry.second == control.id;
             });
         // A prepared override replaces its source when activated. Do not
         // activate another user's hover together with an ongoing gesture.
@@ -266,11 +266,23 @@ ProjectManualControl* ProjectGraph::find_manual_control_locked(
     return found == manual_controls_.end() ? nullptr : std::addressof(*found);
 }
 
+void ProjectGraph::prepare_released_control_locked()
+{
+    if (!settled_preparation_client_) return;
+    if (!hover_retained_inputs_.contains(*settled_preparation_client_)) {
+        settled_preparation_client_.reset();
+        return;
+    }
+    if (!control_code_matches_locked(dynamic_inputs_)) return;
+    auto predicted = desired_dynamic_inputs_locked(false, *settled_preparation_client_);
+    if (predicted != dynamic_inputs_) schedule_control_compile_locked(std::move(predicted), false);
+}
+
 void ProjectGraph::schedule_control_compile_locked(
     std::vector<ManualControlId> dynamic_inputs,
     bool activate_on_ready)
 {
-    if (activate_on_ready && control_code_matches_locked(dynamic_inputs)) return;
+    if (control_code_matches_locked(dynamic_inputs)) return;
     if (!current_generation_ || !current_generation_->graph
         || !current_generation_->definitions
         || !current_generation_->compiled_graph
@@ -280,18 +292,43 @@ void ProjectGraph::schedule_control_compile_locked(
     auto const matches_current_request = [&](auto const& request) {
         return request.request_id == latest_control_compile_request_
             && request.project_generation == current_generation_->generation
-            && std::ranges::equal(request.dynamic_inputs, dynamic_inputs);
+            && std::ranges::equal(request.dynamic_inputs, dynamic_inputs)
+            && request.graph && control_configuration_matches_locked(*request.graph, dynamic_inputs);
     };
     if (pending_control_compile_
         && matches_current_request(*pending_control_compile_)) {
         pending_control_compile_->activate_on_ready |= activate_on_ready;
+        if (activate_on_ready) pending_control_compile_->trace->status.predictive = false;
         return;
     }
     if (inflight_control_compile_
         && matches_current_request(*inflight_control_compile_)) {
         inflight_control_compile_->activate_on_ready |= activate_on_ready;
+        if (activate_on_ready) inflight_control_compile_->trace->status.predictive = false;
         return;
     }
+    if (ready_control_code_ && ready_control_code_->project_generation == current_generation_->generation
+        && ready_control_code_->graph->configured_graph
+        && control_configuration_matches_locked(*ready_control_code_->graph->configured_graph, dynamic_inputs)) {
+        cancel_pending_control_compile_locked();
+        latest_control_compile_request_ = ready_control_code_->trace->status.request_id;
+        if (!activate_on_ready) return;
+        auto const ready = *ready_control_code_;
+        ready.trace->status.predictive = false;
+        pending_control_compile_ = ControlCompileRequest{
+            .request_id = latest_control_compile_request_,
+            .project_generation = current_generation_->generation,
+            .graph = ready.graph->configured_graph,
+            .definitions = current_generation_->definitions,
+            .dynamic_inputs = std::move(dynamic_inputs),
+            .activate_on_ready = true,
+            .trace = ready.trace,
+            .prepared_graph = ready.graph,
+        };
+        queue_control_compile_status_locked(ready.trace, "queued", "prepared code awaiting staging");
+        return;
+    }
+    auto const requested_at = std::chrono::steady_clock::now();
     auto graph = std::make_shared<ConfiguredGraph>(*current_generation_->graph);
     for (auto& configured : graph->manual_controls) {
         configured.dynamic = std::ranges::contains(
@@ -304,6 +341,20 @@ void ProjectGraph::schedule_control_compile_locked(
     }
     auto const request_id = next_control_compile_request_++;
     latest_control_compile_request_ = request_id;
+    cancel_pending_control_compile_locked();
+    auto trace = std::make_shared<ControlCompileTrace>();
+    trace->requested_at = requested_at;
+    trace->status.request_id = request_id;
+    trace->status.project_generation = current_generation_->generation;
+    trace->status.dynamic = !dynamic_inputs.empty();
+    trace->status.predictive = !activate_on_ready;
+    auto const* named_graph = graph.get();
+    if (dynamic_inputs.empty() && staged_control_graph_ && staged_control_graph_->configured_graph)
+        named_graph = staged_control_graph_->configured_graph.get();
+    for (auto const& control : named_graph->manual_controls) {
+        if (control.dynamic && !std::ranges::contains(trace->status.inputs, control.id.input_name))
+            trace->status.inputs.push_back(control.id.input_name);
+    }
     pending_control_compile_ = ControlCompileRequest{
         .request_id = request_id,
         .project_generation = current_generation_->generation,
@@ -311,7 +362,9 @@ void ProjectGraph::schedule_control_compile_locked(
         .definitions = current_generation_->definitions,
         .dynamic_inputs = std::move(dynamic_inputs),
         .activate_on_ready = activate_on_ready,
+        .trace = std::move(trace),
     };
+    queue_control_compile_status_locked(pending_control_compile_->trace, "queued");
     control_compile_changed_.notify_all();
 }
 
@@ -320,8 +373,15 @@ bool ProjectGraph::control_code_matches_locked(std::span<ManualControlId const> 
     if (!current_generation_ || !current_generation_->graph || !staged_control_graph_
         || staged_control_graph_->project_generation != current_generation_->generation
         || !staged_control_graph_->configured_graph) return false;
+    return control_configuration_matches_locked(*staged_control_graph_->configured_graph, inputs);
+}
+
+bool ProjectGraph::control_configuration_matches_locked(ConfiguredGraph const& candidate,
+    std::span<ManualControlId const> inputs) const
+{
+    if (!current_generation_ || !current_generation_->graph) return false;
     auto const& current = current_generation_->graph->manual_controls;
-    auto const& staged = staged_control_graph_->configured_graph->manual_controls;
+    auto const& staged = candidate.manual_controls;
     if (current.size() != staged.size()) return false;
     for (std::size_t index = 0; index < current.size(); ++index) {
         auto const& control = current[index];
@@ -357,12 +417,15 @@ bool ProjectGraph::update_graph_executor_controls_locked(
     bool const stage_code = !reuse_code && code_inputs && ready_control_code_
         && ready_control_code_->project_generation
             == current_generation_->generation
-        && std::ranges::equal(ready_control_code_->dynamic_inputs, *code_inputs);
+        && std::ranges::equal(ready_control_code_->dynamic_inputs, *code_inputs)
+        && ready_control_code_->graph->configured_graph
+        && control_configuration_matches_locked(*ready_control_code_->graph->configured_graph, *code_inputs);
     if (stage_code && GraphExecutor::can_replace_realtime_code(
             *current_generation_->compiled_graph, *ready_control_code_->graph)) {
         request.realtime_code = ready_control_code_->graph;
     }
     if (request.targets.empty() && !request.realtime_code) return reuse_code;
+    auto const stage_begin = std::chrono::steady_clock::now();
     (void)IV_INVOKE_SINGLETON_EVENT(
         iv_runtime_project_graph_graph_executor_controls_requested_event,
         request);
@@ -376,7 +439,17 @@ bool ProjectGraph::update_graph_executor_controls_locked(
     if (reuse_code) return true;
     if (!request.realtime_code
         || request.realtime_code_result != GraphExecutorStageResult::accepted) {
+        if (request.realtime_code) {
+            queue_control_compile_status_locked(ready_control_code_->trace, "failed",
+                "GraphExecutor did not accept the prepared code");
+        }
         return false;
+    }
+    if (ready_control_code_->trace) {
+        ready_control_code_->trace->status.predictive = false;
+        queue_control_compile_status_locked(ready_control_code_->trace, "staged", {},
+            static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - stage_begin).count()));
     }
     staged_control_graph_ = ready_control_code_->graph;
     ready_control_code_.reset();
@@ -395,19 +468,23 @@ void ProjectGraph::reconcile_manual_control_activity_locked(
     }
     dynamic_inputs_ = next_inputs;
     if (dynamic_inputs_.empty()) {
-        if (!targets.empty()) {
-            (void)update_graph_executor_controls_locked(
-                std::move(targets), std::nullopt);
+        if (!settled_dynamic_input && !targets.empty()) {
+            (void)update_graph_executor_controls_locked(std::move(targets), std::nullopt);
         }
-        // Leaving the last released control requests its settled code now.
-        // Other predictive hovers cannot supersede that required restoration.
-        pending_control_compile_.reset();
-        ready_control_code_.reset();
-        latest_control_compile_request_ = next_control_compile_request_++;
+        // Hover leave may consume the settled candidate prepared at release,
+        // or promote the same pending/in-flight job instead of restarting it.
         if (settled_dynamic_input) {
             settling_controls_ = true;
-            if (control_code_matches_locked({})) settling_controls_ = false;
-            else schedule_control_compile_locked({}, true);
+            if (update_graph_executor_controls_locked(std::move(targets), std::span<ManualControlId const>{})) {
+                settling_controls_ = false;
+                cancel_pending_control_compile_locked();
+                ready_control_code_.reset();
+                latest_control_compile_request_ = next_control_compile_request_++;
+            } else schedule_control_compile_locked({}, true);
+        } else {
+            cancel_pending_control_compile_locked();
+            ready_control_code_.reset();
+            latest_control_compile_request_ = next_control_compile_request_++;
         }
         if (!settling_controls_) {
             auto const predictive_inputs = desired_dynamic_inputs_locked(true);
@@ -425,6 +502,44 @@ void ProjectGraph::reconcile_manual_control_activity_locked(
     }
 }
 
+void ProjectGraph::queue_control_compile_status_locked(
+    std::shared_ptr<ControlCompileTrace> const& trace,
+    std::string phase, std::string message, std::uint64_t stage_us)
+{
+    if (!trace) return;
+    auto& status = trace->status;
+    status.phase = std::move(phase);
+    status.message = std::move(message);
+    status.elapsed_us = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - trace->requested_at).count());
+    if (status.phase == "compiling") status.queue_us = status.elapsed_us;
+    if (status.phase == "prepared") status.preparation_us = status.elapsed_us;
+    status.stage_us = stage_us;
+    control_compile_notifications_.push_back(status);
+    control_compile_changed_.notify_all();
+}
+
+void ProjectGraph::cancel_pending_control_compile_locked()
+{
+    if (!pending_control_compile_) return;
+    queue_control_compile_status_locked(pending_control_compile_->trace, "superseded");
+    pending_control_compile_.reset();
+}
+
+void ProjectGraph::publish_control_compile_status()
+{
+    std::vector<ProjectControlCompileStatus> notifications;
+    {
+        std::scoped_lock lock(mutex_);
+        notifications.swap(control_compile_notifications_);
+    }
+    if (notifications.empty()) return;
+    IV_EVENT_SOURCE(ProjectGraph, "control compilation status") {
+        IV_INVOKE_LINKER_EVENT(iv_runtime_control_compile_status_event,
+            std::span<ProjectControlCompileStatus const>{notifications});
+    }
+}
+
 void ProjectGraph::control_compile_worker(std::stop_token stop)
 {
     while (!stop.stop_requested()) {
@@ -432,25 +547,37 @@ void ProjectGraph::control_compile_worker(std::stop_token stop)
         {
             std::unique_lock lock(mutex_);
             control_compile_changed_.wait(lock, [&] {
-                return stop.stop_requested() || pending_control_compile_.has_value();
+                return stop.stop_requested() || pending_control_compile_.has_value()
+                    || !control_compile_notifications_.empty();
             });
             if (stop.stop_requested()) return;
-            request = std::move(pending_control_compile_);
-            pending_control_compile_.reset();
-            inflight_control_compile_ = InflightControlCompile{
-                .request_id = request->request_id,
-                .project_generation = request->project_generation,
-                .dynamic_inputs = request->dynamic_inputs,
-                .activate_on_ready = request->activate_on_ready,
-            };
+            if (pending_control_compile_) {
+                request = std::move(pending_control_compile_);
+                pending_control_compile_.reset();
+                inflight_control_compile_ = InflightControlCompile{
+                    .request_id = request->request_id,
+                    .project_generation = request->project_generation,
+                    .dynamic_inputs = request->dynamic_inputs,
+                    .activate_on_ready = request->activate_on_ready,
+                    .trace = request->trace,
+                    .graph = request->graph,
+                };
+                if (!request->prepared_graph) queue_control_compile_status_locked(request->trace, "compiling");
+            }
         }
+        // Requests queue notifications; this independent cause publishes them
+        // after releasing the graph lock, without re-entering an RPC cause.
+        publish_control_compile_status();
+        if (!request) continue;
 
         // A finished compile completes work scheduled by an earlier cause, so
-        // it is a cause of its own: one GraphJit request, then at most one
+        // it is a cause of its own: at most one GraphJit request, then at most one
         // GraphExecutor control update.
         bool storage_change = false;
         IV_EVENT_SOURCE(ProjectGraph, "control compile completion") {
-            auto result = IV_INVOKE_SINGLETON_EVENT(
+            auto result = request->prepared_graph
+                ? GraphJitCompileResult{.attempted = true, .compiled_graph = request->prepared_graph}
+                : IV_INVOKE_SINGLETON_EVENT(
                 iv_runtime_project_graph_graph_jit_requested_event,
                 ProjectGraphGraphJitRequest{
                     .successor = {
@@ -468,28 +595,44 @@ void ProjectGraph::control_compile_worker(std::stop_token stop)
                     inflight_control_compile_->activate_on_ready;
                 inflight_control_compile_.reset();
             }
-            if (stop.stop_requested()
-                || request->request_id != latest_control_compile_request_
-                || !current_generation_
-                || request->project_generation != current_generation_->generation
-                || !result.compiled_graph) {
+            if (stop.stop_requested()) return;
+            if (request->request_id != latest_control_compile_request_ || !current_generation_
+                || request->project_generation != current_generation_->generation) {
+                queue_control_compile_status_locked(request->trace, "superseded");
+                continue;
+            }
+            if (activate_on_ready && !control_configuration_matches_locked(*request->graph, dynamic_inputs_)) {
+                queue_control_compile_status_locked(request->trace, "superseded");
+                continue;
+            }
+            if (!result.compiled_graph) {
+                queue_control_compile_status_locked(request->trace, "failed",
+                    result.diagnostics.empty() ? "GraphJit returned no executable graph"
+                        : result.diagnostics.front().message);
                 continue;
             }
             ready_control_code_ = ReadyControlCode{
                 .project_generation = request->project_generation,
                 .dynamic_inputs = request->dynamic_inputs,
                 .graph = std::move(result.compiled_graph),
+                .trace = request->trace,
             };
+            if (!request->prepared_graph) queue_control_compile_status_locked(request->trace, "prepared");
             auto staged = false;
             if (activate_on_ready) {
                 storage_change = !GraphExecutor::can_replace_realtime_code(
                     *current_generation_->compiled_graph, *ready_control_code_->graph);
+                if (storage_change) {
+                    queue_control_compile_status_locked(request->trace, "compilingStorage",
+                        "preparing a graph transition for changed storage");
+                }
                 if (!storage_change) {
                     staged = update_graph_executor_controls_locked(
                         {},
                         std::span<ManualControlId const>(request->dynamic_inputs));
                 }
             }
+            if (staged) prepare_released_control_locked();
             // A settled constant replacement consumes the one ready-code slot.
             // If the client still hovers a participating control, prepare that
             // exact dynamic set again without activating it.
@@ -502,11 +645,15 @@ void ProjectGraph::control_compile_worker(std::stop_token stop)
                 }
             }
         }
-        if (storage_change) compile_control_storage_change(request->request_id);
+        if (storage_change) {
+            publish_control_compile_status();
+            compile_control_storage_change(request->request_id, request->trace);
+        }
     }
 }
 
-void ProjectGraph::compile_control_storage_change(std::uint64_t request_id)
+void ProjectGraph::compile_control_storage_change(std::uint64_t request_id,
+    std::shared_ptr<ControlCompileTrace> const& trace)
 {
     IV_EVENT_SOURCE(ProjectGraph, "manual-control storage compilation") {
         // Keep the desired values and accepted predecessor fixed while the
@@ -514,7 +661,11 @@ void ProjectGraph::compile_control_storage_change(std::uint64_t request_id)
         // NodeStorage reads and moves happen only at its eventual cutover.
         std::scoped_lock lock(mutex_);
         if (request_id != latest_control_compile_request_ || !ready_control_code_
-            || !current_generation_ || !accepted_execution_graph_) return;
+            || !current_generation_ || !accepted_execution_graph_
+            || !control_configuration_matches_locked(*ready_control_code_->graph->configured_graph, dynamic_inputs_)) {
+            queue_control_compile_status_locked(trace, "superseded");
+            return;
+        }
         auto graph = std::make_shared<ConfiguredGraph>(
             *ready_control_code_->graph->configured_graph);
         for (auto& configured : graph->manual_controls) {
@@ -535,8 +686,13 @@ void ProjectGraph::compile_control_storage_change(std::uint64_t request_id)
                 },
                 .predecessor = accepted_execution_graph_,
             });
-        if (!compiled.compiled_graph) return;
+        if (!compiled.compiled_graph) {
+            queue_control_compile_status_locked(trace, "failed", compiled.diagnostics.empty()
+                ? "storage-changing GraphJit compilation returned no graph" : compiled.diagnostics.front().message);
+            return;
+        }
         auto const compiled_at = std::chrono::steady_clock::now();
+        queue_control_compile_status_locked(trace, "prepared");
         // Finish allocating publication metadata before accepting a successor:
         // once GraphExecutor accepts it, that chain link must be remembered.
         auto generation = std::make_shared<ProjectGraphGeneration>(*current_generation_);
@@ -550,8 +706,15 @@ void ProjectGraph::compile_control_storage_change(std::uint64_t request_id)
         auto const execution = IV_INVOKE_SINGLETON_EVENT(
             iv_runtime_project_graph_graph_executor_requested_event,
             generation->compiled_graph);
-        if (!execution.accepted) return;
+        if (!execution.accepted) {
+            queue_control_compile_status_locked(trace, "failed", "GraphExecutor did not accept the storage-changing graph");
+            return;
+        }
         auto const staged_at = std::chrono::steady_clock::now();
+        queue_control_compile_status_locked(trace, "staged",
+            "storage-changing generation " + std::to_string(generation_id),
+            static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                staged_at - compiled_at).count()));
         generation->graph_executor_attempted = execution.attempted;
         generation->graph_executor_accepted = execution.accepted;
         auto const microseconds = [](auto from, auto to) {
@@ -567,6 +730,7 @@ void ProjectGraph::compile_control_storage_change(std::uint64_t request_id)
         staged_control_graph_ = generation->compiled_graph;
         current_generation_ = std::move(generation);
         ready_control_code_.reset();
+        prepare_released_control_locked();
         if (diagnostic_flag_enabled("IV_EDIT_TIMING")) log_edit_timing(*current_generation_);
         if (dynamic_inputs_.empty()) {
             settling_controls_ = false;
@@ -1094,7 +1258,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         current_generation_ = generation;
         configuration_failure_.reset();
         ready_control_code_.reset();
-        pending_control_compile_.reset();
+        cancel_pending_control_compile_locked();
         latest_control_compile_request_ = next_control_compile_request_++;
         control_compile_changed_.notify_all();
         ++next_generation_;
@@ -1103,6 +1267,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
             schedule_control_compile_locked(
                 requested_inputs, !dynamic_inputs_.empty());
         }
+        prepare_released_control_locked();
     }
     return RebuildResult{
         .generation = std::move(generation),
@@ -2130,7 +2295,7 @@ void ProjectGraph::handle_project_set_manual_control_hover(
             } else {
                 // A hover-only artifact must never become current after its
                 // hover ended. The active executable is unchanged.
-                pending_control_compile_.reset();
+                cancel_pending_control_compile_locked();
                 ready_control_code_.reset();
                 latest_control_compile_request_ =
                     next_control_compile_request_++;
@@ -2174,10 +2339,11 @@ void ProjectGraph::handle_project_begin_manual_control_interaction(
             .initial_control = control ? std::optional(*control) : std::nullopt,
         });
         hover_retained_inputs_.erase(request.interaction.client_id);
+        if (settled_preparation_client_ == request.interaction.client_id) settled_preparation_client_.reset();
         // The gesture changes no durable state until it ends. Its live value
         // starts here and follows the client's updates.
         if (settling_controls_) {
-            pending_control_compile_.reset();
+            cancel_pending_control_compile_locked();
             ready_control_code_.reset();
             latest_control_compile_request_ = next_control_compile_request_++;
         }
@@ -2284,6 +2450,7 @@ void ProjectGraph::handle_project_end_manual_control_interaction(
         auto const hover = hovered_controls_.find(interaction->interaction.client_id);
         if (hover != hovered_controls_.end() && hover->second == control_id) {
             hover_retained_inputs_.insert_or_assign(interaction->interaction.client_id, control_id);
+            settled_preparation_client_ = interaction->interaction.client_id;
         }
         manual_interactions_.erase(interaction);
         reconcile_manual_control_activity_locked(
@@ -2294,6 +2461,7 @@ void ProjectGraph::handle_project_end_manual_control_interaction(
                 .gesture = live && live->target
                     ? ManualControlGesturePhase::end : ManualControlGesturePhase::none,
             }});
+        prepare_released_control_locked();
     }
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);

@@ -2627,6 +2627,19 @@ media work does not block completion of the core multi-client session server.
 
 ## Front 16: measurement-driven optimization and optional PGO
 
+**Follow-up implementation checkpoint (2026-11-14): idle manual-control polling.**
+`GraphExecutor` now prepares a compact dynamic-target list with each realtime-code
+variant and publishes both together. Settled variants avoid the prior scan over
+all structural manual-control bindings. Previous code/list owners are retired at
+activation and reclaimed on the control path. Source and regressions are written;
+owner build/test verification and measurements remain pending.
+`iv_manual_control_polling_benchmark` isolates the removed idle scan on a no-DSP
+executor graph, alternating compact and emulated-legacy trials. Run it after the
+normal build and retain its TSV output under `build-release/`. This is a component
+measurement, not a claim about total DSP callback improvement. Detailed procedure
+and the related disconnected-input cutover fix are recorded in
+[the Vue client implementation checkpoints](vue_client_implementation_stages.md).
+
 **Primary ownership:** optimization after the correctness architecture is stable.
 
 **Priority target (human co-author, 2026-11-06): edit-to-activation latency.** A

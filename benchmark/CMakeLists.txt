@@ -55,3 +55,16 @@ target_compile_definitions(iv_edit_latency_benchmark PRIVATE
 )
 iv_add_host_runtime_objects(iv_edit_latency_benchmark)
 add_dependencies(iv_edit_latency_benchmark intravenous_builtin_package_artifacts)
+
+# Same executor and no-DSP graph for both cases; adds the former all-binding
+# scan only in the legacy case to isolate idle manual-control polling cost.
+add_executable(iv_manual_control_polling_benchmark
+    iv_manual_control_polling_benchmark.cpp
+    ${PROJECT_SOURCE_DIR}/src/intravenous/third_party/miniaudio/miniaudio.c)
+target_compile_features(iv_manual_control_polling_benchmark PRIVATE cxx_std_23)
+set_target_properties(iv_manual_control_polling_benchmark PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+target_include_directories(iv_manual_control_polling_benchmark PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_include_directories(iv_manual_control_polling_benchmark SYSTEM PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/intravenous/third_party)
+iv_add_host_runtime_objects(iv_manual_control_polling_benchmark)

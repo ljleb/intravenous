@@ -528,6 +528,24 @@ TEST(SineOscillator, LongHeldFrequencyKeepsItsWaveformWhenItStartsChanging)
     }
 }
 
+TEST(SineOscillator, ZeroFrequencyHoldsPhaseAndResumesAtTheRequestedFrequency)
+{
+    std::vector<iv::Sample> frequencies(4096, 265.0f);
+    for (std::size_t i = 1024; i < 3072; ++i) {
+        frequencies[i] = i < 1792 ? 265.0f * (1792 - i) / 768.0f
+            : i < 2304 ? 0.0f : 265.0f * (i - 2304) / 768.0f;
+    }
+    auto const output = render_sine(frequencies, 0.25f, 256);
+    double phase = 0.25 * std::numbers::pi;
+    for (std::size_t i = 0; i < output.size(); ++i) {
+        phase += 2.0 * std::numbers::pi * frequencies[i].value / 48000;
+        ASSERT_NEAR(output[i].value, std::sin(phase), 1e-6) << "sample " << i;
+        if (i > 1792 && i < 2304) {
+            ASSERT_FLOAT_EQ(output[i].value, output[1792].value) << "sample " << i;
+        }
+    }
+}
+
 struct RequestNode {
     std::size_t latency = 0;
 

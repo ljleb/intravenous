@@ -1238,6 +1238,18 @@ void SocketRpcServer::send_server_status(
     impl_->publish("server.status", server_status_json(notification));
 }
 
+void SocketRpcServer::handle_control_compile_status(std::span<ProjectControlCompileStatus const> statuses)
+{
+    for (auto const& status : statuses) {
+        impl_->publish("graph.controlCompilation", Json{
+            {"requestId", status.request_id}, {"projectGeneration", status.project_generation},
+            {"phase", status.phase}, {"dynamic", status.dynamic}, {"predictive", status.predictive},
+            {"inputs", status.inputs}, {"elapsedUs", status.elapsed_us}, {"queueUs", status.queue_us},
+            {"preparationUs", status.preparation_us}, {"stageUs", status.stage_us}, {"message", status.message},
+        });
+    }
+}
+
 void SocketRpcServer::send_node_instances_updated(
     std::vector<IvModuleInstanceInfo> const& instances)
 {

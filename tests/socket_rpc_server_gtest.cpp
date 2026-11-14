@@ -705,6 +705,29 @@ TEST(SocketRpcServer, PublishesAMutationsReadModelChangesAfterItsResponse)
 
 // A live gesture value takes no revision and no reply. Other clients get it
 // as a replaceable frame; none follows the revision that commits its end.
+TEST(SocketRpcServer, PublishesControlCompilationTimingsWithoutAnActivationClaim)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+    std::array statuses{
+        iv::ProjectControlCompileStatus{.request_id = 7, .project_generation = 3,
+            .phase = "queued", .dynamic = true, .predictive = true, .inputs = {"frequency"}},
+        iv::ProjectControlCompileStatus{.request_id = 7, .project_generation = 3,
+            .phase = "prepared", .dynamic = true, .predictive = true, .inputs = {"frequency"},
+            .elapsed_us = 15000, .queue_us = 1000, .preparation_us = 15000},
+    };
+    harness.server.handle_control_compile_status(statuses);
+    for (auto const& expected : statuses) {
+        auto const json = nlohmann::ordered_json::parse(harness.read_line());
+        EXPECT_EQ(json["method"], "graph.controlCompilation");
+        EXPECT_EQ(json["params"]["requestId"], 7);
+        EXPECT_EQ(json["params"]["phase"], expected.phase);
+        EXPECT_EQ(json["params"]["preparationUs"], expected.preparation_us);
+        EXPECT_FALSE(json["params"].contains("activationUs"));
+    }
+}
+
 TEST(SocketRpcServer, RelaysLiveManualValuesToOtherClientsUntilTheGestureEnds)
 {
     socket_rpc_test_state.reset();

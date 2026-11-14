@@ -62,6 +62,7 @@ export function knobAudioRecord(
     clock: ReturnType<typeof clientToServerClock>,
 ) {
     return {
+        formatVersion: 2,
         format: "intravenous knob-audio recording",
         wav: capture.path,
         sampleRate: capture.sampleRate,

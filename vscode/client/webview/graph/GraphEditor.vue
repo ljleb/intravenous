@@ -39,7 +39,11 @@ function traceKnob(kind: string, event?: MouseEvent | PointerEvent, selected?: s
             ? { tag: target.tagName, classes: target.getAttribute("class"),
                 control: target.closest<HTMLElement>(".manual-input")?.dataset.manualControl ?? null }
             : null;
-        return { selected, pointer: event ? { x: event.clientX, y: event.clientY, button: event.button,
+        return { selected,
+            environment: kind === "armed" ? { userAgent: navigator.userAgent, pixelRatio: window.devicePixelRatio,
+                innerWidth: window.innerWidth, innerHeight: window.innerHeight,
+                screenX: window.screenX, screenY: window.screenY } : undefined,
+            pointer: event ? { x: event.clientX, y: event.clientY, button: event.button,
             screenX: event.screenX, screenY: event.screenY,
             buttons: event.buttons, movementX: event.movementX, movementY: event.movementY,
             pointerId: "pointerId" in event ? event.pointerId : null } : null,
