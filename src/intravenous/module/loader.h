@@ -86,6 +86,7 @@ namespace iv {
             // Complete package-side configuration tables used to create a stable
             // BuilderSession later from an immutable NodeDefinitions snapshot.
             std::vector<details::PackageDefinition> provider_definitions{};
+            std::vector<details::NodeCompilerRecord> node_compiler_records{};
             std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
             std::vector<RetainedGlobalData> retained_globals{};
             std::vector<NodeMessageHandlerData> node_message_handlers{};

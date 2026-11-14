@@ -1276,6 +1276,83 @@ TEST(GraphJitConnectionPlan, FusesSampleConversionsAcrossASubgraphInput)
     EXPECT_FLOAT_EQ(transform.coefficients[3], 0.5f);
 }
 
+TEST(GraphJitConnectionPlan, RepeatedModuleOutputsSumMoreSourcesThanAChannelLayout)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto voices = graph.subgraph([&](SubgraphBuilder& boundary) {
+        for (std::size_t voice = 0; voice < 17; ++voice) {
+            auto source = details::configure_concrete_node<PersistedStereoSource>(graph);
+            boundary.outputs(source);
+        }
+    }, "summed-voices");
+    auto sink = details::configure_concrete_node<RealtimeSink>(graph);
+    sink(voices);
+    graph.outputs();
+    auto configured = std::move(graph).finish();
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan) << plan.error();
+    ASSERT_EQ(plan->sample_connections.size(), 1u);
+    auto const& connection = plan->sample_connections.front();
+    EXPECT_EQ(connection.target_port.node_bundle_handle, sink.node_bundle_handle());
+    ASSERT_EQ(connection.source_channel_timings.size(), 34u);
+    ASSERT_EQ(connection.projection_contributions.size(), 1u);
+    auto const& transform = connection.projection_contributions.front().transform;
+    EXPECT_EQ(transform.source_channel_count, 34u);
+    EXPECT_EQ(transform.target_channel_count, 1u);
+    ASSERT_EQ(transform.coefficients.size(), 34u);
+    for (auto const coefficient : transform.coefficients)
+        EXPECT_FLOAT_EQ(coefficient, .5f);
+}
+
+TEST(GraphJitConnectionPlan, ModuleInputFanInPreservesConversionsAndManualControlPolicy)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto mono = details::configure_concrete_node<MonoSource>(graph);
+    auto stereo_source = details::configure_concrete_node<PersistedStereoSource>(graph);
+    auto module = graph.subgraph([&](SubgraphBuilder& boundary) {
+        auto input = boundary.input<"in">();
+        auto sink = details::configure_concrete_node<StereoSink>(graph);
+        sink(input);
+        boundary.outputs();
+    }, "input-fan-in");
+    module(mono);
+    module(stereo_source);
+    graph.outputs();
+    auto configured = std::move(graph).finish();
+    configured.manual_controls.push_back({
+        .id = {.node = {.instance_id = "module"}, .input_name = "in"},
+        .input = {module.node_bundle_handle(), PortKind::sample, 0},
+        .settled_value = .25f,
+    });
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan) << plan.error();
+    EXPECT_TRUE(plan->manual_sample_routes.empty());
+    ASSERT_EQ(plan->sample_connections.size(), 1u);
+    auto const& connection = plan->sample_connections.front();
+    ASSERT_EQ(connection.projection_contributions.size(), 1u);
+    auto const& transform = connection.projection_contributions.front().transform;
+    EXPECT_EQ(transform.source_channel_count, 3u);
+    EXPECT_EQ(transform.target_channel_count, 2u);
+    EXPECT_EQ(transform.coefficients, (std::vector<float>{1, .5f, .5f, 1, .5f, .5f}));
+
+    configured.manual_controls[0].participation =
+        ManualControlParticipation::participate_with_connections;
+    auto combined = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(combined) << combined.error();
+    ASSERT_EQ(combined->manual_sample_routes.size(), 2u);
+    for (auto const& route : combined->manual_sample_routes)
+        EXPECT_FLOAT_EQ(route.coefficient, 1);
+    EXPECT_FALSE(combined->sample_connections.empty());
+
+    configured.manual_controls[0].override_connections = true;
+    auto overridden = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(overridden) << overridden.error();
+    EXPECT_TRUE(overridden->sample_connections.empty());
+    EXPECT_EQ(overridden->manual_sample_routes.size(), 2u);
+}
+
 TEST(GraphJitConnectionPlan, ExpandsTiledSampleInputsAfterSemanticConversion)
 {
     using namespace iv;

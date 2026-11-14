@@ -683,8 +683,7 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
                 "GraphJit structural sample source has no executable producer");
         }
 
-        ConfiguredSampleConnection const* incoming = nullptr;
-        std::size_t incoming_target_channel = 0;
+        std::vector<std::pair<ConfiguredSampleConnection const*, std::size_t>> incoming;
         for (auto const& connection : authored) {
             for (std::size_t target_channel = 0;
                  target_channel < connection.target_channels.size();
@@ -696,13 +695,7 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
                     return std::unexpected(std::move(expanded.error()));
                 }
                 if (!std::ranges::contains(*expanded, upstream_target)) continue;
-                if (incoming) {
-                    pop();
-                    return std::unexpected(
-                        "GraphJit structural sample input has more than one source");
-                }
-                incoming = &connection;
-                incoming_target_channel = target_channel;
+                incoming.emplace_back(&connection, target_channel);
             }
         }
         ResolvedSampleChannel result;
@@ -717,38 +710,40 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
             pop();
             return result;
         }
-        if (!incoming) {
+        if (incoming.empty()) {
             pop();
             if (!result.contributions.empty()) return result;
             return std::unexpected("GraphJit structural sample boundary route has no source");
         }
-        for (std::size_t source_channel = 0;
-             source_channel < incoming->source_channels.size();
-             ++source_channel) {
-            auto resolved = self(
-                self, incoming->source_channels[source_channel].channel);
-            if (!resolved) {
-                pop();
-                return std::unexpected(std::move(resolved.error()));
-            }
-            result.crossed_structure = result.crossed_structure
-                || resolved->crossed_structure;
-            if (incoming->source_channels[source_channel].detach) {
-                resolved = detach_sample_channel(
-                    std::move(*resolved),
-                    *incoming->source_channels[source_channel].detach);
+        for (auto const& [connection, target_channel] : incoming) {
+            for (std::size_t source_channel = 0;
+                 source_channel < connection->source_channels.size();
+                 ++source_channel) {
+                auto resolved = self(
+                    self, connection->source_channels[source_channel].channel);
                 if (!resolved) {
                     pop();
                     return std::unexpected(std::move(resolved.error()));
                 }
+                result.crossed_structure = result.crossed_structure
+                    || resolved->crossed_structure;
+                if (connection->source_channels[source_channel].detach) {
+                    resolved = detach_sample_channel(
+                        std::move(*resolved),
+                        *connection->source_channels[source_channel].detach);
+                    if (!resolved) {
+                        pop();
+                        return std::unexpected(std::move(resolved.error()));
+                    }
+                }
+                auto const coefficient = channel_conversion_coefficient(
+                    connection->source_type,
+                    connection->target_type,
+                    source_channel,
+                    target_channel);
+                if (coefficient == 0.0f) continue;
+                add_sample_channel(result, *resolved, coefficient);
             }
-            auto const coefficient = channel_conversion_coefficient(
-                incoming->source_type,
-                incoming->target_type,
-                source_channel,
-                incoming_target_channel);
-            if (coefficient == 0.0f) continue;
-            add_sample_channel(result, *resolved, coefficient);
         }
         pop();
         return result;
@@ -881,9 +876,6 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
             return std::unexpected(
                 "GraphJit structural sample route resolved to no producer channels");
         }
-        auto source_type = channel_type_with_count(base_sources.size());
-        if (!source_type) return std::unexpected(std::move(source_type.error()));
-
         std::vector<float> complete_transform;
         if (!has_routed_detach) {
             complete_transform.assign(
@@ -950,7 +942,11 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
                 for (auto const source : base_sources)
                     sources.push_back({.channel = source});
                 return ConfiguredSampleConnection{
-                    .source_type = *source_type,
+                    // The explicit transform/contributions map a list of
+                    // producer channels, not one synthetic speaker layout.
+                    // Keep the authored semantic type as a label; the matrix
+                    // dimensions are authoritative for a structural route.
+                    .source_type = connection.source_type,
                     .source_channels = std::move(sources),
                     .target_type = *target_type,
                     .target_channels = group.channels,
@@ -1425,8 +1421,10 @@ std::expected<void, std::string> normalize_sample_target_projections(
                 return std::unexpected(
                     "GraphJit sample target-channel projections disagree on target semantics");
             }
-            if (connection.source_channels.size()
-                    != channel_count(connection.source_type)
+            auto const explicit_routing = !connection.transform.empty()
+                || !connection.routed_contributions.empty();
+            if ((!explicit_routing && connection.source_channels.size()
+                    != channel_count(connection.source_type))
                 || connection.target_channels.size()
                     != channel_count(connection.target_type)
                 || connection.source_channel_timings.size()

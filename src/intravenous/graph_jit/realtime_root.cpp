@@ -378,6 +378,10 @@ struct RealtimeRootPlan {
     std::size_t scratch_size = 0;
     std::size_t scratch_alignment = 1;
     std::size_t maximum_batch_lanes = 0;
+    // Producer lists in composed sums can exceed a speaker layout's channel
+    // count. One frame-local array serves every composition, sequentially.
+    std::size_t maximum_composition_sources = 0;
+    std::size_t composition_sources_offset = 0;
     // The largest step count, begin-index count, dense sample-representation
     // count, and reusable binding/context workspace of any specialization.
     std::size_t maximum_specialization_steps = 0;
@@ -734,7 +738,10 @@ void compose_samples(
         first_authored[index] = target_history - available;
     }
 
-    std::array<float, maximum_supported_channel_count> sources{};
+    std::array<float, maximum_supported_channel_count> local_sources{};
+    auto* sources = frame.plan.maximum_composition_sources <= local_sources.size()
+        ? local_sources.data()
+        : reinterpret_cast<float*>(frame.scratch + frame.plan.composition_sources_offset);
     for (std::size_t offset = 0; offset < count; ++offset) {
         auto const target_frame = first + offset;
         for (std::size_t index = 0; index < contributions.size(); ++index) {
@@ -804,7 +811,7 @@ void compose_samples(
                             write_frame,
                             contribution.target_channels[converted]),
                         lane,
-                        mixed_value(mix, converted, sources.data()));
+                        mixed_value(mix, converted, sources));
                 }
             }
         }
@@ -2488,7 +2495,7 @@ std::expected<ChannelMix, std::string> channel_mix(
     if (!is_registered_channel_type(source)
         || !is_registered_channel_type(target)
         || source_values != source_count
-        || source_count > maximum_supported_channel_count
+        || (transform.empty() && source_count > maximum_supported_channel_count)
         || target_count > maximum_supported_channel_count
         || (!transform.empty()
             && transform.coefficients.size() != source_count * target_count)) {
@@ -2861,6 +2868,8 @@ private:
                 return invalid(
                     "GraphJit sample composition contribution has inconsistent semantic channel counts");
             }
+            plan_.maximum_composition_sources = std::max(
+                plan_.maximum_composition_sources, contribution.sources.size());
             for (auto const& source : contribution.sources) {
                 auto binding = sample_storage_binding(storage, source.source_representation);
                 if (!binding) return std::unexpected(std::move(binding.error()));
@@ -4960,6 +4969,10 @@ private:
             return offset;
         };
         auto const& storage = plan_.sample_ports.storage;
+        plan_.composition_sources_offset = take(
+            plan_.maximum_composition_sources > maximum_supported_channel_count
+                ? plan_.maximum_composition_sources : 0,
+            sizeof(float), alignof(float));
         layout.sample_representations = take(
             storage.representations.size(), sizeof(std::byte*), alignof(std::byte*));
         layout.event_representations = take(

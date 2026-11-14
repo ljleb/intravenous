@@ -1033,6 +1033,28 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
                 staged_control_graph_ = generation->compiled_graph;
             }
         }
+        if (generation->graph_jit_attempted && !generation->compiled_graph) {
+            std::string message = "Graph compilation failed for project generation "
+                + std::to_string(generation->generation) + ". ";
+            message += accepted_execution_graph_ ? "The previous audio graph remains active."
+                : "No audio graph has been accepted yet.";
+            for (auto const& diagnostic : generation->graph_jit_diagnostics) {
+                message += "\n" + diagnostic.message;
+                if (!diagnostic.node_type_id.empty()) message += " [node " + diagnostic.node_type_id + "]";
+                if (!diagnostic.package_root.empty()) message += " [package " + diagnostic.package_root + "]";
+            }
+            if (generation->graph_jit_diagnostics.empty()) {
+                message += "\nGraphJit returned no compiled graph and no diagnostic.";
+            }
+            publication.execution_failure = ProjectStatusNotification{
+                .level = "error", .code = "graphCompilationFailed", .message = std::move(message),
+                .package_root = {},
+            };
+            try {
+                diagnostic_stream() << publication.execution_failure->message << '\n';
+                flush_diagnostic_stream();
+            } catch (...) {}
+        }
         auto const microseconds = [](auto begin, auto end) {
             return static_cast<std::uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());

@@ -106,6 +106,7 @@ struct LoadedPackageCode {
     // The node-code object's own JITDylib, beside jit_dylib.
     llvm::orc::JITDylib* node_code_dylib = nullptr;
     std::vector<details::PackageDefinition> definitions{};
+    std::vector<details::NodeCompilerRecord> node_compiler_records{};
     std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
     std::vector<RetainedGlobalData> retained_globals{};
     std::vector<NodeMessageHandlerData> node_message_handlers{};
@@ -1363,6 +1364,26 @@ public:
                 definitions_fn(),
                 static_cast<details::PackageDefinition*>(nullptr),
                 "definition");
+            auto const compiler_records = copy_table(
+                symbol.template operator()<iv_package_node_compiler_records_fn>(
+                    "iv_package_node_compiler_records")(),
+                static_cast<details::NodeCompilerRecord const**>(nullptr),
+                "node compiler record");
+            package->node_compiler_records.reserve(compiler_records.size());
+            for (auto const* record : compiler_records) {
+                if (!record || !record->operations.valid()
+                    || (!record->type_name && record->type_name_size != 0)) {
+                    throw std::runtime_error("IV package has an invalid node compiler record");
+                }
+                package->node_compiler_records.push_back(*record);
+            }
+            std::ranges::sort(package->node_compiler_records, {},
+                &details::NodeCompilerRecord::code_key);
+            if (std::ranges::adjacent_find(package->node_compiler_records, {},
+                    &details::NodeCompilerRecord::code_key)
+                    != package->node_compiler_records.end()) {
+                throw std::runtime_error("IV package has duplicate node compiler records");
+            }
             package->config_pointer_fields = copy_table(
                 pointer_fields_fn(),
                 static_cast<NodeConfigPointerFieldData*>(nullptr),
@@ -1394,6 +1415,13 @@ public:
                     != package->node_code_records.end()) {
                 throw std::runtime_error(
                     "IV package node code records are not strictly sorted by code key");
+            }
+            if (!std::ranges::equal(package->node_compiler_records,
+                    package->node_code_records, {},
+                    &details::NodeCompilerRecord::code_key,
+                    &NodeCodeRecordData::code_key)) {
+                throw std::runtime_error(
+                    "IV package compiler records disagree with the node-code record keys");
             }
             if (package->node_code_retained_globals.size()
                 != package->retained_globals.size()) {
@@ -1590,6 +1618,7 @@ public:
                 .dynamic_libraries = package->dynamic_libraries,
             },
             .provider_definitions = package->definitions,
+            .node_compiler_records = package->node_compiler_records,
             .config_pointer_fields = package->config_pointer_fields,
             .retained_globals = package->retained_globals,
             .node_message_handlers = package->node_message_handlers,

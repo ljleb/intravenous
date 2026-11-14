@@ -126,6 +126,8 @@ struct SampleSourceChannelTimingPlan {
 // means the ordinary registered conversion from source_type to target_type.
 // build_structural_sample_routes() fills this when resolving subgraph,
 // boundary, or tiled NodeBundle ports requires more than that conversion.
+// With a transform, its dimensions describe the producer-channel list and
+// target channels. The source list need not be a registered channel layout.
 struct SampleChannelTransformPlan {
     std::size_t source_channel_count = 0;
     std::size_t target_channel_count = 0;
@@ -145,6 +147,8 @@ struct SampleChannelTransformPlan {
 // canonical target-port channel indices in the semantic target-channel order
 // produced by target_type. Keeping only indices here leaves the central timing
 // vector authoritative when latency compensation later adjusts read_latency.
+// An explicit transform instead defines the source and target dimensions, so
+// a module's summed output can reference arbitrarily many producer channels.
 struct SampleProjectionContributionPlan {
     ChannelTypeId source_type = ChannelTypeId::mono;
     std::vector<std::size_t> source_channel_indices{};

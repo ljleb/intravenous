@@ -9,6 +9,7 @@ import { WorkspaceSessionFactory } from "./workspaceSessionFactory";
 import { timestampOutput } from "./outputLog";
 import { GraphEditorProvider } from "./graphEditorProvider";
 import type { GraphEditorAction } from "./graphEditorProtocol";
+import { knobPointerLockVersionWarning } from "./editorCompatibility";
 
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -40,7 +41,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const graphEditor = new GraphEditorProvider(context.extensionUri, session);
     context.subscriptions.push(graphEditor);
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.openGraphEditor", () => graphEditor.open()));
-    const graphActions: GraphEditorAction[] = ["addNode", "editNode", "deleteNode", "openNodeSource", "createPackage", "deleteConnection", "undo", "redo", "recordKnobPointer"];
+    const graphActions: GraphEditorAction[] = ["addNode", "editNode", "deleteNode", "openNodeSource", "createPackage", "deleteConnection", "undo", "redo"];
     for (const action of graphActions) {
         context.subscriptions.push(vscode.commands.registerCommand(`intravenous.${action}`, async () => {
             try { await graphEditor.runAction(action); }
@@ -95,6 +96,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (!session.isIntravenousProject()) {
         outputChannel.appendLine(`workspace is not an Intravenous project: missing ${session.projectMarkerPath()}`);
         return;
+    }
+
+    if (vscode.env.uiKind === vscode.UIKind.Desktop) {
+        const warning = knobPointerLockVersionWarning(vscode.env.appName, vscode.version);
+        if (warning) {
+            outputChannel.appendLine(warning);
+            void vscode.window.showWarningMessage(warning);
+        }
     }
 
     context.subscriptions.push(vscode.languages.registerDocumentHighlightProvider(

@@ -18,6 +18,7 @@ thread_local void* current_input_binding = nullptr;
 thread_local void* current_output_binding = nullptr;
 thread_local std::span<Sample const> current_input_samples{};
 thread_local std::span<Sample> current_output_samples{};
+thread_local AudioOutputProbe* current_output_probe = nullptr;
 
 class FallbackAudioOutputDevice {
     RenderConfig config_{};
@@ -89,7 +90,8 @@ SystemAudioDevices::SystemAudioDevices(
     size_t block_size,
     SystemAudioDevicesBackend backend,
     std::optional<std::string> selected_output_device_id,
-    std::optional<std::string> selected_input_device_id)
+    std::optional<std::string> selected_input_device_id,
+    AudioOutputDiagnostics* output_diagnostics)
     : sample_rate_(sample_rate)
     , block_size_(block_size)
     , backend_(std::move(backend))
@@ -98,6 +100,7 @@ SystemAudioDevices::SystemAudioDevices(
           .num_channels = 2,
           .max_block_frames = std::max<size_t>(block_size * 4, 4096),
           .preferred_block_size = block_size,
+          .output_diagnostics = output_diagnostics,
       })
     , input_render_config_(RenderConfig{
           .sample_rate = sample_rate,
@@ -251,6 +254,7 @@ void SystemAudioDevices::input_capture_loop(std::shared_ptr<ActiveInputDevice> i
 void SystemAudioDevices::output_render_loop(
     std::shared_ptr<ActiveOutputDevice> output_device) noexcept
 {
+    AudioOutputProbeRate probe_rate;
     try {
         for (;;) {
             auto output = output_device->device.wait_for_block_request();
@@ -266,6 +270,10 @@ void SystemAudioDevices::output_render_loop(
             }
             for (auto& sample : output) sample = Sample{};
             auto const frames = output.size() / channels;
+            auto* diagnostics = output_device->device.config().output_diagnostics;
+            auto const probe_due = diagnostics && probe_rate.due(frames, sample_rate_);
+            AudioOutputProbe probe{.blocks = probe_rate.blocks()};
+            current_output_probe = probe_due ? &probe : nullptr;
             for (std::size_t offset = 0; offset < frames;) {
                 auto const count = std::min(block_size_, frames - offset);
                 auto const sample_offset = offset * channels;
@@ -302,7 +310,8 @@ void SystemAudioDevices::output_render_loop(
                 auto* executor = graph_executor_.load(std::memory_order_acquire);
                 if (executor) {
                     (void)executor->activate_pending(realtime_cursor_);
-                    if (executor->active_generation()) {
+                    if (auto const generation = executor->active_generation()) {
+                        if (probe_due) { probe.generation = *generation; ++probe.tick_calls; }
                         executor->tick_block(realtime_cursor_, count);
                     }
                 }
@@ -314,9 +323,15 @@ void SystemAudioDevices::output_render_loop(
                 realtime_cursor_ = realtime_cursor_.advanced_by(count);
                 offset += count;
             }
+            current_output_probe = nullptr;
+            if (probe_due) {
+                probe.measure(output);
+                diagnostics->rendered.publish(probe);
+            }
             output_device->device.submit_response();
         }
     } catch (...) {
+        current_output_probe = nullptr;
         current_input_binding = nullptr;
         current_output_binding = nullptr;
         current_input_samples = {};
@@ -387,6 +402,10 @@ SystemAudioOutputBinding SystemAudioDevices::resolve_output_binding(
         found->second.get(),
         +[](void* opaque) noexcept -> std::span<Sample> {
             auto* binding = static_cast<LogicalOutputBinding*>(opaque);
+            if (current_output_probe) {
+                ++current_output_probe->binding_calls;
+                if (current_output_binding == binding) ++current_output_probe->matched_bindings;
+            }
             if (current_output_binding != binding) return {};
             return current_output_samples;
         }};

@@ -749,6 +749,9 @@ struct SocketRpcServer::Impl {
         if (publication.graph_changed) {
             publish("graph.changed", Json::object());
         }
+        if (publication.execution_failure) {
+            publish("server.status", server_status_json(*publication.execution_failure));
+        }
     }
 
     void publish(std::string method, Json params)

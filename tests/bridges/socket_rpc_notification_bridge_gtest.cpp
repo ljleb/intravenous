@@ -153,6 +153,39 @@ Json parse_json_line(std::string_view line)
     return Json::parse(line);
 }
 } // namespace
+TEST(SocketRpcNotificationBridge, GraphCompilationFailureFollowsThePackageBuildSuccess)
+{
+    auto harness = NotificationServerHarness(
+        iv::test::fresh_module_fixture_workspace("socket_rpc_graph_compile_failure"));
+    PackageWatcher watcher;
+    auto report_scope = socket_rpc_package_watcher_bridge::bind(harness.server, watcher);
+    in_event_source([&] {
+        IV_INVOKE_LINKER_EVENT(iv_runtime_package_refresh_published_event,
+            PackageRefreshPublication{
+                .build_status = ProjectStatusNotification{
+                    .level = "info", .code = "rebuildFinished", .message = "Packages built",
+                },
+                .project = ProjectGraphPublication{
+                    .graph_changed = true,
+                    .execution_failure = ProjectStatusNotification{
+                        .level = "error", .code = "graphCompilationFailed",
+                        .message = "Graph compilation failed: output buffer unavailable",
+                    },
+                },
+            });
+    });
+    auto const built = parse_json_line(harness.read_line());
+    EXPECT_EQ(built["method"], "server.status");
+    EXPECT_EQ(built["params"]["code"], "rebuildFinished");
+    auto const changed = parse_json_line(harness.read_line());
+    EXPECT_EQ(changed["method"], "graph.changed");
+    auto const failed = parse_json_line(harness.read_line());
+    EXPECT_EQ(failed["method"], "server.status");
+    EXPECT_EQ(failed["params"]["level"], "error");
+    EXPECT_EQ(failed["params"]["code"], "graphCompilationFailed");
+    EXPECT_EQ(failed["params"]["message"], "Graph compilation failed: output buffer unavailable");
+}
+
 } // namespace iv
 
 namespace iv {

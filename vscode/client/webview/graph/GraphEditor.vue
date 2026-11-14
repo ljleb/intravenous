@@ -17,7 +17,6 @@ import ManualValuePopover from "../presentation/ManualValuePopover.vue";
 import { manualControlKey, resolveManualControl } from "../../src/manualControls";
 import { KnobPointerLock } from "../../src/knobPointerLock";
 import { KnobClicks } from "../../src/knobClicks";
-import { KnobPointerTrace } from "../../src/knobPointerTrace";
 import { projectHistoryShortcut } from "../../src/projectHistoryShortcut";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
 import { connectionEndKey, connectionWirePath, portEndpointKey, portSlotKey, selectedLaneConnections, selectedLaneWirePath,
@@ -32,9 +31,6 @@ const manualVersion = ref(0);
 let lastManualHint = "";
 let manualLockError = "";
 const knobClicks = new KnobClicks();
-const pointerTrace = new KnobPointerTrace((report) => webviewApi.postMessage({ type: "knobPointerTrace", report }), () => performance.now());
-let tracePointerId: number | null = null;
-let traceFinishTimer: number | undefined;
 const manualGestures = new ManualControlGestures(
     (action) => webviewApi.postMessage({ type: "manualControlAction", action }),
     () => crypto.randomUUID(), () => { ++manualVersion.value; publishManualHint(); });
@@ -57,87 +53,11 @@ function reportPointerDiagnostic(reason: string) {
     webviewApi.postMessage({ type: "graphInteractionDiagnostic", message: JSON.stringify({
         reason, ...manualPointer.status(), userAgent: navigator.userAgent, pixelRatio: window.devicePixelRatio,
     }) });
-    if (pointerTrace.capturing()) {
-        pointerTrace.record("lock-diagnostic", { reason, ...pointerTraceState() });
-    }
 }
-function traceElement(target: EventTarget | null): string | null {
-    if (target === window) return "window";
-    if (target === document) return "document";
-    return target instanceof Element ? `${target.tagName.toLowerCase()}${target.id ? `#${target.id}` : ""}`
-        + [...target.classList].slice(0, 4).map((name) => `.${name}`).join("") : null;
-}
-function pointerTraceState(): Record<string, unknown> {
-    const id = manualGestures.pointerId();
-    return { ...manualPointer.status(), pointerId: id, pointerLockElement: traceElement(document.pointerLockElement),
-        activeElement: traceElement(document.activeElement), hasFocus: document.hasFocus(), visibility: document.visibilityState,
-        captured: id !== null && !!surface.value?.hasPointerCapture(id),
-        surfaceConnected: surface.value?.isConnected ?? false,
-        surfaceInDocument: surface.value?.ownerDocument === document,
-        userActivation: navigator.userActivation ? { isActive: navigator.userActivation.isActive,
-            hasBeenActive: navigator.userActivation.hasBeenActive } : null,
-        width: window.innerWidth, height: window.innerHeight };
-}
-function schedulePointerTraceFinish(reason: string) {
-    if (traceFinishTimer !== undefined) return;
-    // A microtask can run between capture and bubble listeners. Finish in the
-    // next task so the normal release/focus handlers run before opening a report.
-    traceFinishTimer = window.setTimeout(() => {
-        traceFinishTimer = undefined;
-        finishPointerTrace(reason);
-    }, 0);
-}
-function finishPointerTrace(reason: string) {
-    window.clearTimeout(traceFinishTimer);
-    traceFinishTimer = undefined;
-    if (!pointerTrace.armed()) return;
-    pointerTrace.finish(reason, pointerTraceState());
-    tracePointerId = null;
-}
-function togglePointerTrace() {
-    if (pointerTrace.armed()) {
-        manualPointer.cancel(); manualGestures.finish(); manualGestures.hover(null);
-        finishPointerTrace("manual-stop"); return;
-    }
-    knobClicks.cancel();
-    pointerTrace.arm({ userAgent: navigator.userAgent, platform: navigator.platform,
-        pixelRatio: window.devicePixelRatio, screenWidth: screen.width, screenHeight: screen.height,
-        timeOrigin: performance.timeOrigin, ...pointerTraceState() });
-    webviewApi.postMessage({ type: "knobPointerTraceStatus", state: "armed" });
-}
-function recordPointerEvent(event: Event) {
-    if (!pointerTrace.capturing()) return;
-    const details: Record<string, unknown> = { ...pointerTraceState(), target: traceElement(event.target),
-        trusted: event.isTrusted, defaultPrevented: event.defaultPrevented };
-    if (event instanceof MouseEvent) Object.assign(details, {
-        clientX: event.clientX, clientY: event.clientY, screenX: event.screenX, screenY: event.screenY,
-        movementX: event.movementX, movementY: event.movementY, button: event.button, buttons: event.buttons,
-        shift: event.shiftKey, ctrl: event.ctrlKey, alt: event.altKey, meta: event.metaKey,
-        relatedTarget: traceElement(event.relatedTarget),
-    });
-    if (event instanceof PointerEvent) Object.assign(details, { eventPointerId: event.pointerId, pointerType: event.pointerType });
-    if (event instanceof WheelEvent) Object.assign(details, { deltaX: event.deltaX, deltaY: event.deltaY, deltaMode: event.deltaMode });
-    if (event instanceof KeyboardEvent) details.key = ["Escape", "Shift", "Control", "Alt", "Meta"].includes(event.key) ? event.key : "<other>";
-    pointerTrace.record(event.type, details);
-    const released = event.type === "pointerup" && event instanceof PointerEvent && event.pointerId === tracePointerId
-        || event.type === "mouseup" && event instanceof MouseEvent && event.button === 0;
-    // Keep rejected acquisitions and boundary crossings in the trace. Ending
-    // here would change the gesture and hide any subsequent focus recovery.
-    if (released) schedulePointerTraceFinish("mouse-release");
-}
-const traceWindowEvents = ["pointerdown", "pointermove", "pointerup", "pointercancel", "gotpointercapture", "lostpointercapture",
-    "pointerover", "pointerout", "mousedown", "mousemove", "mouseup", "wheel", "keydown", "keyup", "focus", "blur"];
-const traceDocumentEvents = ["pointerlockchange", "pointerlockerror", "visibilitychange"];
 provideManualControls({ gestures: manualGestures, version: manualVersion, startKnob: (event, control, descriptor, limits) => {
     surface.value?.focus({ preventScroll: true });
     manualGestures.hover(control, descriptor, limits);
     const origin = { x: event.clientX, y: event.clientY };
-    if (pointerTrace.armed() && !pointerTrace.capturing()) {
-        tracePointerId = event.pointerId;
-        pointerTrace.begin(control, { ...pointerTraceState(), pointerId: event.pointerId, pointerType: event.pointerType,
-            clientX: origin.x, clientY: origin.y, target: traceElement(event.target) });
-        webviewApi.postMessage({ type: "knobPointerTraceStatus", state: "recording" });
-    }
     if (event.pointerType === "mouse" && knobClicks.press(manualControlKey(control), origin, performance.now(), event.detail)) {
         manualGestures.resetHovered();
         return;
@@ -494,8 +414,6 @@ function windowBlurred() {
     // immediately after a successful pointerdown; the host reports real exits.
 }
 function nativeWindowFocusChanged(focused: boolean) {
-    pointerTrace.record("native-window-focus", { focused, ...pointerTraceState() });
-    if (!focused && pointerTrace.capturing()) schedulePointerTraceFinish("native-focus-lost");
     if (!focused) {
         hoverShift.value = initialPortHoverShift();
         cancelConnection();
@@ -509,7 +427,6 @@ function createPackage() {
     creatingPackage.value = false;
 }
 function receive(event: MessageEvent<GraphEditorHostMessage>) {
-    if (event.data?.type === "knobPointerTraceToggle") { togglePointerTrace(); return; }
     if (event.data?.type === "manualControlState") {
         manualGestures.receive(event.data.interactions);
         if (!manualGestures.pointerControl()) manualPointer.cancel();
@@ -548,9 +465,6 @@ onMounted(() => {
     // Give VS Code a persisted panel state so its serializer can restore
     // this editor. Geometry itself lives in the project layout file.
     webviewApi.setState({ ...webviewApi.getState(), surface: "graphEditor" });
-    // Observe events before the gesture handlers consume them.
-    for (const type of traceWindowEvents) window.addEventListener(type, recordPointerEvent, true);
-    for (const type of traceDocumentEvents) document.addEventListener(type, recordPointerEvent, true);
     window.addEventListener("message", receive);
     window.addEventListener("pointermove", moveConnection, true);
     window.addEventListener("pointermove", moveManual, true);
@@ -576,10 +490,6 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
     disposed = true;
-    window.clearTimeout(traceFinishTimer);
-    pointerTrace.finish("webview-disposed", pointerTraceState());
-    for (const type of traceWindowEvents) window.removeEventListener(type, recordPointerEvent, true);
-    for (const type of traceDocumentEvents) document.removeEventListener(type, recordPointerEvent, true);
     blurManual();
     webviewApi.postMessage({ type: "graphInteractionHint", hint: null });
     cancelAnimationFrame(wireFrame);

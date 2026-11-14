@@ -147,7 +147,8 @@ public:
         size_t block_size,
         SystemAudioDevicesBackend backend,
         std::optional<std::string> selected_output_device_id = std::optional<std::string>("default"),
-        std::optional<std::string> selected_input_device_id = std::optional<std::string>("default"));
+        std::optional<std::string> selected_input_device_id = std::optional<std::string>("default"),
+        AudioOutputDiagnostics* output_diagnostics = nullptr);
     ~SystemAudioDevices();
 
     SystemAudioDevices(SystemAudioDevices const &) = delete;

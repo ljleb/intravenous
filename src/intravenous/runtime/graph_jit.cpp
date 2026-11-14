@@ -222,6 +222,55 @@ CapturedInputs capture_inputs(GraphJitCompileRequest const& request)
         }
     }
 
+    struct PackageNode {
+        std::shared_ptr<PackageRevision const> revision;
+        details::NodeCompilerRecord const* record = nullptr;
+    };
+    // A type's NodeCodeKey can occur in several packages. The declaration
+    // address comes from the package that actually constructed this node.
+    using DeclarationCallback = decltype(details::NodeCompilerOperations::declare_node);
+    std::unordered_multimap<DeclarationCallback, PackageNode> package_nodes;
+    for (auto const& [root, revision] : revisions_by_root) {
+        for (auto const& record : revision->node_compiler_records) {
+            package_nodes.emplace(record.operations.declare_node,
+                PackageNode{revision, &record});
+        }
+    }
+    auto capture_node = [&](ConfiguredNodeBundleView const& view,
+                            std::size_t bundle,
+                            std::shared_ptr<PackageRevision const> const& revision,
+                            details::NodeCompilerRecord const& record,
+                            RegisteredNodeTypeIdentity const& identity,
+                            std::uint64_t provider_version) {
+        auto const expected_state = std::ranges::find(
+            revision->node_state_structures, record.code_key,
+            &details::BuilderNodeStateStructures::code_key);
+        auto const* configured_state = view.operations->runtime.state_structures;
+        auto const state_matches = expected_state == revision->node_state_structures.end()
+            ? configured_state == nullptr
+            : configured_state && *configured_state == expected_state->structures;
+        if (!state_matches) {
+            result.diagnostics.push_back(diagnostic(
+                GraphJitDiagnosticStage::input_capture,
+                "configured node State/TockState metadata disagrees with pinned package revision",
+                bundle, identity.node_type_id, identity.provider_package_root));
+            return;
+        }
+        result.nodes.push_back(CapturedNode{
+            .node_bundle = bundle,
+            .revision = revision,
+            .compiler_record = record,
+            .identity = identity,
+            .provider_version = provider_version,
+            .configuration_identity = view.node_storage
+                ? *view.node_storage : std::shared_ptr<void const>{},
+            .node_data = view.operations->runtime.node_data,
+            .state_structures = configured_state,
+            .declare_node = view.operations->runtime.declare_node,
+        });
+        result.used_revisions.insert(revision.get());
+    };
+
     std::size_t node_bundle = 0;
     request.graph->node_bundles.for_each_configured_bundle(
         [&](ConfiguredNodeBundleView const& view) {
@@ -307,50 +356,47 @@ CapturedInputs capture_inputs(GraphJitCompileRequest const& request)
                                 identity.node_type_id,
                                 identity.provider_package_root));
                         } else {
-                            auto const expected_state_structures = std::find_if(
-                                revision->second->node_state_structures.begin(),
-                                revision->second->node_state_structures.end(),
-                                [&](details::BuilderNodeStateStructures const& candidate) {
-                                    return candidate.code_key
-                                        == leaf->compiler_record.code_key;
-                                });
-                            auto const* configured_state_structures =
-                                view.operations->runtime.state_structures;
-                            auto const state_structures_match =
-                                expected_state_structures
-                                    == revision->second->node_state_structures.end()
-                                ? configured_state_structures == nullptr
-                                : configured_state_structures != nullptr
-                                    && *configured_state_structures
-                                        == expected_state_structures->structures;
-                            if (!state_structures_match) {
-                                result.diagnostics.push_back(diagnostic(
-                                    GraphJitDiagnosticStage::input_capture,
-                                    "configured node State/TockState metadata disagrees "
-                                    "with pinned package revision",
-                                    current_bundle,
-                                    identity.node_type_id,
-                                    identity.provider_package_root));
-                                return;
-                            }
-                            result.nodes.push_back(CapturedNode{
-                                .node_bundle = current_bundle,
-                                .revision = revision->second,
-                                .compiler_record = leaf->compiler_record,
-                                .identity = identity,
-                                .provider_version = definition->second.version,
-                                .configuration_identity = view.node_storage
-                                    ? *view.node_storage
-                                    : std::shared_ptr<void const>{},
-                                .node_data = view.operations->runtime.node_data,
-                                .state_structures =
-                                    view.operations->runtime.state_structures,
-                                .declare_node = view.operations->runtime.declare_node,
-                            });
-                            result.used_revisions.insert(revision->second.get());
+                            capture_node(view, current_bundle, revision->second,
+                                leaf->compiler_record, identity, definition->second.version);
                         }
                     }
                 }
+            } else {
+                PackageNode const* matched = nullptr;
+                if (view.code_key && view.operations
+                    && view.operations->runtime.declare_node) {
+                    auto const [begin, end] = package_nodes.equal_range(
+                        view.operations->runtime.declare_node);
+                    for (auto it = begin; it != end; ++it) {
+                        if (it->second.record->code_key != *view.code_key) continue;
+                        if (matched) {
+                            result.diagnostics.push_back(diagnostic(
+                                GraphJitDiagnosticStage::input_capture,
+                                "internal concrete node matches more than one pinned package revision",
+                                current_bundle));
+                            return;
+                        }
+                        matched = &it->second;
+                    }
+                }
+                if (!matched) {
+                    auto const type = view.reflected_type_name
+                        ? *view.reflected_type_name : std::string{};
+                    result.diagnostics.push_back(diagnostic(
+                        GraphJitDiagnosticStage::input_capture,
+                        "internal concrete node '" + type + "' at bundle "
+                            + std::to_string(current_bundle)
+                            + " has no matching compiler record in the pinned package revisions",
+                        current_bundle));
+                    return;
+                }
+                // No public registration is invented for an internal leaf.
+                // The provider root still identifies its exact package code.
+                capture_node(view, current_bundle, matched->revision, *matched->record,
+                    RegisteredNodeTypeIdentity{
+                        .node_type_id = {},
+                        .provider_package_root = package_root_key(matched->revision->package_root),
+                    }, matched->revision->revision);
             }
 
             if (!view.config_relocations) return;

@@ -199,3 +199,7 @@ These documents are retained because they record deleted architectures, supersed
   preserves the editor investigation, temporary patch and installation procedures,
   and superseded implementation status after the owner installed the fixed release
   and removed editor tooling from the repository.
+
+- [Removed Knob Pointer-Lock Recorder](./knob_pointer_recorder_removed_2026-11-14.md)
+  preserves the debugging command's instructions and previous implementation
+  checkpoint after the owner requested removal of the recorder.

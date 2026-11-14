@@ -592,6 +592,100 @@ TEST_F(GraphJitRuntimeFixture, ConfiguredValuesAndPointerRelocations)
 
 }
 
+TEST_F(GraphJitRuntimeFixture, PrivateLeavesAndDslArithmeticUseTheirConstructingPackage)
+{
+    auto graph = configured_module_graph(*revision,
+        "iv.test.graph_jit.private_arithmetic_module");
+    ASSERT_TRUE(graph);
+    auto const probe_record = std::ranges::find_if(revision->node_compiler_records,
+        [](auto const& record) {
+            return std::string_view(record.type_name, record.type_name_size)
+                .find("PrivateArithmeticProbe") != std::string_view::npos;
+        });
+    ASSERT_NE(probe_record, revision->node_compiler_records.end());
+
+    // The same code key in a different package must not be sufficient. Its
+    // configuration callback did not construct the nodes in this graph.
+    auto decoy = std::make_shared<iv::PackageRevision>(*revision);
+    decoy->package_root = revision->package_root / "other-package";
+    decoy->package_id = "iv.test.other-package";
+    decoy->node_compiler_records = {*probe_record};
+    auto const other_record = std::ranges::find_if(revision->node_compiler_records,
+        [&](auto const& record) {
+            return record.operations.declare_node != probe_record->operations.declare_node;
+        });
+    ASSERT_NE(other_record, revision->node_compiler_records.end());
+    decoy->node_compiler_records.front().operations.declare_node =
+        other_record->operations.declare_node;
+    auto snapshot = std::make_shared<iv::NodeDefinitionsSnapshot>(*definitions);
+    snapshot->package_revisions.insert(snapshot->package_revisions.begin(), decoy);
+    auto compiled = jit->compile(iv::GraphJitCompileRequest{
+        .project_generation = 150,
+        .graph = graph,
+        .definitions = snapshot,
+    });
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    ASSERT_EQ(compiled.compiled_graph->package_revisions.size(), 1u);
+    EXPECT_EQ(compiled.compiled_graph->package_revisions.front(), revision);
+
+    struct ProbeState { std::uint64_t calls; iv::Sample first; iv::Sample last; };
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    auto* state = find_unique_state<ProbeState>(compiled.compiled_graph->node_layout, storage);
+    ASSERT_NE(state, nullptr);
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(10), 8);
+    EXPECT_EQ(state->calls, 1u);
+    EXPECT_EQ(state->first, iv::Sample{7});
+    EXPECT_EQ(state->last, iv::Sample{10.5f});
+}
+
+TEST_F(GraphJitRuntimeFixture, ModuleBoundarySumsPreserveAllVoicesAndInputConversions)
+{
+    auto compiled = compile("iv.test.graph_jit.summed_module_boundaries", 152);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    struct ProbeState { std::uint64_t calls; iv::Sample first; iv::Sample last; };
+    auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    auto* state = find_unique_state<ProbeState>(compiled.compiled_graph->node_layout, storage);
+    ASSERT_NE(state, nullptr);
+    // Each stereo voice is (index, index + 1000). Downmix the sum of 17
+    // voices plus one mono index: 17 * (index + 500) + index.
+    for (std::int64_t begin : {10, 18}) {
+        compiled.compiled_graph->root_operations.tick_block(
+            storage.buffer().data(), &empty_tick_invocation, index(begin), 8);
+        EXPECT_EQ(state->first, iv::Sample{static_cast<float>(18 * begin + 8500)});
+        EXPECT_EQ(state->last, iv::Sample{static_cast<float>(18 * (begin + 7) + 8500)});
+    }
+    EXPECT_EQ(state->calls, 2u);
+}
+
+TEST_F(GraphJitRuntimeFixture, MissingPrivateCompilerRecordFailsDuringInputCapture)
+{
+    auto graph = configured_module_graph(*revision,
+        "iv.test.graph_jit.private_arithmetic_module");
+    ASSERT_TRUE(graph);
+    auto incomplete = std::make_shared<iv::PackageRevision>(*revision);
+    auto const removed = std::erase_if(incomplete->node_compiler_records,
+        [](auto const& record) {
+            return std::string_view(record.type_name, record.type_name_size)
+                .find("PrivateArithmeticProbe") != std::string_view::npos;
+        });
+    ASSERT_EQ(removed, 1u);
+    auto result = jit->compile(iv::GraphJitCompileRequest{
+        .project_generation = 151,
+        .graph = graph,
+        .definitions = make_graph_jit_snapshot(incomplete, 92),
+    });
+    EXPECT_FALSE(result.succeeded());
+    ASSERT_EQ(result.diagnostics.size(), 1u);
+    EXPECT_EQ(result.diagnostics.front().stage, iv::GraphJitDiagnosticStage::input_capture);
+    EXPECT_NE(result.diagnostics.front().message.find("PrivateArithmeticProbe"),
+        std::string::npos);
+}
+
 TEST_F(GraphJitRuntimeFixture, MultipleNodesAndBlockSlicing)
 {
     auto multiple_graph = configured_module_graph(

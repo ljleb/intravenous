@@ -7367,6 +7367,57 @@ void automation_window_module(iv::GraphBuilder& graph) {
 IV_MODULE("iv.test.automation.window_module", automation_window_module);
 
 )cpp";
+    static constexpr std::string_view internal_nodes = R"cpp(
+// Deliberately private: no IV_NODE registration for this concrete type.
+struct PrivateArithmeticProbe {
+    struct State {
+        std::uint64_t calls = 0;
+        iv::Sample first = 0;
+        iv::Sample last = 0;
+    };
+    static constexpr auto inputs() {
+        return std::array{iv::input<iv::Sample>("in")};
+    }
+    static constexpr auto outputs() { return std::tuple{}; }
+    void tick_block(iv::TickBlockContext<PrivateArithmeticProbe> const& ctx) const {
+        auto& state = ctx.state();
+        auto input = ctx.input<"in">();
+        ++state.calls;
+        state.first = input.get_value(0);
+        state.last = input.get_value(ctx.block_size - 1);
+    }
+};
+void private_arithmetic_module(iv::GraphBuilder& graph) {
+    auto ramp = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto probe = iv::details::configure_concrete_node<PrivateArithmeticProbe>(graph);
+    // This fixture loads its own package, without the shipped builtin package.
+    // Use its registered constants; arithmetic still creates internal leaves.
+    auto half = graph.node<"iv.test.graph_jit.state_context.constant">(iv::Sample{0.5f});
+    auto two = graph.node<"iv.test.graph_jit.state_context.constant">(iv::Sample{2.0f});
+    probe(ramp * half + two);
+    graph.outputs();
+}
+IV_MODULE("iv.test.graph_jit.private_arithmetic_module", private_arithmetic_module);
+void summed_module_boundaries(iv::GraphBuilder& graph) {
+    auto voices = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+        for (std::size_t voice = 0; voice < 17; ++voice) {
+            auto source = graph.node<"iv.test.graph_jit.state_context.stereo_ramp_source">();
+            boundary.outputs(source);
+        }
+    }, "summed-voices");
+    auto pass = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+        auto input = boundary.input<"in", iv::stereo>();
+        boundary.outputs(input);
+    }, "summed-input");
+    auto extra = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    pass(voices);
+    pass(extra);
+    auto probe = iv::details::configure_concrete_node<PrivateArithmeticProbe>(graph);
+    probe(pass);
+    graph.outputs();
+}
+IV_MODULE("iv.test.graph_jit.summed_module_boundaries", summed_module_boundaries);
+)cpp";
     static_assert(part_1.size() < 60 * 1024);
     static_assert(part_2.size() < 60 * 1024);
     static_assert(part_3.size() < 60 * 1024);
@@ -7376,12 +7427,13 @@ IV_MODULE("iv.test.automation.window_module", automation_window_module);
         std::string result;
         result.reserve(
             part_1.size() + part_2.size() + part_3.size() + part_4.size()
-            + part_5.size());
+            + part_5.size() + internal_nodes.size());
         result.append(part_1);
         result.append(part_2);
         result.append(part_3);
         result.append(part_4);
         result.append(part_5);
+        result.append(internal_nodes);
         return result;
     }();
     return std::string_view{source};

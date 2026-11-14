@@ -20,10 +20,15 @@ struct ProjectGraphPublication {
     // connections, or the generation their ports come from. Editors re-read
     // their scopes (graph.getScope).
     bool graph_changed = false;
+    // Configuration can produce valid interfaces while GraphJit fails. Carry
+    // that failure back to the cause's publication instead of hiding it in
+    // ProjectGraphGeneration or reporting only a successful package build.
+    std::optional<ProjectStatusNotification> execution_failure{};
 
     [[nodiscard]] bool empty() const noexcept
     {
-        return !instances.has_value() && !virtual_nodes.has_value() && !graph_changed;
+        return !instances.has_value() && !virtual_nodes.has_value() && !graph_changed
+            && !execution_failure.has_value();
     }
 };
 } // namespace iv

@@ -58,6 +58,11 @@ struct PackageRevision {
     // Immutable configuration tables copied from the accepted package code.
     // Their function/data pointers remain valid while package_code is retained.
     std::vector<details::PackageDefinition> provider_definitions{};
+    // Complete configuration-side records, not only public IV_NODE entries.
+    // Their declaration callbacks identify the exact package that built an
+    // internal concrete node; NodeCodeKey alone is shared by identical types
+    // compiled in different packages.
+    std::vector<details::NodeCompilerRecord> node_compiler_records{};
     std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
     std::vector<RetainedGlobalData> retained_globals{};
     std::vector<NodeMessageHandlerData> node_message_handlers{};

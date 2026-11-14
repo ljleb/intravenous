@@ -298,6 +298,7 @@ struct IrNodeRecord {
     std::size_t background_state_size = 0;
     std::size_t background_state_alignment = 1;
     Constant* initializer = nullptr;
+    GlobalVariable* global = nullptr;
 };
 
 using iv::graph_jit::CallbackImportAbi;
@@ -400,6 +401,7 @@ std::vector<IrNodeRecord> scan_node_records(Module& module)
             .background_state_alignment = constant_size(
                 record->getOperand(7), "background state alignment"),
             .initializer = record,
+            .global = &global,
         });
     }
     std::sort(result.begin(), result.end(), [](auto const& a, auto const& b) {
@@ -1981,6 +1983,7 @@ void inject_module_message_handler_table(
 void inject_package_configuration_metadata(
     Module& module,
     CompilerMetadata const& metadata,
+    std::span<IrNodeRecord const> node_records,
     std::span<std::pair<iv::NodeCodeKey, iv::NodeStateStructure> const> state_structures,
     std::span<std::pair<iv::NodeCodeKey, iv::NodeStateStructure> const> background_state_structures,
     std::span<RetainedGlobal const> retained_globals)
@@ -1993,6 +1996,35 @@ void inject_package_configuration_metadata(
     auto* i8 = Type::getInt8Ty(context);
     auto* code_key_type = StructType::get(i64, i64);
     auto* view_type = StructType::get(pointer_type, size_type);
+
+    // Public definitions are only a subset of the concrete types instantiated
+    // in a package. Keep the configuration-side records for private leaves and
+    // implicit DSL arithmetic too, including their exact declaration addresses.
+    if (node_records.empty()) {
+        emit_view_accessor(module, "iv_package_node_compiler_records",
+            ConstantPointerNull::get(pointer_type), 0);
+    } else {
+        auto const record_size = module.getDataLayout().getTypeAllocSize(
+            node_records.front().initializer->getType());
+        if (record_size.isScalable()
+            || record_size.getFixedValue() != sizeof(iv::details::NodeCompilerRecord)) {
+            fail("node compiler record ABI does not match NodeCompilerRecord");
+        }
+        std::vector<Constant*> records;
+        records.reserve(node_records.size());
+        for (auto const& record : node_records) {
+            // Refer to the original record, so pre-link optimization retains
+            // it for reduce_to_node_code()'s iv_node_types scan as well.
+            records.push_back(ConstantExpr::getPointerCast(record.global, pointer_type));
+        }
+        auto* array_type = ArrayType::get(pointer_type, records.size());
+        auto* table = new GlobalVariable(module, array_type, true,
+            GlobalValue::PrivateLinkage, ConstantArray::get(array_type, records),
+            "iv.package_node_compiler_records");
+        emit_view_accessor(module, "iv_package_node_compiler_records",
+            ConstantExpr::getPointerCast(table, pointer_type),
+            records.size() * module.getDataLayout().getPointerSize());
+    }
 
     auto code_key = [&](iv::NodeCodeKey key) -> Constant* {
         return ConstantStruct::get(
@@ -2199,9 +2231,10 @@ void inject_package_configuration_metadata(
 // later function terminates (Front 16, 2026-11-07).
 void remove_unreachable_package_code(Module& module)
 {
-    static constexpr std::array<StringRef, 8> entry_points{
+    static constexpr std::array<StringRef, 9> entry_points{
         "iv_package_abi_version",
         "iv_package_definitions",
+        "iv_package_node_compiler_records",
         "iv_package_node_config_pointer_fields",
         "iv_package_retained_globals",
         "iv_package_node_message_handlers",
@@ -2917,6 +2950,7 @@ int finalize(Options options)
     inject_package_configuration_metadata(
         package,
         metadata,
+        node_records,
         state_structures,
         background_state_structures,
         retained_globals);

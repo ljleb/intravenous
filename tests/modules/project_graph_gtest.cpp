@@ -1402,6 +1402,47 @@ TEST_F(ProjectGraphFixture, DefinitionAndMutationTransactionsBuildWholeRootGener
     EXPECT_TRUE(instances.list_instances().empty());
 }
 
+TEST_F(ProjectGraphFixture, FailedGraphCompilationPublishesTheDiagnosticWithDesiredInterfaces)
+{
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    struct RestoreCompiler {
+        iv::ProjectGraphGraphJitRequestedEvent previous;
+        ~RestoreCompiler() { iv::iv_runtime_project_graph_graph_jit_requested_event = previous; }
+    } restore{std::exchange(iv::iv_runtime_project_graph_graph_jit_requested_event,
+        +[](iv::ProjectGraphGraphJitRequest const&) -> iv::GraphJitCompileResult {
+            return {.attempted = true, .diagnostics = {{
+                .stage = iv::GraphJitDiagnosticStage::lowering,
+                .message = "test lowering failure: output buffer unavailable",
+                .node_type_id = definition_id,
+                .package_root = package_root,
+            }}};
+        })};
+    iv::ProjectStringBuilder create;
+    in_event_source([&] {
+        project_graph.handle_project_create_node_instance({
+            .instance_id = "instance:failed-audio", .definition_id = definition_id,
+        }, create);
+    });
+    EXPECT_EQ(create.build(), "instance:failed-audio");
+    auto const generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    EXPECT_TRUE(generation->placements.contains("instance:failed-audio"));
+    EXPECT_TRUE(generation->graph_jit_attempted);
+    EXPECT_FALSE(generation->compiled_graph);
+    EXPECT_FALSE(generation->graph_executor_attempted);
+    auto const publication = create.take_publication();
+    ASSERT_TRUE(publication.execution_failure);
+    EXPECT_FALSE(publication.empty());
+    EXPECT_EQ(publication.execution_failure->code, "graphCompilationFailed");
+    EXPECT_EQ(publication.execution_failure->level, "error");
+    auto const& message = publication.execution_failure->message;
+    EXPECT_NE(message.find("test lowering failure: output buffer unavailable"), std::string::npos);
+    EXPECT_NE(message.find(definition_id), std::string::npos);
+    EXPECT_NE(message.find(package_root), std::string::npos);
+    EXPECT_NE(message.find("No audio graph has been accepted yet"), std::string::npos);
+}
+
 TEST_F(ProjectGraphFixture, MissingDefinitionFailsThePassAndRealizesWhenDefinitionArrives)
 {
     iv::ProjectStringBuilder builder;

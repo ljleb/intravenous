@@ -202,6 +202,17 @@ Stage 3, started 2026-11-13. The owner has verified Stages 1–2, including
 project history and durable settings history. Earlier checkpoints below retain
 their original dates and are superseded by the later verification updates.
 
+Current checkpoint (2026-11-14): generic lane wiring and live manual controls are
+implemented and owner-tested. Complete the typed frontend `node.send(event)` API
+and the specialized automation-curve presentation next. Its remaining scope
+includes authoritative point data after reload/undo and grouped message gestures.
+Live output meters and other Tick observation remain in Stage 4.
+
+After Stage 3, revisit the display of unbounded knobs with the owner. The current
+angle compresses values beyond approximately ±10, so widely different magnitudes
+look almost identical. The owner requests useful visual magnitude feedback for
+very high and very low values. The visual encoding is deliberately undecided.
+
 ### Stage 2 plan (2026-11-12)
 
 The owner settled the editor surface: an editor is opened on one node, its
@@ -1722,29 +1733,19 @@ audio-output diagnostics. Tests and typechecks remain owner-run. Native pointer
 confinement and the cause of the owner's silence remain open until the client
 reports the live lock/device state. This status does not claim either issue fixed.
 
-Inline knobs and an explicit pointer-lock recorder (2026-11-14):
+Inline knobs (2026-11-14):
 
-- Directly visible eligible inputs now render their knob beside the wire handle.
-  Port fitting uses each row's full height. Knob rows occupy more height than
-  event/output handles. Folded ports keep their existing popovers, while direct
-  input handles no longer open a redundant knob popover on ordinary hover.
-- Input and output columns retain their separate positions. Narrow labels hide
-  names/readouts before hiding the wire and knob targets. Connection-preview
-  colors use the port-circle positions, not the width of the input column.
-- The owner requested an explicit recorder after automatic anomaly messages
-  remained absent. **Intravenous: Record Knob Pointer Lock** arms the next drag.
-  It finishes on release or a detected failure. Running it again stops manually.
-  Reports include the initial acquisition events and a bounded tail of recent
-  events, even if the browser never reports the observed confinement failure.
-- The extension saves reports to the repository's ignored `debug-release/`
-  directory and opens the JSON beside the graph. This reintroduces a recording
-  action at the owner's explicit request. It adds no buttons to the presentation.
-
-Instructions are in [Knob Pointer-Lock Recording](./knob_pointer_lock_diagnostics.md).
-Added regressions for mixed port-row heights, trace ownership, bounded recording,
-and report-directory selection. Tests and client typechecks remain owner-run.
-The reported `System Default [default]; active` status confirms hardware device
-activation. It does not prove that the accepted graph delivers a nonzero signal.
+- Directly visible eligible inputs render their knob beside the wire handle.
+  Port fitting uses each row's complete height. Hidden inputs use folded port
+  popovers. Directly visible inputs have no redundant knob popover on hover.
+- Input and output columns retain separate positions. Narrow labels hide names
+  and readouts before hiding the wire and knob targets. Connection-preview colors
+  use the port-circle positions, not the width of the input column.
+- The temporary pointer recorder and its Command Palette action were removed at
+  the owner's request after the editor permission issue was resolved. Automatic
+  pointer-lock diagnostics and the editor compatibility warning remain. The
+  [previous checkpoint](historical/knob_pointer_recorder_removed_2026-11-14.md)
+  retains the recorder's implementation and verification history.
 
 Detached-window pointer lock resolved (2026-11-14):
 
@@ -1756,3 +1757,89 @@ Detached-window pointer lock resolved (2026-11-14):
   `vscode/client` continues to build the extension.
 - The investigation and superseded status are preserved in the
   [historical host-workaround record](historical/vscodium_pointer_lock_host_workaround_2026-11-14.md).
+
+Desktop editor compatibility warning (2026-11-14):
+
+- Project activation warns about detached-window knob pointer lock when the
+  desktop editor's VS Code core version predates 1.133.0. This release contains
+  upstream fix #329240. Both VS Code and VSCodium expose that core version.
+- The warning is also written to the Intravenous output channel. It offers the
+  main-window fallback and does not block startup. Browser hosts and unrecognized
+  custom version labels do not receive an unsupported-version claim.
+- Added focused regressions for the release boundary, prereleases, newer editor
+  versions, and unrecognized labels. Tests and client typechecks remain owner-run.
+
+Silent-output investigation (2026-11-14; next owner run needed):
+
+- Stage 3 remains active. Before the specialized automation presentation proceeds,
+  locate the owner's missing audio using low-rate system-output probes.
+- The application samples one block per second in `SystemAudioDevices` before
+  submission and in miniaudio before its callback returns. A service thread logs
+  every two seconds to the diagnostic file and `server.message` notifications.
+  Render probes include the graph generation, Tick calls, and matched/unmatched
+  device-binding requests. Both sample probes include peak, RMS, DC, and invalid
+  sample counts. The audio threads perform no diagnostic formatting or I/O.
+- The probes are enabled for this investigation. `IV_AUDIO_DIAGNOSTICS=0` disables
+  them at server startup. Library users/tests default to no diagnostics owner.
+- Added focused coverage for missing-graph silence, binding selection across sliced
+  device blocks, signal statistics, and sampling frequency. This pass has not
+  been built or tested. Root cause and its regression remain pending the live
+  output. [Audio output diagnostics](audio_output_diagnostics.md) describes the log.
+
+Silent-output localization update (2026-11-14):
+
+- Owner probes show advancing device blocks but `render.generation=0`, `ticks=0`,
+  and no output binding requests after the package build finishes. The audio graph
+  is not executing; changing detune cannot fix that missing execution.
+- GraphJit compilation diagnostics were retained by ProjectGraph but absent from
+  its publication. `ProjectGraphPublication::execution_failure` now sends those
+  failures through the existing root report to SocketRpcServer and the client.
+  Package-build success is followed by the actionable graph-compilation failure.
+- Removed the probe's service-thread reads of realtime-owned executor pointers.
+  The render-thread generation observation remains the supported evidence.
+- Added two light regressions for error preservation and notification ordering.
+  The actual compiler diagnostic and its targeted fix await the next owner run.
+
+Silent-output compiler fix prepared (2026-11-14):
+
+- The next owner log identifies `GraphJit lowering has no resolved implementation
+  for a concrete primitive`. GraphJit collected registered leaves but omitted
+  internal arithmetic leaves created by expressions in the panner module.
+- The package now exports all compiler records. GraphJit resolves internal leaves
+  through their code key and exact declaration callback in the pinned revisions.
+  This also supports private leaf types without public `IV_NODE` registrations.
+  Package lookup adds no work to the audio callback.
+- Added shared-fixture regressions for execution, identical keys in a different
+  package, and an early diagnostic for a missing private record. The owner must
+  rebuild, run tests, and restart the server to validate this fix. The probes stay
+  enabled until the live output confirms graph execution and signal delivery.
+
+Silent-output module routing fix prepared (2026-11-14):
+
+- The next log gets past compiler-record lookup and reports multiple sources at
+  a structural sample input. The oscillator module contributes 17 voices with
+  repeated `g.outputs(...)` calls. Structural routing now preserves the sum.
+- Explicit transform dimensions represent all producer channels. They no longer
+  require a registered speaker layout for the combined producer list. Per-edge
+  conversions, detach settings, and module manual-control policy remain retained.
+  Large native sums use compiler-sized root scratch instead of a speaker-sized
+  temporary array. Small sums keep their existing fixed array.
+- Added planner and execution regressions for module output sums and input fan-in.
+  The previous new fixture used an invalid public `node<Type>()` call. Corrected
+  it to use the internal concrete-construction function. Its shared setup failure
+  explains the owner's dependent tests marked “Not Run.”
+- Builds, tests, and live signal confirmation remain owner-run. Stage 3 stays
+  active, with the audio investigation ahead of the specialized presentation.
+
+Audible output owner-confirmed (2026-11-14):
+
+- After live rewiring, generation 3 produces audible audio. Render and playback
+  probes report identical nonzero samples and one matched system-output binding.
+- The saved signal path is unchanged apart from connection IDs. The earlier
+  startup error rejecting multiple sources at a concrete target still needs a
+  reproduction. Do not attribute that error to incorrect user wiring or mark its
+  normalization behavior fixed based only on the successful live edit.
+- Corrected the remaining shared-fixture setup error: scalar-literal shorthand
+  required the shipped `constant` definition, absent from that fixture. The new
+  regression now uses the fixture's existing registered constants explicitly.
+  Test validation remains owner-run before continuing the specialized presentation.

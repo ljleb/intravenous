@@ -126,6 +126,10 @@ static_assert(std::is_trivially_copyable_v<NodeStateStructureData>);
 extern "C" {
 using iv_package_abi_version_fn = std::uint32_t (*)();
 using iv_package_definitions_fn = iv::ModuleDataView (*)();
+// All concrete types used by the package, including private leaves and DSL
+// arithmetic that have no public IV_NODE registration.
+// Returns an array of pointers to const details::NodeCompilerRecord.
+using iv_package_node_compiler_records_fn = iv::ModuleDataView (*)();
 using iv_package_node_config_pointer_fields_fn = iv::ModuleDataView (*)();
 using iv_package_retained_globals_fn = iv::ModuleDataView (*)();
 using iv_package_node_message_handlers_fn = iv::ModuleDataView (*)();

@@ -611,6 +611,13 @@ outline around yellow knobs. Drag feedback follows the local pointer gesture,
 independent of server acknowledgement. Keyboard focus remains visible in the
 same color family.
 
+_Deferred visual refinement requested by the owner on 2026-11-14:_ after the
+current Vue Stage 3, improve magnitude feedback on knobs without finite bounds.
+The current angle compresses values well beyond approximately ±10, so values
+such as 100 and 10,000 become difficult to distinguish at a glance. Preserve a
+useful visual distinction for very high and very low values. The exact visual
+encoding remains to be chosen with the owner after this stage.
+
 Drag up to increase the value and down to decrease it. Lock and hide the mouse
 pointer during a drag, using relative movement so screen edges do not limit it.
 Release or Escape unlocks it; leaving the application also ends the drag. Each

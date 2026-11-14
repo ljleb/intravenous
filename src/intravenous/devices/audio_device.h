@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/ports.h>
+#include <intravenous/devices/audio_output_diagnostics.h>
 
 #include <concepts>
 #include <cstddef>
@@ -18,6 +19,7 @@ namespace iv {
         size_t num_channels = 2;
         size_t max_block_frames = 4096;
         size_t preferred_block_size = 256;
+        AudioOutputDiagnostics* output_diagnostics = nullptr;
     };
 
     inline void validate_render_config(RenderConfig const& config)

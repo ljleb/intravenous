@@ -333,7 +333,7 @@ export class WorkspaceSession {
                 return;
             }
 
-            if (params.code === "rebuildFailed") {
+            if (params.code === "rebuildFailed" || params.code === "graphCompilationFailed") {
                 this.logCapturedServerFailureContext();
                 // Keep the actionable failure below compiler output and traces.
                 this.logServerState("Intravenous rebuild failed", params);
