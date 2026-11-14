@@ -194,3 +194,8 @@ These documents are retained because they record deleted architectures, supersed
 - [Patched Editor Before an Isolated Profile](./patched_editor_before_isolated_profile_2026-11-14.md)
   preserves the launch procedure that required closing every VSCodium window
   before the optional host backport received its own user-data directory.
+
+- [Retired VSCodium Pointer-Lock Host Workaround](./vscodium_pointer_lock_host_workaround_2026-11-14.md)
+  preserves the editor investigation, temporary patch and installation procedures,
+  and superseded implementation status after the owner installed the fixed release
+  and removed editor tooling from the repository.

@@ -1746,15 +1746,13 @@ and report-directory selection. Tests and client typechecks remain owner-run.
 The reported `System Default [default]; active` status confirms hardware device
 activation. It does not prove that the accepted graph delivers a nonzero signal.
 
-Detached-window knob pointer lock (2026-11-14):
+Detached-window pointer lock resolved (2026-11-14):
 
-- The owner confirms that pointer lock works with the graph in the main VSCodium
-  window. The detached window still rejects acquisition with `SecurityError`.
-- The installed editor permission handler lacks the upstream auxiliary-window
-  branch. This is host friction, not a change to the intended knob interaction.
-- `nix/vscodium-pointer-lock.nix` provides an optional editor backport. It allows
-  `pointerLock` only for main-frame `about:blank` requests from registered
-  auxiliary windows. The normal extension remains independent of this package.
-- Static bundle syntax validation and four focused permission tests pass. The
-  patched editor still needs owner validation in a detached window. Build and
-  launch steps are in [Knob Pointer-Lock Recording](./knob_pointer_lock_diagnostics.md).
+- The owner confirmed that the editor backport fixed detached-window pointer lock,
+  then installed a normal fixed VSCodium release. The editor package definition
+  now lives in the owner's `/etc/nixos` configuration.
+- Editor patch scripts, their tests, package definitions, the generated editor
+  link, and the temporary test profile were removed from this repository.
+  `vscode/client` continues to build the extension.
+- The investigation and superseded status are preserved in the
+  [historical host-workaround record](historical/vscodium_pointer_lock_host_workaround_2026-11-14.md).
