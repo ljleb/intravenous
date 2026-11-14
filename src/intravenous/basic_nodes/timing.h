@@ -18,19 +18,18 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, 1>{};
+            return std::array<SequentialInputConfig<Sample>, 1>{};
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<TickOutputConfig<Sample>, 1>{};
         }
 
         void declare(DeclarationContext<Latency> const& ctx) const
         {
-            auto const& state = ctx.state();
             size_t const min_size = _latency + ctx.max_block_size();
-            ctx.local_array(state.memory, next_power_of_2(min_size));
+            ctx.local_array<&State::memory>(next_power_of_2(min_size));
         }
 
         void initialize(InitializationContext<Latency> const& ctx) const
@@ -44,8 +43,10 @@ namespace iv {
             auto& state = ctx.state();
             size_t const mask = state.memory.size() - 1;
 
-            state.memory[(ctx.index + _latency) & mask] = ctx.inputs[0].get();
-            ctx.outputs[0].push(state.memory[ctx.index & mask]);
+            state.memory[(ctx.value_index + _latency) & mask] =
+                ctx.template input<0>().get();
+            ctx.template output<0>().push(
+                state.memory[ctx.value_index & mask]);
         }
     };
 }

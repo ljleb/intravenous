@@ -1,5 +1,7 @@
 #include <intravenous/runtime/socket_rpc_requests.h>
 
+#include <intravenous/runtime/project_connection_json.h>
+
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
@@ -82,81 +84,6 @@ std::vector<std::string> parse_string_array_param(Json const &params, std::strin
     return values;
 }
 
-uint64_t parse_uint64_param(Json const &params, std::string const &key) {
-    auto const value_it = params.find(key);
-    if (value_it == params.end() || !value_it->is_number_integer()) {
-        throw std::runtime_error("JSON-RPC request is missing integer param '" + key + "'");
-    }
-    auto const value = value_it->get<int64_t>();
-    if (value < 0) {
-        throw std::runtime_error("JSON-RPC request param '" + key + "' must be non-negative");
-    }
-    return static_cast<uint64_t>(value);
-}
-
-std::optional<uint64_t> parse_optional_uint64_param(Json const &params, std::string const &key) {
-    auto const value_it = params.find(key);
-    if (value_it == params.end() || value_it->is_null()) {
-        return std::nullopt;
-    }
-    if (!value_it->is_number_integer()) {
-        throw std::runtime_error("JSON-RPC request param '" + key + "' must be a non-negative integer");
-    }
-    auto const value = value_it->get<int64_t>();
-    if (value < 0) {
-        throw std::runtime_error("JSON-RPC request param '" + key + "' must be non-negative");
-    }
-    return static_cast<uint64_t>(value);
-}
-
-size_t parse_optional_size_param(Json const &params, std::string const &key, size_t fallback) {
-    auto const value_it = params.find(key);
-    if (value_it == params.end() || value_it->is_null()) {
-        return fallback;
-    }
-    if (!value_it->is_number_integer()) {
-        throw std::runtime_error("JSON-RPC request param '" + key + "' must be a non-negative integer");
-    }
-    auto const value = value_it->get<int64_t>();
-    if (value < 0) {
-        throw std::runtime_error("JSON-RPC request param '" + key + "' must be non-negative");
-    }
-    return static_cast<size_t>(value);
-}
-
-double parse_number_param(Json const &params, std::string const &key) {
-    auto const value_it = params.find(key);
-    if (value_it == params.end() || !value_it->is_number()) {
-        throw std::runtime_error("JSON-RPC request is missing numeric param '" + key + "'");
-    }
-    return value_it->get<double>();
-}
-
-ChannelTypeId parse_channel_type_param(Json const& params, std::string const& key) {
-    auto const value = parse_string_param(params, key);
-    if (value == "mono") {
-        return ChannelTypeId::mono;
-    }
-    if (value == "stereo") {
-        return ChannelTypeId::stereo;
-    }
-    throw std::runtime_error("JSON-RPC request param '" + key + "' must be 'mono' or 'stereo'");
-}
-
-LanePortDomain parse_lane_port_domain_param(Json const& params, std::string const& key) {
-    auto const value = parse_string_param(params, key);
-    if (value == "realtime") return LanePortDomain::realtime;
-    if (value == "compiled") return LanePortDomain::compiled;
-    throw std::runtime_error("JSON-RPC request param '" + key + "' must be 'realtime' or 'compiled'");
-}
-
-PortKind parse_port_kind_param(Json const& params, std::string const& key) {
-    auto const value = parse_string_param(params, key);
-    if (value == "sample") return PortKind::sample;
-    if (value == "event") return PortKind::event;
-    throw std::runtime_error("JSON-RPC request param '" + key + "' must be 'sample' or 'event'");
-}
-
 uint32_t parse_uint32_value(Json const &value, std::string const &context) {
     if (!value.is_number_integer()) {
         throw std::runtime_error(context);
@@ -166,6 +93,37 @@ uint32_t parse_uint32_value(Json const &value, std::string const &context) {
         throw std::runtime_error(context);
     }
     return static_cast<uint32_t>(parsed);
+}
+
+std::optional<std::uint64_t> parse_optional_revision(Json const& params)
+{
+    auto const value = params.find("expectedRevision");
+    if (value == params.end() || value->is_null()) return std::nullopt;
+    if (!value->is_number_unsigned() && !value->is_number_integer()) {
+        throw std::runtime_error("expectedRevision must be an unsigned integer");
+    }
+    if (value->is_number_unsigned()) return value->get<std::uint64_t>();
+    auto const parsed = value->get<std::int64_t>();
+    if (parsed < 0) {
+        throw std::runtime_error("expectedRevision must be an unsigned integer");
+    }
+    return static_cast<std::uint64_t>(parsed);
+}
+
+std::uint64_t parse_revision_param(
+    Json const& params, std::string const& key, std::uint64_t fallback)
+{
+    auto const value = params.find(key);
+    if (value == params.end()) return fallback;
+    if (!value->is_number_unsigned() && !value->is_number_integer()) {
+        throw std::runtime_error(key + " must be an unsigned integer");
+    }
+    if (value->is_number_unsigned()) return value->get<std::uint64_t>();
+    auto const parsed = value->get<std::int64_t>();
+    if (parsed < 0) {
+        throw std::runtime_error(key + " must be an unsigned integer");
+    }
+    return static_cast<std::uint64_t>(parsed);
 }
 
 std::vector<SourceRange> parse_ranges(Json const &params, bool require_non_empty = true) {
@@ -234,405 +192,333 @@ SourceRangeMatchMode parse_match_mode(Json const &params) {
     throw std::runtime_error("graph.queryBySpans match must be 'union' or 'intersection'");
 }
 
-LaneQueryFilter parse_lane_query_filter(Json const &params) {
-    auto const filter_it = params.find("filter");
-    if (filter_it == params.end() || !filter_it->is_object()) {
-        throw std::runtime_error("lane requests require a filter object");
+ManualControlId parse_manual_control_id(Json const& params)
+{
+    auto const node = params.find("node");
+    if (node == params.end() || !node->is_object()) {
+        throw std::runtime_error(
+            "manual control request requires object param 'node'");
     }
-    auto const query_it = filter_it->find("query");
-    if (query_it != filter_it->end()) {
-        if (!query_it->is_string()) {
-            throw std::runtime_error("lane filter.query must be a string");
-        }
-        return LaneQueryFilter{.source = query_it->get<std::string>()};
-    }
-    auto const kind_it = filter_it->find("kind");
-    if (kind_it == filter_it->end() || !kind_it->is_string()) {
-        throw std::runtime_error("lane filter must provide string query or kind");
-    }
-    auto const kind = kind_it->get<std::string>();
-    if (kind == "graphInputs") {
-        return LaneQueryFilter{.source = "dsp_graph.graph_input"};
-    }
-    return LaneQueryFilter{.source = kind};
-}
-
-LaneQuery parse_lane_query(Json const &params) {
-    return LaneQuery{.filter = parse_lane_query_filter(params)};
-}
-
-LaneViewRequest parse_lane_view_request(Json const &params) {
-    return LaneViewRequest{
-        .view_id = parse_optional_nullable_string_param(params, "viewId").has_value()
-            ? InternedString::from_string(*parse_optional_nullable_string_param(params, "viewId"))
-            : InternedString{},
-        .query = parse_lane_query(params),
-        .start_index = parse_optional_size_param(params, "startIndex", 0),
-        .visible_lane_count = parse_optional_size_param(params, "visibleLaneCount", 0),
-        .first_sample_index = parse_optional_size_param(params, "firstSampleIndex", 0),
-        .last_sample_index = parse_optional_size_param(params, "lastSampleIndex", 0),
-        .display_sample_count = parse_optional_size_param(params, "displaySampleCount", 0),
+    return {
+        .node = parse_node_address_json(
+            *node, ProjectConnectionJsonNames::socket_rpc),
+        .input_name = parse_string_param(params, "inputName"),
     };
 }
+
+Sample parse_manual_control_value(Json const& params)
+{
+    auto const value = params.find("value");
+    if (value == params.end() || !value->is_number()) {
+        throw std::runtime_error(
+            "manual control request requires numeric param 'value'");
+    }
+    return value->get<float>();
+}
+
+ManualControlInteractionId parse_manual_interaction_id(Json const& params)
+{
+    return {
+        .interaction_id = parse_string_param(params, "interactionId"),
+    };
+}
+
 } // namespace
 
-ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line) {
+ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
+{
     auto const request = parse_request_json(line);
     auto const request_id = parse_request_id(request);
     auto const method = parse_request_method(request);
     auto const &params = parse_request_params(request);
+    auto const expected_revision = parse_optional_revision(params);
+
+    auto parsed = [&](SocketRpcRequestPayload payload) {
+        return ParsedSocketRpcRequest{
+            .request_id = request_id,
+            .method = method,
+            .expected_revision = expected_revision,
+            .payload = std::move(payload),
+        };
+    };
 
     if (method == "graph.queryBySpans") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = GraphQueryBySpansRequest{
-                .file_path = parse_string_param(params, "filePath"),
-                .ranges = parse_ranges(params),
-                .match_mode = parse_match_mode(params),
-                .instance_id = parse_optional_nullable_string_param(params, "instanceId"),
-            },
-        };
+        return parsed(GraphQueryBySpansRequest{
+            .file_path = parse_string_param(params, "filePath"),
+            .ranges = parse_ranges(params),
+            .match_mode = parse_match_mode(params),
+            .instance_id = parse_optional_nullable_string_param(params, "instanceId")});
     }
     if (method == "graph.queryActiveRegions") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = GraphQueryActiveRegionsRequest{
-                .file_path = parse_string_param(params, "filePath"),
-            },
-        };
+        return parsed(GraphQueryActiveRegionsRequest{
+            .file_path = parse_string_param(params, "filePath")});
     }
     if (method == "graph.getVirtualNode") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = GetVirtualNodeRequest{
-                .node_id = parse_string_param(params, "nodeId"),
-            },
-        };
+        return parsed(GetVirtualNodeRequest{
+            .node_id = parse_string_param(params, "nodeId")});
     }
     if (method == "graph.getVirtualNodes") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = GetVirtualNodesRequest{
-                .node_ids = parse_string_array_param(params, "nodeIds"),
-            },
-        };
+        return parsed(GetVirtualNodesRequest{
+            .node_ids = parse_string_array_param(params, "nodeIds")});
     }
-    if (method == "ivModuleInstances.create") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = CreateIvModuleInstanceRequest{
-                .module_id = parse_string_param(params, "moduleId"),
-                .display_name = parse_optional_nullable_string_param(params, "displayName"),
-            },
+    if (method == "graph.getScope") {
+        return parsed(GetGraphScopeRequest{});
+    }
+    if (method == "project.setToolchain") {
+        auto const settings = params.find("toolchain");
+        if (settings == params.end() || !settings->is_object())
+            throw std::invalid_argument("project.setToolchain requires a toolchain object");
+        auto path = [&](char const* name) -> std::optional<std::filesystem::path> {
+            auto value = parse_optional_nullable_string_param(*settings, name);
+            return value ? std::optional<std::filesystem::path>(*value) : std::nullopt;
         };
+        return parsed(SetProjectToolchainRequest{{
+            .c_compiler = path("cCompiler"), .cxx_compiler = path("cxxCompiler"),
+            .cmake_program = path("cmakeProgram"),
+            .cmake_generator = parse_optional_nullable_string_param(*settings, "cmakeGenerator"),
+            .make_program = path("makeProgram"), .juce_dir = path("juceDir"),
+            .iv_package_pch = path("ivPackagePch"),
+        }});
+    }
+    if (method == "project.undo") return parsed(UndoProjectEditRequest{});
+    if (method == "project.redo") return parsed(RedoProjectEditRequest{});
+    if (method == "project.applyEdit") {
+        ProjectEditBatch batch;
+        auto const operations = params.find("operations");
+        if (operations == params.end() || !operations->is_array())
+            throw std::invalid_argument("project.applyEdit requires an operations array");
+        for (auto const& operation : *operations) {
+            if (!operation.is_object()) throw std::invalid_argument("project batch operation must be an object");
+            auto const operation_method = parse_string_param(operation, "method");
+            if (operation_method == "project.applyEdit" || operation_method == "project.undo" || operation_method == "project.redo")
+                throw std::invalid_argument("project batches cannot contain history or nested batches");
+            auto const nested = parse_socket_rpc_request(Json{{"id", 0}, {"method", operation_method},
+                {"params", operation.value("params", Json::object())}}.dump());
+            std::visit([&](auto const& value) {
+                using Request = std::remove_cvref_t<decltype(value)>;
+                if constexpr (std::same_as<Request, CreateNodeInstanceRequest>) {
+                    if (!value.instance_id) throw std::invalid_argument("batch instance creation requires an explicit instanceId");
+                    batch.require_absent_instances.push_back(*value.instance_id);
+                    batch.instances.push_back({*value.instance_id, ProjectNodeInstanceDeclaration{
+                        .instance_id = *value.instance_id, .definition_id = value.definition_id,
+                        .display_name = value.display_name, .configuration_source = value.configuration_source}});
+                } else if constexpr (std::same_as<Request, UpdateNodeInstancesRequest>) {
+                    for (auto const& update : value.updates) batch.instance_updates.push_back({
+                        update.instance_id, update.display_name, update.configuration_source});
+                } else if constexpr (std::same_as<Request, DeleteNodeInstanceRequest>) {
+                    batch.instances.push_back({value.instance_id, std::nullopt});
+                } else if constexpr (std::same_as<Request, UpsertGraphConnectionRequest>) {
+                    batch.connections.push_back({project_connection_id(value.connection), value.connection});
+                } else if constexpr (std::same_as<Request, DeleteGraphConnectionRequest>) {
+                    batch.connections.push_back({value.connection_id, std::nullopt, true});
+                } else if constexpr (std::same_as<Request, UpsertManualControlRequest>) {
+                    batch.manual_controls.push_back({value.control.id, value.control});
+                } else if constexpr (std::same_as<Request, DeleteManualControlRequest>) {
+                    batch.manual_controls.push_back({value.id, std::nullopt});
+                } else if constexpr (std::same_as<Request, SetAudioDevicesRequest>) {
+                    if (batch.audio_devices) throw std::invalid_argument("project batch edits audio selection twice");
+                    batch.audio_devices = ProjectAudioDeviceSelection{value.output_device_id, value.input_device_id};
+                } else if constexpr (std::same_as<Request, SetProjectToolchainRequest>) {
+                    if (batch.toolchain) throw std::invalid_argument("project batch edits toolchain settings twice");
+                    batch.toolchain = value.settings;
+                } else throw std::invalid_argument("operation is not supported in a project edit batch");
+            }, nested.payload);
+        }
+        return parsed(ApplyProjectEditRequest{std::move(batch)});
+    }
+    if (method == "nodeInstances.create") {
+        auto configuration_source = parse_optional_nullable_string_param(
+            params, "configurationSource");
+        return parsed(CreateNodeInstanceRequest{
+            .instance_id = parse_optional_nullable_string_param(params, "instanceId"),
+            .definition_id = parse_string_param(params, "definitionId"),
+            .display_name = parse_optional_nullable_string_param(params, "displayName"),
+            .configuration_source = configuration_source.value_or(std::string{}),
+        });
     }
     if (method == "ivPackages.list") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = GetIvPackagesRequest{},
-        };
+        return parsed(GetIvPackageDefinitionsRequest{});
     }
     if (method == "ivPackages.create") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = CreateIvPackageRequest{
-                .name = parse_string_param(params, "name"),
-            },
-        };
+        return parsed(CreateIvPackageRequest{
+            .name = parse_string_param(params, "name")});
     }
-    if (method == "ivModuleInstances.get") {
+    if (method == "nodeInstances.get") {
         auto const source_file_path = parse_optional_nullable_string_param(params, "sourceFilePath");
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = GetIvModuleInstancesRequest{
-                .source_file_path = source_file_path.has_value()
-                    ? std::optional<std::filesystem::path>{*source_file_path}
-                    : std::nullopt,
-            },
-        };
+        return parsed(GetNodeInstancesRequest{
+            .source_file_path = source_file_path.has_value()
+                ? std::optional<std::filesystem::path>{*source_file_path}
+                : std::nullopt});
     }
-    if (method == "ivModuleInstances.delete") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = DeleteIvModuleInstanceRequest{
-                .instance_id = parse_string_param(params, "instanceId"),
-            },
-        };
+    if (method == "nodeInstances.delete") {
+        return parsed(DeleteNodeInstanceRequest{
+            .instance_id = parse_string_param(params, "instanceId")});
     }
-    if (method == "ivModuleInstances.update") {
+    if (method == "nodeInstances.update") {
         auto const updates_it = params.find("updates");
         if (updates_it == params.end() || !updates_it->is_array()) {
             throw std::runtime_error("socket rpc params are missing array 'updates'");
         }
-        std::vector<UpdateIvModuleInstance> updates;
+        std::vector<UpdateNodeInstance> updates;
         updates.reserve(updates_it->size());
         for (auto const &update : *updates_it) {
             if (!update.is_object()) {
                 throw std::runtime_error("socket rpc update entry must be an object");
             }
-            updates.push_back(UpdateIvModuleInstance{
+            updates.push_back(UpdateNodeInstance{
                 .instance_id = parse_string_param(update, "instanceId"),
                 .display_name = parse_optional_nullable_string_param(update, "displayName"),
-                .default_silence_ttl_samples = update.contains("defaultSilenceTtlSamples")
-                    ? std::optional<size_t>{static_cast<size_t>(parse_uint64_param(
-                        update,
-                        "defaultSilenceTtlSamples"))}
-                    : std::nullopt,
+                .configuration_source = parse_optional_nullable_string_param(
+                    update, "configurationSource"),
             });
         }
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = UpdateIvModuleInstancesRequest{
-                .updates = std::move(updates),
+        return parsed(UpdateNodeInstancesRequest{
+            .updates = std::move(updates)});
+    }
+    if (method == "graphConnections.upsert") {
+        auto const connection = params.find("connection");
+        if (connection == params.end() || !connection->is_object()) {
+            throw std::runtime_error(
+                "graphConnections.upsert requires object param 'connection'");
+        }
+        return parsed(UpsertGraphConnectionRequest{
+                .connection = parse_project_connection_json(
+                    *connection, ProjectConnectionJsonNames::socket_rpc),
+            });
+    }
+    if (method == "graphConnections.delete") {
+        return parsed(DeleteGraphConnectionRequest{
+                .connection_id = parse_string_param(params, "connectionId"),
+            });
+    }
+    if (method == "manualControls.upsert") {
+        auto const participation = parse_string_param(params, "participation");
+        ManualControlParticipation parsed_participation{};
+        if (participation == "disconnectedOnly") {
+            parsed_participation =
+                ManualControlParticipation::disconnected_only;
+        } else if (participation == "participateWithConnections") {
+            parsed_participation =
+                ManualControlParticipation::participate_with_connections;
+        } else {
+            throw std::runtime_error(
+                "manual control participation must be 'disconnectedOnly' or 'participateWithConnections'");
+        }
+        auto const enabled = params.find("enabled");
+        if (enabled != params.end() && !enabled->is_boolean()) {
+            throw std::runtime_error(
+                "manual control param 'enabled' must be boolean");
+        }
+        return parsed(UpsertManualControlRequest{
+            .control = {
+                .id = parse_manual_control_id(params),
+                .stored_value = parse_manual_control_value(params),
+                .participation = parsed_participation,
+                .enabled = enabled == params.end() || enabled->get<bool>(),
             },
-        };
+        });
     }
-    if (method == "timeline.setCompiledSampleCacheChunkSizeMultiplier") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest{
-                .compiled_sample_cache_chunk_size_multiplier =
-                    static_cast<size_t>(parse_uint64_param(
-                        params,
-                        "compiledSampleCacheChunkSizeMultiplier")),
-            },
-        };
+    if (method == "manualControls.delete") {
+        return parsed(DeleteManualControlRequest{
+            .id = parse_manual_control_id(params),
+        });
     }
-    if (method == "timeline.setLaneSampleChannelType") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetTimelineLaneSampleChannelTypeRequest{
-                .lane_id = InternedString::from_string(parse_string_param(params, "laneId")),
-                .sample_channel_type = parse_channel_type_param(params, "sampleChannelType"),
-            },
-        };
+    if (method == "manualControls.hover") {
+        auto const node = params.find("node");
+        auto const input = params.find("inputName");
+        auto id = std::optional<ManualControlId>{};
+        if ((node == params.end()) != (input == params.end())) {
+            throw std::runtime_error(
+                "manual control hover requires both 'node' and 'inputName', or neither");
+        }
+        if (node != params.end()) id = parse_manual_control_id(params);
+        return parsed(SetManualControlHoverRequest{
+            .id = std::move(id),
+        });
     }
-    if (method == "timeline.setLaneUiState") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetTimelineLaneUiStateRequest{
-                .lane_id = InternedString::from_string(parse_string_param(params, "laneId")),
-                .expected_revision = params.contains("expectedRevision")
-                    ? std::optional<std::uint64_t>{parse_uint64_param(params, "expectedRevision")}
-                    : std::nullopt,
-                .serialized_state = params.contains("serializedState")
-                    ? std::optional<std::string>{parse_string_param(params, "serializedState")}
-                    : std::nullopt,
-                .name = params.contains("name")
-                    ? std::optional<std::string>{parse_string_param(params, "name")}
-                    : std::nullopt,
-            },
-        };
+    if (method == "manualControls.begin") {
+        return parsed(BeginManualControlInteractionRequest{
+            .interaction = parse_manual_interaction_id(params),
+            .id = parse_manual_control_id(params),
+            .value = parse_manual_control_value(params),
+        });
     }
-    if (method == "timeline.connectLanes") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = ConnectTimelineLanesRequest{
-                .source_lane_id = InternedString::from_string(parse_string_param(params, "sourceLaneId")),
-                .target_lane_id = InternedString::from_string(parse_string_param(params, "targetLaneId")),
-                .port_domain = parse_lane_port_domain_param(params, "portDomain"),
-                .port_kind = parse_port_kind_param(params, "portKind"),
-                .port_ordinal = static_cast<size_t>(parse_uint64_param(params, "portOrdinal")),
-            },
-        };
+    if (method == "manualControls.update") {
+        return parsed(UpdateManualControlInteractionRequest{
+            .interaction = parse_manual_interaction_id(params),
+            .value = parse_manual_control_value(params),
+        });
     }
-    if (method == "timeline.disconnectLanes") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = DisconnectTimelineLanesRequest{
-                .source_lane_id = InternedString::from_string(parse_string_param(params, "sourceLaneId")),
-                .target_lane_id = InternedString::from_string(parse_string_param(params, "targetLaneId")),
-                .port_domain = parse_lane_port_domain_param(params, "portDomain"),
-                .port_kind = parse_port_kind_param(params, "portKind"),
-                .port_ordinal = static_cast<size_t>(parse_uint64_param(params, "portOrdinal")),
-            },
-        };
+    if (method == "manualControls.end") {
+        return parsed(EndManualControlInteractionRequest{
+            .interaction = parse_manual_interaction_id(params),
+            .value = parse_manual_control_value(params),
+        });
     }
-    if (method == "timeline.laneTypes") {
-        return ParsedSocketRpcRequest{.request_id = request_id, .payload = GetTimelineLaneTypesRequest{}};
+    if (method == "nodeMessages.getProtocol") {
+        return parsed(GetNodeEventProtocolRequest{});
     }
-    if (method == "timeline.createLane") {
-        return ParsedSocketRpcRequest{.request_id = request_id,
-            .payload = CreateTimelineLaneRequest{.type_id = parse_string_param(params, "typeId")}};
-    }
-    if (method == "timeline.deleteLane") {
-        return ParsedSocketRpcRequest{.request_id = request_id,
-            .payload = DeleteTimelineLaneRequest{.lane_id = InternedString::from_string(parse_string_param(params, "laneId"))}};
-    }
-    if (method == "timeline.duplicateLane") {
-        return ParsedSocketRpcRequest{.request_id = request_id,
-            .payload = DuplicateTimelineLaneRequest{.lane_id = InternedString::from_string(parse_string_param(params, "laneId"))}};
+    if (method == "nodeMessages.dispatch") {
+        auto const target = params.find("target");
+        if (target == params.end() || !target->is_object()) {
+            throw std::runtime_error(
+                "nodeMessages.dispatch requires object param 'target'");
+        }
+        auto const payload = params.find("payload");
+        if (payload == params.end()) {
+            throw std::runtime_error(
+                "nodeMessages.dispatch requires param 'payload'");
+        }
+        return parsed(DispatchNodeMessageRequest{
+                .target = parse_node_address_json(
+                    *target, ProjectConnectionJsonNames::socket_rpc),
+                .event_type_nominal_id = parse_string_param(
+                    params, "eventTypeNominalId"),
+                .event_type_definition_fingerprint = parse_string_param(
+                    params, "eventTypeDefinitionFingerprint"),
+                .payload = std::make_shared<Json>(*payload),
+            });
     }
     if (method == "audioDevices.get") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = GetAudioDevicesRequest{},
-        };
+        return parsed(GetAudioDevicesRequest{});
     }
     if (method == "audioDevices.set") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetAudioDevicesRequest{
-                .output_device_id = parse_optional_nullable_string_param(params, "outputDeviceId"),
-                .input_device_id = parse_optional_nullable_string_param(params, "inputDeviceId"),
-            },
-        };
+        return parsed(SetAudioDevicesRequest{
+            .output_device_id = parse_optional_nullable_string_param(params, "outputDeviceId"),
+            .input_device_id = parse_optional_nullable_string_param(params, "inputDeviceId")});
     }
     if (method == "project.save") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SaveProjectRequest{},
-        };
+        return parsed(SaveProjectRequest{});
     }
     if (method == "project.enableAutosave") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = EnableProjectAutosaveRequest{},
-        };
+        return parsed(EnableProjectAutosaveRequest{});
     }
     if (method == "project.disableAutosave") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = DisableProjectAutosaveRequest{},
-        };
+        return parsed(DisableProjectAutosaveRequest{});
     }
-    if (method == "playback.pause") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = PauseRequest{},
-        };
+    if (method == "session.hello") {
+        return parsed(SessionHelloRequest{
+            .client_id = parse_string_param(params, "clientId"),
+            .local_capability = parse_string_param(params, "localCapability"),
+        });
     }
-    if (method == "playback.resume") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = ResumeRequest{
-                .start_index = static_cast<size_t>(
-                    parse_uint64_param(params, "startIndex")),
-            },
-        };
-    }
-    if (method == "playback.seek") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SeekRequest{.sample_index = static_cast<size_t>(parse_uint64_param(params, "sampleIndex"))},
-        };
-    }
-    if (method == "timeline.openLaneView" || method == "timeline.updateLaneView") {
-        auto const request_payload = parse_lane_view_request(params);
-        if (method == "timeline.openLaneView") {
-            return ParsedSocketRpcRequest{
-                .request_id = request_id,
-                .payload = OpenLaneViewRpcRequest{
-                    .request = std::move(request_payload),
-                },
-            };
+    if (method == "session.subscribe") {
+        auto topics = std::vector<std::string>{};
+        if (params.contains("topics")) {
+            topics = parse_string_array_param(params, "topics");
         }
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = UpdateLaneViewRpcRequest{
-                .request = std::move(request_payload),
-            },
-        };
+        return parsed(SessionSubscribeRequest{
+            .after_revision = parse_revision_param(params, "afterRevision", 0),
+            .topics = std::move(topics),
+        });
     }
-    if (method == "timeline.getLaneQuerySchema") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = GetLaneQuerySchemaRequest{},
-        };
-    }
-    if (method == "timeline.completeLaneQuery") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = CompleteLaneQueryRequest{
-                .source = parse_string_param(params, "source"),
-                .cursor_offset = static_cast<size_t>(parse_uint64_param(params, "cursorOffset")),
-                .schema_revision = parse_optional_uint64_param(params, "schemaRevision"),
-            },
-        };
-    }
-    if (method == "timeline.closeLaneView") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = parse_string_param(params, "viewId"),
-        };
-    }
-    if (method == "graph.setSampleInputValue") {
-        auto const member_ordinal = parse_optional_uint64_param(params, "memberOrdinal");
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetSampleInputValueRequest{
-                .node_id = parse_string_param(params, "nodeId"),
-                .input_ordinal = static_cast<size_t>(parse_uint64_param(params, "inputOrdinal")),
-                .value = static_cast<Sample>(parse_number_param(params, "value")),
-                .member_ordinal = member_ordinal.has_value()
-                    ? std::optional<size_t>(static_cast<size_t>(*member_ordinal))
-                    : std::nullopt,
-                },
-        };
-    }
-    if (method == "graph.setSampleInputState") {
-        auto const member_ordinal = parse_optional_uint64_param(params, "memberOrdinal");
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetSampleInputStateRequest{
-                .node_id = parse_string_param(params, "nodeId"),
-                .input_ordinal = static_cast<size_t>(parse_uint64_param(params, "inputOrdinal")),
-                .member_ordinal = member_ordinal.has_value()
-                    ? std::optional<size_t>(static_cast<size_t>(*member_ordinal))
-                    : std::nullopt,
-                .state = parse_string_param(params, "state"),
-            },
-        };
-    }
-    if (method == "graph.setEventInputState") {
-        auto const member_ordinal = parse_optional_uint64_param(params, "memberOrdinal");
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetEventInputStateRequest{
-                .node_id = parse_string_param(params, "nodeId"),
-                .input_ordinal = static_cast<size_t>(parse_uint64_param(params, "inputOrdinal")),
-                .member_ordinal = member_ordinal.has_value()
-                    ? std::optional<size_t>(static_cast<size_t>(*member_ordinal))
-                    : std::nullopt,
-                .state = parse_string_param(params, "state"),
-            },
-        };
-    }
-    if (method == "graph.setSampleOutputState") {
-        auto const member_ordinal = parse_optional_uint64_param(params, "memberOrdinal");
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetSampleOutputStateRequest{
-                .node_id = parse_string_param(params, "nodeId"),
-                .output_ordinal = static_cast<size_t>(parse_uint64_param(params, "outputOrdinal")),
-                .member_ordinal = member_ordinal.has_value()
-                    ? std::optional<size_t>(static_cast<size_t>(*member_ordinal))
-                    : std::nullopt,
-                .state = parse_string_param(params, "state"),
-            },
-        };
-    }
-    if (method == "graph.setEventOutputState") {
-        auto const member_ordinal = parse_optional_uint64_param(params, "memberOrdinal");
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = SetEventOutputStateRequest{
-                .node_id = parse_string_param(params, "nodeId"),
-                .output_ordinal = static_cast<size_t>(parse_uint64_param(params, "outputOrdinal")),
-                .member_ordinal = member_ordinal.has_value()
-                    ? std::optional<size_t>(static_cast<size_t>(*member_ordinal))
-                    : std::nullopt,
-                .state = parse_string_param(params, "state"),
-            },
-        };
+    if (method == "session.snapshot") {
+        return parsed(SessionSnapshotRequest{});
     }
     if (method == "server.shutdown") {
-        return ParsedSocketRpcRequest{
-            .request_id = request_id,
-            .payload = ServerShutdownRequest{},
-        };
+        return parsed(ServerShutdownRequest{});
     }
 
-    throw std::runtime_error("unsupported JSON-RPC method: " + method);
+    return parsed(UnsupportedSocketRpcRequest{.method = method});
 }
 } // namespace iv

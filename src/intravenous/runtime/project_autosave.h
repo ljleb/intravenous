@@ -7,10 +7,12 @@
 
 namespace iv {
 class SocketRpcAckResponseBuilder;
+class SocketRpcAutosaveStateResultBuilder;
 class ProjectAckBuilder;
 struct DisableProjectAutosaveRequest;
 struct EnableProjectAutosaveRequest;
 struct ProjectSetAutosaveEnabledRequest;
+struct SessionSnapshotRequest;
 
     class ProjectAutosave {
     public:
@@ -39,6 +41,9 @@ struct ProjectSetAutosaveEnabledRequest;
         void handle_socket_rpc_disable_project_autosave(
             DisableProjectAutosaveRequest const &request,
             SocketRpcAckResponseBuilder &builder);
+        void handle_socket_rpc_get_autosave_state(
+            SessionSnapshotRequest const& request,
+            SocketRpcAutosaveStateResultBuilder& builder) const;
         void handle_project_state_changed();
         void handle_project_loaded();
         void handle_project_set_autosave_enabled(

@@ -123,6 +123,12 @@ print_phase_summary() {
                 stages["finalizer_package_metadata_validate_us"] / 1000, \
                 stages["finalizer_package_metadata_inject_us"] / 1000, \
                 stages["finalizer_package_bitcode_write_us"] / 1000
+            printf "iv-module-finalizer-profile module=%s phase=%s prelink_optimize_ms=%.1f node_reduce_ms=%.1f node_optimize_ms=%.1f node_codegen_ms=%.1f\n", \
+                module, phase, \
+                stages["finalizer_package_prelink_optimize_us"] / 1000, \
+                stages["finalizer_node_code_reduce_us"] / 1000, \
+                stages["finalizer_node_code_optimize_us"] / 1000, \
+                stages["finalizer_node_code_codegen_us"] / 1000
         }
     ' "$log_file"
 }

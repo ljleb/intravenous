@@ -1,4 +1,5 @@
 #include <intravenous/compat.h>
+#include <intravenous/throw_site.h>
 
 #include <fstream>
 #include <cstdlib>
@@ -53,12 +54,42 @@ void print_stacktrace(std::ostream& out)
     out.flush();
 }
 
+void print_stacktrace(std::ostream& out, std::exception_ptr const& thrown)
+{
+    if (auto const site = throw_site_stacktrace(thrown)) {
+        out << "thrown at:\n" << *site << '\n';
+        out.flush();
+        return;
+    }
+    print_stacktrace(out);
+}
+
 std::string wrap_exception(std::string_view context, std::exception const& cause)
 {
     std::string wrapped(context);
     wrapped += "\ncaused by: ";
     wrapped += cause.what();
     return wrapped;
+}
+
+[[noreturn]] IV_NOINLINE void terminate_node_lifecycle_exception(
+    char const* operation,
+    char const* node_type,
+    std::size_t node_index) noexcept
+{
+    // Keep reporting off the success path and preserve the authored exception
+    // as std::current_exception() for the installed terminate handler. Logging
+    // failure must not replace that exception or prevent process termination.
+    try {
+        auto& out = diagnostic_stream();
+        out << "\nfatal node lifecycle exception"
+            << "\noperation: " << (operation ? operation : "unknown")
+            << "\nnode type: " << (node_type ? node_type : "unknown")
+            << "\nnode index: " << node_index << '\n';
+        out.flush();
+    } catch (...) {
+    }
+    std::terminate();
 }
 
 [[noreturn]] void assertion_failed(

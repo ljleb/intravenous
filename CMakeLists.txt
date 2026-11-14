@@ -1,12 +1,22 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(intravenous-dsp LANGUAGES C CXX)
+
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "Intravenous requires Linux inotify for package watching")
+endif()
+include(CheckIncludeFileCXX)
+check_include_file_cxx("sys/inotify.h" IV_HAVE_SYS_INOTIFY_H)
+if(NOT IV_HAVE_SYS_INOTIFY_H)
+    message(FATAL_ERROR "Intravenous requires sys/inotify.h")
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 enable_testing()
 
-if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 23)
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR NOT CMAKE_CXX_COMPILER_VERSION MATCHES "^23\\.")
     message(FATAL_ERROR
-        "Intravenous modules require Clang 23 or newer for the LLVM reload pipeline; "
+        "Intravenous requires Clang 23 to match its LLVM and package metadata plugin; "
         "configured compiler is ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} "
         "(${CMAKE_CXX_COMPILER})")
 endif()
@@ -20,6 +30,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(LLVM REQUIRED CONFIG)
 find_package(Clang REQUIRED CONFIG)
+
+# The environment belongs to this installation and survives automatic
+# regeneration from a desktop process outside the original development shell.
+set(IV_APPLICATION_ENVIRONMENT_DIRECTORY "${CMAKE_BINARY_DIR}/src/intravenous")
+include("${CMAKE_SOURCE_DIR}/src/intravenous/module/template/ApplicationEnvironment.cmake")
+foreach(iv_language C CXX)
+    list(PREPEND CMAKE_${iv_language}_COMPILER_LAUNCHER "${IV_APPLICATION_ENVIRONMENT_LAUNCHER}")
+    list(PREPEND CMAKE_${iv_language}_LINKER_LAUNCHER "${IV_APPLICATION_ENVIRONMENT_LAUNCHER}")
+endforeach()
 if(NOT LLVM_VERSION_MAJOR EQUAL 23)
     message(FATAL_ERROR "Intravenous requires LLVM 23; found LLVM ${LLVM_PACKAGE_VERSION}")
 endif()
@@ -60,6 +79,23 @@ target_compile_definitions(intravenous_module_loader PRIVATE
     IV_CONFIGURED_CLANG_SOURCE_INTROSPECTION_PLUGIN="$<TARGET_FILE:iv_clang_source_introspection_plugin>"
     IV_CONFIGURED_IV_PACKAGE_FINALIZER="$<TARGET_FILE:iv_package_finalize>")
 
+add_dependencies(
+    iv_package_prebuild
+    intravenous_dsl_pch
+    iv_clang_source_introspection_plugin
+    iv_package_finalize)
+add_custom_target(intravenous_builtin_package_artifacts ALL
+    COMMAND $<TARGET_FILE:iv_package_prebuild>
+        "${CMAKE_BINARY_DIR}/src/intravenous/builtin_packages/builtin"
+        "${IV_BUILTIN_PACKAGE_ARTIFACT_ROOT}"
+        "${CMAKE_SOURCE_DIR}"
+    DEPENDS
+        iv_package_prebuild
+        intravenous_builtin_package_assets
+    COMMENT "Prebuilding executable-owned built-in IV package artifacts"
+    VERBATIM)
+add_dependencies(intravenous intravenous_builtin_package_artifacts)
+
 add_subdirectory(tests)
 add_subdirectory(benchmark)
 
@@ -78,3 +114,11 @@ function(iv_force_cxx23 directory)
     endforeach()
 endfunction()
 iv_force_cxx23("${CMAKE_SOURCE_DIR}")
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+configure_file(
+    "${CMAKE_SOURCE_DIR}/.clangd.in"
+    "${CMAKE_SOURCE_DIR}/.clangd"
+    @ONLY
+)

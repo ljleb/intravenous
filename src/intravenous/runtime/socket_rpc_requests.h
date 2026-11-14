@@ -1,212 +1,155 @@
 #pragma once
 
-#include <intravenous/channel_layout.h>
-#include <intravenous/runtime/lane_view_service.h>
+#include <intravenous/runtime/project_edit.h>
+
 #include <intravenous/runtime/runtime_project_api_types.h>
-#include <intravenous/runtime/timeline_execution_events.h>
-#include <intravenous/runtime/uuid.h>
-#include <intravenous/sample.h>
+#include <intravenous/runtime/project_connection_types.h>
+#include <intravenous/node/manual_control.h>
 
 #include <filesystem>
+#include <functional>
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
 #include <vector>
 
+#include <nlohmann/json_fwd.hpp>
+
 namespace iv {
-    struct GraphQueryBySpansRequest {
-        std::filesystem::path file_path{};
-        std::vector<SourceRange> ranges{};
-        SourceRangeMatchMode match_mode = SourceRangeMatchMode::intersection;
-        std::optional<std::string> instance_id{};
-    };
+struct GraphQueryBySpansRequest {
+    std::filesystem::path file_path{};
+    std::vector<SourceRange> ranges{};
+    SourceRangeMatchMode match_mode = SourceRangeMatchMode::intersection;
+    std::optional<std::string> instance_id{};
+};
 
-    struct GraphQueryActiveRegionsRequest {
-        std::filesystem::path file_path{};
-    };
+struct GraphQueryActiveRegionsRequest { std::filesystem::path file_path{}; };
+struct GetVirtualNodeRequest { std::string node_id{}; };
+struct GetVirtualNodesRequest { std::vector<std::string> node_ids{}; };
+// The graph editor's project root scope; see ProjectGraphScope.
+struct GetGraphScopeRequest {};
+struct ApplyProjectEditRequest { ProjectEditBatch batch{}; };
+struct UndoProjectEditRequest { std::function<void()> authorize_audio_control{}; };
+struct RedoProjectEditRequest { std::function<void()> authorize_audio_control{}; };
 
-    struct GetVirtualNodeRequest {
-        std::string node_id{};
-    };
+struct CreateNodeInstanceRequest {
+    std::optional<std::string> instance_id{};
+    std::string definition_id{};
+    std::optional<std::string> display_name{};
+    std::string configuration_source{};
+};
+struct GetIvPackageDefinitionsRequest {};
+struct CreateIvPackageRequest { std::string name{}; };
+struct GetNodeInstancesRequest {
+    std::optional<std::filesystem::path> source_file_path {};
+};
+struct DeleteNodeInstanceRequest { std::string instance_id{}; };
+struct UpdateNodeInstance {
+    std::string instance_id{};
+    std::optional<std::string> display_name{};
+    std::optional<std::string> configuration_source{};
+};
+struct UpdateNodeInstancesRequest {
+    std::vector<UpdateNodeInstance> updates{};
+};
+struct UpsertGraphConnectionRequest { ProjectConnection connection{}; };
+struct DeleteGraphConnectionRequest { std::string connection_id{}; };
+struct UpsertManualControlRequest { ProjectManualControl control{}; };
+struct DeleteManualControlRequest { ManualControlId id{}; };
+struct SetManualControlHoverRequest {
+    std::string client_id{};
+    std::optional<ManualControlId> id{};
+};
+struct BeginManualControlInteractionRequest {
+    ManualControlInteractionId interaction{};
+    ManualControlId id{};
+    Sample value{};
+};
+struct UpdateManualControlInteractionRequest {
+    ManualControlInteractionId interaction{};
+    Sample value{};
+};
+struct EndManualControlInteractionRequest {
+    ManualControlInteractionId interaction{};
+    Sample value{};
+};
 
-    struct GetVirtualNodesRequest {
-        std::vector<std::string> node_ids{};
-    };
+struct DispatchNodeMessageRequest {
+    NodeAddress target{};
+    std::string event_type_nominal_id{};
+    std::string event_type_definition_fingerprint{};
+    std::shared_ptr<nlohmann::ordered_json const> payload{};
+};
+struct GetNodeEventProtocolRequest {};
 
-    struct CreateIvModuleInstanceRequest {
-        std::string module_id{};
-        std::optional<std::string> display_name{};
-    };
+struct GetAudioDevicesRequest {};
+struct SetProjectToolchainRequest { ProjectToolchainSettings settings{}; };
+struct SetAudioDevicesRequest {
+    std::optional<std::string> output_device_id {};
+    std::optional<std::string> input_device_id {};
+};
 
-    struct GetIvPackagesRequest {};
+struct SaveProjectRequest {};
+struct EnableProjectAutosaveRequest {};
+struct DisableProjectAutosaveRequest {};
+struct SessionHelloRequest {
+    std::string client_id{};
+    std::string local_capability{};
+};
+struct SessionSubscribeRequest {
+    std::uint64_t after_revision = 0;
+    std::vector<std::string> topics{};
+};
+struct SessionSnapshotRequest {};
+struct ServerShutdownRequest {};
+struct UnsupportedSocketRpcRequest { std::string method{}; };
 
-    struct CreateIvPackageRequest {
-        std::string name{};
-    };
+using SocketRpcRequestPayload = std::variant<
+    GraphQueryBySpansRequest,
+    GraphQueryActiveRegionsRequest,
+    GetVirtualNodeRequest,
+    GetVirtualNodesRequest,
+    GetGraphScopeRequest,
+    ApplyProjectEditRequest,
+    UndoProjectEditRequest,
+    RedoProjectEditRequest,
+    CreateNodeInstanceRequest,
+    GetIvPackageDefinitionsRequest,
+    CreateIvPackageRequest,
+    GetNodeInstancesRequest,
+    DeleteNodeInstanceRequest,
+    UpdateNodeInstancesRequest,
+    UpsertGraphConnectionRequest,
+    DeleteGraphConnectionRequest,
+    UpsertManualControlRequest,
+    DeleteManualControlRequest,
+    SetManualControlHoverRequest,
+    BeginManualControlInteractionRequest,
+    UpdateManualControlInteractionRequest,
+    EndManualControlInteractionRequest,
+    GetNodeEventProtocolRequest,
+    DispatchNodeMessageRequest,
+    GetAudioDevicesRequest,
+    SetProjectToolchainRequest,
+    SetAudioDevicesRequest,
+    SaveProjectRequest,
+    EnableProjectAutosaveRequest,
+    DisableProjectAutosaveRequest,
+    SessionHelloRequest,
+    SessionSubscribeRequest,
+    SessionSnapshotRequest,
+    ServerShutdownRequest,
+    UnsupportedSocketRpcRequest>;
 
-    struct GetIvModuleInstancesRequest {
-        std::optional<std::filesystem::path> source_file_path {};
-    };
+struct ParsedSocketRpcRequest {
+    int request_id = 0;
+    std::string method{};
+    std::optional<std::uint64_t> expected_revision{};
+    SocketRpcRequestPayload payload{};
+};
 
-    struct DeleteIvModuleInstanceRequest {
-        std::string instance_id{};
-    };
-
-    struct UpdateIvModuleInstance {
-        std::string instance_id{};
-        std::optional<std::string> display_name{};
-        std::optional<size_t> default_silence_ttl_samples{};
-    };
-
-    struct UpdateIvModuleInstancesRequest {
-        std::vector<UpdateIvModuleInstance> updates{};
-    };
-
-    struct SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest {
-        size_t compiled_sample_cache_chunk_size_multiplier = 0;
-    };
-
-    struct SetTimelineLaneSampleChannelTypeRequest {
-        InternedString lane_id {};
-        ChannelTypeId sample_channel_type = ChannelTypeId::stereo;
-    };
-
-    struct SetTimelineLaneUiStateRequest {
-        InternedString lane_id {};
-        std::optional<std::uint64_t> expected_revision {};
-        std::optional<std::string> serialized_state {};
-        std::optional<std::string> name {};
-    };
-    struct ConnectTimelineLanesRequest {
-        InternedString source_lane_id {};
-        InternedString target_lane_id {};
-        LanePortDomain port_domain = LanePortDomain::realtime;
-        PortKind port_kind = PortKind::sample;
-        size_t port_ordinal = 0;
-    };
-    struct DisconnectTimelineLanesRequest {
-        InternedString source_lane_id {};
-        InternedString target_lane_id {};
-        LanePortDomain port_domain = LanePortDomain::realtime;
-        PortKind port_kind = PortKind::sample;
-        size_t port_ordinal = 0;
-    };
-    struct GetTimelineLaneTypesRequest {};
-    struct CreateTimelineLaneRequest { std::string type_id {}; };
-    struct DeleteTimelineLaneRequest { InternedString lane_id {}; };
-    struct DuplicateTimelineLaneRequest { InternedString lane_id {}; };
-
-    struct GetAudioDevicesRequest {};
-
-    struct SetAudioDevicesRequest {
-        std::optional<std::string> output_device_id {};
-        std::optional<std::string> input_device_id {};
-    };
-
-    struct OpenLaneViewRpcRequest {
-        LaneViewRequest request{};
-    };
-
-    struct UpdateLaneViewRpcRequest {
-        LaneViewRequest request{};
-    };
-
-    struct GetLaneQuerySchemaRequest {};
-
-    struct CompleteLaneQueryRequest {
-        std::string source {};
-        size_t cursor_offset = 0;
-        std::optional<std::uint64_t> schema_revision {};
-    };
-
-    struct SetSampleInputValueRequest {
-        std::string node_id{};
-        size_t input_ordinal = 0;
-        Sample value = 0.0f;
-        std::optional<size_t> member_ordinal{};
-    };
-
-    struct SetSampleInputStateRequest {
-        std::string node_id{};
-        size_t input_ordinal = 0;
-        std::optional<size_t> member_ordinal{};
-        std::string state{};
-    };
-
-    struct SetEventInputStateRequest {
-        std::string node_id{};
-        size_t input_ordinal = 0;
-        std::optional<size_t> member_ordinal{};
-        std::string state{};
-    };
-
-    struct SetSampleOutputStateRequest {
-        std::string node_id{};
-        size_t output_ordinal = 0;
-        std::optional<size_t> member_ordinal{};
-        std::string state{};
-    };
-
-    struct SetEventOutputStateRequest {
-        std::string node_id{};
-        size_t output_ordinal = 0;
-        std::optional<size_t> member_ordinal{};
-        std::string state{};
-    };
-
-    struct SaveProjectRequest {};
-
-    struct EnableProjectAutosaveRequest {};
-
-    struct DisableProjectAutosaveRequest {};
-
-    struct ServerShutdownRequest {};
-
-    using SocketRpcRequestPayload = std::variant<
-        GraphQueryBySpansRequest,
-        GraphQueryActiveRegionsRequest,
-        GetVirtualNodeRequest,
-        GetVirtualNodesRequest,
-        CreateIvModuleInstanceRequest,
-        GetIvPackagesRequest,
-        CreateIvPackageRequest,
-        GetIvModuleInstancesRequest,
-        DeleteIvModuleInstanceRequest,
-        UpdateIvModuleInstancesRequest,
-        SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest,
-        SetTimelineLaneSampleChannelTypeRequest,
-        SetTimelineLaneUiStateRequest,
-        ConnectTimelineLanesRequest,
-        DisconnectTimelineLanesRequest,
-        GetTimelineLaneTypesRequest,
-        CreateTimelineLaneRequest,
-        DeleteTimelineLaneRequest,
-        DuplicateTimelineLaneRequest,
-        GetAudioDevicesRequest,
-        SetAudioDevicesRequest,
-        OpenLaneViewRpcRequest,
-        UpdateLaneViewRpcRequest,
-        GetLaneQuerySchemaRequest,
-        CompleteLaneQueryRequest,
-        SetSampleInputValueRequest,
-        SetSampleInputStateRequest,
-        SetEventInputStateRequest,
-        SetSampleOutputStateRequest,
-        SetEventOutputStateRequest,
-        PauseRequest,
-        ResumeRequest,
-        SeekRequest,
-        SaveProjectRequest,
-        EnableProjectAutosaveRequest,
-        DisableProjectAutosaveRequest,
-        ServerShutdownRequest,
-        std::string>;
-
-    struct ParsedSocketRpcRequest {
-        int request_id = 0;
-        SocketRpcRequestPayload payload{};
-    };
-
-    ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line);
+ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line);
 } // namespace iv

@@ -1,17 +1,16 @@
 #include "../module_test_utils.h"
+#include "../event_source_test_support.h"
 
-#include <intravenous/runtime/iv_module_instances.h>
-#include <intravenous/runtime/iv_module_instances_events.h>
-#include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_module_definitions_events.h>
-#include <intravenous/runtime/iv_module_definitions_socket_rpc_packages_bridge.h>
-#include <intravenous/runtime/socket_rpc_iv_module_instances_bridge.h>
-#include <intravenous/runtime/lane_query_schema_events.h>
-#include <intravenous/runtime/lane_query_schema_service.h>
-#include <intravenous/runtime/socket_rpc_lane_query_schema_bridge.h>
-#include <intravenous/runtime/lanes_visualization_events.h>
-#include <intravenous/runtime/lanes_visualization.h>
-#include <intravenous/runtime/lanes_visualization_socket_rpc_notification_bridge.h>
+#include <intravenous/runtime/node_instances.h>
+#include <intravenous/runtime/node_definitions.h>
+#include <intravenous/runtime/node_definitions_events.h>
+#include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
+#include <intravenous/runtime/package_definitions.h>
+#include <intravenous/runtime/package_pipeline_events.h>
+#include <intravenous/runtime/package_watcher.h>
+#include <intravenous/runtime/socket_rpc_package_definitions_bridge.h>
+#include <intravenous/runtime/socket_rpc_package_watcher_bridge.h>
+#include <intravenous/runtime/socket_rpc_node_instances_bridge.h>
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
 #include <intravenous/runtime/runtime_project_events.h>
@@ -37,10 +36,6 @@ namespace {
 using namespace std::chrono_literals;
 using Json = nlohmann::ordered_json;
 
-InternedString intern(std::string_view value)
-{
-    return InternedString::from_view(value);
-}
 
 constexpr auto socket_rpc_notification_startup_timeout = 30s;
 
@@ -158,6 +153,39 @@ Json parse_json_line(std::string_view line)
     return Json::parse(line);
 }
 } // namespace
+TEST(SocketRpcNotificationBridge, GraphCompilationFailureFollowsThePackageBuildSuccess)
+{
+    auto harness = NotificationServerHarness(
+        iv::test::fresh_module_fixture_workspace("socket_rpc_graph_compile_failure"));
+    PackageWatcher watcher;
+    auto report_scope = socket_rpc_package_watcher_bridge::bind(harness.server, watcher);
+    in_event_source([&] {
+        IV_INVOKE_LINKER_EVENT(iv_runtime_package_refresh_published_event,
+            PackageRefreshPublication{
+                .build_status = ProjectStatusNotification{
+                    .level = "info", .code = "rebuildFinished", .message = "Packages built",
+                },
+                .project = ProjectGraphPublication{
+                    .graph_changed = true,
+                    .execution_failure = ProjectStatusNotification{
+                        .level = "error", .code = "graphCompilationFailed",
+                        .message = "Graph compilation failed: output buffer unavailable",
+                    },
+                },
+            });
+    });
+    auto const built = parse_json_line(harness.read_line());
+    EXPECT_EQ(built["method"], "server.status");
+    EXPECT_EQ(built["params"]["code"], "rebuildFinished");
+    auto const changed = parse_json_line(harness.read_line());
+    EXPECT_EQ(changed["method"], "graph.changed");
+    auto const failed = parse_json_line(harness.read_line());
+    EXPECT_EQ(failed["method"], "server.status");
+    EXPECT_EQ(failed["params"]["level"], "error");
+    EXPECT_EQ(failed["params"]["code"], "graphCompilationFailed");
+    EXPECT_EQ(failed["params"]["message"], "Graph compilation failed: output buffer unavailable");
+}
+
 } // namespace iv
 
 namespace iv {
@@ -169,7 +197,7 @@ TEST(SocketRpcNotificationBridge, UnboundServerDropsNotifications)
         .message = "hello",
     };
 
-    EXPECT_NO_THROW(IV_INVOKE_LINKER_EVENT(iv_runtime_project_notification_event, notification));
+    EXPECT_NO_THROW(in_event_source([&] { IV_INVOKE_LINKER_EVENT(iv_runtime_project_notification_event, notification); }));
 }
 
 TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
@@ -181,12 +209,12 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
             harness.server,
             persistence);
 
-    IV_INVOKE_LINKER_EVENT(
+    in_event_source([&] { IV_INVOKE_LINKER_EVENT(
         iv_runtime_project_notification_event,
         ProjectNotification(ProjectMessageNotification{
             .level = "warning",
             .message = "bridge message",
-        }));
+        })); });
     auto const message_line = harness.read_line();
     ASSERT_FALSE(message_line.empty());
     auto const message_json = parse_json_line(message_line);
@@ -194,13 +222,13 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
     EXPECT_EQ(message_json["params"]["level"], "warning");
     EXPECT_EQ(message_json["params"]["message"], "bridge message");
 
-    IV_INVOKE_LINKER_EVENT(
+    in_event_source([&] { IV_INVOKE_LINKER_EVENT(
         iv_runtime_project_notification_event,
         ProjectNotification(ProjectStatusNotification{
             .level = "info",
             .code = "rebuildFinished",
             .message = "done",
-        }));
+        })); });
     auto const status_line = harness.read_line();
     ASSERT_FALSE(status_line.empty());
     auto const status_json = parse_json_line(status_line);
@@ -208,205 +236,74 @@ TEST(SocketRpcNotificationBridge, BoundServerForwardsNotificationVariants)
     EXPECT_EQ(status_json["params"]["code"], "rebuildFinished");
     EXPECT_EQ(status_json["params"]["message"], "done");
 
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_project_notification_event,
-        ProjectNotification(ProjectLaneViewNotification{
-            .lane_view = LaneViewResult{
-                .view_id = intern("view-1"),
-                .lanes = LaneQueryResult{
-                    .start_index = 0,
-                    .visible_lane_count = 1,
-                    .total_lane_count = 1,
-                },
-            },
-        }));
-    auto const lane_line = harness.read_line();
-    ASSERT_FALSE(lane_line.empty());
-    auto const lane_json = parse_json_line(lane_line);
-    EXPECT_EQ(lane_json["method"], "timeline.laneViewUpdated");
-    EXPECT_EQ(lane_json["params"]["viewId"], "view-1");
 
 }
 
-TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneQuerySchemaChanges)
+
+
+TEST(SocketRpcNotificationBridge, BoundServerPublishesOnePackageRefreshReport)
 {
     auto harness = NotificationServerHarness(
-        iv::test::fresh_module_fixture_workspace("socket_rpc_lane_query_schema_notification_server"));
-    LaneQuerySchemaService lane_query_schema;
-    auto notification_scope =
-        socket_rpc_lane_query_schema_bridge::bind(
-            harness.server,
-            lane_query_schema);
+        iv::test::fresh_module_fixture_workspace("socket_rpc_package_refresh_report"));
+    PackageWatcher watcher;
+    auto report_scope = socket_rpc_package_watcher_bridge::bind(harness.server, watcher);
 
-    LaneQuerySchemaChanged notification{
-        .change = query::LaneQuerySchemaChange{
-            .changed = true,
-            .old_revision = 3,
-            .new_revision = 4,
-            .added = {
-                query::LaneQuerySchemaChange::Added{
-                    .entry = query::LaneQuerySchemaEntry{
-                        .key = "gain",
-                        .type = query::LaneQueryValueType::float_,
+    // PackageWatcher sends one report after a refresh's whole propagation;
+    // SocketRpcServer turns it into the existing wire notifications in order.
+    in_event_source([&] {
+        IV_INVOKE_LINKER_EVENT(
+            iv_runtime_package_refresh_published_event,
+            PackageRefreshPublication{
+                .build_status = ProjectStatusNotification{
+                    .level = "info",
+                    .code = "rebuildFinished",
+                    .message = "IV package build ready to apply in 5 ms",
+                },
+                .package_catalog_changed = true,
+                .project = ProjectGraphPublication{
+                    .instances = std::vector<IvModuleInstanceInfo>{
+                        IvModuleInstanceInfo{
+                            .instance_id = "instance:1",
+                            .definition_id = "/tmp/module-a",
+                            .package_root = "/tmp/module-a",
+                            .configuration_source = "{.gain = 0.5}",
+                            .realized = true,
+                            .module_id = "module.a",
+                        },
+                        IvModuleInstanceInfo{
+                            .instance_id = "instance:2",
+                            .definition_id = "/tmp/module-b",
+                            .package_root = "/tmp/module-b",
+                            .realized = false,
+                        },
+                    },
+                    .virtual_nodes = ProjectVirtualNodesNotification{
+                        .replace_instance_ids = {"instance:1"},
                     },
                 },
-            },
-        },
-    };
-    IV_INVOKE_LINKER_EVENT(
-        iv_runtime_lane_query_schema_changed_event,
-        notification);
-
-    auto const line = harness.read_line();
-    ASSERT_FALSE(line.empty());
-    auto const json = parse_json_line(line);
-    EXPECT_EQ(json["method"], "timeline.laneQuerySchemaChanged");
-    EXPECT_EQ(json["params"]["oldRevision"], 3);
-    EXPECT_EQ(json["params"]["revision"], 4);
-    ASSERT_EQ(json["params"]["added"].size(), 1u);
-    EXPECT_EQ(json["params"]["added"][0]["key"], "gain");
-    EXPECT_EQ(json["params"]["added"][0]["type"], "float");
-
-}
-
-TEST(SocketRpcNotificationBridge, BoundServerForwardsIvModuleInstancesUpdated)
-{
-    auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_instances_notification_server"));
-    IvModuleInstances instances;
-    auto notification_scope =
-        socket_rpc_iv_module_instances_bridge::bind(
-            harness.server,
-            instances);
-
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_iv_module_instances_list_changed_event,
-        std::vector<iv::IvModuleInstanceInfo>{
-            iv::IvModuleInstanceInfo{
-                .instance_id = "instance:1",
-                .definition_id = "/tmp/module-a",
-                .package_root = "/tmp/module-a",
-                .realized = true,
-                .module_id = "module.a",
-            },
-            iv::IvModuleInstanceInfo{
-                .instance_id = "instance:2",
-                .definition_id = "/tmp/module-b",
-                .package_root = "/tmp/module-b",
-                .realized = false,
-            },
-        });
-
-    auto const line = harness.read_line();
-    ASSERT_FALSE(line.empty());
-    auto const json = parse_json_line(line);
-    EXPECT_EQ(json["method"], "ivModuleInstances.updated");
-    ASSERT_EQ(json["params"]["instances"].size(), 2u);
-    EXPECT_EQ(json["params"]["instances"][0]["instanceId"], "instance:1");
-    EXPECT_EQ(json["params"]["instances"][0]["moduleId"], "module.a");
-    EXPECT_EQ(json["params"]["instances"][1]["realized"], false);
-
-}
-
-TEST(SocketRpcNotificationBridge, PublishedPackageDefinitionsRefreshThePackageCatalog)
-{
-    auto const workspace = iv::test::fresh_module_fixture_workspace(
-        "socket_rpc_package_catalog_notification_server");
-    auto harness = NotificationServerHarness(workspace);
-    IvModuleDefinitions definitions;
-    auto package_catalog_scope =
-        iv_module_definitions_socket_rpc_packages_bridge::bind(
-            definitions,
-            harness.server);
-
-    definitions.seed_loaded_definition(IvModuleReloadedDefinition{
-        .package_id = "iv.test.catalog",
-        .definition_id = "iv.test.catalog.module",
-        .package_root = workspace,
-        .module_id = "iv.test.catalog.module",
+            });
     });
-    IV_INVOKE_LINKER_EVENT_SOURCE(
-        iv_runtime_iv_package_catalog_changed_event,
-        IvPackageCatalogChanged{});
 
-    auto const line = harness.read_line();
-    ASSERT_FALSE(line.empty());
-    auto const json = parse_json_line(line);
-    EXPECT_EQ(json["method"], "ivPackages.updated");
-    EXPECT_EQ(json["params"], Json::object());
-}
+    auto const status = parse_json_line(harness.read_line());
+    EXPECT_EQ(status["method"], "server.status");
+    EXPECT_EQ(status["params"]["code"], "rebuildFinished");
 
-TEST(SocketRpcNotificationBridge, BoundServerForwardsLaneViewContentUpdated)
-{
-    auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_lane_view_content_notification_server"));
-    LanesVisualization lanes_visualization;
-    auto notification_scope =
-        lanes_visualization_socket_rpc_notification_bridge::bind(
-            lanes_visualization,
-            harness.server);
+    auto const catalog = parse_json_line(harness.read_line());
+    EXPECT_EQ(catalog["method"], "ivPackages.updated");
 
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_lane_view_content_updated_event,
-        iv::LaneViewContentUpdate{
-            .view_id = intern("view-1"),
-            .lanes = {
-                iv::LaneVisualizationSeries{
-                    .lane_id = intern("lane-42"),
-                    .adapter_type = "level",
-                    .sample_channel_type = iv::ChannelTypeId::stereo,
-                    .peak_level = 4.0f,
-                },
-            },
-        });
+    auto const instances = parse_json_line(harness.read_line());
+    EXPECT_EQ(instances["method"], "nodeInstances.updated");
+    ASSERT_EQ(instances["params"]["instances"].size(), 2u);
+    EXPECT_EQ(instances["params"]["instances"][0]["instanceId"], "instance:1");
+    EXPECT_EQ(instances["params"]["instances"][0]["moduleId"], "module.a");
+    EXPECT_EQ(
+        instances["params"]["instances"][0]["configurationSource"],
+        "{.gain = 0.5}");
+    EXPECT_EQ(instances["params"]["instances"][1]["realized"], false);
 
-    auto const line = harness.read_line();
-    ASSERT_FALSE(line.empty());
-    auto const json = parse_json_line(line);
-    EXPECT_EQ(json["method"], "timeline.laneViewContentUpdated");
-    EXPECT_EQ(json["params"]["viewId"], "view-1");
-    ASSERT_EQ(json["params"]["lanes"].size(), 1u);
-    EXPECT_EQ(json["params"]["lanes"][0]["laneId"], "lane-42");
-    EXPECT_EQ(json["params"]["lanes"][0]["adapterType"], "level");
-    EXPECT_EQ(json["params"]["lanes"][0]["sampleChannelType"], "stereo");
-    EXPECT_EQ(json["params"]["lanes"][0]["peakLevel"], 4.0f);
-    EXPECT_FALSE(json["params"]["lanes"][0].contains("samples"));
-
-}
-
-TEST(SocketRpcNotificationBridge, LaneViewContentSerializesCompiledSampleWindows)
-{
-    auto harness = NotificationServerHarness(iv::test::fresh_module_fixture_workspace("socket_rpc_compiled_sample_window_notification_server"));
-    LanesVisualization lanes_visualization;
-    auto notification_scope =
-        lanes_visualization_socket_rpc_notification_bridge::bind(
-            lanes_visualization,
-            harness.server);
-
-    IV_INVOKE_LINKER_EVENT(
-        iv::iv_runtime_lane_view_content_updated_event,
-        iv::LaneViewContentUpdate{
-            .view_id = intern("view-1"),
-            .lanes = {
-                iv::LaneVisualizationSeries{
-                    .lane_id = intern("lane-42"),
-                    .adapter_type = "samples",
-                    .compiled_sample_window = iv::CompiledSampleWindow{
-                        .primary = {1.0f, 2.0f, 3.0f},
-                        .secondary = {10.0f, 20.0f, 30.0f},
-                    },
-                    .compiled_window_first_sample_index = 100,
-                    .compiled_window_last_sample_index = 300,
-                },
-            },
-        });
-
-    auto const json = parse_json_line(harness.read_line());
-    auto const& lane = json["params"]["lanes"][0];
-    EXPECT_EQ(lane["adapterType"], "samples");
-    EXPECT_EQ(lane["samples"], nlohmann::json::array({1.0f, 2.0f, 3.0f}));
-    EXPECT_EQ(lane["secondarySamples"], nlohmann::json::array({10.0f, 20.0f, 30.0f}));
-    EXPECT_EQ(lane["sampleWindowFirstIndex"], 100);
-    EXPECT_EQ(lane["sampleWindowLastIndex"], 300);
-
+    auto const nodes = parse_json_line(harness.read_line());
+    EXPECT_EQ(nodes["method"], "graph.nodesUpdated");
+    EXPECT_EQ(nodes["params"]["replaceInstanceIds"], Json::array({"instance:1"}));
 }
 
 } // namespace iv

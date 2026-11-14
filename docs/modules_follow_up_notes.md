@@ -17,8 +17,6 @@
 
 - Make source and instance rows more compact without losing their actions.
 - Rename instance `Select` to `Open`.
-- Later add `Open lanes view`, which upserts a lane view filtered to one
-  instance.
 - Add a non-unique user-facing instance name so users do not need to identify
   instances by UUID.
 
@@ -35,7 +33,7 @@
 - Keep source provenance on named reference identifiers rather than direct
   `g.input(...)`/node expressions; runtime sidepanel controls do not depend on
   a port having its own source span.
-- Audit whether explicitly disconnecting a `g.input()` lane is already possible
+- Audit whether explicitly disconnecting a `g.input()` port is already possible
   or needs a new port-state transition.
 
 ### Settled design decisions
@@ -67,9 +65,4 @@
   name string, and that span belongs to the corresponding virtual input port
   rather than the enclosing virtual node.
 - Source identity groups repeated annotated `g.input()` calls, including calls
-  made in loops, into one logical public input with concrete members. The
-  default behavior is a shared logical lane for all members.
-- Public-input connectivity follows the existing sample-input model:
-  logical state selects the shared logical lane or disconnects; concrete
-  members default to logical-follow and may override to a concrete lane or
-  disconnected. The sidebar should present the same logical/member hierarchy.
+  made in loops, into one logical public input with concrete members.

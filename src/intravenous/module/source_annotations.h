@@ -20,7 +20,7 @@ namespace details {
 extern "C" void iv_builder_annotate_public_output_source_spans(
     GraphBuilder*, bool event, PublicOutputSourceSpan const*, std::size_t);
 extern "C" void iv_builder_annotate_public_output_source_span(
-    GraphBuilder*, bool event, std::size_t ordinal, char const* file_path,
+    GraphBuilder*, bool event, std::size_t index, char const* file_path,
     std::uint32_t begin, std::uint32_t end);
 } // namespace details
 } // namespace iv

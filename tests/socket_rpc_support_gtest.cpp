@@ -1,23 +1,24 @@
 #include <intravenous/runtime/server_options.h>
 #include <intravenous/runtime/socket_rpc_requests.h>
+#include <intravenous/runtime/socket_rpc_routes.h>
 #include <intravenous/runtime/socket_rpc_response_builders.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 #include <array>
+#include <cstdint>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace {
     using Json = nlohmann::ordered_json;
 
-    iv::InternedString intern(std::string_view value)
-    {
-        return iv::InternedString::from_view(value);
-    }
 
     Json parse_json_line(std::string_view line)
     {
@@ -58,6 +59,21 @@ TEST(ServerOptions, RejectsMissingWorkspaceRoot)
         std::runtime_error);
 }
 
+TEST(ServerOptions, AllowsProjectSessionDiscoveryWithoutInheritedRpcFd)
+{
+    char arg0[] = "intravenous";
+    char arg1[] = "--server";
+    char arg2[] = "--workspace-root";
+    char arg3[] = "/tmp/workspace";
+    std::array<char*, 4> argv { arg0, arg1, arg2, arg3 };
+
+    auto const options = iv::ServerOptions::parse(
+        static_cast<int>(argv.size()), argv.data());
+
+    EXPECT_EQ(options.workspace_root, "/tmp/workspace");
+    EXPECT_EQ(options.rpc_fd, -1);
+}
+
 TEST(ServerOptions, RejectsInvalidRpcFd)
 {
     char arg0[] = "intravenous";
@@ -90,172 +106,13 @@ TEST(SocketRpcRequestParser, ParsesGraphQueryBySpansRequest)
     EXPECT_EQ(request->match_mode, iv::SourceRangeMatchMode::union_);
 }
 
-TEST(SocketRpcRequestParser, ParsesLaneViewUpdateRequest)
-{
-    auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":22,"method":"timeline.updateLaneView","params":{"viewId":"view-a","filter":{"kind":"graphInputs"},"startIndex":4,"visibleLaneCount":8}})");
 
-    EXPECT_EQ(parsed.request_id, 22);
-    auto const* request = std::get_if<iv::UpdateLaneViewRpcRequest>(&parsed.payload);
-    ASSERT_NE(request, nullptr);
-    EXPECT_EQ(request->request.view_id.str(), "view-a");
-    EXPECT_EQ(request->request.query.filter.source, "dsp_graph.graph_input");
-    EXPECT_EQ(request->request.start_index, 4u);
-    EXPECT_EQ(request->request.visible_lane_count, 8u);
-}
 
-TEST(SocketRpcRequestParser, ParsesLaneViewCompiledEventDisplayWindow)
-{
-    auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":23,"method":"timeline.updateLaneView","params":{"viewId":"view-a","filter":{"kind":"graphInputs"},"firstSampleIndex":48000,"lastSampleIndex":144000,"displaySampleCount":96000}})");
-    auto const* request = std::get_if<iv::UpdateLaneViewRpcRequest>(&parsed.payload);
-    ASSERT_NE(request, nullptr);
-    EXPECT_EQ(request->request.first_sample_index, 48000u);
-    EXPECT_EQ(request->request.last_sample_index, 144000u);
-    EXPECT_EQ(request->request.display_sample_count, 96000u);
-}
 
-TEST(SocketRpcRequestParser, ParsesGetLaneQuerySchemaRequest)
-{
-    auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":24,"method":"timeline.getLaneQuerySchema","params":{}})");
 
-    EXPECT_EQ(parsed.request_id, 24);
-    EXPECT_NE(std::get_if<iv::GetLaneQuerySchemaRequest>(&parsed.payload), nullptr);
-}
 
-TEST(SocketRpcRequestParser, ParsesCompleteLaneQueryRequest)
-{
-    auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":25,"method":"timeline.completeLaneQuery","params":{"source":"gain=","cursorOffset":5,"schemaRevision":7}})");
 
-    EXPECT_EQ(parsed.request_id, 25);
-    auto const *request = std::get_if<iv::CompleteLaneQueryRequest>(&parsed.payload);
-    ASSERT_NE(request, nullptr);
-    EXPECT_EQ(request->source, "gain=");
-    EXPECT_EQ(request->cursor_offset, 5u);
-    ASSERT_TRUE(request->schema_revision.has_value());
-    EXPECT_EQ(*request->schema_revision, 7u);
-}
 
-TEST(SocketRpcRequestParser, ParsesSetSampleInputValueRequest)
-{
-    auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":23,"method":"graph.setSampleInputValue","params":{"nodeId":"node-1","memberOrdinal":2,"inputOrdinal":5,"value":0.75}})");
-
-    EXPECT_EQ(parsed.request_id, 23);
-    auto const* request = std::get_if<iv::SetSampleInputValueRequest>(&parsed.payload);
-    ASSERT_NE(request, nullptr);
-    EXPECT_EQ(request->node_id, "node-1");
-    ASSERT_TRUE(request->member_ordinal.has_value());
-    EXPECT_EQ(*request->member_ordinal, 2u);
-    EXPECT_EQ(request->input_ordinal, 5u);
-    EXPECT_FLOAT_EQ(request->value, 0.75f);
-}
-
-TEST(SocketRpcRequestParser, ParsesSetSampleInputStateRequest)
-{
-    auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":24,"method":"graph.setSampleInputState","params":{"nodeId":"node-1","memberOrdinal":2,"inputOrdinal":5,"state":"timelineLane"}})");
-
-    EXPECT_EQ(parsed.request_id, 24);
-    auto const* request = std::get_if<iv::SetSampleInputStateRequest>(&parsed.payload);
-    ASSERT_NE(request, nullptr);
-    EXPECT_EQ(request->node_id, "node-1");
-    ASSERT_TRUE(request->member_ordinal.has_value());
-    EXPECT_EQ(*request->member_ordinal, 2u);
-    EXPECT_EQ(request->input_ordinal, 5u);
-    EXPECT_EQ(request->state, "timelineLane");
-}
-
-TEST(SocketRpcRequestParser, ParsesDefaultSampleInputStateRequest)
-{
-    auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":25,"method":"graph.setSampleInputState","params":{"nodeId":"node-1","memberOrdinal":2,"inputOrdinal":5,"state":"default"}})");
-
-    EXPECT_EQ(parsed.request_id, 25);
-    auto const* request = std::get_if<iv::SetSampleInputStateRequest>(&parsed.payload);
-    ASSERT_NE(request, nullptr);
-    EXPECT_EQ(request->state, "default");
-}
-
-TEST(SocketRpcRequestParser, ParsesSetEventInputStateRequest)
-{
-    auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":26,"method":"graph.setEventInputState","params":{"nodeId":"node-1","memberOrdinal":2,"inputOrdinal":5,"state":"virtualFollow"}})");
-
-    EXPECT_EQ(parsed.request_id, 26);
-    auto const* request = std::get_if<iv::SetEventInputStateRequest>(&parsed.payload);
-    ASSERT_NE(request, nullptr);
-    EXPECT_EQ(request->node_id, "node-1");
-    ASSERT_TRUE(request->member_ordinal.has_value());
-    EXPECT_EQ(*request->member_ordinal, 2u);
-    EXPECT_EQ(request->input_ordinal, 5u);
-    EXPECT_EQ(request->state, "virtualFollow");
-}
-
-TEST(SocketRpcRequestParser, ParsesSetSampleOutputStateRequest)
-{
-    auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":27,"method":"graph.setSampleOutputState","params":{"nodeId":"node-1","memberOrdinal":2,"outputOrdinal":5,"state":"virtual"}})");
-
-    EXPECT_EQ(parsed.request_id, 27);
-    auto const* request = std::get_if<iv::SetSampleOutputStateRequest>(&parsed.payload);
-    ASSERT_NE(request, nullptr);
-    EXPECT_EQ(request->node_id, "node-1");
-    ASSERT_TRUE(request->member_ordinal.has_value());
-    EXPECT_EQ(*request->member_ordinal, 2u);
-    EXPECT_EQ(request->output_ordinal, 5u);
-    EXPECT_EQ(request->state, "virtual");
-}
-
-TEST(SocketRpcRequestParser, ParsesSetEventOutputStateRequest)
-{
-    auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":28,"method":"graph.setEventOutputState","params":{"nodeId":"node-1","outputOrdinal":3,"state":"timelineLane"}})");
-
-    EXPECT_EQ(parsed.request_id, 28);
-    auto const* request = std::get_if<iv::SetEventOutputStateRequest>(&parsed.payload);
-    ASSERT_NE(request, nullptr);
-    EXPECT_EQ(request->node_id, "node-1");
-    EXPECT_FALSE(request->member_ordinal.has_value());
-    EXPECT_EQ(request->output_ordinal, 3u);
-    EXPECT_EQ(request->state, "timelineLane");
-}
-
-TEST(SocketRpcRequestParser, ParsesSetTimelineLaneSampleChannelTypeRequest)
-{
-    auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":29,"method":"timeline.setLaneSampleChannelType","params":{"laneId":"lane-42","sampleChannelType":"mono"}})");
-
-    EXPECT_EQ(parsed.request_id, 29);
-    auto const* request = std::get_if<iv::SetTimelineLaneSampleChannelTypeRequest>(&parsed.payload);
-    ASSERT_NE(request, nullptr);
-    EXPECT_EQ(request->lane_id.str(), "lane-42");
-    EXPECT_EQ(request->sample_channel_type, iv::ChannelTypeId::mono);
-}
-
-TEST(SocketRpcRequestParser, ParsesDeleteTimelineLaneRequest)
-{
-    auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":30,"method":"timeline.deleteLane","params":{"laneId":"lane-42"}})");
-
-    EXPECT_EQ(parsed.request_id, 30);
-    auto const* request = std::get_if<iv::DeleteTimelineLaneRequest>(&parsed.payload);
-    ASSERT_NE(request, nullptr);
-    EXPECT_EQ(request->lane_id.str(), "lane-42");
-}
-
-TEST(SocketRpcRequestParser, ParsesDuplicateTimelineLaneRequest)
-{
-    auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":31,"method":"timeline.duplicateLane","params":{"laneId":"lane-42"}})");
-
-    EXPECT_EQ(parsed.request_id, 31);
-    auto const* request = std::get_if<iv::DuplicateTimelineLaneRequest>(&parsed.payload);
-    ASSERT_NE(request, nullptr);
-    EXPECT_EQ(request->lane_id.str(), "lane-42");
-}
 
 TEST(SocketRpcRequestParser, ParsesGetAudioDevicesRequest)
 {
@@ -290,6 +147,58 @@ TEST(SocketRpcRequestParser, ParsesProjectSaveRequest)
     ASSERT_NE(request, nullptr);
 }
 
+TEST(SocketRpcRequestParser, ParsesManualControlDurableAndInteractionRequests)
+{
+    auto const upsert = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":40,"method":"manualControls.upsert","params":{"node":{"instanceId":"instance:synth","path":[{"kind":"virtualNode","sourceIdentity":"voice"}]},"inputName":"gain","value":0.625,"participation":"participateWithConnections","enabled":true}})");
+    auto const* durable = std::get_if<iv::UpsertManualControlRequest>(
+        &upsert.payload);
+    ASSERT_NE(durable, nullptr);
+    EXPECT_EQ(durable->control.id.node.instance_id, "instance:synth");
+    ASSERT_EQ(durable->control.id.node.path.size(), 1u);
+    EXPECT_EQ(durable->control.id.input_name, "gain");
+    EXPECT_FLOAT_EQ(static_cast<float>(durable->control.stored_value), 0.625f);
+    EXPECT_EQ(
+        durable->control.participation,
+        iv::ManualControlParticipation::participate_with_connections);
+    EXPECT_TRUE(durable->control.enabled);
+
+    auto const hover = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":41,"method":"manualControls.hover","params":{"node":{"instanceId":"instance:synth","path":[]},"inputName":"gain"}})");
+    auto const* hovered = std::get_if<iv::SetManualControlHoverRequest>(
+        &hover.payload);
+    ASSERT_NE(hovered, nullptr);
+    EXPECT_TRUE(hovered->client_id.empty());
+    ASSERT_TRUE(hovered->id);
+    EXPECT_EQ(hovered->id->input_name, "gain");
+
+    auto const begin = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":42,"method":"manualControls.begin","params":{"interactionId":"pointer:3","node":{"instanceId":"instance:synth","path":[]},"inputName":"gain","value":0.75}})");
+    auto const* started =
+        std::get_if<iv::BeginManualControlInteractionRequest>(&begin.payload);
+    ASSERT_NE(started, nullptr);
+    EXPECT_TRUE(started->interaction.client_id.empty());
+    EXPECT_EQ(started->interaction.interaction_id, "pointer:3");
+    EXPECT_EQ(started->id.input_name, "gain");
+    EXPECT_FLOAT_EQ(static_cast<float>(started->value), 0.75f);
+
+    auto const update = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":43,"method":"manualControls.update","params":{"interactionId":"pointer:3","value":0.875}})");
+    auto const* changed =
+        std::get_if<iv::UpdateManualControlInteractionRequest>(&update.payload);
+    ASSERT_NE(changed, nullptr);
+    EXPECT_EQ(changed->interaction.interaction_id, "pointer:3");
+    EXPECT_FLOAT_EQ(static_cast<float>(changed->value), 0.875f);
+
+    auto const end = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":44,"method":"manualControls.end","params":{"interactionId":"pointer:3","value":1.0}})");
+    auto const* stopped =
+        std::get_if<iv::EndManualControlInteractionRequest>(&end.payload);
+    ASSERT_NE(stopped, nullptr);
+    EXPECT_TRUE(stopped->interaction.client_id.empty());
+    EXPECT_FLOAT_EQ(static_cast<float>(stopped->value), 1.0f);
+}
+
 TEST(SocketRpcRequestParser, ParsesProjectAutosaveRequests)
 {
     auto const enable = iv::parse_socket_rpc_request(
@@ -307,65 +216,186 @@ TEST(SocketRpcRequestParser, ParsesProjectAutosaveRequests)
         nullptr);
 }
 
-TEST(SocketRpcRequestParser, ParsesPlaybackPauseRequest)
+TEST(SocketRpcRequestParser, ParsesSessionHandshakeSubscriptionAndSnapshot)
 {
-    auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":33,"method":"playback.pause","params":{}})");
+    auto const hello = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":50,"method":"session.hello","params":{"clientId":"editor:one","localCapability":"secret"}})");
+    auto const* hello_request = std::get_if<iv::SessionHelloRequest>(
+        &hello.payload);
+    ASSERT_NE(hello_request, nullptr);
+    EXPECT_EQ(hello_request->client_id, "editor:one");
+    EXPECT_EQ(hello_request->local_capability, "secret");
 
-    EXPECT_EQ(parsed.request_id, 33);
-    auto const *request = std::get_if<iv::PauseRequest>(&parsed.payload);
-    ASSERT_NE(request, nullptr);
+    auto const subscribe = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":51,"method":"session.subscribe","params":{"afterRevision":18446744073709551615,"topics":["graph.nodesUpdated"]}})");
+    auto const* subscribe_request = std::get_if<iv::SessionSubscribeRequest>(
+        &subscribe.payload);
+    ASSERT_NE(subscribe_request, nullptr);
+    EXPECT_EQ(
+        subscribe_request->after_revision,
+        std::numeric_limits<std::uint64_t>::max());
+    EXPECT_EQ(
+        subscribe_request->topics,
+        std::vector<std::string>{"graph.nodesUpdated"});
+
+    auto const snapshot = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":52,"method":"session.snapshot","params":{}})");
+    EXPECT_NE(
+        std::get_if<iv::SessionSnapshotRequest>(&snapshot.payload), nullptr);
 }
 
-TEST(SocketRpcRequestParser, ParsesPlaybackResumeRequest)
+TEST(SocketRpcRequestParser, PreservesExpectedRevisionOnMutation)
 {
     auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":34,"method":"playback.resume","params":{"startIndex":96}})");
+        R"({"jsonrpc":"2.0","id":53,"method":"nodeInstances.delete","params":{"instanceId":"instance:one","expectedRevision":17}})");
 
-    EXPECT_EQ(parsed.request_id, 34);
-    auto const *request = std::get_if<iv::ResumeRequest>(&parsed.payload);
-    ASSERT_NE(request, nullptr);
-    EXPECT_EQ(request->start_index, 96u);
+    EXPECT_EQ(parsed.expected_revision, 17u);
 }
 
-TEST(SocketRpcRequestParser, ParsesCreateIvModuleInstanceRequest)
+TEST(SocketRpcRequestParser, ParsesCreateNodeInstanceRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":26,"method":"ivModuleInstances.create","params":{"moduleId":"iv.test.mod","displayName":"Bass"}})");
+        R"({"jsonrpc":"2.0","id":26,"method":"nodeInstances.create","params":{"instanceId":"instance:bass","definitionId":"iv.test.mod","displayName":"Bass","configurationSource":"{.gain = 0.5}"}})");
 
     EXPECT_EQ(parsed.request_id, 26);
-    auto const *request = std::get_if<iv::CreateIvModuleInstanceRequest>(&parsed.payload);
+    auto const *request = std::get_if<iv::CreateNodeInstanceRequest>(&parsed.payload);
     ASSERT_NE(request, nullptr);
-    EXPECT_EQ(request->module_id, "iv.test.mod");
+    EXPECT_EQ(request->instance_id, "instance:bass");
+    EXPECT_EQ(request->definition_id, "iv.test.mod");
     ASSERT_TRUE(request->display_name.has_value());
     EXPECT_EQ(*request->display_name, "Bass");
+    EXPECT_EQ(request->configuration_source, "{.gain = 0.5}");
 }
 
-TEST(SocketRpcRequestParser, ParsesUpdateIvModuleInstancesRequest)
+TEST(SocketRpcRequestParser, ParsesGetNodeInstancesRequest)
 {
     auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":27,"method":"ivModuleInstances.update","params":{"updates":[{"instanceId":"instance:1","displayName":"Lead","defaultSilenceTtlSamples":64}]}})");
+        R"({"jsonrpc":"2.0","id":40,"method":"nodeInstances.get","params":{"sourceFilePath":"/tmp/module.cpp"}})");
+
+    auto const* request = std::get_if<iv::GetNodeInstancesRequest>(
+        &parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(request->source_file_path, "/tmp/module.cpp");
+}
+
+TEST(SocketRpcRequestParser, ParsesUpdateNodeInstancesRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":27,"method":"nodeInstances.update","params":{"updates":[{"instanceId":"instance:1","displayName":"Lead","configurationSource":"880, stereo"}]}})");
 
     EXPECT_EQ(parsed.request_id, 27);
-    auto const *request = std::get_if<iv::UpdateIvModuleInstancesRequest>(&parsed.payload);
+    auto const *request = std::get_if<iv::UpdateNodeInstancesRequest>(&parsed.payload);
     ASSERT_NE(request, nullptr);
     ASSERT_EQ(request->updates.size(), 1u);
     EXPECT_EQ(request->updates.front().instance_id, "instance:1");
     ASSERT_TRUE(request->updates.front().display_name.has_value());
     EXPECT_EQ(*request->updates.front().display_name, "Lead");
-    ASSERT_TRUE(request->updates.front().default_silence_ttl_samples.has_value());
-    EXPECT_EQ(*request->updates.front().default_silence_ttl_samples, 64u);
+    ASSERT_TRUE(request->updates.front().configuration_source.has_value());
+    EXPECT_EQ(*request->updates.front().configuration_source, "880, stereo");
 }
 
-TEST(SocketRpcRequestParser, ParsesDeleteIvModuleInstanceRequest)
+TEST(SocketRpcRequestParser, DefaultsMissingConfigurationSourceToEmpty)
 {
     auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":28,"method":"ivModuleInstances.delete","params":{"instanceId":"instance:1"}})");
+        R"({"jsonrpc":"2.0","id":35,"method":"nodeInstances.create","params":{"definitionId":"iv.test.mod"}})");
+
+    auto const* request = std::get_if<iv::CreateNodeInstanceRequest>(
+        &parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_TRUE(request->configuration_source.empty());
+}
+
+TEST(SocketRpcRequestParser, ParsesDeleteNodeInstanceRequest)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":28,"method":"nodeInstances.delete","params":{"instanceId":"instance:1"}})");
 
     EXPECT_EQ(parsed.request_id, 28);
-    auto const *request = std::get_if<iv::DeleteIvModuleInstanceRequest>(&parsed.payload);
+    auto const *request = std::get_if<iv::DeleteNodeInstanceRequest>(&parsed.payload);
     ASSERT_NE(request, nullptr);
     EXPECT_EQ(request->instance_id, "instance:1");
+}
+
+TEST(SocketRpcRequestParser, ParsesStructuredSampleConnectionMutation)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":36,"method":"graphConnections.upsert","params":{"connection":{"kind":"sample","connectionId":"sample:main","sourceType":"stereo","outputs":[{"instanceId":"source","path":[{"kind":"virtualNode","sourceIdentity":"processor","typeIdentity":"filter"},{"kind":"virtualMember","index":1},{"kind":"tiledChild","name":"right"}],"port":{"name":"audio","index":2,"channel":1}}],"targetType":"mono","inputs":[{"instanceId":"target","path":[],"port":{"name":"audio"}}]}}})");
+
+    EXPECT_EQ(parsed.request_id, 36);
+    auto const* request = std::get_if<iv::UpsertGraphConnectionRequest>(
+        &parsed.payload);
+    ASSERT_NE(request, nullptr);
+    auto const* connection = std::get_if<iv::ProjectSampleConnection>(
+        &request->connection);
+    ASSERT_NE(connection, nullptr);
+    EXPECT_EQ(connection->connection_id, "sample:main");
+    EXPECT_EQ(connection->source_type, iv::ChannelTypeId::stereo);
+    EXPECT_EQ(connection->target_type, iv::ChannelTypeId::mono);
+    ASSERT_EQ(connection->outputs.size(), 1u);
+    ASSERT_EQ(connection->outputs[0].path.size(), 3u);
+    auto const* virtual_node = std::get_if<iv::ProjectVirtualNodeSelector>(
+        &connection->outputs[0].path[0]);
+    ASSERT_NE(virtual_node, nullptr);
+    EXPECT_EQ(virtual_node->source_identity, "processor");
+    EXPECT_EQ(virtual_node->type_identity, "filter");
+    EXPECT_EQ(connection->outputs[0].port.channel, 1u);
+}
+
+TEST(SocketRpcRequestParser, ParsesGraphConnectionDeleteMutation)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":37,"method":"graphConnections.delete","params":{"connectionId":"sample:main"}})");
+
+    auto const* request = std::get_if<iv::DeleteGraphConnectionRequest>(
+        &parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(request->connection_id, "sample:main");
+}
+
+TEST(SocketRpcRequestParser, ParsesTypedNodeMessageDispatch)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":41,"method":"nodeMessages.dispatch","params":{"target":{"instanceId":"instance:voice","path":[{"kind":"virtualNode","sourceIdentity":"filter"},{"kind":"virtualMember","index":2}]},"eventTypeNominalId":"c:@S@SetCutoff","eventTypeDefinitionFingerprint":"0123456789abcdef","payload":{"cutoff":1800.0}}})");
+
+    auto const* request = std::get_if<iv::DispatchNodeMessageRequest>(
+        &parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(parsed.request_id, 41);
+    EXPECT_EQ(request->target.instance_id, "instance:voice");
+    ASSERT_EQ(request->target.path.size(), 2u);
+    auto const* member = std::get_if<iv::ProjectVirtualMemberSelector>(
+        &request->target.path[1]);
+    ASSERT_NE(member, nullptr);
+    EXPECT_EQ(member->index, 2u);
+    EXPECT_EQ(request->event_type_nominal_id, "c:@S@SetCutoff");
+    EXPECT_EQ(
+        request->event_type_definition_fingerprint,
+        "0123456789abcdef");
+    ASSERT_NE(request->payload, nullptr);
+    EXPECT_EQ((*request->payload)["cutoff"], 1800.0);
+}
+
+TEST(SocketRpcRequestParser, ParsesNodeEventProtocolQuery)
+{
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":43,"method":"nodeMessages.getProtocol","params":{}})");
+
+    EXPECT_EQ(parsed.request_id, 43);
+    EXPECT_NE(
+        std::get_if<iv::GetNodeEventProtocolRequest>(&parsed.payload),
+        nullptr);
+}
+
+TEST(SocketRpcRequestParser, RejectsUnknownStructuredConnectionSelectorsAndTypes)
+{
+    EXPECT_THROW(
+        (void)iv::parse_socket_rpc_request(
+            R"({"jsonrpc":"2.0","id":38,"method":"graphConnections.upsert","params":{"connection":{"kind":"sample","connectionId":"bad:type","sourceType":"surround","outputs":[{"instanceId":"source","path":[],"port":{"name":"audio"}}],"targetType":"mono","inputs":[{"instanceId":"target","path":[],"port":{"name":"audio"}}]}}})"),
+        std::runtime_error);
+    EXPECT_THROW(
+        (void)iv::parse_socket_rpc_request(
+            R"({"jsonrpc":"2.0","id":39,"method":"graphConnections.upsert","params":{"connection":{"kind":"event","connectionId":"bad:path","sourceType":"midi","outputs":[{"instanceId":"source","path":[{"kind":"subgraph","index":0}],"port":{"name":"events"}}],"targetType":"trigger","inputs":[{"instanceId":"target","path":[],"port":{"name":"events"}}]}}})"),
+        std::runtime_error);
 }
 
 TEST(SocketRpcRequestParser, RejectsMissingParamsObject)
@@ -376,12 +406,15 @@ TEST(SocketRpcRequestParser, RejectsMissingParamsObject)
         std::runtime_error);
 }
 
-TEST(SocketRpcRequestParser, RejectsUnsupportedMethod)
+TEST(SocketRpcRequestParser, PreservesUnsupportedMethodForDispatch)
 {
-    EXPECT_THROW(
-        (void)iv::parse_socket_rpc_request(
-            R"({"jsonrpc":"2.0","id":25,"method":"server.nope","params":{}})"),
-        std::runtime_error);
+    auto const parsed = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":25,"method":"server.nope","params":{}})");
+
+    EXPECT_EQ(parsed.request_id, 25);
+    auto const *request = std::get_if<iv::UnsupportedSocketRpcRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+    EXPECT_EQ(request->method, "server.nope");
 }
 
 TEST(SocketRpcAckResponseBuilder, BuildsOkByDefault)
@@ -395,6 +428,25 @@ TEST(SocketRpcAckResponseBuilder, BuildsOkByDefault)
     EXPECT_EQ(response["result"]["ok"], true);
 }
 
+TEST(SocketRpcSessionProjectStateResultBuilder, SerializesCanonicalCommands)
+{
+    iv::SocketRpcSessionProjectStateResultBuilder builder;
+    builder.succeed({iv::ProjectCommand{
+        .command = "graphConnections.upsert",
+        .args = Json{{"connection_id", "sample:main"}},
+    }});
+
+    auto const response = parse_json_line(builder.build(54));
+
+    ASSERT_EQ(response["result"]["commands"].size(), 1u);
+    EXPECT_EQ(
+        response["result"]["commands"][0]["command"],
+        "graphConnections.upsert");
+    EXPECT_EQ(
+        response["result"]["commands"][0]["args"]["connection_id"],
+        "sample:main");
+}
+
 TEST(SocketRpcAckResponseBuilder, BuildsErrorAfterFailure)
 {
     iv::SocketRpcAckResponseBuilder builder;
@@ -406,6 +458,92 @@ TEST(SocketRpcAckResponseBuilder, BuildsErrorAfterFailure)
     EXPECT_EQ(response["id"], 12);
     EXPECT_EQ(response["error"]["code"], -32055);
     EXPECT_EQ(response["error"]["message"], "bad news");
+}
+
+TEST(SocketRpcNodeMessageResultBuilder, SerializesSuccessfulDiagnostics)
+{
+    iv::SocketRpcNodeMessageResultBuilder builder;
+    builder.succeed({iv::SocketRpcNodeMessageDiagnostic{
+        .target = iv::NodeAddress{
+            .instance_id = "instance:voice",
+            .path = {iv::ProjectTiledChildSelector{.name = "right"}},
+        },
+        .message = "selected concrete node does not implement the event",
+    }});
+
+    auto const response = parse_json_line(builder.build(42));
+
+    EXPECT_EQ(response["result"]["ok"], true);
+    ASSERT_EQ(response["result"]["diagnostics"].size(), 1u);
+    EXPECT_EQ(
+        response["result"]["diagnostics"][0]["target"]["instanceId"],
+        "instance:voice");
+    EXPECT_EQ(
+        response["result"]["diagnostics"][0]["target"]["path"][0]["name"],
+        "right");
+}
+
+TEST(SocketRpcNodeEventProtocolResultBuilder, SerializesNeutralSchemasAndReceivers)
+{
+    iv::SocketRpcNodeEventProtocolResultBuilder builder;
+    auto field = std::make_shared<iv::NodeEventValueSchema const>(
+        iv::NodeEventValueSchema{
+            .kind = iv::NodeEventValueKind::floating_point,
+            .integer_bit_width = 64,
+        });
+    builder.succeed(iv::NodeEventProtocolSnapshot{
+        .project_graph_generation = 12,
+        .definitions_generation = 7,
+        .event_types = {{
+            .id = {
+                .nominal_id = "c:@S@SetCutoff",
+                .definition_fingerprint = "event-v2",
+            },
+            .display_name = "SetCutoff",
+            .payload = {
+                .kind = iv::NodeEventValueKind::aggregate,
+                .fields = {{.name = "cutoff", .value = std::move(field)}},
+            },
+        }},
+        .definitions = {{
+            .definition_id = "iv.example.filter",
+            .supported_event_types = {{
+                .nominal_id = "c:@S@SetCutoff",
+                .definition_fingerprint = "event-v2",
+            }},
+        }},
+        .receivers = {{
+            .address = {.instance_id = "instance:filter"},
+            .supported_event_types = {{
+                .nominal_id = "c:@S@SetCutoff",
+                .definition_fingerprint = "event-v2",
+            }},
+        }},
+    });
+
+    auto const response = parse_json_line(builder.build(44));
+    auto const& protocol = response["result"];
+    EXPECT_EQ(protocol["formatVersion"], 0);
+    EXPECT_EQ(protocol["projectGraphGeneration"], 12);
+    EXPECT_EQ(protocol["definitionsGeneration"], 7);
+    ASSERT_EQ(protocol["eventTypes"].size(), 1u);
+    EXPECT_EQ(protocol["eventTypes"][0]["nominalId"], "c:@S@SetCutoff");
+    EXPECT_EQ(protocol["eventTypes"][0]["payload"]["kind"], "aggregate");
+    EXPECT_EQ(
+        protocol["eventTypes"][0]["payload"]["fields"][0]["value"]["kind"],
+        "floatingPoint");
+    ASSERT_EQ(protocol["definitions"].size(), 1u);
+    EXPECT_EQ(
+        protocol["definitions"][0]["definitionId"],
+        "iv.example.filter");
+    ASSERT_EQ(protocol["receivers"].size(), 1u);
+    EXPECT_EQ(
+        protocol["receivers"][0]["address"]["instanceId"],
+        "instance:filter");
+    auto const serialized = protocol.dump();
+    EXPECT_EQ(serialized.find("NodeCodeKey"), std::string::npos);
+    EXPECT_EQ(serialized.find("byteOffset"), std::string::npos);
+    EXPECT_EQ(serialized.find("llvm"), std::string::npos);
 }
 
 TEST(SocketRpcGraphQueryResultBuilder, RequiresExplicitResult)
@@ -424,6 +562,7 @@ TEST(SocketRpcGraphQueryResultBuilder, SerializesNodes)
         .kind = "Oscillator",
         .source_identity = "src-1",
         .type_identity = "Oscillator",
+        .definition_id = "iv.test.oscillator",
         .source_spans = {
             iv::LiveSourceSpan {
                 .file_path = "/tmp/module.cpp",
@@ -433,14 +572,46 @@ TEST(SocketRpcGraphQueryResultBuilder, SerializesNodes)
                 },
             },
         },
-        .sample_inputs = {
-            iv::VirtualPortInfo {
+        .continuous_inputs = {
+            iv::VirtualContinuousPortInfo {
                 .name = "frequency",
-                .type = "sample",
-                .ordinal = 1,
+                .index = 1,
+                .value_types = {
+                    iv::SampleContinuousValueExtension::IntrospectionMetadata{
+                        .default_value = iv::Sample{0.5f},
+                        .min = iv::Sample{
+                            -std::numeric_limits<iv::Sample::storage>::infinity()},
+                        .max = iv::Sample{
+                            std::numeric_limits<iv::Sample::storage>::infinity()},
+                    },
+                    iv::FractionalGlobalIndexContinuousValueExtension::
+                        IntrospectionMetadata{
+                            .default_value = iv::FractionalGlobalIndex::from_parts(
+                                iv::GlobalIndex::from_bits(
+                                    std::uint64_t{9007199254740993ULL}),
+                                std::uint64_t{18446744073709551615ULL}),
+                        },
+                    iv::FFTBlockContinuousValueExtension::IntrospectionMetadata{},
+                },
+                .channel_type = iv::ChannelTypeId::mono,
+                .binding = iv::VirtualPortBinding::interface,
             },
         },
-        .member_count = 0,
+        .event_inputs = {
+            iv::VirtualEventPortInfo{
+                .name = "trigger",
+                .index = 2,
+                .type = iv::EventTypeId::trigger,
+                .binding = iv::VirtualPortBinding::virtual_input,
+            },
+        },
+        .member_count = 1,
+        .members = {
+            iv::VirtualNodeMemberInfo {
+                .index = 4,
+                .backing_node_id = "backing-1",
+            },
+        },
     });
     builder.succeed(std::move(result));
 
@@ -453,137 +624,83 @@ TEST(SocketRpcGraphQueryResultBuilder, SerializesNodes)
     EXPECT_EQ(node["kind"], "Oscillator");
     EXPECT_EQ(node["sourceSpans"][0]["filePath"], "/tmp/module.cpp");
     EXPECT_EQ(node["sourceSpans"][0]["range"]["start"]["line"], 3);
-    EXPECT_EQ(node["sampleInputs"][0]["name"], "frequency");
+    auto const& continuous = node["continuousInputs"][0];
+    EXPECT_EQ(continuous["name"], "frequency");
+    EXPECT_EQ(continuous["index"], 1);
+    EXPECT_EQ(continuous["binding"], "interface");
+    EXPECT_EQ(continuous["channelType"], "mono");
+    ASSERT_EQ(continuous["valueTypes"].size(), 3u);
+    EXPECT_EQ(continuous["valueTypes"][0]["type"], "Sample");
+    EXPECT_EQ(continuous["valueTypes"][0]["defaultValue"], 0.5f);
+    EXPECT_EQ(
+        continuous["valueTypes"][0]["minValue"], "negativeInfinity");
+    EXPECT_EQ(
+        continuous["valueTypes"][0]["maxValue"], "positiveInfinity");
+    EXPECT_EQ(
+        continuous["valueTypes"][1]["defaultValue"]["wholeBits"],
+        "9007199254740993");
+    EXPECT_EQ(
+        continuous["valueTypes"][1]["defaultValue"]["fractionBits"],
+        "18446744073709551615");
+    EXPECT_EQ(continuous["valueTypes"][2]["type"], "FFTBlock");
+    EXPECT_EQ(continuous["valueTypes"][2]["rank"], 1);
+    EXPECT_FALSE(continuous["valueTypes"][2].contains("defaultValue"));
+    EXPECT_FALSE(continuous.contains("currentValue"));
+    EXPECT_FALSE(continuous.contains("hasConcreteOverride"));
+    EXPECT_FALSE(continuous.contains("stateValue"));
+    EXPECT_EQ(node["eventInputs"][0]["eventType"], "trigger");
+    EXPECT_EQ(node["eventInputs"][0]["binding"], "virtualInput");
+    EXPECT_EQ(node["members"][0]["index"], 4);
+    EXPECT_EQ(node["definitionId"], "iv.test.oscillator");
 }
 
-TEST(SocketRpcLaneViewResultBuilder, SerializesLaneViewPayload)
+
+
+
+
+
+
+
+
+TEST(SocketRpcCreateNodeInstanceResultBuilder, SerializesCreatedInstanceId)
 {
-    iv::SocketRpcLaneViewResultBuilder builder;
-    iv::LaneViewResult result {
-        .view_id = intern("view-1"),
-        .lanes = iv::LaneQueryResult {
-            .start_index = 2,
-            .visible_lane_count = 3,
-            .total_lane_count = 5,
-            .lanes = {
-                iv::LaneInfo {
-                    .lane_id = intern("42"),
-                    .domain = iv::LaneDomain::realtime,
-                    .sample_channel_type = iv::ChannelTypeId::stereo,
-                    .metadata = iv::LaneMetadata{
-                        .unit_values = {"graph_input"},
-                        .int_values = {
-                            {"port_ordinal", 7},
-                            {"member_ordinal", 1},
-                        },
-                    },
-                },
-            },
-            .connections = {
-                iv::LaneConnectionInfo {
-                    .source_lane_id = intern("lane-42"),
-                    .target_lane_id = intern("lane-99"),
-                    .port_kind = iv::PortKind::sample,
-                    .port_ordinal = 7,
-                },
-            },
-        },
-    };
-    builder.succeed(std::move(result));
-
-    auto const response = parse_json_line(builder.build(15));
-
-    EXPECT_EQ(response["id"], 15);
-    EXPECT_EQ(response["result"]["viewId"], "view-1");
-    EXPECT_EQ(response["result"]["startIndex"], 2);
-    EXPECT_EQ(response["result"]["visibleLaneCount"], 3);
-    EXPECT_EQ(response["result"]["totalLaneCount"], 5);
-    EXPECT_EQ(response["result"]["lanes"][0]["laneId"], "42");
-    EXPECT_EQ(response["result"]["lanes"][0]["domain"], "realtime");
-    EXPECT_EQ(response["result"]["lanes"][0]["sampleChannelType"], "stereo");
-    EXPECT_TRUE(response["result"]["lanes"][0].contains("metadata"));
-    EXPECT_EQ(response["result"]["lanes"][0]["metadata"]["member_ordinal"], 1);
-    EXPECT_EQ(response["result"]["connections"][0]["targetLaneId"], "lane-99");
-}
-
-TEST(SocketRpcLaneViewResultBuilder, SerializesLaneViewErrorPayload)
-{
-    iv::SocketRpcLaneViewResultBuilder builder;
-    builder.succeed(iv::LaneViewResult{
-        .view_id = intern("view-1"),
-        .lanes = iv::LaneQueryResult{
-            .error_message = "bad filter",
-        },
-    });
-
-    auto const response = parse_json_line(builder.build(16));
-
-    EXPECT_EQ(response["id"], 16);
-    EXPECT_EQ(response["result"]["viewId"], "view-1");
-    EXPECT_EQ(response["result"]["error"], "bad filter");
-}
-
-TEST(SocketRpcLaneQuerySchemaResultBuilder, SerializesSchemaSnapshot)
-{
-    iv::SocketRpcLaneQuerySchemaResultBuilder builder;
-    builder.succeed(iv::query::LaneQuerySchema::from_entries({
-        {"gain", iv::query::LaneQueryValueType::float_},
-        {"graph_input", iv::query::LaneQueryValueType::unit},
-    }, 7));
-
-    auto const response = parse_json_line(builder.build(17));
-
-    EXPECT_EQ(response["id"], 17);
-    EXPECT_EQ(response["result"]["revision"], 7);
-    ASSERT_EQ(response["result"]["entries"].size(), 2u);
-    EXPECT_EQ(response["result"]["entries"][0]["key"], "gain");
-    EXPECT_EQ(response["result"]["entries"][0]["type"], "float");
-    EXPECT_EQ(response["result"]["entries"][1]["key"], "graph_input");
-    EXPECT_EQ(response["result"]["entries"][1]["type"], "unit");
-}
-
-TEST(SocketRpcLaneQueryCompletionResultBuilder, SerializesCompletionPayload)
-{
-    iv::SocketRpcLaneQueryCompletionResultBuilder builder;
-    builder.succeed(iv::query::LaneQueryCompletionResult{
-        .replacement_range = {.start_offset = 4, .end_offset = 6},
-        .context = iv::query::LaneQueryCompletionContext::value,
-        .candidates = {
-            iv::query::LaneQueryCompletionCandidate{
-                .kind = iv::query::LaneQueryCompletionKind::numeric_range,
-                .label = "0..1",
-                .insert_text = "0..1",
-                .value_type = iv::query::LaneQueryValueType::float_,
-            },
-        },
-        .diagnostics = {
-            iv::query::LaneQueryDiagnostic{
-                .range = {.start_offset = 5, .end_offset = 6},
-                .message = "incomplete value",
-            },
-        },
-    }, 9);
-
-    auto const response = parse_json_line(builder.build(18));
-
-    EXPECT_EQ(response["id"], 18);
-    EXPECT_EQ(response["result"]["schemaRevision"], 9);
-    EXPECT_EQ(response["result"]["replacementRange"]["startOffset"], 4);
-    EXPECT_EQ(response["result"]["context"], "value");
-    EXPECT_EQ(response["result"]["candidates"][0]["kind"], "numericRange");
-    EXPECT_EQ(response["result"]["candidates"][0]["valueType"], "float");
-    EXPECT_EQ(response["result"]["diagnostics"][0]["range"]["endOffset"], 6);
-}
-
-TEST(SocketRpcCreateIvModuleInstanceResultBuilder, SerializesCreatedInstanceId)
-{
-    iv::SocketRpcCreateIvModuleInstanceResultBuilder builder;
+    iv::SocketRpcCreateNodeInstanceResultBuilder builder;
     builder.succeed("instance:7");
 
     auto const response = parse_json_line(builder.build(17));
 
     EXPECT_EQ(response["id"], 17);
     EXPECT_EQ(response["result"]["instanceId"], "instance:7");
+}
+
+TEST(SocketRpcIvPackageDefinitionsResultBuilder, SerializesProvenance)
+{
+    iv::SocketRpcIvPackageDefinitionsResultBuilder builder;
+    builder.succeed({
+        iv::IvPackageInfo{
+            .package_id = "iv.builtin",
+            .package_root = "/tmp/builtin",
+            .provenance = iv::PackageProvenance::built_in,
+        },
+        iv::IvPackageInfo{
+            .package_id = "iv.common",
+            .package_root = "/tmp/common",
+            .provenance = iv::PackageProvenance::common,
+        },
+        iv::IvPackageInfo{
+            .package_id = "iv.project",
+            .package_root = "/tmp/project",
+            .provenance = iv::PackageProvenance::project_local,
+        },
+    });
+
+    auto const response = parse_json_line(builder.build(19));
+    auto const& packages = response["result"]["packages"];
+    ASSERT_EQ(packages.size(), 3u);
+    EXPECT_EQ(packages[0]["provenance"], "builtIn");
+    EXPECT_EQ(packages[1]["provenance"], "common");
+    EXPECT_EQ(packages[2]["provenance"], "projectLocal");
+    EXPECT_FALSE(packages[0].contains("projectLocal"));
 }
 
 TEST(SocketRpcAudioDevicesResultBuilder, SerializesSnapshot)
@@ -618,4 +735,48 @@ TEST(SocketRpcAudioDevicesResultBuilder, SerializesSnapshot)
     EXPECT_EQ(response["result"]["selectedOutput"]["name"], "Output 1");
     EXPECT_EQ(response["result"]["selectedInput"]["deviceId"], "missing");
     EXPECT_EQ(response["result"]["selectedInput"]["available"], false);
+}
+
+TEST(SocketRpcProjectHistory, RequiresProjectWriteAndChecksRevisionBeforeInvokingEveryMutationRoute)
+{
+    iv::SocketRpcRouteRegistry routes;
+    for (auto const* method : {"project.undo", "project.redo", "project.applyEdit", "project.setToolchain"}) {
+        Json params = Json::object();
+        params["expectedRevision"] = 17;
+        if (std::string_view(method) == "project.applyEdit") params["operations"] = Json::array();
+        if (std::string_view(method) == "project.setToolchain") params["toolchain"] = Json::object();
+        auto request = iv::parse_socket_rpc_request(Json{{"id", 1}, {"method", method}, {"params", params}}.dump());
+        bool checked_revision = false;
+        std::string capability;
+        EXPECT_THROW((void)routes.dispatch(request, {
+            .authorize = [&](std::string const& required) { capability = required; },
+            .before_invoke = [&](bool mutates) {
+                EXPECT_TRUE(mutates);
+                checked_revision = true;
+                throw std::runtime_error("stale project session revision");
+            },
+        }), std::runtime_error);
+        EXPECT_EQ(capability, "project.write");
+        EXPECT_TRUE(checked_revision);
+        EXPECT_THROW((void)routes.dispatch(request, {
+            .authorize = [](std::string const&) { throw std::runtime_error("permission denied"); },
+            .before_invoke = [](bool) { ADD_FAILURE() << "authorization must precede revision checks"; },
+        }), std::runtime_error);
+    }
+}
+
+TEST(SocketRpcProjectHistory, ParsesCompleteSettingsRecordsAndRejectsDuplicateSingletonEdits)
+{
+    auto parsed = iv::parse_socket_rpc_request(R"({"id":1,"method":"project.applyEdit","params":{"expectedRevision":23,"operations":[{"method":"audioDevices.set","params":{"outputDeviceId":"out","inputDeviceId":null}},{"method":"project.setToolchain","params":{"toolchain":{"cxxCompiler":"/other/clang++","ivPackagePch":null}}}]}})");
+    auto const& batch = std::get<iv::ApplyProjectEditRequest>(parsed.payload).batch;
+    ASSERT_TRUE(batch.audio_devices);
+    EXPECT_EQ(batch.audio_devices->output_device_id, "out");
+    EXPECT_FALSE(batch.audio_devices->input_device_id);
+    ASSERT_TRUE(batch.toolchain);
+    EXPECT_EQ(batch.toolchain->cxx_compiler, std::optional<std::filesystem::path>{"/other/clang++"});
+    EXPECT_FALSE(batch.toolchain->iv_package_pch);
+    EXPECT_FALSE(batch.toolchain->c_compiler); // Omitted fields reset in this complete record.
+    EXPECT_EQ(parsed.expected_revision, 23u);
+    EXPECT_THROW(iv::parse_socket_rpc_request(R"({"id":1,"method":"project.applyEdit","params":{"operations":[{"method":"audioDevices.set","params":{}},{"method":"audioDevices.set","params":{}}]}})"), std::invalid_argument);
+    EXPECT_THROW(iv::parse_socket_rpc_request(R"({"id":1,"method":"project.applyEdit","params":{"operations":[{"method":"project.setToolchain","params":{"toolchain":{}}},{"method":"project.setToolchain","params":{"toolchain":{}}}]}})"), std::invalid_argument);
 }

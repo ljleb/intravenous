@@ -26,15 +26,12 @@ namespace iv {
 
         void declare(DeclarationContext<GraphEventPortDataNode> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.local_array(state.port_data, 1);
-            ctx.local_array(
-                state.events,
+            ctx.local_array<&State::port_data>(1);
+            ctx.local_array<&State::events>(
                 calculate_event_port_buffer_capacity(
                     ctx.event_port_buffer_base_multiplier(), _type)
             );
-            ctx.export_array(
-                _port_data_id, state.port_data);
+            ctx.export_array<&State::port_data>(_port_data_id);
         }
 
         void initialize(InitializationContext<GraphEventPortDataNode> const& ctx) const

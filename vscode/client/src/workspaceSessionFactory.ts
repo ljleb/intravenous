@@ -1,37 +1,24 @@
+import type * as vscode from "vscode";
 import { injectable } from "tsyringe";
 
-import { LiveGraphControlHandler } from "./liveGraphProtocol";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
-import { ModulesViewProvider } from "./modulesViewProvider";
 import { WorkspaceSession } from "./workspaceSession";
 
-type LiveGraphProviderLike = {
-    setControlHandler(handler: LiveGraphControlHandler): void;
-    setInstances(instances: unknown[]): void;
-    setNodes(nodes: unknown[]): void;
-    upsertNodes(nodes: unknown[], replaceInstanceIds?: string[]): void;
-    setSelectedInstanceId(instanceId: string | null): void;
-    setPackageRoot(packageRoot: string | null): void;
-};
+type LiveGraphProviderLike = WorkspaceSession["provider"];
 
-type ModulesViewProviderLike = Pick<ModulesViewProvider, "setState">;
 
 @injectable()
 export class WorkspaceSessionFactory {
     create(
         workspaceFolder: vscode.WorkspaceFolder,
         outputChannel: vscode.OutputChannel,
-        laneTopologyDiagnostics: vscode.OutputChannel,
         provider: LiveGraphProviderLike,
-        modulesProvider: ModulesViewProviderLike,
         highlighter: NodeSpanHighlighter,
     ): WorkspaceSession {
         return new WorkspaceSession(
             workspaceFolder,
             outputChannel,
-            laneTopologyDiagnostics,
             provider,
-            modulesProvider,
             highlighter,
         );
     }

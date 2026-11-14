@@ -1,126 +1,197 @@
 # Project File Serialization Direction
 
-## Current understanding
+_Status: current persistence direction for the generalized `ProjectGraph`._
 
-Project persistence should store configured project state, not runtime object graphs and not execution-derived state.
+Canonical project intent is split by responsibility: `NodeInstances` owns the
+desired node-instance set, `GraphConnections` owns the desired connection set,
+and `ProjectGraph` coordinates reconstruction transactions without duplicating
+either. `ProjectPersistence` is the serializer/replayer. See
+[project_graph_application_architecture.md](./project_graph_application_architecture.md)
+and [event_flows/startup_and_project_replay.md](./event_flows/startup_and_project_replay.md).
 
-That means we want to persist:
+## Persistent state versus derived state
 
-- iv-module instances that exist
-- configured per-instance settings, such as `default_silence_ttl_samples`
-- configured graph-input override state
-- configured knob override values
-- the configured timeline lane DAG
-- configured lane-node parameters
-- later, automation data as its own first-class persistent structure
+Project persistence stores configured user intent, not runtime object graphs and
+not execution-derived state.
 
-That means we do **not** want to persist:
+For the project graph, persist at least:
 
-- `GraphInputLanes`-derived timeline lanes that are reconstructible from graph structure
-- execution caches
-- task graphs
-- descriptor layouts
-- other execution-owned derived state
+- stable project node-instance ids;
+- node definition ids;
+- the exact restricted C++-like configuration argument-list source used to request each node;
+- project-wide connection declarations;
+- structured `ProjectNodePortMatcher`s for every connection side;
+- explicit source/output and target/input channel type information required by
+  sample connections;
+- user-owned graph metadata as it becomes part of the canonical model.
+
+Other app modules may contribute their own independently owned persistent state
+through the persistence collection protocol.
+
+Do **not** persist derived graph/execution state such as:
+
+- `NodeInstances` configured cache entries;
+- parsed configuration-expression cache/retained typed values;
+- definition snapshots or package provider callbacks;
+- `GraphBuilder`/`BuilderSession` objects;
+- local-to-parent embedding maps;
+- concrete builder-local node/port/channel handles;
+- resolved connection channel ids;
+- `GraphJit` compiled kernels/ORC resources or realtime/background executor runtime state;
+- volatile hardware audio-device objects/bindings.
+
+## Node configuration expressions
+
+The initial generic node-configuration persistence format stores one restricted
+C++-like argument-list source string verbatim, for example:
+
+```text
+{.frequency = 440}, 0.25
+```
+
+Do not parse or normalize it by splitting on commas. The restricted grammar may contain
+nested initialization lists, registered containers/aggregates, and other admitted
+expressions with commas. `NodeInstances` later asks the dedicated configuration parser
+to parse/type-check/evaluate it against the registered configuration signature.
+
+The registered configuration signature supplies the expected argument types. The
+source can omit redundant aggregate type names, enum type names, and numeric suffixes
+when those types resolve the value.
+
+The persisted language is deliberately not arbitrary C++. It includes numeric
+operators, an allowlist of pure mathematical functions, aggregates, registered
+containers, bare enum values, and stable project-node references. A reference begins
+with a durable node-ID literal such as `&550e8400-e29b-41d4-a716-446655440000`. It can
+use `.name`, `[n]`, and `#name` semantic selectors. The complete language is in
+[Configuration Expression Language Direction](./configuration_expression_language_direction.md).
+
+The language does not include statements, declarations, mutation, loops, lambdas,
+templates, arbitrary calls, or general side-effecting execution.
+
+A future structured UI may generate this string from forms and controls, but the stored
+semantic request can remain the same.
+
+## Structured project connection matchers
+
+Persistent connections should store structured matcher fields rather than make
+a dotted debug string the canonical representation.
+
+A `ProjectNodePortMatcher` contains conceptually:
+
+- top-level stable project node-instance id;
+- ordered semantic node path;
+- port matcher/name;
+- optional concrete port-channel selector.
+
+The node path uses `ProjectVirtualNodeSelector`, `ProjectVirtualMemberSelector`, and
+`ProjectTiledChildSelector`. Virtual-node lookup is local to the current subject scope.
+A selected virtual node provides the route into its backing subgraph.
+`ProjectSubgraphSelector` is not part of the intended persisted semantic path.
+
+Tiled child selection is a node-path operation. Port-channel selection is a
+port operation. They must remain distinct in persistence.
+
+A connection stores lists of output-side and input-side matchers because each
+matcher is set-valued. Output matches are summed/contribute to the source;
+input matches receive/broadcast the resulting source according to normal graph
+connection semantics.
+
+If a matcher currently resolves to zero nodes/ports, retain it as dangling
+project state. Reload/startup must never silently delete or retarget it.
 
 ## Command model
 
-The important ingress surface is not JSON-RPC itself. The important surface is the existing typed linker-event command API that JSON-RPC already invokes.
+The important ingress surface is the typed application command/event API, not
+JSON-RPC itself. JSON-RPC is a transport adapter that parses/validates wire
+messages and invokes typed requests.
 
-JSON-RPC is currently best understood as:
+Project file replay should reconstruct normalized app-module state through the
+same semantic mutation surfaces used by live edits, but it does not need to
+serialize the JSON-RPC wire protocol literally.
 
-- wire-format parsing
-- request validation
-- conversion into typed event invocations
+The currently chosen persisted format remains suitable:
 
-This is only mostly true today. Some socket-RPC bridges still contain extra policy, such as directly persisting config updates. That logic should eventually move into proper app modules.
+- JSON;
+- one command object per line;
+- each command object has `command` and `args`.
 
-The useful architectural consequence is:
+As the project-graph surface is added, normalized reconstruction commands should
+represent current desired state, for example:
 
-- project file replay does not need to go through the UI
-- project file replay does not need to store JSON-RPC specifically
-- project file replay can use any serialized format that can be decoded into the same typed request structs and `IV_INVOKE_LINKER_EVENT(...)` calls
+```text
+create/update this project node instance id with definition id + restricted configuration arguments
+remove this project node instance id
+create/update this project connection matcher set
+remove this project connection
+```
 
-The currently chosen persisted format is:
+The normalized file is not an append-only edit history.
 
-- JSON
-- one command object per line
-- each command object has exactly `command` and `args`
+### Undo records and backup checkpoints are separate from the project file
 
-For `project.overrideSettings` specifically:
+Undo/redo is planned as server-owned history of **reversible batches of accepted
+durable project changes**, constructed from authoritative before/after records.
+It may reuse this command vocabulary without serializing each user action into
+`iv_project.jsonl`. Saving or replaying a normalized snapshot does not append or
+replay undo steps. A future backup/checkpoint system may reuse the same complete
+project snapshot and serialization facilities, possibly alongside an action
+journal; an inverse-only undo record is not a complete restorable backup.
 
-- recognized keys are parsed explicitly before dispatch
-- unknown sibling keys are logged
-- recognized keys must still apply even when unknown siblings are present
-- after parsing/logging, the original args object is forwarded to owning modules
+See [Project Undo, Redo, And Backup Direction](./project_undo_redo_and_backups_direction.md).
 
-## Persistence shape
+The implemented normalized commands are:
 
-The project file should not store C++ binary objects.
+- `nodeInstances.upsert`, with `instance_id`, `definition_id`, optional
+  `package_root`, optional `display_name`, and exact `configuration_source`;
+- `nodeInstances.delete` for command-stream normalization during load;
+- `graphConnections.upsert`, whose arguments are the complete structured
+  `ProjectSampleConnection` or `ProjectEventConnection` record;
+- `graphConnections.delete` for command-stream normalization during load.
 
-It should store a reconstruction program for the current configured project state.
+The save path emits only the current `*.upsert` records. The delete commands are
+accepted while normalizing input; they are not written as historical edits.
 
-The reconstruction program should be:
+## Replay batching
 
-- semantic
-- deterministic
-- normalized
+Even if the file is command-oriented, replay should collect project graph state
+and apply it as a coherent batch where practical.
 
-Normalized here means:
+`ProjectPersistence` should not emit one downstream root rebuild for every line
+of a loaded project. It should reconstruct the normalized project graph snapshot
+and then invoke `ProjectGraph` once for that replay cause.
 
-- not an ever-growing raw edit history
-- not every intermediate UI gesture
-- instead, the compact set of commands needed to recreate the current project
+This is required both for startup efficiency and for the strict event
+propagation tree/batching rule.
 
-So the persistence shape is closer to:
+Other persistent domains should use their own batched replay procedures when
+combining them into the same propagation would create a diamond that later
+converges on one app module.
 
-- create this instance
-- set this instance parameter
-- create this lane
-- set this lane parameter
-- connect these lanes
-- set this input override
+## Dedicated persistence responsibility
 
-than to:
+`ProjectPersistence` owns:
 
-- store every transient edit event forever
+- loading/parsing the project file;
+- replay orchestration into owning app modules;
+- normalized save collection;
+- atomic file writing.
 
-## Dedicated persistent-state module
+It does not own canonical node/connection state. `NodeInstances` owns desired
+node declarations, `GraphConnections` owns desired connection declarations, and
+`ProjectGraph` coordinates their reconstruction transaction.
 
-We want a dedicated app module for persistent project state.
-
-Its responsibilities should be:
-
-- load the project file
-- hold the normalized reconstruction program
-- replay that program by invoking the same typed command events used by the live app
-- write the project file through a server-owned autosave service
-
-It rebuilds normalized save output from live module state when autosave is due.
-Project replay must not schedule a save; autosave is enabled only after the
-project-loaded event fires.
-
-This module should not depend on the UI.
+`ProjectAutosave` may coalesce mutations and request a save after project load.
+Project replay itself must not immediately schedule a save merely because it is
+reconstructing state.
 
 ## Save policy
 
-Project file writes should not happen on every state change. The server coalesces
-ordinary configured mutations with a short debounce and writes atomically. The UI
-can explicitly save immediately, or disable and re-enable server-owned autosave.
+Ordinary configured mutations should be coalesced with a short debounce and
+saved atomically rather than writing after every UI gesture.
 
-The intended save flow is:
-
-- a project mutation is observed after project load
-- autosave coalesces mutations and requests persistence when due
-- project persistence raises its state-collection event into contributors
-- contributors fill the structured builder
-- the builder lowers to the normalized command list
-- project persistence writes `iv_project.jsonl`
-
-This keeps serialization cost under control, keeps persistence independent of a
-particular client, and lets app modules mutate live state freely without forcing
-an immediate disk write.
-
-## Open questions
-
-- Which currently existing linker events are already suitable as canonical reconstruction commands, and which configured-state commands still need to be introduced.
-- How lane-view 2D layout should be represented and restored from the VS Code side once that deferred work starts.
+A save collection procedure asks each owning app module for its normalized
+persistent contribution. `NodeInstances` contributes
+`ProjectNodeInstanceDeclaration` records and `GraphConnections` contributes
+`ProjectConnection` records. `ProjectGraph` coordinates the single replay
+transaction and does not duplicate either desired-state set. Collection must not expose
+`NodeInstances` caches, `GraphJit` compiled generations, or realtime/background executor runtime state as persistence.

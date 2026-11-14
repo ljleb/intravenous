@@ -16,7 +16,7 @@ Three axes describe an interaction between two units of the application:
 3. **Dependency flow** — which unit knows about the other.
 
 The bridged-module architecture deliberately separates the first axis from the
-third. Bridges make dependency flow static and explicit (both endpoints are
+third. Bridges make dependency flow static and explicit (both participants are
 named in one declaration), while control flow is carried dynamically by events.
 Data flow rides along the same edges as control flow.
 
@@ -103,6 +103,18 @@ A useful mental model: each event propagation carries an implicit cause token.
 The tree constraint says: for each source and each cause, no module processes
 that cause twice.
 
+The tree constraint applies to **application-module event propagation**, not to
+internal actor handoffs inside one module. For example, `GraphExecutor` owns internal
+`RealtimeExecutor` and `BackgroundExecutor` actors that exchange provisioned block
+chains, generation-cutover pointers, and persisted-state pointers in both directions.
+Those handoffs are ordinary internal runtime synchronization and do not add vertices or
+edges to the app-module propagation tree.
+
+App modules themselves may also have bidirectional static bridge relationships. What is
+forbidden is re-entering the same app module twice for one propagated cause. The
+constraint is therefore on each dynamic propagation graph, not on the undirected/static
+module relationship graph.
+
 ### Raising multiple events from one member
 
 A module member may raise as many events as it needs. Raising several events is
@@ -129,30 +141,37 @@ over-approximates and will flag some propagations that cannot actually happen
 at runtime; the architecture accepts this and treats flagged collisions as
 review items rather than proof of a bug.
 
-## Source modules
+## Source invocations, not permanently source-only modules
 
-A source module is a module designated as an origin of control: all of its
-externally visible events are initially triggered by it, never by a
-propagation arriving at it.
+The tree is rooted at a **control-source invocation**, not at a permanent class
+of source-only app modules.
 
-Designating modules rather than individual events is the workable option: it
-keeps the analysis well-defined, since a source's *whole* event surface is
-root-level. The restriction that comes with designation is deliberate:
+For example, one incoming client message can start a tree at `SocketRpcServer`,
+while a later independent presentation-update cause may reach `SocketRpcServer`
+as a notification sink. Those are different causes and therefore different
+trees.
 
-> **A source module does not subscribe to events.** It only raises.
+The hard rule is local to one cause:
 
-If a source module also subscribed, it would have two kinds of causes — its own
-originations and arriving propagations — and the tree rooted at "its own
-origination" would no longer be a pure tree from a single source. Where a
-module needs both roles, split it: the subscribing half delegates internally to
-the raising half, and only the raising half is declared a source.
+> An application module may appear at most once in the propagation tree rooted
+> at one source invocation.
 
-Typical source modules in this application:
+A module may therefore be a root in one procedure and a child in another. What
+is forbidden is a procedure that starts at a module, takes some path through
+other modules, and then re-enters that same module before the original cause has
+unwound.
 
-- `SocketRpcServer` (client messages);
-- `ProjectPersistence` (project file load/save);
-- the module watcher's reload service (filesystem changes);
-- the audio device boundary.
+Typical external source invocations include:
+
+- a client message arriving in `SocketRpcServer`;
+- project-file replay initiated by `ProjectPersistence`;
+- Linux package filesystem/discovery activity entering `PackageWatcher`;
+- hardware/audio callbacks entering the device domain;
+- future presentation/user-interface events.
+
+When an asynchronous operation is scheduled by one cause and completes later,
+its completion starts a new source invocation/tree. This is often the correct
+way to avoid re-entry through long-running compile/reload work.
 
 ## Cost and what it buys
 
@@ -210,17 +229,20 @@ concern.
 ### Runtime propagation context
 
 Debug builds thread a **propagation context** through event invocations. The
-context is created when a root event is raised outside any active propagation,
-and inherited by every event raised as a consequence:
+context is created when an **event source entry** opens, with
+`IV_EVENT_SOURCE(SourceModule, name) { ... }`, and inherited by every event
+raised inside that block:
 
 ```cpp
 struct PropagationContext {
-    EventId root_event;
+    SourceFrame source;            // source module, debugging name, location
     std::unordered_set<ModuleId> visited_modules;
     // causal trace entries
 };
 ```
 
+The source module is recorded as visited when the entry opens, so a
+propagation that comes back to its own source is a re-entry like any other.
 Each subscriber dispatch marks its module visited; raising a further event
 inside a handler reuses the same context rather than creating a new one. The
 invariant enforced dynamically:
@@ -234,9 +256,9 @@ leave `D` off the stack by the time `C` raises into it; the visited set still
 contains it, so the violation is caught.
 
 The context travels via the invocation mechanism: `IV_INVOKE_LINKER_EVENT` and
-its variants seed or inherit the context around subscriber dispatch, and
-`IV_INVOKE_LINKER_EVENT_SOURCE` marks a member as a propagation root. A
-thread-local current context is sufficient for synchronous propagation and
+`IV_INVOKE_SINGLETON_EVENT` inherit the context of the enclosing source entry
+around subscriber dispatch, and a raise outside any source entry is an error.
+A thread-local current context is sufficient for synchronous propagation and
 adds no cost in release builds, where all of this compiles out.
 
 Because the check observes the branch that actually executed, conditions are
@@ -249,22 +271,22 @@ Recording the causal edge that led to each visit makes the failure
 self-explanatory — not "module entered twice" but the two concrete paths:
 
 ```
-invalid event propagation: module Timeline reached twice
+invalid event propagation: module ProjectGraph reached twice
 
 root:
-    graph_changed
+    source_changed
 
 first path:
-    graph_changed
-      -> Foo::handle_graph_changed
-      -> timeline_changed
-      -> Timeline::handle_timeline_changed
+    source_changed
+      -> PackageDefinitions::handle_source_changed
+      -> definitions_changed
+      -> ProjectGraph::handle_definitions_changed
 
 second path:
-    graph_changed
-      -> Bar::handle_graph_changed
-      -> refresh_requested
-      -> Timeline::handle_refresh_requested
+    source_changed
+      -> NodeDefinitions::handle_source_changed
+      -> nodes_changed
+      -> ProjectGraph::handle_nodes_changed
 ```
 
 Each path is exactly the subscriber -> call chain -> raise sequence that
@@ -307,23 +329,34 @@ signatures do not change, and modules never pass provenance objects manually.
 Provenance is an execution concern of the event mechanism, not part of module
 APIs.
 
-### Public API change
+### Public API
 
-Exactly one primitive is added; the existing invocation macro keeps its name
-and meaning:
+_Accepted design change, 2026-11-12: event sources are entered explicitly with
+a scope. The previous single-raise source primitive is preserved in
+[event_source_marking_before_event_source_scopes_2026-11-12.md](./historical/event_source_marking_before_event_source_scopes_2026-11-12.md)._
 
 ```text
-IV_INVOKE_LINKER_EVENT_SOURCE(event_name, ...)
-    - must be called with no linker event being dispatched on this thread
-    - starts a new propagation context
-    - raises the event
-    - destroys the context when the synchronous propagation returns
+IV_EVENT_SOURCE(SourceModule[, name]) { ... }
+    - enters one event source for the block that follows
+    - must not be entered while another event source entry is active on this thread
+    - SourceModule is where control originates; it is recorded as visited, so
+      nothing raised inside the block may enter it again
+    - name is an optional debugging name, printed next to the source module in
+      collision reports (for example the JSON-RPC method of one client message)
+    - everything raised inside the block is one propagation tree
+    - the context is destroyed when the block exits, normally or by exception
 
 IV_INVOKE_LINKER_EVENT(event_name, ...)
-    - raises an ordinary event
-    - if a propagation context exists, inherits it
-    - otherwise behaves as it does today
+IV_INVOKE_SINGLETON_EVENT(event_name, ...)
+    - raise an event as a consequence of the current source entry
+    - raising one outside an event source entry is an error
 ```
+
+One source entry is one tree. A source block that raises several events
+raises them as siblings of that tree, never as several trees. A function may
+enter the same source more than once only for distinct causes, as
+`PackageWatcherService` does when it reports `rebuildStarted` before entering
+the refresh it announces.
 
 The subscriber function type is unchanged: subscribers remain plain
 `void(Args...)`. In particular the event context is not injected as a first
@@ -331,33 +364,17 @@ parameter; that would infect every module API with an execution concern.
 
 `IV_DECLARE_LINKER_EVENT`, `IV_DEFINE_LINKER_EVENT`, and the linker-section
 representation are unchanged. The section still holds subscriber function
-pointers; the templated bridge thunk already knows the concrete subscriber
+pointers; the templated bridge function already knows the concrete subscriber
 type at exactly the point where module identity is needed, so there is no
 reason to widen the section's ABI with metadata.
 
-### Two thread-local concepts
+### Thread-local state
 
-```cpp
-thread_local event_stack;            // every event invocation, tracked or not
-thread_local propagation_context*;   // only underneath a marked source
-```
-
-The event stack exists for every invocation — including currently untracked
-ones — because nesting is the fact that decides whether a raise can be a root:
-
-> Calling `IV_INVOKE_LINKER_EVENT_SOURCE` while any event invocation is active
-> on this thread is an error — even if the enclosing event is itself
-> untracked.
-
-An untracked enclosing event is still a synchronously preceding application
-cause, so a source nested under it is not a source. The check is therefore
-against the event stack, not merely against the propagation pointer:
-
-```text
-IV_INVOKE_LINKER_EVENT(A)
-    -> subscriber
-       -> IV_INVOKE_LINKER_EVENT_SOURCE(B)   // error: nested under A
-```
+Every event is raised inside a source entry, so one thread-local pointer to the
+current propagation context is enough: it is null exactly when no source entry
+is active on the thread. A raise with a null context fails, and a source entry
+opened with a non-null context fails. A source therefore cannot nest under an
+event either: the event's own source entry is still active.
 
 ### Invocation mechanics
 
@@ -365,12 +382,14 @@ The macro bodies move into internal helpers so RAII can maintain state and
 exceptions cannot corrupt it:
 
 ```text
-IV_INVOKE_LINKER_EVENT:   push event frame -> dispatch subscribers -> pop
-IV_INVOKE_LINKER_EVENT_SOURCE:
-    assert event stack empty and no active propagation
-    create propagation context
-    push event frame -> dispatch subscribers -> pop
+IV_EVENT_SOURCE:
+    assert no active propagation
+    create propagation context; record the source module as visited
+    run the block
     destroy context
+IV_INVOKE_LINKER_EVENT / IV_INVOKE_SINGLETON_EVENT:
+    assert an active propagation
+    push event frame -> dispatch subscribers -> pop
 ```
 
 Subscriber wrappers record module entry. The bridge subscriber template
@@ -391,6 +410,41 @@ instances of the same C++ type ever need distinguishing, identity would switch
 to something instance-based — but type identity matches the architecture
 today.
 
+### Module transactions
+
+_Accepted design change, 2026-11-12._
+
+Application-event propagation and transactional computation are different.
+The tree constraint governs the first: two event paths may not reach one
+module for one cause, because the module would perform redundant work or
+observe incomplete intermediate state. A module may still perform several
+computational steps for one cause when those steps form one transaction whose
+intermediate state is not published as independent application changes.
+
+A module transaction is opened by one event delivery. The handler keeps its
+entry with `EventModuleVisit::current<Module>()` and returns a transaction
+object on the request record. Each later operation runs inside
+`EventModuleVisitScope(visit)`: it continues the opening entry instead of
+entering the module again, and whatever it raises is still checked, as raised
+by that module. Using the transaction outside the propagation that opened it
+is an error.
+
+A transaction:
+
+- works on transaction-local data; its intermediate steps change no durable
+  state and raise nothing;
+- commits its accepted result once and raises the consolidated changes once;
+- exposes narrowly defined operations and does not re-raise the events that
+  opened it; and
+- does not hold module mutexes across its lifetime unless its ownership and
+  synchronization design explicitly justify it.
+
+Node-message interactions use this: `ProjectGraph` opens one
+`NodeInstancesInteraction` and one `GraphConnectionsInteraction` for an
+interaction, and runs every replacement preview and the final replacement set
+through them. See
+[Node message interaction](./event_flows/node_message_interaction.md).
+
 ### Provenance traces
 
 Detection needs only `visited_modules.contains(module)`, but the diagnostic
@@ -404,69 +458,68 @@ On a violation, the first visit's retained path snapshot plus the current path
 yield a full two-path report:
 
 ```
-event propagation re-entered module Timeline
+event propagation re-entered module ProjectGraph
 
 source:
-    iv_project_loaded_event
-    project_persistence.cpp:143
+    project mutation source
 
 first entry:
-    iv_project_loaded_event
-      -> Graph::handle_project_loaded
-      -> iv_timeline_changed_event
-      -> Timeline::handle_timeline_changed
+    source event
+      -> ProjectGraph::handle_first_change
+      -> derived event A
+      -> ConsumerA::handle_change
 
 second entry:
-    iv_project_loaded_event
-      -> GraphInputLanes::handle_project_loaded
-      -> iv_lane_batch_changed_event
-      -> Timeline::handle_lane_batch_changed
+    source event
+      -> ConsumerB::handle_change
+      -> derived event B
+      -> ProjectGraph::handle_second_change
 ```
 
 The runtime checker therefore doubles as an architecture debugger: every
 failure reports the exact subscriber -> raise chains that collided.
 
-### Migration of unmarked roots
+### Every raise has a source
 
-Initially:
-
-```text
-IV_INVOKE_LINKER_EVENT_SOURCE          checked propagation
-IV_INVOKE_LINKER_EVENT under a source  checked propagation
-IV_INVOKE_LINKER_EVENT at top level    today's behavior + event stack only
-```
-
-Once every control source is annotated, the natural tightening is: a
-top-level `IV_INVOKE_LINKER_EVENT` (event stack empty, no propagation) becomes
-a debug error demanding the source variant. This prevents new control sources
-from silently bypassing the invariant, and makes the semantic distinction
-load-bearing:
+Every control source is annotated (2026-11-12), and a raise outside a source
+entry is an error, so a new control source cannot bypass the invariant:
 
 ```cpp
-IV_INVOKE_LINKER_EVENT_SOURCE(E, ...)  // external/new cause
-IV_INVOKE_LINKER_EVENT(E, ...)         // consequence of the current cause
+IV_EVENT_SOURCE(Source, "cause") { IV_INVOKE_LINKER_EVENT(E, ...); }  // new cause
+IV_INVOKE_LINKER_EVENT(E, ...)  // consequence of the current cause
 ```
 
-Neither macro is interchangeable inside a subscriber.
+The current source entries are:
+
+| Source module | Entry | Opened in |
+| --- | --- | --- |
+| `SocketRpcServer` | one client message, named by its JSON-RPC method | the request command handler |
+| `SocketRpcServer` | one client connection cleanup | the client cleanup command |
+| `PackageWatcherService` | one package refresh; `rebuildStarted`; a discovery or service failure report | its worker |
+| `ProjectPersistence` | one project-file replay | `ProjectPersistence::load` |
+| `ProjectAutosave` | one autosave attempt, including its failure report | the autosave service thread |
+| `ProjectGraph` | one finished control compile | its control-compile worker |
 
 ### Asynchronous boundaries
 
-The nested-source rule is unconditional in debug builds: a source nested under
-any active event invocation fails, because "source" means *no preceding
-application-level event cause on this thread*, and a handler on the stack
+The nested-source rule is unconditional in debug builds: an event source entry
+opened inside another fails, because "source" means *no preceding
+application-level event cause on this thread*, and an active entry
 demonstrably contradicts that.
 
 The sanctioned escape is a deliberately defined cause-breaking boundary. Work
-scheduled for later (task runner, deferred queue) executes when the event
-stack is empty, so a source invocation there is genuinely a new cause and the
-model accepts it naturally. If queued work must instead retain the original
-cause, that requires an explicit movable propagation token; that mechanism
-should not be built until a concrete requirement exists.
+scheduled for later (task runner, deferred queue, worker thread) executes
+outside any source entry, so it enters a source of its own: the completion is
+genuinely a new cause. `ProjectGraph`'s control-compile completion and
+`ProjectAutosave`'s save are such entries. If queued work must instead retain
+the original cause, that requires an explicit movable propagation token; that
+mechanism should not be built until a concrete requirement exists.
 
 ## Implementation notes
 
-- `linker_event.h`: thread-local event stack, propagation context, RAII scopes
-  around both invocation macros, `IV_INVOKE_LINKER_EVENT_SOURCE` primitive;
+- `linker_event.h`: thread-local propagation context, RAII scopes around
+  `IV_EVENT_SOURCE` and both invocation macros, and `EventModuleVisit` /
+  `EventModuleVisitScope` for module transactions;
 - `bridge.h`: module-entry guard in `iv_bridge_subscriber::invoke`, which
   already holds the participant type for the visited-set check;
 - no changes to `IV_DECLARE_LINKER_EVENT` / `IV_DEFINE_LINKER_EVENT`, the

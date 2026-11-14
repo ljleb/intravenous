@@ -1,0 +1,154 @@
+#pragma once
+
+#include <intravenous/runtime/node_definition_types.h>
+#include <intravenous/module/abi.h>
+#include <intravenous/module/builder_session.h>
+#include <intravenous/module/package_compiler_artifact.h>
+#include <intravenous/runtime/project_graph_publication.h>
+
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace iv {
+struct PackageModuleDefinition {
+    std::string package_id{};
+    std::string definition_id{};
+    std::filesystem::path package_root{};
+    std::string module_id{};
+    NodeDefinitionProvider provider{};
+    GraphIntrospectionMetadata introspection{};
+    std::vector<ModuleDependency> dependencies{};
+    std::vector<ModuleRef> module_refs{};
+    std::shared_ptr<ConfiguredGraph const> configured_graph{};
+};
+
+struct PackageLeafDefinition {
+    std::string package_id{};
+    std::string definition_id{};
+    std::filesystem::path package_root{};
+    NodeDefinitionProvider provider{};
+    details::NodeCompilerRecord compiler_record{};
+    std::vector<ModuleRef> module_refs{};
+};
+
+// One successful, self-contained package build generation. The retained module
+// references pin every provider/code object needed by the definitions in this
+// revision even after a later revision is accepted.
+struct PackageRevision {
+    std::string package_id{};
+    std::filesystem::path package_root{};
+    PackageProvenance provenance = PackageProvenance::project_local;
+    std::uint64_t revision = 0;
+    // Exact finalized package LLVM and native link dependencies for this
+    // accepted package generation.
+    PackageCompilerArtifact compiler_artifact{};
+    // Pins this package JIT generation, including retained LLVM/code/data and
+    // the node code below.
+    ModuleRef package_code{};
+    // Node code: every node record's runtime/compiler callbacks and a copy of
+    // every retained global, compiled at O3 for the host CPU once per package
+    // build and loaded with the package (NodeCodeRecordData). Project code
+    // calls these addresses; no project compilation recompiles them.
+    std::vector<NodeCodeRecordData> node_code_records{};
+    std::vector<NodeCodeRetainedGlobalData> node_code_retained_globals{};
+    // Immutable configuration tables copied from the accepted package code.
+    // Their function/data pointers remain valid while package_code is retained.
+    std::vector<details::PackageDefinition> provider_definitions{};
+    // Complete configuration-side records, not only public IV_NODE entries.
+    // Their declaration callbacks identify the exact package that built an
+    // internal concrete node; NodeCodeKey alone is shared by identical types
+    // compiled in different packages.
+    std::vector<details::NodeCompilerRecord> node_compiler_records{};
+    std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
+    std::vector<RetainedGlobalData> retained_globals{};
+    std::vector<NodeMessageHandlerData> node_message_handlers{};
+    std::vector<ModuleMessageHandlerData> module_message_handlers{};
+    std::vector<details::BuilderNodeStateStructures> node_state_structures{};
+    std::vector<ModuleDependency> dependencies{};
+    std::vector<PackageModuleDefinition> module_definitions{};
+    std::vector<PackageLeafDefinition> leaf_definitions{};
+};
+
+struct PackageJitFailure {
+    std::string package_id{};
+    std::filesystem::path package_root{};
+    PackageProvenance provenance = PackageProvenance::project_local;
+    std::string message{};
+};
+
+struct PackageJitBatchResult {
+    std::vector<PackageRevision> revisions{};
+    std::vector<PackageJitFailure> failed{};
+};
+
+// The packages one refresh builds, prepared before the refresh cause so
+// PackageWatcherService can report rebuildStarted ahead of the build. The
+// refresh's outcome is reported once by PackageWatcher (PackageRefreshPublication).
+struct PackageWatcherRefreshPlan {
+    std::size_t build_count = 0;
+    // The package root when exactly one package is built.
+    std::filesystem::path single_package_root{};
+};
+
+struct PackageWatcherRefreshRequest {
+    bool changed = false;
+    // The service that owns the refresh request retains these diagnostics so
+    // non-frontend callers can fail instead of waiting for definitions that a
+    // failed build cannot publish.
+    std::vector<PackageJitFailure> failed_builds{};
+};
+
+struct PackageJitBatchRequest {
+    std::vector<IvPackageDeclaration> declarations{};
+    std::vector<std::filesystem::path> removed_package_roots{};
+    PackageJitBatchResult result{};
+};
+
+enum class PackageBuildState {
+    queued,
+    building,
+    built,
+    failed,
+};
+
+struct PackageBuildStatus {
+    std::string package_id{};
+    PackageBuildState state = PackageBuildState::queued;
+    std::string message{};
+};
+
+// One complete application-level package update emitted by PackageWatcher after
+// its synchronous PackageJit request has completed and dependency watches have
+// been updated. PackageDefinitions is entered exactly once per refresh cause.
+struct PackageRefreshTransaction {
+    IvPackageDeclarationsChanged declarations{};
+    std::vector<PackageRevision> successful_revisions{};
+    std::vector<PackageJitFailure> failed_builds{};
+    // Reply: the read-model changes of the project rebuild this refresh's
+    // publication caused, for PackageWatcher to publish with the refresh.
+    ProjectGraphPublication project_publication{};
+};
+
+struct PackageDefinitionsSnapshot {
+    std::uint64_t generation = 0;
+    std::unordered_map<std::string, std::shared_ptr<PackageRevision const>> by_package_id{};
+};
+
+// Synchronous request/response payload for the PackageDefinitions ->
+// NodeDefinitions edge. NodeDefinitions derives the global namespace and writes
+// the package-facing publication projection into this object before returning.
+struct PackageDefinitionsPublicationRequest {
+    std::shared_ptr<PackageDefinitionsSnapshot const> snapshot{};
+    std::unordered_map<std::string, std::vector<std::string>>
+        published_module_ids_by_package_id{};
+    std::unordered_map<std::string, std::vector<std::string>>
+        published_leaf_ids_by_package_id{};
+    std::unordered_map<std::string, std::string> publication_messages_by_package_id{};
+    // The read-model changes of the project rebuild this publication caused.
+    ProjectGraphPublication project_publication{};
+};
+} // namespace iv

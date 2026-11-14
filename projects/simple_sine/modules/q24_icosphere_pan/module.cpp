@@ -81,17 +81,23 @@ struct LearnedHrtfSourceIcosphere
 
     static constexpr auto inputs()
     {
-        return std::array<InputConfig, 3> {
-            sample_input("in", {.history = input_history}),
-            sample_input("azimuth", {.default_value = 0, .min = -180, .max = 180}),
-            sample_input("elevation", {.default_value = 0, .min = -180, .max = 180}),
+        return std::array {
+            input<Sample>("in", InputAccess::sequential),
+            input<Sample>("azimuth", InputAccess::sequential, {.default_value = 0, .min = -180, .max = 180}),
+            input<Sample>("elevation", InputAccess::sequential, {.default_value = 0, .min = -180, .max = 180}),
         };
+    }
+
+    void constrain_ports(
+        ConstrainPortsContext<LearnedHrtfSourceIcosphere>& ctx) const
+    {
+        ctx.input<"in">().history() = input_history;
     }
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1> {
-            sample_output("out", {
+        return std::array {
+            output<Sample>("out", OutputProduction::tick, {
                 .channel_layout = { .channel_type = ChannelTypeId::stereo },
             }),
         };
@@ -233,7 +239,7 @@ struct LearnedHrtfSourceIcosphere
     void tick_block(TickBlockContext<LearnedHrtfSourceIcosphere> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const& input = ctx.inputs[0];
+        auto const input = ctx.input<"in">();
         auto const azimuth = ctx.input<"azimuth">();
         auto const elevation = ctx.input<"elevation">();
         auto output = ctx.output<"out">();
@@ -1320,14 +1326,14 @@ private:
 
     // ---------- existing HRTF decoder / DSP ----------
 
-    static Sample read_ago(InputPort const& input, size_t frame, size_t samples_ago)
+    static Sample read_ago(auto const& input, size_t frame, size_t samples_ago)
     {
         if (samples_ago <= frame)
-            return input.get_frame(frame - samples_ago);
+            return input.get_value(frame - samples_ago);
         return input.get(samples_ago - frame);
     }
 
-    static Sample read_fractional_delay(InputPort const& input, size_t frame, float delay)
+    static Sample read_fractional_delay(auto const& input, size_t frame, float delay)
     {
         auto const whole = static_cast<size_t>(delay);
         auto const fraction = delay - static_cast<float>(whole);
@@ -1542,21 +1548,25 @@ struct BaselineFir256
 
     static constexpr auto inputs()
     {
-        return std::array<InputConfig, 1> {
-            sample_input("in", {
+        return std::array {
+            input<Sample>("in", InputAccess::sequential, {
                 .channel_layout = { .channel_type = ChannelTypeId::stereo },
-                .history = input_history,
             }),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array<OutputConfig, 1> {
-            sample_output("out", {
+        return std::array {
+            output<Sample>("out", OutputProduction::tick, {
                 .channel_layout = { .channel_type = ChannelTypeId::stereo },
             }),
         };
+    }
+
+    void constrain_ports(ConstrainPortsContext<BaselineFir256>& ctx) const
+    {
+        ctx.input<"in">().history() = input_history;
     }
 
     struct State
@@ -1595,7 +1605,7 @@ struct BaselineFir256
     void tick_block(TickBlockContext<BaselineFir256> const& ctx) const
     {
         auto const& state = ctx.state();
-        auto const& input = ctx.inputs[0];
+        auto const& input = ctx.input<"in">();
         auto output = ctx.output<"out">();
 
         for (size_t frame = 0; frame < ctx.block_size; ++frame) {
@@ -1605,7 +1615,7 @@ struct BaselineFir256
                 float sum = 0.0f;
 
                 for (size_t tap = 0; tap < current_taps; ++tap)
-                    sum += state.taps[tap] * input.get_frame(frame - tap, channel);
+                    sum += state.taps[tap] * input.get_value(frame - tap, channel);
 
                 for (size_t tap = current_taps; tap < tap_count; ++tap)
                     sum += state.taps[tap] * input.get(tap - frame, channel);

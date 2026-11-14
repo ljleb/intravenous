@@ -22,10 +22,16 @@ shared client ──┘              │
                                 └─ notifications to subscribed clients
 ```
 
-The session server owns mutable project/runtime state. A client does not own a
-server merely because it started it.
+The session server owns mutable project/runtime state.
 
-On activation, a client should:
+**Default: the client owns its server** (decided 2026-11-12). A client launches its
+own server process and is that server's only client. Reloading or closing the
+client stops the server, so restarting the client restarts the application. If
+the server stops while the client keeps running, the client starts a new one.
+There is no discovery of, or attachment to, a server launched by another client.
+
+**Shared sessions are a future opt-in mode, not implemented in the client.** When
+explicitly enabled, a client would instead:
 
 1. derive a stable identity from the canonical project root;
 2. discover an existing session server for that project;
@@ -36,7 +42,10 @@ On activation, a client should:
 This is preferable to deciding behavior from the presence of a specific VS Code
 extension. In a Remote SSH window, the extension host discovers a server on the
 remote machine because that is where it runs. In a local window, it discovers a
-local one by the same mechanism.
+local one by the same mechanism. The protocol requirements below remain the
+foundation of that mode. The superseded rule that a client never owns the server
+it starts is preserved in
+[historical documentation](./historical/project_session_client_attachment_before_owned_server_2026-11-12.md).
 
 ## Session protocol requirements
 
@@ -48,8 +57,9 @@ shape is not a sufficient foundation for this direction.
 - State-changing requests are executed through one ordered command executor.
 - Read-only requests may run concurrently only against a safe snapshot.
 - State changes produce notifications for subscribed clients.
-- Snapshots and notifications carry a monotonically increasing session
-  `revision`.
+- Durable state snapshots and reliable mutation notifications carry a
+  monotonically increasing session `revision`. Disposable observation frames
+  do not advance that revision.
 - Clients can subscribe from a known revision. If the server cannot replay the
   required history, the client requests a fresh snapshot.
 - Mutations that replace or edit existing state may include an
@@ -59,8 +69,93 @@ shape is not a sufficient foundation for this direction.
   especially important for controls that start audio, change devices, or expose
   a network stream.
 
+For Vue, a successful mutation's direct RPC reply confirms the sender's request;
+it does not replace reliable revisioned publication to every subscribed client
+or other presentation of the same semantic node. `session.subscribe` with
+`session.snapshot`/replay supplies authoritative committed read-model
+synchronization. A future affected-node delta shape may be chosen from actual
+Vue graph-editor requirements without turning this into a second unversioned
+state path. Live `Observations` frames remain disposable and separate.
+
 Threading and atomicity belong at this server boundary. Extension-side locks
 cannot make concurrent clients coherent.
+
+### Planned project-session undo and redo
+
+Initial undo/redo uses one server-owned project-session-global history. One
+undoable user action can contain multiple durable mutations; applying its
+reverse or forward batch is one accepted session change, revisioned and
+published to every subscribed client. Ctrl+Z/Ctrl+Shift+Z belongs to the
+focused Intravenous editor, not to arbitrary VS Code text editors. Redo is
+cleared by a new ordinary accepted edit, and undo/redo themselves do not create
+new history entries. Failed/stale reversals must not advance the history
+position. Per-user selective undo and durable history across restarts remain
+future possibilities. See [Project Undo, Redo, And Backup Direction](./project_undo_redo_and_backups_direction.md).
+
+### Planned observation delivery is not session revision replay
+
+Ordinary session snapshots, revisions, and reliable mutation notifications
+retain the guarantees above. The future `Observations` application module
+reconciles authenticated per-client interests and hands `SocketRpcServer`
+bounded replaceable live observation batches and versioned window results.
+A live meter frame must not advance the durable project revision, fill the
+session replay log, or use the reliable slow-client queue policy unchanged.
+Latest-value frames can be coalesced/dropped; versioned range replies must
+support discarding obsolete viewport requests; exact event histories may
+require different delivery guarantees. Disconnect releases observation
+interests; leases also reclaim abandoned scopes. See
+[Vue Output Observation And Query Direction](./vue_output_observation_direction.md).
+
+## Current core implementation
+
+`SocketRpcRouteRegistry` owns the mapping from each parsed request type to its
+typed application event. `SocketRpcServer` does not contain the old request
+type switch.
+
+`SocketRpcServer` now supports these session operations:
+
+- It accepts multiple clients.
+- It gives each client a bounded output queue and a writer thread.
+- It runs requests and external notifications through one ordered command queue.
+- It assigns one revision to each successful mutation.
+- It applies `expectedRevision` before a mutation callback runs.
+- It records complete notification revisions in a bounded replay log.
+- It supports topic filters and replay through `session.subscribe`.
+- It returns durable project commands and current runtime records through
+  `session.snapshot`.
+
+The snapshot contains the commands from `ProjectPersistence::snapshot()`. These
+commands include node instances, node replacements, graph connections, project
+toolchain values, and audio-device selection. The snapshot also contains the
+current package list, realized node instances, audio-device state, autosave
+state, and node-message protocol.
+
+On Linux, a server without `--rpc-fd` owns the project lock and publishes
+`descriptor.json` plus `server.sock`. The descriptor contains the canonical
+project root, protocol version, PID, startup time, Unix socket path, and local
+capability. The descriptor and socket permit access by the current user only.
+
+The VS Code client owns its server (implemented 2026-11-12, not yet built or
+tested). It spawns the server with `--rpc-fd 3` and the parent end of a socket
+pair as that descriptor, so the server publishes no project endpoint and takes no
+project lock. The client on the inherited descriptor is the server's **owner**:
+when that connection closes, including when the extension host exits on a window
+reload or a crash, the server shuts down. If the connection is lost while the
+window stays open, the client starts a new server, backing off while servers keep
+failing soon after starting. Extension shutdown closes the socket and also sends
+`SIGTERM`.
+
+Without `--rpc-fd`, the server still publishes the endpoint and descriptor
+described below and accepts multiple authenticated clients; the client no longer
+uses that path.
+
+As of 2026-11-04, the repository owner's complete C++ build and test suite passes for
+this core implementation. The VS Code client typecheck and npm tests also pass.
+
+The optional remote-audio lease and WebRTC relay are not part of this core
+implementation. They remain separate optional work because they add media
+processes and transport dependencies. They do not change the session protocol
+rules above.
 
 ## Local discovery and election
 

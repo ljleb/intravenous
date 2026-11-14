@@ -12,6 +12,7 @@
 #include <intravenous/basic_nodes/polyphonic.h>
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/basic_nodes/shaping.h>
+#include <intravenous/basic_nodes/system_audio.h>
 #include <intravenous/basic_nodes/timing.h>
 
 IV_NODE("iv.builtin.constant", iv::Constant);
@@ -34,8 +35,6 @@ IV_NODE("iv.builtin.uniform_to_power", iv::UniformToPower);
 IV_NODE("iv.builtin.uniform_to_gaussian", iv::UniformToGaussian);
 IV_NODE("iv.builtin.deterministic_gaussian_aes_noise", iv::DeterministicGaussianAESNoise);
 
-IV_NODE("iv.builtin.detach_writer", iv::DetachWriterNode);
-IV_NODE("iv.builtin.detach_reader", iv::DetachReaderNode);
 IV_NODE("iv.builtin.dummy_sink", iv::DummySink);
 IV_NODE("iv.builtin.dummy_event_sink", iv::DummyEventSink);
 
@@ -49,6 +48,9 @@ IV_NODE("iv.builtin.interpolation", iv::Interpolation);
 IV_NODE("iv.builtin.latency", iv::Latency);
 IV_NODE("iv.builtin.midi_pitch", iv::MidiPitch);
 IV_NODE("iv.builtin.midi_gate", iv::MidiGate);
+
+IV_NODE("iv.builtin.system_audio_input", iv::SystemAudioInput);
+IV_NODE("iv.builtin.system_audio_output", iv::SystemAudioOutput);
 
 // Generic node families and compiler-inserted dynamic-arity helpers deliberately
 // have no registered ID. Their concrete specializations are internal

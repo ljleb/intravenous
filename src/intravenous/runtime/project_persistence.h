@@ -1,38 +1,19 @@
 #pragma once
 
-#include <intravenous/runtime/audio_device_lanes.h>
-#include <intravenous/runtime/graph_input_lanes.h>
-#include <intravenous/runtime/iv_module_instances.h>
-#include <intravenous/runtime/lane_views.h>
 #include <intravenous/runtime/project_persistence_builder.h>
-#include <intravenous/runtime/project_persistence_events.h>
+#include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/runtime/startup_config.h>
-#include <intravenous/runtime/timeline.h>
-#include <intravenous/runtime/timeline_execution.h>
 
 #include <filesystem>
 #include <mutex>
-#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
 
 namespace iv {
 class SocketRpcAckResponseBuilder;
-class SocketRpcCreateIvModuleInstanceResultBuilder;
-class SocketRpcLaneTypesResultBuilder;
+class SocketRpcSessionProjectStateResultBuilder;
 struct SaveProjectRequest;
-struct CreateIvModuleInstanceRequest;
-struct DeleteIvModuleInstanceRequest;
-struct UpdateIvModuleInstancesRequest;
-struct SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest;
-struct SetTimelineLaneSampleChannelTypeRequest;
-struct SetTimelineLaneUiStateRequest;
-struct ConnectTimelineLanesRequest;
-struct DisconnectTimelineLanesRequest;
-struct GetTimelineLaneTypesRequest;
-struct CreateTimelineLaneRequest;
-struct DeleteTimelineLaneRequest;
-struct DuplicateTimelineLaneRequest;
+struct SessionSnapshotRequest;
 
 class ProjectPersistence {
     std::filesystem::path workspace_root_;
@@ -41,55 +22,28 @@ class ProjectPersistence {
 
     [[nodiscard]] std::filesystem::path project_file_path() const;
     [[nodiscard]] std::vector<ProjectCommand> read_commands() const;
-    void apply_command(ProjectCommand const &command);
+    [[nodiscard]] std::vector<ProjectCommand> collect_commands() const;
     void emit_message(std::string level, std::string message) const;
+    // The body of load(), inside its event source entry.
+    void replay(std::vector<ProjectMessageNotification>& messages);
 
 public:
     ProjectPersistence(
         std::filesystem::path workspace_root,
         StartupConfigState startup);
 
-    void load();
+    // Replays the project file as one event source entry. Replay runs before
+    // any client attaches, so its command failures and warnings return to the
+    // caller instead of being notified.
+    [[nodiscard]] std::vector<ProjectMessageNotification> load();
     void save() const;
+    [[nodiscard]] std::vector<ProjectCommand> snapshot() const;
     void handle_socket_rpc_save_project(
         SaveProjectRequest const &request,
         SocketRpcAckResponseBuilder &builder) const;
-    void handle_socket_rpc_create_iv_module_instance(
-        CreateIvModuleInstanceRequest const &request,
-        SocketRpcCreateIvModuleInstanceResultBuilder &builder) const;
-    void handle_socket_rpc_delete_iv_module_instance(
-        DeleteIvModuleInstanceRequest const &request,
-        SocketRpcAckResponseBuilder &builder) const;
-    void handle_socket_rpc_update_iv_module_instances(
-        UpdateIvModuleInstancesRequest const &request,
-        SocketRpcAckResponseBuilder &builder) const;
-    void handle_socket_rpc_set_timeline_compiled_sample_cache_chunk_size_multiplier(
-        SetTimelineCompiledSampleCacheChunkSizeMultiplierRequest const &request,
-        SocketRpcAckResponseBuilder &builder) const;
-    void handle_socket_rpc_set_timeline_lane_sample_channel_type(
-        SetTimelineLaneSampleChannelTypeRequest const &request,
-        SocketRpcAckResponseBuilder &builder) const;
-    void handle_socket_rpc_set_timeline_lane_ui_state(
-        SetTimelineLaneUiStateRequest const &request,
-        SocketRpcAckResponseBuilder &builder) const;
-    void handle_socket_rpc_connect_timeline_lanes(
-        ConnectTimelineLanesRequest const &request,
-        SocketRpcAckResponseBuilder &builder) const;
-    void handle_socket_rpc_disconnect_timeline_lanes(
-        DisconnectTimelineLanesRequest const &request,
-        SocketRpcAckResponseBuilder &builder) const;
-    void handle_socket_rpc_get_timeline_lane_types(
-        GetTimelineLaneTypesRequest const &request,
-        SocketRpcLaneTypesResultBuilder &builder) const;
-    void handle_socket_rpc_create_timeline_lane(
-        CreateTimelineLaneRequest const &request,
-        SocketRpcAckResponseBuilder &builder) const;
-    void handle_socket_rpc_delete_timeline_lane(
-        DeleteTimelineLaneRequest const &request,
-        SocketRpcAckResponseBuilder &builder) const;
-    void handle_socket_rpc_duplicate_timeline_lane(
-        DuplicateTimelineLaneRequest const &request,
-        SocketRpcAckResponseBuilder &builder) const;
+    void handle_socket_rpc_get_session_project_state(
+        SessionSnapshotRequest const& request,
+        SocketRpcSessionProjectStateResultBuilder& builder) const;
     void report_autosave_failure(std::string message) const;
 };
 } // namespace iv

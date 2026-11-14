@@ -1,179 +1,71 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {
-    serializeLiveGraphInstances,
-    serializeLiveGraphNodes,
-} from "../src/liveGraphModel";
 import { VirtualNode } from "../src/graphModel";
+import { liveGraphInstances, upsertVirtualNodes } from "../src/liveGraphModel";
+import { instanceLabel, visibleNodes } from "../webview/liveGraphView";
 
-function sampleNode(): VirtualNode {
-    return {
-        id: "node-1",
-        kind: "Oscillator",
-        packageIdentity: "module@Oscillator",
-        memberCount: 2,
-        sampleInputs: [{
-            ordinal: 1,
-            name: "frequency",
-            connectivity: "disconnected",
-            defaultValue: 0.5,
-            currentValue: 0.25,
-            stateValue: "overridden",
-        }],
-        sampleOutputs: [{
-            ordinal: 2,
-            name: "out",
-            connectivity: "connected",
-            stateValue: "disconnected",
-        }],
-        eventInputs: [{
-            ordinal: 3,
-            name: "gate",
-            connectivity: "mixed",
-            stateValue: "default",
-        }],
-        eventOutputs: [{
-            ordinal: 4,
-            name: "trig",
-            connectivity: "connected",
-            stateValue: "disconnected",
-        }],
-        members: [{
-            ordinal: 7,
-            backingNodeId: "backing-1",
-            kind: "Oscillator",
-            sampleInputs: [{
-                ordinal: 1,
-                name: "frequency",
-                connectivity: "disconnected",
-                defaultValue: 0.5,
-                currentValue: 0.25,
-                hasConcreteOverride: false,
-                stateValue: "virtualFollow",
-            }],
-            sampleOutputs: [{
-                ordinal: 2,
-                name: "out",
-                connectivity: "connected",
-                stateValue: "disconnected",
-            }],
-            eventInputs: [{
-                ordinal: 3,
-                name: "gate",
-                connectivity: "mixed",
-                stateValue: "virtualFollow",
-            }],
-            eventOutputs: [{
-                ordinal: 4,
-                name: "trig",
-                connectivity: "connected",
-                stateValue: "disconnected",
-            }],
-        }],
-    };
-}
-
-test("serializeLiveGraphNodes exposes all supported port state families", () => {
-    const serialized = serializeLiveGraphNodes([sampleNode()]);
-    assert.equal(serialized.length, 1);
-
-    const node = serialized[0];
-    const virtualSampleInput = node.groups[0].ports[0];
-    const virtualSampleOutput = node.groups[1].ports[0];
-    const virtualEventInput = node.groups[2].ports[0];
-    const virtualEventOutput = node.groups[3].ports[0];
-    const memberSampleInput = node.members[0].groups[0].ports[0];
-
-    assert.equal(virtualSampleInput.stateFamily, "sampleInput");
-    assert.equal(virtualSampleInput.stateSummary, "knob value");
-    assert.deepEqual(virtualSampleInput.stateActions.map((action) => action.state), ["timelineLane"]);
-
-    assert.equal(virtualEventInput.stateFamily, "eventInput");
-    assert.equal(virtualEventInput.stateSummary, "default");
-    assert.deepEqual(virtualEventInput.stateActions.map((action) => action.state), ["timelineLane"]);
-
-    assert.equal(virtualSampleOutput.stateFamily, "sampleOutput");
-    assert.equal(virtualSampleOutput.stateSummary, "disconnected");
-    assert.deepEqual(virtualSampleOutput.stateActions.map((action) => action.state), ["timelineLane"]);
-
-    assert.equal(virtualEventOutput.stateFamily, "eventOutput");
-    assert.equal(virtualEventOutput.stateSummary, "disconnected");
-    assert.deepEqual(virtualEventOutput.stateActions.map((action) => action.state), ["timelineLane"]);
-
-    assert.equal(memberSampleInput.stateSummary, "follow virtual value");
-    assert.equal(memberSampleInput.resetState, null);
-    assert.deepEqual(memberSampleInput.stateActions.map((action) => action.state), [
-        "overridden",
-        "timelineLane",
-        "disconnected",
-    ]);
-});
-
-test("serializeLiveGraphNodes treats default-connected concrete ports as connected", () => {
-    const node: VirtualNode = {
-        id: "node-1",
-        kind: "Module",
-        sampleOutputs: [{
-            ordinal: 2,
-            name: "mix",
-            connectivity: "connected",
-            stateValue: "timelineLane",
-        }],
-        members: [{
-            ordinal: 1,
-            backingNodeId: "backing-1",
-            kind: "Member",
-            sampleInputs: [{
-                ordinal: 3,
-                name: "in",
-                connectivity: "connected",
-                stateValue: "disconnected",
-            }],
-            sampleOutputs: [{
-                ordinal: 2,
-                name: "mix",
-                connectivity: "connected",
-                stateValue: "virtual",
-            }],
-        }],
-    };
-
-    const serialized = serializeLiveGraphNodes([node]);
-    const memberSampleInput = serialized[0].members[0].groups[0].ports[0];
-    const memberSampleOutput = serialized[0].members[0].groups[1].ports[0];
-
-    assert.equal(memberSampleInput.stateSummary, "built-in connection");
-    assert.equal(memberSampleInput.resetState, null);
-    assert.deepEqual(memberSampleInput.stateActions.map((action) => action.state), [
-        "overridden",
-        "virtualFollow",
-        "timelineLane",
+test("liveGraphInstances keeps only records with an instance ID", () => {
+    const instances = liveGraphInstances([
+        {
+            instanceId: "instance-1",
+            definitionId: "definition-1",
+            moduleId: "iv.project.simple_sine",
+            packageRoot: "/tmp/simple_sine",
+            realized: true,
+        },
+        { definitionId: "definition-2" },
+        { instanceId: "" },
     ]);
 
-    assert.equal(memberSampleOutput.stateSummary, "virtual output");
-    assert.equal(memberSampleOutput.resetState, null);
-    assert.deepEqual(memberSampleOutput.stateActions.map((action) => action.state), [
-        "timelineLane",
-        "disconnected",
-    ]);
-});
-
-test("serializeLiveGraphInstances builds stable dropdown labels", () => {
-    const serialized = serializeLiveGraphInstances([{
+    assert.deepEqual(instances, [{
         instanceId: "instance-1",
         definitionId: "definition-1",
+        displayName: "",
         moduleId: "iv.project.simple_sine",
         packageRoot: "/tmp/simple_sine",
         realized: true,
     }]);
+});
 
-    assert.deepEqual(serialized, [{
+test("instanceLabel prefers the display name and marks unrealized instances", () => {
+    const [instance] = liveGraphInstances([{
         instanceId: "instance-1",
-        definitionId: "definition-1",
         moduleId: "iv.project.simple_sine",
-        packageRoot: "/tmp/simple_sine",
         realized: true,
-        label: "iv.project.simple_sine • instance-1",
     }]);
+    assert.equal(instanceLabel(instance), "iv.project.simple_sine • instance-1");
+    assert.equal(
+        instanceLabel({ ...instance, displayName: "Lead", realized: false }),
+        "Lead [loading]");
+});
+
+test("upsertVirtualNodes replaces whole instances and then nodes by ID", () => {
+    const current: VirtualNode[] = [
+        { id: "a:1", instanceId: "a", kind: "Old" },
+        { id: "a:2", instanceId: "a", kind: "Removed" },
+        { id: "b:1", instanceId: "b", kind: "Kept" },
+        { id: "c:1", instanceId: "c", kind: "Old" },
+    ];
+    const updated = upsertVirtualNodes(
+        current,
+        [
+            { id: "a:1", instanceId: "a", kind: "New" },
+            { id: "c:1", instanceId: "c", kind: "New" },
+        ],
+        ["a"]);
+
+    assert.deepEqual(
+        updated.map((node) => `${node.id}=${node.kind}`).sort(),
+        ["a:1=New", "b:1=Kept", "c:1=New"]);
+});
+
+test("visibleNodes falls back to every node when the selection has none", () => {
+    const nodes: VirtualNode[] = [
+        { id: "a:1", instanceId: "a" },
+        { id: "b:1", instanceId: "b" },
+    ];
+    assert.deepEqual(visibleNodes(nodes, "b").map((node) => node.id), ["b:1"]);
+    assert.deepEqual(visibleNodes(nodes, "missing").map((node) => node.id), ["a:1", "b:1"]);
+    assert.deepEqual(visibleNodes(nodes, null).map((node) => node.id), ["a:1", "b:1"]);
 });

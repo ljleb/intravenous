@@ -1,13 +1,19 @@
 #include "../module_test_utils.h"
+#include "../event_source_test_support.h"
+#include "../node_definitions_test_support.h"
 
-#include <intravenous/runtime/graph_input_lanes.h>
-#include <intravenous/runtime/iv_module_definitions.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
-#include <intravenous/runtime/iv_module_instances.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/node_definitions.h>
+#include <intravenous/runtime/node_definitions_project_graph_bridge.h>
+#include <intravenous/runtime/graph_connections.h>
+#include <intravenous/runtime/project_graph.h>
+#include <intravenous/runtime/runtime_project_events.h>
+#include <intravenous/runtime/project_graph_graph_connections_bridge.h>
+#include <intravenous/runtime/project_graph_node_instances_bridge.h>
+#include <intravenous/runtime/project_graph_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/node_instances.h>
+#include <intravenous/runtime/node_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
-#include <intravenous/runtime/iv_module_source_introspection_graph_input_lanes_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 #include <intravenous/runtime/startup_config.h>
@@ -34,38 +40,45 @@ Json parse_json_line(std::string_view line)
     return Json::parse(line);
 }
 
-struct SeededIvModuleSourceIntrospectionOwner {
-    IvModuleInstances instances;
-    IvModuleDefinitions definitions;
-    GraphInputLanes graph_input_lanes;
+struct InitializedIvModuleSourceIntrospectionOwner {
+    NodeInstances instances;
+    NodeDefinitions definitions;
+    GraphConnections graph_connections;
+    ProjectGraph project_graph;
     IvModuleSourceIntrospection introspection;
     StartupConfig startup_config;
-    iv_module_definitions_iv_module_instances_bridge::scope
-        iv_module_definitions_iv_module_instances_scope;
-    iv_module_instances_iv_module_source_introspection_bridge::scope
+    node_definitions_project_graph_bridge::scope
+        node_definitions_project_graph_scope;
+    project_graph_node_instances_bridge::scope
+        project_graph_node_instances_scope;
+    project_graph_graph_connections_bridge::scope
+        project_graph_graph_connections_scope;
+    project_graph_iv_module_source_introspection_bridge::scope
+        project_graph_iv_module_source_introspection_scope;
+    node_instances_iv_module_source_introspection_bridge::scope
         iv_module_instances_iv_module_source_introspection_scope;
-    iv_module_source_introspection_graph_input_lanes_bridge::scope
-        iv_module_source_introspection_graph_input_lanes_scope;
 
-    SeededIvModuleSourceIntrospectionOwner(
+    InitializedIvModuleSourceIntrospectionOwner(
         std::filesystem::path workspace_root,
         std::filesystem::path discovery_start,
-        std::vector<std::filesystem::path> extra_search_roots)
+        std::vector<std::filesystem::path> extra_common_package_roots)
         : startup_config(
               std::move(workspace_root),
               std::move(discovery_start),
-              std::move(extra_search_roots)),
-          iv_module_definitions_iv_module_instances_scope(definitions, instances),
+              std::move(extra_common_package_roots)),
+          node_definitions_project_graph_scope(definitions, project_graph),
+          project_graph_node_instances_scope(project_graph, instances),
+          project_graph_graph_connections_scope(project_graph, graph_connections),
+          project_graph_iv_module_source_introspection_scope(
+              project_graph,
+              introspection),
           iv_module_instances_iv_module_source_introspection_scope(
               instances,
-              introspection),
-          iv_module_source_introspection_graph_input_lanes_scope(
-              introspection,
-              graph_input_lanes)
+              introspection)
     {
     }
 
-    ~SeededIvModuleSourceIntrospectionOwner() = default;
+    ~InitializedIvModuleSourceIntrospectionOwner() = default;
 
     void initialize()
     {
@@ -73,11 +86,19 @@ struct SeededIvModuleSourceIntrospectionOwner {
         auto const module_root =
             std::filesystem::weakly_canonical(startup.workspace_root);
         auto definition = iv::test::load_runtime_iv_module_definition(startup, module_root);
-        (void)instances.create_instance(
-            definition.module_id,
-            module_root,
-            "instance:1");
-        definitions.seed_loaded_definition(std::move(definition));
+        // Source introspection learns instance declarations from the
+        // ProjectGraph root build that creates the instance.
+        auto const module_id = definition.module_id;
+        iv::test::publish_loaded_definition(definitions, std::move(definition));
+        iv::ProjectStringBuilder created;
+        in_event_source([&] { return project_graph.handle_project_create_node_instance(
+            iv::ProjectCreateNodeInstanceRequest{
+                .instance_id = "instance:1",
+                .definition_id = module_id,
+                .package_root = module_root,
+            },
+            created); });
+        (void)created.build();
     }
 
     void shutdown()
@@ -91,7 +112,7 @@ TEST(SocketRpcIvModuleSourceIntrospectionBridge, UnboundQueryEventLeavesBuilderU
     auto const workspace = make_project_workspace();
     SocketRpcGraphQueryResultBuilder builder;
 
-    IV_INVOKE_LINKER_EVENT(
+    in_event_source([&] { IV_INVOKE_LINKER_EVENT(
         iv_socket_rpc_graph_query_by_spans_event,
         GraphQueryBySpansRequest{
             .file_path = workspace / "module.cpp",
@@ -104,7 +125,7 @@ TEST(SocketRpcIvModuleSourceIntrospectionBridge, UnboundQueryEventLeavesBuilderU
             .match_mode = iv::SourceRangeMatchMode::intersection,
             .instance_id = "instance:1",
         },
-        builder);
+        builder); });
 
     EXPECT_THROW((void)builder.build(1), std::runtime_error);
 }
@@ -112,14 +133,14 @@ TEST(SocketRpcIvModuleSourceIntrospectionBridge, UnboundQueryEventLeavesBuilderU
 TEST(SocketRpcIvModuleSourceIntrospectionBridge, BoundQueryEventPopulatesBuilderFromOwners)
 {
     auto const workspace = make_project_workspace();
-    SeededIvModuleSourceIntrospectionOwner owner(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionOwner owner(workspace, iv::test::repo_root(), {});
     owner.initialize();
     SocketRpcServer server(workspace, -1);
     auto socket_introspection_scope =
         socket_rpc_iv_module_source_introspection_bridge::bind(server, owner.introspection);
 
     SocketRpcGraphQueryResultBuilder builder;
-    IV_INVOKE_LINKER_EVENT(
+    in_event_source([&] { IV_INVOKE_LINKER_EVENT(
         iv_socket_rpc_graph_query_by_spans_event,
         GraphQueryBySpansRequest{
             .file_path = workspace / "module.cpp",
@@ -132,7 +153,7 @@ TEST(SocketRpcIvModuleSourceIntrospectionBridge, BoundQueryEventPopulatesBuilder
             .match_mode = iv::SourceRangeMatchMode::intersection,
             .instance_id = "instance:1",
         },
-        builder);
+        builder); });
 
     auto const response = parse_json_line(builder.build(2));
 

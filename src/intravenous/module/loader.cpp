@@ -3,15 +3,13 @@
 #include <intravenous/module/builder_session.h>
 #include <intravenous/module/package_manifest.h>
 #include <intravenous/module/package_definitions.h>
+#include <intravenous/orc_perf_support.h>
 #include <intravenous/compat.h>
 #include <intravenous/graph/builder.h>
-#include <intravenous/graph/builder/lowering.hpp>
-#include <intravenous/graph/compiler.h>
-#include <intravenous/graph/node.h>
+#include <intravenous/graph/introspection.h>
 
 #include <nlohmann/json.hpp>
 
-#include <llvm/ADT/SmallPtrSet.h>
 #include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
@@ -22,15 +20,15 @@
 #include <llvm/IR/GlobalAlias.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/LLVMContext.h>
-#include <llvm/IR/PassManager.h>
-#include <llvm/Passes/OptimizationLevel.h>
-#include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/Error.h>
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/TargetParser/Host.h>
 
 #include <algorithm>
+#include <bit>
+#include <array>
 #include <chrono>
 #include <cctype>
 #include <cstring>
@@ -41,9 +39,11 @@
 #include <mutex>
 #include <ranges>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
+#include <tuple>
 #include <atomic>
 #include <unordered_map>
 #include <unordered_set>
@@ -82,7 +82,8 @@ struct ResolvedPackage {
     std::filesystem::path module_dir;
     std::filesystem::path manifest_file;
     std::filesystem::path entry_file;
-    bool global = false;
+    PackageProvenance provenance = PackageProvenance::project_local;
+    std::filesystem::path artifact_root;
     std::filesystem::file_time_type package_stamp {};
 };
 
@@ -102,10 +103,19 @@ struct LoadedPackageCode {
     std::shared_ptr<SharedPackageJit> shared_jit;
     llvm::orc::JITDylib* jit_dylib = nullptr;
     llvm::orc::ResourceTrackerSP resources{};
+    // The node-code object's own JITDylib, beside jit_dylib.
+    llvm::orc::JITDylib* node_code_dylib = nullptr;
     std::vector<details::PackageDefinition> definitions{};
+    std::vector<details::NodeCompilerRecord> node_compiler_records{};
     std::vector<NodeConfigPointerFieldData> config_pointer_fields{};
     std::vector<RetainedGlobalData> retained_globals{};
-    std::vector<details::BuilderNodeStateStructure> node_state_structures{};
+    std::vector<NodeMessageHandlerData> node_message_handlers{};
+    std::vector<ModuleMessageHandlerData> module_message_handlers{};
+    std::vector<details::BuilderNodeStateStructures> node_state_structures{};
+    // The node-code object's tables, linked in node_code_dylib. Sorted by code
+    // key; addresses are valid while this is alive.
+    std::vector<NodeCodeRecordData> node_code_records{};
+    std::vector<NodeCodeRetainedGlobalData> node_code_retained_globals{};
     ModuleDependency dependency{};
 
     ~LoadedPackageCode();
@@ -324,9 +334,75 @@ std::string package_key_for(std::filesystem::path const& directory)
     auto const name = normalized.filename().generic_string();
     if (name.empty() || name == "." || name == "..") {
         throw std::runtime_error(
-            "cannot derive IV package package key from '" + normalized.string() + "'");
+            "cannot derive IV package key from '" + normalized.string() + "'");
     }
     return name;
+}
+
+std::string stable_text_hash(std::string_view value);
+
+std::string source_tree_fingerprint(
+    std::filesystem::path const& directory)
+{
+    std::vector<std::filesystem::path> files;
+    std::error_code error;
+    auto const options = std::filesystem::directory_options::skip_permission_denied;
+    for (std::filesystem::recursive_directory_iterator it(directory, options, error), end;
+         !error && it != end;
+         it.increment(error)) {
+        if (it->is_directory()) {
+            if (is_module_dependency_ignored_directory(it->path())) {
+                it.disable_recursion_pending();
+            } else if (it->path() != directory
+                       && std::filesystem::exists(
+                           it->path() / std::string(IV_PACKAGE_MANIFEST_FILE))) {
+                it.disable_recursion_pending();
+            }
+            continue;
+        }
+        if (it->is_regular_file()
+            && is_module_dependency_package_path(it->path())) {
+            files.push_back(it->path());
+        }
+    }
+    if (error) {
+        throw std::runtime_error(
+            "cannot fingerprint source tree '" + directory.string()
+            + "': " + error.message());
+    }
+    std::ranges::sort(files, {}, [&](auto const& path) {
+        return path.lexically_relative(directory).generic_string();
+    });
+
+    std::string source;
+    for (auto const& file : files) {
+        source += file.lexically_relative(directory).generic_string();
+        source.push_back('\0');
+        source += read_text(file);
+        source.push_back('\0');
+    }
+    return stable_text_hash(source);
+}
+
+std::string file_identity(std::filesystem::path const& path)
+{
+    if (path.empty()) return "<none>";
+    std::error_code error;
+    auto const normalized = normalize(path);
+    auto const size = std::filesystem::file_size(normalized, error);
+    if (error) {
+        throw std::runtime_error(
+            "cannot inspect configured build tool '" + normalized.string()
+            + "': " + error.message());
+    }
+    auto const stamp = std::filesystem::last_write_time(normalized, error);
+    if (error) {
+        throw std::runtime_error(
+            "cannot inspect configured build tool '" + normalized.string()
+            + "': " + error.message());
+    }
+    return normalized.generic_string() + ':' + std::to_string(size) + ':'
+        + std::to_string(stamp.time_since_epoch().count());
 }
 
 std::filesystem::file_time_type directory_stamp(std::filesystem::path const &dir)
@@ -348,7 +424,7 @@ std::filesystem::file_time_type directory_stamp(std::filesystem::path const &dir
             } else if (it->path() != dir
                        && std::filesystem::exists(
                            it->path() / std::string(IV_PACKAGE_MANIFEST_FILE))) {
-                // A nested IV package package owns a distinct artifact and
+                // A nested IV package owns a distinct artifact and
                 // source stamp. Its edits must not cause this package's C++
                 // compilation signature to change.
                 it.disable_recursion_pending();
@@ -407,6 +483,30 @@ std::string package_code_name(std::string_view base)
     return std::string(base) + ".ivpkg.bc";
 }
 
+// The finalizer's node-code object beside the finalized package LLVM.
+std::filesystem::path node_code_object_path(std::filesystem::path const& bitcode_path)
+{
+    return std::filesystem::path(bitcode_path.string() + ".node-code.o");
+}
+
+// The CPU the finalizer compiles node code for, as it detects it: the host.
+// Sorted so that the artifact signature is stable.
+std::string host_cpu_signature()
+{
+    std::vector<std::string> features;
+    for (auto const& feature : llvm::sys::getHostCPUFeatures()) {
+        features.push_back(
+            (feature.getValue() ? "+" : "-") + feature.getKey().str());
+    }
+    std::ranges::sort(features);
+    std::string result = llvm::sys::getHostCPUName().str();
+    for (auto const& feature : features) {
+        result += ',';
+        result += feature;
+    }
+    return result;
+}
+
 char const *config_name()
 {
 #if defined(NDEBUG)
@@ -418,12 +518,12 @@ char const *config_name()
 
 std::string quote_string(std::string_view value)
 {
-    std::string out = "\"";
+    std::string out = "'";
     for (char c : value) {
-        if (c == '"') out += '\\';
-        out += c;
+        if (c == '\'') out += "'\"'\"'";
+        else out += c;
     }
-    return out + "\"";
+    return out + "'";
 }
 
 std::string quote(std::filesystem::path const &path)
@@ -530,151 +630,41 @@ void initialize_package_jit_target()
     });
 }
 
-llvm::CodeGenOptLevel package_codegen_optimization_level(
-    ModuleLoader::OptimizationLevel optimization_level)
-{
-    switch (optimization_level) {
-    case ModuleLoader::OptimizationLevel::O0:
-        return llvm::CodeGenOptLevel::None;
-    case ModuleLoader::OptimizationLevel::O1:
-        return llvm::CodeGenOptLevel::Less;
-    case ModuleLoader::OptimizationLevel::O2:
-        return llvm::CodeGenOptLevel::Default;
-    case ModuleLoader::OptimizationLevel::O3:
-        return llvm::CodeGenOptLevel::Aggressive;
-    }
-    throw std::logic_error("unknown IV package optimization level");
-}
-
-llvm::OptimizationLevel package_ir_optimization_level(
-    ModuleLoader::OptimizationLevel optimization_level)
-{
-    switch (optimization_level) {
-    case ModuleLoader::OptimizationLevel::O0:
-        return llvm::OptimizationLevel::O0;
-    case ModuleLoader::OptimizationLevel::O1:
-        return llvm::OptimizationLevel::O1;
-    case ModuleLoader::OptimizationLevel::O2:
-        return llvm::OptimizationLevel::O2;
-    case ModuleLoader::OptimizationLevel::O3:
-        return llvm::OptimizationLevel::O3;
-    }
-    throw std::logic_error("unknown IV package optimization level");
-}
-
-std::shared_ptr<SharedPackageJit> create_shared_package_jit(
-    ModuleLoader::OptimizationLevel optimization_level)
+std::shared_ptr<SharedPackageJit> create_shared_package_jit()
 {
     initialize_package_jit_target();
     auto target = take_llvm_expected(
         llvm::orc::JITTargetMachineBuilder::detectHost(),
         "detect package ORC target");
-    target.setCodeGenOptLevel(package_codegen_optimization_level(optimization_level));
+    target.setCodeGenOptLevel(llvm::CodeGenOptLevel::None);
     auto jit = take_llvm_expected(
         llvm::orc::LLJITBuilder()
             .setJITTargetMachineBuilder(std::move(target))
             .create(),
         "create package ORC JIT");
+    check_llvm_error(
+        details::enable_orc_perf_support_if_requested(*jit),
+        "enable package ORC perf support");
     auto result = std::make_shared<SharedPackageJit>();
     result->jit = std::move(jit);
     return result;
 }
 
-void mark_runtime_reachable(
-    llvm::Value const* value,
-    llvm::SmallPtrSetImpl<llvm::GlobalValue const*>& reachable)
+bool same_pch_contents(std::filesystem::path const& left, std::filesystem::path const& right)
 {
-    if (!value) return;
-    if (auto const* global = llvm::dyn_cast<llvm::GlobalValue>(value)) {
-        if (!reachable.insert(global).second) return;
-        if (auto const* function = llvm::dyn_cast<llvm::Function>(global)) {
-            if (!function->isDeclaration()) {
-                for (auto const& block : *function) {
-                    for (auto const& instruction : block) {
-                        for (auto const& operand : instruction.operands()) {
-                            mark_runtime_reachable(operand.get(), reachable);
-                        }
-                    }
-                }
-            }
-        } else if (auto const* variable = llvm::dyn_cast<llvm::GlobalVariable>(global)) {
-            if (variable->hasInitializer()) {
-                mark_runtime_reachable(variable->getInitializer(), reachable);
-            }
-        } else if (auto const* alias = llvm::dyn_cast<llvm::GlobalAlias>(global)) {
-            mark_runtime_reachable(alias->getAliasee(), reachable);
-        }
-        return;
-    }
-    if (auto const* constant = llvm::dyn_cast<llvm::Constant>(value)) {
-        for (auto const& operand : constant->operands()) {
-            mark_runtime_reachable(operand.get(), reachable);
-        }
-    }
-}
-
-void collect_compatibility_runtime_code(
-    llvm::Module const& module,
-    llvm::SmallPtrSetImpl<llvm::GlobalValue const*>& reachable)
-{
-    for (auto const& global : module.globals()) {
-        auto const section = global.getSection();
-        if (section != "iv_node_types" && !section.ends_with("__iv_node_types")) {
-            continue;
-        }
-        auto const* record = llvm::dyn_cast_or_null<llvm::ConstantStruct>(
-            global.getInitializer());
-        if (!record || record->getNumOperands() != 6) continue;
-        auto const* operations = llvm::dyn_cast<llvm::ConstantStruct>(
-            record->getOperand(1));
-        if (!operations || operations->getNumOperands() != 3) continue;
-
-        // declare_node participates in graph construction and is intentionally
-        // left at package O0.  Package/provider configuration is allowed to
-        // throw across the JIT boundary, and optimizing that path caused those
-        // exceptions to terminate instead of reaching their existing handlers.
-        // Only tick/skip are realtime compatibility-runtime code.
-        mark_runtime_reachable(operations->getOperand(1), reachable);
-        mark_runtime_reachable(operations->getOperand(2), reachable);
-    }
-}
-
-void optimize_package_for_compatibility_runtime(
-    llvm::Module& module,
-    ModuleLoader::OptimizationLevel optimization_level)
-{
-    if (optimization_level == ModuleLoader::OptimizationLevel::O0) return;
-    // Package artifacts intentionally stop at Clang O0 so source rebuilds stay
-    // cheap and the future whole-graph compiler receives the unoptimized IR.
-    // The current reflected executor only needs native-quality node tick/skip
-    // callbacks. Keep package/module graph-construction code at its original O0
-    // semantics: it is allowed to throw through the JIT boundary and some
-    // providers deliberately catch configuration failures inside package code.
-    llvm::SmallPtrSet<llvm::GlobalValue const*, 32> runtime_code;
-    collect_compatibility_runtime_code(module, runtime_code);
-    for (auto const* value : runtime_code) {
-        auto* function = llvm::dyn_cast<llvm::Function>(
-            const_cast<llvm::GlobalValue*>(value));
-        if (!function || !function->hasFnAttribute(llvm::Attribute::OptimizeNone)) {
-            continue;
-        }
-        function->removeFnAttr(llvm::Attribute::OptimizeNone);
-        function->removeFnAttr(llvm::Attribute::NoInline);
-    }
-
-    llvm::PassBuilder pass_builder;
-    llvm::LoopAnalysisManager loops;
-    llvm::FunctionAnalysisManager functions;
-    llvm::CGSCCAnalysisManager cgscc;
-    llvm::ModuleAnalysisManager modules;
-    pass_builder.registerModuleAnalyses(modules);
-    pass_builder.registerCGSCCAnalyses(cgscc);
-    pass_builder.registerFunctionAnalyses(functions);
-    pass_builder.registerLoopAnalyses(loops);
-    pass_builder.crossRegisterProxies(loops, functions, cgscc, modules);
-    auto pipeline = pass_builder.buildPerModuleDefaultPipeline(
-        package_ir_optimization_level(optimization_level));
-    pipeline.run(module, modules);
+    if (std::filesystem::equivalent(left, right)) return true;
+    if (std::filesystem::file_size(left) != std::filesystem::file_size(right)) return false;
+    std::ifstream first(left, std::ios::binary), second(right, std::ios::binary);
+    if (!first || !second) throw std::runtime_error("cannot read application DSL PCH for compatibility check");
+    std::array<char, 64 * 1024> first_block{}, second_block{};
+    do {
+        first.read(first_block.data(), first_block.size());
+        second.read(second_block.data(), second_block.size());
+        if (first.gcount() != second.gcount()
+            || !std::equal(first_block.begin(), first_block.begin() + first.gcount(), second_block.begin())) return false;
+    } while (first);
+    if (first.bad() || second.bad()) throw std::runtime_error("cannot read application DSL PCH for compatibility check");
+    return true;
 }
 
 void apply_configured_dsl_pch(ModuleLoaderToolchainConfig& toolchain)
@@ -711,7 +701,8 @@ void run(
     std::filesystem::path const* output_log = nullptr)
 {
     if (sink) sink("[" + std::string(phase) + "] " + command);
-    auto invocation = command;
+    auto invocation = quote(std::filesystem::path(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER))
+        + " /bin/sh -c " + quote_string(command);
     if (output_log) {
         invocation += " >> " + quote(*output_log) + " 2>&1";
     }
@@ -730,8 +721,15 @@ void run(
 }
 LoadedPackageCode::~LoadedPackageCode()
 {
-    if (!shared_jit || !shared_jit->jit || !jit_dylib) return;
+    if (!shared_jit || !shared_jit->jit) return;
     std::lock_guard lock(shared_jit->mutex);
+    if (node_code_dylib) {
+        if (auto error = shared_jit->jit->getExecutionSession().removeJITDylib(
+                *node_code_dylib)) {
+            llvm::consumeError(std::move(error));
+        }
+    }
+    if (!jit_dylib) return;
     if (auto error = shared_jit->jit->deinitialize(*jit_dylib)) {
         llvm::consumeError(std::move(error));
     }
@@ -751,8 +749,8 @@ class ModuleLoader::Impl {
     std::filesystem::path repo_root_;
     std::filesystem::path global_cache_root_;
     ModuleLoaderToolchainConfig toolchain_;
+    mutable std::unordered_set<std::string> validated_toolchains_;
     LogSink log_sink_;
-    OptimizationLevel optimization_level_;
     mutable std::mutex mutex_;
 
     struct CompiledPackage {
@@ -769,14 +767,27 @@ class ModuleLoader::Impl {
     mutable std::unordered_map<std::string, std::shared_ptr<LoadedPackageCode>>
         current_packages_by_root_;
 
-    static std::string key(ResolvedPackage const &module)
+    static std::string artifact_signature_package_identity(
+        ResolvedPackage const& package)
     {
-        return std::string(module.global ? "global:" : "project:")
-            + normalize(module.module_dir).generic_string();
+        std::string_view provenance;
+        switch (package.provenance) {
+        case PackageProvenance::project_local:
+            provenance = "project-local";
+            break;
+        case PackageProvenance::common:
+            provenance = "common";
+            break;
+        case PackageProvenance::built_in:
+            provenance = "built-in";
+            break;
+        }
+        return std::string(provenance) + ':' + package.package_key;
     }
 
-    ResolvedPackage resolve_dir(std::filesystem::path dir, bool global) const
+    ResolvedPackage resolve_dir(PackageBuildRequest const& request) const
     {
+        auto dir = request.package_root;
         dir = normalize(dir);
         auto manifest_file = find_package_manifest(dir);
         if (!manifest_file) {
@@ -797,13 +808,32 @@ class ModuleLoader::Impl {
                 "IV package manifest entry escapes source directory: " + manifest.entry.string());
         }
 
+        std::filesystem::path artifact_root;
+        if (request.artifact_root) {
+            artifact_root = normalize(*request.artifact_root);
+        } else {
+            switch (request.provenance) {
+            case PackageProvenance::project_local:
+                artifact_root = discover_project_root(dir) / "build/iv";
+                break;
+            case PackageProvenance::common:
+                artifact_root = global_cache_root_;
+                break;
+            case PackageProvenance::built_in:
+                throw std::runtime_error(
+                    "built-in IV package has no executable-owned artifact root: '"
+                    + dir.string() + "'");
+            }
+        }
+
         return {
             .manifest = std::move(manifest),
             .package_key = package_key_for(dir),
             .module_dir = dir,
             .manifest_file = normalize(*manifest_file),
             .entry_file = entry,
-            .global = global,
+            .provenance = request.provenance,
+            .artifact_root = std::move(artifact_root),
             .package_stamp = directory_stamp(dir),
         };
     }
@@ -819,19 +849,84 @@ class ModuleLoader::Impl {
 
     std::pair<std::filesystem::path, std::filesystem::path> compilers() const
     {
-        if (toolchain_.c_compiler && toolchain_.cxx_compiler) {
-            return {*toolchain_.c_compiler, *toolchain_.cxx_compiler};
+        return {toolchain_.c_compiler.value_or(IV_CONFIGURED_C_COMPILER),
+            toolchain_.cxx_compiler.value_or(IV_CONFIGURED_CXX_COMPILER)};
+    }
+
+    std::optional<std::filesystem::path> make_program() const
+    {
+        if (toolchain_.make_program && !toolchain_.make_program->empty()) {
+            return toolchain_.make_program;
         }
-        return {IV_CONFIGURED_C_COMPILER, IV_CONFIGURED_CXX_COMPILER};
+        auto const configured = std::string_view(IV_CONFIGURED_MAKE_PROGRAM);
+        if (!configured.empty()) return std::filesystem::path(configured);
+        return std::nullopt;
+    }
+
+    std::optional<std::filesystem::path> juce_dir() const
+    {
+        if (toolchain_.juce_dir && !toolchain_.juce_dir->empty()) {
+            return toolchain_.juce_dir;
+        }
+        auto const configured = std::string_view(IV_CONFIGURED_JUCE_DIR);
+        if (!configured.empty()) return std::filesystem::path(configured);
+        return std::nullopt;
+    }
+
+    void validate_compiler(
+        std::filesystem::path const& compiler,
+        std::filesystem::path const& plugin) const
+    {
+        // The default toolchain produced these artifacts under this same
+        // captured environment. Overrides must prove their compatibility.
+        if (compiler == std::filesystem::path(IV_CONFIGURED_CXX_COMPILER)
+            && *toolchain_.iv_package_pch == std::filesystem::path(IV_CONFIGURED_IV_DSL_PCH)) return;
+        auto const key = file_identity(compiler) + file_identity(*toolchain_.iv_package_pch)
+            + file_identity(plugin)
+            + file_identity(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER);
+        if (validated_toolchains_.contains(key)) return;
+        auto const directory = global_cache_root_ / "toolchain-checks" / stable_text_hash(key);
+        std::filesystem::create_directories(directory);
+        ScopedModuleBuildLock const lock(directory / "check.lock");
+        auto const accepted = directory / "accepted";
+        if (!std::filesystem::exists(accepted) || read_text(accepted) != key) {
+            if (!same_pch_contents(*toolchain_.iv_package_pch, IV_CONFIGURED_IV_DSL_PCH)) {
+                throw std::runtime_error(
+                    "iv_package_pch must be an unchanged copy of this application's DSL PCH; "
+                    "a PCH from another application build cannot replace its public C++ ABI");
+            }
+            auto const log = directory / "compiler.log";
+            write_text_if_different(log, "");
+            std::string const command = quote(compiler) + " -std=c++23 "
+                + IV_CONFIGURED_PACKAGE_COMPILE_FLAGS
+                + " -DIV_ENABLE_JUCE_VST=0 -Xclang -disable-llvm-passes"
+                + " -include-pch " + quote(*toolchain_.iv_package_pch)
+                + " -fplugin=" + quote(plugin)
+                + " -fplugin-arg-iv_module_metadata-metadata-dir=" + quote(directory)
+                + " -fplugin-arg-iv_module_metadata-core-source-dir="
+                + quote(repo_root_ / "src/intravenous")
+                + " -fsyntax-only -x c++ /dev/null";
+            try {
+                run(command, log_sink_, "toolchain-check", &log);
+            } catch (std::exception const&) {
+                throw std::runtime_error(
+                    "IV packages require Clang compatible with this application's LLVM, "
+                    "DSL PCH and metadata plugin; GCC and arbitrary Clang versions are unsupported. "
+                    "The selected C++ compiler '" + compiler.string()
+                    + "' failed the compatibility check:\n" + read_text(log));
+            }
+            write_text_if_different(accepted, key);
+        }
+        validated_toolchains_.insert(key);
     }
 
     std::filesystem::path build(
-        ResolvedPackage const &root,
-        std::filesystem::path const &project_root) const
+        ResolvedPackage const &root) const
     {
-        auto const project_iv_root = project_root / "build/iv";
-        auto const owner_root = root.global ? global_cache_root_ : project_iv_root;
-        auto const build_key = sanitize(root.package_key) + "_" + stable_hash(root.module_dir);
+        auto const& owner_root = root.artifact_root;
+        auto const build_key = root.provenance == PackageProvenance::built_in
+            ? sanitize(root.package_key)
+            : sanitize(root.package_key) + "_" + stable_hash(root.module_dir);
         auto const workspace = owner_root / "build" / build_key / config_name();
         auto const build_dir = workspace / "cmake-build";
         auto const output_dir = workspace / "out";
@@ -875,48 +970,67 @@ class ModuleLoader::Impl {
                 "configured IV module finalizer does not exist: '" +
                 module_finalizer.string() + "'");
         }
+        validate_compiler(cxx, source_introspection_plugin);
         std::string generator = toolchain_.cmake_generator.value_or(
             std::string(IV_CONFIGURED_CMAKE_GENERATOR));
+        auto const selected_make_program = make_program();
+        auto const selected_juce_dir = juce_dir();
 
         std::ostringstream signature;
         signature << "iv-package-abi=" << IV_PACKAGE_ABI_VERSION << '\n'
                   << "config=" << config_name() << '\n'
-                  << "cmake=" << cmake_program().generic_string() << '\n'
-                  << "cc=" << cc.generic_string() << '\n'
-                  << "cxx=" << cxx.generic_string() << '\n'
+                  << "application-environment="
+                  << file_identity(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER) << '\n'
+                  << "target-triple=" << llvm::sys::getDefaultTargetTriple() << '\n'
+                  // Node code is compiled for the host CPU.
+                  << "host-cpu=" << host_cpu_signature() << '\n'
+                  << "pointer-size=" << sizeof(void*) << '\n'
+                  << "little-endian=" << (std::endian::native == std::endian::little) << '\n'
+                  << "cmake=" << file_identity(cmake_program()) << '\n'
+                  << "cc=" << file_identity(cc) << '\n'
+                  << "cxx=" << file_identity(cxx) << '\n'
                   << "generator=" << generator << '\n'
+                  << "make-program="
+                  << (selected_make_program
+                          ? file_identity(*selected_make_program)
+                          : std::string("<default>")) << '\n'
+                  << "juce-dir="
+                  << (selected_juce_dir
+                          ? normalize(*selected_juce_dir).generic_string()
+                          : std::string("<none>")) << '\n'
+                  << "juce-vst=" << IV_CONFIGURED_ENABLE_JUCE_VST << '\n'
+                  << "juce-web-browser=" << IV_CONFIGURED_JUCE_WEB_BROWSER << '\n'
+                  << "juce-curl=" << IV_CONFIGURED_JUCE_USE_CURL << '\n'
                   << "source-introspection="
                   << toolchain_.source_introspection << '\n'
                   << "dsl-pch="
-                  << toolchain_.iv_package_pch->generic_string() << '\n'
-                  << "dsl-pch-stamp="
-                  << std::filesystem::last_write_time(*toolchain_.iv_package_pch)
-                         .time_since_epoch().count() << '\n'
+                  << file_identity(*toolchain_.iv_package_pch) << '\n'
                   << "clang-time-trace="
                   << toolchain_.clang_time_trace << '\n'
-                  << "core-source-stamp="
-                  << directory_stamp(repo_root_ / "src/intravenous")
-                         .time_since_epoch().count() << '\n'
+                  << "package-build-templates="
+                  << source_tree_fingerprint(
+                         repo_root_ / "src/intravenous/module/template") << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/abi.h") << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/builder_session.h") << '\n'
                   << read_text(repo_root_ / "src/intravenous/module/template/ModuleSupport.cmake") << '\n';
         signature
             << "package-finalizer=" << module_finalizer.generic_string() << '\n'
-            << "package-finalizer-stamp="
-            << std::filesystem::last_write_time(module_finalizer)
-                   .time_since_epoch().count() << '\n';
+            << "package-finalizer-identity=" << file_identity(module_finalizer) << '\n';
         signature
             << "source-introspection-plugin="
             << source_introspection_plugin.generic_string() << '\n'
-            << "source-introspection-plugin-stamp="
-            << std::filesystem::last_write_time(source_introspection_plugin)
-                   .time_since_epoch().count() << '\n';
+            << "source-introspection-plugin-identity="
+            << file_identity(source_introspection_plugin) << '\n';
         // An IV package compile owns only its own implementation files. Package
         // definition IDs resolve through graph configuration, so provider edits do
         // not enter a consumer's C++ compilation signature.
-        signature << key(root) << '\n'
+        signature << artifact_signature_package_identity(root) << '\n'
                   << read_text(root.manifest_file) << '\n'
-                  << root.package_stamp.time_since_epoch().count() << '\n';
+                  << "package-source=" << source_tree_fingerprint(root.module_dir) << '\n';
+        if (std::string_view(IV_CONFIGURED_IV_BUILDER_LIBRARY).size()) {
+            signature << "builder-library="
+                      << file_identity(IV_CONFIGURED_IV_BUILDER_LIBRARY) << '\n';
+        }
         if (std::filesystem::exists(custom_cmake)) {
             signature << read_text(custom_cmake) << '\n';
         }
@@ -947,6 +1061,12 @@ class ModuleLoader::Impl {
         if (!generator.empty()) configure << " -G " << quote(generator);
         if (!cc.empty()) configure << " -DCMAKE_C_COMPILER=" << quote(cc);
         if (!cxx.empty()) configure << " -DCMAKE_CXX_COMPILER=" << quote(cxx);
+        if (selected_make_program) {
+            configure << " -DCMAKE_MAKE_PROGRAM=" << quote(*selected_make_program);
+        }
+        if (selected_juce_dir) {
+            configure << " -DJUCE_DIR=" << quote(*selected_juce_dir);
+        }
         configure << " -DIV_INCLUDE_DIR=" << quote(repo_root_ / "src")
                   << " -DIV_SOURCE_DIR=" << quote(repo_root_ / "src/intravenous")
                   << " -DIV_THIRD_PARTY_INCLUDE_DIR=" << quote(repo_root_ / "src/intravenous/third_party")
@@ -1008,6 +1128,19 @@ class ModuleLoader::Impl {
             throw std::runtime_error(
                 "IV package build did not produce expected LLVM '" + artifact.string() + "'");
         }
+        auto const node_event_protocol = std::filesystem::path(
+            artifact.string() + ".node-events.json");
+        if (!std::filesystem::exists(node_event_protocol)) {
+            throw std::runtime_error(
+                "IV package build did not produce semantic event protocol '"
+                + node_event_protocol.string() + "'");
+        }
+        if (auto const node_code = node_code_object_path(artifact);
+            !std::filesystem::exists(node_code)) {
+            throw std::runtime_error(
+                "IV package build did not produce node code '"
+                + node_code.string() + "'");
+        }
 
         // The signature is part of the filename. A changed IV package produces new
         // LLVM while configured graphs keep the previous ORC resources alive
@@ -1016,32 +1149,24 @@ class ModuleLoader::Impl {
     }
 
 public:
-    std::vector<std::filesystem::path> extra_search_roots;
-
     Impl(
         std::filesystem::path discovery_start,
-        std::vector<std::filesystem::path> roots,
         ModuleLoaderToolchainConfig toolchain,
-        LogSink sink,
-        OptimizationLevel optimization_level)
+        LogSink sink)
         : repo_root_(discover_repo(std::move(discovery_start))),
           global_cache_root_(global_cache_root()),
           toolchain_(std::move(toolchain)),
           log_sink_(std::move(sink)),
-          optimization_level_(optimization_level),
-          package_jit_(create_shared_package_jit(optimization_level))
+          package_jit_(create_shared_package_jit())
     {
         apply_configured_dsl_pch(toolchain_);
         std::filesystem::create_directories(global_cache_root_);
-        for (auto const &root : roots) {
-            extra_search_roots.push_back(normalize(root));
-        }
     }
 
     CompiledPackage compile_package_unlocked(
-        std::filesystem::path const& path) const
+        PackageBuildRequest const& request) const
     {
-        auto module_path = normalize(path);
+        auto module_path = normalize(request.package_root);
         if (std::filesystem::is_regular_file(module_path)) {
             if (is_iv_package_manifest_file(module_path.filename().string())) {
                 module_path = module_path.parent_path();
@@ -1052,14 +1177,10 @@ public:
             }
         }
 
-        bool const global_root = std::ranges::any_of(
-            extra_search_roots,
-            [&](auto const& root) { return is_within(module_path, root); });
-        auto root = resolve_dir(module_path, global_root);
-        auto const project_root = root.global
-            ? global_cache_root_
-            : discover_project_root(root.module_dir);
-        auto artifact = build(root, project_root);
+        auto normalized_request = request;
+        normalized_request.package_root = std::move(module_path);
+        auto root = resolve_dir(normalized_request);
+        auto artifact = build(root);
         return {
             .root = std::move(root),
             .artifact = std::move(artifact),
@@ -1067,10 +1188,10 @@ public:
     }
 
     std::filesystem::path compile_package(
-        std::filesystem::path const& path) const
+        PackageBuildRequest const& package) const
     {
         std::lock_guard lock(mutex_);
-        return compile_package_unlocked(path).artifact;
+        return compile_package_unlocked(package).artifact;
     }
 
     void set_toolchain_config(ModuleLoaderToolchainConfig toolchain)
@@ -1128,17 +1249,6 @@ public:
                             (*buffer)->getMemBufferRef(), *context),
                         "parse finalized IV package LLVM");
                 });
-            if (optimization_level_ != OptimizationLevel::O0) {
-                auto const optimize_started_at = std::chrono::steady_clock::now();
-                optimize_package_for_compatibility_runtime(*module, optimization_level_);
-                if (log_sink_) {
-                    log_sink_(
-                        "[package-orc-optimize] elapsed_us="
-                        + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
-                            std::chrono::steady_clock::now() - optimize_started_at).count()));
-                }
-            }
-
             auto const suffix = package_jit_->next_package.fetch_add(
                 1, std::memory_order_relaxed);
             // Use LLJIT's wrapper rather than ExecutionSession::createJITDylib.
@@ -1152,25 +1262,50 @@ public:
             package->jit_dylib = &jit_dylib;
             package->resources = jit_dylib.createResourceTracker();
             auto const global_prefix = jit.getDataLayout().getGlobalPrefix();
-            if (std::string_view(IV_CONFIGURED_IV_BUILDER_LIBRARY).size()) {
-                jit_dylib.addGenerator(take_llvm_expected(
-                    llvm::orc::DynamicLibrarySearchGenerator::Load(
-                        IV_CONFIGURED_IV_BUILDER_LIBRARY, global_prefix),
-                    "load iv_builder package symbol resolver"));
-            }
-            for (auto const& library : package->dynamic_libraries) {
-                auto const library_path = library.string();
-                jit_dylib.addGenerator(take_llvm_expected(
-                    llvm::orc::DynamicLibrarySearchGenerator::Load(
-                        library_path.c_str(), global_prefix),
-                    "load IV package dynamic library '" + library_path + "'"));
-            }
+            auto add_package_generators = [&](llvm::orc::JITDylib& target) {
+                if (std::string_view(IV_CONFIGURED_IV_BUILDER_LIBRARY).size()) {
+                    target.addGenerator(take_llvm_expected(
+                        llvm::orc::DynamicLibrarySearchGenerator::Load(
+                            IV_CONFIGURED_IV_BUILDER_LIBRARY, global_prefix),
+                        "load iv_builder package symbol resolver"));
+                }
+                for (auto const& library : package->dynamic_libraries) {
+                    auto const library_path = library.string();
+                    target.addGenerator(take_llvm_expected(
+                        llvm::orc::DynamicLibrarySearchGenerator::Load(
+                            library_path.c_str(), global_prefix),
+                        "load IV package dynamic library '" + library_path + "'"));
+                }
+            };
+            add_package_generators(jit_dylib);
             check_llvm_error(
                 jit.addIRModule(
                     package->resources,
                     llvm::orc::ThreadSafeModule(
                         std::move(module), std::move(thread_safe_context))),
                 "add IV package LLVM to shared ORC JIT");
+            // Node code gets its own JITDylib, so that its linker-private weak
+            // definitions, such as DW.ref.__gxx_personality_v0, never resolve
+            // to the package graph's.
+            auto& node_code_dylib = take_llvm_expected(
+                jit.createJITDylib(
+                    "iv.package." + sanitize(root.package_key) + "."
+                    + std::to_string(suffix) + ".node-code"),
+                "create IV package node-code JITDylib");
+            package->node_code_dylib = &node_code_dylib;
+            add_package_generators(node_code_dylib);
+            {
+                auto const node_code_path = node_code_object_path(bitcode_path);
+                auto node_code = llvm::MemoryBuffer::getFile(node_code_path.string());
+                if (!node_code) {
+                    throw std::runtime_error(
+                        "cannot read IV package node code '" + node_code_path.string()
+                        + "': " + node_code.getError().message());
+                }
+                check_llvm_error(
+                    jit.addObjectFile(node_code_dylib, std::move(*node_code)),
+                    "add IV package node code to shared ORC JIT");
+            }
             check_llvm_error(jit.initialize(jit_dylib), "initialize IV package LLVM");
 
             auto symbol = [&]<class Function>(char const* name) -> Function {
@@ -1198,9 +1333,18 @@ public:
             auto const retained_globals_fn =
                 symbol.template operator()<iv_package_retained_globals_fn>(
                     "iv_package_retained_globals");
+            auto const node_message_handlers_fn =
+                symbol.template operator()<iv_package_node_message_handlers_fn>(
+                    "iv_package_node_message_handlers");
+            auto const module_message_handlers_fn =
+                symbol.template operator()<iv_package_module_message_handlers_fn>(
+                    "iv_package_module_message_handlers");
             auto const node_state_structures_fn =
                 symbol.template operator()<iv_package_node_state_structures_fn>(
                     "iv_package_node_state_structures");
+            auto const node_background_state_structures_fn =
+                symbol.template operator()<iv_package_node_background_state_structures_fn>(
+                    "iv_package_node_background_state_structures");
 
             auto copy_table = [&](auto view, auto* type_tag, std::string_view name) {
                 using T = std::remove_pointer_t<decltype(type_tag)>;
@@ -1220,6 +1364,26 @@ public:
                 definitions_fn(),
                 static_cast<details::PackageDefinition*>(nullptr),
                 "definition");
+            auto const compiler_records = copy_table(
+                symbol.template operator()<iv_package_node_compiler_records_fn>(
+                    "iv_package_node_compiler_records")(),
+                static_cast<details::NodeCompilerRecord const**>(nullptr),
+                "node compiler record");
+            package->node_compiler_records.reserve(compiler_records.size());
+            for (auto const* record : compiler_records) {
+                if (!record || !record->operations.valid()
+                    || (!record->type_name && record->type_name_size != 0)) {
+                    throw std::runtime_error("IV package has an invalid node compiler record");
+                }
+                package->node_compiler_records.push_back(*record);
+            }
+            std::ranges::sort(package->node_compiler_records, {},
+                &details::NodeCompilerRecord::code_key);
+            if (std::ranges::adjacent_find(package->node_compiler_records, {},
+                    &details::NodeCompilerRecord::code_key)
+                    != package->node_compiler_records.end()) {
+                throw std::runtime_error("IV package has duplicate node compiler records");
+            }
             package->config_pointer_fields = copy_table(
                 pointer_fields_fn(),
                 static_cast<NodeConfigPointerFieldData*>(nullptr),
@@ -1228,10 +1392,58 @@ public:
                 retained_globals_fn(),
                 static_cast<RetainedGlobalData*>(nullptr),
                 "retained LLVM global");
+            auto node_code_symbol = [&]<class Function>(char const* name) -> Function {
+                auto address = take_llvm_expected(
+                    jit.lookup(node_code_dylib, name),
+                    std::string("lookup IV package node-code symbol '") + name + "'");
+                return address.template toPtr<Function>();
+            };
+            package->node_code_records = copy_table(
+                node_code_symbol.template operator()<iv_package_node_code_records_fn>(
+                    "iv_package_node_code_records")(),
+                static_cast<NodeCodeRecordData*>(nullptr),
+                "node-code record");
+            package->node_code_retained_globals = copy_table(
+                node_code_symbol.template operator()<iv_package_node_code_retained_globals_fn>(
+                    "iv_package_node_code_retained_globals")(),
+                static_cast<NodeCodeRetainedGlobalData*>(nullptr),
+                "node-code retained global");
+            if (!std::ranges::is_sorted(
+                    package->node_code_records, {}, &NodeCodeRecordData::code_key)
+                || std::ranges::adjacent_find(
+                       package->node_code_records, {}, &NodeCodeRecordData::code_key)
+                    != package->node_code_records.end()) {
+                throw std::runtime_error(
+                    "IV package node code records are not strictly sorted by code key");
+            }
+            if (!std::ranges::equal(package->node_compiler_records,
+                    package->node_code_records, {},
+                    &details::NodeCompilerRecord::code_key,
+                    &NodeCodeRecordData::code_key)) {
+                throw std::runtime_error(
+                    "IV package compiler records disagree with the node-code record keys");
+            }
+            if (package->node_code_retained_globals.size()
+                != package->retained_globals.size()) {
+                throw std::runtime_error(
+                    "IV package node code retained-global count disagrees with the package");
+            }
+            package->node_message_handlers = copy_table(
+                node_message_handlers_fn(),
+                static_cast<NodeMessageHandlerData*>(nullptr),
+                "node message handler");
+            package->module_message_handlers = copy_table(
+                module_message_handlers_fn(),
+                static_cast<ModuleMessageHandlerData*>(nullptr),
+                "module message handler");
             auto const state_structures = copy_table(
                 node_state_structures_fn(),
                 static_cast<NodeStateStructureData*>(nullptr),
                 "node-state structure");
+            auto const background_state_structures = copy_table(
+                node_background_state_structures_fn(),
+                static_cast<NodeStateStructureData*>(nullptr),
+                "node-background-state structure");
 
             auto copy_text = [](ModuleDataView view, std::string_view what) {
                 if (!view.data && view.size != 0) {
@@ -1241,27 +1453,46 @@ public:
                 return std::string(
                     static_cast<char const*>(view.data), view.size);
             };
-            package->node_state_structures.reserve(state_structures.size());
-            for (auto const& state : state_structures) {
+            auto copy_state_structure = [&](NodeStateStructureData const& state,
+                                                std::string_view label) {
                 if (!state.fields.data && state.fields.size != 0) {
                     throw std::runtime_error(
-                        "IV package node-state field table has null data");
+                        "IV package " + std::string(label)
+                        + " field table has null data");
                 }
                 if (state.fields.size % sizeof(NodeStateFieldData) != 0) {
                     throw std::runtime_error(
-                        "IV package node-state field table has invalid size");
+                        "IV package " + std::string(label)
+                        + " field table has invalid size");
                 }
                 auto const fields = std::span(
                     static_cast<NodeStateFieldData const*>(state.fields.data),
                     state.fields.size / sizeof(NodeStateFieldData));
                 NodeStateStructure structure{
+                    .type_identity = {
+                        .nominal_id = copy_text(
+                            state.nominal_id, "node-state nominal type ID"),
+                        .definition_fingerprint = copy_text(
+                            state.definition_fingerprint,
+                            "node-state definition fingerprint"),
+                        .display_name = copy_text(
+                            state.display_name, "node-state display name"),
+                    },
                     .size_bits = state.size_bits,
                     .alignment_bits = state.alignment_bits,
                 };
+                if (!structure.type_identity.valid()) {
+                    throw std::runtime_error(
+                        "IV package " + std::string(label)
+                        + " has incomplete type definition identity");
+                }
                 structure.fields.reserve(fields.size());
                 for (auto const& field : fields) {
                     structure.fields.push_back({
                         .name = copy_text(field.name, "node-state field name"),
+                        .nominal_id = copy_text(
+                            field.nominal_id,
+                            "node-state field nominal ID"),
                         .type_name = copy_text(
                             field.type_name, "node-state field type name"),
                         .bit_offset = field.bit_offset,
@@ -1272,11 +1503,41 @@ public:
                             : std::nullopt,
                     });
                 }
-                package->node_state_structures.push_back({
-                    .code_key = state.code_key,
-                    .structure = std::move(structure),
-                });
+                return structure;
+            };
+
+            package->node_state_structures.reserve(
+                state_structures.size() + background_state_structures.size());
+            auto find_or_append = [&](NodeCodeKey key) -> details::BuilderNodeStateStructures& {
+                auto found = std::ranges::find(
+                    package->node_state_structures,
+                    key,
+                    &details::BuilderNodeStateStructures::code_key);
+                if (found != package->node_state_structures.end()) {
+                    return *found;
+                }
+                package->node_state_structures.push_back({.code_key = key});
+                return package->node_state_structures.back();
+            };
+            for (auto const& state : state_structures) {
+                auto& destination = find_or_append(state.code_key);
+                if (destination.structures.state) {
+                    throw std::runtime_error(
+                        "IV package has duplicate Node::State structure record");
+                }
+                destination.structures.state =
+                    copy_state_structure(state, "node-state structure");
             }
+            for (auto const& state : background_state_structures) {
+                auto& destination = find_or_append(state.code_key);
+                if (destination.structures.tock_state) {
+                    throw std::runtime_error(
+                        "IV package has duplicate Node::TockState structure record");
+                }
+                destination.structures.tock_state =
+                    copy_state_structure(state, "node-background-state structure");
+            }
+
 
             // Package ownership comes from the loader's resolved manifest, not
             // a per-package compiler definition. This keeps package code—and
@@ -1296,6 +1557,12 @@ public:
                         std::chrono::steady_clock::now() - load_started_at).count()));
             }
         }
+        // Reused code still reports this load's source stamp. A save that moves
+        // the newest source write without changing the compiled package (a
+        // save without edits, or an edit undone) otherwise leaves the watched
+        // stamp older than the sources, and every refresh finds the package
+        // changed again. Every reader of `dependency` holds this loader's lock.
+        package->dependency.package_stamp = root.package_stamp;
 
         std::vector<LoadedNodeType> loaded_node_types;
         std::unordered_set<std::string> node_type_ids;
@@ -1328,6 +1595,7 @@ public:
             loaded_node_types.push_back({
                 .node_type_id = std::move(node_type_id),
                 .compiler_record = *compiler_record,
+                .provider = definition,
                 .package_path = root.module_dir,
                 .module_refs = {package},
             });
@@ -1343,6 +1611,21 @@ public:
             .definitions = {},
             .node_types = std::move(loaded_node_types),
             .dependencies = std::move(dependencies),
+            .compiler_artifact = {
+                .bitcode_path = package->bitcode_path,
+                .node_event_protocol_path = std::filesystem::path(
+                    package->bitcode_path.string() + ".node-events.json"),
+                .dynamic_libraries = package->dynamic_libraries,
+            },
+            .provider_definitions = package->definitions,
+            .node_compiler_records = package->node_compiler_records,
+            .config_pointer_fields = package->config_pointer_fields,
+            .retained_globals = package->retained_globals,
+            .node_message_handlers = package->node_message_handlers,
+            .module_message_handlers = package->module_message_handlers,
+            .node_state_structures = package->node_state_structures,
+            .node_code_records = package->node_code_records,
+            .node_code_retained_globals = package->node_code_retained_globals,
             .package_code = package,
         };
     }
@@ -1368,6 +1651,8 @@ public:
                 .definitions = package->definitions,
                 .config_pointer_fields = package->config_pointer_fields,
                 .retained_globals = package->retained_globals,
+                .node_message_handlers = package->node_message_handlers,
+                .module_message_handlers = package->module_message_handlers,
                 .node_state_structures = package->node_state_structures,
             });
         }
@@ -1396,18 +1681,16 @@ public:
                     "IV module definition has no construction signature");
             }
             details::validate_registered_signature_shape(module_id, *signature);
-            // The compatibility instance runtime has no persisted module
-            // construction arguments yet. Publish a required-argument module
-            // nonetheless: it is a valid provider for another module's
-            // g.node<Id>(...) call, but has no default execution root for a
-            // project instance to realize.
+            // A required-argument module is still a valid provider for another
+            // module's g.node<Id>(...) call, but has no default configured graph
+            // for source introspection.
             if (signature->required_argument_count != 0) {
                 definitions.emplace_back(
                     std::vector<ModuleRef>{root_package},
-                    WeakTypeErasedNode{},
                     GraphIntrospectionMetadata{},
                     compiled.root.module_dir,
                     std::move(module_id),
+                    definition,
                     package_result.dependencies,
                     nullptr);
                 continue;
@@ -1435,13 +1718,11 @@ public:
             definition.module_build(builder, {});
             auto configured = std::make_shared<ConfiguredGraph const>(
                 details::take_built_graph(session.get()));
-            auto plan = GraphCompiler::compile(
-                GraphLowerer::lower(*configured, {.execution_root = true}));
-            auto runtime_root = std::make_shared<RuntimeGraphRoot>(std::move(plan.graph));
+            auto introspection = build_graph_introspection_metadata(*configured);
 
             auto const used_package_indexes = details::builder_used_packages(session.get());
             std::vector<ModuleRef> refs;
-            refs.reserve(used_package_indexes.size() + 1);
+            refs.reserve(used_package_indexes.size());
             for (auto const package_index : used_package_indexes) {
                 if (package_index >= loaded_packages.size()) {
                     throw std::logic_error("configured graph references an invalid IV package");
@@ -1453,8 +1734,6 @@ public:
                 // that configured against it to be rebuilt.
                 refs.push_back(loaded_packages[package_index]);
             }
-            refs.push_back(runtime_root);
-
             std::vector<ModuleDependency> dependencies;
             dependencies.reserve(used_package_indexes.size());
             std::unordered_set<std::string> dependency_roots;
@@ -1468,10 +1747,10 @@ public:
 
             definitions.emplace_back(
                 std::move(refs),
-                WeakTypeErasedNode(*runtime_root),
-                std::move(plan.introspection),
+                std::move(introspection),
                 compiled.root.module_dir,
                 std::move(module_id),
+                definition,
                 std::move(dependencies),
                 std::move(configured));
         }
@@ -1504,10 +1783,10 @@ public:
     }
 
     std::vector<ModuleLoader::PackageLoadResult> load_packages(
-        std::vector<std::filesystem::path> const& paths) const
+        std::vector<PackageBuildRequest> const& packages) const
     {
         std::lock_guard lock(mutex_);
-        std::vector<ModuleLoader::PackageLoadResult> results(paths.size());
+        std::vector<ModuleLoader::PackageLoadResult> results(packages.size());
 
         struct Candidate {
             std::size_t result_index = 0;
@@ -1519,13 +1798,13 @@ public:
             bool surviving = true;
         };
         std::vector<Candidate> candidates;
-        candidates.reserve(paths.size());
+        candidates.reserve(packages.size());
         std::unordered_set<std::string> requested_roots;
 
-        for (std::size_t index = 0; index < paths.size(); ++index) {
-            results[index].package_path = paths[index];
+        for (std::size_t index = 0; index < packages.size(); ++index) {
+            results[index].package_path = packages[index].package_root;
             try {
-                auto compiled = compile_package_unlocked(paths[index]);
+                auto compiled = compile_package_unlocked(packages[index]);
                 auto const root_key = normalize(compiled.root.module_dir).generic_string();
                 results[index].package_path = compiled.root.module_dir;
                 if (!requested_roots.insert(root_key).second) {
@@ -1599,19 +1878,6 @@ public:
         return results;
     }
 
-    ModuleLoader::LoadedPackage load_package(
-        std::filesystem::path const& path) const
-    {
-        auto results = load_packages({path});
-        if (results.empty() || !results.front()) {
-            throw std::runtime_error(
-                results.empty()
-                    ? "IV package load produced no result"
-                    : results.front().error);
-        }
-        return std::move(*results.front().package);
-    }
-
     void remove_package(std::filesystem::path const& path) const
     {
         std::lock_guard lock(mutex_);
@@ -1621,49 +1887,39 @@ public:
 
 ModuleLoader::LoadedDefinition::LoadedDefinition(
     std::vector<ModuleRef> refs,
-    WeakTypeErasedNode root_,
     GraphIntrospectionMetadata introspection_,
     std::filesystem::path path,
     std::string id,
+    details::PackageDefinition provider_,
     std::vector<ModuleDependency> deps,
     std::shared_ptr<ConfiguredGraph const> configured_graph_)
     : module_refs(std::move(refs)),
-      root(root_),
       introspection(std::move(introspection_)),
       package_path(std::move(path)),
       module_id(std::move(id)),
+      provider(provider_),
       dependencies(std::move(deps)),
       configured_graph(std::move(configured_graph_))
 {}
 
 ModuleLoader::ModuleLoader(
     std::filesystem::path start,
-    std::vector<std::filesystem::path> roots,
     ModuleLoaderToolchainConfig toolchain,
-    LogSink sink,
-    OptimizationLevel optimization_level)
+    LogSink sink)
     : _impl(std::make_unique<Impl>(
           std::move(start),
-          std::move(roots),
           std::move(toolchain),
-          std::move(sink),
-          optimization_level))
+          std::move(sink)))
 {}
 
 ModuleLoader::~ModuleLoader() = default;
 ModuleLoader::ModuleLoader(ModuleLoader &&) noexcept = default;
 ModuleLoader &ModuleLoader::operator=(ModuleLoader &&) noexcept = default;
 
-ModuleLoader::LoadedPackage ModuleLoader::load_package(
-    std::filesystem::path const &path) const
-{
-    return _impl->load_package(path);
-}
-
 std::vector<ModuleLoader::PackageLoadResult> ModuleLoader::load_packages(
-    std::vector<std::filesystem::path> const& paths) const
+    std::vector<PackageBuildRequest> const& packages) const
 {
-    return _impl->load_packages(paths);
+    return _impl->load_packages(packages);
 }
 
 void ModuleLoader::remove_package(std::filesystem::path const& path) const
@@ -1671,17 +1927,19 @@ void ModuleLoader::remove_package(std::filesystem::path const& path) const
     _impl->remove_package(path);
 }
 
-std::vector<ModuleLoader::LoadedDefinition> ModuleLoader::load_package_definitions(
-    std::filesystem::path const &path) const
+std::filesystem::path ModuleLoader::compile_package(
+    PackageBuildRequest const& package) const
 {
-    auto source = load_package(path);
-    return std::move(source.definitions);
+    return _impl->compile_package(package);
 }
 
-std::filesystem::path ModuleLoader::compile_package(
-    std::filesystem::path const& path) const
+std::filesystem::path ModuleLoader::compile_project_package(
+    std::filesystem::path const& package_path) const
 {
-    return _impl->compile_package(path);
+    return compile_package(PackageBuildRequest{
+        .package_root = package_path,
+        .provenance = PackageProvenance::project_local,
+    });
 }
 
 void ModuleLoader::set_toolchain_config(ModuleLoaderToolchainConfig toolchain)
@@ -1689,8 +1947,4 @@ void ModuleLoader::set_toolchain_config(ModuleLoaderToolchainConfig toolchain)
     _impl->set_toolchain_config(std::move(toolchain));
 }
 
-std::vector<std::filesystem::path> const &ModuleLoader::extra_search_roots() const
-{
-    return _impl->extra_search_roots;
-}
 } // namespace iv

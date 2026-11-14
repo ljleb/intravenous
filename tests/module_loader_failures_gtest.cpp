@@ -1,10 +1,13 @@
 #include "module_test_utils.h"
 
 #include <intravenous/graph/configured_graph.hpp>
+#include <intravenous/runtime/configuration_expression.h>
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <fstream>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -33,8 +36,81 @@ TEST(ModuleLoaderFailures, MissingManifestFails)
     auto missing_dir = runtime_root / "missing_entry";
     std::filesystem::create_directories(missing_dir);
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(missing_dir); },
+        [&] { (void)iv::test::load_project_package_definitions(loader, missing_dir); },
         "iv_package.json");
+}
+
+TEST(ModuleLoaderFailures, IncompatibleSingleCppCompilerOverrideFailsBeforePackageConfiguration)
+{
+    auto const workspace = iv::test::fresh_module_fixture_workspace("incompatible_cpp_override");
+    iv::test::write_text(workspace / "iv_package.json", R"({"schema":2,"entry":"module.cpp"})");
+    iv::test::write_text(workspace / "iv_project.jsonl", "");
+    iv::test::write_text(workspace / "module.cpp", "#include <intravenous/dsl.h>\n");
+    auto const compiler = workspace / "fake compiler's $literal";
+    iv::test::write_text(compiler, "#!/bin/sh\necho 'incompatible-compiler-sentinel' >&2\nexit 42\n");
+    std::filesystem::permissions(compiler, std::filesystem::perms::owner_all);
+    iv::ModuleLoaderToolchainConfig toolchain;
+    toolchain.cxx_compiler = compiler; // No C compiler override: this must still be used.
+    iv::ModuleLoader loader(iv::test::repo_root(), toolchain);
+    expect_failure_contains([&] {
+        (void)loader.compile_package(iv::PackageBuildRequest{.package_root = workspace});
+    }, "failed the compatibility check");
+    expect_failure_contains([&] {
+        (void)loader.compile_package(iv::PackageBuildRequest{.package_root = workspace});
+    }, "incompatible-compiler-sentinel");
+}
+
+TEST(ModuleLoaderPackages, CompatibleCompilerOverridePassesThePchAndPluginCheck)
+{
+    auto const workspace = iv::test::fresh_module_fixture_workspace("compatible_cpp_override");
+    iv::test::write_text(workspace / "iv_package.json", R"({"schema":2,"entry":"module.cpp"})");
+    iv::test::write_text(workspace / "iv_project.jsonl", "");
+    iv::test::write_text(workspace / "module.cpp", "#include <intravenous/dsl.h>\n");
+    auto const compiler = workspace / "clang++";
+    std::string quoted = "'";
+    for (char c : std::string_view(IV_CONFIGURED_CXX_COMPILER)) {
+        if (c == '\'') quoted += "'\"'\"'";
+        else quoted += c;
+    }
+    quoted += "'";
+    iv::test::write_text(compiler, "#!/bin/sh\nexec " + quoted + " \"$@\"\n");
+    std::filesystem::permissions(compiler, std::filesystem::perms::owner_all);
+    // Stop at configure after proving compatibility. This test does not need
+    // another package build to exercise the compiler/PCH/plugin contract.
+    auto const cmake = workspace / "stop-at-configure";
+    iv::test::write_text(cmake, "#!/bin/sh\nexit 42\n");
+    std::filesystem::permissions(cmake, std::filesystem::perms::owner_all);
+    iv::ModuleLoaderToolchainConfig toolchain;
+    toolchain.cxx_compiler = compiler;
+    toolchain.cmake_program = cmake;
+    std::vector<std::string> log;
+    iv::ModuleLoader loader(iv::test::repo_root(), toolchain,
+        [&](std::string const& message) { log.push_back(message); });
+    expect_failure_contains([&] {
+        (void)loader.compile_package(iv::PackageBuildRequest{.package_root = workspace});
+    }, cmake.string());
+    EXPECT_TRUE(std::ranges::any_of(log, [](auto const& line) {
+        return line.starts_with("[toolchain-check] elapsed_us=");
+    }));
+    EXPECT_TRUE(std::ranges::any_of(log, [](auto const& line) {
+        return line.starts_with("[configure]");
+    }));
+}
+
+TEST(ModuleLoaderFailures, PchOverrideMustPreserveTheApplicationArtifact)
+{
+    auto const workspace = iv::test::fresh_module_fixture_workspace("foreign_pch_override");
+    iv::test::write_text(workspace / "iv_package.json", R"({"schema":2,"entry":"module.cpp"})");
+    iv::test::write_text(workspace / "iv_project.jsonl", "");
+    iv::test::write_text(workspace / "module.cpp", "#include <intravenous/dsl.h>\n");
+    auto const pch = workspace / "foreign.pch";
+    iv::test::write_text(pch, "another build's precompiled header");
+    iv::ModuleLoaderToolchainConfig toolchain;
+    toolchain.iv_package_pch = pch;
+    iv::ModuleLoader loader(iv::test::repo_root(), toolchain);
+    expect_failure_contains([&] {
+        (void)loader.compile_package(iv::PackageBuildRequest{.package_root = workspace});
+    }, "unchanged copy of this application's DSL PCH");
 }
 
 TEST(ModuleLoaderPackages, CanonicalPackageManifestLoads)
@@ -56,19 +132,116 @@ TEST(ModuleLoaderPackages, CanonicalPackageManifestLoads)
         "IV_MODULE(\"iv.test.canonical_source.secondary\", module_secondary);\n");
 
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_package_definitions(runtime_root);
+    auto loaded = iv::test::load_project_package(loader, runtime_root);
 
-    ASSERT_EQ(loaded.size(), 2);
+    ASSERT_EQ(loaded.definitions.size(), 2);
     auto const primary = std::ranges::find(
-        loaded, "iv.test.canonical_source", &iv::ModuleLoader::LoadedDefinition::module_id);
+        loaded.definitions,
+        "iv.test.canonical_source",
+        &iv::ModuleLoader::LoadedDefinition::module_id);
     auto const secondary = std::ranges::find(
-        loaded,
+        loaded.definitions,
         "iv.test.canonical_source.secondary",
         &iv::ModuleLoader::LoadedDefinition::module_id);
-    ASSERT_NE(primary, loaded.end());
-    ASSERT_NE(secondary, loaded.end());
-    EXPECT_TRUE(static_cast<bool>(primary->root));
-    EXPECT_TRUE(static_cast<bool>(secondary->root));
+    ASSERT_NE(primary, loaded.definitions.end());
+    ASSERT_NE(secondary, loaded.definitions.end());
+    EXPECT_NE(primary->configured_graph, nullptr);
+    EXPECT_NE(secondary->configured_graph, nullptr);
+}
+
+TEST(ModuleLoaderPackages, BuiltinPackageUsesExecutableOwnedArtifactRoot)
+{
+    // make_loader() loads the shipped package before loading project packages.
+    // It must not make the source checkout's builtin directory a build owner.
+    auto loader = iv::test::make_loader();
+    auto const staged = iv::test::staged_builtin_package_root();
+    auto const artifact = loader.compile_package(iv::PackageBuildRequest{
+        .package_root = staged,
+        .provenance = iv::PackageProvenance::built_in,
+        .artifact_root = iv::test::builtin_package_artifact_root(),
+    });
+    auto const build_root = iv::test::builtin_package_artifact_root() / "build/builtin";
+    auto const relative_artifact = artifact.lexically_relative(build_root);
+
+    ASSERT_FALSE(relative_artifact.empty());
+    EXPECT_NE(*relative_artifact.begin(), std::filesystem::path{".."});
+    EXPECT_TRUE(std::filesystem::is_regular_file(artifact));
+}
+
+TEST(ModuleLoaderFailures, BuiltinPackageWithoutExecutableArtifactRootFails)
+{
+    iv::ModuleLoader loader(iv::test::repo_root());
+    EXPECT_THROW(
+        static_cast<void>(loader.compile_package(iv::PackageBuildRequest{
+            .package_root = iv::test::staged_builtin_package_root(),
+            .provenance = iv::PackageProvenance::built_in,
+        })),
+        std::runtime_error);
+}
+
+TEST(ModuleLoaderPackages, CommonPackageUsesSharedCacheInsteadOfProjectBuildTree)
+{
+    auto const package_root = iv::test_support::make_inline_module_workspace(
+        "module_loader_common_artifact_owner",
+        R"cpp(
+#include <intravenous/dsl.h>
+void common_artifact_owner(iv::GraphBuilder& g) { g.outputs(); }
+)cpp");
+    auto const common_cache = package_root.parent_path() / "common-cache";
+    iv::test_support::ScopedEnvVar cache_env(
+        "IV_GLOBAL_MODULE_CACHE", common_cache.string());
+    iv::ModuleLoader loader(iv::test::repo_root());
+
+    auto const request = iv::PackageBuildRequest{
+        .package_root = package_root,
+        .provenance = iv::PackageProvenance::common,
+    };
+    auto const artifact = loader.compile_package(request);
+
+    auto const relative_artifact = artifact.lexically_relative(common_cache);
+    ASSERT_FALSE(relative_artifact.empty());
+    EXPECT_NE(*relative_artifact.begin(), std::filesystem::path{".."});
+    EXPECT_FALSE(std::filesystem::exists(package_root / "build/iv"));
+
+    auto const source_path = package_root / "module.cpp";
+    auto const original_stamp = std::filesystem::last_write_time(source_path);
+    iv::test_support::write_text(
+        source_path,
+        iv::test_support::read_text(source_path) + "\n// changed without a timestamp change\n");
+    std::filesystem::last_write_time(source_path, original_stamp);
+    auto const changed_artifact = loader.compile_package(request);
+    EXPECT_NE(changed_artifact, artifact);
+}
+
+TEST(ModuleLoaderPackages, ReloadingUnchangedCodeReportsTheCurrentSourceStamp)
+{
+    auto const package_root = iv::test_support::make_inline_module_workspace(
+        "module_loader_unchanged_save_stamp",
+        R"cpp(
+#include <intravenous/dsl.h>
+void unchanged_save_stamp(iv::GraphBuilder& g) { g.outputs(); }
+)cpp");
+    auto loader = iv::test::make_loader();
+    auto const request = iv::test::project_package_request(package_root);
+    (void)iv::test::load_package(loader, request);
+
+    // Save the source again without changing it: its newest write moves while
+    // the compiled package stays the same. The package watcher compares this
+    // stamp with the sources, so a stale one would report a change forever.
+    auto const source_path = package_root / "module.cpp";
+    auto const saved_at =
+        std::filesystem::last_write_time(source_path) + std::chrono::seconds(5);
+    std::filesystem::last_write_time(source_path, saved_at);
+
+    auto const reloaded = iv::test::load_package(loader, request);
+    auto const canonical_root = std::filesystem::weakly_canonical(package_root);
+    auto const own = std::ranges::find_if(
+        reloaded.dependencies,
+        [&](iv::ModuleDependency const& dependency) {
+            return std::filesystem::weakly_canonical(dependency.module_dir) == canonical_root;
+        });
+    ASSERT_NE(own, reloaded.dependencies.end());
+    EXPECT_EQ(own->package_stamp, saved_at);
 }
 
 TEST(ModuleLoaderPackages, ScalarSourceOutputResolvesShippedBuiltinConstant)
@@ -91,10 +264,10 @@ TEST(ModuleLoaderPackages, ScalarSourceOutputResolvesShippedBuiltinConstant)
         "IV_MODULE(\"iv.test.scalar_output\", scalar_output);\n");
 
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_package_definitions(package_root);
+    auto loaded = iv::test::load_project_package_definitions(loader, package_root);
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.scalar_output");
-    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    EXPECT_NE(loaded.front().configured_graph, nullptr);
 }
 
 TEST(ModuleLoaderPackages, BuiltinNodeShortIdCanConstructATiledRegisteredNode)
@@ -119,11 +292,11 @@ TEST(ModuleLoaderPackages, BuiltinNodeShortIdCanConstructATiledRegisteredNode)
         "IV_MODULE(\"iv.test.builtin_oscillator\", builtin_oscillator);\n");
 
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_package_definitions(package_root);
+    auto loaded = iv::test::load_project_package_definitions(loader, package_root);
 
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.builtin_oscillator");
-    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    EXPECT_NE(loaded.front().configured_graph, nullptr);
 }
 
 TEST(ModuleLoaderPackages, ExactShortRegistrationOverridesBuiltinConvenienceAlias)
@@ -144,9 +317,9 @@ TEST(ModuleLoaderPackages, ExactShortRegistrationOverridesBuiltinConvenienceAlia
         "    iv::Sample value;\n"
         "    explicit LocalShortNameOscillator(iv::Sample value_) : value(value_) {}\n"
         "    static constexpr auto outputs()\n"
-        "    { return std::array<iv::OutputConfig, 1>{}; }\n"
+        "    { return std::array<iv::TickOutputConfig<iv::Sample>, 1>{}; }\n"
         "    void tick(iv::TickSampleContext<LocalShortNameOscillator> const& ctx) const\n"
-        "    { ctx.outputs[0].push(value); }\n"
+        "    { ctx.template output<0>().push(value); }\n"
         "};\n\n"
         "void local_short_name_consumer(iv::GraphBuilder& g)\n"
         "{\n"
@@ -156,14 +329,14 @@ TEST(ModuleLoaderPackages, ExactShortRegistrationOverridesBuiltinConvenienceAlia
         "IV_MODULE(\"iv.test.local_short_name_consumer\", local_short_name_consumer);\n");
 
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_package_definitions(package_root);
+    auto loaded = iv::test::load_project_package_definitions(loader, package_root);
 
     // The shipped saw oscillator does not accept this construction argument.
     // Reaching a valid root proves the exact local ID won before the bare-ID
     // builtin alias was considered.
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.local_short_name_consumer");
-    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    EXPECT_NE(loaded.front().configured_graph, nullptr);
 }
 
 TEST(ModuleLoaderPackages, RegisteredModuleCanConstructATiledMonoInterface)
@@ -197,7 +370,7 @@ TEST(ModuleLoaderPackages, RegisteredModuleCanConstructATiledMonoInterface)
         "IV_MODULE(\"iv.test.tiled_stereo_voice\", stereo_voice);\n");
 
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_package_definitions(package_root);
+    auto loaded = iv::test::load_project_package_definitions(loader, package_root);
 
     ASSERT_EQ(loaded.size(), 2u);
     auto const stereo = std::ranges::find(
@@ -205,7 +378,6 @@ TEST(ModuleLoaderPackages, RegisteredModuleCanConstructATiledMonoInterface)
         "iv.test.tiled_stereo_voice",
         &iv::ModuleLoader::LoadedDefinition::module_id);
     ASSERT_NE(stereo, loaded.end());
-    EXPECT_TRUE(static_cast<bool>(stereo->root));
     ASSERT_NE(stereo->configured_graph, nullptr);
     auto const inputs = stereo->configured_graph->public_ports.sample_inputs(
         stereo->configured_graph->node_bundles);
@@ -244,7 +416,7 @@ TEST(ModuleLoaderFailures, TiledRegisteredModuleRequiresMonoSampleInterface)
 
     auto loader = iv::test::make_loader();
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(package_root); },
+        [&] { (void)iv::test::load_project_package_definitions(loader, package_root); },
         "tiled IV module members must expose only mono sample inputs");
 }
 
@@ -274,11 +446,11 @@ TEST(ModuleLoaderFailures, TiledRegisteredModuleRequiresMonoSampleOutputs)
 
     auto loader = iv::test::make_loader();
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(package_root); },
+        [&] { (void)iv::test::load_project_package_definitions(loader, package_root); },
         "tiled IV module members must expose only mono sample outputs");
 }
 
-TEST(ModuleLoaderPackages, RejectedTiledModuleLeavesNoPartialSubgraphs)
+TEST(ModuleLoaderPackages, CaughtTiledModuleRejectionStillFailsThePackage)
 {
     auto const package_root = iv::test::runtime_modules_root()
         / "rejected_tiled_module_has_no_partial_graph_state";
@@ -307,38 +479,34 @@ TEST(ModuleLoaderPackages, RejectedTiledModuleLeavesNoPartialSubgraphs)
         "IV_MODULE(\"iv.test.incompatible_provider\", incompatible_provider);\n"
         "IV_MODULE(\"iv.test.catches_rejected_tile\", catches_rejected_tile);\n");
 
+    // The rejected tile failed its session, so catching it cannot resume
+    // construction: the catching module fails and the package is rejected.
     auto loader = iv::test::make_loader();
-    auto loaded = loader.load_package_definitions(package_root);
-    auto const fallback = std::ranges::find(
-        loaded,
-        "iv.test.catches_rejected_tile",
-        &iv::ModuleLoader::LoadedDefinition::module_id);
-    ASSERT_NE(fallback, loaded.end());
-    ASSERT_NE(fallback->configured_graph, nullptr);
-
-    std::size_t subgraphs = 0;
-    fallback->configured_graph->node_bundles.for_each_configured_bundle(
-        [&](iv::ConfiguredNodeBundleView const& bundle) {
-            if (bundle.kind == iv::ConfiguredNodeBundleKind::subgraph) ++subgraphs;
-        });
-    EXPECT_EQ(subgraphs, 0u);
+    try {
+        (void)iv::test::load_project_package_definitions(loader, package_root);
+        ADD_FAILURE() << "a package whose module caught a construction failure loaded";
+    } catch (std::exception const& error) {
+        EXPECT_NE(
+            std::string_view(error.what()).find(
+                "tiled IV module members must expose only mono sample inputs"),
+            std::string_view::npos) << error.what();
+    }
 }
 
 TEST(ModuleLoaderPackages, RootPackageDoesNotPublishOtherPackageDefinitions)
 {
     auto const fixtures = iv::test::test_modules_root();
-    auto loader = iv::test::make_loader(
-        {fixtures / "nested_loader_project", fixtures / "nested_loader_voice"});
+    auto loader = iv::test::make_loader();
 
     // Provider packages are independent compilation units. Make the active
     // package set explicit instead of relying on loader-wide source scanning.
-    ASSERT_NO_THROW((void)loader.load_package_definitions(
+    ASSERT_NO_THROW((void)iv::test::load_project_package_definitions(loader, 
         fixtures / "nested_loader_voice"));
-    auto loaded = loader.load_package_definitions(fixtures / "nested_loader_project");
+    auto loaded = iv::test::load_project_package_definitions(loader, fixtures / "nested_loader_project");
 
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded.front().module_id, "iv.test.nested_loader_project");
-    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    EXPECT_NE(loaded.front().configured_graph, nullptr);
 }
 
 TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefinitions)
@@ -362,11 +530,11 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
         "struct RegisteredPackageNode {\n"
         "    static constexpr auto outputs()\n"
         "    {\n"
-        "        return std::array<iv::OutputConfig, 1>{};\n"
+        "        return std::array<iv::TickOutputConfig<iv::Sample>, 1>{};\n"
         "    }\n\n"
         "    void tick(iv::TickSampleContext<RegisteredPackageNode> const& ctx) const\n"
         "    {\n"
-        "        ctx.outputs[0].push(0.25);\n"
+        "        ctx.template output<0>().push(0.25);\n"
         "    }\n"
         "};\n"
         "}\n\n"
@@ -384,7 +552,16 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
         "IV_MODULE(\"iv.test.registered_node_consumer\", registered_node_consumer);\n");
 
     auto loader = iv::test::make_loader();
-    auto batch = loader.load_packages({node_package, consumer_package});
+    auto batch = loader.load_packages({
+        iv::PackageBuildRequest{
+            .package_root = node_package,
+            .provenance = iv::PackageProvenance::project_local,
+        },
+        iv::PackageBuildRequest{
+            .package_root = consumer_package,
+            .provenance = iv::PackageProvenance::project_local,
+        },
+    });
     ASSERT_EQ(batch.size(), 2u);
     ASSERT_TRUE(batch[0]) << batch[0].error;
     ASSERT_TRUE(batch[1]) << batch[1].error;
@@ -392,7 +569,7 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
 
     ASSERT_EQ(loaded.size(), 1);
     EXPECT_EQ(loaded.front().module_id, "iv.test.registered_node_consumer");
-    EXPECT_TRUE(static_cast<bool>(loaded.front().root));
+    EXPECT_NE(loaded.front().configured_graph, nullptr);
     ASSERT_NE(loaded.front().configured_graph, nullptr);
 
     std::optional<iv::RegisteredNodeTypeIdentity> registered_identity;
@@ -417,7 +594,7 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
     // silently bind to a package that discovery has removed.
     loader.remove_package(node_package);
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(consumer_package); },
+        [&] { (void)iv::test::load_project_package_definitions(loader, consumer_package); },
         "iv.test.registered_package_node");
 }
 
@@ -437,34 +614,46 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
     iv::test::write_text(
         provider_package / "module.cpp",
         "#include <intravenous/dsl.h>\n"
-        "#include <array>\n\n"
+        "#include <array>\n"
+        "#include <vector>\n\n"
         "namespace {\n"
         "struct ConfiguredProviderNode {\n"
         "    iv::Sample gain;\n"
         "    constexpr explicit ConfiguredProviderNode(iv::Sample gain_ = iv::Sample{0.25f})\n"
         "        : gain(gain_) {}\n"
         "    static constexpr auto outputs()\n"
-        "    { return std::array<iv::OutputConfig, 1>{}; }\n"
+        "    { return std::array{iv::TickOutputConfig<iv::Sample>{.name = \"out\"}}; }\n"
         "    void tick(iv::TickSampleContext<ConfiguredProviderNode> const& ctx) const\n"
-        "    { ctx.outputs[0].push(gain); }\n"
+        "    { ctx.output<\"out\">().push(gain); }\n"
         "};\n"
         "struct RequiredConfiguredProviderNode {\n"
         "    iv::Sample gain;\n"
         "    constexpr explicit RequiredConfiguredProviderNode(iv::Sample gain_)\n"
         "        : gain(gain_) {}\n"
         "    static constexpr auto outputs()\n"
-        "    { return std::array<iv::OutputConfig, 1>{}; }\n"
+        "    { return std::array{iv::TickOutputConfig<iv::Sample>{.name = \"out\"}}; }\n"
         "    void tick(iv::TickSampleContext<RequiredConfiguredProviderNode> const& ctx) const\n"
-        "    { ctx.outputs[0].push(gain); }\n"
+        "    { ctx.output<\"out\">().push(gain); }\n"
         "};\n"
         "struct LabelConfiguredProviderNode {\n"
         "    char const* label;\n"
         "    constexpr explicit LabelConfiguredProviderNode(char const* label_)\n"
         "        : label(label_) {}\n"
         "    static constexpr auto outputs()\n"
-        "    { return std::array<iv::OutputConfig, 1>{}; }\n"
+        "    { return std::array{iv::TickOutputConfig<iv::Sample>{.name = \"out\"}}; }\n"
         "    void tick(iv::TickSampleContext<LabelConfiguredProviderNode> const& ctx) const\n"
-        "    { ctx.outputs[0].push(iv::Sample{}); }\n"
+        "    { ctx.output<\"out\">().push(iv::Sample{}); }\n"
+        "};\n"
+        "enum class FilterMode : unsigned { lowpass, highpass };\n"
+        "struct Band {\n"
+        "    double frequency = 1000.0;\n"
+        "    double gain = 0.0;\n"
+        "};\n"
+        "struct FilterOptions {\n"
+        "    double cutoff = 440.0;\n"
+        "    FilterMode mode = FilterMode::lowpass;\n"
+        "    std::vector<Band> bands{};\n"
+        "    std::array<double, 2> resonance{};\n"
         "};\n"
         "}\n\n"
         "IV_NODE(\"iv.test.configured_provider_node\", ConfiguredProviderNode);\n\n"
@@ -482,7 +671,29 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "{\n"
         "    g.outputs(g.node<\"iv.test.configured_provider_node\">(gain));\n"
         "}\n"
-        "IV_MODULE(\"iv.test.required_provider_module\", required_provider_module);\n");
+        "IV_MODULE(\"iv.test.required_provider_module\", required_provider_module);\n"
+        "void aggregate_provider_module(iv::GraphBuilder& g, FilterOptions)\n"
+        "{ g.outputs(); }\n"
+        "IV_MODULE(\"iv.test.aggregate_provider_module\", aggregate_provider_module);\n"
+        "void framework_enum_provider_module(\n"
+        "    iv::GraphBuilder& g, iv::SampleStreamLayout)\n"
+        "{ g.outputs(); }\n"
+        "IV_MODULE(\"iv.test.framework_enum_provider_module\",\n"
+        "    framework_enum_provider_module);\n"
+        "struct ClassProviderModule {\n"
+        "    iv::Sample gain;\n"
+        "    explicit ClassProviderModule(iv::Sample gain_) : gain(gain_) {}\n"
+        "    void build_graph(iv::GraphBuilder& g) const\n"
+        "    {\n"
+        "        auto source = g.node<\"iv.test.configured_provider_node\">(gain);\n"
+        "        g.outputs(source);\n"
+        "    }\n"
+        "    void on_message(\n"
+        "        iv::ModuleMessageContext<ClassProviderModule>& ctx,\n"
+        "        iv::Sample const& event) const\n"
+        "    { ctx.send(ctx.ref<\"source\">(), event); }\n"
+        "};\n"
+        "IV_MODULE_CLASS(\"iv.test.class_provider_module\", ClassProviderModule);\n");
     iv::test::write_text(
         consumer_package / "iv_package.json",
         "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
@@ -513,19 +724,163 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "{\n"
         "    g.outputs(g.node<\"iv.test.configured_provider_module\">());\n"
         "}\n"
+        "void class_module_reference(iv::GraphBuilder& g)\n"
+        "{\n"
+        "    g.outputs(g.node<\"iv.test.class_provider_module\">(iv::Sample{0.25f}));\n"
+        "}\n"
         "IV_MODULE(\"iv.test.direct_configured_node\", direct_configured_node);\n"
         "IV_MODULE(\"iv.test.configured_module_reference\", configured_module_reference);\n"
         "IV_MODULE(\"iv.test.required_configured_node\", required_configured_node);\n"
         "IV_MODULE(\"iv.test.required_configured_module\", required_configured_module);\n"
         "IV_MODULE(\"iv.test.string_literal_configuration\", string_literal_configuration);\n"
         "IV_MODULE(\"iv.test.default_configured_module_reference\", "
-        "default_configured_module_reference);\n");
+        "default_configured_module_reference);\n"
+        "IV_MODULE(\"iv.test.class_module_reference\", class_module_reference);\n");
 
     auto loader = iv::test::make_loader();
-    ASSERT_NO_THROW((void)loader.load_package_definitions(provider_package));
-    auto loaded = loader.load_package_definitions(consumer_package);
+    auto provider_package_revision = iv::test::load_project_package(loader, provider_package);
+    ASSERT_TRUE(std::filesystem::is_regular_file(
+        provider_package_revision.compiler_artifact.node_event_protocol_path));
+    std::ifstream event_protocol_stream(
+        provider_package_revision.compiler_artifact.node_event_protocol_path);
+    ASSERT_TRUE(event_protocol_stream);
+    auto const event_protocol = nlohmann::ordered_json::parse(
+        event_protocol_stream);
+    EXPECT_EQ(event_protocol["formatVersion"], 0);
+    ASSERT_EQ(event_protocol["eventTypes"].size(), 1u);
+    EXPECT_FALSE(event_protocol["eventTypes"][0]["nominalId"]
+        .get<std::string>().empty());
+    EXPECT_FALSE(event_protocol["eventTypes"][0]["definitionFingerprint"]
+        .get<std::string>().empty());
+    EXPECT_EQ(
+        event_protocol["eventTypes"][0]["payload"]["kind"],
+        "convertedScalar");
+    ASSERT_EQ(event_protocol["definitions"].size(), 1u);
+    EXPECT_EQ(
+        event_protocol["definitions"][0]["definitionId"],
+        "iv.test.class_provider_module");
+    ASSERT_EQ(
+        event_protocol["definitions"][0]["supportedEventTypes"].size(),
+        1u);
+    EXPECT_EQ(
+        event_protocol["definitions"][0]["supportedEventTypes"][0]
+            ["nominalId"],
+        event_protocol["eventTypes"][0]["nominalId"]);
+    auto const protocol_text = event_protocol.dump();
+    EXPECT_EQ(protocol_text.find("nodeCodeKey"), std::string::npos);
+    EXPECT_EQ(protocol_text.find("methodSymbol"), std::string::npos);
+    EXPECT_EQ(protocol_text.find("bitOffset"), std::string::npos);
+    auto const& provider_definitions = provider_package_revision.definitions;
+    ASSERT_EQ(provider_package_revision.module_message_handlers.size(), 1u);
+    auto const& class_handler =
+        provider_package_revision.module_message_handlers.front();
+    EXPECT_EQ(
+        std::string_view(
+            static_cast<char const*>(class_handler.definition_id.data),
+            class_handler.definition_id.size),
+        "iv.test.class_provider_module");
+    EXPECT_NE(class_handler.event_type, nullptr);
+    EXPECT_NE(class_handler.invoke, nullptr);
+    auto const provider_definition = std::ranges::find(
+        provider_definitions,
+        "iv.test.configured_provider_module",
+        &iv::ModuleLoader::LoadedDefinition::module_id);
+    ASSERT_NE(provider_definition, provider_definitions.end());
+    ASSERT_NE(provider_definition->provider.signature, nullptr);
+    auto const* provider_signature = provider_definition->provider.signature();
+    ASSERT_NE(provider_signature, nullptr);
+    ASSERT_EQ(provider_signature->argument_count, 1u);
+    ASSERT_NE(provider_signature->parameter_types[0], nullptr);
+    ASSERT_NE(provider_signature->parameter_types[0]->expression_schema, nullptr);
+    EXPECT_EQ(
+        provider_signature->parameter_types[0]->expression_schema->kind,
+        iv::details::ConfigurationExpressionTypeKind::converted_scalar);
+    EXPECT_NO_THROW({
+        auto values = iv::evaluate_configuration_expression_list(
+            iv::parse_configuration_expression_list("0.75"), *provider_signature);
+        EXPECT_EQ(values.arguments().size(), 1u);
+    });
+    auto const aggregate_definition = std::ranges::find(
+        provider_definitions,
+        "iv.test.aggregate_provider_module",
+        &iv::ModuleLoader::LoadedDefinition::module_id);
+    ASSERT_NE(aggregate_definition, provider_definitions.end());
+    auto const* aggregate_signature = aggregate_definition->provider.signature();
+    ASSERT_NE(aggregate_signature, nullptr);
+    ASSERT_EQ(aggregate_signature->argument_count, 1u);
+    auto const* aggregate_schema =
+        aggregate_signature->parameter_types[0]->expression_schema;
+    ASSERT_NE(aggregate_schema, nullptr);
+    ASSERT_EQ(
+        aggregate_schema->kind,
+        iv::details::ConfigurationExpressionTypeKind::aggregate);
+    ASSERT_EQ(aggregate_schema->field_count, 4u);
+    EXPECT_EQ(
+        aggregate_schema->fields[1].type->kind,
+        iv::details::ConfigurationExpressionTypeKind::enumeration);
+    EXPECT_EQ(aggregate_schema->fields[1].type->enumerator_count, 2u);
+    EXPECT_EQ(
+        aggregate_schema->fields[2].type->kind,
+        iv::details::ConfigurationExpressionTypeKind::sequence);
+    ASSERT_NE(aggregate_schema->fields[2].type->element_type, nullptr);
+    EXPECT_EQ(
+        aggregate_schema->fields[2].type->element_type->kind,
+        iv::details::ConfigurationExpressionTypeKind::aggregate);
+    EXPECT_EQ(
+        aggregate_schema->fields[3].type->kind,
+        iv::details::ConfigurationExpressionTypeKind::sequence);
+    EXPECT_EQ(aggregate_schema->fields[3].type->fixed_element_count, 2u);
+    EXPECT_NO_THROW({
+        auto values = iv::evaluate_configuration_expression_list(
+            iv::parse_configuration_expression_list("{.cutoff = 1800, .mode = highpass, "
+            ".bands = {{.frequency = 200, .gain = -3}, "
+            "{.frequency = 2000, .gain = 2.5}}, "
+            ".resonance = {0.25, 0.5}}"),
+            *aggregate_signature);
+        EXPECT_EQ(values.arguments().size(), 1u);
+    });
+    auto const framework_enum_definition = std::ranges::find(
+        provider_definitions,
+        "iv.test.framework_enum_provider_module",
+        &iv::ModuleLoader::LoadedDefinition::module_id);
+    ASSERT_NE(framework_enum_definition, provider_definitions.end());
+    auto const* framework_enum_signature =
+        framework_enum_definition->provider.signature();
+    ASSERT_NE(framework_enum_signature, nullptr);
+    ASSERT_EQ(framework_enum_signature->argument_count, 1u);
+    auto const* framework_enum_schema =
+        framework_enum_signature->parameter_types[0]->expression_schema;
+    ASSERT_NE(framework_enum_schema, nullptr);
+    EXPECT_EQ(
+        framework_enum_schema->kind,
+        iv::details::ConfigurationExpressionTypeKind::enumeration);
+    ASSERT_GE(framework_enum_schema->enumerator_count, 2u);
+    EXPECT_EQ(
+        std::string_view(
+            framework_enum_schema->enumerators[0].name,
+            framework_enum_schema->enumerators[0].name_size),
+        "planar");
+    EXPECT_EQ(
+        std::string_view(
+            framework_enum_schema->enumerators[1].name,
+            framework_enum_schema->enumerators[1].name_size),
+        "interleaved");
+    EXPECT_NO_THROW({
+        auto values = iv::evaluate_configuration_expression_list(
+            iv::parse_configuration_expression_list("interleaved"), *framework_enum_signature);
+        EXPECT_EQ(values.arguments().size(), 1u);
+    });
+    auto const class_definition = std::ranges::find(
+        provider_definitions,
+        "iv.test.class_provider_module",
+        &iv::ModuleLoader::LoadedDefinition::module_id);
+    ASSERT_NE(class_definition, provider_definitions.end());
+    auto const* class_signature = class_definition->provider.signature();
+    ASSERT_NE(class_signature, nullptr);
+    ASSERT_EQ(class_signature->argument_count, 1u);
+    auto loaded = iv::test::load_project_package_definitions(loader, consumer_package);
 
-    ASSERT_EQ(loaded.size(), 6u);
+    ASSERT_EQ(loaded.size(), 7u);
     EXPECT_NE(std::ranges::find(
         loaded, "iv.test.direct_configured_node", &iv::ModuleLoader::LoadedDefinition::module_id),
         loaded.end());
@@ -551,18 +906,23 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         loaded.end());
     EXPECT_NE(std::ranges::find(
         loaded,
+        "iv.test.class_module_reference",
+        &iv::ModuleLoader::LoadedDefinition::module_id),
+        loaded.end());
+    EXPECT_NE(std::ranges::find(
+        loaded,
         "iv.test.default_configured_module_reference",
         &iv::ModuleLoader::LoadedDefinition::module_id),
         loaded.end());
 
-    auto provider_loaded = loader.load_package_definitions(provider_package);
-    ASSERT_EQ(provider_loaded.size(), 2u);
+    auto const& provider_loaded = provider_package_revision.definitions;
+    ASSERT_EQ(provider_loaded.size(), 5u);
     auto const required_provider = std::ranges::find(
         provider_loaded,
         "iv.test.required_provider_module",
         &iv::ModuleLoader::LoadedDefinition::module_id);
     ASSERT_NE(required_provider, provider_loaded.end());
-    EXPECT_FALSE(static_cast<bool>(required_provider->root));
+    EXPECT_EQ(required_provider->configured_graph, nullptr);
 }
 
 TEST(ModuleLoaderFailures, RegisteredConfigurationRejectsImplicitConversions)
@@ -586,9 +946,9 @@ TEST(ModuleLoaderFailures, RegisteredConfigurationRejectsImplicitConversions)
         "struct SampleConfiguredNode {\n"
         "    constexpr explicit SampleConfiguredNode(iv::Sample = iv::Sample{}) {}\n"
         "    static constexpr auto outputs()\n"
-        "    { return std::array<iv::OutputConfig, 1>{}; }\n"
+        "    { return std::array<iv::TickOutputConfig<iv::Sample>, 1>{}; }\n"
         "    void tick(iv::TickSampleContext<SampleConfiguredNode> const& ctx) const\n"
-        "    { ctx.outputs[0].push(iv::Sample{}); }\n"
+        "    { ctx.template output<0>().push(iv::Sample{}); }\n"
         "};\n"
         "}\n\n"
         "IV_NODE(\"iv.test.sample_configured_node\", SampleConfiguredNode);\n");
@@ -606,9 +966,9 @@ TEST(ModuleLoaderFailures, RegisteredConfigurationRejectsImplicitConversions)
         "IV_MODULE(\"iv.test.mismatched_configuration\", mismatched_configuration);\n");
 
     auto loader = iv::test::make_loader();
-    ASSERT_NO_THROW((void)loader.load_package_definitions(provider_package));
+    ASSERT_NO_THROW((void)iv::test::load_project_package_definitions(loader, provider_package));
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(consumer_package); },
+        [&] { (void)iv::test::load_project_package_definitions(loader, consumer_package); },
         "registered-ID argument conversion is not supported");
 }
 
@@ -628,9 +988,9 @@ TEST(ModuleLoaderFailures, SamePackageNodeAndModuleCannotShareStableId)
         "#include <array>\n\n"
         "struct DuplicateIdNode {\n"
         "    static constexpr auto outputs()\n"
-        "    { return std::array<iv::OutputConfig, 1>{}; }\n"
+        "    { return std::array<iv::TickOutputConfig<iv::Sample>, 1>{}; }\n"
         "    void tick(iv::TickSampleContext<DuplicateIdNode> const& ctx) const\n"
-        "    { ctx.outputs[0].push(iv::Sample{}); }\n"
+        "    { ctx.template output<0>().push(iv::Sample{}); }\n"
         "};\n\n"
         "void duplicate_id_module(iv::GraphBuilder& g) { g.outputs(); }\n\n"
         "IV_NODE(\"iv.test.duplicate_local_id\", DuplicateIdNode);\n"
@@ -641,34 +1001,34 @@ TEST(ModuleLoaderFailures, SamePackageNodeAndModuleCannotShareStableId)
     // while compiling the one package rather than survive as a later registry
     // conflict that depends on unrelated reload order.
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(package_root); },
+        [&] { (void)iv::test::load_project_package_definitions(loader, package_root); },
         "command failed");
 }
 
 TEST(ModuleLoaderFailures, SourceWithoutManifestFails)
 {
     auto const fixtures = iv::test::test_modules_root();
-    auto loader = iv::test::make_loader({fixtures / "missing_export"});
+    auto loader = iv::test::make_loader();
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(fixtures / "missing_export"); },
+        [&] { (void)iv::test::load_project_package_definitions(loader, fixtures / "missing_export"); },
         "iv_package.json");
 }
 
 TEST(ModuleLoaderFailures, BuildFailurePropagates)
 {
     auto const fixtures = iv::test::test_modules_root();
-    auto loader = iv::test::make_loader({fixtures / "build_failure"});
+    auto loader = iv::test::make_loader();
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(fixtures / "build_failure"); },
+        [&] { (void)iv::test::load_project_package_definitions(loader, fixtures / "build_failure"); },
         "command failed");
 }
 
 TEST(ModuleLoaderFailures, MissingDependencyFails)
 {
     auto const fixtures = iv::test::test_modules_root();
-    auto loader = iv::test::make_loader({fixtures / "missing_dependency"});
+    auto loader = iv::test::make_loader();
     expect_failure_contains(
-        [&] { (void)loader.load_package_definitions(fixtures / "missing_dependency"); },
+        [&] { (void)iv::test::load_project_package_definitions(loader, fixtures / "missing_dependency"); },
         "is unavailable in the loaded package definitions");
 }
 
@@ -676,15 +1036,10 @@ TEST(ModuleLoaderFailures, UnrelatedDuplicateDefinitionIdsDoNotBlockLoading)
 {
     auto const fixtures = iv::test::test_modules_root();
     auto const duplicates = iv::test::duplicate_modules_root();
-    auto loader = iv::test::make_loader({
-        fixtures / "nested_loader_project",
-        fixtures / "nested_loader_voice",
-        duplicates / "one",
-        duplicates / "two",
-    });
-    ASSERT_NO_THROW((void)loader.load_package_definitions(
+    auto loader = iv::test::make_loader();
+    ASSERT_NO_THROW((void)iv::test::load_project_package_definitions(loader, 
         fixtures / "nested_loader_voice"));
-    auto const definitions = loader.load_package_definitions(
+    auto const definitions = iv::test::load_project_package_definitions(loader, 
         fixtures / "nested_loader_project");
     EXPECT_EQ(definitions.size(), 1u);
     EXPECT_EQ(definitions.front().module_id, "iv.test.nested_loader_project");

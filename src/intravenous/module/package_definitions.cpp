@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -43,16 +44,15 @@ public:
 };
 } // namespace
 
-NodeRef configure_package_definition_impl(
+namespace {
+NodeRef construct_package_definition(
     GraphBuilder& builder,
+    BuilderSession* session,
     std::string_view id,
     std::optional<ChannelLayout> tiled_layout,
     std::span<ConfigurationArgument> arguments)
 {
-    if (!builder._session) {
-        throw std::logic_error("IV package definition requires a BuilderSession");
-    }
-    auto const found = find_builder_definition(builder._session, id);
+    auto const found = find_builder_definition(session, id);
     auto const& definition = found.definition;
     auto const registered_id = std::string_view(definition.id, definition.id_size);
     if (!definition.signature) {
@@ -68,10 +68,11 @@ NodeRef configure_package_definition_impl(
     }
     validate_registered_signature(registered_id, *signature, arguments);
     if (definition.kind == PackageDefinitionKind::node) {
-        PackageSelection const package(builder._session, found.package_index);
+        PackageSelection const package(session, found.package_index);
         auto node = definition.node_build(
             builder, arguments,
             tiled_layout ? std::addressof(*tiled_layout) : nullptr);
+        throw_if_builder_failed(session);
         auto const provider_package_root = std::string_view(
             definition.package_root, definition.package_root_size);
         builder_graph_state(builder).set_registered_node_type_identity(
@@ -83,47 +84,123 @@ NodeRef configure_package_definition_impl(
         return node;
     }
 
-    ModuleStackEntry const stack_entry(builder._session, registered_id);
-    using ChildSession = std::unique_ptr<BuilderSession,
-        decltype(&iv_builder_session_destroy)>;
-    auto make_child_session = [&] {
-        return ChildSession(
-                iv_builder_child_session_create(builder._session, found.package_index),
-                iv_builder_session_destroy);
+    ModuleStackEntry const stack_entry(session, registered_id);
+    PackageSelection const package(session, found.package_index);
+    // One module body: a definition scope of the caller's session, constructed
+    // in place and finalized without copying. `member_suffix` names a tiled
+    // member inside the invocation.
+    auto construct_body = [&](std::span<ProjectNodePathSelector const> member_suffix,
+                              bool tiled_member) {
+        auto const scope = begin_builder_scope(session, BuilderScopeKind::definition);
+        begin_builder_module_body(session, member_suffix);
+        GraphBuilder body(session, scope);
+        definition.module_build(body, arguments);
+        // A failure that the module body caught still fails the pass.
+        throw_if_builder_failed(session);
+        if (tiled_member && !builder_scope_sample_outputs_defined(session, scope)) {
+            error("tiled IV module must call g.outputs(...) before it can be configured");
+        }
+        end_builder_module_body(session);
+        auto const qualifier = member_suffix.empty()
+            ? std::string{}
+            : builder_invocation_qualifier(member_suffix);
+        return finish_builder_scope(
+            session, scope, "module", qualifier);
     };
-    if (tiled_layout) {
-        auto const member_count = channel_count(tiled_layout->channel_type);
-        std::vector<ChildSession> child_sessions;
-        std::vector<std::unique_ptr<GraphBuilder>> children;
-        child_sessions.reserve(member_count);
-        children.reserve(member_count);
-        for (std::size_t channel = 0; channel < member_count; ++channel) {
-            child_sessions.push_back(make_child_session());
-            auto child = std::make_unique<GraphBuilder>(child_sessions.back().get());
-            definition.module_build(*child, arguments);
-            children.push_back(std::move(child));
-        }
-        std::vector<GraphBuilder*> child_views;
-        child_views.reserve(children.size());
-        for (auto const& child : children) child_views.push_back(child.get());
-        iv_builder_validate_tiled_module_interfaces(child_views);
-
-        std::vector<NodeBundleHandle> members;
-        members.reserve(children.size());
-        for (auto const& child : children) {
-            members.push_back(
-                builder.embed_child(*child, "IV module definition").node_bundle_handle());
-        }
-        return NodeRef(builder, iv_builder_append_tiled_node_bundles(
-            builder,
-            {members.data(), members.size()},
-            *tiled_layout));
+    if (!tiled_layout) {
+        return NodeRef(session, construct_body({}, false));
     }
-    auto child_session = make_child_session();
-    GraphBuilder child(child_session.get());
-    definition.module_build(child, arguments);
-    return builder.embed_child(child, "IV module definition");
+
+    // Every tiled member is constructed and the member interfaces validated
+    // before the tiled bundle exists. A failure fails the pass, so no partial
+    // tile is ever published.
+    auto const member_count = channel_count(tiled_layout->channel_type);
+    std::vector<NodeBundleHandle> members;
+    members.reserve(member_count);
+    for (std::size_t channel = 0; channel < member_count; ++channel) {
+        auto const& channel_name =
+            channel_type_info(tiled_layout->channel_type).channel_names[channel];
+        ProjectNodePathSelector const selector = ProjectTiledChildSelector{
+            .name = std::string(channel_name),
+        };
+        members.push_back(construct_body(std::span{&selector, 1}, true));
+    }
+    validate_builder_tiled_module_interfaces(session, members);
+    return NodeRef(session, iv_builder_append_tiled_node_bundles(
+        builder,
+        {members.data(), members.size()},
+        *tiled_layout));
 }
+} // namespace
+
+// The library boundary around one leaf or module factory. Whatever escapes
+// it, from the library or from authored code, is recorded as the session's
+// construction failure before it reaches the caller.
+NodeRef configure_package_definition_provider(
+    GraphBuilder& builder,
+    std::string_view id,
+    std::optional<ChannelLayout> tiled_layout,
+    std::span<ConfigurationArgument> arguments)
+{
+    if (!builder._session) {
+        throw std::logic_error("IV package definition requires a BuilderSession");
+    }
+    try {
+        return construct_package_definition(
+            builder, builder._session, id, tiled_layout, arguments);
+    } catch (...) {
+        record_builder_failure(
+            builder._session, std::current_exception(),
+            "while configuring '" + std::string(id) + "'");
+        throw;
+    }
+}
+
+NodeRef configure_package_definition_impl(
+    GraphBuilder& builder,
+    std::string_view id,
+    std::optional<ChannelLayout> tiled_layout,
+    std::span<ConfigurationArgument> arguments)
+{
+    if (!builder._session) {
+        throw std::logic_error("IV package definition requires a BuilderSession");
+    }
+    auto* const session = builder._session;
+    auto const prepared = consume_builder_node_source_identity(session);
+    try {
+        record_builder_module_message_local_ref(session, prepared);
+        auto const relative_path = claim_builder_registered_call_path(
+            session, prepared.source_identity);
+        if (auto resolver = builder_definition_resolver(session)) {
+            return resolver(
+                builder_definition_resolver_context(session),
+                builder,
+                id,
+                relative_path,
+                tiled_layout,
+                arguments);
+        }
+
+        // Without a configuration cache the call is still one invocation of
+        // the caller's session: its records are qualified by its semantic path
+        // and its message handlers are re-rooted at the caller.
+        auto const invocation = begin_builder_invocation(session);
+        auto constructed = configure_package_definition_provider(
+            builder, id, tiled_layout, arguments);
+        auto finished = finish_builder_invocation(
+            session, invocation, constructed.node_bundle_handle(),
+            builder_invocation_qualifier(relative_path), false);
+        register_builder_embedded_message_handlers(
+            session, relative_path, finished.message_handlers);
+        return constructed;
+    } catch (...) {
+        // A registered call is where authored module code sees the failure;
+        // record it before the caller can catch it.
+        record_builder_failure(session, std::current_exception(), {});
+        throw;
+    }
+}
+
 NodeRef configure_package_definition(
     GraphBuilder& builder,
     std::string_view id,
