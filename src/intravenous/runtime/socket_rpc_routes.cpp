@@ -348,23 +348,6 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
             }
             return builder.build(id);
         });
-    impl_->add<UpdateManualControlInteractionRequest>(
-        "manualControls.update", "project.write", true, false,
-        [](auto const& request, int id, Context const& context) {
-            SocketRpcAckResponseBuilder builder;
-            auto bound = request;
-            bound.interaction.client_id = context.client_id;
-            IV_INVOKE_LINKER_EVENT(
-                iv_socket_rpc_update_manual_control_interaction_event,
-                bound,
-                builder);
-            if (!builder.has_response()) builder.fail("project graph service is unavailable");
-            // The request's committed read-model changes go out after its response.
-            if (context.publish_project_graph) {
-                context.publish_project_graph(builder.take_publication());
-            }
-            return builder.build(id);
-        });
     impl_->add<EndManualControlInteractionRequest>(
         "manualControls.end", "project.write", true, false,
         [](auto const& request, int id, Context const& context) {
@@ -376,6 +359,10 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
                 bound,
                 builder);
             if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            // No relayed value of this gesture may follow its committed revision.
+            if (context.discard_live_frames) {
+                context.discard_live_frames(live_gesture_key(bound.interaction));
+            }
             // The request's committed read-model changes go out after its response.
             if (context.publish_project_graph) {
                 context.publish_project_graph(builder.take_publication());
@@ -412,6 +399,18 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
                 iv_socket_rpc_get_audio_devices_event, request, builder);
             if (!builder.has_response()) builder.fail("audio device service is unavailable");
             return builder.build(id);
+        });
+    impl_->add<CaptureAudioOutputRequest>(
+        "audioDevices.captureDiagnostic", "audio.control", false, false,
+        [](auto const& request, int id, Context const&) {
+            auto capture = request;
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_capture_audio_output_event, capture);
+            if (!capture.handled) throw std::runtime_error("audio capture service is unavailable");
+            return jsonrpc_result(id, Json{
+                {"recording", capture.recording}, {"path", capture.path},
+                {"sampleRate", capture.sample_rate}, {"channels", capture.channels},
+                {"sampleCount", capture.sample_count}, {"blocks", capture.blocks},
+                {"serverTimeMs", capture.server_time_ms}, {"serverSteadyUs", capture.server_steady_us}});
         });
     impl_->add<SetAudioDevicesRequest>(
         "audioDevices.set", "audio.control", true, false,

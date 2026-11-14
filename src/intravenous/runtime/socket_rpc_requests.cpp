@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -225,6 +226,27 @@ ManualControlInteractionId parse_manual_interaction_id(Json const& params)
 
 } // namespace
 
+std::optional<LiveManualControlUpdateRequest>
+parse_live_manual_control_update(std::string_view line)
+{
+    auto const request = parse_request_json(line);
+    if (!request.is_object() || request.contains("id")) return std::nullopt;
+    auto const method = request.find("method");
+    if (method == request.end() || !method->is_string()
+        || method->get_ref<std::string const&>() != "manualControls.update") {
+        return std::nullopt;
+    }
+    auto const& params = parse_request_params(request);
+    auto value = parse_manual_control_value(params);
+    if (!std::isfinite(value.value)) {
+        throw std::runtime_error("manual control update requires a finite 'value'");
+    }
+    return LiveManualControlUpdateRequest{
+        .interaction = parse_manual_interaction_id(params),
+        .value = value,
+    };
+}
+
 ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
 {
     auto const request = parse_request_json(line);
@@ -443,12 +465,6 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
             .value = parse_manual_control_value(params),
         });
     }
-    if (method == "manualControls.update") {
-        return parsed(UpdateManualControlInteractionRequest{
-            .interaction = parse_manual_interaction_id(params),
-            .value = parse_manual_control_value(params),
-        });
-    }
     if (method == "manualControls.end") {
         return parsed(EndManualControlInteractionRequest{
             .interaction = parse_manual_interaction_id(params),
@@ -481,6 +497,14 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
     }
     if (method == "audioDevices.get") {
         return parsed(GetAudioDevicesRequest{});
+    }
+    if (method == "audioDevices.captureDiagnostic") {
+        auto action = parse_string_param(params, "action");
+        auto token = parse_string_param(params, "token");
+        if ((action != "start" && action != "read") || token.empty() || token.size() > 80
+            || token.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != std::string::npos)
+            throw std::invalid_argument("invalid audio diagnostic capture action or token");
+        return parsed(CaptureAudioOutputRequest{.action = std::move(action), .token = std::move(token)});
     }
     if (method == "audioDevices.set") {
         return parsed(SetAudioDevicesRequest{

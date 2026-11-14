@@ -64,11 +64,14 @@ namespace iv {
         void (*)(SetManualControlHoverRequest const&, SocketRpcAckResponseBuilder&);
     using SocketRpcBeginManualControlInteractionEvent = void (*)(
         BeginManualControlInteractionRequest const&, SocketRpcAckResponseBuilder&);
-    using SocketRpcUpdateManualControlInteractionEvent = void (*)(
-        UpdateManualControlInteractionRequest const&, SocketRpcAckResponseBuilder&);
+    // One live gesture value from a client reader thread; see
+    // LiveManualControlUpdateRequest.
+    using SocketRpcLiveManualControlUpdateEvent =
+        void (*)(LiveManualControlUpdateRequest&);
     using SocketRpcEndManualControlInteractionEvent = void (*)(
         EndManualControlInteractionRequest const&, SocketRpcAckResponseBuilder&);
-    using SocketRpcClientDisconnectedEvent = void (*)(std::string const&);
+    using SocketRpcClientDisconnectedEvent =
+        void (*)(SocketRpcClientDisconnectedRequest&);
     using SocketRpcDispatchNodeMessageEvent =
         void (*)(DispatchNodeMessageRequest const&, SocketRpcNodeMessageResultBuilder&);
     using SocketRpcGetNodeEventProtocolEvent =
@@ -76,6 +79,7 @@ namespace iv {
                  SocketRpcNodeEventProtocolResultBuilder&);
     using SocketRpcGetAudioDevicesEvent =
         void (*)(GetAudioDevicesRequest const &, SocketRpcAudioDevicesResultBuilder &);
+    using SocketRpcCaptureAudioOutputEvent = void (*)(CaptureAudioOutputRequest&);
     using SocketRpcSetAudioDevicesEvent =
         void (*)(SetAudioDevicesRequest const &, SocketRpcAudioDevicesResultBuilder &);
     using SocketRpcSaveProjectEvent =
@@ -112,12 +116,13 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcDeleteManualControlEvent, iv_socket_rpc_delete_manual_control_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetManualControlHoverEvent, iv_socket_rpc_set_manual_control_hover_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcBeginManualControlInteractionEvent, iv_socket_rpc_begin_manual_control_interaction_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcUpdateManualControlInteractionEvent, iv_socket_rpc_update_manual_control_interaction_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcLiveManualControlUpdateEvent, iv_socket_rpc_live_manual_control_update_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcEndManualControlInteractionEvent, iv_socket_rpc_end_manual_control_interaction_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcClientDisconnectedEvent, iv_socket_rpc_client_disconnected_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcDispatchNodeMessageEvent, iv_socket_rpc_dispatch_node_message_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetNodeEventProtocolEvent, iv_socket_rpc_get_node_event_protocol_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetAudioDevicesEvent, iv_socket_rpc_get_audio_devices_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcCaptureAudioOutputEvent, iv_socket_rpc_capture_audio_output_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetAudioDevicesEvent, iv_socket_rpc_set_audio_devices_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSaveProjectEvent, iv_socket_rpc_save_project_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcEnableProjectAutosaveEvent, iv_socket_rpc_enable_project_autosave_event);

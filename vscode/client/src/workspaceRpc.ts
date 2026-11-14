@@ -1,3 +1,4 @@
+import type { AudioOutputCaptureReply } from "./knobAudioRecording";
 import type { ManualControlId } from "./manualControls";
 import { JsonRpcSocketClient } from "./rpcClient";
 import { VirtualNode, SourceSpan } from "./graphModel";
@@ -56,6 +57,12 @@ export class WorkspaceRpc {
 
     getGraphScope(): Promise<GraphScope> {
         return this.client.request("graph.getScope", {});
+    }
+
+    // Temporary knob-audio recorder: "start" arms an eight-second capture of the
+    // audio callback output; "read" reports progress, then the saved WAV.
+    captureAudioOutput(action: "start" | "read", token: string): Promise<AudioOutputCaptureReply> {
+        return this.client.request("audioDevices.captureDiagnostic", { action, token });
     }
 
     getAudioDevices(): Promise<AudioDevicesSnapshot> {
@@ -128,8 +135,9 @@ export class WorkspaceRpc {
     beginManualControl(interactionId: string, control: ManualControlId, value: number): Promise<void> {
         return this.client.request("manualControls.begin", this.mutationParams({ interactionId, ...control, value }));
     }
-    updateManualControl(interactionId: string, value: number): Promise<void> {
-        return this.client.request("manualControls.update", this.mutationParams({ interactionId, value }));
+    // A live gesture value: unacknowledged, revision-free, latest value wins.
+    updateManualControl(interactionId: string, value: number): void {
+        this.client.notify("manualControls.update", { interactionId, value });
     }
     endManualControl(interactionId: string, value: number): Promise<void> {
         return this.client.request("manualControls.end", this.mutationParams({ interactionId, value }));

@@ -1,15 +1,19 @@
 #include <intravenous/basic_nodes/filters.h>
 #include <intravenous/basic_nodes/automation.h>
+#include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/node/coverage_port_context.h>
 #include <intravenous/node/tick.h>
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cmath>
 #include <limits>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -431,6 +435,97 @@ TEST(TickPointwiseExecution, ExposesHistoryPlusOneCurrentValue)
 
     EXPECT_FLOAT_EQ(output_storage[0], 18.0f);
     EXPECT_FLOAT_EQ(output_storage[1], 13.0f);
+}
+
+std::vector<iv::Sample> render_sine(
+    std::vector<iv::Sample> frequencies,
+    float phase_offset,
+    std::size_t block_size,
+    std::uint64_t preceding_samples = 0)
+{
+    std::vector<iv::Sample> phases(frequencies.size(), iv::Sample{phase_offset});
+    std::vector<iv::Sample> output(frequencies.size());
+    std::array inputs{
+        sample_input_binding(phases), sample_input_binding(frequencies)};
+    std::array outputs{sample_output_binding(output)};
+    iv::SineOscillator node;
+    iv::SineOscillator::State state;
+    iv::TickContext<iv::SineOscillator> context{
+        iv::details::TickPortBindings<iv::SineOscillator>{
+            .continuous_inputs = inputs,
+            .continuous_outputs = outputs,
+        },
+        48000, 0, std::as_writable_bytes(std::span{&state, 1}),
+    };
+    if (preceding_samples != 0) {
+        // Establish real oscillator state, then jump to a later callback.
+        // A constant frequency permits this without rendering minutes of audio.
+        iv::do_tick_block(node, iv::TickBlockContext<iv::SineOscillator>{
+            context, iv::FractionalGlobalIndex::from_global(index(12345)), 1,
+        });
+    }
+    for (std::size_t begin = 0; begin < frequencies.size(); begin += block_size) {
+        for (auto& input : inputs) input.sequential_begin_index = begin;
+        outputs[0].sequential_begin_index = begin;
+        iv::do_tick_block(node, iv::TickBlockContext<iv::SineOscillator>{
+            context,
+            iv::FractionalGlobalIndex::from_global(index(12345 + preceding_samples + begin)),
+            std::min(block_size, frequencies.size() - begin),
+        });
+    }
+    return output;
+}
+
+TEST(SineOscillator, FrequencyAndPhaseOffsetUseNormalizedCycles)
+{
+    auto const output = render_sine(std::vector<iv::Sample>(4096, 440.0f), 0.25f, 256);
+    for (std::size_t i = 0; i < output.size(); ++i) {
+        auto const expected = std::sin(
+            2.0 * std::numbers::pi * 440.0 * (i + 1) / 48000.0
+            + 0.25 * std::numbers::pi);
+        ASSERT_NEAR(output[i].value, expected, 1e-6) << "sample " << i;
+    }
+}
+
+TEST(SineOscillator, FrequencyRampsPreservePhaseAcrossWrapsAndCallbackBoundaries)
+{
+    std::vector<iv::Sample> frequencies(4096);
+    for (std::size_t i = 0; i < frequencies.size(); ++i) {
+        // Hold, ramp up, hold, ramp down. Several phase wraps occur during
+        // each ramp, including on the first change after a constant hold.
+        float const value = i < 768 ? 265.0f
+            : i < 1792 ? 265.0f + (i - 768) * (735.0f / 1024.0f)
+            : i < 2560 ? 1000.0f
+            : 1000.0f - (i - 2560) * (855.0f / 1536.0f);
+        frequencies[i] = value;
+    }
+    auto const block_output = render_sine(frequencies, 0.25f, 256);
+    auto const sliced_output = render_sine(frequencies, 0.25f, 37);
+    double phase = 0.25 * std::numbers::pi;
+    for (std::size_t i = 0; i < frequencies.size(); ++i) {
+        phase += 2.0 * std::numbers::pi * frequencies[i].value / 48000.0;
+        ASSERT_NEAR(block_output[i].value, std::sin(phase), 1e-6) << "sample " << i;
+        ASSERT_FLOAT_EQ(sliced_output[i].value, block_output[i].value) << "sample " << i;
+    }
+}
+
+TEST(SineOscillator, LongHeldFrequencyKeepsItsWaveformWhenItStartsChanging)
+{
+    for (auto const elapsed : {std::uint64_t{48000 * 60}, std::uint64_t{48000 * 3600}}) {
+        std::vector<iv::Sample> frequencies(4096, 440.0f);
+        for (std::size_t i = 2048; i < frequencies.size(); ++i) {
+            frequencies[i] = 440.0f + (i - 2048) * (200.0f / 2048);
+        }
+        auto const output = render_sine(frequencies, 0.25f, 256, elapsed);
+        long double phase = 0.25L * std::numbers::pi_v<long double>
+            + 2.0L * std::numbers::pi_v<long double>
+                * std::fmod(440.0L * elapsed / 48000, 1.0L);
+        for (std::size_t i = 0; i < output.size(); ++i) {
+            phase += 2.0L * std::numbers::pi_v<long double> * frequencies[i].value / 48000;
+            ASSERT_NEAR(output[i].value, std::sin(phase), 1e-6)
+                << "elapsed samples " << elapsed << ", sample " << i;
+        }
+    }
 }
 
 struct RequestNode {

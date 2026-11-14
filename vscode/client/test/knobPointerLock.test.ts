@@ -63,15 +63,30 @@ test("an external unlock finishes once, and a denied request keeps bounded dragg
     assert.deepEqual(ends[1], [2, { x: 15, y: 15 }]);
 });
 
-test("a quick regrab adopts the pending acquisition without overlapping browser requests", () => {
-    const { owner, requests, lock, moves } = harness();
+test("a quick regrab discards the previous press's pending lock and obtains its own anchor", () => {
+    const { owner, requests, lock, moves, exits } = harness();
     owner.start(1, { x: 10, y: 10 });
     owner.release(1, { x: 10, y: 10 });
     owner.start(2, { x: 20, y: 20 });
     assert.equal(requests(), 1);
     lock(true);
+    assert.equal(exits(), 1);
+    assert.equal(owner.move(99), false);
+    lock(false);
+    assert.equal(requests(), 2);
+    lock(true);
     owner.move(100);
     assert.deepEqual(moves, [[2, 100]]);
+});
+
+test("a second press cannot steal a held drag, even with a reused mouse pointer id", () => {
+    const { owner, lock, moves, ends } = harness();
+    owner.start(1, { x: 10, y: 20 }); lock(true);
+    owner.start(1, { x: 10, y: 50 });
+    owner.move(5);
+    owner.release(1, { x: 10, y: 50 });
+    assert.deepEqual(moves, [[1, 5]]);
+    assert.deepEqual(ends, [[1, { x: 10, y: 20 }]]);
 });
 
 test("the old drag's delayed unlock cannot terminate the next drag", () => {

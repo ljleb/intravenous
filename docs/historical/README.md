@@ -203,3 +203,16 @@ These documents are retained because they record deleted architectures, supersed
 - [Removed Knob Pointer-Lock Recorder](./knob_pointer_recorder_removed_2026-11-14.md)
   preserves the debugging command's instructions and previous implementation
   checkpoint after the owner requested removal of the recorder.
+
+- [Manual-Control Gesture Updates Before Transient Live Values (2026-11-14)](./manual_control_durable_gesture_updates_2026-11-14.md)
+  preserves the per-update durable write and history grouping that made knob
+  audio stepped; the replacement is "Live gesture values are transient" in
+  [Node Presentation And Manual Controls](../node_presentation_and_manual_controls_direction.md).
+
+- [Audio Output Diagnostics (2026-11-14)](./audio_output_diagnostics_2026-11-14.md)
+  preserves the silent-output probe investigation after the owner asked to remove
+  the probes.
+
+- [Knob Recording Analysis Before The Direct Oscillator Capture](./knob_recording_analysis_before_direct_oscillator_capture_2026-11-14.md)
+  preserves the first panner recording analysis and its incorrect conclusion
+  about oscillator phase continuity before the direct recording exposed the bug.

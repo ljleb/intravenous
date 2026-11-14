@@ -81,6 +81,35 @@ static_assert(sizeof(ManualControlRuntimeState) == 2 * sizeof(std::uint32_t));
 static_assert(std::atomic_ref<std::uint32_t>::is_always_lock_free,
     "manual-control target updates must stay lock-free");
 
+// The latest value of the open gestures on one semantic control. One cell per
+// ManualControlId is shared by every execution generation that binds the control,
+// so a gesture update needs no generation lookup, executor guard, or project lock:
+// the control path stores target_bits, and while open_gestures is nonzero the audio
+// thread copies it into the active NodeStorage before each root call. Completion
+// also publishes a sequence so the next callback repairs a copy that raced with
+// the final commit, even after the last gesture has closed.
+struct ManualControlLiveTarget {
+    std::atomic<std::uint32_t> target_bits{0};
+    std::atomic<std::uint32_t> open_gestures{0};
+    // A callback that began copying before end committed must observe that
+    // final value on its next call, even though the gesture is now closed.
+    std::atomic<std::uint64_t> completion_sequence{0};
+};
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+static_assert(std::atomic<std::uint32_t>::is_always_lock_free,
+    "manual-control live targets must stay lock-free");
+
+// How a control-path target change relates to a manual-control gesture.
+enum class ManualControlGesturePhase {
+    // A settled value for one named execution generation.
+    none,
+    // A gesture opens at this value; its live target follows later updates.
+    begin,
+    // A gesture closes at this committed value. Every accepted generation that
+    // binds the control receives it before the live target is released.
+    end,
+};
+
 // Cold metadata that lets GraphExecutor update the state owned by one active
 // NodeStorage without inspecting GraphJit's internal lowering plan.
 struct ManualControlRuntimeBinding {

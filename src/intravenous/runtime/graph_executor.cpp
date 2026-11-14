@@ -1092,6 +1092,29 @@ GraphExecutorStageResult GraphExecutor::stage(
         production_reservation_failed_,
         producer_capacity_,
         background_executor_.work_signal());
+    // Live gesture targets are resolved before the generation becomes visible,
+    // so realtime copies through stable pointers and never searches.
+    {
+        auto const storage_size = prepared->realtime.storage.buffer().size();
+        prepared->live_targets.reserve(prepared->graph->manual_controls.size());
+        for (auto const& binding : prepared->graph->manual_controls) {
+            auto const offset = binding.state_storage_offset
+                + offsetof(ManualControlRuntimeState, target_bits);
+            if (offset > storage_size
+                || sizeof(std::uint32_t) > storage_size - offset
+                || offset % alignof(std::uint32_t) != 0) {
+                throw std::logic_error(
+                    "GraphExecutor manual-control state lies outside NodeStorage");
+            }
+            auto target = live_target(binding.configured.id);
+            auto const completion = target->completion_sequence.load(std::memory_order_acquire);
+            prepared->live_targets.push_back({
+                .target = std::move(target),
+                .target_storage_offset = offset,
+                .observed_completion = completion,
+            });
+        }
+    }
     prepared->background.tick_materialization_demand =
         tick_materialization_demand_;
     prepared->background.tick_materialization_required =
@@ -1189,6 +1212,61 @@ bool GraphExecutor::set_manual_control_target(
     return true;
 }
 
+std::shared_ptr<ManualControlLiveTarget> GraphExecutor::live_target(
+    ManualControlId const& id)
+{
+    std::scoped_lock lock(live_targets_mutex_);
+    std::erase_if(live_targets_, [](auto const& entry) {
+        return entry.second.expired();
+    });
+    auto found = std::ranges::find(
+        live_targets_, id, [](auto const& entry) -> ManualControlId const& {
+            return entry.first;
+        });
+    if (found != live_targets_.end()) {
+        if (auto target = found->second.lock()) return target;
+    }
+    auto target = std::make_shared<ManualControlLiveTarget>();
+    if (found != live_targets_.end()) found->second = target;
+    else live_targets_.emplace_back(id, target);
+    return target;
+}
+
+bool GraphExecutor::set_manual_control_target_in_accepted_chain(
+    ManualControlId const& id, Sample value)
+{
+    auto update = [&](ExecutionGeneration& generation) {
+        if (!std::ranges::any_of(
+                generation.graph->manual_controls,
+                [&](ManualControlRuntimeBinding const& binding) {
+                    return binding.configured.id == id;
+                })) {
+            return false;
+        }
+        auto target = std::ranges::find(
+            generation.manual_control_targets, id,
+            [](auto const& entry) -> ManualControlId const& {
+                return entry.first;
+            });
+        if (target == generation.manual_control_targets.end()) {
+            generation.manual_control_targets.emplace_back(id, value);
+        } else {
+            target->second = value;
+        }
+        if (generation.realtime_initialized) {
+            (void)write_manual_control_target(
+                *generation.graph, generation.realtime.storage, id, value);
+        }
+        return true;
+    };
+    bool updated = realtime_active_ && update(*realtime_active_);
+    for (auto* pending = pending_head_; pending;
+         pending = pending->successor_owner.get()) {
+        updated |= update(*pending);
+    }
+    return updated;
+}
+
 ProjectGraphGraphExecutorResult GraphExecutor::handle_project_graph_transaction(
     std::shared_ptr<CompiledGraph const> const& compiled_graph)
 {
@@ -1206,11 +1284,46 @@ ProjectGraphGraphExecutorResult GraphExecutor::handle_project_graph_transaction(
 void GraphExecutor::handle_project_graph_controls(
     ProjectGraphGraphExecutorControlsRequest& request)
 {
-    if (request.target) {
-        request.target_applied = set_manual_control_target(
-            request.target->project_generation,
-            request.target->id,
-            request.target->value);
+    for (auto& target : request.targets) {
+        auto const bits = std::bit_cast<std::uint32_t>(target.value.value);
+        switch (target.gesture) {
+        case ManualControlGesturePhase::none:
+            request.target_applied |= set_manual_control_target(
+                target.project_generation, target.id, target.value);
+            break;
+        case ManualControlGesturePhase::begin: {
+            // Store before opening, so realtime never copies a stale value.
+            target.live_target = live_target(target.id);
+            target.live_target->target_bits.store(bits, std::memory_order_relaxed);
+            target.live_target->open_gestures.fetch_add(1, std::memory_order_release);
+            request.target_applied |= set_manual_control_target(
+                target.project_generation, target.id, target.value);
+            break;
+        }
+        case ManualControlGesturePhase::end: {
+            // The committed value reaches the cell and every accepted
+            // generation before the gesture closes, so the last realtime copy
+            // and the settled targets agree.
+            auto const live = live_target(target.id);
+            live->target_bits.store(bits, std::memory_order_relaxed);
+            {
+                struct Unlock {
+                    GraphExecutor* executor;
+                    ~Unlock() { executor->unlock_accepted_chain(); }
+                };
+                lock_accepted_chain();
+                Unlock unlock{this};
+                request.target_applied |=
+                    set_manual_control_target_in_accepted_chain(target.id, target.value);
+            }
+            auto open = live->open_gestures.load(std::memory_order_relaxed);
+            while (open != 0 && !live->open_gestures.compare_exchange_weak(
+                       open, open - 1, std::memory_order_release,
+                       std::memory_order_relaxed)) {}
+            live->completion_sequence.fetch_add(1, std::memory_order_release);
+            break;
+        }
+        }
     }
     if (request.realtime_code) {
         request.realtime_code_result = stage_realtime_code(request.realtime_code);
@@ -1581,6 +1694,19 @@ void GraphExecutor::tick_block(GlobalIndex sample_index, std::size_t block_size)
             "GraphExecutor tick block size is outside the compiled specialization");
     }
     generation.update_realtime_phase();
+    // An open gesture's latest value reaches the root's per-call latch here,
+    // independently of the control path's generation chain and locks.
+    auto* const storage_base = generation.realtime.storage.buffer().data();
+    for (auto& live : generation.live_targets) {
+        auto const completion = live.target->completion_sequence.load(std::memory_order_acquire);
+        if (live.target->open_gestures.load(std::memory_order_acquire) == 0
+            && completion == live.observed_completion) continue;
+        std::atomic_ref<std::uint32_t>(*reinterpret_cast<std::uint32_t*>(
+            storage_base + live.target_storage_offset))
+            .store(live.target->target_bits.load(std::memory_order_relaxed),
+                std::memory_order_relaxed);
+        live.observed_completion = completion;
+    }
     auto const* persisted = realtime_persisted_state_.adopt(
         generation.graph->project_generation);
     if (!persisted) {

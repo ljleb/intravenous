@@ -494,6 +494,7 @@ The current source entries are:
 | Source module | Entry | Opened in |
 | --- | --- | --- |
 | `SocketRpcServer` | one client message, named by its JSON-RPC method | the request command handler |
+| `SocketRpcServer` | one live manual-control update notification | that client's connection reader |
 | `SocketRpcServer` | one client connection cleanup | the client cleanup command |
 | `PackageWatcherService` | one package refresh; `rebuildStarted`; a discovery or service failure report | its worker |
 | `ProjectPersistence` | one project-file replay | `ProjectPersistence::load` |

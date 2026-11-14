@@ -52,6 +52,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         async deserializeWebviewPanel(panel) { graphEditor.revive(panel); },
     }));
 
+    // Temporary diagnostic for knob smoothness; remove with its server capture.
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.recordKnobAudio", async () => {
+        try {
+            const recordPath = await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: "Intravenous: recording 8 seconds of audio output. Drag a knob now.",
+            }, () => graphEditor.recordKnobAudio());
+            void vscode.window.showInformationMessage(`Intravenous knob audio recorded: ${recordPath}`);
+        } catch (error: any) {
+            void vscode.window.showErrorMessage(`Cannot record knob audio: ${error.message}`);
+        }
+    }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.saveProject", async () => {
         try {
             await session.saveProject();

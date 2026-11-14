@@ -17,6 +17,7 @@ import ManualValuePopover from "../presentation/ManualValuePopover.vue";
 import { manualControlKey, resolveManualControl } from "../../src/manualControls";
 import { KnobPointerLock } from "../../src/knobPointerLock";
 import { KnobClicks } from "../../src/knobClicks";
+import { KnobPointerTrace } from "../../src/knobAudioRecording";
 import { projectHistoryShortcut } from "../../src/projectHistoryShortcut";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
 import { connectionEndKey, connectionWirePath, portEndpointKey, portSlotKey, selectedLaneConnections, selectedLaneWirePath,
@@ -31,6 +32,26 @@ const manualVersion = ref(0);
 let lastManualHint = "";
 let manualLockError = "";
 const knobClicks = new KnobClicks();
+let knobTrace: { token: string; trace: KnobPointerTrace } | null = null;
+function traceKnob(kind: string, event?: MouseEvent | PointerEvent, selected?: string) {
+    knobTrace?.trace.record(kind, performance.timeOrigin + performance.now(), () => {
+        const identify = (target: EventTarget | null | undefined) => target instanceof Element
+            ? { tag: target.tagName, classes: target.getAttribute("class"),
+                control: target.closest<HTMLElement>(".manual-input")?.dataset.manualControl ?? null }
+            : null;
+        return { selected, pointer: event ? { x: event.clientX, y: event.clientY, button: event.button,
+            screenX: event.screenX, screenY: event.screenY,
+            buttons: event.buttons, movementX: event.movementX, movementY: event.movementY,
+            pointerId: "pointerId" in event ? event.pointerId : null } : null,
+            target: identify(event?.target), hit: identify(event && document.elementFromPoint(event.clientX, event.clientY)),
+            active: manualGestures.pointerControl(), lock: manualPointer.status(), focused: document.hasFocus(),
+            knobs: kind === "press" || kind === "pointer-down" || kind === "lock-change"
+                ? [...document.querySelectorAll<HTMLElement>(".manual-input")].map((element) => {
+                    const rect = element.getBoundingClientRect();
+                    return { control: element.dataset.manualControl, x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+                }).filter((rect) => rect.width && rect.height) : undefined };
+    });
+}
 const manualGestures = new ManualControlGestures(
     (action) => webviewApi.postMessage({ type: "manualControlAction", action }),
     () => crypto.randomUUID(), () => { ++manualVersion.value; publishManualHint(); });
@@ -42,8 +63,8 @@ const manualPointer = new KnobPointerLock({
     if (!point) knobClicks.cancel();
     const control = manualGestures.pointerControl();
     const knob = point && document.elementFromPoint(point.x, point.y)?.closest<HTMLElement>(".manual-input");
-    if (!control || !knob || knob.dataset.manualControl !== manualControlKey(control)) manualGestures.hover(null);
     manualGestures.release(id);
+    if (!control || !knob || knob.dataset.manualControl !== manualControlKey(control)) manualGestures.hover(null);
     if (surface.value?.hasPointerCapture(id)) surface.value.releasePointerCapture(id);
 }, (message) => {
     manualLockError = message; publishManualHint();
@@ -55,6 +76,8 @@ function reportPointerDiagnostic(reason: string) {
     }) });
 }
 provideManualControls({ gestures: manualGestures, version: manualVersion, startKnob: (event, control, descriptor, limits) => {
+    traceKnob("press", event, manualControlKey(control));
+    if (manualGestures.pointerControl()) return;
     surface.value?.focus({ preventScroll: true });
     manualGestures.hover(control, descriptor, limits);
     const origin = { x: event.clientX, y: event.clientY };
@@ -64,8 +87,8 @@ provideManualControls({ gestures: manualGestures, version: manualVersion, startK
     }
     const scale = limits.min !== undefined && limits.max !== undefined && limits.max > limits.min
         ? (limits.max - limits.min) / 200 : Math.max(Math.abs(manualGestures.state(control)?.value ?? descriptor.value), 1) / 100;
+    if (!manualGestures.scrub(control, descriptor, event.pointerId, -event.clientY, scale, limits)) return;
     surface.value?.setPointerCapture(event.pointerId);
-    manualGestures.scrub(control, descriptor, event.pointerId, -event.clientY, scale, limits);
     manualLockError = "";
     manualPointer.start(event.pointerId, origin, event.pointerType === "mouse");
 } });
@@ -86,15 +109,18 @@ function moveManual(event: PointerEvent) {
     if (manualGestures.pointerId() !== event.pointerId) return;
     event.stopImmediatePropagation();
     if (document.pointerLockElement === surface.value) return;
+    traceKnob("move", event);
     if (!(event.buttons & 1)) { releaseManual(event); return; }
     knobClicks.move(event.movementX, event.movementY);
     manualGestures.move(event.pointerId, -event.clientY);
 }
 function releaseManual(event: PointerEvent) {
+    if (manualGestures.pointerControl()) traceKnob("release", event);
     if (manualGestures.pointerId() === event.pointerId) knobClicks.release(performance.now());
     manualPointer.release(event.pointerId, { x: event.clientX, y: event.clientY });
 }
 function lockedManualMove(event: MouseEvent) {
+    traceKnob("move", event);
     if (document.pointerLockElement !== surface.value) return;
     event.stopImmediatePropagation();
     // A synthesized move with an empty buttons mask is not a mouse release.
@@ -105,11 +131,13 @@ function lockedManualMove(event: MouseEvent) {
 function lockedManualRelease(event: MouseEvent) {
     const id = manualGestures.pointerId();
     if (event.button === 0 && id !== null) {
+        traceKnob("mouse-release", event);
         knobClicks.release(performance.now());
         manualPointer.release(id, { x: event.clientX, y: event.clientY });
     }
 }
 function manualLockChanged() {
+    traceKnob("lock-change");
     const before = manualPointer.status();
     if (before.granted && document.pointerLockElement !== surface.value) reportPointerDiagnostic("Browser released pointer lock before mouse release");
     manualPointer.changed();
@@ -129,13 +157,14 @@ function wheelManual(event: WheelEvent) {
     manualGestures.changeSensitivity(event.deltaY || event.deltaX);
 }
 function clickOutsideManual(event: PointerEvent) {
+    traceKnob("pointer-down", event);
     const target = event.target instanceof Element ? event.target : null;
     if (target?.closest(".manual-value-popover")) return;
     manualGestures.cancelEntry();
     if (!target?.closest(".manual-input") || event.button !== 0) knobClicks.cancel();
     if (!target?.closest(".manual-input")) { manualPointer.cancel(); manualGestures.finish(); }
 }
-function blurManual() { knobClicks.cancel(); manualPointer.cancel(); manualGestures.finish(); manualGestures.cancelEntry(); manualGestures.hover(null); }
+function blurManual() { traceKnob("blur"); knobClicks.cancel(); manualPointer.cancel(); manualGestures.finish(); manualGestures.cancelEntry(); manualGestures.hover(null); }
 
 let initializedLayout = false;
 const surface = ref<HTMLElement | null>(null);
@@ -427,8 +456,20 @@ function createPackage() {
     creatingPackage.value = false;
 }
 function receive(event: MessageEvent<GraphEditorHostMessage>) {
+    if (event.data?.type === "knobTrace") {
+        if (event.data.action === "start") {
+            knobTrace = { token: event.data.token, trace: new KnobPointerTrace() };
+            traceKnob("armed");
+        } else if (knobTrace?.token === event.data.token) {
+            const trace = knobTrace;
+            traceKnob("stopped");
+            knobTrace = null;
+            webviewApi.postMessage({ type: "knobTrace", token: trace.token, ...trace.trace.snapshot() });
+        }
+        return;
+    }
     if (event.data?.type === "manualControlState") {
-        manualGestures.receive(event.data.interactions);
+        manualGestures.receive(event.data.interactions, event.data.live);
         if (!manualGestures.pointerControl()) manualPointer.cancel();
         return;
     }

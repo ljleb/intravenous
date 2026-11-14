@@ -25,6 +25,8 @@ struct SocketRpcRouteContext {
     // Publishes the read-model changes a project-graph request committed,
     // after its response. They return on the request's result builder.
     std::function<void(ProjectGraphPublication const&)> publish_project_graph{};
+    // Drops relayed live values of one gesture that have not been written yet.
+    std::function<void(std::string const&)> discard_live_frames{};
 };
 
 class SocketRpcRouteRegistry {

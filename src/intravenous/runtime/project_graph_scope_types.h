@@ -25,6 +25,9 @@ struct ProjectGraphScopeManualControl {
     ProjectManualControl control{};
     bool available = false;
     bool participates = false;
+    // The latest value of an open gesture, which is not yet durable. A reader
+    // shows it until a later read reports the gesture closed.
+    std::optional<Sample> live_value{};
 };
 // One child of a graph editor scope. In the project root scope, each child is
 // one desired project instance.

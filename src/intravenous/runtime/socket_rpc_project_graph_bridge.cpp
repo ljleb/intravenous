@@ -57,8 +57,8 @@ IV_SUBSCRIBE_LINKER_EVENT(
     &ProjectGraph::handle_socket_rpc_begin_manual_control_interaction)
 IV_SUBSCRIBE_LINKER_EVENT(
     socket_rpc_project_graph_bridge,
-    iv_socket_rpc_update_manual_control_interaction_event,
-    &ProjectGraph::handle_socket_rpc_update_manual_control_interaction)
+    iv_socket_rpc_live_manual_control_update_event,
+    &ProjectGraph::handle_live_manual_control_update)
 IV_SUBSCRIBE_LINKER_EVENT(
     socket_rpc_project_graph_bridge,
     iv_socket_rpc_end_manual_control_interaction_event,

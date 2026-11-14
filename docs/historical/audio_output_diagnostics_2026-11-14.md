@@ -1,5 +1,14 @@
 # Audio output diagnostics
 
+_Status: historical, non-normative. Moved from `docs/audio_output_diagnostics.md`
+on 2026-11-14 when the repository owner asked to remove the periodic audio
+probes after audible output was confirmed. The probes (`AudioOutputProbe`,
+`AudioOutputProbeSlot`, `AudioOutputProbeRate`, the `IV_AUDIO_DIAGNOSTICS`
+switch, and the two-second `Intravenous audio probe:` report) were deleted from
+source. The one-shot `AudioOutputCapture` remains only for the temporary
+knob-audio recorder described in
+[Vue Client Implementation Stages](../vue_client_implementation_stages.md)._
+
 The owner reports no audible graph output. The active device status alone does
 not establish that a graph runs or that it produces a nonzero signal. These
 temporary probes locate the first failing boundary before a targeted fix.

@@ -1,4 +1,4 @@
-import type { ManualControlAction, ManualControlDescriptor, ManualControlId, ManualControlInteractionState } from "./manualControls";
+import type { ManualControlAction, ManualControlDescriptor, ManualControlId, ManualControlInteractionState, ManualControlLiveValue } from "./manualControls";
 import { manualControlKey } from "./manualControls";
 import { addressKey, type NodeAddress } from "./graphScope";
 
@@ -27,6 +27,7 @@ export class ManualControlGestures {
     private hoverDetails: Hover | null = null;
     private entry: ManualValueEntry | null = null;
     private remote: ManualControlInteractionState[] = [];
+    private live: ManualControlLiveValue[] = [];
     private readonly ending = new Map<string, ManualControlInteractionState>();
     constructor(private readonly send: (action: ManualControlAction) => void,
         private readonly newId: () => string, private readonly changed: () => void) {}
@@ -36,8 +37,14 @@ export class ManualControlGestures {
         return this.ending.get(manualControlKey(control))
             ?? this.remote.find((entry) => manualControlKey(entry.control) === manualControlKey(control));
     }
-    receive(states: ManualControlInteractionState[]): void {
+    // The value of a gesture held elsewhere: another view or another client.
+    // This view's own gesture state takes precedence through state().
+    liveValue(control: ManualControlId): number | undefined {
+        return this.live.find((entry) => manualControlKey(entry.control) === manualControlKey(control))?.value;
+    }
+    receive(states: ManualControlInteractionState[], live: ManualControlLiveValue[] = []): void {
         this.remote = states;
+        this.live = live;
         for (const [key, pending] of this.ending) {
             if (states.some((entry) => entry.interactionId === pending.interactionId
                 && (entry.phase === "settled" || entry.phase === "failed"))) this.ending.delete(key);
@@ -47,6 +54,10 @@ export class ManualControlGestures {
         this.changed();
     }
     hover(control: ManualControlId | null, descriptor?: ManualControlDescriptor, limits: ManualControlLimits = {}): void {
+        // Pointer lock and focus changes can synthesize boundary events for
+        // other knobs. They cannot transfer ownership of a held drag.
+        if (this.active?.pointer && (!control
+            || manualControlKey(control) !== manualControlKey(this.active.control))) return;
         this.hoverDetails = control && descriptor ? { control, descriptor, limits } : null;
         const same = this.hovered && control && manualControlKey(this.hovered) === manualControlKey(control);
         if (!same && (this.hovered || control)) this.send({ action: "hover", control });
@@ -85,12 +96,14 @@ export class ManualControlGestures {
         this.changed();
     }
     scrub(control: ManualControlId, descriptor: ManualControlDescriptor,
-        pointerId: number, position: number, unitsPerPixel: number, limits: ManualControlLimits = {}): void {
+        pointerId: number, position: number, unitsPerPixel: number, limits: ManualControlLimits = {}): boolean {
+        if (this.active?.pointer) return false;
         this.cancelEntry();
         this.edit(control, descriptor);
-        if (!this.active || !Number.isFinite(unitsPerPixel) || unitsPerPixel <= 0) return;
+        if (!this.active || !Number.isFinite(unitsPerPixel) || unitsPerPixel <= 0) return false;
         this.active.pointer = { id: pointerId, position, initialScale: unitsPerPixel, speed: 0, plateau: 0, limits };
         this.changed();
+        return true;
     }
     update(control: ManualControlId, value: number): void {
         if (!this.active || manualControlKey(this.active.control) !== manualControlKey(control) || !Number.isFinite(value)) return;
@@ -212,5 +225,5 @@ export class ManualControlGestures {
         this.send({ action: "end", interactionId: active.interactionId, value: active.value });
         this.changed();
     }
-    disconnected(): void { this.active = null; this.hovered = null; this.hoverDetails = null; this.entry = null; this.remote = []; this.ending.clear(); this.changed(); }
+    disconnected(): void { this.active = null; this.hovered = null; this.hoverDetails = null; this.entry = null; this.remote = []; this.live = []; this.ending.clear(); this.changed(); }
 }

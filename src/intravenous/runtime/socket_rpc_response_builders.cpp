@@ -463,7 +463,11 @@ Json graph_scope_ports_json(std::vector<NodeInstancePortInfo> const& ports,
             {"participation", control->control.participation == ManualControlParticipation::disconnected_only
                 ? "disconnectedOnly" : "participateWithConnections"},
             {"available", control->available}, {"participates", control->participates},
+            {"live", control->live_value.has_value()},
         };
+        if (control != controls.end() && control->live_value) {
+            entry["manualControl"]["liveValue"] = control->live_value->value;
+        }
         json.push_back(std::move(entry));
     }
     return json;

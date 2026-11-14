@@ -7,6 +7,7 @@
 #include <intravenous/node/manual_control.h>
 
 #include <filesystem>
+#include <array>
 #include <functional>
 #include <cstdint>
 #include <memory>
@@ -68,13 +69,32 @@ struct BeginManualControlInteractionRequest {
     ManualControlId id{};
     Sample value{};
 };
-struct UpdateManualControlInteractionRequest {
+// One transient gesture value. A client sends it as an id-less JSON-RPC
+// notification; the server handles it on that client's reader thread, outside
+// the ordered command queue, and sends no reply. It changes no durable state and
+// takes no session revision. The results return on this record so the server can
+// relay the accepted value to the other clients.
+struct LiveManualControlUpdateRequest {
     ManualControlInteractionId interaction{};
     Sample value{};
+    bool applied = false;
+    ManualControlId control{};
 };
+// Identifies one gesture's relayed live values among all clients' frames.
+inline std::string live_gesture_key(ManualControlInteractionId const& interaction)
+{
+    return interaction.client_id + '\n' + interaction.interaction_id;
+}
 struct EndManualControlInteractionRequest {
     ManualControlInteractionId interaction{};
     Sample value{};
+};
+// One closed client connection. The client's open gestures end at the last
+// values the server received from it; project_state_changed reports whether that
+// committed durable state, so the server publishes one revision for it.
+struct SocketRpcClientDisconnectedRequest {
+    std::string client_id{};
+    bool project_state_changed = false;
 };
 
 struct DispatchNodeMessageRequest {
@@ -86,6 +106,20 @@ struct DispatchNodeMessageRequest {
 struct GetNodeEventProtocolRequest {};
 
 struct GetAudioDevicesRequest {};
+// Temporary output diagnostics. This does not mutate the project revision.
+struct CaptureAudioOutputRequest {
+    std::string action{};
+    std::string token{};
+    bool handled = false;
+    bool recording = false;
+    std::string path{};
+    std::size_t sample_rate = 0;
+    std::size_t channels = 0;
+    std::size_t sample_count = 0;
+    std::uint64_t server_time_ms = 0;
+    std::uint64_t server_steady_us = 0;
+    std::vector<std::array<std::uint64_t, 3>> blocks{};
+};
 struct SetProjectToolchainRequest { ProjectToolchainSettings settings{}; };
 struct SetAudioDevicesRequest {
     std::optional<std::string> output_device_id {};
@@ -128,11 +162,11 @@ using SocketRpcRequestPayload = std::variant<
     DeleteManualControlRequest,
     SetManualControlHoverRequest,
     BeginManualControlInteractionRequest,
-    UpdateManualControlInteractionRequest,
     EndManualControlInteractionRequest,
     GetNodeEventProtocolRequest,
     DispatchNodeMessageRequest,
     GetAudioDevicesRequest,
+    CaptureAudioOutputRequest,
     SetProjectToolchainRequest,
     SetAudioDevicesRequest,
     SaveProjectRequest,
@@ -152,4 +186,9 @@ struct ParsedSocketRpcRequest {
 };
 
 ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line);
+
+// Returns the update carried by an id-less `manualControls.update` notification,
+// or nothing for every other message. Throws when such a notification is malformed.
+std::optional<LiveManualControlUpdateRequest>
+parse_live_manual_control_update(std::string_view line);
 } // namespace iv

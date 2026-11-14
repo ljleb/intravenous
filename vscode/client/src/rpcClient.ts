@@ -99,6 +99,15 @@ export class JsonRpcSocketClient {
         });
     }
 
+    // A JSON-RPC notification: no id, so the server sends no reply. Used only
+    // for transient latest values whose loss a later request makes harmless.
+    notify(method: string, params: Record<string, unknown>): void {
+        if (!this.socket) {
+            throw new Error("Intravenous JSON-RPC client is not connected");
+        }
+        this.socket.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n", "utf8");
+    }
+
     private onData(chunk: string): void {
         this.buffer += chunk;
         for (;;) {

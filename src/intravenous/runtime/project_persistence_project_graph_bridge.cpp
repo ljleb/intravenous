@@ -50,10 +50,6 @@ IV_SUBSCRIBE_LINKER_EVENT(
     &ProjectGraph::handle_project_begin_manual_control_interaction)
 IV_SUBSCRIBE_LINKER_EVENT(
     project_persistence_project_graph_bridge,
-    iv_runtime_project_update_manual_control_interaction_requested_event,
-    &ProjectGraph::handle_project_update_manual_control_interaction)
-IV_SUBSCRIBE_LINKER_EVENT(
-    project_persistence_project_graph_bridge,
     iv_runtime_project_end_manual_control_interaction_requested_event,
     &ProjectGraph::handle_project_end_manual_control_interaction)
 IV_SUBSCRIBE_LINKER_EVENT(

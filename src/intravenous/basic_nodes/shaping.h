@@ -270,8 +270,8 @@ namespace iv {
         {
             auto& state = ctx.state();
 
-            double const f = ctx.template input<1>().get();
-            double const phi = ctx.template input<0>().get();
+            double const f = ctx.input<"frequency">().get();
+            double const phi = ctx.input<"phase_offset">().get();
             auto const dt = ctx.sample_period();
 
             if (!state.initialized) {
@@ -302,10 +302,11 @@ namespace iv {
                 state.anchor_phase +
                 state.frequency * 2.0 * (elapsed + 1.0) * dt;
 
-            auto const y =
-                sine((phase + phi) * std::numbers::pi);
+            // Phase and phase_offset use normalized cycles: 2 units per turn.
+            // sine() performs the conversion to radians in its lookup table.
+            auto const y = sine(phase + phi);
 
-            ctx.template output<0>().push(y);
+            ctx.output<"out">().push(y);
         }
     };
 

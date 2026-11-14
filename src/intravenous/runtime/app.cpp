@@ -53,17 +53,12 @@
 
 #include <atomic>
 #include <chrono>
-#include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <exception>
 #include <filesystem>
-#include <fstream>
 #include <functional>
 #include <iostream>
-#include <iomanip>
 #include <optional>
-#include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
@@ -188,7 +183,6 @@ class RuntimeExecutionService {
     SystemAudioDevices* devices_ = nullptr;
     GraphExecutor* executor_ = nullptr;
     std::function<void()> request_shutdown_{};
-    std::function<void()> report_audio_{};
     std::atomic<Failure> failure_ = Failure::none;
     std::optional<std::jthread> thread_{};
 
@@ -218,12 +212,10 @@ public:
     RuntimeExecutionService(
         SystemAudioDevices& devices,
         GraphExecutor& executor,
-        std::function<void()> request_shutdown,
-        std::function<void()> report_audio = {})
+        std::function<void()> request_shutdown)
         : devices_(&devices)
         , executor_(&executor)
         , request_shutdown_(std::move(request_shutdown))
-        , report_audio_(std::move(report_audio))
     {
     }
 
@@ -233,18 +225,12 @@ public:
     {
         if (thread_) return;
         thread_.emplace([this](std::stop_token stop) {
-            auto next_report = std::chrono::steady_clock::now() + std::chrono::seconds(2);
             while (!stop.stop_requested()) {
                 auto const failure = current_failure();
                 if (failure != Failure::none) {
                     failure_.store(failure, std::memory_order_release);
                     request_shutdown_();
                     return;
-                }
-                if (report_audio_ && std::chrono::steady_clock::now() >= next_report) {
-                    // Diagnostic I/O must not interrupt execution or escape a thread.
-                    try { report_audio_(); } catch (...) {}
-                    next_report = std::chrono::steady_clock::now() + std::chrono::seconds(2);
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
@@ -318,21 +304,8 @@ int run_server_mode(int argc, char** argv)
 #if IV_ENABLE_JUCE_VST
     JuceVstRuntimeManager vst_runtime_manager;
 #endif
-    AudioOutputDiagnostics audio_diagnostics;
-    auto const* audio_diagnostic_setting = std::getenv("IV_AUDIO_DIAGNOSTICS");
-    // Enabled during the silent-output investigation. Library users/tests pay
-    // no sampling cost unless they explicitly pass a diagnostics owner.
-    auto* output_diagnostics = audio_diagnostic_setting
-            && std::string_view{audio_diagnostic_setting} == "0"
-        ? nullptr : &audio_diagnostics;
-    // This stream is used only by the reporting service. Do not concurrently
-    // write through compat.cpp's shared diagnostic ostream from this thread.
-    std::ofstream audio_diagnostic_log;
-    if (output_diagnostics) {
-        if (auto const* path = std::getenv("IV_LOG_FILE"); path && *path) {
-            audio_diagnostic_log.open(path, std::ios::app);
-        }
-    }
+    // Destination of the temporary knob-audio recorder; idle unless armed.
+    AudioOutputCapture audio_output_capture;
     SystemAudioDevices system_audio_devices(
         startup.execution.sample_rate,
         startup.execution.block_size,
@@ -348,7 +321,7 @@ int run_server_mode(int argc, char** argv)
         },
         startup.output_device_id,
         startup.input_device_id,
-        output_diagnostics);
+        &audio_output_capture);
     auto execution_resources = system_audio_devices.resources();
 #if IV_ENABLE_JUCE_VST
     JuceVstRuntimeSupport vst_runtime_support(
@@ -383,40 +356,7 @@ int run_server_mode(int argc, char** argv)
     RuntimeExecutionService runtime_execution_service(
         system_audio_devices,
         graph_executor,
-        shutdown,
-        [&] {
-            if (!output_diagnostics) return;
-            auto const selection = system_audio_devices.selected_devices();
-            std::ostringstream message;
-            message << std::setprecision(6) << "Intravenous audio probe: device="
-                << selection.output_device_id.value_or("disabled");
-            auto append = [&](char const* stage, AudioOutputProbeSlot const& slot) {
-                message << " | " << stage << ": ";
-                auto const probe = slot.read();
-                if (!probe) { message << "no observation"; return; }
-                auto const finite = probe->samples - probe->nonfinite;
-                message << "block=" << probe->blocks << " samples=" << probe->samples
-                    << " peak=" << probe->peak
-                    << " rms=" << (finite ? std::sqrt(probe->square_sum / finite) : 0)
-                    << " dc=" << (finite ? probe->sum / finite : 0)
-                    << " nonfinite=" << probe->nonfinite;
-                if (stage == std::string_view{"render"}) {
-                    message << " generation=" << probe->generation << " ticks=" << probe->tick_calls
-                        << " binding_calls=" << probe->binding_calls
-                        << " matched=" << probe->matched_bindings;
-                }
-            };
-            append("render", audio_diagnostics.rendered);
-            append("playback", audio_diagnostics.playback);
-            auto const text = message.str();
-            if (audio_diagnostic_log.is_open()) {
-                audio_diagnostic_log << text << '\n';
-                audio_diagnostic_log.flush();
-            } else {
-                std::cerr << text << '\n';
-            }
-            server.send_server_message({.level = "info", .message = text, .package_root = {}});
-        });
+        shutdown);
 
     // Runtime bridges.
     auto definitions_project_graph_scope =

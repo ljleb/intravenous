@@ -6,6 +6,7 @@ import { nodeDebugDetails } from "./nodeDebugDetails";
 import type { GraphEditorAction, GraphEditorState, GraphEditorWebviewMessage } from "./graphEditorProtocol";
 import type { WorkspaceSession } from "./workspaceSession";
 import type { ManualControlHint } from "./manualControlGesture";
+import type { KnobPointerEvent } from "./knobAudioRecording";
 
 export class GraphEditorProvider implements vscode.Disposable {
     private readonly panels = new Set<vscode.WebviewPanel>();
@@ -28,6 +29,34 @@ export class GraphEditorProvider implements vscode.Disposable {
     private reading = false;
     private disposed = false;
     private layoutError = "";
+    private knobTrace: { token: string; panel: vscode.WebviewPanel;
+        resolve: (value: { events: KnobPointerEvent[]; dropped: number }) => void } | null = null;
+
+    async recordKnobAudio(): Promise<string> {
+        if (this.knobTrace) throw new Error("A knob recording is already active");
+        const panel = this.lastActivePanel && this.ready.has(this.lastActivePanel) ? this.lastActivePanel
+            : [...this.ready][0];
+        if (!panel) throw new Error("Open the Intravenous Graph before recording a knob");
+        const token = crypto.randomUUID();
+        let resolve!: (value: { events: KnobPointerEvent[]; dropped: number }) => void;
+        const result = new Promise<{ events: KnobPointerEvent[]; dropped: number }>((done) => { resolve = done; });
+        this.knobTrace = { token, panel, resolve };
+        try {
+            await panel.webview.postMessage({ type: "knobTrace", token, action: "start" });
+            return await this.session.recordKnobAudio(async () => {
+                await panel.webview.postMessage({ type: "knobTrace", token, action: "stop" });
+                let timeout: ReturnType<typeof setTimeout> | undefined;
+                try {
+                    return await Promise.race([result, new Promise<never>((_, reject) => {
+                        timeout = setTimeout(() => reject(new Error("The graph did not return its pointer trace")), 2000);
+                    })]);
+                } finally { if (timeout) clearTimeout(timeout); }
+            });
+        } finally {
+            this.knobTrace = null;
+            void panel.webview.postMessage({ type: "knobTrace", token, action: "stop" });
+        }
+    }
 
     constructor(private readonly extensionUri: vscode.Uri,
         private readonly session: WorkspaceSession) {
@@ -144,7 +173,10 @@ export class GraphEditorProvider implements vscode.Disposable {
         const root = vscode.Uri.joinPath(this.extensionUri, "dist", "webview");
         panel.webview.options = { enableScripts: true, localResourceRoots: [root] };
         const messages = panel.webview.onDidReceiveMessage(async (message: GraphEditorWebviewMessage) => {
-            if (message?.type === "graphReady") {
+            if (message?.type === "knobTrace") {
+                if (this.knobTrace?.panel === panel && this.knobTrace.token === message.token)
+                    this.knobTrace.resolve({ events: message.events, dropped: message.dropped });
+            } else if (message?.type === "graphReady") {
                 await this.layoutLoaded;
                 if (!this.panels.has(panel)) return;
                 this.interactionHints.delete(panel);
@@ -179,7 +211,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                         type: "manualControlState", interactions: [...this.session.manualControls.states(owner), {
                             interactionId: message.action.interactionId, control: message.action.control,
                             value: message.action.value, phase: "failed", error: error.message,
-                        }],
+                        }], live: this.session.manualControls.live(owner),
                     });
                     void vscode.window.showErrorMessage(`Cannot edit manual input: ${error.message}`);
                 }
@@ -253,6 +285,7 @@ export class GraphEditorProvider implements vscode.Disposable {
         const owner = this.controlOwners.get(panel);
         if (owner && this.ready.has(panel)) void panel.webview.postMessage({
             type: "manualControlState", interactions: this.session.manualControls.states(owner),
+            live: this.session.manualControls.live(owner),
         });
     }
 

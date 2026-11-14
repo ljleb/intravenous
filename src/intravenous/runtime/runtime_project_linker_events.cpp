@@ -41,9 +41,6 @@ IV_DEFINE_LINKER_EVENT(
     ProjectBeginManualControlInteractionRequestedEvent,
     iv_runtime_project_begin_manual_control_interaction_requested_event)
 IV_DEFINE_LINKER_EVENT(
-    ProjectUpdateManualControlInteractionRequestedEvent,
-    iv_runtime_project_update_manual_control_interaction_requested_event)
-IV_DEFINE_LINKER_EVENT(
     ProjectEndManualControlInteractionRequestedEvent,
     iv_runtime_project_end_manual_control_interaction_requested_event)
 IV_DEFINE_LINKER_EVENT(

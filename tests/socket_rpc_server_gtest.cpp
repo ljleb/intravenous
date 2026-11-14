@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include <array>
+#include <atomic>
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
@@ -188,6 +189,32 @@ namespace {
             });
         }
 
+        // Accepts live values of the gesture named "drag" and closes it at end.
+        std::atomic<bool> drag_open{false};
+        void handle_live_manual_control_update(iv::LiveManualControlUpdateRequest& request)
+        {
+            if (request.interaction.interaction_id != "drag" || !drag_open.load()) return;
+            request.applied = true;
+            request.control = {.node = {.instance_id = "osc"}, .input_name = "frequency"};
+        }
+        void handle_begin_manual_control(
+            iv::BeginManualControlInteractionRequest const&, iv::SocketRpcAckResponseBuilder& builder)
+        {
+            drag_open.store(true);
+            builder.succeed();
+        }
+        void handle_end_manual_control(
+            iv::EndManualControlInteractionRequest const&, iv::SocketRpcAckResponseBuilder& builder)
+        {
+            drag_open.store(false);
+            builder.succeed();
+        }
+        // A closed client's open gesture commits as one durable change.
+        void handle_client_disconnected(iv::SocketRpcClientDisconnectedRequest& request)
+        {
+            request.project_state_changed = drag_open.exchange(false);
+        }
+
         // A mutation answers with the read-model changes it committed.
         void handle_delete_node_instance(
             iv::DeleteNodeInstanceRequest const&,
@@ -260,6 +287,22 @@ namespace {
         socket_rpc_server_test_project_graph_bridge,
         iv_socket_rpc_delete_node_instance_event,
         &ProjectGraphFake::handle_delete_node_instance)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_project_graph_bridge,
+        iv_socket_rpc_live_manual_control_update_event,
+        &ProjectGraphFake::handle_live_manual_control_update)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_project_graph_bridge,
+        iv_socket_rpc_begin_manual_control_interaction_event,
+        &ProjectGraphFake::handle_begin_manual_control)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_project_graph_bridge,
+        iv_socket_rpc_end_manual_control_interaction_event,
+        &ProjectGraphFake::handle_end_manual_control)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_project_graph_bridge,
+        iv_socket_rpc_client_disconnected_event,
+        &ProjectGraphFake::handle_client_disconnected)
     IV_DECLARE_BRIDGE(socket_rpc_server_test_audio_graph_bridge, iv::SocketRpcServer, iv::ProjectGraph);
     IV_DEFINE_BRIDGE(socket_rpc_server_test_audio_graph_bridge)
     IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_server_test_audio_graph_bridge,
@@ -658,6 +701,86 @@ TEST(SocketRpcServer, PublishesAMutationsReadModelChangesAfterItsResponse)
     EXPECT_EQ(notification["method"], "nodeInstances.updated");
     EXPECT_EQ(notification["params"]["revision"], 1);
     EXPECT_TRUE(notification["params"]["instances"].empty());
+}
+
+// A live gesture value takes no revision and no reply. Other clients get it
+// as a replaceable frame; none follows the revision that commits its end.
+TEST(SocketRpcServer, RelaysLiveManualValuesToOtherClientsUntilTheGestureEnds)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+    auto second = make_socket_pair();
+    harness.server.attach_client(second[1], true);
+    std::string second_buffer;
+    ASSERT_FALSE(read_line_until(second[0], &second_buffer, socket_rpc_startup_timeout).empty());
+
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":80,"method":"manualControls.begin","params":{"interactionId":"drag","node":{"instanceId":"osc","path":[]},"inputName":"frequency","value":0.25}})"
+        "\n");
+    EXPECT_EQ(nlohmann::ordered_json::parse(harness.read_response(80))["result"]["sessionRevision"], 1);
+    EXPECT_EQ(nlohmann::ordered_json::parse(read_line_until(
+        second[0], &second_buffer, socket_rpc_response_timeout))["method"], "session.revisionChanged");
+
+    harness.write_request(
+        R"({"jsonrpc":"2.0","method":"manualControls.update","params":{"interactionId":"drag","value":0.5}})"
+        "\n");
+    auto const frame = nlohmann::ordered_json::parse(read_line_until(
+        second[0], &second_buffer, socket_rpc_response_timeout));
+    EXPECT_EQ(frame["method"], "manualControls.liveValue");
+    EXPECT_EQ(frame["params"]["inputName"], "frequency");
+    EXPECT_EQ(frame["params"]["node"]["instanceId"], "osc");
+    EXPECT_FLOAT_EQ(frame["params"]["value"].get<float>(), .5f);
+    EXPECT_FALSE(frame["params"].contains("revision"));
+
+    // The next value is still inside the relay interval when the end commits.
+    harness.write_request(
+        R"({"jsonrpc":"2.0","method":"manualControls.update","params":{"interactionId":"drag","value":0.75}})"
+        "\n"
+        R"({"jsonrpc":"2.0","id":81,"method":"manualControls.end","params":{"interactionId":"drag","value":0.75,"expectedRevision":1}})"
+        "\n");
+    EXPECT_EQ(nlohmann::ordered_json::parse(harness.read_response(81))["result"]["sessionRevision"], 2);
+    for (;;) {
+        auto const line = read_line_until(second[0], &second_buffer, socket_rpc_response_timeout);
+        ASSERT_FALSE(line.empty());
+        auto const message = nlohmann::ordered_json::parse(line);
+        if (message["method"] == "session.revisionChanged") {
+            EXPECT_EQ(message["params"]["revision"], 2);
+            break;
+        }
+        EXPECT_EQ(message["method"], "manualControls.liveValue");
+    }
+    EXPECT_TRUE(read_line_until(second[0], &second_buffer, 150ms).empty());
+    // The sender receives neither relays nor replies for its live values,
+    // only the revisions of its begin and end.
+    for (auto line = harness.read_line(150ms); !line.empty(); line = harness.read_line(150ms)) {
+        auto const message = nlohmann::ordered_json::parse(line);
+        EXPECT_FALSE(message.contains("id")) << line;
+        EXPECT_EQ(message["method"], "session.revisionChanged") << line;
+    }
+    ::close(second[0]);
+}
+
+TEST(SocketRpcServer, PublishesOneRevisionWhenAClosedClientsGestureCommits)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+    auto gesturing = make_socket_pair();
+    harness.server.attach_client(gesturing[1], true);
+    std::string gesturing_buffer;
+    ASSERT_FALSE(read_line_until(gesturing[0], &gesturing_buffer, socket_rpc_startup_timeout).empty());
+    std::string const begin =
+        R"({"jsonrpc":"2.0","id":90,"method":"manualControls.begin","params":{"interactionId":"drag","node":{"instanceId":"osc","path":[]},"inputName":"frequency","value":0.25}})"
+        "\n";
+    ASSERT_EQ(::write(gesturing[0], begin.data(), begin.size()), static_cast<ssize_t>(begin.size()));
+    ASSERT_FALSE(read_response_for_id(gesturing[0], &gesturing_buffer, 90, socket_rpc_response_timeout).empty());
+    EXPECT_EQ(nlohmann::ordered_json::parse(harness.read_line())["params"]["revision"], 1);
+
+    ::close(gesturing[0]);
+    auto const committed = nlohmann::ordered_json::parse(harness.read_line());
+    EXPECT_EQ(committed["method"], "session.revisionChanged");
+    EXPECT_EQ(committed["params"]["revision"], 2);
 }
 
 TEST(SocketRpcServer, RejectsAStaleMutationAfterThePriorMutationCommits)

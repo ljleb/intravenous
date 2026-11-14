@@ -22,6 +22,7 @@
 
 #include <atomic>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
@@ -1009,6 +1010,7 @@ struct ManualControlTargetRecord {
     std::uint64_t project_generation = 0;
     iv::ManualControlId id{};
     iv::Sample value{};
+    iv::ManualControlGesturePhase gesture = iv::ManualControlGesturePhase::none;
 };
 
 class ManualControlSchedulerProbe {
@@ -1144,18 +1146,28 @@ public:
         return iv::GraphExecutorStageResult::accepted;
     }
 
-    bool set_target(
-        std::uint64_t project_generation,
-        iv::ManualControlId const& id,
-        iv::Sample value)
+    // The probe stands in for GraphExecutor's one live target per control.
+    std::shared_ptr<iv::ManualControlLiveTarget> live_target = std::make_shared<iv::ManualControlLiveTarget>();
+
+    bool set_target(iv::ProjectGraphManualControlTarget& target)
     {
         {
             std::scoped_lock lock(mutex_);
             targets_.push_back({
-                .project_generation = project_generation,
-                .id = id,
-                .value = value,
+                .project_generation = target.project_generation,
+                .id = target.id,
+                .value = target.value,
+                .gesture = target.gesture,
             });
+            auto const bits = std::bit_cast<std::uint32_t>(target.value.value);
+            if (target.gesture == iv::ManualControlGesturePhase::begin) {
+                live_target->target_bits.store(bits);
+                live_target->open_gestures.fetch_add(1);
+                target.live_target = live_target;
+            } else if (target.gesture == iv::ManualControlGesturePhase::end) {
+                live_target->target_bits.store(bits);
+                live_target->open_gestures.fetch_sub(1);
+            }
         }
         changed_.notify_all();
         return true;
@@ -1245,11 +1257,8 @@ iv::ProjectGraphGraphExecutorResult probe_structural_graph_acceptance(
 void probe_graph_executor_controls(
     iv::ProjectGraphGraphExecutorControlsRequest& request)
 {
-    if (request.target) {
-        request.target_applied = active_manual_control_scheduler_probe->set_target(
-            request.target->project_generation,
-            request.target->id,
-            request.target->value);
+    for (auto& target : request.targets) {
+        request.target_applied |= active_manual_control_scheduler_probe->set_target(target);
     }
     if (request.realtime_code) {
         request.realtime_code_result =
@@ -2750,7 +2759,8 @@ TEST_F(ProjectGraphManualControlSchedulingFixture,
     in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({interaction, .5f}, end); });
     ASSERT_NO_THROW(end.build());
     probe.block_next_compilation();
-    in_event_source([&] { project_graph.handle_socket_rpc_client_disconnected("ui"); });
+    iv::SocketRpcClientDisconnectedRequest closed{.client_id = "ui"};
+    in_event_source([&] { project_graph.handle_socket_rpc_client_disconnected(closed); });
     ASSERT_TRUE(probe.wait_for_blocked_compilation());
     iv::ProjectAckBuilder predictive;
     in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
@@ -2787,8 +2797,8 @@ TEST_F(ProjectGraphManualControlSchedulingFixture,
         EXPECT_TRUE(probe.wait_for_blocked_compilation());
 
         if (disconnect) {
-            in_event_source([&] { return project_graph.handle_socket_rpc_client_disconnected(
-                interaction.client_id); });
+            iv::SocketRpcClientDisconnectedRequest closed{.client_id = interaction.client_id};
+            in_event_source([&] { return project_graph.handle_socket_rpc_client_disconnected(closed); });
         } else {
             iv::ProjectAckBuilder end;
             in_event_source([&] { return project_graph.handle_project_end_manual_control_interaction(
@@ -2866,18 +2876,14 @@ TEST_F(ProjectGraphFixture,
         begin); });
     ASSERT_NO_THROW(begin.build());
 
-    in_event_source([&] { return project_graph.handle_socket_rpc_client_disconnected("socket:17"); });
+    iv::SocketRpcClientDisconnectedRequest closed{.client_id = "socket:17"};
+    in_event_source([&] { return project_graph.handle_socket_rpc_client_disconnected(closed); });
 
-    // The disconnected client's interaction identity is no longer active.
-    iv::ProjectAckBuilder update;
-    EXPECT_THROW(
-        in_event_source([&] { return project_graph.handle_project_update_manual_control_interaction(
-            iv::ProjectUpdateManualControlInteractionRequest{
-                .interaction = interaction,
-                .value = iv::Sample{0.5f},
-            },
-            update); }),
-        std::invalid_argument);
+    // The disconnected client's interaction identity is no longer active, so
+    // a late live value is dropped rather than applied.
+    iv::LiveManualControlUpdateRequest update{.interaction = interaction, .value = iv::Sample{0.5f}};
+    project_graph.handle_live_manual_control_update(update);
+    EXPECT_FALSE(update.applied);
 
     iv::ProjectAckBuilder begin_again;
     in_event_source([&] { return project_graph.handle_project_begin_manual_control_interaction(
@@ -2897,15 +2903,10 @@ TEST_F(ProjectGraphFixture,
         remove_target); });
     ASSERT_NO_THROW(remove_target.build());
 
-    iv::ProjectAckBuilder update_after_removal;
-    EXPECT_THROW(
-        in_event_source([&] { return project_graph.handle_project_update_manual_control_interaction(
-            iv::ProjectUpdateManualControlInteractionRequest{
-                .interaction = interaction,
-                .value = iv::Sample{1.0f},
-            },
-            update_after_removal); }),
-        std::invalid_argument);
+    iv::LiveManualControlUpdateRequest update_after_removal{
+        .interaction = interaction, .value = iv::Sample{1.0f}};
+    project_graph.handle_live_manual_control_update(update_after_removal);
+    EXPECT_FALSE(update_after_removal.applied);
 
     iv::ProjectAckBuilder begin_after_removal;
     EXPECT_THROW(
@@ -3146,7 +3147,77 @@ TEST_F(ProjectGraphFixture, HistoryRecordsFinalSemanticReplacementWithoutReplayi
         nlohmann::ordered_json::array({99}));
 }
 
-TEST_F(ProjectGraphFixture, HistoryGroupsManualGestureAndSealsItAtAnInterveningAcceptedAction)
+TEST_F(ProjectGraphFixture, ManualGestureStaysTransientAndCommitsOneHistoryEntryWhenItCompletes)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ManualControlId id{.node = {.instance_id = "manual"}, .input_name = "gain"};
+    iv::ProjectAckBuilder load;
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {{.instance_id = "manual", .definition_id = manual_control_leaf_definition_id}},
+        .manual_controls = {{.id = id, .stored_value = .1f}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    auto const live_value = [&] {
+        auto const scope = read_graph_scope(project_graph);
+        auto const& control = scope_node(scope, "manual").at("sampleInputs").at(0).at("manualControl");
+        return std::pair{control.at("value").get<float>(),
+            control.at("live").get<bool>() ? control.at("liveValue").get<float>() : -1.f};
+    };
+    iv::ManualControlInteractionId gesture{.client_id = "client-a", .interaction_id = "drag"};
+    iv::ProjectAckBuilder begin;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, .2f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    iv::LiveManualControlUpdateRequest update{.interaction = gesture, .value = .3f};
+    project_graph.handle_live_manual_control_update(update);
+    EXPECT_TRUE(update.applied);
+    EXPECT_EQ(update.control, id);
+    // Nothing durable changes mid-gesture; readers see the open live value.
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.1f});
+    EXPECT_EQ(live_value(), std::pair(.1f, .3f));
+    iv::ProjectAckBuilder blocked;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(blocked); }), std::runtime_error);
+    iv::ProjectAckBuilder end;
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({gesture, .4f}, end); });
+    ASSERT_NO_THROW(end.build());
+    EXPECT_EQ(live_value(), std::pair(.4f, -1.f));
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    ASSERT_EQ(project_graph.manual_controls().size(), 1u);
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.1f});
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.4f});
+
+    // An edit accepted while a gesture is open precedes that gesture in history,
+    // because the gesture becomes one accepted action only when it ends.
+    iv::ProjectAckBuilder begin_again;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, .5f}, begin_again); });
+    ASSERT_NO_THROW(begin_again.build());
+    iv::ProjectAckBuilder other_client;
+    in_event_source([&] { project_graph.handle_project_update_node_instances({
+        .updates = {{.instance_id = "manual", .display_name = "Other client"}}}, other_client); });
+    ASSERT_NO_THROW(other_client.build());
+    iv::LiveManualControlUpdateRequest after_edit{.interaction = gesture, .value = .55f};
+    project_graph.handle_live_manual_control_update(after_edit);
+    EXPECT_TRUE(after_edit.applied);
+    iv::ProjectAckBuilder finish;
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({gesture, .6f}, finish); });
+    ASSERT_NO_THROW(finish.build());
+    iv::ProjectAckBuilder undo_tail;
+    in_event_source([&] { project_graph.handle_project_undo(undo_tail); });
+    ASSERT_NO_THROW(undo_tail.build());
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.4f});
+    EXPECT_EQ(instances.desired_instances()[0].display_name, "Other client");
+    iv::ProjectAckBuilder undo_name;
+    in_event_source([&] { project_graph.handle_project_undo(undo_name); });
+    ASSERT_NO_THROW(undo_name.build());
+    EXPECT_FALSE(instances.desired_instances()[0].display_name);
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.4f});
+}
+
+TEST_F(ProjectGraphFixture, DisconnectEndsOpenGesturesAtTheirLastReceivedValues)
 {
     publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
     iv::ManualControlId id{.node = {.instance_id = "manual"}, .input_name = "gain"};
@@ -3160,43 +3231,36 @@ TEST_F(ProjectGraphFixture, HistoryGroupsManualGestureAndSealsItAtAnInterveningA
     iv::ProjectAckBuilder begin;
     in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, .2f}, begin); });
     ASSERT_NO_THROW(begin.build());
-    iv::ProjectAckBuilder update;
-    in_event_source([&] { project_graph.handle_project_update_manual_control_interaction({gesture, .3f}, update); });
-    ASSERT_NO_THROW(update.build());
-    iv::ProjectAckBuilder blocked;
-    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(blocked); }), std::runtime_error);
-    iv::ProjectAckBuilder end;
-    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({gesture, .4f}, end); });
-    ASSERT_NO_THROW(end.build());
+
+    // Another client's disconnect commits nothing.
+    iv::SocketRpcClientDisconnectedRequest other{.client_id = "client-b"};
+    in_event_source([&] { project_graph.handle_socket_rpc_client_disconnected(other); });
+    EXPECT_FALSE(other.project_state_changed);
+    iv::LiveManualControlUpdateRequest update{.interaction = gesture, .value = .7f};
+    project_graph.handle_live_manual_control_update(update);
+    ASSERT_TRUE(update.applied);
+
+    iv::SocketRpcClientDisconnectedRequest closed{.client_id = "client-a"};
+    in_event_source([&] { project_graph.handle_socket_rpc_client_disconnected(closed); });
+    EXPECT_TRUE(closed.project_state_changed);
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.7f});
+    iv::LiveManualControlUpdateRequest late{.interaction = gesture, .value = .9f};
+    project_graph.handle_live_manual_control_update(late);
+    EXPECT_FALSE(late.applied);
     iv::ProjectAckBuilder undo;
     in_event_source([&] { project_graph.handle_project_undo(undo); });
     ASSERT_NO_THROW(undo.build());
-    ASSERT_EQ(project_graph.manual_controls().size(), 1u);
     EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.1f});
-    iv::ProjectAckBuilder redo;
-    in_event_source([&] { project_graph.handle_project_redo(redo); });
-    ASSERT_NO_THROW(redo.build());
-    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.4f});
 
-    iv::ProjectAckBuilder begin_again;
-    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, .5f}, begin_again); });
-    iv::ProjectAckBuilder other_client;
-    in_event_source([&] { project_graph.handle_project_update_node_instances({
-        .updates = {{.instance_id = "manual", .display_name = "Other client"}}}, other_client); });
-    ASSERT_NO_THROW(other_client.build());
-    iv::ProjectAckBuilder finish;
-    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({gesture, .6f}, finish); });
-    ASSERT_NO_THROW(finish.build());
-    iv::ProjectAckBuilder undo_tail;
-    in_event_source([&] { project_graph.handle_project_undo(undo_tail); });
-    ASSERT_NO_THROW(undo_tail.build());
-    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.5f});
-    EXPECT_EQ(instances.desired_instances()[0].display_name, "Other client");
-    iv::ProjectAckBuilder undo_name;
-    in_event_source([&] { project_graph.handle_project_undo(undo_name); });
-    ASSERT_NO_THROW(undo_name.build());
-    EXPECT_FALSE(instances.desired_instances()[0].display_name);
-    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.5f});
+    // A begin with no update before the disconnect keeps the begin value.
+    iv::ManualControlInteractionId unchanged{.client_id = "client-c", .interaction_id = "press"};
+    iv::ProjectAckBuilder press;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({unchanged, id, .1f}, press); });
+    ASSERT_NO_THROW(press.build());
+    iv::SocketRpcClientDisconnectedRequest released{.client_id = "client-c"};
+    in_event_source([&] { project_graph.handle_socket_rpc_client_disconnected(released); });
+    EXPECT_FALSE(released.project_state_changed);
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.1f});
 }
 
 TEST_F(ProjectGraphFixture, ProjectEditParserRejectsNestedOrUnsupportedOperationsAndKeepsOneBatch)
@@ -3322,11 +3386,13 @@ TEST_F(ProjectGraphFixture, FirstManualGestureCreatesOneHistoryEntryAndUndoResto
     ASSERT_NO_THROW(load.build());
     iv::ManualControlId id{.node = {.instance_id = "manual"}, .input_name = "gain"};
     iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "first-drag"};
-    iv::ProjectAckBuilder begin, update, end;
+    iv::ProjectAckBuilder begin, end;
     in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, .2f}, begin); });
     ASSERT_NO_THROW(begin.build());
-    in_event_source([&] { project_graph.handle_project_update_manual_control_interaction({gesture, .4f}, update); });
-    ASSERT_NO_THROW(update.build());
+    iv::LiveManualControlUpdateRequest update{.interaction = gesture, .value = .4f};
+    project_graph.handle_live_manual_control_update(update);
+    EXPECT_TRUE(update.applied);
+    EXPECT_TRUE(project_graph.manual_controls().empty());
     in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({gesture, .6f}, end); });
     ASSERT_NO_THROW(end.build());
     ASSERT_EQ(project_graph.manual_controls().size(), 1u);

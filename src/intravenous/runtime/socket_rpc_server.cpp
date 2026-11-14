@@ -2,6 +2,7 @@
 
 #include <intravenous/filesystem_paths.h>
 #include <intravenous/runtime/package_pipeline_events.h>
+#include <intravenous/runtime/project_connection_json.h>
 #include <intravenous/runtime/project_graph_publication.h>
 #include <intravenous/runtime/socket_rpc_json_serialization.h>
 #include <intravenous/runtime/socket_rpc_routes.h>
@@ -12,6 +13,7 @@
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
@@ -19,6 +21,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <random>
 #include <sstream>
@@ -47,6 +50,10 @@ constexpr std::size_t max_replay_entries = 2048;
 // not look like backpressure from a slow client.
 constexpr std::size_t max_replay_bytes = 512 * 1024;
 constexpr std::uint32_t session_protocol_version = 0;
+// Minimum spacing of relayed live manual-control values to one client. A
+// tuning value: other clients' knobs follow a gesture at this rate, while the
+// gesturing client's updates reach the audio target at full pointer rate.
+constexpr auto live_frame_interval = std::chrono::milliseconds(33);
 
 std::string project_path_hash(std::filesystem::path const& path)
 {
@@ -226,6 +233,11 @@ struct SocketRpcServer::Impl {
         std::condition_variable queue_ready{};
         std::deque<OutboundMessage> outbound{};
         std::size_t outbound_bytes = 0;
+        // Replaceable live values relayed from other clients' gestures, keyed by
+        // live_gesture_key(). Only the newest value of each gesture is kept, and
+        // reliable messages are always written first.
+        std::map<std::string, std::string> live_frames{};
+        std::chrono::steady_clock::time_point live_due{};
         bool closing = false;
         std::optional<std::jthread> reader{};
         std::optional<std::jthread> writer{};
@@ -553,13 +565,29 @@ struct SocketRpcServer::Impl {
             OutboundMessage message;
             {
                 std::unique_lock lock(client->mutex);
-                client->queue_ready.wait(lock, [&] {
-                    return client->closing || !client->outbound.empty();
-                });
-                if (client->outbound.empty()) return;
-                message = std::move(client->outbound.front());
-                client->outbound.pop_front();
-                client->outbound_bytes -= message.value.size();
+                for (;;) {
+                    if (!client->outbound.empty() || client->closing) break;
+                    if (client->live_frames.empty()) {
+                        client->queue_ready.wait(lock);
+                        continue;
+                    }
+                    auto const now = std::chrono::steady_clock::now();
+                    if (now >= client->live_due) break;
+                    client->queue_ready.wait_until(lock, client->live_due);
+                }
+                if (client->outbound.empty()) {
+                    if (client->closing) return;
+                    for (auto& [key, frame] : client->live_frames) {
+                        (void)key;
+                        message.value += std::move(frame);
+                    }
+                    client->live_frames.clear();
+                    client->live_due = std::chrono::steady_clock::now() + live_frame_interval;
+                } else {
+                    message = std::move(client->outbound.front());
+                    client->outbound.pop_front();
+                    client->outbound_bytes -= message.value.size();
+                }
             }
             if (!write_all(client->fd, message.value)) {
                 disconnect(client);
@@ -570,6 +598,79 @@ struct SocketRpcServer::Impl {
                 return;
             }
         }
+    }
+
+    void enqueue_live_frame(
+        std::shared_ptr<Client> const& client, std::string const& key, std::string frame)
+    {
+        {
+            std::scoped_lock lock(client->mutex);
+            if (client->closing) return;
+            client->live_frames.insert_or_assign(key, std::move(frame));
+        }
+        client->queue_ready.notify_one();
+    }
+
+    // Removes unwritten live frames whose key starts with `prefix`, so that no
+    // relayed value of a closed gesture follows the revision that commits it.
+    void discard_live_frames(std::string const& prefix)
+    {
+        std::scoped_lock lock(clients_mutex);
+        for (auto const& [key, client] : clients) {
+            (void)key;
+            std::scoped_lock client_lock(client->mutex);
+            std::erase_if(client->live_frames, [&](auto const& entry) {
+                return entry.first.starts_with(prefix);
+            });
+        }
+    }
+
+    // A live gesture value is handled here, on its client's reader thread,
+    // instead of the ordered command queue: it must not wait behind requests
+    // blocked on project locks. Per-client socket order still places it after
+    // its acknowledged begin and before its end. It has no reply; failures are
+    // dropped because the gesture's end carries the authoritative value.
+    bool handle_live_manual_control_update(Client* client, std::string const& line)
+    {
+        std::optional<LiveManualControlUpdateRequest> request;
+        try {
+            request = parse_live_manual_control_update(line);
+        } catch (std::exception const&) {
+            return line.find("\"manualControls.update\"") != std::string::npos
+                && line.find("\"id\"") == std::string::npos;
+        }
+        if (!request) return false;
+        auto const origin = client->shared_from_this();
+        try {
+            authorize(origin, "project.write");
+        } catch (std::exception const&) {
+            return true;
+        }
+        request->interaction.client_id = connected_client_id(client->key);
+        IV_EVENT_SOURCE(SocketRpcServer, "manualControls.update") {
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_live_manual_control_update_event, *request);
+        }
+        if (!request->applied) return true;
+        auto const frame = jsonrpc_notification("manualControls.liveValue", Json{
+            {"node", node_address_json(request->control.node, ProjectConnectionJsonNames::socket_rpc)},
+            {"inputName", request->control.input_name},
+            {"value", request->value.value},
+        });
+        auto const key = live_gesture_key(request->interaction);
+        std::vector<std::shared_ptr<Client>> targets;
+        {
+            std::scoped_lock lock(clients_mutex);
+            for (auto const& [target_key, target] : clients) {
+                if (target_key == client->key) continue;
+                std::scoped_lock client_lock(target->mutex);
+                if (!target->closing && target->authenticated && target->subscribed
+                    && topic_matches(*target, "manualControls.liveValue")) {
+                    targets.push_back(target);
+                }
+            }
+        }
+        for (auto const& target : targets) enqueue_live_frame(target, key, frame);
+        return true;
     }
 
     void reader_loop(Client* client)
@@ -590,6 +691,7 @@ struct SocketRpcServer::Impl {
                 auto line = buffer.substr(0, newline);
                 buffer.erase(0, newline + 1);
                 if (line.empty()) continue;
+                if (handle_live_manual_control_update(client, line)) continue;
                 {
                     std::scoped_lock lock(commands_mutex);
                     if (shutting_down.load()) return;
@@ -907,6 +1009,9 @@ struct SocketRpcServer::Impl {
                         ProjectGraphPublication const& publication) {
                         publish_project_graph(publication);
                     },
+                    .discard_live_frames = [this](std::string const& key) {
+                        discard_live_frames(key);
+                    },
                 });
             }
             route_known = true;
@@ -975,10 +1080,19 @@ struct SocketRpcServer::Impl {
                     }
                 }
                 if (retired) {
+                    SocketRpcClientDisconnectedRequest request{
+                        .client_id = connected_client_id(retired->key),
+                    };
                     IV_EVENT_SOURCE(SocketRpcServer, "client disconnected") {
                         IV_INVOKE_LINKER_EVENT(
-                            iv_socket_rpc_client_disconnected_event,
-                            connected_client_id(retired->key));
+                            iv_socket_rpc_client_disconnected_event, request);
+                    }
+                    // Its gestures ended at their last received values: drop
+                    // their unwritten relays, then publish that commit.
+                    discard_live_frames(request.client_id + '\n');
+                    if (request.project_state_changed) {
+                        publish_at_revision(
+                            "session.revisionChanged", Json::object(), advance_revision());
                     }
                 }
                 retired.reset();

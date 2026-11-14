@@ -182,13 +182,22 @@ TEST(SocketRpcRequestParser, ParsesManualControlDurableAndInteractionRequests)
     EXPECT_EQ(started->id.input_name, "gain");
     EXPECT_FLOAT_EQ(static_cast<float>(started->value), 0.75f);
 
-    auto const update = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":43,"method":"manualControls.update","params":{"interactionId":"pointer:3","value":0.875}})");
-    auto const* changed =
-        std::get_if<iv::UpdateManualControlInteractionRequest>(&update.payload);
-    ASSERT_NE(changed, nullptr);
-    EXPECT_EQ(changed->interaction.interaction_id, "pointer:3");
-    EXPECT_FLOAT_EQ(static_cast<float>(changed->value), 0.875f);
+    // A live update is an id-less notification outside the request table.
+    auto const update = iv::parse_live_manual_control_update(
+        R"({"jsonrpc":"2.0","method":"manualControls.update","params":{"interactionId":"pointer:3","value":0.875}})");
+    ASSERT_TRUE(update);
+    EXPECT_TRUE(update->interaction.client_id.empty());
+    EXPECT_EQ(update->interaction.interaction_id, "pointer:3");
+    EXPECT_FLOAT_EQ(static_cast<float>(update->value), 0.875f);
+    EXPECT_FALSE(iv::parse_live_manual_control_update(
+        R"({"jsonrpc":"2.0","id":43,"method":"manualControls.update","params":{"interactionId":"pointer:3","value":0.875}})"));
+    EXPECT_FALSE(iv::parse_live_manual_control_update(
+        R"({"jsonrpc":"2.0","id":45,"method":"manualControls.end","params":{"interactionId":"pointer:3","value":1.0}})"));
+    EXPECT_THROW((void)iv::parse_live_manual_control_update(
+        R"({"jsonrpc":"2.0","method":"manualControls.update","params":{"interactionId":"pointer:3"}})"), std::runtime_error);
+    // With an id it is no longer a routed request.
+    EXPECT_TRUE(std::holds_alternative<iv::UnsupportedSocketRpcRequest>(iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":43,"method":"manualControls.update","params":{"interactionId":"pointer:3","value":0.875}})").payload));
 
     auto const end = iv::parse_socket_rpc_request(
         R"({"jsonrpc":"2.0","id":44,"method":"manualControls.end","params":{"interactionId":"pointer:3","value":1.0}})");

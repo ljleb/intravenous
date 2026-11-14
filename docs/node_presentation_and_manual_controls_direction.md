@@ -459,8 +459,9 @@ lifetime.
 
 For socket RPC clients, the server assigns the interaction's client identity from
 the authenticated connection. A request cannot claim another client's identity.
-Disconnect removes that client's hover and active-interaction state. The durable
-manual value remains the last value accepted before disconnect.
+Disconnect removes that client's hover state and ends each of its open gestures at
+the last value the server received from it, as an explicit end would. See
+[Live gesture values are transient](#live-gesture-values-are-transient).
 
 ## Source navigation uses `NodeAddress` and its selector path
 
@@ -656,9 +657,9 @@ user gesture: retain the original accepted stored value and, when the gesture
 settles, record one reversible change to the final accepted value. A no-op
 should create no history entry. The interaction context already outlives an
 individual Vue control component and must remain the grouping authority
-through remounts and presentation-mode changes. On disconnect, the last
-accepted durable value remains authoritative; any unfinished history grouping
-must be resolved consistently rather than inventing an audio-thread rollback.
+through remounts and presentation-mode changes. On disconnect, the server ends
+the gesture at the last value it received, which records its one history entry
+like any completed gesture; there is no audio-thread rollback.
 See [Project Undo, Redo, And Backup Direction](./project_undo_redo_and_backups_direction.md).
 
 ## Manual values are Tick/ephemeral sources
@@ -678,12 +679,13 @@ creating a second control-only execution semantics.
 ## Interpolation exists only during active scrubbing
 
 A settled manual value is eligible for exact constant specialization. The stored
-manual value is the latest value retained by the project and UI. The effective manual
-value is the value used by the active executable graph. These values can differ while
-a replacement graph compiles.
+manual value is the durable value retained by the project; a gesture changes it once,
+when the gesture ends. The live value is the latest value of an open gesture. The
+effective manual value is the value used by the active executable graph. These values
+can differ while a gesture is open or a replacement graph compiles.
 
 Hover requests compilation of dynamic-input code. Hover does not activate that code.
-If scrubbing starts first, the UI updates the stored value while the active graph keeps
+If scrubbing starts first, the gesture's live value changes while the active graph keeps
 using its existing constant. No generic execution path applies the new value to code
 that does not support a dynamic input.
 
@@ -733,6 +735,35 @@ The UI-to-audio target scalar requires defined C++ concurrency. The audio thread
 observe the latest coherent target that is available. A relaxed atomic is sufficient
 for that scalar. The audio thread owns the prior value, effective value, and
 interpolation state. A target update does not require an RPC or queue handshake.
+
+### Live gesture values are transient
+
+_Accepted design change by the repository owner, 2026-11-14. The superseded
+per-update durable contract is preserved in
+[historical documentation](./historical/manual_control_durable_gesture_updates_2026-11-14.md)._
+
+Begin and end are ordinary project requests. Between them, an update is a
+transient latest value:
+
+- it changes no durable project record or history entry, takes no session
+  revision, and has no reply;
+- it does not wait behind any other request, a compilation, staging, or a
+  graph read. The audio thread receives each value without a lock shared with
+  those operations, and a successor generation staged during the gesture
+  continues from the latest value;
+- every listener hears it immediately, because all clients share one engine.
+
+Other clients' knobs follow the gesture through unreliable, latest-value
+notifications at a bounded rate. They can drop or coalesce values. No relayed value
+of a gesture follows the committed end, which corrects every knob. A view that reads
+the graph while a gesture is open starts from that gesture's live value.
+
+`end` commits the final value as the stored value and records the gesture's one
+history entry, ordered when the gesture completes. An edit accepted while a gesture
+is open therefore precedes that gesture in history. When a client disconnects, the
+server ends each of its open gestures at the last value it received from that
+client. A gesture whose target disappears or becomes disabled ends without a
+commit.
 
 ## Predictive compilation and demand-driven activation
 

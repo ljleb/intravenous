@@ -25,7 +25,7 @@ function harness(overrides: Partial<ManualControlTransport> = {}) {
     const transport: ManualControlTransport = {
         hoverManualControl: async () => { calls.push({ action: "hover" }); },
         beginManualControl: async (id, _control, value) => { calls.push({ action: "begin", id, value }); },
-        updateManualControl: async (id, value) => { calls.push({ action: "update", id, value }); },
+        updateManualControl: (id, value) => { calls.push({ action: "update", id, value }); },
         endManualControl: async (id, value) => { calls.push({ action: "end", id, value }); },
         ...overrides,
     };
@@ -57,21 +57,20 @@ test("manual gestures coalesce while begin is pending and finish with the latest
     assert.equal(manager.states("panel")[0].value, 440);
 });
 
-test("in-flight manual updates keep one latest pending update", async () => {
-    const update = deferred();
-    const { manager, calls } = harness({ updateManualControl: async (_id, value) => {
-        calls.push({ action: "update", value }); await update.promise;
-    } });
+test("an acknowledged gesture streams every update at once, even behind a pending reply", async () => {
+    const hover = deferred();
+    const { manager, calls } = harness({ hoverManualControl: async () => { calls.push({ action: "hover" }); await hover.promise; } });
     manager.action("panel", { action: "begin", interactionId: "drag", control, value: 440 });
     await manager.settled();
-    manager.action("panel", { action: "update", interactionId: "drag", value: 450 });
-    await Promise.resolve();
-    for (let value = 451; value < 500; ++value)
+    // A slow ordered request must not hold back live values.
+    manager.action("panel", { action: "hover", control: { ...control, inputName: "other" } });
+    for (let value = 450; value < 455; ++value)
         manager.action("panel", { action: "update", interactionId: "drag", value });
-    update.resolve(); await manager.settled();
-    assert.deepEqual(calls.filter((entry) => entry.action === "update").map((entry) => entry.value), [450, 499]);
-    manager.action("panel", { action: "end", interactionId: "drag", value: 499 });
-    await manager.settled();
+    manager.action("panel", { action: "update", interactionId: "drag", value: 454 }); // Unchanged.
+    assert.deepEqual(calls.filter((entry) => entry.action === "update").map((entry) => entry.value), [450, 451, 452, 453, 454]);
+    manager.action("panel", { action: "end", interactionId: "drag", value: 454 });
+    hover.resolve(); await manager.settled();
+    assert.deepEqual(calls.at(-1), { action: "end", id: calls.find((entry) => entry.action === "begin")!.id, value: 454 });
 });
 
 test("compatible scope refresh keeps a gesture and panel close ends it", async () => {
@@ -97,14 +96,55 @@ test("target removal ends a gesture explicitly and ignores late pointer events",
     assert.match(manager.states("panel")[0].error!, /removed or became incompatible/);
 });
 
-test("rejected manual updates close at the last accepted value without retrying", async () => {
-    const { manager, calls } = harness({ updateManualControl: async () => { throw new Error("stale project revision"); } });
+test("an update that cannot be sent closes the gesture at the last sent value without retrying", async () => {
+    const { manager, calls } = harness({ updateManualControl: () => { throw new Error("client is not connected"); } });
     manager.action("panel", { action: "begin", interactionId: "drag", control, value: 450 });
     await manager.settled();
     manager.action("panel", { action: "update", interactionId: "drag", value: 900 });
     await manager.settled();
     assert.deepEqual(calls.map((entry) => [entry.action, entry.value]), [["begin", 450], ["end", 450]]);
-    assert.equal(manager.states("panel")[0].error, "stale project revision");
+    assert.equal(manager.states("panel")[0].error, "client is not connected");
+});
+
+test("other views and clients show live gesture values until a read reports the gesture closed", async () => {
+    const { manager } = harness();
+    const live = (owner: string) => manager.live(owner).map((entry) => [entry.control.inputName, entry.value]);
+    manager.action("a", { action: "begin", interactionId: "drag", control, value: 450 });
+    await manager.settled();
+    manager.action("a", { action: "update", interactionId: "drag", value: 460 });
+    assert.deepEqual(live("a"), []); // The owner shows its own gesture state.
+    assert.deepEqual(live("b"), [["frequency", 460]]);
+    const remote = { node: { instanceId: "osc" }, inputName: "detune" };
+    manager.receiveLive({ control: remote, value: 2 });
+    assert.deepEqual(live("b"), [["detune", 2], ["frequency", 460]]);
+    const withDetune = (detune: Partial<ManualControlDescriptor>): GraphScope => {
+        const value = scope(true, 450);
+        value.nodes[0].sampleInputs.push({ name: "detune", index: 1, manualControl: { ...descriptor, value: 0, ...detune } });
+        return value;
+    };
+    manager.reconcile(withDetune({ live: true, liveValue: 1 }));
+    assert.deepEqual(live("b"), [["detune", 2], ["frequency", 460]]); // A newer relayed value wins.
+    manager.reconcile(withDetune({ live: false }));
+    assert.deepEqual(live("b"), [["frequency", 460]]);
+    manager.reconcile(withDetune({ live: true, liveValue: 3 })); // A view opened mid-gesture.
+    assert.deepEqual(live("b"), [["detune", 3], ["frequency", 460]]);
+    manager.disconnect();
+    assert.deepEqual(live("b"), []);
+});
+
+test("the recorder observer sees each gesture message in sending order", async () => {
+    const { manager } = harness();
+    const events: Array<[string, number]> = [];
+    manager.observe((event) => events.push([event.kind, event.value]));
+    manager.action("panel", { action: "begin", interactionId: "drag", control, value: 450 });
+    await manager.settled();
+    manager.action("panel", { action: "update", interactionId: "drag", value: 451 });
+    manager.action("panel", { action: "end", interactionId: "drag", value: 452 });
+    await manager.settled();
+    manager.observe(null);
+    manager.action("panel", { action: "begin", interactionId: "again", control, value: 452 });
+    await manager.settled();
+    assert.deepEqual(events, [["begin", 450], ["update", 451], ["end", 452]]);
 });
 
 test("disconnect prevents queued gestures and late begin replies from reaching a replacement session", async () => {
@@ -160,6 +200,33 @@ test("manual pointer tracking clamps bounds and ignores other pointers", () => {
     assert.equal(actions.length, 2);
     gestures.release(7);
     assert.equal(actions.length, 3);
+});
+
+test("a held knob drag ignores another knob's hover and press until release", () => {
+    const actions: unknown[] = [];
+    let next = 0;
+    const gestures = new ManualControlGestures((action) => actions.push(action), () => `drag-${++next}`, () => {});
+    const other = { ...control, inputName: "detune" };
+    gestures.hover(control, descriptor);
+    assert.equal(gestures.scrub(control, descriptor, 1, 100, 1), true);
+    gestures.hover(other, descriptor);
+    assert.equal(gestures.scrub(other, descriptor, 1, 200, 1), false);
+    assert.deepEqual(gestures.pointerControl(), control);
+    gestures.moveBy(1, 10);
+    assert.equal(gestures.state(control)?.value, 450);
+    assert.equal(gestures.state(other), undefined);
+    gestures.release(1);
+    gestures.hover(other, descriptor);
+    assert.equal(gestures.scrub(other, descriptor, 1, 200, 1), true);
+    assert.deepEqual(gestures.pointerControl(), other);
+    assert.deepEqual(actions, [
+        { action: "hover", control },
+        { action: "begin", interactionId: "drag-1", control, value: 440 },
+        { action: "update", interactionId: "drag-1", value: 450 },
+        { action: "end", interactionId: "drag-1", value: 450 },
+        { action: "hover", control: other },
+        { action: "begin", interactionId: "drag-2", control: other, value: 440 },
+    ]);
 });
 
 test("host rejection invalidates the webview gesture before late pointer movement", () => {
@@ -387,4 +454,25 @@ test("metadata refresh changes reset and numeric limits without replacing a type
     gestures.cancelEntry();
     gestures.resetHovered();
     assert.equal(gestures.state(control)?.value, 300);
+});
+
+test("a webview shows another holder's live value until its own gesture takes over", () => {
+    const gestures = new ManualControlGestures(() => {}, () => "own", () => {});
+    assert.equal(gestures.liveValue(control), undefined);
+    gestures.receive([], [{ control, value: 470 }]);
+    assert.equal(gestures.liveValue(control), 470);
+    assert.equal(gestures.state(control), undefined);
+    gestures.edit(control, descriptor);
+    gestures.update(control, 480);
+    assert.equal(gestures.state(control)?.value, 480);
+    gestures.receive([], []);
+    assert.equal(gestures.liveValue(control), undefined);
+});
+
+test("disconnect clears relayed values before a replacement session uses the same control identity", () => {
+    const gestures = new ManualControlGestures(() => {}, () => "own", () => {});
+    gestures.receive([], [{ control, value: 470 }]);
+    gestures.disconnected();
+    assert.equal(gestures.liveValue(control), undefined);
+    assert.equal(gestures.state(control), undefined);
 });

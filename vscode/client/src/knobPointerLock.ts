@@ -16,10 +16,11 @@ export class KnobPointerLock {
         private readonly failed: (message: string) => void) {}
 
     start(pointerId: number, origin: Point, mouse = true): void {
+        if (this.session) return;
         const session: Session = { pointerId, origin, pending: mouse, granted: false, mouse };
         this.session = session;
         if (!mouse) return;
-        if (this.host.locked() && !this.exiting) { session.pending = false; session.granted = true; return; }
+        if (this.host.locked()) { this.exit(); return; }
         this.request();
     }
     private request(): void {
@@ -44,8 +45,12 @@ export class KnobPointerLock {
     changed(): void {
         const session = this.session;
         if (this.host.locked()) {
+            const requestedSession = this.requesting?.session;
             this.requesting = null;
             if (this.exiting) return;
+            // A late grant belongs to the press that requested it, including
+            // its physical cursor anchor. Never adopt it for a later press.
+            if (requestedSession && requestedSession !== session) { this.exit(); return; }
             if (!session?.mouse) { this.exit(); return; }
             session.pending = false; session.granted = true;
         } else if (this.exiting) {

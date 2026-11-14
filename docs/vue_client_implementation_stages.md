@@ -1784,7 +1784,7 @@ Silent-output investigation (2026-11-14; next owner run needed):
 - Added focused coverage for missing-graph silence, binding selection across sliced
   device blocks, signal statistics, and sampling frequency. This pass has not
   been built or tested. Root cause and its regression remain pending the live
-  output. [Audio output diagnostics](audio_output_diagnostics.md) describes the log.
+  output. [Audio output diagnostics](historical/audio_output_diagnostics_2026-11-14.md) describes the log.
 
 Silent-output localization update (2026-11-14):
 
@@ -1843,3 +1843,218 @@ Audible output owner-confirmed (2026-11-14):
   required the shipped `constant` definition, absent from that fixture. The new
   regression now uses the fixture's existing registered constants explicitly.
   Test validation remains owner-run before continuing the specialized presentation.
+
+Knob regrab and drag smoothness investigation (2026-11-14; unresolved):
+
+- The owner reports two defects after all tests passed. Rapid repeated grabs of
+  one knob sometimes highlight and drag another knob, both inline and in a port
+  popover. Dragging sounds clicky; `iv.project.saw` frequency is an example.
+- Regrab fix in the working tree, not built or tested: `KnobPointerLock.start()`
+  ignores a press while a session exists and exits a lock it did not request;
+  `changed()` exits a late grant requested by an earlier press. While a pointer
+  drag is held, `ManualControlGestures.hover()` ignores other knobs and `scrub()`
+  returns false. `GraphEditor.vue` releases the drag before clearing hover.
+- Temporary server capture in the working tree, not built or tested:
+  `AudioOutputCapture` and `audioDevices.captureDiagnostic` record eight seconds
+  of the miniaudio callback output with per-block timing and write a WAV to the
+  temporary directory. The owner-requested Command Palette action has not been
+  written, so nothing calls the route yet.
+
+_Implementation friction (observation, not a requirement):_ the realtime ramp
+in `stage_manual_control_sample_timelines()` is correct within one root
+invocation. Source inspection shows that new targets reach it late and in bursts:
+
+1. **Planned assumption.** A live target update is a cheap, non-blocking store;
+   the manual-controls direction says a relaxed atomic suffices and needs no
+   RPC or queue handshake.
+2. **Observed constraint.** `ProjectGraph::handle_project_update_manual_control_interaction()`
+   holds `ProjectGraph::mutex_` for every pointer update. It rewrites the durable
+   `ProjectManualControl::stored_value` and history through
+   `set_interaction_value_locked()`, then raises
+   `iv_runtime_project_state_changed_event`. The `manualControls.update` route
+   has `mutates_session = true`, so each update advances the session revision and
+   publishes `session.revisionChanged`. The client fires `graphChanges`, and
+   `GraphEditorProvider.refresh()` re-reads `graph.getScope` and the definitions
+   on the same ordered command queue and mutex, discarding reads overtaken by the
+   next update. `ManualControlInteractions` sends one update at a time, each using
+   the preceding revision. `compile_control_storage_change()` also holds the mutex
+   across a GraphJit compile and staging, blocking updates for that duration.
+3. **Complexity introduced.** Target cadence depends on scope-read and compile
+   latency rather than pointer rate. Each late step is ramped over one root
+   invocation and then held. Every pointer movement costs a durable write, a history
+   update, a session revision, a replay-log entry and a full scope read per editor.
+4. **Reach.** `ProjectGraph` manual interactions, the `manualControls.update` route,
+   `SocketRpcServer` revisions, `ManualControlInteractions`,
+   `GraphEditorProvider.refresh()`, `GraphExecutor` target delivery, and the
+   multi-client display of an in-progress drag.
+5. **Alternatives.** (a) Make in-gesture updates transient: no durable write,
+   history update or session revision; latest-value delivery to a stable
+   lock-free target, with `begin`/`end` remaining ordinary mutations and `end`
+   committing the one history entry. (b) Keep durable updates but stop editors
+   re-reading the scope for an update's revision. (c) Lengthen the audio-thread
+   smoothing to hide irregular arrival. (c) treats a symptom; (b) leaves the
+   mutex, the revision per update and the compile stall.
+6. **Recommendation.** (a), followed by a measurement of the remaining cadence.
+   A ramp-length change is a separate normative decision.
+7. **Dependency change.** Resolve this before the specialized automation
+   presentation, whose debounced point gestures use the same interaction path.
+
+Owner decision (2026-11-14): alternative (a), extended. During a gesture, an
+update is a transient latest value that every listener hears immediately. It
+creates no durable write, history change, session revision or reply. Other
+clients' knobs follow it through unreliable, throttled, coalesced notifications;
+`end` commits the stored value and the gesture's one history entry, and corrects
+every knob. When a client disconnects, the server ends that client's open
+gestures at the last value it received from them.
+
+Source checkpoint (2026-11-14; not built or tested by the agent). The normative
+contract is [Live gesture values are transient](node_presentation_and_manual_controls_direction.md#live-gesture-values-are-transient);
+the procedure is [Manual-control gesture](event_flows/manual_control_gesture.md).
+
+- Each semantic control has one `ManualControlLiveTarget` cell, owned by
+  `GraphExecutor` for its lifetime. A `begin` controls request returns it to
+  `ProjectGraph`. `ProjectGraph::handle_live_manual_control_update()` stores into it
+  under `live_mutex_` only, without `ProjectGraph::mutex_` or the accepted-chain
+  guard. While the gesture is open, `GraphExecutor::tick_block()` copies the cell
+  into the active generation's `ManualControlRuntimeState::target_bits` before the
+  root latches it. `GraphExecutor::stage()` binds every generation to the same
+  cell, so a successor staged mid-gesture cannot restore a stale seed.
+- `ProjectGraphGraphExecutorControlsRequest::targets` replaces the single target,
+  so one disconnect cause can end several gestures. An end writes the committed
+  value into every accepted generation before closing the cell. A rebuild that
+  invalidates a gesture releases its cell directly; that cause already enters
+  `GraphExecutor` to stage. Interactions on implicit-default controls are no
+  longer erased by `rebuild_locked()` merely for lacking a durable record.
+- `begin` no longer writes durable state or raises the autosave event. `end`
+  commits through the existing `set_interaction_value_locked()`. A disconnect
+  commits each open gesture at its last received value and reports
+  `SocketRpcClientDisconnectedRequest::project_state_changed`.
+- `manualControls.update` is an id-less notification parsed by
+  `parse_live_manual_control_update()` and handled on the reader thread as a new
+  `IV_EVENT_SOURCE(SocketRpcServer, "manualControls.update")`. The routed
+  request, `UpdateManualControlInteractionRequest`,
+  `ProjectUpdateManualControlInteractionRequest` and their events are removed.
+- `SocketRpcServer` relays `manualControls.liveValue` frames to other subscribed
+  clients through `Client::live_frames`, at most every 33 ms per client, after
+  reliable messages. `end` and disconnect discard the gesture's unwritten frames
+  before the committing revision. `graph.getScope` reports `live` and `liveValue`.
+- The client sends updates with `JsonRpcSocketClient::notify()` once `begin` is
+  acknowledged, without `expectedRevision`, and never waits behind queued
+  requests. `ManualControlInteractions::live()` merges other views' gestures with
+  relayed values. Each webview shows them through `ManualControlGestures::liveValue()`.
+- Requested removal: the periodic audio probes, their reporting thread and
+  `IV_AUDIO_DIAGNOSTICS` are deleted. Their tests and document moved to
+  [historical documentation](historical/audio_output_diagnostics_2026-11-14.md).
+  `AudioOutputCapture` stays as the recorder's destination via
+  `RenderConfig::output_capture`.
+- New Command Palette action, "Intravenous: Record Knob Audio Diagnostic": it
+  records eight seconds of the miniaudio callback output to a WAV in the server's
+  temporary directory. Beside the WAV it writes a JSON file with each block's
+  steady-clock time and when each gesture message was sent. Remove the action and
+  `AudioOutputCapture` once knob smoothness is verified.
+
+Tests added or rewritten: transient gestures and completion-ordered history;
+disconnect commits; late updates after disconnect or removal; the executor live
+target across a mid-gesture successor and after close; live-update parsing; server
+relay and frame discard ordering; disconnect revision publication; client
+streaming behind a pending request; live-value display; and recorder clock mapping.
+
+Owner verification:
+
+1. Build and run the C++ suite; in `vscode/client` run `npm run typecheck` and
+   `npm test`, then rebuild and reinstall the extension.
+2. Drag `iv.project.saw` frequency slowly and quickly. If the audio still steps, run
+   the recorder while dragging and send the JSON path. The WAV and the
+   timing together show whether values still arrive late or the ramp itself steps.
+3. With two editor windows on the same session, drag in one and watch the other's
+   knob follow, then settle exactly on release. Edit another node during a drag;
+   the gesture must continue and undo must step over the drag as one entry.
+4. Close a window mid-drag; the other must settle at the last dragged value.
+5. Confirm the periodic `Intravenous audio probe:` lines are gone.
+
+Knob recording analysis (2026-11-14; observations and source corrections):
+
+- The earlier panner recording and its initial interpretation are preserved in
+  [the historical analysis](historical/knob_recording_analysis_before_direct_oscillator_capture_2026-11-14.md).
+  Its callback handoff gaps show stalls; they are not render-duration measurements.
+  `LearnedHrtfSourceIcosphere::tick_block()` recomputes HRTF coefficients whenever
+  its direction changes, including every sample of a dynamic manual ramp. That
+  remains a separate performance investigation. No panner DSP policy changed.
+- The owner confirmed that `freq` clicks while moving even with `iv.project.saw`
+  connected directly to audio output. Holding it still is clean. Direction controls
+  can stutter while held, so those symptoms must not be treated as one defect.
+- The direct recording `/tmp/iv-knob-audio-90246e39-088f-44b3-9844-005d75a2ccd0`
+  contains eight seconds of audio in about eight seconds of callback handoff time.
+  Large waveform jumps coincide with callback boundaries while frequency changes.
+  At a stored 265 Hz, the stationary signal has a strong component at about
+  832.5 Hz, which is 265 times pi.
+- `SineOscillator::sine()` accepts normalized phase, with two units per turn. Its
+  table already converts that phase to radians. `tick()` multiplied by pi a second
+  time. Besides the wrong pitch, removing complete normalized turns during a
+  frequency re-anchor then changed the audible phase. The earlier statement that
+  re-anchoring ruled out an oscillator defect was incorrect.
+- Source correction: `tick()` passes `phase + phi` directly to `sine()` and uses
+  named ports. Two light `SineOscillator` tests compare constant-frequency and
+  changing-frequency output against an integrated sine reference, across phase
+  wraps, holds and different callback partitions. Owner verification is pending.
+- Executor correction: `ManualControlLiveTarget::completion_sequence` makes the
+  next callback copy a gesture's final value even after the gesture closes. This
+  repairs an older target copied by a callback that raced with the final commit.
+  A regression simulates that stale copy after close. This does not explain the
+  oscillator's in-motion phase jumps; it fixes an independent end-of-gesture race.
+- The existing temporary audio-recording action also requests a bounded pointer
+  trace from the graph webview. The JSON includes press/release events, selected
+  and hit-tested controls, knob rectangles and pointer-lock transitions, with an
+  epoch-to-server clock anchor. Pointer moves are throttled before DOM measurement.
+  Audio and gesture evidence is still saved if the webview cannot return its trace.
+  The wrong-knob grab remains unresolved until that evidence identifies the event
+  target and lock ordering. The two audio-only recordings do not contain it.
+
+Verification checkpoint: source inspected and `git diff --check` used; the agent
+has not run builds, typechecks or tests. Rebuild the application and extension, run
+`SineOscillator.*` and the existing executor/knob tests, then listen to a direct
+frequency drag. Use "Intravenous: Record Knob Audio Diagnostic" if a wrong grab
+recurs; this version writes the pointer trace alongside audio in the same JSON.
+
+
+Cleanup and remaining investigation (2026-11-14; implementation status):
+
+- The owner reports that the oscillator fix sounds smooth and that all tests pass.
+  The transient transport remains useful independently: live values avoid the
+  graph mutex, durable writes and per-movement revisions. The owner questioned
+  whether to keep it after the oscillator fix; the agent recommends retaining it.
+- `GraphExecutor` initially retained every live target for its entire lifetime.
+  Its registry now holds weak references and removes expired entries on lookup.
+  Execution generations and active gestures retain the cells they actually use.
+  The existing executor test covers sharing across a successor and final delivery.
+- Removed the socket-specific forwarding method for live updates; the bridge now
+  enters `ProjectGraph::handle_live_manual_control_update()` directly. Removed an
+  unused recorder include. Disconnect now clears the webview's remote live values,
+  with a client regression for reuse of the same control identity in a new session.
+- The remaining temporary recorder serves two unresolved defects. It is retained
+  until they are diagnosed, rather than removed as part of the finished pitch fix.
+  Periodic audio probes remain removed. User project and layout edits are untouched.
+- In `/tmp/iv-knob-audio-15336e7f-64a4-4169-920f-65239ec41eb0.json`, release is
+  reported at the original `freq` knob (about y=267). The next press is reported at
+  the `detune` knob (about y=305), and its DOM target and hit test both select
+  `detune`. The owner sees the cursor restored over `freq`. JavaScript gesture
+  ownership alone therefore cannot explain that press: the delivered coordinates
+  already select the other control. The trace now records screen coordinates and
+  unlocked mouse movement as well. No corrective coordinate offset has been added.
+- The owner also hears distortion after roughly one minute with the oscillator
+  module connected directly to output. This remains unresolved. A light test checks
+  a constant frequency at one minute and one hour, then ramps it, against an
+  integrated sine reference. It jumps the callback index after initializing the
+  real oscillator state, so it tests elapsed-phase arithmetic cheaply. It does not
+  reproduce millions of JIT callbacks, device playback or graph transitions.
+- Audit finding for later performance work: `GraphExecutor::tick_block()` currently
+  scans all `ExecutionGeneration::live_targets`, even with no open gestures.
+  Filtering on the structural graph's `configured.dynamic` would be incorrect:
+  `stage_realtime_code()` can activate a dynamic variant with the same storage.
+  Avoiding this scan should publish the needed target bindings with code activation,
+  while preserving completion delivery. It must not silently discard controls that
+  become dynamic through code replacement. No such optimization is implemented here.
+
+The owner verified the preceding version. The cleanup, additional trace fields and
+new regressions have only been inspected statically; the agent did not run builds,
+typechecks or tests. `git diff --check` is the mechanical check used for this pass.

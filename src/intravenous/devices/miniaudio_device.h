@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/devices/audio_device.h>
+#include <intravenous/devices/audio_output_capture.h>
 #include <intravenous/third_party/miniaudio/miniaudio.h>
 
 #include <algorithm>
@@ -115,7 +116,6 @@ namespace iv {
         bool _response_ready = false;
         Sample* _pending_output = nullptr;
         size_t _pending_samples = 0;
-        AudioOutputProbeRate _output_probe_rate;
 
         static void data_callback(ma_device* device, void* output, void const*, ma_uint32 frame_count)
         {
@@ -137,11 +137,9 @@ namespace iv {
                     return _shutdown_requested || _response_ready;
                 });
 
-                if (!_shutdown_requested && _config.output_diagnostics
-                    && _output_probe_rate.due(frame_count, _config.sample_rate)) {
-                    AudioOutputProbe probe{.blocks = _output_probe_rate.blocks()};
-                    probe.measure(std::span<Sample const>{output, _pending_samples});
-                    _config.output_diagnostics->playback.publish(probe);
+                if (!_shutdown_requested && _config.output_capture) {
+                    _config.output_capture->write(
+                        {output, _pending_samples}, _config.sample_rate, _config.num_channels);
                 }
 
                 _pending_output = nullptr;

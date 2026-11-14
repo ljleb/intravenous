@@ -1,11 +1,15 @@
 #include <intravenous/runtime/system_audio_devices.h>
 
+#include <intravenous/devices/audio_output_capture.h>
+
 #include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/graph_executor.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <algorithm>
+#include <bit>
+#include <fstream>
 #include <chrono>
 #include <condition_variable>
 #include <exception>
@@ -18,7 +22,6 @@ thread_local void* current_input_binding = nullptr;
 thread_local void* current_output_binding = nullptr;
 thread_local std::span<Sample const> current_input_samples{};
 thread_local std::span<Sample> current_output_samples{};
-thread_local AudioOutputProbe* current_output_probe = nullptr;
 
 class FallbackAudioOutputDevice {
     RenderConfig config_{};
@@ -91,7 +94,7 @@ SystemAudioDevices::SystemAudioDevices(
     SystemAudioDevicesBackend backend,
     std::optional<std::string> selected_output_device_id,
     std::optional<std::string> selected_input_device_id,
-    AudioOutputDiagnostics* output_diagnostics)
+    AudioOutputCapture* output_capture)
     : sample_rate_(sample_rate)
     , block_size_(block_size)
     , backend_(std::move(backend))
@@ -100,7 +103,7 @@ SystemAudioDevices::SystemAudioDevices(
           .num_channels = 2,
           .max_block_frames = std::max<size_t>(block_size * 4, 4096),
           .preferred_block_size = block_size,
-          .output_diagnostics = output_diagnostics,
+          .output_capture = output_capture,
       })
     , input_render_config_(RenderConfig{
           .sample_rate = sample_rate,
@@ -254,7 +257,6 @@ void SystemAudioDevices::input_capture_loop(std::shared_ptr<ActiveInputDevice> i
 void SystemAudioDevices::output_render_loop(
     std::shared_ptr<ActiveOutputDevice> output_device) noexcept
 {
-    AudioOutputProbeRate probe_rate;
     try {
         for (;;) {
             auto output = output_device->device.wait_for_block_request();
@@ -270,10 +272,6 @@ void SystemAudioDevices::output_render_loop(
             }
             for (auto& sample : output) sample = Sample{};
             auto const frames = output.size() / channels;
-            auto* diagnostics = output_device->device.config().output_diagnostics;
-            auto const probe_due = diagnostics && probe_rate.due(frames, sample_rate_);
-            AudioOutputProbe probe{.blocks = probe_rate.blocks()};
-            current_output_probe = probe_due ? &probe : nullptr;
             for (std::size_t offset = 0; offset < frames;) {
                 auto const count = std::min(block_size_, frames - offset);
                 auto const sample_offset = offset * channels;
@@ -310,8 +308,7 @@ void SystemAudioDevices::output_render_loop(
                 auto* executor = graph_executor_.load(std::memory_order_acquire);
                 if (executor) {
                     (void)executor->activate_pending(realtime_cursor_);
-                    if (auto const generation = executor->active_generation()) {
-                        if (probe_due) { probe.generation = *generation; ++probe.tick_calls; }
+                    if (executor->active_generation()) {
                         executor->tick_block(realtime_cursor_, count);
                     }
                 }
@@ -323,15 +320,9 @@ void SystemAudioDevices::output_render_loop(
                 realtime_cursor_ = realtime_cursor_.advanced_by(count);
                 offset += count;
             }
-            current_output_probe = nullptr;
-            if (probe_due) {
-                probe.measure(output);
-                diagnostics->rendered.publish(probe);
-            }
             output_device->device.submit_response();
         }
     } catch (...) {
-        current_output_probe = nullptr;
         current_input_binding = nullptr;
         current_output_binding = nullptr;
         current_input_samples = {};
@@ -402,10 +393,6 @@ SystemAudioOutputBinding SystemAudioDevices::resolve_output_binding(
         found->second.get(),
         +[](void* opaque) noexcept -> std::span<Sample> {
             auto* binding = static_cast<LogicalOutputBinding*>(opaque);
-            if (current_output_probe) {
-                ++current_output_probe->binding_calls;
-                if (current_output_binding == binding) ++current_output_probe->matched_bindings;
-            }
             if (current_output_binding != binding) return {};
             return current_output_samples;
         }};
@@ -769,6 +756,46 @@ void SystemAudioDevices::handle_socket_rpc_get_audio_devices(
     SocketRpcAudioDevicesResultBuilder &builder) const
 {
     builder.succeed(audio_devices_snapshot());
+}
+
+void SystemAudioDevices::handle_socket_rpc_capture_audio_output(CaptureAudioOutputRequest& request)
+{
+    auto* capture_owner = output_render_config_.output_capture;
+    if (!capture_owner) throw std::runtime_error("audio output capture is unavailable");
+    request.handled = true;
+    request.server_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    request.server_steady_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (request.action == "start") {
+        {
+            std::scoped_lock lock(mutex_);
+            if (!active_output_device_ || !active_output_device_->hardware_available)
+                throw std::runtime_error("select an active hardware output before capturing audio");
+        }
+        capture_owner->arm(request.token, sample_rate_, output_render_config_.num_channels);
+        request.recording = true;
+        return;
+    }
+    request.recording = capture_owner->recording();
+    if (request.recording) return;
+    auto capture = capture_owner->snapshot(request.token);
+    auto path = std::filesystem::temp_directory_path() / ("iv-knob-audio-" + request.token + ".wav");
+    std::ofstream wave(path, std::ios::binary | std::ios::trunc);
+    auto write = [&](std::uint32_t value, unsigned bytes) {
+        for (unsigned i = 0; i < bytes; ++i) wave.put(static_cast<char>((value >> (8 * i)) & 255));
+    };
+    auto const bytes = static_cast<std::uint32_t>(capture.samples.size() * sizeof(float));
+    wave.write("RIFF", 4); write(36 + bytes, 4); wave.write("WAVEfmt ", 8);
+    write(16, 4); write(3, 2); write(capture.channels, 2); // IEEE float, interleaved.
+    write(capture.sample_rate, 4); write(capture.sample_rate * capture.channels * 4, 4);
+    write(capture.channels * 4, 2); write(32, 2); wave.write("data", 4); write(bytes, 4);
+    for (auto value : capture.samples) write(std::bit_cast<std::uint32_t>(value.value), 4);
+    wave.close();
+    if (!wave) throw std::runtime_error("could not save diagnostic WAV: " + path.string());
+    request.path = path.string(); request.sample_rate = capture.sample_rate;
+    request.channels = capture.channels; request.sample_count = capture.samples.size();
+    request.blocks = std::move(capture.blocks);
 }
 
 void SystemAudioDevices::handle_project_override_settings(ProjectOverrideSettingsRequest const& request)

@@ -106,6 +106,26 @@ require different delivery guarantees. Disconnect releases observation
 interests; leases also reclaim abandoned scopes. See
 [Vue Output Observation And Query Direction](./vue_output_observation_direction.md).
 
+### Live manual-control values bypass the ordered executor
+
+_Accepted design decision, 2026-11-14._ An open manual-control gesture's update
+changes no session state: no durable record, history entry, or revision. A client
+sends it as an id-less JSON-RPC notification with no reply. The server handles it
+on that client's connection reader, outside the ordered command executor, so it
+never waits behind a request blocked on project or compilation work. The client
+sends updates only after its `begin` is acknowledged, and one connection's
+messages keep their order, so an update cannot precede its `begin` or follow its
+`end`. A late update for a closed gesture is dropped.
+
+The server relays accepted values to the other subscribed clients as replaceable
+`manualControls.liveValue` frames. It keeps only the newest unwritten frame per
+gesture, writes reliable messages first, and spaces frames to one client by a
+bounded tuning interval. Frames carry no revision and never enter the replay log.
+When a gesture's `end` commits, or its client disconnects, its unwritten frames
+are discarded before the committing revision is published. A disconnect that
+commits gestures publishes one revision. See
+[Live gesture values are transient](./node_presentation_and_manual_controls_direction.md#live-gesture-values-are-transient).
+
 ## Current core implementation
 
 `SocketRpcRouteRegistry` owns the mapping from each parsed request type to its

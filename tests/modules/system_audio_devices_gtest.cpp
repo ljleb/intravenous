@@ -22,7 +22,6 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
-#include <limits>
 #include <ranges>
 #include <stdexcept>
 #include <vector>
@@ -375,9 +374,7 @@ TEST(SystemAudioDevices, OutputClockActivatesAndRendersTheGraphExecutor)
 TEST(SystemAudioDevices, OutputClockSlicesLargeDeviceRequestsIntoProjectBlocks)
 {
     auto lifetime = std::make_shared<DeviceLifetimeState>();
-    iv::AudioOutputDiagnostics diagnostics;
-    iv::SystemAudioDevices devices(48000, 64, make_backend(lifetime),
-        "default", "default", &diagnostics);
+    iv::SystemAudioDevices devices(48000, 64, make_backend(lifetime));
     auto resources = devices.resources();
     selected_output_binding = resources.system_audio.resolve_output("default");
     missing_output_binding = resources.system_audio.resolve_output("missing-output");
@@ -411,67 +408,6 @@ TEST(SystemAudioDevices, OutputClockSlicesLargeDeviceRequestsIntoProjectBlocks)
     for (auto const sample : rendered) {
         EXPECT_FLOAT_EQ(sample.value, 0.75f);
     }
-    auto const probe = diagnostics.rendered.read();
-    ASSERT_TRUE(probe.has_value());
-    EXPECT_EQ(probe->generation, 1u);
-    EXPECT_EQ(probe->tick_calls, 3u);
-    EXPECT_EQ(probe->binding_calls, 9u);
-    EXPECT_EQ(probe->matched_bindings, 6u);
-    EXPECT_EQ(probe->samples, 320u);
-    EXPECT_DOUBLE_EQ(probe->peak, .75);
-    EXPECT_DOUBLE_EQ(probe->sum, .75 * 320);
-    EXPECT_DOUBLE_EQ(probe->square_sum, .75 * .75 * 320);
-    EXPECT_EQ(probe->nonfinite, 0u);
-}
-
-TEST(SystemAudioDevices, AudioProbeDistinguishesMissingGraphFromSilentActiveOutput)
-{
-    auto lifetime = std::make_shared<DeviceLifetimeState>();
-    iv::AudioOutputDiagnostics diagnostics;
-    iv::SystemAudioDevices devices(48000, 64, make_backend(lifetime),
-        "default", "default", &diagnostics);
-    auto const output = current_output(lifetime);
-    ASSERT_TRUE(output);
-    auto const rendered = request_output_block(output, 64);
-    devices.stop();
-    ASSERT_EQ(rendered.size(), 128u);
-    auto const probe = diagnostics.rendered.read();
-    ASSERT_TRUE(probe);
-    EXPECT_EQ(probe->generation, 0u);
-    EXPECT_EQ(probe->tick_calls, 0u);
-    EXPECT_EQ(probe->binding_calls, 0u);
-    EXPECT_EQ(probe->matched_bindings, 0u);
-    EXPECT_EQ(probe->samples, rendered.size());
-    EXPECT_DOUBLE_EQ(probe->peak, 0);
-    EXPECT_EQ(probe->nonfinite, 0u);
-    EXPECT_FALSE(diagnostics.playback.read()); // Fake backend has no native callback.
-}
-
-TEST(AudioOutputDiagnostics, SeparatesFiniteSignalDcAndInvalidValues)
-{
-    iv::AudioOutputProbe probe;
-    std::array<iv::Sample, 6> values{1.f, -1.f, .5f, 0.f,
-        std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()};
-    probe.measure(values);
-    iv::AudioOutputProbeSlot slot;
-    EXPECT_FALSE(slot.read());
-    slot.publish(probe);
-    auto const observation = slot.read();
-    ASSERT_TRUE(observation);
-    EXPECT_EQ(observation->samples, 6u);
-    EXPECT_EQ(observation->nonfinite, 2u);
-    EXPECT_DOUBLE_EQ(observation->peak, 1);
-    EXPECT_DOUBLE_EQ(observation->sum, .5);
-    EXPECT_DOUBLE_EQ(observation->square_sum, 2.25);
-}
-
-TEST(AudioOutputDiagnostics, SamplesOneBlockPerSecondWithoutScanningEveryBlock)
-{
-    iv::AudioOutputProbeRate rate;
-    EXPECT_TRUE(rate.due(64, 48000));
-    for (std::size_t block = 0; block < 749; ++block) EXPECT_FALSE(rate.due(64, 48000));
-    EXPECT_TRUE(rate.due(64, 48000));
-    EXPECT_EQ(rate.blocks(), 751u);
 }
 
 TEST(SystemAudioDevices, LogicalOutputBindingFollowsDeviceSelection)

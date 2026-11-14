@@ -1261,6 +1261,80 @@ TEST_F(GraphExecutorFixture, DynamicSuccessorUsesItsStoredTargetAfterStateMigrat
     EXPECT_FLOAT_EQ(std::bit_cast<float>(state.target_bits), .9f);
 }
 
+TEST_F(GraphExecutorFixture, OpenGestureReachesEveryGenerationThroughOneLiveTarget)
+{
+    iv::GraphExecutor executor;
+    std::size_t state_offset = 0;
+    auto initial = std::const_pointer_cast<iv::CompiledGraph>(compiled_graph(
+        1, &observe_first, manual_control_layout(state_offset)));
+    initial->manual_controls.push_back(iv::ManualControlRuntimeBinding{
+        .configured = {
+            .id = manual_control_id(),
+            .input = {0, iv::PortKind::sample, 0},
+            .settled_value = .1f,
+            .dynamic = true,
+        },
+        .state_storage_offset = state_offset,
+        .participates = true,
+    });
+    auto target_in = [&](std::byte const* storage) {
+        iv::ManualControlRuntimeState state{};
+        std::memcpy(&state, storage + state_offset, sizeof(state));
+        return std::bit_cast<float>(state.target_bits);
+    };
+    auto controls = [&](iv::ManualControlGesturePhase gesture, float value) {
+        iv::ProjectGraphGraphExecutorControlsRequest request;
+        request.targets.push_back({.project_generation = 1, .id = manual_control_id(),
+            .value = value, .gesture = gesture});
+        executor.handle_project_graph_controls(request);
+        return request.targets[0].live_target;
+    };
+    ASSERT_EQ(stage_graph(executor, initial), iv::GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+
+    auto const live = controls(iv::ManualControlGesturePhase::begin, .3f);
+    ASSERT_TRUE(live);
+    executor.tick_block(index(0), 16);
+    EXPECT_FLOAT_EQ(target_in(first_tick.storage), .3f);
+    // A gesture update is one store into the shared live target.
+    live->target_bits.store(std::bit_cast<std::uint32_t>(.4f));
+    executor.tick_block(index(16), 16);
+    EXPECT_FLOAT_EQ(target_in(first_tick.storage), .4f);
+
+    // A successor staged mid-gesture binds the same live target, so its
+    // compiled seed cannot replace a value sent while it was being prepared.
+    auto successor = std::make_shared<iv::CompiledGraph>(*initial);
+    successor->project_generation = 2;
+    successor->root_operations.tick_block = {.function = &observe_second};
+    ASSERT_EQ(stage_graph(executor, successor), iv::GraphExecutorStageResult::accepted);
+    live->target_bits.store(std::bit_cast<std::uint32_t>(.45f));
+    ASSERT_TRUE(executor.activate_pending(index(32)));
+    executor.tick_block(index(32), 16);
+    EXPECT_FLOAT_EQ(target_in(second_tick.storage), .45f);
+
+    EXPECT_EQ(controls(iv::ManualControlGesturePhase::end, .5f), nullptr);
+    EXPECT_EQ(live->open_gestures.load(), 0u);
+    // Model the final store of a callback that loaded the old live value just
+    // before end committed .5. The following call must repair that stale copy
+    // even though open_gestures is now zero.
+    auto& late_target = *reinterpret_cast<std::uint32_t*>(
+        const_cast<std::byte*>(second_tick.storage) + state_offset
+        + offsetof(iv::ManualControlRuntimeState, target_bits));
+    std::atomic_ref<std::uint32_t>(late_target).store(std::bit_cast<std::uint32_t>(.45f));
+    executor.tick_block(index(48), 16);
+    EXPECT_FLOAT_EQ(target_in(second_tick.storage), .5f);
+
+    // A closed gesture no longer overrides a later generation's settled value,
+    // as when undo restores a value while the released knob stays dynamic.
+    auto restored = std::make_shared<iv::CompiledGraph>(*successor);
+    restored->project_generation = 3;
+    restored->manual_controls[0].configured.settled_value = .2f;
+    ASSERT_EQ(stage_graph(executor, restored), iv::GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(64)));
+    executor.tick_block(index(64), 16);
+    EXPECT_FLOAT_EQ(target_in(second_tick.storage), .2f);
+}
+
 TEST_F(GraphExecutorFixture, PreservesEveryAcceptedGenerationBeforeActivation)
 {
     iv::GraphExecutor executor;

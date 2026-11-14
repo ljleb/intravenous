@@ -13,6 +13,7 @@ The procedures are:
 - [Startup and project replay](./startup_and_project_replay.md)
 - [Node message interaction](./node_message_interaction.md)
 - [Graph scope read](./graph_scope_read.md)
+- [Manual-control gesture](./manual_control_gesture.md)
 
 Each tree is rooted at one event source entry, opened with
 `IV_EVENT_SOURCE(SourceModule, name) { ... }`; linker events cannot be raised

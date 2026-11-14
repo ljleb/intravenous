@@ -1,7 +1,6 @@
 #pragma once
 
 #include <intravenous/ports.h>
-#include <intravenous/devices/audio_output_diagnostics.h>
 
 #include <concepts>
 #include <cstddef>
@@ -14,12 +13,15 @@
 #include <vector>
 
 namespace iv {
+    class AudioOutputCapture;
+
     struct RenderConfig {
         size_t sample_rate = 48000;
         size_t num_channels = 2;
         size_t max_block_frames = 4096;
         size_t preferred_block_size = 256;
-        AudioOutputDiagnostics* output_diagnostics = nullptr;
+        // Optional knob-audio recorder destination; null in libraries and tests.
+        AudioOutputCapture* output_capture = nullptr;
     };
 
     inline void validate_render_config(RenderConfig const& config)

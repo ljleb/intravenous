@@ -20,6 +20,7 @@
 #include <iomanip>
 #include <chrono>
 #include <algorithm>
+#include <bit>
 #include <functional>
 #include <iterator>
 #include <ranges>
@@ -337,18 +338,21 @@ bool ProjectGraph::control_code_matches_locked(std::span<ManualControlId const> 
 }
 
 bool ProjectGraph::update_graph_executor_controls_locked(
-    std::optional<ManualControlTargetValue> target,
-    std::optional<std::span<ManualControlId const>> code_inputs)
+    std::vector<ManualControlTargetValue> targets,
+    std::optional<std::span<ManualControlId const>> code_inputs,
+    std::shared_ptr<ManualControlLiveTarget>* begun)
 {
     if (!current_generation_) return false;
     ProjectGraphGraphExecutorControlsRequest request;
     auto const reuse_code = code_inputs && control_code_matches_locked(*code_inputs);
-    if (target) {
-        request.target = ProjectGraphManualControlTarget{
+    request.targets.reserve(targets.size());
+    for (auto& target : targets) {
+        request.targets.push_back(ProjectGraphManualControlTarget{
             .project_generation = current_generation_->generation,
-            .id = std::move(target->id),
-            .value = target->value,
-        };
+            .id = std::move(target.id),
+            .value = target.value,
+            .gesture = target.gesture,
+        });
     }
     bool const stage_code = !reuse_code && code_inputs && ready_control_code_
         && ready_control_code_->project_generation
@@ -358,10 +362,17 @@ bool ProjectGraph::update_graph_executor_controls_locked(
             *current_generation_->compiled_graph, *ready_control_code_->graph)) {
         request.realtime_code = ready_control_code_->graph;
     }
-    if (!request.target && !request.realtime_code) return reuse_code;
+    if (request.targets.empty() && !request.realtime_code) return reuse_code;
     (void)IV_INVOKE_SINGLETON_EVENT(
         iv_runtime_project_graph_graph_executor_controls_requested_event,
         request);
+    if (begun) {
+        for (auto& target : request.targets) {
+            if (target.gesture == ManualControlGesturePhase::begin) {
+                *begun = std::move(target.live_target);
+            }
+        }
+    }
     if (reuse_code) return true;
     if (!request.realtime_code
         || request.realtime_code_result != GraphExecutorStageResult::accepted) {
@@ -374,19 +385,19 @@ bool ProjectGraph::update_graph_executor_controls_locked(
 
 void ProjectGraph::reconcile_manual_control_activity_locked(
     bool settled_dynamic_input,
-    std::optional<ManualControlTargetValue> target)
+    std::vector<ManualControlTargetValue> targets)
 {
     auto const next_inputs = desired_dynamic_inputs_locked(false);
-    if (next_inputs.empty() && settling_controls_ && !settled_dynamic_input && !target) return;
+    if (next_inputs.empty() && settling_controls_ && !settled_dynamic_input && targets.empty()) return;
     if (next_inputs == dynamic_inputs_ && !next_inputs.empty() && control_code_matches_locked(next_inputs)) {
-        if (target) (void)update_graph_executor_controls_locked(std::move(target), std::nullopt);
+        if (!targets.empty()) (void)update_graph_executor_controls_locked(std::move(targets), std::nullopt);
         return;
     }
     dynamic_inputs_ = next_inputs;
     if (dynamic_inputs_.empty()) {
-        if (target) {
+        if (!targets.empty()) {
             (void)update_graph_executor_controls_locked(
-                std::move(target), std::nullopt);
+                std::move(targets), std::nullopt);
         }
         // Leaving the last released control requests its settled code now.
         // Other predictive hovers cannot supersede that required restoration.
@@ -409,7 +420,7 @@ void ProjectGraph::reconcile_manual_control_activity_locked(
     settling_controls_ = false;
     auto const requested_inputs = desired_dynamic_inputs_locked(true);
     if (!update_graph_executor_controls_locked(
-            std::move(target), std::span<ManualControlId const>(requested_inputs))) {
+            std::move(targets), std::span<ManualControlId const>(requested_inputs))) {
         schedule_control_compile_locked(requested_inputs, true);
     }
 }
@@ -475,7 +486,7 @@ void ProjectGraph::control_compile_worker(std::stop_token stop)
                     *current_generation_->compiled_graph, *ready_control_code_->graph);
                 if (!storage_change) {
                     staged = update_graph_executor_controls_locked(
-                        std::nullopt,
+                        {},
                         std::span<ManualControlId const>(request->dynamic_inputs));
                 }
             }
@@ -829,10 +840,14 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         else record_edit_locked(std::move(effect));
     }
     if (publish_execution) {
+        // An implicit default has no record until its first gesture ends, so
+        // only a disabled record ends an open gesture here. Removed nodes are
+        // checked below against the finished graph.
         std::erase_if(manual_interactions_, [&](auto const& interaction) {
             auto const* control = find_manual_control_locked(interaction.control);
-            return !control || !control->enabled;
+            return control && !control->enabled;
         });
+        prune_live_interactions_locked();
     }
     if (instances_failed) {
         return fail(ProjectGraphConfigurationFailure{
@@ -1071,6 +1086,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         generation->graph_jit_timings = std::move(graph_jit_result.timings);
         if (diagnostic_flag_enabled("IV_EDIT_TIMING")) log_edit_timing(*generation);
         manual_interactions_ = std::move(next_manual_interactions);
+        prune_live_interactions_locked();
         hovered_controls_ = std::move(next_hovered_controls);
         hover_retained_inputs_ = std::move(next_retained_inputs);
         dynamic_inputs_ = std::move(next_dynamic_inputs);
@@ -2158,7 +2174,8 @@ void ProjectGraph::handle_project_begin_manual_control_interaction(
             .initial_control = control ? std::optional(*control) : std::nullopt,
         });
         hover_retained_inputs_.erase(request.interaction.client_id);
-        set_interaction_value_locked(manual_interactions_.back(), request.value);
+        // The gesture changes no durable state until it ends. Its live value
+        // starts here and follows the client's updates.
         if (settling_controls_) {
             pending_control_compile_.reset();
             ready_control_code_.reset();
@@ -2167,43 +2184,80 @@ void ProjectGraph::handle_project_begin_manual_control_interaction(
         settling_controls_ = false;
         dynamic_inputs_ = desired_dynamic_inputs_locked(false);
         auto const requested_inputs = desired_dynamic_inputs_locked(true);
+        std::shared_ptr<ManualControlLiveTarget> live_target;
         auto const staged = update_graph_executor_controls_locked(
-            ManualControlTargetValue{.id = request.id, .value = request.value},
+            {ManualControlTargetValue{
+                .id = request.id,
+                .value = request.value,
+                .gesture = ManualControlGesturePhase::begin,
+            }},
             requested_inputs.empty()
                 ? std::nullopt
-                : std::optional(std::span<ManualControlId const>(requested_inputs)));
+                : std::optional(std::span<ManualControlId const>(requested_inputs)),
+            &live_target);
+        {
+            std::scoped_lock live(live_mutex_);
+            live_interactions_.push_back({
+                .interaction = request.interaction,
+                .control = request.id,
+                .target = std::move(live_target),
+                .value = request.value,
+            });
+        }
         if (!requested_inputs.empty() && !staged) {
             schedule_control_compile_locked(requested_inputs, true);
         }
     }
     builder.succeed();
-    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
 
-void ProjectGraph::handle_project_update_manual_control_interaction(
-    ProjectUpdateManualControlInteractionRequest const& request,
-    ProjectAckBuilder& builder)
+void ProjectGraph::handle_live_manual_control_update(LiveManualControlUpdateRequest& request)
 {
-    {
-        std::scoped_lock lock(mutex_);
-        auto interaction = std::ranges::find(
-            manual_interactions_,
-            request.interaction,
-            &ActiveManualControlInteraction::interaction);
-        if (interaction == manual_interactions_.end()) {
-            throw std::invalid_argument(
-                "manual-control interaction id is not active");
-        }
-        set_interaction_value_locked(*interaction, request.value);
-        (void)update_graph_executor_controls_locked(
-            ManualControlTargetValue{
-                .id = interaction->control,
-                .value = request.value,
-            },
-            std::nullopt);
+    std::scoped_lock live(live_mutex_);
+    auto interaction = std::ranges::find(
+        live_interactions_, request.interaction,
+        &LiveManualControlInteraction::interaction);
+    // A late update for a gesture that already ended or was invalidated is
+    // dropped: its end carried the authoritative value.
+    if (interaction == live_interactions_.end()) return;
+    interaction->value = request.value;
+    if (interaction->target) {
+        interaction->target->target_bits.store(
+            std::bit_cast<std::uint32_t>(request.value.value),
+            std::memory_order_relaxed);
     }
-    builder.succeed();
-    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+    request.applied = true;
+    request.control = interaction->control;
+}
+
+std::optional<ProjectGraph::LiveManualControlInteraction>
+ProjectGraph::close_live_interaction_locked(ManualControlInteractionId const& interaction)
+{
+    std::scoped_lock live(live_mutex_);
+    auto found = std::ranges::find(
+        live_interactions_, interaction, &LiveManualControlInteraction::interaction);
+    if (found == live_interactions_.end()) return std::nullopt;
+    auto closed = std::move(*found);
+    live_interactions_.erase(found);
+    return closed;
+}
+
+void ProjectGraph::prune_live_interactions_locked()
+{
+    std::scoped_lock live(live_mutex_);
+    std::erase_if(live_interactions_, [&](LiveManualControlInteraction& entry) {
+        if (std::ranges::contains(manual_interactions_, entry.interaction,
+                &ActiveManualControlInteraction::interaction)) {
+            return false;
+        }
+        if (entry.target) {
+            auto open = entry.target->open_gestures.load(std::memory_order_relaxed);
+            while (open != 0 && !entry.target->open_gestures.compare_exchange_weak(
+                       open, open - 1, std::memory_order_release,
+                       std::memory_order_relaxed)) {}
+        }
+        return true;
+    });
 }
 
 void ProjectGraph::handle_project_end_manual_control_interaction(
@@ -2221,7 +2275,10 @@ void ProjectGraph::handle_project_end_manual_control_interaction(
                 "manual-control interaction id is not active");
         }
         auto const control_id = interaction->control;
+        // The end value is the gesture's one durable change and history entry,
+        // appended in the order the gesture completes.
         set_interaction_value_locked(*interaction, request.value);
+        auto const live = close_live_interaction_locked(request.interaction);
         auto const settled_dynamic_input = std::ranges::contains(
             dynamic_inputs_, control_id);
         auto const hover = hovered_controls_.find(interaction->interaction.client_id);
@@ -2231,7 +2288,12 @@ void ProjectGraph::handle_project_end_manual_control_interaction(
         manual_interactions_.erase(interaction);
         reconcile_manual_control_activity_locked(
             settled_dynamic_input,
-            ManualControlTargetValue{.id = control_id, .value = request.value});
+            {ManualControlTargetValue{
+                .id = control_id,
+                .value = request.value,
+                .gesture = live && live->target
+                    ? ManualControlGesturePhase::end : ManualControlGesturePhase::none,
+            }});
     }
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
@@ -2494,26 +2556,6 @@ void ProjectGraph::handle_socket_rpc_begin_manual_control_interaction(
     }
 }
 
-void ProjectGraph::handle_socket_rpc_update_manual_control_interaction(
-    UpdateManualControlInteractionRequest const& request,
-    SocketRpcAckResponseBuilder& builder)
-{
-    try {
-        ProjectAckBuilder project_builder;
-        handle_project_update_manual_control_interaction(
-            ProjectUpdateManualControlInteractionRequest{
-                .interaction = request.interaction,
-                .value = request.value,
-            },
-            project_builder);
-        builder.set_publication(project_builder.take_publication());
-        project_builder.build();
-        builder.succeed();
-    } catch (std::exception const& error) {
-        builder.fail(error.what());
-    }
-}
-
 void ProjectGraph::handle_socket_rpc_end_manual_control_interaction(
     EndManualControlInteractionRequest const& request,
     SocketRpcAckResponseBuilder& builder)
@@ -2535,30 +2577,53 @@ void ProjectGraph::handle_socket_rpc_end_manual_control_interaction(
 }
 
 void ProjectGraph::handle_socket_rpc_client_disconnected(
-    std::string const& client_id)
+    SocketRpcClientDisconnectedRequest& request)
 {
+    auto const& client_id = request.client_id;
     if (client_id.empty()) return;
-    std::scoped_lock lock(mutex_);
-    auto const interaction_count = manual_interactions_.size();
-    auto const hover_count = hovered_controls_.size();
-    auto settled_dynamic_input = false;
-    std::erase_if(
-        manual_interactions_,
-        [&](ActiveManualControlInteraction const& interaction) {
-            auto const remove =
-                interaction.interaction.client_id == client_id;
-            if (remove && std::ranges::contains(
-                    dynamic_inputs_, interaction.control)) {
-                settled_dynamic_input = true;
+    {
+        std::scoped_lock lock(mutex_);
+        auto const hover_count = hovered_controls_.size();
+        auto const controls_before = manual_controls_;
+        auto settled_dynamic_input = false;
+        std::vector<ManualControlTargetValue> ended;
+        // Each open gesture ends at the last value received from its client,
+        // exactly as an explicit end would, so its history entry is ordinary.
+        for (auto interaction = manual_interactions_.begin();
+             interaction != manual_interactions_.end();) {
+            if (interaction->interaction.client_id != client_id) {
+                ++interaction;
+                continue;
             }
-            return remove;
-        });
-    hovered_controls_.erase(client_id);
-    auto const retained_removed = hover_retained_inputs_.erase(client_id) != 0;
-    settled_dynamic_input |= retained_removed;
-    if (manual_interactions_.size() != interaction_count
-        || hovered_controls_.size() != hover_count || retained_removed) {
-        reconcile_manual_control_activity_locked(settled_dynamic_input);
+            if (auto const live = close_live_interaction_locked(interaction->interaction)) {
+                // A control disabled since the gesture began keeps its record;
+                // the gesture still closes its live target at the received value.
+                try {
+                    set_interaction_value_locked(*interaction, live->value);
+                } catch (std::invalid_argument const&) {}
+                ended.push_back({
+                    .id = interaction->control,
+                    .value = live->value,
+                    .gesture = live->target
+                        ? ManualControlGesturePhase::end : ManualControlGesturePhase::none,
+                });
+            }
+            settled_dynamic_input |= std::ranges::contains(
+                dynamic_inputs_, interaction->control);
+            interaction = manual_interactions_.erase(interaction);
+        }
+        hovered_controls_.erase(client_id);
+        auto const retained_removed = hover_retained_inputs_.erase(client_id) != 0;
+        settled_dynamic_input |= retained_removed;
+        if (!ended.empty() || settled_dynamic_input
+            || hovered_controls_.size() != hover_count) {
+            reconcile_manual_control_activity_locked(
+                settled_dynamic_input, std::move(ended));
+        }
+        request.project_state_changed = manual_controls_ != controls_before;
+    }
+    if (request.project_state_changed) {
+        IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
     }
 }
 
@@ -2711,10 +2776,19 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                 auto const* saved = find_manual_control_locked(id);
                 bool const available = node.load_state == ProjectGraphScopeNodeState::ready
                     && generation && generation->graph && manual_control_is_available(*generation->graph, id);
+                std::optional<Sample> live_value;
+                {
+                    std::scoped_lock live(live_mutex_);
+                    // The newest open gesture on this control, if any.
+                    for (auto const& entry : live_interactions_ | std::views::reverse) {
+                        if (entry.control == id) { live_value = entry.value; break; }
+                    }
+                }
                 node.manual_controls.push_back({
                     .control = saved ? *saved : ProjectManualControl{.id = id, .stored_value = *port.manual_default},
                     .available = available,
                     .participates = available && (!saved || saved->enabled) && manual_control_participates(*generation->graph, id),
+                    .live_value = live_value,
                 });
             }
             scope.nodes.push_back(std::move(node));

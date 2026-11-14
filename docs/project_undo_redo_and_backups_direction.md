@@ -191,11 +191,14 @@ Desired connections retain their matchers, including dangling ones, unless
 the same action explicitly changes them. Undo restores the exact records that
 changed rather than deleting or recreating inferred connections.
 
-Manual-control updates coalesce only while that interaction owns the latest
-history entry. An intervening accepted edit seals that entry; the next control
-update begins a new entry after the intervening edit. Disconnect finalizes the
-last accepted stored value. Undo/redo requires active manual-control interactions
-to finish first; it does not rewind a pointer gesture still being operated.
+A manual-control gesture changes no durable record until it ends. Its end records
+one history entry from the stored value before the end to the final value, appended
+when the gesture completes, so an edit accepted while the gesture is open precedes
+it. Disconnect ends the client's open gestures at the last values received from it.
+Undo/redo requires active manual-control interactions to finish first; it does not
+rewind a pointer gesture still being operated. _Accepted design change, 2026-11-14;
+the superseded per-update grouping is preserved in
+[historical documentation](./historical/manual_control_durable_gesture_updates_2026-11-14.md)._
 
 The extension provides Undo Project Edit and Redo Project Edit commands.
 Ctrl/Command+Z and Ctrl/Command+Shift+Z act on project history only inside the

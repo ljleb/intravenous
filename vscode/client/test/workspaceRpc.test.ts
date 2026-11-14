@@ -75,22 +75,25 @@ test("project history and a multi-node edit use one revision-checked request eac
     ]);
 });
 
-test("manual control requests retain server client identity and use fresh mutation revisions", async () => {
+test("manual control mutations use fresh revisions and live updates are revision-free notifications", async () => {
     const calls: unknown[] = [];
     let revision = 1;
-    const client = { request: async (method, params) => { calls.push({ method, params }); ++revision; } } as unknown as JsonRpcSocketClient;
+    const client = {
+        request: async (method, params) => { calls.push({ method, params }); ++revision; },
+        notify: (method, params) => { calls.push({ notification: method, params }); },
+    } as unknown as JsonRpcSocketClient;
     const rpc = new WorkspaceRpc(client, () => revision);
     const control = { node: { instanceId: "filter", path: [{ name: "inner" }] }, inputName: "cutoff" };
     await rpc.hoverManualControl(control);
     await rpc.beginManualControl("drag", control, .2);
-    await rpc.updateManualControl("drag", .3);
+    rpc.updateManualControl("drag", .3);
     await rpc.endManualControl("drag", .4);
     await rpc.hoverManualControl(null);
     assert.deepEqual(calls, [
         { method: "manualControls.hover", params: control },
         { method: "manualControls.begin", params: { interactionId: "drag", ...control, value: .2, expectedRevision: 2 } },
-        { method: "manualControls.update", params: { interactionId: "drag", value: .3, expectedRevision: 3 } },
-        { method: "manualControls.end", params: { interactionId: "drag", value: .4, expectedRevision: 4 } },
+        { notification: "manualControls.update", params: { interactionId: "drag", value: .3 } },
+        { method: "manualControls.end", params: { interactionId: "drag", value: .4, expectedRevision: 3 } },
         { method: "manualControls.hover", params: {} },
     ]);
 });

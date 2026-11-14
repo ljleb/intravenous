@@ -1,4 +1,6 @@
 import { ManualControlInteractions } from "./manualControls";
+import type { NodeAddress } from "./graphScope";
+import { clientToServerClock, knobAudioRecord, recordingPathFor, type KnobGestureEvent } from "./knobAudioRecording";
 import * as vscode from "vscode";
 import * as childProcess from "child_process";
 import * as crypto from "crypto";
@@ -258,8 +260,15 @@ export class WorkspaceSession {
 
     private registerNotificationHandlers(): void {
         this.notifications.subscribe("graph.changed", () => this.graphChanges.fire());
-        // Live manual values change durable state without a graph publication.
+        // A committed revision without a graph publication, such as a settled
+        // manual value or an audio selection.
         this.notifications.subscribe("session.revisionChanged", () => this.graphChanges.fire());
+        // Another client's open gesture: unreliable, display only.
+        this.notifications.subscribe<{ node?: NodeAddress; inputName?: string; value?: number }>(
+            "manualControls.liveValue", (params) => {
+                if (!params.node || typeof params.inputName !== "string" || typeof params.value !== "number") return;
+                this.manualControls.receiveLive({ control: { node: params.node, inputName: params.inputName }, value: params.value });
+            });
         this.notifications.subscribe<ServerMessageNotification>("server.message", (params) => {
             if (!params.message) {
                 return;
@@ -1117,6 +1126,44 @@ export class WorkspaceSession {
 
     private syncSelectedInstanceViews(): void {
         this.provider.setSelectedInstanceId(this.selectedInstanceId);
+    }
+
+    // Records eight seconds of audio callback output while the user drags a knob,
+    // together with when each gesture message was sent. Returns the JSON path;
+    // the WAV path is inside it.
+    async recordKnobAudio(pointerTrace?: () => Promise<unknown>): Promise<string> {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        const rpc = this.rpc;
+        const token = crypto.randomUUID();
+        const events: KnobGestureEvent[] = [];
+        const requestStartMs = performance.now();
+        const started = await rpc.captureAudioOutput("start", token);
+        const clock = clientToServerClock(requestStartMs, performance.now(), started.serverSteadyUs);
+        this.manualControls.observe((event) => events.push(event));
+        try {
+            const deadline = performance.now() + 20_000;
+            for (;;) {
+                await new Promise((resolve) => setTimeout(resolve, 500));
+                if (this.rpc !== rpc) throw new Error("The Intravenous server connection changed during the recording");
+                const reply = await rpc.captureAudioOutput("read", token);
+                if (!reply.recording) {
+                    const recordPath = recordingPathFor(reply.path);
+                    // Preserve the audio and gesture evidence even if its
+                    // webview closed before returning the pointer trace.
+                    let pointer: unknown;
+                    try { pointer = await pointerTrace?.(); }
+                    catch (error) { pointer = { error: error instanceof Error ? error.message : String(error) }; }
+                    const record = { ...knobAudioRecord(reply, events, clock),
+                        serverClock: { epochMs: started.serverTimeMs, steadyUs: started.serverSteadyUs }, pointer };
+                    await fs.promises.writeFile(recordPath, JSON.stringify(record, null, 1));
+                    this.outputChannel.appendLine(`Intravenous knob audio recording: ${reply.path} with timing ${recordPath}`);
+                    return recordPath;
+                }
+                if (performance.now() > deadline) throw new Error("The audio capture did not finish");
+            }
+        } finally {
+            this.manualControls.observe(null);
+        }
     }
 
     async saveProject(): Promise<void> {

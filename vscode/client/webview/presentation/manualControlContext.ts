@@ -25,7 +25,11 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>) {
         const pointerControl = context?.gestures.pointerControl();
         return !!id.value && !!pointerControl && manualControlKey(id.value) === manualControlKey(pointerControl);
     });
-    const value = computed(() => state.value?.value ?? descriptor.value?.value);
+    const value = computed(() => {
+        void context?.version.value;
+        return state.value?.value ?? (id.value ? context?.gestures.liveValue(id.value) : undefined)
+            ?? descriptor.value?.value;
+    });
     const limits = computed(() => {
         const metadata = port.value?.kind === "continuous" ? port.value.valueTypes[0] : undefined;
         const finite = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) ? value : undefined;

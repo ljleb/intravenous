@@ -39,13 +39,17 @@ struct ProjectGraphManualControlTarget {
     std::uint64_t project_generation = 0;
     ManualControlId id{};
     Sample value{};
+    ManualControlGesturePhase gesture = ManualControlGesturePhase::none;
+    // Returned for ManualControlGesturePhase::begin.
+    std::shared_ptr<ManualControlLiveTarget> live_target{};
 };
 
 // One ProjectGraph -> GraphExecutor manual-control update per cause: the
-// optional target change is applied first, then the optional same-layout
-// realtime code is staged. The results return on the same record.
+// target changes are applied first, in order, then the optional same-layout
+// realtime code is staged. A client disconnect can close several gestures in
+// one cause. The results return on the same record.
 struct ProjectGraphGraphExecutorControlsRequest {
-    std::optional<ProjectGraphManualControlTarget> target{};
+    std::vector<ProjectGraphManualControlTarget> targets{};
     std::shared_ptr<CompiledGraph const> realtime_code{};
     bool target_applied = false;
     GraphExecutorStageResult realtime_code_result =
@@ -176,6 +180,16 @@ class GraphExecutor {
         std::shared_ptr<CompiledGraph const> active_realtime_code_owner{};
         std::shared_ptr<CompiledGraph const> pending_realtime_code_owner{};
         std::vector<std::pair<ManualControlId, Sample>> manual_control_targets{};
+        // One entry per manual-control binding, resolved off realtime before the
+        // generation becomes visible. Constant and dynamic code variants share
+        // the state offsets, so the binding list follows the structural graph.
+        struct LiveTargetBinding {
+            std::shared_ptr<ManualControlLiveTarget> target{};
+            std::size_t target_storage_offset = 0;
+            // Owned by the realtime thread after publication.
+            std::uint64_t observed_completion = 0;
+        };
+        std::vector<LiveTargetBinding> live_targets{};
         RealtimeGeneration realtime;
         BackgroundGeneration background;
         std::unique_ptr<RealtimePersistedState> initial_persisted_state{};
@@ -336,6 +350,12 @@ class GraphExecutor {
     // Control-path playback demand copied into every staged generation before
     // it becomes visible to either executor actor.
     IndexCoverage tick_materialization_demand_{};
+    // Generations and gestures own their live targets. The registry shares
+    // those cells without retaining controls after their last owner is gone.
+    // Locked only for lookup, never by realtime.
+    std::mutex live_targets_mutex_{};
+    std::vector<std::pair<ManualControlId, std::weak_ptr<ManualControlLiveTarget>>>
+        live_targets_{};
     // Declared last so its worker stops and its generation chain is destroyed
     // before the stores and capacity manager used by those generations.
     BackgroundExecutor background_executor_;
@@ -353,6 +373,12 @@ class GraphExecutor {
     void unlock_accepted_chain() noexcept;
     [[nodiscard]] ExecutionGeneration* find_accepted_generation(
         std::uint64_t project_generation) noexcept;
+    [[nodiscard]] std::shared_ptr<ManualControlLiveTarget> live_target(
+        ManualControlId const& id);
+    // Writes value into every accepted generation that binds id. The caller
+    // holds the accepted-chain guard.
+    bool set_manual_control_target_in_accepted_chain(
+        ManualControlId const& id, Sample value);
 
 public:
     explicit GraphExecutor(

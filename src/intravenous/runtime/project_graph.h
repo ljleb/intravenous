@@ -49,7 +49,6 @@ struct ProjectUpsertManualControlRequest;
 struct ProjectDeleteManualControlRequest;
 struct ProjectSetManualControlHoverRequest;
 struct ProjectBeginManualControlInteractionRequest;
-struct ProjectUpdateManualControlInteractionRequest;
 struct ProjectEndManualControlInteractionRequest;
 struct UpdateNodeInstancesRequest;
 struct UpsertGraphConnectionRequest;
@@ -58,7 +57,8 @@ struct UpsertManualControlRequest;
 struct DeleteManualControlRequest;
 struct SetManualControlHoverRequest;
 struct BeginManualControlInteractionRequest;
-struct UpdateManualControlInteractionRequest;
+struct LiveManualControlUpdateRequest;
+struct SocketRpcClientDisconnectedRequest;
 struct EndManualControlInteractionRequest;
 struct DispatchNodeMessageRequest;
 struct GetNodeEventProtocolRequest;
@@ -164,6 +164,7 @@ class ProjectGraph {
     struct ManualControlTargetValue {
         ManualControlId id{};
         Sample value{};
+        ManualControlGesturePhase gesture = ManualControlGesturePhase::none;
     };
     struct RebuildResult {
         // Null when the configuration pass failed.
@@ -179,6 +180,15 @@ class ProjectGraph {
         ManualControlId control{};
         std::uint64_t history_serial = 0;
         std::optional<ProjectManualControl> initial_control{};
+    };
+    // The transient part of one open gesture: its latest received value and
+    // the GraphExecutor live target that realtime reads. Durable state changes
+    // only when the gesture ends.
+    struct LiveManualControlInteraction {
+        ManualControlInteractionId interaction{};
+        ManualControlId control{};
+        std::shared_ptr<ManualControlLiveTarget> target{};
+        Sample value{};
     };
     struct ControlCompileRequest {
         std::uint64_t request_id = 0;
@@ -221,6 +231,10 @@ class ProjectGraph {
     std::vector<ProjectManualControl> manual_controls_{};
     std::vector<ManualControlId> dynamic_inputs_{};
     std::vector<ActiveManualControlInteraction> manual_interactions_{};
+    // Transient gesture values. Live updates on client reader threads take
+    // only live_mutex_; every other access holds mutex_ first.
+    mutable std::mutex live_mutex_;
+    std::vector<LiveManualControlInteraction> live_interactions_{};
     std::unordered_map<std::string, ManualControlId> hovered_controls_{};
     // A released gesture stays dynamic only while its own client still hovers
     // that input. This does not keep its undo interaction open.
@@ -269,16 +283,25 @@ class ProjectGraph {
     [[nodiscard]] bool control_code_matches_locked(std::span<ManualControlId const> inputs) const;
     [[nodiscard]] ProjectManualControl* find_manual_control_locked(
         ManualControlId const& id);
-    // Sends GraphExecutor one control update: the optional target, then the
-    // ready same-layout code when it matches `code_inputs`. Returns whether
-    // that code was staged.
+    // Sends GraphExecutor one control update: the targets, then the ready
+    // same-layout code when it matches `code_inputs`. Returns whether that code
+    // was staged. A begin target's live target is stored in `begun`.
     [[nodiscard]] bool update_graph_executor_controls_locked(
-        std::optional<ManualControlTargetValue> target,
-        std::optional<std::span<ManualControlId const>> code_inputs);
-    // `target`, when set, joins the same GraphExecutor control update.
+        std::vector<ManualControlTargetValue> targets,
+        std::optional<std::span<ManualControlId const>> code_inputs,
+        std::shared_ptr<ManualControlLiveTarget>* begun = nullptr);
+    // `targets` join the same GraphExecutor control update.
     void reconcile_manual_control_activity_locked(
         bool settled_dynamic_input,
-        std::optional<ManualControlTargetValue> target = std::nullopt);
+        std::vector<ManualControlTargetValue> targets = {});
+    // Removes and returns the interaction's transient record. The caller ends
+    // its live target through GraphExecutor. Requires mutex_.
+    [[nodiscard]] std::optional<LiveManualControlInteraction> close_live_interaction_locked(
+        ManualControlInteractionId const& interaction);
+    // Drops the transient records of interactions a rebuild invalidated. Their
+    // controls are gone or disabled, so no committed value needs to reach an
+    // execution generation; the live targets are released directly. Requires mutex_.
+    void prune_live_interactions_locked();
 
 public:
     ProjectGraph();
@@ -343,9 +366,9 @@ public:
     void handle_project_begin_manual_control_interaction(
         ProjectBeginManualControlInteractionRequest const& request,
         ProjectAckBuilder& builder);
-    void handle_project_update_manual_control_interaction(
-        ProjectUpdateManualControlInteractionRequest const& request,
-        ProjectAckBuilder& builder);
+    // A live gesture value. Takes only live_mutex_, so it never waits for a
+    // control compilation, a staging, or a scope read.
+    void handle_live_manual_control_update(LiveManualControlUpdateRequest& request);
     void handle_project_end_manual_control_interaction(
         ProjectEndManualControlInteractionRequest const& request,
         ProjectAckBuilder& builder);
@@ -379,13 +402,12 @@ public:
     void handle_socket_rpc_begin_manual_control_interaction(
         BeginManualControlInteractionRequest const& request,
         SocketRpcAckResponseBuilder& builder);
-    void handle_socket_rpc_update_manual_control_interaction(
-        UpdateManualControlInteractionRequest const& request,
-        SocketRpcAckResponseBuilder& builder);
     void handle_socket_rpc_end_manual_control_interaction(
         EndManualControlInteractionRequest const& request,
         SocketRpcAckResponseBuilder& builder);
-    void handle_socket_rpc_client_disconnected(std::string const& client_id);
+    // Ends the client's open gestures at their last received values, committing
+    // their history as ordinary completed gestures, and clears its hover state.
+    void handle_socket_rpc_client_disconnected(SocketRpcClientDisconnectedRequest& request);
     void handle_socket_rpc_dispatch_node_message(
         DispatchNodeMessageRequest const& request,
         SocketRpcNodeMessageResultBuilder& builder);
