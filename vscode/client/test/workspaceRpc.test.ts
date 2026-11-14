@@ -94,3 +94,12 @@ test("manual control requests retain server client identity and use fresh mutati
         { method: "manualControls.hover", params: {} },
     ]);
 });
+
+test("audio output diagnostics read the existing audioDevices endpoint without a project mutation", async () => {
+    const calls: unknown[] = [];
+    const snapshot = { selectedOutput: { deviceId: "default", available: false, error: "unavailable" } };
+    const client = { request: async (method, params) => { calls.push({ method, params }); return snapshot; } } as unknown as JsonRpcSocketClient;
+    const rpc = new WorkspaceRpc(client, () => 17);
+    assert.deepEqual(await rpc.getAudioDevices(), snapshot);
+    assert.deepEqual(calls, [{ method: "audioDevices.get", params: {} }]);
+});

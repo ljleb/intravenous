@@ -30,6 +30,7 @@ import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
 import { autoDetectedServerDirectoriesForWorkspaceRoot } from "./serverBinaryPaths";
 import { WorkspaceNotificationRouter } from "./workspaceNotifications";
 import { WorkspaceRpc } from "./workspaceRpc";
+import { audioOutputDiagnostic } from "./audioOutputDiagnostic";
 
 declare const __INTRAVENOUS_DEFAULT_DIR__: string;
 
@@ -103,6 +104,10 @@ export class WorkspaceSession {
     async readGraphScope() {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
         return this.rpc.getGraphScope();
+    }
+
+    reportGraphInteractionDiagnostic(message: string): void {
+        this.outputChannel.appendLine(`Intravenous knob pointer: ${message}`);
     }
 
     async connectGraphPorts(id: string, first: GraphPortEndpoint, second: GraphPortEndpoint): Promise<void> {
@@ -859,6 +864,14 @@ export class WorkspaceSession {
         this.outputChannel.appendLine(
             `Intravenous startup: connected at session revision ${this.lastSessionRevision}`,
         );
+        // Do not delay graph discovery on hardware enumeration. Report the
+        // selected device explicitly because the fallback clock keeps Tick
+        // running even when hardware output could not be opened.
+        void this.rpc.getAudioDevices().then((snapshot) => {
+            if (this.client === client) this.outputChannel.appendLine(audioOutputDiagnostic(snapshot.selectedOutput));
+        }, (error) => {
+            if (this.client === client) this.outputChannel.appendLine(`Intravenous audio output query failed: ${error.message ?? error}`);
+        });
     }
 
     // The server stops with its socket, so a lost connection means this

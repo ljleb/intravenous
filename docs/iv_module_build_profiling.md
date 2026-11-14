@@ -45,6 +45,11 @@ The first line for each `cold` and `hot` phase reports:
   outside an individual package build, and therefore is not a package-Ninja
   timing field.
 
+The second summary line, `iv-module-finalizer-profile`, exposes LLVM pre-link
+optimization, node-code reduction, node-code optimization, and machine-code
+generation. These are parts of `finalizer_ms`, not additional time. They can
+dominate finalization even when bitcode parsing and metadata processing are fast.
+
 The following lines, prefixed `finalizer_`, come from
 `cmake-build/iv-package-finalizer-timings.txt` in that workspace. They split
 the package finalizer into bitcode parse/link, package-metadata validation,
@@ -79,3 +84,44 @@ largest measured stage:
 The broader `scripts/verify_release_performance.sh` is for release validation,
 not the quick investigation loop: it builds the full release tree, runs all
 release tests, and also runs the execution benchmark.
+
+## Simple-sine measurements, 2026-11-14
+
+The owner ran `scripts/profile_module_reload.sh --simple-sine-modules`.
+Detailed logs were retained in `/tmp/intravenous-module-reload-profile.logs`,
+with Clang traces under `/tmp/intravenous-module-reload-profile`.
+
+The six hot package rebuilds total 22.712 seconds. Their combined times are:
+
+| Work | Seconds |
+| --- | ---: |
+| CMake configuration | 0.255 |
+| Compilation and remaining Ninja overhead, estimated by subtraction | 15.623 |
+| Finalization, measured from Ninja edges | 6.832 |
+
+Finalization includes 3.465 seconds of pre-link LLVM optimization, 1.602 seconds
+of node-code optimization, and 1.330 seconds of machine-code generation.
+These three stages were present in detailed logs but absent from the original
+wrapper summary. The wrapper now prints them on a second line.
+
+The accompanying application log reports 23.172 seconds for its package batch.
+Its diagnostic log shows six source compilations and finalizations, with CMake
+reusing existing workspaces. `ModuleLoader::Impl::load_packages` compiles its
+candidates sequentially. The summed package measurements therefore explain
+nearly all of that observed delay. They are separate runs, not a per-stage
+measurement of the application run. The remaining difference cannot be assigned
+precisely from these logs.
+
+Clang traces put most translation-unit time in the frontend. For example, the
+hot `saw` compile spends 2.113 of its 2.209 seconds there. Template instantiation
+includes `make_node_build_request` for common nodes such as `Constant`, `Sum`,
+and arithmetic nodes. The timings overlap and must not be added. This is work
+that remains after loading the shared PCH, not evidence of PCH regeneration.
+
+The application currently passes an empty `ModuleLoader::LogSink` from
+`PackageJit::ensure_loader`. Its ordinary package-status messages therefore do
+not expose the loader's optional ORC/configuration timings. Knob compilation
+uses `ProjectGraph::control_compile_worker`, not the package-status path.
+Ordinary code-only knob compilations produce no rebuild status messages.
+`IV_EDIT_TIMING` currently reports structural rebuilds and storage-changing
+control successors, not every code-only control compilation.

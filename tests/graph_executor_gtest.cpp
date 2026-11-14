@@ -1188,6 +1188,14 @@ TEST_F(GraphExecutorFixture,
         sizeof(state));
     EXPECT_FLOAT_EQ(std::bit_cast<float>(state.target_bits), 0.75f);
 
+    auto metadata_only = std::make_shared<iv::CompiledGraph>(*replacement);
+    metadata_only->manual_controls[0].participates = false;
+    EXPECT_TRUE(iv::GraphExecutor::can_replace_realtime_code(*initial, *metadata_only));
+    auto changed_slots = std::make_shared<iv::CompiledGraph>(*replacement);
+    changed_slots->background_evaluation_plan.tick_runtime.sequential_sample_inputs.push_back({});
+    EXPECT_FALSE(iv::GraphExecutor::can_replace_realtime_code(*initial, *changed_slots));
+    EXPECT_THROW((void)executor.stage_realtime_code(changed_slots), std::invalid_argument);
+
     auto incompatible = std::make_shared<iv::CompiledGraph>(*replacement);
     incompatible->node_layout = iv::NodeLayoutBuilder(64).build();
     EXPECT_THROW(
@@ -1199,6 +1207,58 @@ TEST_F(GraphExecutorFixture,
     EXPECT_EQ(
         executor.stage_realtime_code(std::move(stale)),
         iv::GraphExecutorStageResult::ignored_stale);
+}
+
+TEST_F(GraphExecutorFixture, DynamicSuccessorUsesItsStoredTargetAfterStateMigration)
+{
+    iv::GraphExecutor executor;
+    std::size_t state_offset = 0;
+    auto initial = std::const_pointer_cast<iv::CompiledGraph>(compiled_graph(
+        1, &observe_first, manual_control_layout(state_offset)));
+    initial->manual_controls.push_back(iv::ManualControlRuntimeBinding{
+        .configured = {
+            .id = manual_control_id(),
+            .input = {0, iv::PortKind::sample, 0},
+            .settled_value = .75f,
+            .dynamic = true,
+        },
+        .state_storage_offset = state_offset,
+        .participates = true,
+    });
+    ASSERT_EQ(stage_graph(executor, initial), iv::GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+    ASSERT_TRUE(executor.set_manual_control_target(1, manual_control_id(), .75f));
+    executor.tick_block(index(0), 16);
+    ASSERT_NE(first_tick.storage, nullptr);
+    iv::ManualControlRuntimeState state{};
+    std::memcpy(&state, first_tick.storage + state_offset, sizeof(state));
+    state.effective_bits = std::bit_cast<std::uint32_t>(.6f);
+    std::memcpy(first_tick.storage + state_offset, &state, sizeof(state));
+
+    // Undo can replace the stored value while the released knob remains
+    // dynamic. Migrating its runtime state must not restore the old target.
+    auto successor = std::make_shared<iv::CompiledGraph>(*initial);
+    successor->project_generation = 2;
+    successor->root_operations.tick_block = {.function = &observe_second};
+    successor->manual_controls[0].configured.settled_value = .25f;
+    ASSERT_EQ(stage_graph(executor, successor), iv::GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(16)));
+    executor.tick_block(index(16), 16);
+    ASSERT_NE(second_tick.storage, nullptr);
+    std::memcpy(&state, second_tick.storage + state_offset, sizeof(state));
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(state.target_bits), .25f);
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(state.effective_bits), .6f);
+
+    // A live target sent after staging still wins over the compiled seed.
+    auto later = std::make_shared<iv::CompiledGraph>(*successor);
+    later->project_generation = 3;
+    later->manual_controls[0].configured.settled_value = .5f;
+    ASSERT_EQ(stage_graph(executor, later), iv::GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.set_manual_control_target(3, manual_control_id(), .9f));
+    ASSERT_TRUE(executor.activate_pending(index(32)));
+    executor.tick_block(index(32), 16);
+    std::memcpy(&state, second_tick.storage + state_offset, sizeof(state));
+    EXPECT_FLOAT_EQ(std::bit_cast<float>(state.target_bits), .9f);
 }
 
 TEST_F(GraphExecutorFixture, PreservesEveryAcceptedGenerationBeforeActivation)

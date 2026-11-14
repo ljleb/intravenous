@@ -41,13 +41,14 @@ const outputSummary = computed(() => outputs.value.map((port) => `${port.name}: 
 
 <style scoped>
 .node-lane { display: grid; grid-template-columns: var(--node-label-width, 220px) minmax(0, 1fr); height: 100%; min-height: 0; }
-.lane-label { min-width: 0; padding: 8px 12px; border-right: 1px solid var(--vscode-panel-border); }
-.lane-heading { display: flex; align-items: flex-start; gap: 6px; }
+.lane-label { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 8px 12px; border-right: 1px solid var(--vscode-panel-border); }
+.lane-heading { display: flex; flex: 0 0 auto; align-items: flex-start; gap: 6px; }
+.lane-label :deep(.node-ports) { flex: 1; min-height: 22px; }
 .port-summary { display: flex; gap: 16px; margin-top: 6px; font-size: .9em; color: var(--vscode-descriptionForeground); }
 .node-lane[data-mode="nano"] .lane-label { padding-top: 2px; padding-bottom: 2px; }
-.node-lane[data-mode="nano"] .lane-label, .node-lane[data-mode="compact"] .lane-label { display: flex; align-items: center; gap: 4px; }
+.node-lane[data-mode="nano"] .lane-label, .node-lane[data-mode="compact"] .lane-label { flex-direction: row; align-items: center; gap: 4px; }
 .node-lane[data-mode="nano"] .lane-heading, .node-lane[data-mode="compact"] .lane-heading { flex: 1; min-width: 0; }
-.node-lane[data-mode="nano"] :deep(.node-ports), .node-lane[data-mode="compact"] :deep(.node-ports) { margin-top: 0; flex-shrink: 0; }
+.node-lane[data-mode="nano"] :deep(.node-ports), .node-lane[data-mode="compact"] :deep(.node-ports) { margin-top: 0; flex: 0 0 62px; height: 22px; }
 .node-lane[data-mode="nano"] .port-summary, .node-lane[data-mode="compact"] .port-summary { display: none; }
 .lane-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lane-name.failed { color: var(--vscode-errorForeground, #f14c4c); }

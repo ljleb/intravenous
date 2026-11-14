@@ -222,19 +222,19 @@ class ProjectGraph {
     std::vector<ManualControlId> dynamic_inputs_{};
     std::vector<ActiveManualControlInteraction> manual_interactions_{};
     std::unordered_map<std::string, ManualControlId> hovered_controls_{};
+    // A released gesture stays dynamic only while its own client still hovers
+    // that input. This does not keep its undo interaction open.
+    std::unordered_map<std::string, ManualControlId> hover_retained_inputs_{};
+    std::shared_ptr<CompiledGraph const> staged_control_graph_{};
     std::optional<ControlCompileRequest> pending_control_compile_{};
     std::optional<InflightControlCompile> inflight_control_compile_{};
     std::optional<ReadyControlCode> ready_control_code_{};
-    std::optional<std::chrono::steady_clock::time_point>
-        constant_specialization_deadline_{};
+    bool settling_controls_ = false;
     std::condition_variable control_compile_changed_{};
     std::uint64_t next_control_compile_request_ = 1;
     std::uint64_t latest_control_compile_request_ = 0;
     std::uint64_t next_generation_ = 1;
     std::jthread control_compile_worker_{};
-
-    static constexpr auto manual_control_idle_debounce =
-        std::chrono::milliseconds(250);
 
     // `package_definitions` is the module-definition change of the
     // definitions publication this build follows, if any.
@@ -265,6 +265,8 @@ class ProjectGraph {
         std::vector<ManualControlId> dynamic_inputs,
         bool activate_on_ready);
     void control_compile_worker(std::stop_token stop);
+    void compile_control_storage_change(std::uint64_t request_id);
+    [[nodiscard]] bool control_code_matches_locked(std::span<ManualControlId const> inputs) const;
     [[nodiscard]] ProjectManualControl* find_manual_control_locked(
         ManualControlId const& id);
     // Sends GraphExecutor one control update: the optional target, then the

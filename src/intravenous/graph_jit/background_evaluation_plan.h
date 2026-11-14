@@ -552,6 +552,7 @@ struct BackgroundRuntimePlan {
 struct TickRandomAccessBindingPlan {
     BackgroundPortIndex port = 0;
     std::vector<PortStorageIndex> storage{};
+    bool operator==(TickRandomAccessBindingPlan const&) const = default;
 };
 
 // One Tick-root Sequential input whose current-block storage is supplied by
@@ -563,6 +564,7 @@ struct TickRandomAccessBindingPlan {
 struct TickSequentialBindingPlan {
     BackgroundPortIndex port = 0;
     std::vector<PortStorageIndex> storage{};
+    bool operator==(TickSequentialBindingPlan const&) const = default;
 };
 
 // One compiler-selected production/finalization capture. The logical output
@@ -577,6 +579,7 @@ struct TickCaptureBindingPlan {
     // per semantic slice with the SCC quantum.
     std::size_t maximum_block_size = 0;
     std::size_t maximum_invocations_per_callback = 0;
+    bool operator==(TickCaptureBindingPlan const&) const = default;
 };
 
 // Contiguous ranges in TickInvocationCall's kind-specific arrays. Input ranges
@@ -597,6 +600,7 @@ struct TickNodeInvocationPlan {
     std::size_t sample_capture_count = 0;
     std::size_t event_capture_begin = 0;
     std::size_t event_capture_count = 0;
+    bool operator==(TickNodeInvocationPlan const&) const = default;
 };
 
 struct TickRuntimePlan {
@@ -608,6 +612,7 @@ struct TickRuntimePlan {
     std::vector<TickCaptureBindingPlan> event_captures{};
     // Aligned with BackgroundEvaluationPlan::nodes.
     std::vector<TickNodeInvocationPlan> nodes{};
+    bool operator==(TickRuntimePlan const&) const = default;
 };
 
 struct BackgroundDependencyPlan {

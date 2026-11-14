@@ -80,6 +80,11 @@ bool compatible_realtime_code(
             != structural.node_layout.initialize_order
         || replacement.manual_controls.size()
             != structural.manual_controls.size()
+        // TickInvocationWorkspace keeps these slots and capture reserves for
+        // the structural generation. A source replacement may change them
+        // even when its NodeStorage happens to have the same byte extent.
+        || replacement.background_evaluation_plan.tick_runtime
+            != structural.background_evaluation_plan.tick_runtime
         || !replacement.root_operations.valid()) {
         return false;
     }
@@ -168,8 +173,7 @@ bool compatible_realtime_code(
             || lhs.configured.concrete_selection_index
                 != rhs.configured.concrete_selection_index
             || lhs.configured.participation != rhs.configured.participation
-            || lhs.state_storage_offset != rhs.state_storage_offset
-            || lhs.participates != rhs.participates) {
+            || lhs.state_storage_offset != rhs.state_storage_offset) {
             return false;
         }
     }
@@ -406,6 +410,20 @@ GraphExecutor::ExecutionGeneration::ExecutionGeneration(
     static_assert(std::atomic<ExecutionGeneration*>::is_always_lock_free);
     static_assert(
         std::atomic<CompiledGraphRealtimePhase>::is_always_lock_free);
+    for (auto const& binding : graph->manual_controls) {
+        if (!binding.configured.dynamic
+            || std::ranges::any_of(manual_control_targets,
+                [&](auto const& target) {
+                    return target.first == binding.configured.id;
+                })) {
+            continue;
+        }
+        // The successor's desired value is authoritative, including undo
+        // while a released knob stays dynamic. Later live target updates
+        // replace this seed before or after activation in the usual way.
+        manual_control_targets.emplace_back(
+            binding.configured.id, binding.configured.settled_value);
+    }
     if (graph->cutover) {
         auto const& expiry =
             graph->cutover->state_transition.sample_expiry_cursors;
@@ -1101,6 +1119,13 @@ GraphExecutorStageResult GraphExecutor::stage(
     pending_tail_ = accepted;
     accepted_tail_graph_ = accepted->graph;
     return GraphExecutorStageResult::accepted;
+}
+
+bool GraphExecutor::can_replace_realtime_code(
+    CompiledGraph const& structural,
+    CompiledGraph const& replacement) noexcept
+{
+    return compatible_realtime_code(structural, replacement);
 }
 
 GraphExecutorStageResult GraphExecutor::stage_realtime_code(

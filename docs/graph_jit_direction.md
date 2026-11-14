@@ -2021,16 +2021,22 @@ case, the UI retains the latest desired value while the active graph keeps using
 existing constant value. There is no generic execution path that applies a dynamic
 value to code that does not support it.
 
-The `dynamic_inputs` set contains every control with an ongoing interaction. A later
-hover can supersede predictive work, but it cannot remove an input that an ongoing
-interaction requires. Each compilation carries exact request and project-revision
-identity. The worker cancels obsolete work when possible and otherwise discards its
-result.
+The required `dynamic_inputs` set contains every control with an ongoing interaction
+or a released gesture retained by its own client's hover. Another client's hover
+does not extend that retention. Hover can supersede predictive work, but cannot
+remove a required input or supersede a required settled replacement. Each compilation
+carries exact request and project-revision identity. The worker cancels obsolete
+work when possible and otherwise discards its result.
 
-After manual updates remain idle for the defined debounce interval, GraphJit captures
-the latest settled values and compiles a constant-specialized replacement. The active
-dynamic code continues during compilation. Pointer release is not the only idle
-trigger.
+Pointer release closes the undo gesture. Leaving the knob requests a replacement
+with the latest settled constants and authored connections immediately. If the pointer
+already left before release, release requests that replacement. The active dynamic
+code continues during compilation. There is no idle/debounce timer. The owner accepted
+this policy on 2026-11-14; the
+[superseded debounce policy](./historical/manual_control_debounce_before_hover_settling_2026-11-14.md)
+is retained with provenance. Regrabbing a matching dynamic variant reuses the accepted
+code; equality of dynamic input IDs alone is insufficient if another settled constant
+has changed.
 
 The active and replacement code share the canonical `NodeLayout` and `NodeStorage`.
 They must preserve compatible persistent-state semantics, not only identical offsets.

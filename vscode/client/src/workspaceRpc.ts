@@ -8,6 +8,15 @@ export type SourceQueryRange = {
     end: { line: number; column: number };
 };
 
+export type AudioDeviceSelection = {
+    deviceId: string | null; name: string | null; available: boolean; error: string | null;
+};
+export type AudioDevicesSnapshot = {
+    outputDevices: Array<{ deviceId: string; name: string }>;
+    inputDevices: Array<{ deviceId: string; name: string }>;
+    selectedOutput: AudioDeviceSelection; selectedInput: AudioDeviceSelection;
+};
+
 
 export class WorkspaceRpc {
     constructor(
@@ -47,6 +56,10 @@ export class WorkspaceRpc {
 
     getGraphScope(): Promise<GraphScope> {
         return this.client.request("graph.getScope", {});
+    }
+
+    getAudioDevices(): Promise<AudioDevicesSnapshot> {
+        return this.client.request("audioDevices.get", {});
     }
 
     getNodeInstances(sourceFilePath: string | null = null): Promise<{ instances?: Array<Record<string, unknown>> }> {

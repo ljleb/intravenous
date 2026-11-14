@@ -4416,6 +4416,37 @@ TEST(GraphJitConnectionPlan, ModuleManualInputKeepsItsInternalChannelConversion)
     }
 }
 
+TEST(GraphJitConnectionPlan, ManualOverrideReplacesOnlyItsSelectedInputSource)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto selected = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto other = details::configure_concrete_node<PlainSamplePass>(graph);
+    selected(source);
+    other(source);
+    graph.outputs();
+    auto configured = std::move(graph).finish();
+    configured.manual_controls.push_back({
+        .id = {.node = {.instance_id = "selected"}, .input_name = "in"},
+        .input = {selected.node_bundle_handle(), PortKind::sample, 0},
+        .settled_value = .25f,
+        .dynamic = true,
+        .override_connections = true,
+    });
+    auto overridden = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(overridden) << overridden.error();
+    ASSERT_EQ(overridden->sample_connections.size(), 1u);
+    EXPECT_EQ(overridden->sample_connections[0].target_port.node_bundle_handle,
+        other.node_bundle_handle());
+    EXPECT_EQ(configured.connections.configured_sample_connections().size(), 2u);
+    configured.manual_controls[0].override_connections = false;
+    configured.manual_controls[0].dynamic = false;
+    auto restored = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(restored) << restored.error();
+    EXPECT_EQ(restored->sample_connections.size(), 2u);
+}
+
 TEST(GraphJitConnectionPlan, ModuleManualFanoutPreservesDetachAndOrdinarySourcePolicy)
 {
     using namespace iv;
@@ -4453,6 +4484,17 @@ TEST(GraphJitConnectionPlan, ModuleManualFanoutPreservesDetachAndOrdinarySourceP
     // The ordinary detached expression already owns the one initial override.
     EXPECT_FLOAT_EQ(delayed->initial_coefficient, 0.f);
     EXPECT_FALSE(combined->sample_connections.empty());
+    configured.manual_controls[0].participation = ManualControlParticipation::disconnected_only;
+    configured.manual_controls[0].dynamic = true;
+    configured.manual_controls[0].override_connections = true;
+    auto overridden = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(overridden) << overridden.error();
+    ASSERT_EQ(overridden->manual_sample_routes.size(), 2u);
+    auto overridden_delay = std::ranges::find_if(overridden->manual_sample_routes,
+        [&](auto const& route) { return route.target.node_bundle_handle == delayed_handle; });
+    ASSERT_NE(overridden_delay, overridden->manual_sample_routes.end());
+    EXPECT_EQ(overridden_delay->delay, 3u);
+    EXPECT_FLOAT_EQ(overridden_delay->initial_coefficient, 1.f);
 }
 
 TEST(GraphJitConnectionPlan, RejectsAcyclicDetachOfAModuleManualInput)
@@ -4475,4 +4517,9 @@ TEST(GraphJitConnectionPlan, RejectsAcyclicDetachOfAModuleManualInput)
     auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_FALSE(plan);
     EXPECT_NE(plan.error().find("breaks an acyclic dependency"), std::string::npos);
+    configured.manual_controls[0].dynamic = true;
+    configured.manual_controls[0].override_connections = true;
+    auto overridden = build_connection_analysis_plan(configured, 64);
+    ASSERT_FALSE(overridden);
+    EXPECT_NE(overridden.error().find("breaks an acyclic dependency"), std::string::npos);
 }

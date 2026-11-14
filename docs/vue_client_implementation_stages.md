@@ -1433,3 +1433,328 @@ checks compiler/PCH/plugin override compatibility, and restores installation
 defaults when project overrides are cleared. Project persistence already filters
 matching installation defaults; it retains that behavior. Owner verification is
 pending. The separate clangd extension can use the generated local launcher.
+
+#### Knob gestures and temporary input override plan (2026-11-14)
+
+The owner accepted radial knobs beside input identities in the port UI. Ordinary
+left-drag edits the independent stored manual value. Wheel input during a drag
+changes sensitivity without changing the value at the current pointer position.
+The default has extra mouse travel assigned to its exact value; no numeric
+interval is clamped away, and this travel width is independent of sensitivity.
+Right-click opens numeric entry (Enter accepts, Escape cancels). Double-click
+resets to the declared input default. This replaces the original Hover + R plan
+under the owner's 2026-11-14 decision. The
+[earlier wording](./historical/knob_reset_before_double_click_2026-11-14.md)
+is retained. A compact VS Code status item exposes the current context's
+shortcuts and drag sensitivity, with fuller help in its tooltip.
+
+For a connected input, a gesture temporarily replaces the incoming value. Ending
+the gesture restores the normal connection when its compiled version activates;
+the last manual value remains stored. Hover only prepares code. This is a
+transient specialization, not a durable change to connection participation or
+wiring. An unrelated graph compile preserves a valid active interaction.
+
+Implementation order: complete backend connected-input overrides; add reusable
+radial gestures, numeric entry, and reset; place the control once per input in
+port popovers; expose contextual status hints; add focused regressions. Keep the
+existing Shift connection gestures and defer output meters/observation to a
+separate pass. The owner continues to run builds and tests.
+
+Backend friction found before implementation: a connected module input using
+`disconnected_only` produces no `ManualSampleRoutePlan` in the current structural
+sample-route expansion. Starting an override would introduce a `ManualControlPlan`
+and its persistent raw region. `GraphExecutor::compatible_realtime_code()` rejects
+changes to steady storage, region counts, manual binding counts, and participation.
+For direct leaf inputs, dynamic participation also changes the private input
+materialization requirements. Simply enabling `dynamic` is therefore insufficient.
+
+`lowering_plan.cpp` currently allocates each routed manual control's state as
+`sizeof(ManualControlRuntimeState)` plus a power-of-two delay ring for every
+routed channel when a delay is present. Reserving all potential connected-input
+controls in the settled graph would preserve the existing code-swap contract,
+but would charge that storage even while their knobs are unused. For example,
+a stereo two-second route at 48 kHz and block size 256 rounds to 131072 values
+per channel, approximately 1 MiB for one delay ring plus control state.
+
+The alternative is extending prepared code activation to support variant-specific
+storage while retaining the structural generation's state and ordinary connection
+history. This is a broader executor/planner change, and its activation and migration
+costs must be designed explicitly. No runtime fallback, permanent reservation,
+participation-policy change, or replacement-storage redesign has been implemented.
+The radial-control and status-hint UI has not yet been changed in this pass. Report
+this tradeoff to the owner before selecting either approach, per the repository
+workflow's requirement to expose unexpected storage and architectural costs.
+
+Owner response: permanently reserving potential override storage is rejected.
+Preparing additional storage on demand is acceptable, including an exception to
+the one-buffer rule when justified. Before changing replacement storage, distinguish
+logically required history from the current lowering representation.
+
+Follow-up source findings: `ManualControlRuntimeState` contains only target and
+effective scalar bits (8 bytes). Direct leaf controls already receive that region,
+including inactive connected controls. A current-block override without history or
+delay does not inherently require a persistent delay ring; callbacks requiring a
+contiguous block may still require a private transient materialization. The
+producer's shared output cannot be overwritten to supply one consumer's override.
+
+The large allocation comes from `ManualControlPlan` combining scalar state with
+per-route, per-channel delay storage. A delayed, changing manual source does need
+past information, but duplicating its scalar history for each routed channel and
+consumer is a representation choice. A consumer's declared input history must
+preserve the values actually consumed during an override, including after release
+until those values leave its history window. Storage cannot always be discarded
+at the end of the pointer gesture.
+
+Next design work should first reuse existing private input timelines and transient
+storage where possible, then identify and prepare only the additional persistent
+history actually required. Do not treat a change to the `participates` metadata
+alone as proof that the physical storage must change. Do not bypass module-internal
+delay/conversion semantics to avoid allocating history. The 1 MiB example above
+is the cost of the current representation for a particular delayed route, not a
+minimum cost of every connected knob.
+
+Accepted investigation direction (2026-11-14): model a temporary manual override
+as an internal producer replacing the ordinary source at the selected public
+Sequential Sample input. This is planner representation, not a requirement for
+an extra runtime callback or a durable project node. Module-internal routing,
+conversion, and authored delay remain ordinary graph operations. Reuse existing
+private input storage and realtime port-state migration; prepare additional
+storage only when shared producer storage cannot serve the changed input.
+Settled values remain specialization constants, and hover preparation must not
+activate an override. Investigate this backend change before continuing the
+radial-control UI work above.
+
+A shared allocation sized for the largest history is an optional allocation
+policy, not the semantic representation. Distinct input histories can remain
+live after their gestures end, so simultaneous live histories cannot alias the
+same bytes. Do not preallocate maximum histories for every potentially edited
+input. The existing code-only replacement path rejects layout changes and does
+not perform the structural generation's migration; joining these paths remains
+implementation work, not an already implemented capability.
+
+Owner performance constraint (2026-11-14): do not assume whole-graph storage
+migration is cheap enough for a manual override. If existing storage cannot be
+reused, measure activation separately from cold preparation: raw bytes copied,
+node lifecycle moves, port-history transfer bytes, activation duration, and the
+first subsequent Tick duration as graph size and affected history grow. Existing
+`NodeStorage::Migration::commit()` copies raw regions and visits matching nodes;
+using it unchanged can introduce graph-size-dependent realtime work.
+
+Page-backed storage shared between variants is a proposed alternative, not an
+accepted redesign. Investigate stable addresses or separately allocated override
+storage before remapping the entire node allocation. Reusing physical pages does
+not itself establish C++ object relocation, mutable ownership, or bounded edit
+work. Graph-wide virtual contiguity is separate from each callback's contiguous
+sample-span contract. No migration timings have yet been measured for this
+override feature, and no source implementation has been changed in this pass.
+
+Owner decision (2026-11-14): implement the straightforward migration path now.
+Keep compatible manual-control variants on the existing code-only activation
+path. When a variant changes storage requirements, compile an ordinary successor
+from the already configured graph and use the accepted generation chain's node
+storage and port-state migration. This may move unaffected node state at cutover;
+accept that initial cost, then profile it in actual projects before introducing
+page-backed state sharing or another allocator. Preparing a variant must not
+activate it merely because a control is hovered.
+
+Backend implementation prepared for owner validation (2026-11-14):
+
+- `ConfiguredManualControl::override_connections` represents the temporary
+  producer independently of durable participation. Structural routing replaces
+  only the selected input's source; the authored connections remain available
+  for restoration. Module conversion and temporal cuts remain in the route.
+- Detach validity is checked against the authored graph before source
+  replacement. Opening a valid feedback cycle during a gesture preserves its
+  authored delay; an originally invalid acyclic detach remains rejected.
+- Hover-only controls are excluded from the activated dynamic set while any
+  gesture is active. Existing cancellation/request identities reject late
+  results after a gesture ends or its client disconnects.
+- `GraphExecutor::can_replace_realtime_code()` preflights layout and Tick
+  invocation-slot/capture compatibility. A participation metadata change alone
+  does not require moving storage when the persistent layout remains compatible.
+- A storage-changing variant is compiled as a normal accepted successor from
+  the configured graph, preserving node placements and message handlers without
+  reconstructing them through `NodeInstances`. Existing node lifecycle migration
+  and semantic port-state transfers preserve state and consumed input history.
+  This uses ordinary background-generation preparation as well as realtime
+  preparation; no separate allocator or page mapping was introduced.
+- This first implementation performs a steady compilation for preflight, then
+  a transition compilation when migration is needed. Transition compilation
+  serializes project control events to keep its values and predecessor fixed;
+  audio continues running the previous realization. Accepted successors follow
+  the existing cutover ordering, including waiting for a predecessor's transition
+  phase to finish. These costs remain candidates for profiling, not new latency
+  guarantees. `IV_EDIT_TIMING` includes the storage-changing successor's cold
+  compilation/staging timings; realtime migration cost is not yet measured here.
+
+Regressions cover source isolation/restoration, module delay preservation,
+invalid-detach rejection during override, stale storage-changing results,
+cross-client hover isolation, migration scheduling, Tick invocation compatibility,
+and consumed history across normal/override/restored execution while an unaffected
+consumer keeps reading the shared source. Builds and tests remain owner-run;
+only source inspection and `git diff --check` have been performed in this pass.
+The radial knobs, popover placement, numeric entry/reset, and status hints remain
+the next UI phase of the accepted plan.
+
+Owner validation: all tests passed for the backend override/migration change.
+
+Radial-knob UI implementation prepared for validation (2026-11-14):
+
+- `ManualInput.vue` renders a radial control with vertical dragging and keyboard
+  arrow adjustment. `NodePorts.vue` includes it once per eligible input in port
+  popovers or the first row of a connection popover; single-input ports can open
+  a popover as well. The generic lane no longer repeats controls in its viewport.
+- `ManualControlGestures` owns sensitivity, the default-value travel region,
+  optimistic values during end acknowledgement, and numeric-entry drafts.
+  Wheel sensitivity uses incremental pointer movement; the exact default gets
+  twelve extra pointer pixels, with progress preserved when sensitivity changes.
+- `ManualValuePopover.vue` edits locally until Enter accepts; Escape or outside
+  clicks cancel. Values must be finite and within the reflected input limits.
+  Metadata refreshes preserve the draft while updating its limits/default.
+- The initial Hover + R reset required keyboard focus in the graph. The later
+  double-click decision replaces it. The extension displays contextual shortcuts
+  and drag sensitivity in a status item, clearing it on focus loss or disposal.
+- Manual wheel input is captured before timeline navigation. Port popovers stay
+  open while their knob or numeric entry is active, and value-only scope updates
+  do not close them. Existing wire handles retain their own pointer targets.
+- Quick successive gestures from the same view serialize behind the preceding
+  end, including when its begin reply is pending. Other views still cannot take
+  over an input whose interaction is active or ending. Late acknowledgements do
+  not rewind the webview's latest local value; confirmed undo remains visible.
+
+Added client regressions for sensitivity changes, reversible default traversal,
+limit reversal, exact/canceled/invalid numeric entry, reset focus rules, metadata
+refresh, status hints, optimistic completion, and successive gesture ordering.
+Builds, typechecks, npm tests, and browser validation remain owner-run. Source
+review and `git diff --check` are the checks performed during this UI pass.
+
+Manual validation should include a first knob grab after focusing another native
+application; fine scrolling inside the default region; connected-input override
+and restoration; numeric Enter/Escape while a port popover is open; ordinary and
+Shift wire dragging beside knobs; and status clearing when another editor gains
+focus. Use `npm run typecheck` as well as `npm test` in `vscode/client`, since the
+Vue components are checked by the former.
+
+Owner validation: all tests passed for the radial-knob UI above.
+
+Hover-leave settling and pointer-lock changes prepared for validation (2026-11-14):
+
+- Mouse release closes the undo gesture. `ProjectGraph` retains the dynamic input
+  while the same client hovers that knob. Leaving requests settled code immediately,
+  without a debounce timer. Disconnect also clears that client's retained input.
+- Regrabbing reuses matching accepted code. Other settled constants must still
+  match. Predictive hover cannot replace a required request to restore connections.
+- `GraphExecutor` applies a successor's configured dynamic target after migrating
+  storage. This preserves undo while a released knob stays dynamic. A newer live
+  target still takes precedence.
+- Each wheel event halves or doubles sensitivity. The default-value travel region
+  keeps its fixed pointer distance. Mouse dragging requests pointer lock and uses
+  relative movement. Release, Escape, focus loss, and disposal release the lock.
+- Controls appear between port circles and names. Logical values have greater
+  emphasis than normalized 0–1 values. The normalized readout requires finite bounds.
+
+New regressions cover hover retention, regrabbing, stale constant values, disconnect,
+required settling, migrated targets, discrete sensitivity, and pointer-lock lifetime.
+The pointer-lock tests use an injected browser interface. They do not establish that
+the installed VS Code webview grants pointer lock.
+
+Builds, typechecks, and tests remain owner-run. Manually try a first grab after
+switching applications, drag past screen edges, and release without leaving the knob.
+The override must remain until the pointer leaves. Also try Escape and focus loss
+during a drag, and undo after release while the pointer remains over the knob.
+
+Owner validation: all tests passed for hover-leave settling and pointer lock above.
+
+Double-click reset and height-dependent port display prepared for validation
+(2026-11-14):
+
+- `KnobClicks` recognizes two short presses on the same knob. Relative movement
+  during a drag disqualifies that press from reset. This remains independent of
+  native click targets, which pointer lock redirects to the editor. The R handler
+  is removed, and status hints describe double-click reset.
+- `NodePorts.vue` measures the available height below the lane heading. Each
+  direction displays the ports that fit, in reflected order. If necessary, its
+  final slot opens a popover for the remaining ports. Only those hidden ports
+  contribute to the folded handle's connection state. Direct inputs keep their
+  knob popovers, and direct connections use their visible port circles.
+- `KnobPointerLock` serializes acquisition and release across rapid regrabs.
+  Delayed grants and unlocks cannot terminate a newer drag. A rejected acquisition
+  can retry when native focus arrives. Empty button masks on synthesized locked
+  movement do not end the drag. Explicit release, Escape, and real focus loss
+  still end it.
+
+Added client regressions for layout capacity, order, overflow, double-click versus
+drag, delayed lock transitions, and focus recovery. Builds, typechecks, tests, and
+browser validation remain owner-run. Manually check direct-to-folded transitions
+while zooming, direct-port connection choices, rapid double-clicks and regrabs,
+and pointer confinement while moving and scrolling during a knob drag.
+
+Pointer-confinement follow-up and audio inspection (2026-11-14):
+
+The owner still reports a hidden pointer that can move out of confinement during
+a slow upward drag. The previous acquisition/release race fixes did not establish
+that native confinement works. Browser and desktop behavior remains unverified.
+
+- Fixed `NodePorts.vue`'s window-boundary dismissal path, which previously ignored
+  `editingControl`. Popovers now ignore pointer movement and boundary dismissal
+  while their node has an active knob gesture.
+- `GraphEditor.vue` consumes knob motion before other UI handlers and releases
+  any remaining pointer capture after the browser grants pointer lock.
+- `KnobPointerLock` detects changing absolute client coordinates while the browser
+  reports a lock. It emits at most one such diagnostic per drag. The extension
+  output also reports lock rejection and unexpected release, with browser version
+  and lock state. No recording command or diagnostic menu action was added.
+- Removed the blue drag outline. Idle, hover, and drag use progressively stronger
+  yellow stroke/fill feedback. The dragged state follows the local pointer, rather
+  than a remote interaction phase. Keyboard focus uses the same color family.
+- Static inspection of `simple_sine` found the saved route `saw` to
+  `q24_icosphere_pan` to `system_audio_output`. The source defaults to 220 Hz,
+  both filter data files exist, and the baseline FIR has approximately unity
+  gain at 220 Hz. This establishes the intended signal path, not actual live
+  hardware output or successful activation of the graph.
+- The existing `audioDevices.get` route distinguishes hardware availability from
+  the silent fallback clock. `WorkspaceSession` now queries it asynchronously on
+  connection and logs the selected output and activation error. The query does
+  not delay initial graph discovery or mutate project state.
+
+Added client regressions for fixed versus drifting locked coordinates and for
+audio-output diagnostics. Tests and typechecks remain owner-run. Native pointer
+confinement and the cause of the owner's silence remain open until the client
+reports the live lock/device state. This status does not claim either issue fixed.
+
+Inline knobs and an explicit pointer-lock recorder (2026-11-14):
+
+- Directly visible eligible inputs now render their knob beside the wire handle.
+  Port fitting uses each row's full height. Knob rows occupy more height than
+  event/output handles. Folded ports keep their existing popovers, while direct
+  input handles no longer open a redundant knob popover on ordinary hover.
+- Input and output columns retain their separate positions. Narrow labels hide
+  names/readouts before hiding the wire and knob targets. Connection-preview
+  colors use the port-circle positions, not the width of the input column.
+- The owner requested an explicit recorder after automatic anomaly messages
+  remained absent. **Intravenous: Record Knob Pointer Lock** arms the next drag.
+  It finishes on release or a detected failure. Running it again stops manually.
+  Reports include the initial acquisition events and a bounded tail of recent
+  events, even if the browser never reports the observed confinement failure.
+- The extension saves reports to the repository's ignored `debug-release/`
+  directory and opens the JSON beside the graph. This reintroduces a recording
+  action at the owner's explicit request. It adds no buttons to the presentation.
+
+Instructions are in [Knob Pointer-Lock Recording](./knob_pointer_lock_diagnostics.md).
+Added regressions for mixed port-row heights, trace ownership, bounded recording,
+and report-directory selection. Tests and client typechecks remain owner-run.
+The reported `System Default [default]; active` status confirms hardware device
+activation. It does not prove that the accepted graph delivers a nonzero signal.
+
+Detached-window knob pointer lock (2026-11-14):
+
+- The owner confirms that pointer lock works with the graph in the main VSCodium
+  window. The detached window still rejects acquisition with `SecurityError`.
+- The installed editor permission handler lacks the upstream auxiliary-window
+  branch. This is host friction, not a change to the intended knob interaction.
+- `nix/vscodium-pointer-lock.nix` provides an optional editor backport. It allows
+  `pointerLock` only for main-frame `about:blank` requests from registered
+  auxiliary windows. The normal extension remains independent of this package.
+- Static bundle syntax validation and four focused permission tests pass. The
+  patched editor still needs owner validation in a detached window. Build and
+  launch steps are in [Knob Pointer-Lock Recording](./knob_pointer_lock_diagnostics.md).

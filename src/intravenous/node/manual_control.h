@@ -62,6 +62,9 @@ struct ConfiguredManualControl {
     ManualControlParticipation participation =
         ManualControlParticipation::disconnected_only;
     bool dynamic = false;
+    // Transient source replacement for a live gesture. Independent of the
+    // durable participation policy; never serialized into the project.
+    bool override_connections = false;
 
     bool operator==(ConfiguredManualControl const&) const = default;
 };

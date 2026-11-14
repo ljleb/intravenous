@@ -18,6 +18,8 @@ These documents are retained because they record deleted architectures, supersed
 
 ## Superseded lane-era feature designs
 
+- [Lane Knobs Before Default Inline Display (2026-11-14)](./inline_lane_knobs_before_default_display_2026-11-14.md)
+- [Knob Reset Before Double-Click (2026-11-14)](./knob_reset_before_double_click_2026-11-14.md)
 - [Audio Device Lanes Direction](./audio_device_lanes_direction.md)
 - [MIDI Device Lanes Direction](./midi_device_lanes_direction.md)
 - [Configured Lane Creation Direction](./configured_lane_creation_direction.md)
@@ -32,6 +34,7 @@ These documents are retained because they record deleted architectures, supersed
 
 ## Superseded transition and compiler design
 
+- [Manual-Control Debounce Before Hover Settling (2026-11-14)](./manual_control_debounce_before_hover_settling_2026-11-14.md)
 - [Application Modules And Batched Event Architecture](./application_modules_event_architecture.md)
 - [Unified Graph Direction](./unified_graph_direction.md)
 - [LLVM Hot Reload And Whole-Graph Design](./intravenous-llvm-hot-reload-and-whole-graph-design.md)
@@ -183,3 +186,11 @@ These documents are retained because they record deleted architectures, supersed
 - [Node-reference Output Selection Before Mixed Outputs](./node_ref_output_selection_before_mixed_outputs_2026-11-14.md)
   preserves the exactly-one-output rules before first-output selection and mixed
   sample/event public declarations were accepted.
+
+- [Knob Recording Before Passive Failure Capture](./knob_pointer_recording_before_passive_failures_2026-11-14.md)
+  preserves the recorder procedure that stopped and cancelled a drag at its first
+  lock diagnostic, before diagnostics became passive through mouse release.
+
+- [Patched Editor Before an Isolated Profile](./patched_editor_before_isolated_profile_2026-11-14.md)
+  preserves the launch procedure that required closing every VSCodium window
+  before the optional host backport received its own user-data directory.

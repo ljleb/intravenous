@@ -1002,6 +1002,7 @@ struct ProjectGraphFixture : ::testing::Test {
 struct ManualControlCompileRecord {
     std::uint64_t project_generation = 0;
     std::vector<iv::ManualControlId> dynamic_inputs{};
+    bool has_predecessor = false;
 };
 
 struct ManualControlTargetRecord {
@@ -1016,6 +1017,8 @@ class ManualControlSchedulerProbe {
     std::vector<ManualControlCompileRecord> compilations_{};
     std::vector<ManualControlCompileRecord> stages_{};
     std::vector<ManualControlTargetRecord> targets_{};
+    std::vector<ManualControlCompileRecord> structural_stages_{};
+    bool dynamic_controls_need_storage_ = false;
     bool block_next_compilation_ = false;
     bool compilation_is_blocked_ = false;
     bool release_blocked_compilation_ = false;
@@ -1037,12 +1040,15 @@ public:
         auto const inputs = request.successor.graph
             ? dynamic_inputs(request.successor.graph->manual_controls)
             : std::vector<iv::ManualControlId>{};
+        bool needs_storage = false;
         {
             std::unique_lock lock(mutex_);
             compilations_.push_back({
                 .project_generation = request.successor.project_generation,
                 .dynamic_inputs = inputs,
+                .has_predecessor = static_cast<bool>(request.predecessor),
             });
+            needs_storage = dynamic_controls_need_storage_ && !inputs.empty();
             auto const block = std::exchange(block_next_compilation_, false);
             if (block) {
                 compilation_is_blocked_ = true;
@@ -1058,6 +1064,15 @@ public:
 
         auto compiled = std::make_shared<iv::CompiledGraph>();
         compiled->project_generation = request.successor.project_generation;
+        compiled->configured_graph = request.successor.graph;
+        compiled->node_layout.storage_size = needs_storage ? 8 : 0;
+        compiled->node_layout.steady_storage_size = compiled->node_layout.storage_size;
+        compiled->root_operations.tick_block.function = +[](
+            iv::graph_jit::RealtimeRootPlan const*, std::byte*,
+            iv::graph_jit::TickInvocationCall const*, iv::GlobalIndex, std::size_t) {};
+        compiled->root_operations.combine_sequential_input = +[](
+            iv::graph_jit::BackgroundPortIndex, std::byte*,
+            std::byte const*, std::size_t) { return true; };
         if (request.successor.graph) {
             for (auto const& configured :
                  request.successor.graph->manual_controls) {
@@ -1074,9 +1089,37 @@ public:
     }
 
     iv::ProjectGraphGraphExecutorResult accept_structural_graph(
-        std::shared_ptr<iv::CompiledGraph const> const&)
+        std::shared_ptr<iv::CompiledGraph const> const& graph)
     {
+        {
+            std::scoped_lock lock(mutex_);
+            structural_stages_.push_back({
+                .project_generation = graph->project_generation,
+                .dynamic_inputs = dynamic_inputs(graph->configured_graph->manual_controls),
+            });
+        }
+        changed_.notify_all();
         return {.attempted = true, .accepted = true};
+    }
+
+    void require_storage_for_dynamic_controls()
+    {
+        std::scoped_lock lock(mutex_);
+        dynamic_controls_need_storage_ = true;
+    }
+
+    std::size_t structural_stage_count() const
+    {
+        std::scoped_lock lock(mutex_);
+        return structural_stages_.size();
+    }
+
+    bool wait_for_structural_stages(std::size_t count)
+    {
+        std::unique_lock lock(mutex_);
+        return changed_.wait_for(lock, std::chrono::seconds(5), [&] {
+            return structural_stages_.size() >= count;
+        });
     }
 
     iv::GraphExecutorStageResult stage_realtime_code(
@@ -2483,9 +2526,205 @@ TEST_F(ProjectGraphManualControlSchedulingFixture,
 }
 
 TEST_F(ProjectGraphManualControlSchedulingFixture,
+       StorageChangingControlVariantsUseTheAcceptedGenerationChain)
+{
+    auto const controls = realize_controls(1);
+    ASSERT_EQ(controls.size(), 1u);
+    auto const initial = project_graph.current_generation();
+    auto const baseline = probe.structural_stage_count();
+    probe.require_storage_for_dynamic_controls();
+    iv::ManualControlInteractionId interaction{.client_id = "ui", .interaction_id = "storage"};
+    iv::ProjectAckBuilder begin;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction(
+        {interaction, controls[0], .25f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    ASSERT_TRUE(probe.wait_for_structural_stages(baseline + 1));
+    auto const live = project_graph.current_generation();
+    ASSERT_TRUE(live);
+    EXPECT_GT(live->generation, initial->generation);
+    ASSERT_EQ(live->graph->manual_controls.size(), 1u);
+    EXPECT_TRUE(live->graph->manual_controls[0].override_connections);
+    EXPECT_EQ(live->graph->manual_controls[0].participation,
+        iv::ManualControlParticipation::disconnected_only);
+    EXPECT_TRUE(probe.compilations().back().has_predecessor);
+    EXPECT_TRUE(probe.stages().empty());
+
+    iv::ProjectAckBuilder end;
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction(
+        {interaction, .5f}, end); });
+    ASSERT_NO_THROW(end.build());
+    ASSERT_TRUE(probe.wait_for_structural_stages(baseline + 2));
+    auto const restored = project_graph.current_generation();
+    ASSERT_TRUE(restored);
+    EXPECT_GT(restored->generation, live->generation);
+    EXPECT_FALSE(restored->graph->manual_controls[0].dynamic);
+    EXPECT_FALSE(restored->graph->manual_controls[0].override_connections);
+    EXPECT_FLOAT_EQ(restored->graph->manual_controls[0].settled_value.value, .5f);
+    EXPECT_EQ(restored->graph->connections.configured_sample_connections().size(),
+        initial->graph->connections.configured_sample_connections().size());
+    EXPECT_TRUE(probe.compilations().back().has_predecessor);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       HoveredControlDoesNotJoinAnotherClientsActiveOverride)
+{
+    auto const controls = realize_controls(2);
+    ASSERT_EQ(controls.size(), 2u);
+    iv::ManualControlInteractionId interaction{.client_id = "active", .interaction_id = "drag"};
+    iv::ProjectAckBuilder begin;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction(
+        {interaction, controls[0], .25f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    auto const compiled_before_hover = probe.compilation_count();
+    iv::ProjectAckBuilder hover;
+    in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
+        {.client_id = "other", .id = controls[1]}, hover); });
+    ASSERT_NO_THROW(hover.build());
+    EXPECT_EQ(probe.compilation_count(), compiled_before_hover);
+    for (auto const& staged : probe.stages()) {
+        EXPECT_EQ(staged.dynamic_inputs, std::vector<iv::ManualControlId>{controls[0]});
+    }
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       ReleasedKnobStaysDynamicUntilItsOwnClientLeavesAndRegrabReusesCode)
+{
+    auto const controls = realize_controls(1);
+    ASSERT_EQ(controls.size(), 1u);
+    iv::ProjectAckBuilder hover;
+    in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
+        {.client_id = "ui", .id = controls[0]}, hover); });
+    ASSERT_NO_THROW(hover.build());
+    iv::ManualControlInteractionId first{.client_id = "ui", .interaction_id = "first"};
+    iv::ProjectAckBuilder begin;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction(
+        {first, controls[0], .25f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    auto const before_release = probe.compilation_count();
+    iv::ProjectAckBuilder end;
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({first, .5f}, end); });
+    ASSERT_NO_THROW(end.build());
+    EXPECT_EQ(probe.compilation_count(), before_release);
+
+    iv::ManualControlInteractionId second{.client_id = "ui", .interaction_id = "second"};
+    iv::ProjectAckBuilder regrab, release;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction(
+        {second, controls[0], .75f}, regrab); });
+    ASSERT_NO_THROW(regrab.build());
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({second, .9f}, release); });
+    ASSERT_NO_THROW(release.build());
+    EXPECT_EQ(probe.compilation_count(), before_release);
+
+    iv::ProjectAckBuilder leave;
+    in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
+        {.client_id = "ui", .id = std::nullopt}, leave); });
+    ASSERT_NO_THROW(leave.build());
+    ASSERT_TRUE(probe.wait_for_stages(2));
+    EXPECT_TRUE(probe.stages().back().dynamic_inputs.empty());
+    EXPECT_EQ(probe.compilation_count(), before_release + 1);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       AnotherClientsHoverDoesNotRetainAReleasedOverride)
+{
+    auto const controls = realize_controls(1);
+    iv::ProjectAckBuilder predictive;
+    in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
+        {.client_id = "observer", .id = controls[0]}, predictive); });
+    ASSERT_NO_THROW(predictive.build());
+    iv::ManualControlInteractionId interaction{.client_id = "editor", .interaction_id = "drag"};
+    iv::ProjectAckBuilder begin, end;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction(
+        {interaction, controls[0], .25f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction(
+        {interaction, .5f}, end); });
+    ASSERT_NO_THROW(end.build());
+    ASSERT_TRUE(probe.wait_for_stages(2));
+    EXPECT_TRUE(probe.stages().back().dynamic_inputs.empty());
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       RegrabDoesNotReuseCodeWithAnotherControlsOutdatedConstant)
+{
+    auto const controls = realize_controls(2);
+    auto hover = [&](iv::ManualControlId const& id) {
+        iv::ProjectAckBuilder ack;
+        in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
+            {.client_id = "ui", .id = id}, ack); });
+        ASSERT_NO_THROW(ack.build());
+    };
+    auto begin = [&](iv::ManualControlInteractionId const& interaction,
+                     iv::ManualControlId const& id, float value) {
+        iv::ProjectAckBuilder ack;
+        in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction(
+            {interaction, id, value}, ack); });
+        ASSERT_NO_THROW(ack.build());
+    };
+    auto end = [&](iv::ManualControlInteractionId const& interaction, float value) {
+        iv::ProjectAckBuilder ack;
+        in_event_source([&] { project_graph.handle_project_end_manual_control_interaction(
+            {interaction, value}, ack); });
+        ASSERT_NO_THROW(ack.build());
+    };
+    iv::ManualControlInteractionId first{.client_id = "ui", .interaction_id = "first"};
+    hover(controls[0]);
+    begin(first, controls[0], .25f);
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    end(first, .25f);
+
+    // Change a different control before its dynamic variant can activate.
+    // Returning to the first dynamic set still needs the new constant value.
+    probe.block_next_compilation();
+    iv::ManualControlInteractionId other{.client_id = "ui", .interaction_id = "other"};
+    begin(other, controls[1], .9f);
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    end(other, .9f);
+    hover(controls[0]);
+    iv::ManualControlInteractionId regrab{.client_id = "ui", .interaction_id = "regrab"};
+    begin(regrab, controls[0], .5f);
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_stages(2));
+    EXPECT_EQ(probe.stages().back().dynamic_inputs,
+        std::vector<iv::ManualControlId>{controls[0]});
+    end(regrab, .5f);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       HoverCannotSupersedeRequiredSettlingAndDisconnectReleasesRetainedControl)
+{
+    auto const controls = realize_controls(2);
+    iv::ProjectAckBuilder hover, begin, end;
+    in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
+        {.client_id = "ui", .id = controls[0]}, hover); });
+    ASSERT_NO_THROW(hover.build());
+    iv::ManualControlInteractionId interaction{.client_id = "ui", .interaction_id = "drag"};
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction(
+        {interaction, controls[0], .25f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({interaction, .5f}, end); });
+    ASSERT_NO_THROW(end.build());
+    probe.block_next_compilation();
+    in_event_source([&] { project_graph.handle_socket_rpc_client_disconnected("ui"); });
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    iv::ProjectAckBuilder predictive;
+    in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
+        {.client_id = "other", .id = controls[1]}, predictive); });
+    ASSERT_NO_THROW(predictive.build());
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_stages(2));
+    EXPECT_TRUE(probe.stages().back().dynamic_inputs.empty());
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
        EndingOrDisconnectingRejectsDynamicResultAndRequestsConstantCode)
 {
     auto const controls = realize_controls(1);
+    probe.require_storage_for_dynamic_controls();
     ASSERT_EQ(controls.size(), 1u);
     auto const& control = controls.front();
 

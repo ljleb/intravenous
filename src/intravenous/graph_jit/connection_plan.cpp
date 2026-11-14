@@ -708,9 +708,14 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
         ResolvedSampleChannel result;
         result.crossed_structure = true;
         auto const control_index = manual_source(output);
-        if (control_index && (!connected_module_inputs.contains({upstream_target.bundle, upstream_target.port})
+        if (control_index && (graph.manual_controls[*control_index].override_connections
+            || !connected_module_inputs.contains({upstream_target.bundle, upstream_target.port})
             || graph.manual_controls[*control_index].participation == ManualControlParticipation::participate_with_connections)) {
             result.contributions.push_back({.source_terms = {{output, 1.0f}}});
+        }
+        if (control_index && graph.manual_controls[*control_index].override_connections) {
+            pop();
+            return result;
         }
         if (!incoming) {
             pop();
@@ -761,6 +766,16 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
         for (auto const target : connection.target_channels) {
             auto expanded = expand_target(expand_target, target);
             if (!expanded) return std::unexpected(std::move(expanded.error()));
+            // A live manual producer replaces this input's authored source.
+            // Keep the authored connections in ConfiguredGraph so restoring
+            // the connection requires no durable project edit.
+            std::erase_if(*expanded, [&](SampleInputChannelId channel) {
+                return std::ranges::any_of(graph.manual_controls, [&](auto const& control) {
+                    return control.override_connections
+                        && control.input.node_bundle_handle == channel.bundle
+                        && control.input.port_index == channel.port;
+                });
+            });
             target_crossed_structure = target_crossed_structure
                 || expanded->size() != 1 || expanded->front() != target;
             has_terminal_target = has_terminal_target
@@ -6195,6 +6210,20 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
             "connection analysis requires a non-zero kernel block size");
     }
 
+    auto const has_manual_override = std::ranges::any_of(
+        graph.manual_controls, [](auto const& control) { return control.override_connections; });
+    if (has_manual_override) {
+        // detach() is validated against authored topology. A temporary source
+        // replacement can open a valid feedback cycle; its remaining delay
+        // still belongs to that authored temporal cut.
+        auto authored = graph;
+        for (auto& control : authored.manual_controls) control.override_connections = false;
+        auto validated = build_connection_analysis_plan(authored, port_realization,
+            kernel_block_size, cost_model, retained_background_plan,
+            callback_batch_classes, callback_elision_candidates);
+        if (!validated) return std::unexpected(std::move(validated.error()));
+    }
+
     for (NodeBundleHandle bundle = 0;
          bundle < graph.node_bundles.size(); ++bundle) {
         auto const& node_bundle = graph.node_bundles.bundle(bundle);
@@ -6305,8 +6334,10 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     if (auto acyclic = validate_explicit_graph_is_acyclic(graph, plan); !acyclic) {
         return std::unexpected(std::move(acyclic.error()));
     }
-    if (auto detaches = validate_detached_connections(graph, plan); !detaches) {
-        return std::unexpected(std::move(detaches.error()));
+    if (!has_manual_override) {
+        if (auto detaches = validate_detached_connections(graph, plan); !detaches) {
+            return std::unexpected(std::move(detaches.error()));
+        }
     }
     std::vector<std::uint8_t> callback_elided(
         graph.node_bundles.size(), std::uint8_t{0});

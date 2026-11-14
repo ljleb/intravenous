@@ -544,6 +544,102 @@ surface is implemented.
 The live scalar may reside in `NodeStorage`; one scalar per eligible/manual control
 is not a reason to create a separate runtime storage architecture.
 
+### Temporary connected-input override
+
+_Settled by the repository owner on 2026-11-14._
+
+Only Sequential inputs receive tweakable manual controls. During a live
+interaction, the manual value replaces the selected input's incoming signal,
+including when its settled participation policy is disconnected-only. The knob
+retains its independent manual value; it does not have to follow the connected
+signal. Releasing the mouse closes the undo gesture. While that client's pointer
+remains over the knob, retain the dynamic code and temporary override. Leaving
+the knob requests settled code immediately; the authored connection resumes when
+that replacement activates. Neither the authored wiring nor the durable
+participation policy changes. Hover alone prepares code and never activates an
+override. This hover-leave policy was accepted on 2026-11-14; the
+[earlier settling policy](./historical/manual_control_debounce_before_hover_settling_2026-11-14.md)
+is preserved for provenance.
+
+Represent the override as an internal Tick/ephemeral producer at the selected
+public input. Preserve module-internal conversion, fanout, and authored temporal
+cuts. Input history records the values actually consumed, including manual
+values that remain in the history window after the gesture ends. A recording
+node can explicitly persist the gestures when desired.
+
+Reuse existing input-owned storage where possible. Shared producer storage
+cannot be overwritten to override only one consumer. Compatible code variants
+keep their existing `NodeStorage`; a variant that changes storage requirements
+uses an ordinary accepted successor with node-storage and semantic port-state
+migration. The owner accepts this initial migration cost. Measure real project
+costs before introducing shared page-backed node state or another allocation
+scheme; do not reserve every possible override's history permanently.
+
+### Knob gestures and discovery
+
+_Settled by the repository owner on 2026-11-14._
+
+The default presentation places one radial knob beside each eligible input
+that fits directly on the lane. No hover is needed to reach that knob. A hidden
+input exposes its knob through the folded port popover, or once in its connection
+popover. Do not duplicate a directly visible knob in the connection popover.
+Keep the lane's wiring interface compact and avoid a second list of input
+identities in its content area. The owner accepted default inline knobs on
+2026-11-14. The
+[previous popover-only contract](./historical/inline_lane_knobs_before_default_display_2026-11-14.md)
+is retained for provenance.
+
+_Accepted clarification, 2026-11-14:_ use the available height of the lane's
+left area to show ports directly. Inputs and outputs keep separate columns.
+Each column retains reflected definition order. If every port fits, show all
+of them. Otherwise, reserve one handle for a popover that contains the remaining
+ports. Compute each direction independently. Hidden-port connection indicators
+summarize only that remainder. Existing connections and drag previews attach to
+the direct handle when visible, or to the folded handle when hidden.
+Fitting must account for the complete row height, including its knob. Knobs
+and wire handles keep separate drag targets. In narrow lane labels, keep those
+targets reachable even when names or numeric readouts need to be hidden.
+
+Place the control between its port circle and displayed name. Keep the knob
+and wire handle as separate pointer targets. Show the logical value prominently;
+when finite minimum and maximum bounds exist, also show the normalized 0–1
+value with less emphasis.
+
+_Accepted visual feedback, 2026-11-14:_ distinguish idle, hovered, and dragged
+knobs with subtle stroke and fill changes in the knob's own color. Avoid a blue
+outline around yellow knobs. Drag feedback follows the local pointer gesture,
+independent of server acknowledgement. Keyboard focus remains visible in the
+same color family.
+
+Drag up to increase the value and down to decrease it. Lock and hide the mouse
+pointer during a drag, using relative movement so screen edges do not limit it.
+Release or Escape unlocks it; leaving the application also ends the drag. Each
+wheel event with nonzero vertical movement halves sensitivity when scrolling
+down and doubles it when scrolling up, independent of the event's delta magnitude.
+Use horizontal movement only when the wheel event has no vertical movement.
+Changing sensitivity must not change the current value or reset the pointer
+origin. Wheel events used by a knob must not scroll or zoom the timeline.
+
+The exact authored default receives additional mouse travel. Preserve every
+nearby numeric value; do not clamp a numeric interval to the default. The
+extra travel has a fixed width in pointer pixels, independent of sensitivity.
+Changing sensitivity inside that region preserves progress through it.
+
+Right-click opens a numeric-value popover. Typing remains local until Enter
+accepts one exact-value gesture. Escape, clicking outside, or leaving the
+editor cancels the draft. Numeric entry bypasses drag snapping. Double-clicking
+a knob resets it to the authored default. A drag must not count as the first
+click of a reset. Arrow keys still adjust a focused knob. The owner replaced
+Hover + R with double-click on 2026-11-14. The
+[earlier reset contract](./historical/knob_reset_before_double_click_2026-11-14.md)
+is retained for provenance.
+
+A compact VS Code status item reports the hovered knob's shortcuts and the
+active drag's value and sensitivity; its tooltip holds fuller help. Clear it
+when the relevant context or focus is lost. Hover never steals keyboard focus
+from another editor. Gesture and numeric-entry ownership belongs to the webview
+root, so remounting a port widget does not silently end its interaction.
+
 ### Manual-control history is grouped by completed interaction (planned)
 
 The durable `ProjectManualControl` value is eligible for project undo, but
@@ -607,20 +703,24 @@ for each audio callback while dynamic scrubbing is active:
     interpolate sample-by-sample from the previous effective value
     to the latched target over the callback
 
-input updates become idle:
-    stop interpolation
-    keep the dynamic graph active during the debounce interval
+mouse releases while still over the knob:
+    close the undo gesture
+    keep the dynamic graph and latest target active
 
-debounce interval expires:
+pointer leaves the knob after release:
     capture the latest stored value
-    request a constant-specialized replacement
+    immediately request a settled replacement (no debounce timer)
 
-constant-specialized graph becomes active:
-    use the settled value as an exact constant
+settled graph becomes active:
+    use the manual value as an exact constant where it participates
+    otherwise restore the authored connection
 ```
 
-Pointer release is not the only idle trigger. Front 14 uses one explicit configurable
-or fixed debounce policy instead of compiling after every input update.
+If the pointer already left before release, release requests settled code. Client
+disconnect clears its retained controls too. Another client's hover cannot retain
+an override after the originating client leaves. Keyboard and exact-value gestures
+use the same hover lifetime. Regrabbing an unchanged dynamic variant reuses its code;
+changes to other settled constants still require a matching replacement.
 
 The UI-to-audio target scalar requires defined C++ concurrency. The audio thread can
 observe the latest coherent target that is available. A relaxed atomic is sufficient
@@ -637,10 +737,11 @@ Front 14 initially keeps one active executable graph and one logically current
 replacement request. Compiled code can overlap temporarily during safe activation and
 reclamation. Front 14 does not keep a cache of old control specializations.
 
-The required `dynamic_inputs` set contains every control with an ongoing interaction.
-It can also contain the currently relevant hovered control for predictive compilation.
-A later hover can replace the predictive part of the set. It must not remove a control
-that an ongoing interaction still requires.
+The required `dynamic_inputs` set contains every control with an ongoing interaction
+or a released gesture retained by its own client's hover. With no required controls,
+hover can request predictive compilation without activation. A later hover can replace
+predictive work, but it cannot remove a required input. Predictive work must not
+supersede a required settled replacement that restores the authored connections.
 
 The initial scheduling policy is:
 
@@ -650,10 +751,11 @@ The initial scheduling policy is:
 4. If matching dynamic code is ready, `GraphExecutor` activates it safely.
 5. If matching code is not ready, the UI retains the latest desired value.
 6. The active graph continues to use the value representation that it supports.
-7. If the interaction ends first, the scheduler can skip the obsolete dynamic result
-   and request the settled constant replacement directly.
-8. After the idle interval, the scheduler requests code with the latest settled
-   constant values.
+7. Release ends the undo gesture but retains the required dynamic input while its
+   client still hovers the knob. A late dynamic result remains useful in that case.
+8. Leaving requests code with the latest settled values and authored connections
+   immediately. If release also ends the required lifetime before dynamic code is
+   ready, discard that obsolete dynamic result.
 
 Each replacement request carries the exact project revision, request identity,
 `dynamic_inputs` set, and settled values. A newer relevant request supersedes the
@@ -743,7 +845,7 @@ Front 14 uses the completed identity, persistence, GraphJit, and executor contra
 5. Add audio-thread-owned interpolation for active dynamic scrubbing.
 6. Add one active executable graph and one current replacement request.
 7. Add predictive hover compilation, demand-driven activation, stale-result rejection,
-   and the idle return to constant specialization.
+   and hover-leave return to constant specialization.
 8. Measure compile latency and interaction latency before Front 16 adds reuse or more
    scheduling machinery.
 

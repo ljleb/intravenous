@@ -72,6 +72,10 @@
                 "title": "Intravenous: Open Graph Editor"
             },
             {
+                "command": "intravenous.recordKnobPointer",
+                "title": "Intravenous: Record Knob Pointer Lock"
+            },
+            {
                 "command": "intravenous.addNode",
                 "title": "Intravenous: Add Node"
             },

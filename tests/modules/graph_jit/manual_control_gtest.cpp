@@ -15,7 +15,8 @@ struct ManualControlSliceProbeStateMirror {
 };
 
 std::shared_ptr<iv::ConfiguredGraph const> configured_module_manual_fanout(
-    iv::PackageRevision const& revision, bool dynamic, bool convert = true)
+    iv::PackageRevision const& revision, bool dynamic, bool convert = true,
+    bool connected = false)
 {
     using namespace iv;
     using Session = std::unique_ptr<iv::details::BuilderSession, decltype(&iv::details::iv_builder_session_destroy)>;
@@ -82,19 +83,100 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_module_manual_fanout(
         }
     }, "manual-module");
     if (convert) module(static_cast<iv::SamplePortRef>(module));
+    if (connected) {
+        auto source = configure("iv.test.graph_jit.state_context.constant", iv::Sample{.75f});
+        module(source);
+        auto other = iv::details::configure_package_definition_provider(graph,
+            "iv.test.graph_jit.state_context.manual_control_slice_probe", std::nullopt, {});
+        other(source);
+    }
     auto const module_handle = module.node_bundle_handle();
     graph.outputs();
     auto configured = iv::details::take_built_graph(session.get());
     configured.manual_controls.push_back({
         .id = {.node = {.instance_id = "module"}, .input_name = "value"},
         .input = {module_handle, iv::PortKind::sample, 0}, .settled_value = .25f,
-        .participation = iv::ManualControlParticipation::participate_with_connections,
+        .participation = connected ? iv::ManualControlParticipation::disconnected_only
+            : iv::ManualControlParticipation::participate_with_connections,
         .dynamic = dynamic,
     });
+    if (connected) {
+        configured.identity.value = "manual-override-test";
+        for (iv::NodeBundleHandle bundle = 0; bundle < configured.node_bundles.size(); ++bundle) {
+            auto const& node = configured.node_bundles.bundle(bundle);
+            if (!node.is_concrete()) continue;
+            auto const identity = configured.virtual_nodes.create(
+                "node:" + std::to_string(bundle), node.type_identity());
+            configured.virtual_nodes.attach_bundle_member(configured.node_bundles, identity, bundle);
+        }
+    }
     return std::make_shared<iv::ConfiguredGraph const>(std::move(configured));
 }
 
 } // namespace
+
+TEST_F(GraphJitRuntimeFixture, ModuleOverrideMigratesConsumedHistoryAndRestoresItsSharedSource)
+{
+    auto ordinary = configured_module_manual_fanout(*revision, false, false, true);
+    auto overridden = std::make_shared<iv::ConfiguredGraph>(*ordinary);
+    overridden->manual_controls[0].dynamic = true;
+    overridden->manual_controls[0].override_connections = true;
+    auto before = compile_graph(ordinary, 392);
+    ASSERT_TRUE(before.succeeded()) << (before.diagnostics.empty() ? "" : before.diagnostics.front().message);
+    auto during = jit->handle_project_graph_transaction({
+        .successor = {.project_generation = 393, .graph = overridden, .definitions = definitions},
+        .predecessor = before.compiled_graph,
+    });
+    ASSERT_TRUE(during.succeeded()) << (during.diagnostics.empty() ? "" : during.diagnostics.front().message);
+    auto after = jit->handle_project_graph_transaction({
+        .successor = {.project_generation = 394, .graph = ordinary, .definitions = definitions},
+        .predecessor = during.compiled_graph,
+    });
+    ASSERT_TRUE(after.succeeded()) << (after.diagnostics.empty() ? "" : after.diagnostics.front().message);
+    EXPECT_FALSE(iv::GraphExecutor::can_replace_realtime_code(*before.compiled_graph, *during.compiled_graph));
+
+    auto initial_storage = before.compiled_graph->node_layout.create_storage(resources);
+    initial_storage.initialize();
+    before.compiled_graph->root_operations.tick_block(
+        initial_storage.buffer().data(), &empty_tick_invocation, index(0), 4);
+    auto override_storage = during.compiled_graph->node_layout.create_storage(resources);
+    auto restored_storage = after.compiled_graph->node_layout.create_storage(resources);
+    auto migrate_and_tick = [&](iv::NodeStorage& previous_storage,
+                                iv::CompiledGraph const& current, iv::NodeStorage& current_storage,
+                                std::int64_t begin) {
+        ASSERT_TRUE(current.cutover);
+        auto migration = current_storage.prepare_migration_from(previous_storage);
+        auto transfer = iv::graph_jit::prepare_realtime_port_state_transfers(
+            current.cutover->state_transition, previous_storage.buffer(), current_storage.buffer());
+        ASSERT_TRUE(transfer) << transfer.error();
+        migration.commit();
+        iv::graph_jit::execute_realtime_port_state_transfers(
+            *transfer, previous_storage.buffer(), current_storage.buffer(), index(begin));
+        auto const& operation = current.root_operations.transition_tick_block
+            ? current.root_operations.transition_tick_block : current.root_operations.tick_block;
+        operation(current_storage.buffer().data(), &empty_tick_invocation, index(begin), 4);
+    };
+    migrate_and_tick(initial_storage, *during.compiled_graph, override_storage, 4);
+    ASSERT_FALSE(HasFatalFailure());
+    migrate_and_tick(override_storage, *after.compiled_graph, restored_storage, 8);
+    ASSERT_FALSE(HasFatalFailure());
+    std::size_t probe_index = 0;
+    for (std::size_t node = 0; node < after.compiled_graph->node_layout.nodes.size(); ++node) {
+        if (after.compiled_graph->node_layout.nodes[node].state_size != sizeof(ManualControlSliceProbeStateMirror)) continue;
+        auto const* probe = static_cast<ManualControlSliceProbeStateMirror*>(restored_storage.state_ptr(node));
+        ASSERT_NE(probe, nullptr);
+        EXPECT_EQ(probe->calls, 6u);
+        EXPECT_EQ(probe->value_count, 12u);
+        for (std::size_t i = 0; i < 12; ++i) {
+            auto const expected = probe_index < 2 && i >= 4 && i < 8 ? .25f : .75f;
+            EXPECT_FLOAT_EQ(probe->values[i], expected) << "probe " << probe_index << ", sample " << i;
+        }
+        EXPECT_FLOAT_EQ(probe->history_before_slice[2], .75f);
+        EXPECT_FLOAT_EQ(probe->history_before_slice[4], probe_index < 2 ? .25f : .75f);
+        ++probe_index;
+    }
+    EXPECT_EQ(probe_index, 3u);
+}
 
 TEST_F(GraphJitRuntimeFixture,
        DynamicManualControlInterpolatesAcrossAllPrimitiveSlices)

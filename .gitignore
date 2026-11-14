@@ -1,5 +1,6 @@
 build/
 build-release/
+debug-release/
 .cache
 *.wav
 /perf.data*

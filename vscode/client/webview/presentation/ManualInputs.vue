@@ -8,7 +8,7 @@ const inputs = computed(() => node.value.ports.filter((entry) => entry.direction
 </script>
 <template>
     <div v-if="inputs.length" class="manual-inputs" @pointerdown.stop>
-        <ManualInput v-for="port in inputs" :key="port.name" :name="port.name" />
+        <ManualInput v-for="port in inputs" :key="port.name" :name="port.name" show-name />
     </div>
 </template>
 <style scoped>

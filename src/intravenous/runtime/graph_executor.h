@@ -377,6 +377,12 @@ public:
     GraphExecutorStageResult stage_realtime_code(
         std::shared_ptr<CompiledGraph const> compiled_graph);
 
+    // Cold preflight used by ProjectGraph to select code-only activation or
+    // an ordinary successor with NodeStorage and port-state migration.
+    [[nodiscard]] static bool can_replace_realtime_code(
+        CompiledGraph const& structural,
+        CompiledGraph const& replacement) noexcept;
+
     // Atomically changes target_bits in the accepted generation selected by
     // project_generation. One semantic ManualControlId can update several
     // concrete selected inputs.

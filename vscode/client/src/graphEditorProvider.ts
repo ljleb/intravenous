@@ -5,9 +5,15 @@ import { addressKey, readLayout, type GraphScope } from "./graphScope";
 import { nodeDebugDetails } from "./nodeDebugDetails";
 import type { GraphEditorAction, GraphEditorState, GraphEditorWebviewMessage } from "./graphEditorProtocol";
 import type { WorkspaceSession } from "./workspaceSession";
+import type { ManualControlHint } from "./manualControlGesture";
+import type { KnobPointerTraceReport } from "./knobPointerTrace";
+import { knobPointerTraceDirectory } from "./knobPointerTraceFile";
 
 export class GraphEditorProvider implements vscode.Disposable {
     private readonly panels = new Set<vscode.WebviewPanel>();
+    private readonly interactionHints = new Map<vscode.WebviewPanel, ManualControlHint>();
+    private readonly interactionStatus = vscode.window.createStatusBarItem(
+        "intravenous.manualControlHints", vscode.StatusBarAlignment.Left, 10);
     private readonly controlOwners = new Map<vscode.WebviewPanel, string>();
     private readonly controlsChanged: vscode.Disposable;
     private readonly ready = new Set<vscode.WebviewPanel>();
@@ -38,8 +44,19 @@ export class GraphEditorProvider implements vscode.Disposable {
             for (const panel of this.ready) this.postControls(panel);
         });
         this.windowFocusChanged = vscode.window.onDidChangeWindowState(({ focused }) => {
+            if (!focused) this.interactionHints.clear();
+            this.updateInteractionStatus();
             for (const panel of this.ready) void panel.webview.postMessage({ type: "graphWindowFocus", focused });
         });
+    }
+
+    private updateInteractionStatus(): void {
+        const panel = [...this.panels].find((candidate) => candidate.active);
+        const hint = panel && vscode.window.state.focused ? this.interactionHints.get(panel) : undefined;
+        if (!hint) { this.interactionStatus.hide(); return; }
+        this.interactionStatus.text = hint.text.replace(/\$\(/g, "＄(");
+        this.interactionStatus.tooltip = hint.tooltip;
+        this.interactionStatus.show();
     }
 
     open(): vscode.WebviewPanel {
@@ -55,6 +72,10 @@ export class GraphEditorProvider implements vscode.Disposable {
         panel.reveal(panel.viewColumn, false);
         if (!this.ready.has(panel)) {
             this.pendingActions.set(panel, [...(this.pendingActions.get(panel) ?? []), action]);
+            return;
+        }
+        if (action === "recordKnobPointer") {
+            void panel.webview.postMessage({ type: "knobPointerTraceToggle" });
             return;
         }
         if (action === "undo" || action === "redo") {
@@ -117,12 +138,25 @@ export class GraphEditorProvider implements vscode.Disposable {
     // VS Code restores each tab independently after a window reload.
     revive(panel: vscode.WebviewPanel): void { this.attach(panel); }
 
+    private async openPointerTrace(report: KnobPointerTraceReport): Promise<void> {
+        const directory = vscode.Uri.file(knobPointerTraceDirectory(this.session.workspaceRoot()));
+        await vscode.workspace.fs.createDirectory(directory);
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const file = vscode.Uri.joinPath(directory, `knob-pointer-${stamp}-${crypto.randomUUID().slice(0, 8)}.json`);
+        await vscode.workspace.fs.writeFile(file, Buffer.from(JSON.stringify(report, null, 2) + "\n"));
+        this.session.reportGraphInteractionDiagnostic(`Trace saved to ${file.fsPath}`);
+        const document = await vscode.workspace.openTextDocument(file);
+        await vscode.window.showTextDocument(document, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+    }
+
     private attach(panel: vscode.WebviewPanel): void {
         this.panels.add(panel);
         this.controlOwners.set(panel, crypto.randomUUID());
         if (panel.active) this.lastActivePanel = panel;
         const viewState = panel.onDidChangeViewState(() => {
             if (panel.active) this.lastActivePanel = panel;
+            else this.interactionHints.delete(panel);
+            this.updateInteractionStatus();
         });
         const root = vscode.Uri.joinPath(this.extensionUri, "dist", "webview");
         panel.webview.options = { enableScripts: true, localResourceRoots: [root] };
@@ -130,6 +164,8 @@ export class GraphEditorProvider implements vscode.Disposable {
             if (message?.type === "graphReady") {
                 await this.layoutLoaded;
                 if (!this.panels.has(panel)) return;
+                this.interactionHints.delete(panel);
+                this.updateInteractionStatus();
                 if (this.ready.has(panel)) {
                     const owner = this.controlOwners.get(panel);
                     if (owner) this.session.manualControls.releaseOwner(owner);
@@ -145,6 +181,19 @@ export class GraphEditorProvider implements vscode.Disposable {
                     try { await this.runAction(action, panel); }
                     catch (error) { void vscode.window.showErrorMessage(`Cannot edit project: ${error.message}`); }
                 }
+            } else if (message?.type === "graphInteractionHint") {
+                if (message.hint && panel.active && vscode.window.state.focused) this.interactionHints.set(panel, message.hint);
+                else this.interactionHints.delete(panel);
+                this.updateInteractionStatus();
+            } else if (message?.type === "graphInteractionDiagnostic" && typeof message.message === "string") {
+                this.session.reportGraphInteractionDiagnostic(message.message);
+            } else if (message?.type === "knobPointerTrace") {
+                try { await this.openPointerTrace(message.report); }
+                catch (error) { void vscode.window.showErrorMessage(`Cannot save knob pointer trace: ${error.message}`); }
+            } else if (message?.type === "knobPointerTraceStatus") {
+                vscode.window.setStatusBarMessage(message.state === "armed"
+                    ? "Intravenous pointer trace armed: drag a knob to reproduce; run the command again to stop"
+                    : "Intravenous pointer trace recording: reproduce the escape, then release the mouse", 10000);
             } else if (message?.type === "manualControlAction") {
                 const owner = this.controlOwners.get(panel);
                 if (!owner) return;
@@ -208,7 +257,9 @@ export class GraphEditorProvider implements vscode.Disposable {
             const owner = this.controlOwners.get(panel);
             if (owner) this.session.manualControls.releaseOwner(owner);
             this.controlOwners.delete(panel);
+            this.interactionHints.delete(panel);
             messages.dispose(); viewState.dispose(); this.panels.delete(panel); this.ready.delete(panel);
+            this.updateInteractionStatus();
             this.pendingActions.delete(panel);
             if (this.lastActivePanel === panel) this.lastActivePanel = null;
         });
@@ -274,5 +325,6 @@ export class GraphEditorProvider implements vscode.Disposable {
         this.windowFocusChanged.dispose();
         for (const panel of this.panels) panel.dispose();
         this.panels.clear();
+        this.interactionStatus.dispose();
     }
 }

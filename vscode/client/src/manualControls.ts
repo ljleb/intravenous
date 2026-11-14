@@ -81,8 +81,12 @@ export class ManualControlInteractions {
             if (this.entries.has(key) && !["failed", "settled"].includes(this.entries.get(key)!.phase))
                 throw new Error("This manual interaction is already active");
             if ([...this.entries.values()].some((entry) => entry.phase !== "failed" && entry.phase !== "settled"
-                && manualControlKey(entry.control) === manualControlKey(action.control)))
+                && manualControlKey(entry.control) === manualControlKey(action.control)
+                && !(entry.owner === owner && entry.ending)))
                 throw new Error("This input already has an active interaction");
+            const predecessors = [...this.entries.values()].filter((entry) => entry.owner === owner && entry.ending
+                && entry.phase !== "failed" && entry.phase !== "settled"
+                && manualControlKey(entry.control) === manualControlKey(action.control));
             for (const [previousKey, previous] of this.entries)
                 if (previous.owner === owner && (previous.phase === "failed" || previous.phase === "settled")
                     && manualControlKey(previous.control) === manualControlKey(action.control)) this.entries.delete(previousKey);
@@ -95,6 +99,22 @@ export class ManualControlInteractions {
                 try {
                     const rpc = this.transport();
                     if (!rpc) throw new Error("The Intravenous server is unavailable");
+                    // A quick re-grab or another keyboard step can arrive
+                    // before the prior begin reply scheduled its end. Close
+                    // those gestures before sending this begin; any queued
+                    // old end then sees remoteActive=false and does nothing.
+                    for (const previous of predecessors) {
+                        if (previous.remoteActive) {
+                            try { await rpc.endManualControl(previous.remoteId, previous.value); }
+                            catch (error) { await this.fail(previous, error); throw error; }
+                            if (entry.epoch !== this.epoch) return;
+                            previous.accepted = previous.sent = previous.value;
+                            previous.remoteActive = false;
+                            previous.phase = "settled";
+                        }
+                        entry.accepted = previous.accepted;
+                        this.entries.delete(this.key(previous.owner, previous.interactionId));
+                    }
                     const value = entry.value;
                     await rpc.beginManualControl(entry.remoteId, entry.control, value);
                     if (entry.epoch !== this.epoch) return;
