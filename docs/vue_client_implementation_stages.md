@@ -2261,3 +2261,25 @@ held controls, release before dynamic activation, restoration of the original
 constant, and storage-changing activation. Existing blocking tests now arm the
 block before release, since release itself starts preparation. No build/test has
 run for this change yet.
+
+### Owner follow-up list, 2026-11-14
+
+The accepted interaction requirements are recorded in
+[Owner interaction requests](node_presentation_and_manual_controls_direction.md#owner-interaction-requests-2026-11-14).
+They cover modified middle-button zoom, creation without a form for zero-argument
+nodes, default display names, renaming, definition discovery, multiple selection,
+lane ordering, deletion, default-value pins, a larger default travel region,
+larger port handles, and more compact popovers with a single-port icon.
+These are pending work, not changes implemented by this documentation pass.
+
+The ghost-cursor defect remains active. It can trigger incorrect hover changes
+and unnecessary GraphJit compilations after release. Treat that consequence as
+part of the regression requirement, alongside the wrong-knob grab itself.
+
+The owner also requests investigation of `q24_icosphere_pan` performance. Aim for
+roughly a tenfold improvement, including responsive live input edits. Separate
+package load, graph compilation, and dynamic audio execution in measurements
+before choosing a change. If that improvement is impractical, investigate another
+implementation of full spherical panning (the owner's “360d x 360d” requirement)
+using the available datasets and research. No replacement algorithm or quality
+tradeoff is selected. This work is also recorded under Front 16.

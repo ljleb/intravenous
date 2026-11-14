@@ -6993,6 +6993,19 @@ spans.
 Runtime PGO remains an optional discovery direction rather than a prerequisite for the
 architecture.
 
+### Owner-requested panner investigation, 2026-11-14
+
+Pending measurement work: `q24_icosphere_pan` is slow to load in the owner's
+project. The requested improvement is roughly an order of magnitude, including
+responsive live input edits. Measure package load, graph compilation, and audio
+execution with dynamic inputs separately. Do not assume that the reported load
+cost and the cost during a gesture share a cause.
+
+If that target is impractical for the current implementation, investigate another
+approach to full spherical panning using the available datasets and research.
+No algorithm replacement or quality tradeoff is accepted yet. The associated UI
+requests remain in [the Vue follow-up list](vue_client_implementation_stages.md#owner-follow-up-list-2026-11-14).
+
 ## Dependency summary
 
 The main execution path is approximately:

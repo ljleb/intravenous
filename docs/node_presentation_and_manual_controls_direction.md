@@ -954,3 +954,65 @@ the active dynamic variant. With concurrent gestures, preparation keeps other he
 or hover-retained controls dynamic. Storage-changing activation follows the normal
 compiled-transition path, as it does for predictive dynamic variants. The earlier
 wording is retained in [historical documentation](historical/knob_settling_before_release_preparation_2026-11-14.md).
+
+## Owner interaction requests, 2026-11-14
+
+_Status: accepted destination, pending implementation. These requests extend the
+lane interface. They do not claim that the current client implements them._
+
+### Navigation, selection, and lane order
+
+- Alt + middle-button drag uses vertical mouse movement for vertical zoom, with
+  the same effect as Alt + wheel.
+- Ctrl + middle-button drag uses vertical mouse movement for horizontal zoom,
+  with the same effect as Ctrl + wheel.
+- Support multiple selected lanes. Ctrl-click toggles a lane in the selection.
+  Shift-click extends the selection across a range of lanes.
+- Shift + Up moves the selected lanes up within their current parent subgraph.
+  Shift + Down moves them down. Preserve the selected lanes' relative order.
+  A lane cannot leave its parent through either action. Selected lanes already
+  stacked against the relevant boundary stay there. Do not wrap them around or
+  swap their order.
+- Delete removes the selected node or nodes without a confirmation dialog.
+  Ctrl + Z restores the deletion through project history. As a general policy,
+  avoid confirmation dialogs for ordinary reversible project edits.
+
+### Node creation and names
+
+- `IV_NODE` and `IV_MODULE` take an additional display-name parameter. This name
+  supplies the default name when the user creates a node instance.
+- Always supply a default instance name. If a definition takes no construction
+  arguments, create the instance without opening a construction form.
+- Double-clicking a lane's node name starts renaming that node instance.
+- Creation must offer a convenient way to find definitions without knowing their
+  IDs. Search by display name or ID, tag search, and visual browsing are candidate
+  interfaces. The owner has not selected one of these interfaces yet.
+
+### Knobs and port handles
+
+- Show the authored default value as a small pin outside the knob's semi-ring,
+  at the position that represents that value.
+- Double the current extra pointer travel assigned to the exact default value.
+  At a fixed scrub speed, crossing this region takes twice as long as before.
+  Preserve the existing independence from wheel sensitivity changes.
+- Enlarge port handles so that grabbing them requires less precise aiming.
+  Provide visible hover feedback as already requested.
+- A port popover containing exactly one port uses a single-circle icon. The
+  circle is empty when disconnected and filled when connected. Hover still opens
+  the popover. This changes the icon, not the popover interaction.
+- Size port popovers to fit their longest port name with the required padding.
+  Remove unnecessary horizontal space.
+
+### Unresolved knob hover defect
+
+The owner still reports a hidden cursor position that differs from the visible
+cursor after pointer unlock. On release, another knob can become hovered even
+though the cursor reappears over the knob just dragged. A small real mouse move
+restores the correct hover.
+
+This defect affects compilation as well as selection. The incorrect hover can
+release the current dynamic variant too early, discard useful prepared code, and
+request unnecessary replacements. Fixing hover ownership after unlock must
+preserve release-time settled preparation and genuine movement to another knob.
+The cause remains unconfirmed. The existing pointer traces are evidence, not a
+basis for assuming a particular browser or editor fault.
