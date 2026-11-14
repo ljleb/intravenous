@@ -44,6 +44,8 @@ void iv_builder_connect_event_input(
     BuilderSession*, NodeBundleHandle);
 [[nodiscard]] NodeBundlePortId iv_builder_input_port_at(
     BuilderSession*, NodeBundleHandle, std::size_t position);
+[[nodiscard]] NodeBundlePortId iv_builder_output_port_at(
+    BuilderSession*, NodeBundleHandle, std::size_t position);
 [[nodiscard]] NodePorts const& iv_builder_typed_ports(
     BuilderSession*, NodeBundleHandle);
 [[nodiscard]] NodeBundleHandle iv_builder_tiled_member(

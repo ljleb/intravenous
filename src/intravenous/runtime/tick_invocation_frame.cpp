@@ -47,6 +47,8 @@ IndexCoverage const empty_tick_coverage{};
         return std::holds_alternative<TriggerEvent>(event);
     case EventTypeId::boundary:
         return std::holds_alternative<BoundaryEvent>(event);
+    case EventTypeId::sample:
+        return std::holds_alternative<SampleEvent>(event);
     case EventTypeId::midi:
         return std::holds_alternative<MidiEvent>(event);
     case EventTypeId::count:
@@ -1108,6 +1110,12 @@ public:
                 range,
                 [&](TimedEvent const& event) { visitor(visitor_data, event); });
         }
+        [[nodiscard]] EventNeighbors neighbors(std::size_t region, GlobalIndex position) const {
+            if (materialized) return materialized->neighbors(region, position);
+            if (!snapshot || !output) return {};
+            return snapshot->event_neighbors(*output, type, region, position);
+        }
+
     };
 
     std::vector<SequentialSampleSlot> sequential_sample_slots{};
@@ -1237,7 +1245,7 @@ public:
                     "input port");
             }
 
-            double maximum_rate = 0.0;
+            std::size_t maximum_count = 0;
             for (auto const storage : planned.storage) {
                 if (storage >= plan.storage.ports.size()) continue;
                 auto const& candidate = plan.storage.ports[storage];
@@ -1249,13 +1257,14 @@ public:
                         "Tick Sequential event binding has incompatible "
                         "storage");
                 }
-                maximum_rate = std::max(
-                    maximum_rate, candidate.max_events_per_index);
+                auto const bound = graph_jit::detail::background_event_count_bound(
+                    plan.storage, storage, maximum_block_size);
+                if (!bound) throw std::length_error("Tick event playback bound is not representable");
+                maximum_count = std::max(maximum_count, bound->count);
             }
-            auto const selected_capacity =
-                event_sequence_capacity_for_sample_span(
-                    maximum_rate, maximum_block_size);
-            if (!selected_capacity) {
+            auto const maximum_power = std::size_t{1}
+                << (std::numeric_limits<std::size_t>::digits - 1);
+            if (maximum_count > maximum_power) {
                 throw std::length_error(
                     "Tick Sequential event playback capacity is too large");
             }
@@ -1263,7 +1272,7 @@ public:
             auto& selected = sequential_event_slots[slot];
             selected.port = planned.port;
             selected.type = port.event_type;
-            selected.capacity = std::max<std::size_t>(*selected_capacity, 1);
+            selected.capacity = std::bit_ceil(std::max<std::size_t>(maximum_count, 1));
             selected.accepts_materialization = std::ranges::any_of(
                 planned.storage, [&](auto const storage) {
                     return storage < plan.storage.ports.size()
@@ -1338,6 +1347,9 @@ public:
                     RandomAccessEventInputPort::VisitEvent visitor) {
                     static_cast<EventSlot const*>(opaque)->for_each_region(
                         region, range, visitor_data, visitor);
+                },
+                .find_neighbors = +[](void const* opaque, std::size_t region, GlobalIndex position) {
+                    return static_cast<EventSlot const*>(opaque)->neighbors(region, position);
                 },
             };
         }

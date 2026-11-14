@@ -74,6 +74,8 @@ namespace iv {
         struct NodeCallRequests {
             std::array<NodeCallSampleInput, SampleCount> sample_inputs {};
             std::array<NodeCallEventInput, EventCount> event_inputs {};
+            size_t sample_input_count = 0;
+            size_t event_input_count = 0;
         };
 
         template<class... Args>
@@ -153,6 +155,8 @@ namespace iv {
             }
         }
         operator SamplePortRef() const;
+        // Mixed declaration order, unlike the per-kind operator[]/event_port indices.
+        NodeBundlePortId output_port_at(size_t position) const;
         size_t sample_input_count() const;
         size_t sample_output_count() const;
         size_t event_input_count() const;
@@ -472,7 +476,7 @@ namespace iv {
         }
 
         operator TypedSamplePortTileRef<ChannelType>() const
-        requires (details::static_output_count_v<NodeType> == 1)
+        requires (details::static_output_count_v<NodeType> > 0)
         {
             return static_output<0>();
         }
@@ -516,9 +520,9 @@ namespace iv {
                 this->_session, std::forward<Args>(args)...);
             this->apply_node_call(
                 {.data = requests.sample_inputs.data(),
-                 .size = requests.sample_inputs.size()},
+                 .size = requests.sample_input_count},
                 {.data = requests.event_inputs.data(),
-                 .size = requests.event_inputs.size()});
+                 .size = requests.event_input_count});
             return _clone_handle();
         }
     };

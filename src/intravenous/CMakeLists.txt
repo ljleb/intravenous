@@ -253,13 +253,14 @@ file(GLOB_RECURSE IV_PACKAGE_PCH_HEADERS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/*.h" "${CMAKE_CURRENT_SOURCE_DIR}/*.hpp")
 add_custom_command(
     OUTPUT "${IV_DSL_PCH}"
-    COMMAND "${CMAKE_CXX_COMPILER}" -std=c++23
+    COMMAND "${IV_APPLICATION_ENVIRONMENT_LAUNCHER}" "${CMAKE_CXX_COMPILER}" -std=c++23
         ${IV_PACKAGE_COMPILE_FLAGS} -Xclang -disable-llvm-passes
         "-I${IV_PUBLIC_INCLUDE_ROOT}" -isystem "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
         -DIV_ENABLE_JUCE_VST=0 -x c++-header
         "${CMAKE_CURRENT_SOURCE_DIR}/module/template/module_pch.h"
         -o "${IV_DSL_PCH}"
-    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/module/template/module_pch.h" ${IV_PACKAGE_PCH_HEADERS}
+    DEPENDS "${IV_APPLICATION_ENVIRONMENT_LAUNCHER}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/module/template/module_pch.h" ${IV_PACKAGE_PCH_HEADERS}
     VERBATIM)
 add_custom_target(intravenous_dsl_pch DEPENDS "${IV_DSL_PCH}")
 
@@ -288,13 +289,16 @@ add_library(intravenous_module_loader OBJECT
 iv_configure_intravenous_target(intravenous_module_loader PUBLIC)
 add_dependencies(intravenous_module_loader intravenous_dsl_pch)
 target_include_directories(intravenous_module_loader PRIVATE ${LLVM_INCLUDE_DIRS})
+list(JOIN IV_PACKAGE_COMPILE_FLAGS " " IV_PACKAGE_COMPILER_FLAGS_COMMAND_LINE)
 target_compile_definitions(intravenous_module_loader PRIVATE
     ${LLVM_DEFINITIONS}
     # ModuleLoader owns the default package toolchain.  Keeping the path on
     # this target means every direct loader user—tests and tools included—gets
     # the one application-built DSL PCH rather than inventing a per-package
     # fallback.
-    IV_CONFIGURED_IV_DSL_PCH="${IV_DSL_PCH}")
+    IV_CONFIGURED_IV_DSL_PCH="${IV_DSL_PCH}"
+    IV_CONFIGURED_PACKAGE_COMPILE_FLAGS="${IV_PACKAGE_COMPILER_FLAGS_COMMAND_LINE}"
+    IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER="${IV_APPLICATION_ENVIRONMENT_LAUNCHER}")
 llvm_map_components_to_libnames(IV_PACKAGE_LOADER_LLVM_LIBS
     bitreader
     core
@@ -552,6 +556,9 @@ add_executable(intravenous
 )
 
 iv_apply_common_cxx_settings(intravenous PRIVATE)
+target_compile_definitions(intravenous PRIVATE
+    IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER="${IV_APPLICATION_ENVIRONMENT_LAUNCHER}"
+    IV_CONFIGURED_APPLICATION_ENVIRONMENT_ID="${IV_APPLICATION_ENVIRONMENT_ID}")
 
 target_include_directories(intravenous PRIVATE
     ${IV_PUBLIC_INCLUDE_ROOT}

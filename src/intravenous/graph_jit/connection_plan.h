@@ -44,6 +44,8 @@ struct PlannedGraphNode {
     bool tick_execution = true;
     bool intrinsically_replayable = false;
     bool contextually_replayable = false;
+    bool authored_forward_coverage = false;
+    bool authored_reverse_coverage = false;
 };
 
 struct DependencyEdgePlan {

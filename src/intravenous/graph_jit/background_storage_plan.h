@@ -3,9 +3,20 @@
 #include <intravenous/graph_jit/connection_plan.h>
 
 #include <expected>
+#include <optional>
 #include <string>
 
 namespace iv::graph_jit::detail {
+
+// A control/background-path storage bound. Finite authored counts survive
+// conversions and fan-in; other sources keep their declared density bound.
+struct BackgroundEventCountBound {
+    std::size_t count = 0;
+    bool uses_finite_count = false;
+};
+[[nodiscard]] std::optional<BackgroundEventCountBound> background_event_count_bound(
+    BackgroundStoragePlan const& plan, PortStorageIndex storage,
+    std::size_t window_size);
 
 // Select immutable source views and derived materializations for every
 // background or mixed-domain connection. No data memory is allocated here;

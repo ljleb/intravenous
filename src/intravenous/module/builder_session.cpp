@@ -338,6 +338,7 @@ struct BuilderSession {
     // node relative to the module body that created it.
     std::vector<std::optional<std::vector<ProjectNodePathSelector>>> node_message_paths{};
     std::vector<NodeConfigAllocation> pending_node_configs{};
+    std::vector<std::shared_ptr<ImmutableConfigData const>> immutable_config_data{};
     std::vector<OpenScope> open_scopes{};
     std::optional<Failure> failure{};
 
@@ -1158,6 +1159,18 @@ std::shared_ptr<void const> take_builder_node_config(
         });
 }
 
+void const* iv_builder_copy_immutable_data(
+    BuilderSession* session, std::span<std::byte const> bytes,
+    std::size_t alignment)
+{
+    if (!session) throw std::invalid_argument("immutable array requires a builder session");
+    throw_if_builder_failed(session);
+    auto data = copy_immutable_config_data(bytes, alignment);
+    auto* pointer = data->storage.get();
+    session->immutable_config_data.push_back(std::move(data));
+    return pointer;
+}
+
 NodeConfigRelocations capture_node_config(
     BuilderSession* session,
     NodeCodeKey code_key,
@@ -1191,6 +1204,19 @@ NodeConfigRelocations capture_node_config(
             continue;
         }
         auto const value_address = reinterpret_cast<std::uintptr_t>(value);
+        auto const immutable = std::ranges::find_if(
+            session->immutable_config_data, [&](auto const& data) {
+                auto const begin = reinterpret_cast<std::uintptr_t>(data->storage.get());
+                return value_address >= begin && value_address - begin < data->bytes.size();
+            });
+        if (immutable != session->immutable_config_data.end()) {
+            relocations.push_back({
+                .byte_offset = offset,
+                .addend = value_address - reinterpret_cast<std::uintptr_t>((*immutable)->storage.get()),
+                .immutable_data = *immutable,
+            });
+            continue;
+        }
         // The field layout belongs to the concrete node's provider package,
         // but the value stored in the field may have originated in the
         // package that called g.node<Id>(...).  A string literal is the

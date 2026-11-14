@@ -940,7 +940,9 @@ consteval auto node_tock_coverage_batch_operation()
 template<class Node>
 consteval auto node_propagate_forward_coverage_operation()
 {
-    if constexpr (details::declares_tock_outputs_v<Node>) {
+    if constexpr (details::declares_tock_outputs_v<Node>
+        || details::has_propagate_forward_coverage<Node>
+        || details::has_propagate_forward_coverage_batch<Node>) {
         static_assert(details::has_propagate_forward_coverage<Node>
                 || details::has_propagate_forward_coverage_batch<Node>,
             "background-output node has no exact propagate_forward_coverage implementation");
@@ -954,7 +956,9 @@ consteval auto node_propagate_forward_coverage_operation()
 template<class Node>
 consteval auto node_propagate_forward_coverage_batch_operation()
 {
-    if constexpr (details::declares_tock_outputs_v<Node>) {
+    if constexpr (details::declares_tock_outputs_v<Node>
+        || details::has_propagate_forward_coverage<Node>
+        || details::has_propagate_forward_coverage_batch<Node>) {
         return &propagate_node_forward_coverage_batch<Node>;
     } else {
         return static_cast<void (*)(
@@ -965,8 +969,10 @@ consteval auto node_propagate_forward_coverage_batch_operation()
 template<class Node>
 consteval auto node_propagate_reverse_coverage_operation()
 {
-    if constexpr (details::declares_tock_outputs_v<Node>
-        && details::declares_random_access_inputs_v<Node>) {
+    if constexpr ((details::declares_tock_outputs_v<Node>
+            && details::declares_random_access_inputs_v<Node>)
+        || details::has_propagate_reverse_coverage<Node>
+        || details::has_propagate_reverse_coverage_batch<Node>) {
         return &propagate_node_reverse_coverage<Node>;
     } else {
         return static_cast<void (*)(
@@ -977,8 +983,10 @@ consteval auto node_propagate_reverse_coverage_operation()
 template<class Node>
 consteval auto node_propagate_reverse_coverage_batch_operation()
 {
-    if constexpr (details::declares_tock_outputs_v<Node>
-        && details::declares_random_access_inputs_v<Node>) {
+    if constexpr ((details::declares_tock_outputs_v<Node>
+            && details::declares_random_access_inputs_v<Node>)
+        || details::has_propagate_reverse_coverage<Node>
+        || details::has_propagate_reverse_coverage_batch<Node>) {
         return &propagate_node_reverse_coverage_batch<Node>;
     } else {
         return static_cast<void (*)(
@@ -1461,8 +1469,8 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
     }
     static_assert(replay_declaration_is_valid_v<Node>,
         "intrinsically replayable nodes must author a Tick callback, "
-        "have no State/TockState or RandomAccess inputs, and declare only "
-        "Sequential inputs and Tick outputs; resolved timing is validated by "
+        "have no State/TockState, provide propagation for Random Access inputs, "
+        "and declare only Tick outputs; resolved timing is validated by "
         "the whole-graph planner");
     sink.set_internal_latency(get_internal_latency(node));
     sink.set_intrinsically_replayable(intrinsically_replayable_v<Node>);
@@ -1488,8 +1496,8 @@ NodeBuildRequest make_node_build_request(Node const& node)
         "nodes may declare only Tock outputs");
     static_assert(replay_declaration_is_valid_v<Value>,
         "intrinsically replayable nodes must author a Tick callback, "
-        "have no State/TockState or RandomAccess inputs, and declare only "
-        "Sequential inputs and Tick outputs; resolved timing is validated by "
+        "have no State/TockState, provide propagation for Random Access inputs, "
+        "and declare only Tick outputs; resolved timing is validated by "
         "the whole-graph planner");
     // Emit the build-local record in the LLVM module.  The builder consumes
     // it synchronously and retains only copied data and the NodeCodeKey.

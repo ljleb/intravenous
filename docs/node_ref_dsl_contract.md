@@ -79,6 +79,9 @@ duplication, composition, and representation conversion lower directly rather th
 through authored `ChannelPack`/`ChannelUnpack` nodes. Matching tiled ports may lower
 to matching mono edges only when their channel types, not merely their widths, match.
 
+Output-selection rules superseded on 2026-11-14 are preserved in
+[the historical snapshot](historical/node_ref_output_selection_before_mixed_outputs_2026-11-14.md).
+
 ## Expression rules
 
 - `g.node<"stable.id">(args...)` is the normal source-facing node-construction
@@ -101,23 +104,39 @@ to matching mono edges only when their channel types, not merely their widths, m
   where typed information is available.
 - `ref[i]` and `ref["name"_P]` select outputs. Typed refs preserve output
   channel/layout information; erased refs return an erased bundle port.
-- A node ref may implicitly convert to `SamplePortRef` **only when it has
-  exactly one sample output**. The output name is irrelevant. It does not need
-  to be named `"main"`.
-- A node ref may supply `event_port()` **only when it has exactly one event
-  output**. The event output name is irrelevant.
+- In a sample context, a node ref selects its first sample output. An implicit
+  conversion to `SamplePortRef` fails if it has no sample output. The output
+  name is irrelevant. It does not need to be named `"main"`.
+- In an event context, `event_port()` selects the first event output and fails
+  if there is no event output. The event output name is irrelevant.
+- An unqualified node argument to a node call, chaining operation, or public
+  `outputs(...)` selects its first declared output across both kinds. An event
+  output declared before the sample outputs is therefore the default.
+- Named bindings select a kind: `"audio"_P = node` selects the first sample
+  output, and `"points"_F = node` selects the first event output. Explicit
+  output selection chooses a different source port when needed.
+- `output_port_at(position)` returns the port kind and its index within that
+  kind for one position in the mixed output declaration list. Existing sample
+  and event indices remain separate.
 - `std::get<I>(ref)` is available only for typed concrete/tiled refs with a
   constexpr output tuple; it is not available on erased `NodeRef`.
 - `tiled[channel]` selects a concrete typed node; `tiled[port][channel]`
   selects a promoted-port channel.
-- Sample/event chaining operators require exactly one matching target input and
-  produce the documented one-output/source/node chaining result.
+- Sample/event chaining operators require exactly one matching target input.
+  Bare node chaining returns the target node reference, so the next operation
+  can select its first declared output across both kinds. Chaining from an
+  explicit port returns the target's first output of the matching kind, or
+  passes through the source port if the target has no output of that kind.
 - Arithmetic creates ordinary builder nodes. Typed ports preserve channel type
   and layout; incompatible channel representations fail rather than silently
   flattening or selecting channels.
 - `port.detach(loop_extra_latency)` detaches a sample or event stream with the declared extra feedback latency; `~port` uses the default latency of one sample. Sample detach also accepts an optional initial sample value. When omitted, lowering chooses the neutral value of one connected downstream sample input (if several differ, either is valid); when supplied, the override is the initial value for the detached sample storage. Bundle outputs are lowered first.
-- Public outputs accept ports or nodes under the same exactly-one-output rule;
-  their virtual/bundle identity never becomes a tile identity.
+- `GraphBuilder::outputs(...)` and `SubgraphBuilder::outputs(...)` accept sample
+  and event outputs in the same call. For example,
+  `g.outputs("value"_P = curve, "points"_F = points)` declares a sample output
+  followed by an event output. The public boundary retains this declaration
+  order through subgraph use and graph serialization. Multiple outputs require
+  names. Their virtual/bundle identity never becomes a tile identity.
 
 ## Non-negotiable constraints
 

@@ -28,8 +28,9 @@ namespace iv {
         std::optional<std::string> cmake_generator {};
         std::optional<std::filesystem::path> make_program {};
         std::optional<std::filesystem::path> juce_dir {};
-        // Overrides the application-built DSL PCH. When omitted, a loader
-        // built by the application uses its configured shared DSL PCH.
+        // Optional relocation of the application-built DSL PCH. An override
+        // must be an unchanged copy of this build's artifact. When omitted,
+        // the loader uses its configured shared DSL PCH.
         std::optional<std::filesystem::path> iv_package_pch {};
         bool source_introspection = true;
         bool clang_time_trace = false;

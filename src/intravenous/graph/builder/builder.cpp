@@ -210,13 +210,7 @@ try {
     }
 
     target.connect_input(0, std::move(source));
-    if (output_count > 1) {
-        error(
-            std::string(operation)
-            + " requires target to have at most 1 output when used as an expression; got "
-            + std::to_string(output_count) + " outputs on " + target.to_string());
-    }
-    return output_count == 1;
+    return output_count != 0;
 } catch (...) {
     // An exception leaving a session operation fails the session.
     record_builder_failure(target._builder_session(), std::current_exception(), {});
@@ -237,12 +231,6 @@ try {
     target.connect_event_input(0, source);
     if (output_count == 0) {
         return source;
-    }
-    if (output_count != 1) {
-        error(
-            std::string(operation)
-            + " requires target to have at most 1 event output when used as an expression; got "
-            + std::to_string(output_count) + " event outputs on " + target.to_string());
     }
     return target.event_port(0);
 } catch (...) {
@@ -369,6 +357,15 @@ NodeBundlePortId iv_builder_input_port_at(
     BuilderSession* value, NodeBundleHandle handle, std::size_t position)
 try {
     return session(value).input_port_at(handle, position);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
+NodeBundlePortId iv_builder_output_port_at(
+    BuilderSession* value, NodeBundleHandle handle, std::size_t position)
+try {
+    return session(value).output_port_at(handle, position);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     record_builder_failure(value, std::current_exception(), {});
@@ -591,6 +588,15 @@ try {
     record_builder_failure(value, std::current_exception(), {});
     throw;
 }
+void iv_builder_scope_outputs(
+    BuilderSession* value, BuilderScopeId scope, std::span<OutputRequest const> refs)
+try {
+    session(value).scope_outputs(scope, refs);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    record_builder_failure(value, std::current_exception(), {});
+    throw;
+}
 void iv_builder_scope_named_outputs(
     BuilderSession* value, BuilderScopeId scope, std::span<NamedRef const> refs)
 try {
@@ -767,6 +773,14 @@ try {
     throw;
 }
 void GraphBuilder::outputs(std::span<SampleOutputRequest const> refs)
+try {
+    details::iv_builder_scope_outputs(_session, _scope, refs);
+} catch (...) {
+    // An exception leaving a session operation fails the session.
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
+}
+void GraphBuilder::outputs(std::span<OutputRequest const> refs)
 try {
     details::iv_builder_scope_outputs(_session, _scope, refs);
 } catch (...) {

@@ -19,6 +19,7 @@ std::string_view graph_jit_runtime_package_source()
     // stable fragments instead of relying on one oversized literal.
     static constexpr std::string_view part_1 = R"cpp(
 #include <intravenous/dsl.h>
+#include <intravenous/builtin_packages/automation/module.cpp>
 
 #include <algorithm>
 #include <array>
@@ -7323,6 +7324,48 @@ void distinct_immutable_history_module(iv::GraphBuilder& graph)
 IV_MODULE(
     "iv.test.graph_jit.state_context.distinct_immutable_history_module",
     distinct_immutable_history_module);
+// A tiny Tock consumer forces background replay of the curve without
+// materializing its entire duration. The point source still retains its one
+// complete sparse event Region, including the two points outside this window.
+struct AutomationWindow {
+    static constexpr auto inputs() {
+        return std::array{iv::input<iv::Sample>("curve", iv::InputAccess::region)};
+    }
+    static constexpr auto outputs() {
+        return std::array{iv::output<iv::Sample>("window", iv::OutputProduction::region,
+            iv::OutputRetention::persisted)};
+    }
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<AutomationWindow>& ctx) const {
+        auto const window = iv::GlobalIndexRange{iv::GlobalIndex::from_bits(2), 2};
+        ctx.output<"window">().publish(window);
+        if (ctx.local_state_changed || !ctx.input<"curve">().changed().empty())
+            ctx.output<"window">().change(iv::IndexCoverage{window});
+    }
+    void propagate_reverse_coverage(iv::PropagateReverseCoverageContext<AutomationWindow>& ctx) const {
+        ctx.input<"curve">().require(ctx.output<"window">().required());
+    }
+    void tock_coverage(iv::TockCoverageContext<AutomationWindow>& ctx) const {
+        auto input = ctx.input<"curve">().region();
+        auto output = ctx.output<"window">().region();
+        for (std::size_t i = 0; i < output.frame_count(); ++i)
+            output.value(i) = input.value(i);
+    }
+};
+IV_NODE("iv.test.automation.window", AutomationWindow);
+void automation_window_module(iv::GraphBuilder& graph) {
+    // Ten hours of sparse coverage, but only three event records. None lies
+    // inside the two-sample replay window.
+    auto curve = graph.node<"iv.automation.curve">(
+        std::vector<iv::automation::Point>{{1, 0, 0}, {2, 4.0 / 88200, 1}, {3, 36000, 0}},
+        36000.0);
+    auto window = graph.node<"iv.test.automation.window">();
+    window(curve);
+    auto live = graph.node<"iv.test.graph_jit.state_context.manual_control_slice_probe">();
+    live(curve);
+    graph.outputs();
+}
+IV_MODULE("iv.test.automation.window_module", automation_window_module);
+
 )cpp";
     static_assert(part_1.size() < 60 * 1024);
     static_assert(part_2.size() < 60 * 1024);

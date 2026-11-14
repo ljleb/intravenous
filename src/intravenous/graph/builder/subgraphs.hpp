@@ -84,6 +84,7 @@ public:
   void outputs(std::initializer_list<NamedRef>);
   void outputs(std::span<NamedRef const>);
   void outputs(std::span<SampleOutputRequest const>);
+  void outputs(std::span<OutputRequest const>);
   template<class... Refs> void event_outputs(Refs&&... refs);
   void event_outputs(std::span<EventOutputRequest const>);
 };

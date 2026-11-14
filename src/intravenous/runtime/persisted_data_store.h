@@ -2,6 +2,7 @@
 
 #include <intravenous/channel_layout.h>
 #include <intravenous/coverage.h>
+#include <intravenous/event_sequence.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
 #include <intravenous/graph_jit/stable_graph_identity.h>
 #include <intravenous/node/continuous_port.h>
@@ -292,6 +293,9 @@ public:
         // independent sequence identity. A positional Tick recording Region
         // may span several retained chunks and is visited as their merged
         // canonical IndexCoverage range.
+        [[nodiscard]] EventNeighbors event_neighbors(
+            PersistedOutputHandle, EventTypeId, std::size_t region, GlobalIndex) const;
+
         void for_each_event_region(
             PersistedOutputHandle output,
             EventTypeId type,

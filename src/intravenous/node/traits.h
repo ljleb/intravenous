@@ -436,26 +436,6 @@ namespace iv {
                 || (declares_tock_outputs_v<Node>
                     && !declares_tick_outputs_v<Node>));
 
-        template<typename Node>
-        inline constexpr bool background_dsp_node_declaration_is_valid_v =
-            background_state_type_is_valid_v<Node>
-            && has_constexpr_port_configs<Node>
-            && primary_callback_declaration_is_valid_v<Node>
-            && (!declares_tock_outputs_v<Node>
-                || has_tock_family_v<Node>)
-            && (!has_tock_family_v<Node>
-                || declares_tock_outputs_v<Node>)
-            && (!declares_tock_outputs_v<Node>
-                || has_propagate_forward_coverage<Node>
-                || has_propagate_forward_coverage_batch<Node>)
-            && (!(has_propagate_forward_coverage<Node>
-                    || has_propagate_forward_coverage_batch<Node>)
-                || declares_tock_outputs_v<Node>)
-            && (!(has_propagate_reverse_coverage<Node>
-                    || has_propagate_reverse_coverage_batch<Node>)
-                || (declares_tock_outputs_v<Node>
-                    && declares_random_access_inputs_v<Node>));
-
         // The author opts into a deterministic, side-effect-free Tick contract.
         // This is a type-level fact, not a producer mode; contextual replay is
         // established by the whole-graph planner after checking live sources.
@@ -474,15 +454,47 @@ namespace iv {
             intrinsically_replayable<Node>();
 
         template<typename Node>
-        consteval bool replay_ports_are_pointwise()
+        inline constexpr bool has_coverage_propagation_domain_v =
+            declares_tock_outputs_v<Node>
+            || (has_tick_family_v<Node> && intrinsically_replayable_v<Node>);
+
+        template<typename Node>
+        inline constexpr bool background_dsp_node_declaration_is_valid_v =
+            background_state_type_is_valid_v<Node>
+            && has_constexpr_port_configs<Node>
+            && primary_callback_declaration_is_valid_v<Node>
+            && (!declares_tock_outputs_v<Node>
+                || has_tock_family_v<Node>)
+            && (!has_tock_family_v<Node>
+                || declares_tock_outputs_v<Node>)
+            && (!declares_tock_outputs_v<Node>
+                || has_propagate_forward_coverage<Node>
+                || has_propagate_forward_coverage_batch<Node>)
+            && (!(has_propagate_forward_coverage<Node>
+                    || has_propagate_forward_coverage_batch<Node>)
+                || has_coverage_propagation_domain_v<Node>)
+            && (!(has_propagate_reverse_coverage<Node>
+                    || has_propagate_reverse_coverage_batch<Node>)
+                || (has_coverage_propagation_domain_v<Node>
+                    && declares_random_access_inputs_v<Node>));
+
+        template<typename Node>
+        consteval bool replay_ports_are_valid()
         {
             if constexpr (!has_constexpr_port_configs<Node>) {
                 return false;
             } else {
                 if constexpr (has_inputs<Node>) {
                     if (any_port_config(Node::inputs(), [](auto const& config) {
-                        return !is_sequential(config);
-                    })) return false;
+                        return is_random_access(config);
+                    })) {
+                        // Non-pointwise access needs authored availability and
+                        // reverse-demand mapping, even for pure Tick code.
+                        if constexpr (!(has_propagate_forward_coverage<Node>
+                              || has_propagate_forward_coverage_batch<Node>)
+                            || !(has_propagate_reverse_coverage<Node>
+                              || has_propagate_reverse_coverage_batch<Node>)) return false;
+                    }
                 }
                 if constexpr (has_outputs<Node>) {
                     if (any_port_config(Node::outputs(), [](auto const& config) {
@@ -500,7 +512,7 @@ namespace iv {
                 && has_tick_family_v<Node>
                 && !has_State<Node>
                 && !has_BackgroundState<Node>
-                && replay_ports_are_pointwise<Node>());
+                && replay_ports_are_valid<Node>());
 
         template <typename Node>
         concept has_internal_latency = requires(Node node, size_t internal_latency)

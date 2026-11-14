@@ -65,8 +65,8 @@ expect_invalid(
 expect_invalid(
     invalid_tock_callback_shape.cpp
     "defines tock_coverage but declares no Tock output port"
-    "defines propagate_forward_coverage but declares no Tock output port"
-    "defines propagate_reverse_coverage but does not declare both random-access input and Tock output ports")
+    "defines propagate_forward_coverage but declares neither Tock outputs nor replayable Tick execution"
+    "defines propagate_reverse_coverage but requires random-access inputs and either Tock outputs or replayable Tick execution")
 
 expect_invalid(
     invalid_tock_state.cpp

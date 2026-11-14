@@ -438,8 +438,8 @@ namespace {
         auto trigger = details::configure_concrete_node<TriggerSource>(g).event_port();
         auto event_sink = details::configure_concrete_node<TriggerSink>(g);
         event_sink("gate"_F = trigger);
-        g.outputs("main"_P = out);
-        g.event_outputs("trigger"_F = trigger);
+        g.outputs("trigger"_F = trigger, "main"_P = out,
+            "pulse"_F = trigger, "dry"_P = frequency);
     }
 }
 )");
@@ -559,6 +559,23 @@ namespace {
     EXPECT_TRUE(std::ranges::any_of(event_output_node->source_spans, [](auto const& span) {
         return source_text(span) == "\"trigger\"";
     }));
+
+    // Mixed declaration positions differ from the per-kind connection indices.
+    // Both kinds' second outputs must keep their own binding annotations.
+    auto const second_event = query_at("\"pulse\"_F", 2);
+    auto const pulse = std::ranges::find_if(second_event.nodes, [](auto const& node) {
+        return node.type_identity == "public-output" && node.kind == "output";
+    });
+    ASSERT_NE(pulse, second_event.nodes.end());
+    ASSERT_EQ(pulse->event_inputs.size(), 1u);
+    EXPECT_EQ(pulse->event_inputs.front().name, "pulse");
+    auto const second_sample = query_at("\"dry\"_P", 2);
+    auto const dry = std::ranges::find_if(second_sample.nodes, [](auto const& node) {
+        return node.type_identity == "public-output" && node.kind == "output";
+    });
+    ASSERT_NE(dry, second_sample.nodes.end());
+    ASSERT_EQ(dry->continuous_inputs.size(), 1u);
+    EXPECT_EQ(dry->continuous_inputs.front().name, "dry");
 
     // Move past the inclusive end of each name token: the UDL suffix itself
     // must not become a highlighted source range.

@@ -96,8 +96,9 @@ struct NodeCompilerOperations {
             && (tick_block_batch != nullptr) == tick
             && (skip_block_batch != nullptr) == tick
             && (tock_coverage_batch != nullptr) == tock
-            && (propagate_forward_coverage != nullptr) == tock
-            && (propagate_forward_coverage_batch != nullptr) == tock
+            && (!tock || propagate_forward_coverage != nullptr)
+            && (propagate_forward_coverage_batch != nullptr)
+                == (propagate_forward_coverage != nullptr)
             && (propagate_reverse_coverage_batch != nullptr)
                 == (propagate_reverse_coverage != nullptr);
     }

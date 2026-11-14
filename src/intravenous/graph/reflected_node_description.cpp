@@ -1,5 +1,6 @@
 #include <intravenous/graph/reflected_node_description.h>
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -139,6 +140,21 @@ ReflectedPortConstraintSink NodeDescriptionSink::port_constraint_sink() const
             void* state, PortConstraintRef port, PortPace pace) {
             static_cast<NodePortConstraints*>(state)
                 ->absolute_pace_anchors.push_back({port, pace});
+        },
+        .event_count_context = std::addressof(description()),
+        .set_event_count_bound = +[](void* opaque, PortConstraintRef port, std::size_t count) {
+            auto& description = *static_cast<ReflectedNodeDescription*>(opaque);
+            std::size_t event_index = 0;
+            for (auto& config : description.ports.output_configs) {
+                auto* event = std::get_if<EventOutputProperties>(&config.kind);
+                if (!event) continue;
+                if (event_index++ == port.port_index) {
+                    event->max_event_count = event->max_event_count
+                        ? std::min(*event->max_event_count, count) : count;
+                    return;
+                }
+            }
+            throw std::logic_error("event count bound references an absent output");
         },
     };
 }

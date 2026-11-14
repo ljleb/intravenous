@@ -152,6 +152,13 @@ add_iv_gtest(intravenous_graph_modules_tests graph_modules_gtest.cpp)
 add_iv_gtest(intravenous_predictors_tests predictors_gtest.cpp)
 add_iv_gtest(intravenous_system_audio_devices_tests modules/system_audio_devices_gtest.cpp)
 add_iv_gtest(intravenous_startup_config_tests modules/startup_config_gtest.cpp)
+add_test(NAME intravenous_application_environment
+    COMMAND ${CMAKE_COMMAND}
+        "-DIV_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+        "-DIV_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/application_environment.cmake")
+set_tests_properties(intravenous_application_environment PROPERTIES LABELS light)
+
 add_iv_gtest(intravenous_node_definitions_tests modules/node_definitions_gtest.cpp)
 add_iv_gtest(intravenous_node_instances_tests modules/node_instances_gtest.cpp)
 add_iv_gtest(intravenous_project_graph_tests modules/project_graph_gtest.cpp)
@@ -186,6 +193,7 @@ add_iv_gtest(
 set(iv_graph_jit_test_sources
     modules/graph_jit/test_support.cpp
     modules/graph_jit/package_fixture.cpp
+    modules/graph_jit/automation_gtest.cpp
     modules/graph_jit/background_gtest.cpp
     modules/graph_jit/event_feedback_gtest.cpp
     modules/graph_jit/event_runtime_gtest.cpp

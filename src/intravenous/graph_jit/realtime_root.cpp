@@ -188,6 +188,7 @@ struct RootBeginIndex {
 };
 
 struct RootPrimitive {
+    std::vector<std::shared_ptr<ImmutableConfigData const>> immutable_config_data{};
     AlignedBytes node_data{};
     details::NodeCompilerOperations callbacks{};
     // Root-scratch offsets of the primitive's reflected binding arrays and of
@@ -3342,7 +3343,11 @@ private:
                         "planned node configuration relocation is outside configuration bytes");
                 }
                 void const* pointer = nullptr;
-                if (!relocation.retained_global_symbol.empty()) {
+                if (relocation.immutable_data) {
+                    primitive.immutable_config_data.push_back(relocation.immutable_data);
+                    pointer = static_cast<std::byte const*>(relocation.immutable_data->storage.get())
+                        + relocation.addend;
+                } else if (!relocation.retained_global_symbol.empty()) {
                     auto const found = retained_globals.find(
                         relocation.retained_global_symbol);
                     if (found == retained_globals.end()) {

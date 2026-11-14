@@ -32,6 +32,8 @@ namespace {
         return std::holds_alternative<TriggerEvent>(event);
     case EventTypeId::boundary:
         return std::holds_alternative<BoundaryEvent>(event);
+    case EventTypeId::sample:
+        return std::holds_alternative<SampleEvent>(event);
     case EventTypeId::midi:
         return std::holds_alternative<MidiEvent>(event);
     case EventTypeId::count:
@@ -267,6 +269,14 @@ void TickMaterializedEventInput::for_each_indexed(
     });
 }
 
+EventNeighbors TickMaterializedEventInput::neighbors(std::size_t region, GlobalIndex position) const
+{
+    if (region >= chunks.size() || !chunks[region].range.contains(position)) return {};
+    auto const& chunk = chunks[region];
+    return sorted_event_neighbors(std::span<TimedEvent const>{*chunk.events}
+        .subspan(chunk.begin, chunk.end - chunk.begin), chunk.range.begin, position);
+}
+
 void TickMaterializedEventInput::for_each_region(
     std::size_t region,
     GlobalIndexRange range,
@@ -278,12 +288,10 @@ void TickMaterializedEventInput::for_each_region(
         return;
     }
     auto const& chunk = chunks[region];
-    auto const first = chunk.events->begin()
-        + static_cast<std::ptrdiff_t>(chunk.begin);
-    auto const last = chunk.events->begin()
-        + static_cast<std::ptrdiff_t>(chunk.end);
-    for (auto event = first; event != last; ++event) {
-        if (range.contains(event->time)) visitor(visitor_data, *event);
+    auto const events = std::span<TimedEvent const>{*chunk.events}
+        .subspan(chunk.begin, chunk.end - chunk.begin);
+    for (auto const& event : sorted_event_range(events, chunk.range, range)) {
+        visitor(visitor_data, event);
     }
 }
 

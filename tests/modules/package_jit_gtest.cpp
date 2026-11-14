@@ -111,3 +111,31 @@ TEST(PackageJit, ToolchainConfigurationRoundTripsWithoutForcingABuild)
     EXPECT_EQ(round_trip.cmake_generator, toolchain.cmake_generator);
     EXPECT_EQ(round_trip.make_program, toolchain.make_program);
 }
+
+TEST(PackageJit, ClearingToolchainOverridesRestoresInstallationDefaults)
+{
+    iv::StartupConfigState startup;
+    startup.toolchain.c_compiler = "/installation/toolchain/clang";
+    startup.toolchain.cxx_compiler = "/installation/toolchain/clang++";
+    startup.toolchain.cmake_program = "/installation/bin/cmake";
+    startup.toolchain.cmake_generator = "Ninja";
+    startup.toolchain.make_program = "/installation/bin/ninja";
+    startup.toolchain.juce_dir = "/installation/juce";
+    startup.toolchain.iv_package_pch = "/installation/iv_dsl.pch";
+    auto const defaults = startup.toolchain;
+    iv::PackageJit jit(std::move(startup));
+    auto changed = defaults;
+    changed.cxx_compiler = "/project/toolchain/clang++";
+    changed.cmake_generator = "Unix Makefiles";
+    jit.set_toolchain_config(changed);
+    EXPECT_EQ(jit.toolchain_config().cxx_compiler, changed.cxx_compiler);
+    jit.set_toolchain_config({});
+    auto restored = jit.toolchain_config();
+    EXPECT_EQ(restored.c_compiler, defaults.c_compiler);
+    EXPECT_EQ(restored.cxx_compiler, defaults.cxx_compiler);
+    EXPECT_EQ(restored.cmake_program, defaults.cmake_program);
+    EXPECT_EQ(restored.cmake_generator, defaults.cmake_generator);
+    EXPECT_EQ(restored.make_program, defaults.make_program);
+    EXPECT_EQ(restored.juce_dir, defaults.juce_dir);
+    EXPECT_EQ(restored.iv_package_pch, defaults.iv_package_pch);
+}

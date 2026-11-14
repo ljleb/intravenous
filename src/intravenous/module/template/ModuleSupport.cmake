@@ -297,9 +297,9 @@ function(iv_add_package target)
     set(multiValueArgs SOURCES)
     cmake_parse_arguments(IVP "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 23)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR NOT CMAKE_CXX_COMPILER_VERSION MATCHES "^23\\.")
         message(FATAL_ERROR
-            "IV packages require Clang 23 or newer; configured compiler is "
+            "IV packages require Clang 23; configured compiler is "
             "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} (${CMAKE_CXX_COMPILER})")
     endif()
     if(NOT DEFINED IV_PACKAGE_FINALIZER OR IV_PACKAGE_FINALIZER STREQUAL ""

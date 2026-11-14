@@ -196,6 +196,46 @@ void GraphBuilderPublicPorts::define_sample_outputs(
   _sample_outputs_defined = true;
 }
 
+void GraphBuilderPublicPorts::define_outputs(
+    GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
+    GraphBuilderIdentity const& identity, std::span<OutputRefConfig const> samples,
+    std::span<EventOutputRefConfig const> events, std::span<PortKind const> declaration_kinds)
+{
+  auto& boundary = bundles.bundle(_boundary);
+  std::vector<NodeBundlePortId> previous;
+  size_t sample_index = 0, event_index = 0;
+  for (auto const& config : boundary.boundary_ports().output_configs) {
+    bool const sample = is_continuous(config);
+    auto const index = sample ? sample_index++ : event_index++;
+    if (sample || events.empty())
+      previous.push_back({_boundary, sample ? PortKind::sample : PortKind::event, index});
+  }
+  define_sample_outputs(builder, bundles, identity, samples);
+  if (!events.empty()) define_event_outputs(builder, bundles, identity, events);
+
+  // BoundaryNodeBundle's internal outputs are the scope's public inputs.
+  // Order the public outputs using their declared NodePorts counts instead.
+  auto const& ports = boundary.boundary_ports();
+  std::vector<bool> seen_samples(ports.sample_output_count(), false);
+  std::vector<bool> seen_events(ports.event_output_count(), false);
+  std::vector<PortKind> order;
+  order.reserve(seen_samples.size() + seen_events.size());
+  auto append = [&](PortKind kind, size_t index) {
+    auto& seen = kind == PortKind::sample ? seen_samples : seen_events;
+    if (index >= seen.size()) details::error("public output declaration index is out of bounds");
+    if (!seen[index]) { seen[index] = true; order.push_back(kind); }
+  };
+  for (auto port : previous) append(port.port_kind, port.port_index);
+  sample_index = 0;
+  event_index = 0;
+  for (auto kind : declaration_kinds) {
+    if (kind == PortKind::sample)
+      append(kind, _last_sample_output_port_indices.at(sample_index++));
+    else append(kind, event_index++);
+  }
+  boundary.reorder_boundary_outputs(order);
+}
+
 void GraphBuilderPublicPorts::define_event_outputs(
     GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
     GraphBuilderIdentity const& identity,
@@ -420,11 +460,66 @@ void GraphBuilderState::scope_outputs(
 void GraphBuilderState::scope_outputs(
     details::BuilderScopeId id, std::span<NamedRef const> refs)
 {
+  std::vector<OutputRefConfig> samples;
+  std::vector<EventOutputRefConfig> events;
+  std::vector<PortKind> kinds;
+  kinds.reserve(refs.size());
+  for (auto const& ref : refs) {
+    if (refs.size() > 1 && ref.name.empty())
+      details::error("outputs(...) requires names when exposing more than one output");
+    if (auto const* event = std::get_if<EventPortRef>(&ref.value)) {
+      events.push_back({.ref = *event, .config = {.name = std::string(ref.name)}});
+      kinds.push_back(PortKind::event);
+      continue;
+    }
+    auto source = lift_named_sample(ref);
+    auto logical = _node_bundles.sample_output_port_for_channels(
+        source.channel_type, source.channels());
+    auto config = logical ? _node_bundles.resolve_sample_output(*logical).config
+                          : ContinuousOutputConfig{
+                              .channel_layout = {.channel_type = source.channel_type,
+                                  .sample_layout = SampleStreamLayout::planar},
+                              .production = default_tick_output_properties(
+                                  ContinuousValueTypeSet::audio_capable())};
+    config.name = std::string(ref.name);
+    set_continuous_channel_layout(config, {
+        .channel_type = config.channel_layout.channel_type,
+        .sample_layout = SampleStreamLayout::planar,
+    });
+    samples.push_back({
+        .ref = source, .config = std::move(config),
+        .public_member = {.family_name = std::string(ref.name),
+            .channel_type = source.channel_type, .whole_stream = true}});
+    kinds.push_back(PortKind::sample);
+  }
   auto const index = frame_index(id);
-  _scopes[index].ports.define_sample_outputs_from_named_refs(
-      *this, _node_bundles, _identity,
-      [&](NamedRef const& value) { return lift_named_sample(value); },
-      refs);
+  _scopes[index].ports.define_outputs(
+      *this, _node_bundles, _identity, samples, events, kinds);
+}
+
+void GraphBuilderState::scope_outputs(
+    details::BuilderScopeId id, std::span<OutputRequest const> refs)
+{
+  std::vector<SampleOutputRequest> samples;
+  std::vector<EventOutputRequest> events;
+  std::vector<PortKind> kinds;
+  kinds.reserve(refs.size());
+  for (auto const& request : refs) {
+    if (refs.size() > 1 && std::visit([](auto const& value) { return value.name.empty(); }, request))
+      details::error("outputs(...) requires names when exposing more than one output");
+    if (auto const* sample = std::get_if<SampleOutputRequest>(&request)) {
+      samples.push_back(*sample);
+      kinds.push_back(PortKind::sample);
+    } else {
+      events.push_back(std::get<EventOutputRequest>(request));
+      kinds.push_back(PortKind::event);
+    }
+  }
+  auto sample_configs = make_sample_output_configs(samples);
+  auto event_configs = make_event_output_configs(events);
+  auto const index = frame_index(id);
+  _scopes[index].ports.define_outputs(
+      *this, _node_bundles, _identity, sample_configs, event_configs, kinds);
 }
 
 void GraphBuilderState::scope_event_outputs(
@@ -1264,6 +1359,11 @@ size_t GraphBuilderState::event_output_count(NodeBundleHandle handle) const {
 NodeBundlePortId GraphBuilderState::input_port_at(
     NodeBundleHandle handle, size_t position) const {
   return _node_bundles.input_port_at(handle, position);
+}
+
+NodeBundlePortId GraphBuilderState::output_port_at(
+    NodeBundleHandle handle, size_t position) const {
+  return _node_bundles.output_port_at(handle, position);
 }
 
 ContinuousInputConfig GraphBuilderState::sample_input_config(

@@ -412,6 +412,8 @@ struct LinearRange {
         return std::holds_alternative<TriggerEvent>(event);
     case EventTypeId::boundary:
         return std::holds_alternative<BoundaryEvent>(event);
+    case EventTypeId::sample:
+        return std::holds_alternative<SampleEvent>(event);
     case EventTypeId::midi:
         return std::holds_alternative<MidiEvent>(event);
     case EventTypeId::count:
@@ -1964,6 +1966,44 @@ PersistedDataStore::Snapshot::event_timeline(
         : std::span<TimedEvent const>{};
 }
 
+EventNeighbors PersistedDataStore::Snapshot::event_neighbors(
+    PersistedOutputHandle output, EventTypeId type, std::size_t region_index,
+    GlobalIndex position) const
+{
+    auto const ranges = event_region_ranges(output, type);
+    if (region_index >= ranges.size() || !ranges[region_index].contains(position)) return {};
+    auto const region = ranges[region_index];
+    // Authored logical Regions own independent, range-relative sequences.
+    auto const* selected = find_output<EventOutputNode, EventOutputState>(
+        event_outputs_, event_output_levels_, PersistedDataStore::output_directory_index(output));
+    if (!selected) return {};
+    if (!selected->positional_recording) {
+        if (!selected->logical_regions || region_index >= selected->logical_regions->size()) return {};
+        return sorted_event_neighbors((*selected->logical_regions)[region_index].events,
+            region.begin, position);
+    }
+    // Positional recordings have one signed-sorted timeline. A circular Region
+    // intersects at most two signed-order spans; each is searched separately.
+    EventNeighbors result;
+    auto timeline = event_timeline(output, type);
+    region.for_each_signed_order_segment([&](GlobalIndexRange segment) {
+        auto const first = std::ranges::lower_bound(timeline, segment.begin,
+            SignedGlobalIndexOrder{}, &TimedEvent::time);
+        auto last = first;
+        // The end can be the signed seam, where a signed lower_bound would
+        // select the start of the timeline instead of the end.
+        if (segment.begin.signed_value() >= 0 && segment.end().signed_value() < 0) last = timeline.end();
+        else last = std::ranges::lower_bound(timeline, segment.end(), SignedGlobalIndexOrder{}, &TimedEvent::time);
+        auto found = sorted_event_neighbors(std::span<TimedEvent const>{first, last}, region.begin, position);
+        if (found.at_or_before && (!result.at_or_before
+            || region.begin.forward_distance_to(found.at_or_before->time)
+                >= region.begin.forward_distance_to(result.at_or_before->time))) result.at_or_before = found.at_or_before;
+        if (found.after && (!result.after || region.begin.forward_distance_to(found.after->time)
+                < region.begin.forward_distance_to(result.after->time))) result.after = found.after;
+    });
+    return result;
+}
+
 void PersistedDataStore::Snapshot::for_each_event_region(
     PersistedOutputHandle output,
     EventTypeId type,
@@ -1993,9 +2033,9 @@ void PersistedDataStore::Snapshot::for_each_event_region(
             || region_index >= selected->logical_regions->size()) {
             return;
         }
-        for (auto const& event : (*selected->logical_regions)[region_index].events) {
-            if (requested.contains(event.time)) visitor(visitor_data, event);
-        }
+        auto const& region = (*selected->logical_regions)[region_index];
+        for (auto const& event : sorted_event_range(region.events,
+                 (*selected->region_ranges)[region_index], requested)) visitor(visitor_data, event);
         return;
     }
 

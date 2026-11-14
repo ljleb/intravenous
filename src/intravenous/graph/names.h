@@ -39,6 +39,8 @@ constexpr std::string event_type_name(EventTypeId type)
         return "boundary";
     case EventTypeId::empty:
         return "empty";
+    case EventTypeId::sample:
+        return "sample";
     case EventTypeId::count:
         break;
     }

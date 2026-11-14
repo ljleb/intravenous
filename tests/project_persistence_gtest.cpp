@@ -224,6 +224,12 @@ TEST(ProjectPersistenceBuilder, SerializesOnlyDurableConfiguredStateInStableOrde
     auto const workspace = fresh_workspace("project_persistence_builder_durable_state");
     auto startup = startup_for(workspace);
     startup.toolchain.cmake_generator = "Ninja";
+    startup.toolchain.c_compiler = "/installation/toolchain/clang";
+    startup.toolchain.cxx_compiler = "/installation/toolchain/clang++";
+    startup.toolchain.cmake_program = "/installation/cmake";
+    startup.toolchain.make_program = "/installation/ninja";
+    startup.toolchain.juce_dir = "/installation/juce";
+    startup.toolchain.iv_package_pch = "/installation/iv_dsl.pch";
 
     iv::ProjectPersistenceBuilder builder(workspace, startup);
     auto toolchain = startup.toolchain;

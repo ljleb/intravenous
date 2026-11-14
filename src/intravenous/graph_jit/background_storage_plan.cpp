@@ -5,11 +5,13 @@
 #include <expected>
 #include <iterator>
 #include <numeric>
+#include <limits>
 #include <optional>
 #include <ranges>
 #include <span>
 #include <string>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 namespace iv::graph_jit::detail {
@@ -386,6 +388,42 @@ bool equal_event_materialization_key(
 
 } // namespace
 
+std::optional<BackgroundEventCountBound> background_event_count_bound(
+    BackgroundStoragePlan const& plan, PortStorageIndex storage,
+    std::size_t window_size)
+{
+    std::unordered_map<PortStorageIndex, std::optional<BackgroundEventCountBound>> cache;
+    auto visit = [&](auto&& self, PortStorageIndex index, std::size_t depth)
+        -> std::optional<BackgroundEventCountBound> {
+        if (index >= plan.ports.size() || depth > plan.ports.size()) return std::nullopt;
+        if (auto found = cache.find(index); found != cache.end()) return found->second;
+        cache.emplace(index, std::nullopt);
+        auto const& port = plan.ports[index];
+        if (port.kind != PortKind::event) return std::nullopt;
+        if (port.max_event_count) {
+            BackgroundEventCountBound bound{window_size == 0 ? 0 : *port.max_event_count, true};
+            cache[index] = bound;
+            return bound;
+        }
+        BackgroundEventCountBound result;
+        for (auto input : port.inputs) {
+            auto child = self(self, input, depth + 1);
+            if (!child || child->count > std::numeric_limits<std::size_t>::max() - result.count)
+                return std::nullopt;
+            result.count += child->count;
+            result.uses_finite_count = result.uses_finite_count || child->uses_finite_count;
+        }
+        if (!result.uses_finite_count) {
+            auto count = event_count_for_sample_span(port.max_events_per_index, window_size);
+            if (!count) return std::nullopt;
+            result.count = *count;
+        }
+        cache[index] = result;
+        return result;
+    };
+    return visit(visit, storage, 0);
+}
+
 std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
     ConnectionAnalysisPlan const& connections)
 {
@@ -444,6 +482,10 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                     sample_channels.begin(), sample_channels.end()},
                 .event_type = event_type,
                 .max_events_per_index = max_events_per_index,
+                .max_event_count = [&]() -> std::optional<std::size_t> {
+                    auto output = output_port_for(background, port);
+                    return output ? background.ports[*output].max_event_count : std::nullopt;
+                }(),
             });
         } else {
             storage_index = static_cast<PortStorageIndex>(
@@ -1519,7 +1561,7 @@ std::expected<void, std::string> validate_background_runtime_plan(
         return port.direction == PortDirection::input
             ? node.authored_tock_execution
                 ? port.random_access_input
-                : node.replays_tick && port.replay_sequential_input
+                : node.replays_tick && (port.replay_sequential_input || port.random_access_input)
             : node.authored_tock_execution
                 ? port.authored_tock_output
                 : node.replays_tick && port.replayed_tick_output;
@@ -1860,7 +1902,7 @@ std::expected<void, std::string> finalize_background_runtime_plan(
         return port.direction == PortDirection::input
             ? node.authored_tock_execution
                 ? port.random_access_input
-                : node.replays_tick && port.replay_sequential_input
+                : node.replays_tick && (port.replay_sequential_input || port.random_access_input)
             : node.authored_tock_execution
                 ? port.authored_tock_output
                 : node.replays_tick && port.replayed_tick_output;

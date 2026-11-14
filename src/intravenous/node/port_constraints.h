@@ -129,6 +129,8 @@ struct ReflectedPortConstraintSink {
 #undef IV_PORT_CONSTRAINT_CALLBACKS
     void (*anchor_absolute_pace)(
         void*, PortConstraintRef, PortPace) = nullptr;
+    void* event_count_context = nullptr;
+    void (*set_event_count_bound)(void*, PortConstraintRef, std::size_t) = nullptr;
 
     template<class Property>
     void equal(PortConstraintRef first, PortConstraintRef second) const
@@ -231,7 +233,20 @@ using PortHistoryConstraint = PortPropertyConstraint<PortHistoryProperty>;
 using PortLatencyConstraint = PortPropertyConstraint<PortLatencyProperty>;
 using CoverageOrderingConstraint = PortPropertyConstraint<CoverageOrderingProperty>;
 
-template<bool Continuous, bool Dimensioned, bool HasHistory, bool HasLatency, bool HasOrdering>
+class EventCountBound {
+    ReflectedPortConstraintSink const* sink_;
+    PortConstraintRef port_;
+public:
+    EventCountBound(ReflectedPortConstraintSink const& sink, PortConstraintRef port)
+        : sink_(&sink), port_(port) {}
+    void operator=(std::size_t count) const {
+        if (port_.direction != PortConstraintDirection::output || port_.kind != PortKind::event
+            || !sink_->set_event_count_bound) throw std::logic_error("event count bounds require an event output");
+        sink_->set_event_count_bound(sink_->event_count_context, port_, count);
+    }
+};
+
+template<bool Continuous, bool Dimensioned, bool HasHistory, bool HasLatency, bool HasOrdering, bool IsOutput>
 class PortConstraint {
     ReflectedPortConstraintSink const* sink_ = nullptr;
     PortConstraintRef port_ {};
@@ -245,6 +260,7 @@ public:
     [[nodiscard]] constexpr PortHistoryConstraint history() const noexcept requires HasHistory { return {*sink_, port_}; }
     [[nodiscard]] constexpr PortLatencyConstraint latency() const noexcept requires HasLatency { return {*sink_, port_}; }
     [[nodiscard]] constexpr CoverageOrderingConstraint ordering() const noexcept requires HasOrdering { return {*sink_, port_}; }
+    [[nodiscard]] EventCountBound max_event_count() const requires (!Continuous && IsOutput) { return {*sink_, port_}; }
 };
 
 [[nodiscard]] constexpr bool domain_has_dynamic_dimension(ContinuousValueTypeSet domain) noexcept
@@ -308,7 +324,7 @@ public:
             if constexpr (continuous) return details::static_input_port_index<Node, Name>();
             else return details::static_event_input_port_index<Node, Name>();
         }();
-        return PortConstraint<continuous, dimensioned, sequential, false, coverage>(
+        return PortConstraint<continuous, dimensioned, sequential, false, coverage, false>(
             sink_, {PortConstraintDirection::input, kind, port});
     }
 
@@ -332,7 +348,7 @@ public:
             if constexpr (continuous) return details::static_output_port_index<Node, Name>();
             else return details::static_event_output_port_index<Node, Name>();
         }();
-        return PortConstraint<continuous, dimensioned, tick, tick, coverage>(
+        return PortConstraint<continuous, dimensioned, tick, tick, coverage, true>(
             sink_, {PortConstraintDirection::output, kind, port});
     }
 

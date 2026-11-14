@@ -17,6 +17,7 @@ class ProjectPersistenceBuilder;
 
 class PackageJit {
     StartupConfigState startup_config_;
+    ModuleLoaderToolchainConfig installation_toolchain_;
     std::unique_ptr<ModuleLoader> loader_;
     bool loader_toolchain_dirty_ = false;
     mutable std::mutex mutex_;

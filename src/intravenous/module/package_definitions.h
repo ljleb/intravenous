@@ -633,8 +633,8 @@ RegisteredSignature const* node_constructor_signature()
         "declare only Tock outputs. Use a module node to group both domains."); \
     static_assert(::iv::details::replay_declaration_is_valid_v<Node>, \
         "IV_NODE intrinsically replayable nodes must author a Tick callback, " \
-        "have no State/TockState or RandomAccess inputs, and declare only " \
-        "Sequential inputs and Tick outputs; resolved timing is validated by " \
+        "have no State/TockState, provide propagation for Random Access inputs, " \
+        "and declare only Tick outputs; resolved timing is validated by " \
         "the whole-graph planner."); \
     static_assert(::iv::details::background_state_type_is_valid_v<Node>, \
         "IV_NODE Node::TockState must be a mutable, non-volatile, default-constructible object type."); \
@@ -651,13 +651,13 @@ RegisteredSignature const* node_constructor_signature()
         "IV_NODE node type declares a Tock output port; define exact propagate_forward_coverage() or propagate_forward_coverage_batch()."); \
     static_assert(!(::iv::details::has_propagate_forward_coverage<Node> \
                 || ::iv::details::has_propagate_forward_coverage_batch<Node>) \
-            || ::iv::details::declares_tock_outputs_v<Node>, \
-        "IV_NODE node type defines propagate_forward_coverage but declares no Tock output port."); \
+            || ::iv::details::has_coverage_propagation_domain_v<Node>, \
+        "IV_NODE node type defines propagate_forward_coverage but declares neither Tock outputs nor replayable Tick execution."); \
     static_assert(!(::iv::details::has_propagate_reverse_coverage<Node> \
                 || ::iv::details::has_propagate_reverse_coverage_batch<Node>) \
-            || (::iv::details::declares_tock_outputs_v<Node> \
+            || (::iv::details::has_coverage_propagation_domain_v<Node> \
                 && ::iv::details::declares_random_access_inputs_v<Node>), \
-        "IV_NODE node type defines propagate_reverse_coverage but does not declare both random-access input and Tock output ports.")
+        "IV_NODE node type defines propagate_reverse_coverage but requires random-access inputs and either Tock outputs or replayable Tick execution.")
 
 #define IV_NODE_IMPL(Id, Node, Unique) \
     namespace { \

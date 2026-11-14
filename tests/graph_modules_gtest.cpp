@@ -39,6 +39,20 @@ struct CStringConfigNode {
     }
 };
 
+struct ImmutablePointsNode {
+    ImmutableArray<Sample> points;
+    explicit ImmutablePointsNode(ImmutableArray<Sample> points_) : points(points_) {}
+    static constexpr bool intrinsically_replayable = true;
+    static constexpr auto outputs() {
+        return std::array{output<Sample>("out", OutputProduction::tick)};
+    }
+    void tick(TickSampleContext<ImmutablePointsNode> const& ctx) const {
+        ctx.output<"out">().push(points.empty() ? Sample{} : points[0]);
+    }
+};
+static_assert(std::is_trivially_copyable_v<ImmutablePointsNode>);
+static_assert(std::is_standard_layout_v<ImmutableArray<Sample>>);
+
 struct NodeCallEventSource {
     static constexpr auto outputs()
     {
@@ -48,6 +62,33 @@ struct NodeCallEventSource {
     }
 
     void tick_block(TickBlockContext<NodeCallEventSource> const&) const {}
+};
+
+struct NodeCallEventFirstOutputs {
+    static constexpr auto outputs() {
+        return std::tuple{
+            event_output("event-first", EventTypeId::trigger, OutputProduction::tick),
+            output<Sample>("sample-first"),
+            event_output("event-second", EventTypeId::trigger, OutputProduction::tick),
+            output<Sample>("sample-second"),
+        };
+    }
+    void tick_block(TickBlockContext<NodeCallEventFirstOutputs> const&) const {}
+};
+struct NodeCallEventSink {
+    static constexpr auto inputs() {
+        return std::array{event_input("in", EventTypeId::trigger, InputAccess::sequential)};
+    }
+    void tick_block(TickBlockContext<NodeCallEventSink> const&) const {}
+};
+struct NodeCallEventForwarder {
+    static constexpr auto inputs() { return NodeCallEventSink::inputs(); }
+    static constexpr auto outputs() { return NodeCallEventFirstOutputs::outputs(); }
+    void tick_block(TickBlockContext<NodeCallEventForwarder> const&) const {}
+};
+struct NodeCallSampleSink {
+    static constexpr auto inputs() { return std::array{input<Sample>("in")}; }
+    void tick_block(TickBlockContext<NodeCallSampleSink> const&) const {}
 };
 
 struct NodeCallMixedSink {
@@ -319,6 +360,203 @@ TEST(GraphModules, BuilderCapturesPointerConfigurationAsSymbolicRelocations)
     EXPECT_EQ(relocations[2].byte_offset, offsetof(CStringConfigNode, optional));
     EXPECT_TRUE(relocations[2].package_root.empty());
     EXPECT_FALSE(relocations[2].retained_global_index.has_value());
+}
+
+TEST(GraphModules, NamedPortKindsSelectTheFirstMatchingOutput)
+{
+    GraphBuilder g;
+    auto source = details::configure_concrete_node<NodeCallEventFirstOutputs>(g);
+    auto sample_sink = details::configure_concrete_node<NodeCallSampleSink>(g);
+    auto event_sink = details::configure_concrete_node<NodeCallEventSink>(g);
+    auto default_sink = details::configure_concrete_node<NodeCallEventSink>(g);
+    auto const source_handle = source.node_bundle_handle();
+    sample_sink("in"_P = source);
+    event_sink("in"_F = source);
+    default_sink(source.node_ref()); // Runtime kind from the erased node.
+    auto typed_default_sink = details::configure_concrete_node<NodeCallEventSink>(g);
+    typed_default_sink(source); // Same default with constexpr source metadata.
+    EXPECT_EQ(source.output_port_at(0).port_kind, PortKind::event);
+    EXPECT_EQ(source.output_port_at(2), (NodeBundlePortId{source_handle, PortKind::event, 1}));
+    EXPECT_EQ(source.output_port_at(3), (NodeBundlePortId{source_handle, PortKind::sample, 1}));
+    EXPECT_EQ(source.event_port().sources().front(), (EventOutputPortId{source_handle, 0}));
+    EXPECT_EQ(static_cast<SamplePortRef>(source).channels().front(),
+        (SampleOutputChannelId{source_handle, 0, 0}));
+    g.outputs();
+    auto graph = std::move(g).finish();
+    ASSERT_EQ(graph.connections.configured_sample_connections().size(), 1u);
+    EXPECT_EQ(graph.connections.configured_sample_connections()[0].source_channels[0].channel,
+        (SampleOutputChannelId{source_handle, 0, 0}));
+    size_t event_target_count = 0;
+    for (auto const& connection : graph.connections.configured_event_connections()) {
+        ASSERT_EQ(connection.sources.size(), 1u);
+        EXPECT_EQ(connection.sources[0].port, (EventOutputPortId{source_handle, 0}));
+        event_target_count += connection.targets.size();
+    }
+    EXPECT_EQ(event_target_count, 3u);
+}
+
+TEST(GraphModules, NodeChainingUsesDeclaredKindAndReturnsTheTargetNode)
+{
+    GraphBuilder g;
+    auto source = details::configure_concrete_node<NodeCallEventFirstOutputs>(g);
+    auto forwarder = details::configure_concrete_node<NodeCallEventForwarder>(g);
+    auto sink = details::configure_concrete_node<NodeCallEventSink>(g);
+    auto const source_handle = source.node_bundle_handle();
+    auto const forwarder_handle = forwarder.node_bundle_handle();
+    auto const sink_handle = sink.node_bundle_handle();
+    auto next = source > forwarder;
+    EXPECT_EQ(next.node_bundle_handle(), forwarder_handle);
+    auto result = next > sink;
+    EXPECT_EQ(result.node_bundle_handle(), sink_handle);
+    g.outputs(next);
+    auto graph = std::move(g).finish();
+    auto has_connection = [&](NodeBundleHandle from, NodeBundleHandle to) {
+        return std::ranges::any_of(graph.connections.configured_event_connections(), [&](auto const& connection) {
+            return std::ranges::any_of(connection.sources, [&](auto const& source) {
+                return source.port == EventOutputPortId{from, 0};
+            }) && std::ranges::find(connection.targets, EventInputPortId{to, 0})
+                != connection.targets.end();
+        });
+    };
+    EXPECT_TRUE(has_connection(source_handle, forwarder_handle));
+    EXPECT_TRUE(has_connection(forwarder_handle, sink_handle));
+}
+
+TEST(GraphModules, MixedPublicOutputsPreserveKindOrderThroughSubgraphsAndArchives)
+{
+    GraphBuilder g;
+    auto module = g.subgraph([&g](SubgraphBuilder& boundary) {
+        auto source = details::configure_concrete_node<NodeCallEventFirstOutputs>(g);
+        boundary.outputs("events"_F = source, "audio"_P = source,
+            "events2"_F = source.event_port(1), "audio2"_P = source[1]);
+    });
+    auto const module_handle = module.node_bundle_handle();
+    EXPECT_EQ(module.output_port_at(0).port_kind, PortKind::event);
+    auto sink = details::configure_concrete_node<NodeCallEventSink>(g);
+    sink(module);
+    g.outputs("events"_F = module, "audio"_P = module);
+    auto graph = std::move(g).finish();
+    auto const& outputs = graph.public_ports.outputs(graph.node_bundles);
+    ASSERT_EQ(outputs.size(), 2u);
+    EXPECT_FALSE(is_continuous(outputs[0]));
+    EXPECT_TRUE(is_continuous(outputs[1]));
+    auto archive = serialize_configured_graph(graph);
+    std::array records{details::node_compiler_record<NodeCallEventFirstOutputs>,
+        details::node_compiler_record<NodeCallEventSink>};
+    auto restored = deserialize_configured_graph(archive.bytes, records, archive.node_configs);
+    auto const& restored_outputs = restored.public_ports.outputs(restored.node_bundles);
+    ASSERT_EQ(restored_outputs.size(), 2u);
+    EXPECT_FALSE(is_continuous(restored_outputs[0]));
+    EXPECT_TRUE(is_continuous(restored_outputs[1]));
+    EXPECT_EQ(restored.node_bundles.output_port_at(module_handle, 0).port_kind, PortKind::event);
+    EXPECT_EQ(restored.node_bundles.output_port_at(module_handle, 2),
+        (NodeBundlePortId{module_handle, PortKind::event, 1}));
+    EXPECT_EQ(restored.node_bundles.output_port_at(module_handle, 3),
+        (NodeBundlePortId{module_handle, PortKind::sample, 1}));
+}
+
+TEST(GraphModules, MixedPublicOutputOrderUsesOutputCountsInsteadOfInputCounts)
+{
+    GraphBuilder g;
+    (void)g.input<"audio-in">();
+    (void)g.event_input<"event-in-a">(EventTypeId::trigger);
+    (void)g.event_input<"event-in-b">(EventTypeId::trigger);
+    (void)g.event_input<"event-in-c">(EventTypeId::trigger);
+    auto source = details::configure_concrete_node<NodeCallEventFirstOutputs>(g);
+    g.outputs("event-a"_F = source.event_port(0), "audio-a"_P = source[0],
+        "audio-b"_P = source[1], "event-b"_F = source.event_port(1));
+    auto graph = std::move(g).finish();
+    auto const& ports = graph.node_bundles.bundle(
+        graph.public_ports.boundary_handle()).boundary_ports();
+    ASSERT_EQ(ports.sample_input_count(), 1u);
+    ASSERT_EQ(ports.event_input_count(), 3u);
+    ASSERT_EQ(ports.sample_output_count(), 2u);
+    ASSERT_EQ(ports.event_output_count(), 2u);
+    auto const& outputs = graph.public_ports.outputs(graph.node_bundles);
+    ASSERT_EQ(outputs.size(), 4u);
+    EXPECT_FALSE(is_continuous(outputs[0]));
+    EXPECT_TRUE(is_continuous(outputs[1]));
+    EXPECT_TRUE(is_continuous(outputs[2]));
+    EXPECT_FALSE(is_continuous(outputs[3]));
+}
+
+TEST(GraphModules, BareEventNodePublicOutputUsesItsFirstDeclaredPort)
+{
+    GraphBuilder g;
+    auto source = details::configure_concrete_node<NodeCallEventFirstOutputs>(g);
+    g.outputs(source.node_ref());
+    auto graph = std::move(g).finish();
+    EXPECT_EQ(graph.public_ports.sample_outputs(graph.node_bundles).size(), 0u);
+    EXPECT_EQ(graph.public_ports.event_outputs(graph.node_bundles).size(), 1u);
+}
+
+TEST(GraphModules, MixedNamedRefListPreservesEventFirstOrder)
+{
+    GraphBuilder g;
+    auto source = details::configure_concrete_node<NodeCallEventFirstOutputs>(g);
+    g.outputs({{"events", source.event_port()}, {"audio", static_cast<SamplePortRef>(source)}});
+    auto graph = std::move(g).finish();
+    auto const& outputs = graph.public_ports.outputs(graph.node_bundles);
+    ASSERT_EQ(outputs.size(), 2u);
+    EXPECT_FALSE(is_continuous(outputs[0]));
+    EXPECT_TRUE(is_continuous(outputs[1]));
+}
+
+TEST(GraphModules, ImmutableArraysOwnCopiesAcrossGraphAndArchiveLifetimes)
+{
+    using Session = std::unique_ptr<details::BuilderSession,
+        decltype(&details::iv_builder_session_destroy)>;
+    Session session(details::iv_builder_session_create(), details::iv_builder_session_destroy);
+    std::array fields{NodeConfigPointerFieldData{
+        .code_key = details::node_code_key_v<ImmutablePointsNode>,
+        // ImmutableArray is standard-layout, with its data pointer first.
+        .byte_offset = offsetof(ImmutablePointsNode, points),
+    }};
+    configure_pointer_metadata_package(session.get(), fields, {});
+    GraphBuilder builder(session.get());
+    std::array source{Sample{.25f}, Sample{.5f}, Sample{.75f}};
+    auto points = builder.immutable_array<Sample>(source);
+    EXPECT_NE(points.data(), source.data());
+    source[0] = Sample{99};
+    EXPECT_EQ(points[0], Sample{.25f});
+    auto node = details::configure_concrete_node<ImmutablePointsNode>(builder, points);
+    auto const node_handle = node.node_bundle_handle();
+    builder.outputs(node);
+    auto graph = details::take_built_graph(session.get());
+    auto archive = serialize_configured_graph(graph);
+    ASSERT_EQ(archive.node_configs.size(), 1u);
+    auto& config = archive.node_configs[0];
+    ASSERT_EQ(config.relocations.size(), 1u);
+    auto const& relocation = config.relocations[0];
+    ASSERT_TRUE(relocation.immutable_data);
+    EXPECT_FALSE(relocation.retained_global_index);
+    EXPECT_TRUE(std::ranges::all_of(
+        std::span(config.bytes).subspan(relocation.byte_offset, sizeof(void*)),
+        [](std::byte byte) { return byte == std::byte{}; }));
+    std::weak_ptr<ImmutableConfigData const> lifetime = relocation.immutable_data;
+    graph = {};
+    session.reset();
+    std::array records{details::node_compiler_record<ImmutablePointsNode>};
+    auto restored = deserialize_configured_graph(archive.bytes, records, archive.node_configs);
+    archive = {};
+    ASSERT_FALSE(lifetime.expired());
+    auto const restored_node = restored.node_bundles.materialize_concrete_description(node_handle);
+    ASSERT_EQ(restored_node.config_relocations.size(), 1u);
+    EXPECT_EQ(restored_node.config_relocations[0].immutable_data, lifetime.lock());
+    auto const& value = *static_cast<ImmutablePointsNode const*>(restored_node.node_storage.get());
+    ASSERT_EQ(value.points.size(), 3u);
+    EXPECT_EQ(value.points[0], Sample{.25f});
+    EXPECT_EQ(value.points[1], Sample{.5f});
+    EXPECT_EQ(value.points[2], Sample{.75f});
+}
+
+TEST(GraphModules, EmptyImmutableArrayHasNoAllocation)
+{
+    GraphBuilder builder;
+    auto points = builder.immutable_array<Sample>({});
+    EXPECT_TRUE(points.empty());
+    EXPECT_EQ(points.data(), nullptr);
+    EXPECT_EQ(points.begin(), points.end());
 }
 
 TEST(GraphModules, BuilderRelocatesProviderNodePointerToCallerPackageGlobal)

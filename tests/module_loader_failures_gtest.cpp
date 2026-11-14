@@ -40,6 +40,79 @@ TEST(ModuleLoaderFailures, MissingManifestFails)
         "iv_package.json");
 }
 
+TEST(ModuleLoaderFailures, IncompatibleSingleCppCompilerOverrideFailsBeforePackageConfiguration)
+{
+    auto const workspace = iv::test::fresh_module_fixture_workspace("incompatible_cpp_override");
+    iv::test::write_text(workspace / "iv_package.json", R"({"schema":2,"entry":"module.cpp"})");
+    iv::test::write_text(workspace / "iv_project.jsonl", "");
+    iv::test::write_text(workspace / "module.cpp", "#include <intravenous/dsl.h>\n");
+    auto const compiler = workspace / "fake compiler's $literal";
+    iv::test::write_text(compiler, "#!/bin/sh\necho 'incompatible-compiler-sentinel' >&2\nexit 42\n");
+    std::filesystem::permissions(compiler, std::filesystem::perms::owner_all);
+    iv::ModuleLoaderToolchainConfig toolchain;
+    toolchain.cxx_compiler = compiler; // No C compiler override: this must still be used.
+    iv::ModuleLoader loader(iv::test::repo_root(), toolchain);
+    expect_failure_contains([&] {
+        (void)loader.compile_package(iv::PackageBuildRequest{.package_root = workspace});
+    }, "failed the compatibility check");
+    expect_failure_contains([&] {
+        (void)loader.compile_package(iv::PackageBuildRequest{.package_root = workspace});
+    }, "incompatible-compiler-sentinel");
+}
+
+TEST(ModuleLoaderPackages, CompatibleCompilerOverridePassesThePchAndPluginCheck)
+{
+    auto const workspace = iv::test::fresh_module_fixture_workspace("compatible_cpp_override");
+    iv::test::write_text(workspace / "iv_package.json", R"({"schema":2,"entry":"module.cpp"})");
+    iv::test::write_text(workspace / "iv_project.jsonl", "");
+    iv::test::write_text(workspace / "module.cpp", "#include <intravenous/dsl.h>\n");
+    auto const compiler = workspace / "clang++";
+    std::string quoted = "'";
+    for (char c : std::string_view(IV_CONFIGURED_CXX_COMPILER)) {
+        if (c == '\'') quoted += "'\"'\"'";
+        else quoted += c;
+    }
+    quoted += "'";
+    iv::test::write_text(compiler, "#!/bin/sh\nexec " + quoted + " \"$@\"\n");
+    std::filesystem::permissions(compiler, std::filesystem::perms::owner_all);
+    // Stop at configure after proving compatibility. This test does not need
+    // another package build to exercise the compiler/PCH/plugin contract.
+    auto const cmake = workspace / "stop-at-configure";
+    iv::test::write_text(cmake, "#!/bin/sh\nexit 42\n");
+    std::filesystem::permissions(cmake, std::filesystem::perms::owner_all);
+    iv::ModuleLoaderToolchainConfig toolchain;
+    toolchain.cxx_compiler = compiler;
+    toolchain.cmake_program = cmake;
+    std::vector<std::string> log;
+    iv::ModuleLoader loader(iv::test::repo_root(), toolchain,
+        [&](std::string const& message) { log.push_back(message); });
+    expect_failure_contains([&] {
+        (void)loader.compile_package(iv::PackageBuildRequest{.package_root = workspace});
+    }, cmake.string());
+    EXPECT_TRUE(std::ranges::any_of(log, [](auto const& line) {
+        return line.starts_with("[toolchain-check] elapsed_us=");
+    }));
+    EXPECT_TRUE(std::ranges::any_of(log, [](auto const& line) {
+        return line.starts_with("[configure]");
+    }));
+}
+
+TEST(ModuleLoaderFailures, PchOverrideMustPreserveTheApplicationArtifact)
+{
+    auto const workspace = iv::test::fresh_module_fixture_workspace("foreign_pch_override");
+    iv::test::write_text(workspace / "iv_package.json", R"({"schema":2,"entry":"module.cpp"})");
+    iv::test::write_text(workspace / "iv_project.jsonl", "");
+    iv::test::write_text(workspace / "module.cpp", "#include <intravenous/dsl.h>\n");
+    auto const pch = workspace / "foreign.pch";
+    iv::test::write_text(pch, "another build's precompiled header");
+    iv::ModuleLoaderToolchainConfig toolchain;
+    toolchain.iv_package_pch = pch;
+    iv::ModuleLoader loader(iv::test::repo_root(), toolchain);
+    expect_failure_contains([&] {
+        (void)loader.compile_package(iv::PackageBuildRequest{.package_root = workspace});
+    }, "unchanged copy of this application's DSL PCH");
+}
+
 TEST(ModuleLoaderPackages, CanonicalPackageManifestLoads)
 {
     auto const runtime_root = iv::test::runtime_modules_root()

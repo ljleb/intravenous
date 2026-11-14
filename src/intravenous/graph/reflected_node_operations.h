@@ -319,6 +319,11 @@ struct ReflectedNodeRuntimeOperations {
     void (*skip_block)(
         void const*, ReflectedNodeTickContext const&, GlobalIndex, std::size_t) = nullptr;
 
+    // Coverage callbacks execute through imported package LLVM. Connection
+    // planning needs their presence, without retaining native callback pointers.
+    bool has_propagate_forward_coverage = false;
+    bool has_propagate_reverse_coverage = false;
+
     constexpr bool valid() const
     {
         // Tock-only primitives retain declaration/configuration operations in
@@ -351,6 +356,10 @@ constexpr ReflectedNodeRuntimeOperations make_runtime_operations(
         .declare_node = record.operations.declare_node,
         .tick_block = record.operations.tick_block,
         .skip_block = record.operations.skip_block,
+        .has_propagate_forward_coverage =
+            record.operations.propagate_forward_coverage != nullptr,
+        .has_propagate_reverse_coverage =
+            record.operations.propagate_reverse_coverage != nullptr,
     };
 }
 

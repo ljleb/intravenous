@@ -28,6 +28,8 @@ namespace {
         return std::holds_alternative<TriggerEvent>(event);
     case EventTypeId::boundary:
         return std::holds_alternative<BoundaryEvent>(event);
+    case EventTypeId::sample:
+        return std::holds_alternative<SampleEvent>(event);
     case EventTypeId::empty:
         return std::holds_alternative<EmptyEvent>(event);
     case EventTypeId::count:

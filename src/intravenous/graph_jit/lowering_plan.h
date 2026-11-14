@@ -4,6 +4,7 @@
 #include <intravenous/graph_jit/connection_plan.h>
 #include <intravenous/graph_jit/sample_storage_plan.h>
 #include <intravenous/graph_jit/lowering.h>
+#include <intravenous/node/config_relocations.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -134,6 +135,7 @@ struct NodeConfigurationRelocationPlan {
     // retained LLVM global whose byte-address plus addend reconstructs the
     // configured pointer value.
     std::string retained_global_symbol{};
+    std::shared_ptr<ImmutableConfigData const> immutable_data{};
 };
 
 struct NodeConfigurationPlan {

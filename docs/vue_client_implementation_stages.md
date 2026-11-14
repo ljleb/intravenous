@@ -1188,3 +1188,248 @@ each registered provider signature, following the existing
 `configured_module_graph_with_arguments()` host-test pattern, and supplies the
 exact C++ parameter types. Production argument validation is unchanged. This
 fixture correction awaits the owner's build and runtime verification.
+
+### Stage 3 typed-event implementation start (2026-11-13)
+
+The owner reports that all C++ and TypeScript tests pass for manual controls.
+The subsequent semantic split of the GraphJit runtime tests also passes.
+These results supersede the pending verification notes above.
+
+The next feature connects typed frontend events to semantic nodes:
+
+1. Generate TypeScript types, factories, and codecs from the neutral event protocol.
+2. Expose `node.send(event)` and validate the current address and exact event identity before dispatch.
+3. Keep dispatch completion and failure reporting outside component lifetimes.
+4. Add a gain/bypass example package and its bundled Vue presentation.
+   The owner selected this example. Gain uses a manual input. Bypass uses a typed event.
+5. Add client regressions and document the commands for owner verification.
+
+The backend remains independent of TypeScript. The existing package sidecar and
+`nodeMessages.getProtocol` remain the sources for event schemas. Live observation
+is outside this feature. Implementation is in progress. No new build or test
+result is claimed.
+
+### Stage 3 automation decision (2026-11-13)
+
+_Accepted direction. This supersedes the gain/bypass example selection above.
+No automation implementation or new verification result is claimed._
+
+The first specialized presentation will edit an automation curve. Its source
+produces timestamped Sample-valued events. Other nodes can transform these
+points before a replayable Tick node interprets them as a curve. The event
+carries a value, while its existing event timestamp carries the position.
+Holding values and interpolation are consumer behaviors. The exact C++ event
+name and interpolation policy remain to be selected.
+
+The owner accepts debounced semantic updates instead of audio-rate control-point
+edits. Vue previews point movement immediately. The client coalesces unsent
+updates and commits the final desired position when the drag ends. Audio uses
+the latest accepted realization until its ordered replacement activates.
+Continuous audible tracking of every pointer movement is not required. No fixed
+debounce duration or reconstruction-latency guarantee is established here.
+
+A gesture remains one undoable operation, including any intermediate debounced
+updates. Existing manual-control gesture history does not establish that typed
+node messages already support this grouping. That path needs investigation.
+Queued requests must retain the latest desired edit without retrying rejected
+mutations against a different revision. Interaction ownership must survive Vue
+presentation remounts.
+
+Points are ordered data rather than one graph input per coordinate. This avoids
+requiring thousands of ports for an ordinary editable clip. The proposed
+`additional_inputs()` and `additional_outputs()` remain separate, unimplemented
+authoring extensions for variable lists of independently connectable ports.
+They are not prerequisites for this automation representation.
+
+Required implementation work includes:
+
+- A dedicated Sample-valued event type in the existing event representation.
+- Indexed lookup in sorted event storage, including neighboring events needed
+  to interpolate a requested region that contains no control points itself.
+  Neighbor lookup must respect logical Region membership. Circular timeline
+  ordering and equal-position events require explicit handling.
+- Safe ownership of instance-specific point data. Current concrete leaf values
+  must be trivially copyable, and configuration pointers resolve to retained
+  package globals. A leaf cannot simply retain an arbitrary point vector.
+- Replay of requested regions without sampling or scanning the complete clip.
+  Current replay traits reject non-sequential inputs, although the normative
+  coverage design permits replay with prepared random-access dependencies.
+- Authoritative point data for the presentation after reload, undo, or another
+  client's edit. The current scope interface does not expose a curve point table.
+- Frontend-owned event bindings and `node.send(event)`, followed by the curve
+  presentation and regressions for editing, reconstruction, and sparse lookup.
+
+Binary search can locate range boundaries in logarithmic time. Returning the
+selected events still costs time proportional to their count. A curve evaluator
+also needs the surrounding segment or neighboring points. Sorted storage alone
+does not supply the dependency or lookup contract. Explicit cubic handles will
+need additional data if they cannot be derived from the neighboring points.
+
+#### Immutable construction-array decision and in-progress work (2026-11-13)
+
+The owner selected an explicit immutable array for construction data instead of
+arbitrary owning C++ objects in concrete leaf configuration. A module can own
+the editable point list and message handlers. Graph construction freezes that
+list for a leaf that reads it during evaluation. This is an ownership decision,
+not a return to one port per point.
+
+The first prerequisite is in progress. `GraphBuilder::immutable_array()` copies
+pointer-free, trivially copyable elements. `ImmutableArray<T>` is a read-only
+pointer/count value. `NodeConfigRelocation` retains its allocation through graph
+copies. GraphJit lowers the allocation into immutable configuration data and
+retains native backing storage for the realtime root. Archive reconstruction
+restores its pointer from the retained data instead of persisting the address.
+New ownership and archive regressions are in source. They have not been run.
+
+`SampleEvent` and `EventTypeId::sample` are also in source, with the event-name,
+connection parser, and runtime payload checks updated. Event lookup, replay
+support, source and interpreter nodes, frontend bindings, and the presentation
+remain unfinished. No build or test result is claimed for this working tree.
+
+
+#### Tock point-source and Tick interpreter implementation (2026-11-13)
+
+_Accepted decision and current implementation status. This extends the
+checkpoint above. The owner has not yet built or run this working tree._
+
+The owner approved a Tock source for the sparse control points. The curve
+interpreter remains replayable Tick code. The distinction applies to the two
+leaves, rather than forcing the editable module into one execution domain.
+
+The new optional `builtin_packages/automation` package registers:
+
+- `iv.automation.point_source`: a persisted Tock event Region containing
+  `SampleEvent` values. The point list is frozen with `ImmutableArray<Point>`.
+- `iv.automation.linear_curve`: a stateless, replayable Tick node with a Region
+  event input and a sequential Sample output. It finds the neighboring points
+  and samples only its current block or requested replay window.
+- `iv.automation.curve`: a class module owning the editable point list. Its
+  independent `AddPoint`, `RemovePoint`, and `MovePoint` message types reconstruct
+  the module through the existing durable replacement mechanism. It exposes
+  both the interpreted values and the underlying point events.
+
+The first interpolation policy is linear. Events at the same position retain
+stable order. The last event at a position supplies that position's held value;
+interpolation approaching that position uses the first event there. An empty
+point list, a position before the first point, or a position outside the bound
+Region produces zero. After the last point, its value is held to the Region's
+end. Point-source coverage includes the rounded sample position of `duration`.
+These are the initial node's policies, not universal rules for Sample events.
+
+`EventRegion::neighbors()` now exposes the last event at or before a position
+and the first strictly later event in that same logical Region. Sorted event
+storage uses binary search. Overlapping Regions keep independent event groups,
+including across the signed index seam and unsigned wrap.
+
+Replayable Tick leaves with Random Access inputs can supply forward and reverse
+coverage callbacks. Forward publication for their Tick outputs is positional
+`IndexCoverage`; it does not create authored Region identity. During evaluation,
+replayed Tick storage follows the consumer's requested positions. Authored Tock
+Regions and recorded Regions keep their complete storage and membership. This
+prevents a short read of the curve from allocating samples for the whole clip.
+
+The point source sets `ctx.output<"points">().max_event_count()` in
+`constrain_ports()`. Background event storage starts with a small allocation and
+grows as events are written, within the selected bound. Finite counts survive
+conversion and fan-in when allocating sequential playback and replay event
+buffers before execution. Sources without a finite count keep density-based
+sizing. Tick callbacks still allocate no event storage.
+
+The shared GraphJit package fixture now includes the automation registrations.
+A new runtime regression demands two samples of a ten-hour, three-point clip.
+It checks the narrow replay demand and the resulting interpolated values.
+A second runtime regression invokes the registered add/remove/move handlers
+after the builder session has ended and checks their complete replacement lists.
+Light regressions cover immutable-array lifetime and archive reconstruction,
+Sample event identity, duplicate timestamps, independent overlapping Regions,
+index seams, empty startup data, callback selection, and count bounds through
+conversion and mixed fan-in. No test result is claimed yet.
+
+The specialized Vue presentation is still unfinished. It needs authoritative
+point data after reload or undo, frontend-owned event bindings, `node.send()`,
+and message gesture history. The optional package does not enter the default
+builtin discovery root automatically. This checkpoint does not mark Stage 3
+complete or claim that the curve editor is already available in the UI.
+
+
+#### Replay-domain clarification (2026-11-14)
+
+The owner reaffirmed that intrinsic replayability belongs only to Tick nodes.
+`PointSource` stays a Tock producer. It uses ordinary Tock evaluation and retained
+event storage. `LinearCurve` is the replayable Tick reader. Its forward/reverse
+coverage callbacks describe availability and input demand; background replay
+executes its Tick callback. Sharing propagation callback interfaces does not
+make Tock execution replayable.
+
+The owner's latest run passed 935 of 937 tests. The two remaining failures
+identified a Tock-only propagation check in GraphJit lowering and missing module
+handler metadata in the automation test's builder package view. Both paths have
+been corrected in source. Lowering also explicitly rejects intrinsic replay on
+a non-Tick primitive. This correction has not been built or run by the agent.
+
+
+#### Unified output DSL work in progress (2026-11-14)
+
+The owner requests mixed output declarations using
+`g.outputs("value"_P = curve, "points"_F = points)`, and first-output defaults
+that preserve event/sample kind. The source example in `automation.h` is the
+accepted authoring interface and must be retained.
+
+Implementation plan:
+
+1. Preserve the requested kind in named `_P`/`_F` arguments, selecting the first
+   output of that kind from a node reference.
+2. Resolve bare node arguments from the first declared output across kinds.
+3. Carry mixed public output requests through GraphBuilder and SubgraphBuilder,
+   retaining declaration order in boundary `NodePorts::output_configs`.
+4. Preserve per-kind connection indices, public channel families, and source
+   annotations while ordering mixed declarations. Archive/import already carry
+   the unified NodePorts configs and must retain the resulting order.
+5. Add light regressions for event-first defaults, explicit kind selection,
+   multiple outputs, mixed modules, subgraphs, and archive reconstruction.
+
+At the start of this pass, the implementation separated Sample and event
+output requests. The `_F` node-input path already carried event kind, but the
+public `outputs()` helper routed every argument through sample lifting. This
+was source behavior to correct, not an intended restriction on the owner's syntax.
+
+The source now carries `OutputRequest` variants through both builders. Boundary
+configs preserve mixed declaration order, and source annotations count each kind
+separately. Bare node arguments and node chaining select the first declared
+output; explicit sample/event contexts select the first output of that kind.
+The initializer-list API retains the sample source configuration it preserved
+before this change. No realtime representation or callback execution path changed.
+
+Light regressions cover first matching outputs, typed and erased event-first
+arguments, outputless chaining targets, mixed subgraphs and archive reconstruction,
+and mixed initializer lists. The existing source-provenance integration test now
+checks alternating event and sample public outputs, including each kind's second
+output. The owner's `automation.h` syntax is retained. Build and test execution
+remain with the owner; no result is claimed for this pass.
+
+#### Shared live and replay sample producer correction (2026-11-14)
+
+The owner's 943-test run passed every test except
+`SparseTockPointsReplayOnlyTheRequestedCurveWindow`. Compilation rejected the
+curve's replay consumer as a foreign producer connection. `SampleProducerGroupPlan`
+correctly records both the live Tick connection and the background replay
+connection for the same declared output. `build_sample_storage_plan()` incorrectly
+required realtime delivery when validating that connection's source identity.
+
+Source ownership now checks the declared producer port independently of delivery.
+The existing delivery checks still exclude replay consumers from realtime storage
+allocation. A light regression covers a shared producer, absence of a realtime
+representation for its replay consumer, and rejection of a genuinely foreign
+source. This correction has not been built or tested by the agent.
+
+#### Application-owned toolchain environment (2026-11-14)
+
+The owner identified the startup PCH/PIE mismatch as missing application build
+environment activation. The temporary forced `-fPIC` change was reverted. The
+accepted replacement is recorded in
+[Application-owned compilation environment](application_toolchain_environment.md).
+The source now captures and activates the installation's compiler environment,
+checks compiler/PCH/plugin override compatibility, and restores installation
+defaults when project overrides are cleared. Project persistence already filters
+matching installation defaults; it retains that behavior. Owner verification is
+pending. The separate clangd extension can use the generated local launcher.

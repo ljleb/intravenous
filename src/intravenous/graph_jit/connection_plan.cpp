@@ -365,6 +365,8 @@ std::expected<void, std::string> inventory_nodes(
                 .event_output_count = view.ports->event_output_count(),
                 .tick_execution = has_tick_callback,
                 .intrinsically_replayable = view.intrinsically_replayable,
+                .authored_forward_coverage = view.operations->runtime.has_propagate_forward_coverage,
+                .authored_reverse_coverage = view.operations->runtime.has_propagate_reverse_coverage,
             });
             inventory_realtime_port_states(
                 *view.ports,
@@ -2836,8 +2838,12 @@ std::expected<void, std::string> populate_background_topology(
             .stable_identity = node.stable_identity,
             .authored_tock_execution = authored_tock,
             .replays_tick = node.contextually_replayable,
-            .uses_replay_forward_coverage = node.contextually_replayable,
-            .uses_replay_reverse_coverage = node.contextually_replayable,
+            .authored_forward_coverage = authored_tock
+                || (node.contextually_replayable && node.authored_forward_coverage),
+            .authored_reverse_coverage = (authored_tock || node.contextually_replayable)
+                && node.authored_reverse_coverage,
+            .uses_replay_forward_coverage = node.contextually_replayable && !node.authored_forward_coverage,
+            .uses_replay_reverse_coverage = node.contextually_replayable && !node.authored_reverse_coverage,
             .uses_imported_tick_block_for_replay = node.contextually_replayable,
             .replay_maximum_block_size = node.contextually_replayable
                 ? std::min(kernel_block_size, node.maximum_block_size)
@@ -2947,6 +2953,7 @@ std::expected<void, std::string> populate_background_topology(
         std::int32_t absolute_pace_exponent = 0;
         EventTypeId event_type = EventTypeId::empty;
         double max_events_per_index = 0.0;
+        std::optional<std::size_t> max_event_count;
         Sample neutral{};
         std::size_t sequential_history = 0;
         std::size_t output_history = 0;
@@ -2999,6 +3006,7 @@ std::expected<void, std::string> populate_background_topology(
                 event_type = config.type;
                 configured_output_production = output_production(config);
                 max_events_per_index = config.max_events_per_index;
+                max_event_count = config.max_event_count;
                 auto const& resolved = realization.event_output(
                     port.node_bundle_handle, port.port_index);
                 output_history = resolved.history;
@@ -3071,6 +3079,7 @@ std::expected<void, std::string> populate_background_topology(
                         port.node_bundle_handle, port.port_index).ordering),
             .event_type = event_type,
             .max_events_per_index = max_events_per_index,
+            .max_event_count = max_event_count,
             .accumulators = indices,
         });
         port_by_port.emplace(key, port_index);

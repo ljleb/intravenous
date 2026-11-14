@@ -179,3 +179,7 @@ These documents are retained because they record deleted architectures, supersed
 - [Project History Before Durable Settings](./project_history_before_settings_2026-11-13.md)
   preserves the initial graph-history scope before audio selections and persisted
   toolchain settings joined the same session history.
+
+- [Node-reference Output Selection Before Mixed Outputs](./node_ref_output_selection_before_mixed_outputs_2026-11-14.md)
+  preserves the exactly-one-output rules before first-output selection and mixed
+  sample/event public declarations were accepted.

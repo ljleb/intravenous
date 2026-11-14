@@ -1,4 +1,5 @@
 #include <intravenous/basic_nodes/filters.h>
+#include <intravenous/basic_nodes/automation.h>
 #include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/node/coverage_port_context.h>
 #include <intravenous/node/tick.h>
@@ -648,6 +649,8 @@ TEST(NodeBuildRequest, ValidatesAndReflectsIntrinsicReplayability)
     auto description = iv::details::materialize_node_description(
         request, std::move(storage));
     EXPECT_TRUE(description.intrinsically_replayable);
+    EXPECT_FALSE(description.operations.runtime.has_propagate_forward_coverage);
+    EXPECT_FALSE(description.operations.runtime.has_propagate_reverse_coverage);
     EXPECT_EQ(description.internal_latency_samples, 0u);
     EXPECT_TRUE(iv::is_tick(description.outputs().front()));
 
@@ -2330,3 +2333,101 @@ TEST(BackgroundDspPorts, CompilerRecordAnchorsAllBackgroundOperations)
 }
 
 } // namespace
+
+// Random Access replay is permitted only with an authored dependency mapping.
+static_assert(iv::details::replay_declaration_is_valid_v<iv::automation::LinearCurve>);
+static_assert(iv::details::background_dsp_node_declaration_is_valid_v<iv::automation::LinearCurve>);
+
+TEST(NodeBuildRequest, ReplayableCurveRetainsItsCoverageCallbacks)
+{
+    iv::automation::LinearCurve curve;
+    auto const request = iv::details::make_node_build_request(curve);
+    ASSERT_NE(request.compiler_record, nullptr);
+    auto const& operations = request.compiler_record->operations;
+    EXPECT_TRUE(operations.valid());
+    EXPECT_NE(operations.tick_block, nullptr);
+    EXPECT_EQ(operations.tock_coverage, nullptr);
+    EXPECT_NE(operations.propagate_forward_coverage, nullptr);
+    EXPECT_NE(operations.propagate_reverse_coverage, nullptr);
+    auto storage = iv::details::copy_node_config_bytes(
+        request.config, request.config_size, request.config_alignment);
+    auto description = iv::details::materialize_node_description(request, std::move(storage));
+    EXPECT_TRUE(description.operations.runtime.has_propagate_forward_coverage);
+    EXPECT_TRUE(description.operations.runtime.has_propagate_reverse_coverage);
+}
+
+TEST(NodeBuildRequest, SparsePointCountDoesNotDependOnClipDuration)
+{
+    iv::automation::PointSource source{{}, 36000};
+    auto const request = iv::details::make_node_build_request(source);
+    auto storage = iv::details::copy_node_config_bytes(request.config,
+        request.config_size, request.config_alignment);
+    auto description = iv::details::materialize_node_description(request, std::move(storage));
+    ASSERT_EQ(description.event_outputs().size(), 1u);
+    EXPECT_EQ(description.event_outputs()[0].max_event_count, 0u);
+    EXPECT_EQ(source.range(88200).extent, 36000ULL * 88200 + 1);
+}
+
+TEST(NodeBuildRequest, CurveInterpolatesNeighborsAndUsesNeutralOutsideItsClip)
+{
+    auto const clip = range(0, 5);
+    iv::IndexCoverage const coverage{clip};
+    std::vector<iv::TimedEvent> events{
+        {.time = index(0), .value = iv::SampleEvent{iv::Sample{0}}},
+        {.time = index(2), .value = iv::SampleEvent{iv::Sample{2}}},
+        {.time = index(2), .value = iv::SampleEvent{iv::Sample{3}}},
+        {.time = index(4), .value = iv::SampleEvent{iv::Sample{5}}},
+    };
+    std::array<iv::Sample, 8> samples{};
+    std::array outputs{sample_output_binding(std::span{samples})};
+    std::array<iv::ReflectedEventInputPortBinding, 1> sequential_placeholders{};
+    std::array inputs{iv::RandomAccessEventInputPort{
+        .data = &events, .region_ranges = &clip, .region_count = 1,
+        .coverage_value = &coverage,
+        .for_each_event = +[](void const*, std::size_t, iv::GlobalIndexRange,
+                             void*, iv::RandomAccessEventInputPort::VisitEvent) {},
+        .find_neighbors = +[](void const* data, std::size_t, iv::GlobalIndex position) {
+            auto const& values = *static_cast<std::vector<iv::TimedEvent> const*>(data);
+            return iv::sorted_event_neighbors(values, iv::GlobalIndex::from_bits(0), position);
+        },
+    }};
+    iv::automation::LinearCurve curve;
+    auto const operations = iv::details::node_compiler_operations<iv::automation::LinearCurve>();
+    operations.tick_block(&curve, iv::ReflectedNodeTickContext{
+        .continuous_output_bindings = outputs,
+        .event_input_bindings = sequential_placeholders,
+        .random_access_event_inputs = inputs,
+    }, index(0), 8);
+    std::array<float, 8> const expected{0, 1, 3, 4, 5, 0, 0, 0};
+    for (std::size_t i = 0; i < samples.size(); ++i)
+        EXPECT_FLOAT_EQ(static_cast<float>(samples[i]), expected[i]);
+
+    // At startup no accepted point materialization may be available yet.
+    iv::IndexCoverage const empty;
+    inputs[0].coverage_value = &empty;
+    inputs[0].region_count = 0;
+    operations.tick_block(&curve, iv::ReflectedNodeTickContext{
+        .continuous_output_bindings = outputs,
+        .event_input_bindings = sequential_placeholders,
+        .random_access_event_inputs = inputs,
+    }, index(0), 8);
+    for (auto value : samples) EXPECT_FLOAT_EQ(static_cast<float>(value), 0);
+}
+
+struct ReplayWithoutRandomAccessPropagation {
+    static constexpr bool intrinsically_replayable = true;
+    static constexpr auto inputs() {
+        return std::array{iv::event_input("points", iv::EventTypeId::sample, iv::InputAccess::region)};
+    }
+    static constexpr auto outputs() { return std::array{iv::output<iv::Sample>("value")}; }
+    void tick_block(iv::TickBlockContext<ReplayWithoutRandomAccessPropagation> const&) const {}
+};
+static_assert(!iv::details::replay_declaration_is_valid_v<ReplayWithoutRandomAccessPropagation>);
+
+TEST(NodeBuildRequest, AutomationRejectsInvalidConstructionData)
+{
+    EXPECT_THROW((iv::automation::AutomationCurve{{{1, 0, 0}, {1, 1, 1}}, 1}), std::invalid_argument);
+    EXPECT_THROW((iv::automation::AutomationCurve{{{1, 2, 0}}, 1}), std::invalid_argument);
+    EXPECT_THROW((iv::automation::AutomationCurve{{{1, 0, std::numeric_limits<float>::quiet_NaN()}}, 1}), std::invalid_argument);
+    EXPECT_THROW((iv::automation::PointSource{{}, 0}), std::invalid_argument);
+}

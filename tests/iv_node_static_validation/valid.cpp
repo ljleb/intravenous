@@ -199,3 +199,32 @@ struct ValidReplayableBlockNode {
 static_assert(iv::details::replay_declaration_is_valid_v<
     ValidReplayableBlockNode>);
 IV_NODE("iv.test.valid_replayable_block_node", ValidReplayableBlockNode);
+
+// Registered replayable Tick nodes can author the dependency mapping required
+// by their Random Access inputs, without declaring a Tock output.
+struct ValidRandomAccessReplayNode {
+    static constexpr bool intrinsically_replayable = true;
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>("input", iv::InputAccess::region)};
+    }
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("output")};
+    }
+    void tick_block(iv::TickBlockContext<ValidRandomAccessReplayNode> const&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<ValidRandomAccessReplayNode>& ctx) const
+    {
+        ctx.output<"output">().publish(ctx.input<"input">().coverage());
+        ctx.output<"output">().change(ctx.input<"input">().changed());
+    }
+    void propagate_reverse_coverage(
+        iv::PropagateReverseCoverageContext<ValidRandomAccessReplayNode>& ctx) const
+    {
+        for (auto required : ctx.output<"output">().required())
+            ctx.input<"input">().require(required);
+    }
+};
+
+IV_NODE("iv.test.valid_random_access_replay_node", ValidRandomAccessReplayNode);

@@ -47,10 +47,9 @@ public:
       GraphBuilderIdentity const&, std::span<OutputRefConfig const>);
   void define_event_outputs(GraphBuilderState&, GraphBuilderNodeBundles&,
       GraphBuilderIdentity const&, std::span<EventOutputRefConfig const>);
-
-  template<class LiftSample>
-  void define_sample_outputs_from_named_refs(GraphBuilderState&, GraphBuilderNodeBundles&,
-      GraphBuilderIdentity const&, LiftSample&&, std::span<NamedRef const>);
+  void define_outputs(GraphBuilderState&, GraphBuilderNodeBundles&,
+      GraphBuilderIdentity const&, std::span<OutputRefConfig const>,
+      std::span<EventOutputRefConfig const>, std::span<PortKind const> declaration_kinds);
 
   constexpr std::vector<ContinuousInputConfig> sample_inputs(
       GraphBuilderNodeBundles const&) const;
@@ -96,40 +95,6 @@ private:
   bool _sample_outputs_defined = false;
 };
 
-template<class LiftSample>
-void GraphBuilderPublicPorts::define_sample_outputs_from_named_refs(
-    GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
-    GraphBuilderIdentity const& identity, LiftSample&& lift_sample,
-    std::span<NamedRef const> refs) {
-  std::vector<OutputRefConfig> out; out.reserve(refs.size());
-  for (auto const& ref : refs) {
-    if (refs.size() > 1 && ref.name.empty()) details::error("builder " + identity.value + ": outputs(...) requires names when exposing more than one sample output");
-    auto source = lift_sample(ref);
-    auto logical = bundles.sample_output_port_for_channels(
-        source.channel_type, source.channels());
-    auto config = logical ? bundles.resolve_sample_output(*logical).config
-                          : ContinuousOutputConfig{
-                              .channel_layout = {.channel_type = source.channel_type,
-                                  .sample_layout = SampleStreamLayout::planar},
-                              .production = default_tick_output_properties(
-                                  ContinuousValueTypeSet::audio_capable())};
-    config.name = std::string(ref.name);
-    set_continuous_channel_layout(config, {
-        .channel_type = config.channel_layout.channel_type,
-        .sample_layout = SampleStreamLayout::planar,
-    });
-    out.push_back({
-        .ref = source,
-        .config = std::move(config),
-        .public_member = {
-            .family_name = std::string(ref.name),
-            .channel_type = source.channel_type,
-            .whole_stream = true,
-        },
-    });
-  }
-  define_sample_outputs(builder, bundles, identity, out);
-}
 
 } // namespace iv
 namespace iv {

@@ -68,6 +68,9 @@ namespace iv {
         std::string_view name;
     };
 
+    using OutputRequest = std::variant<SampleOutputRequest, EventOutputRequest>;
+
+    static_assert(std::is_trivially_copyable_v<OutputRequest>);
     static_assert(std::is_trivially_copyable_v<SampleOutputRequest>);
     static_assert(std::is_trivially_copyable_v<EventOutputRequest>);
 }

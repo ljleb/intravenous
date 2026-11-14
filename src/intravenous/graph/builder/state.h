@@ -110,6 +110,7 @@ public:
   PublicEventInputRef scope_event_input(
       details::BuilderScopeId, std::string_view name, EventTypeId);
   void scope_outputs(details::BuilderScopeId, std::span<SampleOutputRequest const>);
+  void scope_outputs(details::BuilderScopeId, std::span<OutputRequest const>);
   void scope_outputs(details::BuilderScopeId, std::span<NamedRef const>);
   void scope_event_outputs(details::BuilderScopeId, std::span<EventOutputRequest const>);
   void annotate_scope_sample_output_source_info(
@@ -166,6 +167,7 @@ public:
   size_t event_input_count(NodeBundleHandle) const;
   size_t event_output_count(NodeBundleHandle) const;
   NodeBundlePortId input_port_at(NodeBundleHandle, size_t) const;
+  NodeBundlePortId output_port_at(NodeBundleHandle, size_t) const;
   ContinuousInputConfig sample_input_config(NodeBundleHandle, size_t) const;
   EventInputConfig event_input_config(NodeBundleHandle, size_t) const;
   NodeBundleHandle tiled_member(NodeBundleHandle, size_t) const;

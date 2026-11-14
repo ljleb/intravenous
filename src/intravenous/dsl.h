@@ -231,7 +231,7 @@ namespace iv {
     };
 
     template<class Node>
-    requires (details::static_output_count_v<std::remove_cvref_t<Node>> == 1)
+    requires (details::static_output_count_v<std::remove_cvref_t<Node>> > 0)
     struct typed_sample_port_traits<
         TypedNodeRef<Node, ConcretePortProjection>> {
         static constexpr auto output_layout =
@@ -241,7 +241,7 @@ namespace iv {
     };
 
     template<class Node, class ChannelType>
-    requires (details::static_output_count_v<std::remove_cvref_t<Node>> == 1)
+    requires (details::static_output_count_v<std::remove_cvref_t<Node>> > 0)
     struct typed_sample_port_traits<
         TypedNodeRef<Node, TiledPortProjection<ChannelType>>> {
         using channel_type = ChannelType;
@@ -545,15 +545,22 @@ namespace iv {
     )
     constexpr auto connect_unary_node(L&& lhs, R&& rhs, std::string_view op_name)
     {
-        SamplePortRef source = static_cast<SamplePortRef>(std::forward<L>(lhs));
         NodeRef target = _materialize_node_ref(std::forward<R>(rhs));
-        bool const has_output = details::iv_builder_connect_unary_sample(
-            target, source, op_name);
         if constexpr (NodeLike<L>) {
+            auto node = _materialize_node_ref(std::forward<L>(lhs));
+            auto const port = node.output_port_at(0);
+            if (port.port_kind == PortKind::event) {
+                (void)details::iv_builder_connect_unary_event(
+                    target, node.event_port(port.port_index), op_name);
+            } else {
+                (void)details::iv_builder_connect_unary_sample(
+                    target, node[port.port_index], op_name);
+            }
             return target;
-        } else if (!has_output) {
-            return source;
         } else {
+            SamplePortRef source = static_cast<SamplePortRef>(std::forward<L>(lhs));
+            bool const has_output = details::iv_builder_connect_unary_sample(target, source, op_name);
+            if (!has_output) return source;
             return static_cast<SamplePortRef>(target);
         }
     }

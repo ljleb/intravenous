@@ -237,7 +237,18 @@ std::expected<llvm::GlobalVariable*, std::string> immutable_node_configuration_g
         append_bytes(cursor, relocation.byte_offset - cursor);
 
         llvm::Constant* pointer = nullptr;
-        if (relocation.retained_global_symbol.empty()) {
+        if (relocation.immutable_data) {
+            auto const& data = *relocation.immutable_data;
+            auto* global = immutable_bytes_global(module, data.bytes.data(),
+                data.bytes.size(), data.alignment,
+                node.node_global_symbol + ".array." + std::to_string(relocation.byte_offset));
+            pointer = global;
+            if (relocation.addend != 0) {
+                llvm::Constant* indices[] = {
+                    llvm::ConstantInt::get(size_type, relocation.addend)};
+                pointer = llvm::ConstantExpr::getInBoundsGetElementPtr(byte_type, global, indices);
+            }
+        } else if (relocation.retained_global_symbol.empty()) {
             pointer = llvm::ConstantPointerNull::get(pointer_type);
         } else {
             auto* global = module.getNamedGlobal(relocation.retained_global_symbol);
@@ -767,10 +778,10 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
         }
         auto const& background_node = plan.connections.background.nodes[node];
         auto const applicable = phase == BackgroundRootOperation::forward
-            ? background_node.authored_tock_execution
+            ? background_node.authored_forward_coverage
                 || background_node.uses_replay_forward_coverage
             : phase == BackgroundRootOperation::reverse
-                ? (background_node.authored_tock_execution
+                ? (background_node.authored_reverse_coverage
                       && background_node.accumulators.input_requirement_count != 0)
                     || background_node.uses_replay_reverse_coverage
                 : background_node.authored_tock_execution
@@ -782,7 +793,7 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
         auto const& callbacks = plan.imports.primitive_callbacks[*primitive];
 
         if (phase == BackgroundRootOperation::forward) {
-            if (background_node.authored_tock_execution) {
+            if (background_node.authored_forward_coverage) {
                 if (callbacks.propagate_forward_coverage.empty()) {
                     return std::unexpected(
                         "GraphJit background forward program has no authored callback");
@@ -812,7 +823,7 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
         }
 
         if (phase == BackgroundRootOperation::reverse) {
-            if (background_node.authored_tock_execution
+            if (background_node.authored_reverse_coverage
                 && background_node.accumulators.input_requirement_count != 0) {
                 if (callbacks.propagate_reverse_coverage.empty()) {
                     return std::unexpected(

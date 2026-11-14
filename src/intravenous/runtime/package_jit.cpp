@@ -26,6 +26,7 @@ std::string describe_exception(std::exception_ptr exception)
 
 PackageJit::PackageJit(StartupConfigState startup_config)
     : startup_config_(std::move(startup_config))
+    , installation_toolchain_(startup_config_.toolchain)
 {}
 
 ModuleLoader& PackageJit::ensure_loader()
@@ -51,6 +52,19 @@ void PackageJit::set_toolchain_config(ModuleLoaderToolchainConfig toolchain)
 
 void PackageJit::set_toolchain_config_locked(ModuleLoaderToolchainConfig toolchain)
 {
+    // Empty project overrides select this installation's defaults, including
+    // defaults selected in .intravenous_defaults rather than compiled paths.
+    auto restore_default = [&](auto field) {
+        auto& value = toolchain.*field;
+        if (!value || value->empty()) value = installation_toolchain_.*field;
+    };
+    restore_default(&ModuleLoaderToolchainConfig::c_compiler);
+    restore_default(&ModuleLoaderToolchainConfig::cxx_compiler);
+    restore_default(&ModuleLoaderToolchainConfig::cmake_program);
+    restore_default(&ModuleLoaderToolchainConfig::cmake_generator);
+    restore_default(&ModuleLoaderToolchainConfig::make_program);
+    restore_default(&ModuleLoaderToolchainConfig::juce_dir);
+    restore_default(&ModuleLoaderToolchainConfig::iv_package_pch);
     startup_config_.toolchain = std::move(toolchain);
     loader_toolchain_dirty_ = true;
 }

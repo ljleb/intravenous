@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/compat.h>
+#include <intravenous/event_sequence.h>
 #include <intravenous/coverage.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
 #include <intravenous/runtime/persisted_data_store.h>
@@ -83,6 +84,7 @@ struct BackgroundEventReadView {
     ForEachEvent for_each_event = nullptr;
     void (*for_each_region_event)(
         void const*, std::size_t, GlobalIndexRange, void*, VisitEvent) = nullptr;
+    EventNeighbors (*find_neighbors)(void const*, std::size_t, GlobalIndex) = nullptr;
     void (*for_each_indexed_event)(
         void const*, GlobalIndexRange, void*, VisitIndexedEvent) = nullptr;
 

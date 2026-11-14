@@ -14,6 +14,7 @@
 #include <intravenous/graph/source_info.h>
 #include <intravenous/node/build_request.h>
 #include <intravenous/node/message.h>
+#include <intravenous/node/immutable_array.h>
 #include <intravenous/module/configuration_argument.h>
 
 #include <array>
@@ -87,12 +88,17 @@ void register_builder_embedded_message_handlers(
 // Scope operations. A view's interface operations edit the boundary of the
 // scope it names; node creation edits the session's current scope.
 [[nodiscard]] BuilderScopeId iv_builder_current_scope(BuilderSession*) noexcept;
+void const* iv_builder_copy_immutable_data(
+    BuilderSession*, std::span<std::byte const>, std::size_t alignment);
+
 PublicSampleInputRef iv_builder_scope_input(
     BuilderSession*, BuilderScopeId, ContinuousInputConfig);
 PublicEventInputRef iv_builder_scope_event_input(
     BuilderSession*, BuilderScopeId, std::string_view, EventTypeId);
 void iv_builder_scope_outputs(
     BuilderSession*, BuilderScopeId, std::span<SampleOutputRequest const>);
+void iv_builder_scope_outputs(
+    BuilderSession*, BuilderScopeId, std::span<OutputRequest const>);
 void iv_builder_scope_named_outputs(
     BuilderSession*, BuilderScopeId, std::span<NamedRef const>);
 void iv_builder_scope_event_outputs(
@@ -242,6 +248,15 @@ public:
       return _session;
   }
 
+  // Copy construction data once. No array allocation or copying occurs in Tick.
+  template<class T>
+  [[nodiscard]] ImmutableArray<T> immutable_array(std::span<T const> values) {
+    if (values.empty()) return {};
+    auto* data = details::iv_builder_copy_immutable_data(
+        _session, std::as_bytes(values), alignof(T));
+    return ImmutableArray<T>{static_cast<T const*>(data), values.size()};
+  }
+
   PublicSampleInputRef input();
   template<fixed_string Name, class ChannelType = mono>
     requires requires { ChannelTypeTraits<ChannelType>::id; }
@@ -345,6 +360,7 @@ public:
   void outputs(std::initializer_list<NamedRef>);
   void outputs(std::span<NamedRef const>);
   void outputs(std::span<SampleOutputRequest const>);
+  void outputs(std::span<OutputRequest const>);
 
   template<class... Refs>
   void event_outputs(Refs&&... refs);
@@ -644,7 +660,8 @@ auto make_node_call_requests(BuilderSession* session, Args&&... args)
   // Scalar arguments are lifted into constant nodes of the current scope.
   GraphBuilder builder(session);
   using Requests = NodeCallRequests<
-      sample_input_arg_count_v<Args...>, event_input_arg_count_v<Args...>>;
+      sample_input_arg_count_v<Args...> + dynamic_input_arg_count_v<Args...>,
+      event_input_arg_count_v<Args...> + dynamic_input_arg_count_v<Args...>>;
   Requests requests;
   size_t positional_index = 0;
   size_t sample_index = 0;
@@ -670,6 +687,22 @@ auto make_node_call_requests(BuilderSession* session, Args&&... args)
             .target = NodeCallInputTarget::named,
         };
       }
+    } else if constexpr (graph_builder_node_output_like<Arg>) {
+      auto source = arg.node_ref();
+      auto const port = [&] {
+        if constexpr (static_default_output_kind<Arg>())
+          return NodeBundlePortId{source.node_bundle_handle(), *static_default_output_kind<Arg>(), 0};
+        else return source.output_port_at(0);
+      }();
+      if (port.port_kind == PortKind::event) {
+        requests.event_inputs[event_index++] = {
+            .source = source.event_port(port.port_index), .name = {},
+            .input_index = positional_index++, .target = NodeCallInputTarget::positional};
+      } else {
+        requests.sample_inputs[sample_index++] = {
+            .source = source[port.port_index], .name = {},
+            .input_index = positional_index++, .target = NodeCallInputTarget::positional};
+      }
     } else if constexpr (graph_builder_event_port_like<Arg>) {
       requests.event_inputs[event_index++] = {
         .source = static_cast<EventPortRef>(std::forward<Arg>(arg)),
@@ -687,6 +720,8 @@ auto make_node_call_requests(BuilderSession* session, Args&&... args)
     }
   };
   (append(std::forward<Args>(args)), ...);
+  requests.sample_input_count = sample_index;
+  requests.event_input_count = event_index;
   return requests;
 }
 
@@ -748,12 +783,44 @@ inline auto make_event_output_requests(Refs&&... refs) {
     using Value = std::remove_cvref_t<Ref>;
     auto& request = requests[index++];
     if constexpr (is_named_arg_v<Value>) {
-      request.ref = static_cast<EventPortRef>(ref.value);
+      request.ref = lift_node_call_event_operand(ref.value);
       request.name = Value::name.view();
     } else {
       static_assert(count == 1,
         "event_outputs(...) requires names when exposing more than one event output");
-      request.ref = static_cast<EventPortRef>(std::forward<Ref>(ref));
+      request.ref = lift_node_call_event_operand(std::forward<Ref>(ref));
+    }
+  };
+  (append(std::forward<Refs>(refs)), ...);
+  return requests;
+}
+template<class... Refs>
+inline auto make_output_requests(GraphBuilder& builder, Refs&&... refs)
+{
+  constexpr auto count = sizeof...(Refs);
+  std::array<OutputRequest, count> requests{};
+  std::size_t index = 0;
+  auto append = [&]<class Ref>(Ref&& ref) {
+    using Value = std::remove_cvref_t<Ref>;
+    if constexpr (is_named_arg_v<Value>) {
+      if constexpr (Value::kind == NamedPortKind::event)
+        requests[index++] = make_event_output_requests(std::forward<Ref>(ref))[0];
+      else requests[index++] = make_sample_output_requests(builder, std::forward<Ref>(ref))[0];
+    } else if constexpr (is_channel_named_arg_v<Value> || is_default_channel_named_arg_v<Value>) {
+      requests[index++] = make_sample_output_requests(builder, std::forward<Ref>(ref))[0];
+    } else {
+      static_assert(count == 1, "outputs(...) requires names when exposing more than one output");
+      if constexpr (graph_builder_node_output_like<Ref>) {
+        auto source = ref.node_ref();
+        auto const port = source.output_port_at(0);
+        if (port.port_kind == PortKind::event)
+          requests[index++] = make_event_output_requests(source.event_port(port.port_index))[0];
+        else requests[index++] = make_sample_output_requests(builder, source[port.port_index])[0];
+      } else if constexpr (graph_builder_event_port_like<Ref>) {
+        requests[index++] = make_event_output_requests(std::forward<Ref>(ref))[0];
+      } else {
+        requests[index++] = make_sample_output_requests(builder, std::forward<Ref>(ref))[0];
+      }
     }
   };
   (append(std::forward<Refs>(refs)), ...);
@@ -763,9 +830,8 @@ inline auto make_event_output_requests(Refs&&... refs) {
 
 template<class... Refs>
 inline void GraphBuilder::outputs(Refs&&... refs) {
-  auto requests = details::make_sample_output_requests(
-      *this, std::forward<Refs>(refs)...);
-  outputs(std::span<SampleOutputRequest const>(requests));
+  auto requests = details::make_output_requests(*this, std::forward<Refs>(refs)...);
+  outputs(std::span<OutputRequest const>(requests));
 }
 
 template<class... Refs>
@@ -847,10 +913,9 @@ inline PublicEventInputRef SubgraphBuilder::event_input(EventTypeId type) {
 template<class... Refs>
 inline void SubgraphBuilder::outputs(Refs&&... refs) {
   GraphBuilder builder(_session);
-  auto requests = details::make_sample_output_requests(
-      builder, std::forward<Refs>(refs)...);
+  auto requests = details::make_output_requests(builder, std::forward<Refs>(refs)...);
   details::iv_builder_scope_outputs(
-      _session, _scope, std::span<SampleOutputRequest const>(requests));
+      _session, _scope, std::span<OutputRequest const>(requests));
 }
 inline void SubgraphBuilder::outputs(std::initializer_list<NamedRef> refs) {
   outputs(std::span<NamedRef const>(refs.begin(), refs.size()));
@@ -859,6 +924,9 @@ inline void SubgraphBuilder::outputs(std::span<NamedRef const> refs) {
   details::iv_builder_scope_named_outputs(_session, _scope, refs);
 }
 inline void SubgraphBuilder::outputs(std::span<SampleOutputRequest const> refs) {
+  details::iv_builder_scope_outputs(_session, _scope, refs);
+}
+inline void SubgraphBuilder::outputs(std::span<OutputRequest const> refs) {
   details::iv_builder_scope_outputs(_session, _scope, refs);
 }
 template<class... Refs>
@@ -901,8 +969,8 @@ inline NodeRef NodeRef::operator()(Args&&... args) const {
   auto requests = details::make_node_call_requests(
       _session, std::forward<Args>(args)...);
   apply_node_call(
-      {.data = requests.sample_inputs.data(), .size = requests.sample_inputs.size()},
-      {.data = requests.event_inputs.data(), .size = requests.event_inputs.size()});
+      {.data = requests.sample_inputs.data(), .size = requests.sample_input_count},
+      {.data = requests.event_inputs.data(), .size = requests.event_input_count});
   return _clone_handle();
 }
 template<class Node, class Projection>
@@ -939,8 +1007,8 @@ TypedNodeRef<Node, Projection>::operator()(Args&&... args) const {
   auto requests = details::make_node_call_requests(
       _session, std::forward<Args>(args)...);
   this->apply_node_call(
-      {.data = requests.sample_inputs.data(), .size = requests.sample_inputs.size()},
-      {.data = requests.event_inputs.data(), .size = requests.event_inputs.size()});
+      {.data = requests.sample_inputs.data(), .size = requests.sample_input_count},
+      {.data = requests.event_inputs.data(), .size = requests.event_input_count});
   return this->_clone_handle();
 }
 template<class Node, class Projection>

@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <array>
 #include <chrono>
 #include <cctype>
 #include <cstring>
@@ -516,12 +517,12 @@ char const *config_name()
 
 std::string quote_string(std::string_view value)
 {
-    std::string out = "\"";
+    std::string out = "'";
     for (char c : value) {
-        if (c == '"') out += '\\';
-        out += c;
+        if (c == '\'') out += "'\"'\"'";
+        else out += c;
     }
-    return out + "\"";
+    return out + "'";
 }
 
 std::string quote(std::filesystem::path const &path)
@@ -648,6 +649,23 @@ std::shared_ptr<SharedPackageJit> create_shared_package_jit()
     return result;
 }
 
+bool same_pch_contents(std::filesystem::path const& left, std::filesystem::path const& right)
+{
+    if (std::filesystem::equivalent(left, right)) return true;
+    if (std::filesystem::file_size(left) != std::filesystem::file_size(right)) return false;
+    std::ifstream first(left, std::ios::binary), second(right, std::ios::binary);
+    if (!first || !second) throw std::runtime_error("cannot read application DSL PCH for compatibility check");
+    std::array<char, 64 * 1024> first_block{}, second_block{};
+    do {
+        first.read(first_block.data(), first_block.size());
+        second.read(second_block.data(), second_block.size());
+        if (first.gcount() != second.gcount()
+            || !std::equal(first_block.begin(), first_block.begin() + first.gcount(), second_block.begin())) return false;
+    } while (first);
+    if (first.bad() || second.bad()) throw std::runtime_error("cannot read application DSL PCH for compatibility check");
+    return true;
+}
+
 void apply_configured_dsl_pch(ModuleLoaderToolchainConfig& toolchain)
 {
     // The PCH is an application build product, not something an individual IV
@@ -682,7 +700,8 @@ void run(
     std::filesystem::path const* output_log = nullptr)
 {
     if (sink) sink("[" + std::string(phase) + "] " + command);
-    auto invocation = command;
+    auto invocation = quote(std::filesystem::path(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER))
+        + " /bin/sh -c " + quote_string(command);
     if (output_log) {
         invocation += " >> " + quote(*output_log) + " 2>&1";
     }
@@ -729,6 +748,7 @@ class ModuleLoader::Impl {
     std::filesystem::path repo_root_;
     std::filesystem::path global_cache_root_;
     ModuleLoaderToolchainConfig toolchain_;
+    mutable std::unordered_set<std::string> validated_toolchains_;
     LogSink log_sink_;
     mutable std::mutex mutex_;
 
@@ -828,10 +848,8 @@ class ModuleLoader::Impl {
 
     std::pair<std::filesystem::path, std::filesystem::path> compilers() const
     {
-        if (toolchain_.c_compiler && toolchain_.cxx_compiler) {
-            return {*toolchain_.c_compiler, *toolchain_.cxx_compiler};
-        }
-        return {IV_CONFIGURED_C_COMPILER, IV_CONFIGURED_CXX_COMPILER};
+        return {toolchain_.c_compiler.value_or(IV_CONFIGURED_C_COMPILER),
+            toolchain_.cxx_compiler.value_or(IV_CONFIGURED_CXX_COMPILER)};
     }
 
     std::optional<std::filesystem::path> make_program() const
@@ -852,6 +870,53 @@ class ModuleLoader::Impl {
         auto const configured = std::string_view(IV_CONFIGURED_JUCE_DIR);
         if (!configured.empty()) return std::filesystem::path(configured);
         return std::nullopt;
+    }
+
+    void validate_compiler(
+        std::filesystem::path const& compiler,
+        std::filesystem::path const& plugin) const
+    {
+        // The default toolchain produced these artifacts under this same
+        // captured environment. Overrides must prove their compatibility.
+        if (compiler == std::filesystem::path(IV_CONFIGURED_CXX_COMPILER)
+            && *toolchain_.iv_package_pch == std::filesystem::path(IV_CONFIGURED_IV_DSL_PCH)) return;
+        auto const key = file_identity(compiler) + file_identity(*toolchain_.iv_package_pch)
+            + file_identity(plugin)
+            + file_identity(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER);
+        if (validated_toolchains_.contains(key)) return;
+        auto const directory = global_cache_root_ / "toolchain-checks" / stable_text_hash(key);
+        std::filesystem::create_directories(directory);
+        ScopedModuleBuildLock const lock(directory / "check.lock");
+        auto const accepted = directory / "accepted";
+        if (!std::filesystem::exists(accepted) || read_text(accepted) != key) {
+            if (!same_pch_contents(*toolchain_.iv_package_pch, IV_CONFIGURED_IV_DSL_PCH)) {
+                throw std::runtime_error(
+                    "iv_package_pch must be an unchanged copy of this application's DSL PCH; "
+                    "a PCH from another application build cannot replace its public C++ ABI");
+            }
+            auto const log = directory / "compiler.log";
+            write_text_if_different(log, "");
+            std::string const command = quote(compiler) + " -std=c++23 "
+                + IV_CONFIGURED_PACKAGE_COMPILE_FLAGS
+                + " -DIV_ENABLE_JUCE_VST=0 -Xclang -disable-llvm-passes"
+                + " -include-pch " + quote(*toolchain_.iv_package_pch)
+                + " -fplugin=" + quote(plugin)
+                + " -fplugin-arg-iv_module_metadata-metadata-dir=" + quote(directory)
+                + " -fplugin-arg-iv_module_metadata-core-source-dir="
+                + quote(repo_root_ / "src/intravenous")
+                + " -fsyntax-only -x c++ /dev/null";
+            try {
+                run(command, log_sink_, "toolchain-check", &log);
+            } catch (std::exception const&) {
+                throw std::runtime_error(
+                    "IV packages require Clang compatible with this application's LLVM, "
+                    "DSL PCH and metadata plugin; GCC and arbitrary Clang versions are unsupported. "
+                    "The selected C++ compiler '" + compiler.string()
+                    + "' failed the compatibility check:\n" + read_text(log));
+            }
+            write_text_if_different(accepted, key);
+        }
+        validated_toolchains_.insert(key);
     }
 
     std::filesystem::path build(
@@ -904,6 +969,7 @@ class ModuleLoader::Impl {
                 "configured IV module finalizer does not exist: '" +
                 module_finalizer.string() + "'");
         }
+        validate_compiler(cxx, source_introspection_plugin);
         std::string generator = toolchain_.cmake_generator.value_or(
             std::string(IV_CONFIGURED_CMAKE_GENERATOR));
         auto const selected_make_program = make_program();
@@ -912,6 +978,8 @@ class ModuleLoader::Impl {
         std::ostringstream signature;
         signature << "iv-package-abi=" << IV_PACKAGE_ABI_VERSION << '\n'
                   << "config=" << config_name() << '\n'
+                  << "application-environment="
+                  << file_identity(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER) << '\n'
                   << "target-triple=" << llvm::sys::getDefaultTargetTriple() << '\n'
                   // Node code is compiled for the host CPU.
                   << "host-cpu=" << host_cpu_signature() << '\n'

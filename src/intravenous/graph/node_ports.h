@@ -141,6 +141,23 @@ struct NodePorts {
             port_index,
         };
     }
+    constexpr NodeBundlePortId output_port_at(
+        NodeBundleHandle node_bundle_handle, size_t position) const
+    {
+        if (position >= output_configs.size()) {
+            throw std::out_of_range("positional output is out of bounds");
+        }
+        auto const sample = is_continuous(output_configs[position]);
+        size_t port_index = 0;
+        for (size_t config_index = 0; config_index < position; ++config_index) {
+            port_index += is_continuous(output_configs[config_index]) == sample;
+        }
+        return {
+            node_bundle_handle,
+            sample ? PortKind::sample : PortKind::event,
+            port_index,
+        };
+    }
 };
 
 } // namespace iv

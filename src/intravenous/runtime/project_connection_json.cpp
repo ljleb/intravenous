@@ -111,6 +111,7 @@ EventTypeId parse_event_type(std::string_view name)
              EventTypeId::trigger,
              EventTypeId::boundary,
              EventTypeId::midi,
+             EventTypeId::sample,
          }) {
         if (details::event_type_name(type) == name) return type;
     }

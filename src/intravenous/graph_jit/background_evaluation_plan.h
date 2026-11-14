@@ -226,13 +226,14 @@ struct BackgroundPortPlan {
 
     ChannelLayout sample_layout{};
     ContinuousValueStorageGeometry continuous_geometry{};
-    // Continuous Region/Coverage coordinates are value-lattice ordinals.
+    // Continuous Region/Coverage coordinates are value-lattice indices.
     // Persisted Tick capture uses the resolved pace to project each root
     // invocation window into that coordinate space before publication.
     std::int32_t absolute_pace_exponent = 0;
     CoverageOrdering ordering = CoverageOrdering::unspecified;
     EventTypeId event_type = EventTypeId::empty;
     double max_events_per_index = 0.0;
+    std::optional<std::size_t> max_event_count{};
 
     // Connection indices make fan-in/fan-out convergence explicit. Lists
     // contain each logical background connection once, even when a sample
@@ -260,11 +261,14 @@ struct BackgroundNodePlan {
     std::shared_ptr<void const> configuration_identity{};
 
     // Authored Tock nodes execute their imported F/R/T callbacks. Replay nodes
-    // instead use compiler-provided pointwise F/R coverage propagation and
+    // use authored F/R mapping for non-pointwise inputs, or compiler-provided
+    // pointwise F/R coverage propagation, and
     // the already-imported generated tick_block() wrapper. A retained Tick-only
     // boundary may have neither execution mode.
     bool authored_tock_execution = false;
     bool replays_tick = false;
+    bool authored_forward_coverage = false;
+    bool authored_reverse_coverage = false;
     bool uses_replay_forward_coverage = false;
     bool uses_replay_reverse_coverage = false;
     bool uses_imported_tick_block_for_replay = false;
@@ -368,6 +372,7 @@ struct PortStoragePlan {
     std::vector<std::size_t> sample_channels{};
     EventTypeId event_type = EventTypeId::empty;
     double max_events_per_index = 0.0;
+    std::optional<std::size_t> max_event_count{};
 
     std::optional<SampleMaterializationIndex> sample_materialization{};
     std::optional<EventMaterializationIndex> event_materialization{};

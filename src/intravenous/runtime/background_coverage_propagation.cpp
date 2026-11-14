@@ -153,6 +153,7 @@ bool local_port_semantics_equal(
         || current.ordering != previous.ordering
         || current.event_type != previous.event_type
         || current.max_events_per_index != previous.max_events_per_index
+        || current.max_event_count != previous.max_event_count
         || current.accumulators.input_change.has_value()
             != previous.accumulators.input_change.has_value()
         || current.accumulators.output_change.has_value()
@@ -220,6 +221,8 @@ bool node_local_semantics_equal(
             previous.configuration_identity)
         && current.authored_tock_execution == previous.authored_tock_execution
         && current.replays_tick == previous.replays_tick
+        && current.authored_forward_coverage == previous.authored_forward_coverage
+        && current.authored_reverse_coverage == previous.authored_reverse_coverage
         && current.uses_replay_forward_coverage
             == previous.uses_replay_forward_coverage
         && current.uses_replay_reverse_coverage
@@ -309,14 +312,23 @@ IndexCoverage derive_input_coverage(
 std::vector<GlobalIndexRange> derive_input_regions(
     graph_jit::BackgroundEvaluationPlan const& plan,
     std::span<std::vector<GlobalIndexRange> const> output_regions,
-    graph_jit::BackgroundPortIndex input)
+    graph_jit::BackgroundPortIndex input,
+    IndexCoverage const* requested = nullptr)
 {
     std::vector<GlobalIndexRange> result;
     std::vector<std::vector<GlobalIndexRange>> sorted_runs;
     auto const& planned_input = plan.ports[input];
-    auto const source_regions = [&](graph_jit::BackgroundPortIndex output)
-        -> std::vector<GlobalIndexRange> const& {
-        return output_regions[*plan.ports[output].accumulators.output_change];
+    auto const source_regions = [&](graph_jit::BackgroundPortIndex output,
+                                    std::size_t latency = 0) {
+        auto const& source = plan.ports[output];
+        auto const& regions = output_regions[*source.accumulators.output_change];
+        // Authored Regions retain membership and complete storage. Tick replay
+        // has no authored Region identity: its finite storage follows demand.
+        if (!requested || !source.replayed_tick_output)
+            return regions;
+        auto selected = region_coverage(regions);
+        selected = selected & shifted_back(*requested, latency);
+        return std::vector<GlobalIndexRange>{selected.begin(), selected.end()};
     };
 
     for (auto const connection_index : planned_input.incoming_connections) {
@@ -326,24 +338,21 @@ std::vector<GlobalIndexRange> derive_input_regions(
         if (connection.kind == PortKind::event) {
             IndexCoverage complete;
             bool first_source = true;
-            std::vector<std::vector<GlobalIndexRange> const*> source_runs;
+            std::vector<std::vector<GlobalIndexRange>> source_runs;
             for (auto const& delivery : connection.event_deliveries) {
                 if (delivery.target_port != input || !delivery.source_port) {
                     continue;
                 }
                 auto const& regions = source_regions(*delivery.source_port);
-                auto const& available = output_regions[
-                    *plan.ports[*delivery.source_port]
-                         .accumulators.output_change];
-                auto available_coverage = region_coverage(available);
+                auto available_coverage = region_coverage(regions);
                 complete = first_source
                     ? std::move(available_coverage)
                     : complete & available_coverage;
                 first_source = false;
-                source_runs.push_back(std::addressof(regions));
+                source_runs.push_back(regions);
             }
-            for (auto const* source_run : source_runs) {
-                for (auto const source_region : *source_run) {
+            for (auto const& source_run : source_runs) {
+                for (auto const source_region : source_run) {
                     for (auto const available : complete) {
                         for_each_range_intersection_preserving_shape(
                             source_region,
@@ -397,7 +406,7 @@ std::vector<GlobalIndexRange> derive_input_regions(
             bool first = true;
             for (auto const [source, latency] : routes) {
                 std::vector<GlobalIndexRange> available;
-                for (auto const range : source_regions(source)) {
+                for (auto const range : source_regions(source, latency)) {
                     available.push_back({
                         .begin = range.begin.advanced_by(latency),
                         .extent = range.extent,
@@ -1085,7 +1094,7 @@ void BackgroundPropagationWorkspace::initialize_calls()
             auto const& planned = port(port_index);
             auto const callback_input =
                 node.authored_tock_execution ? planned.random_access_input
-                : node.replays_tick          ? planned.replay_sequential_input
+                : node.replays_tick          ? planned.replay_sequential_input || planned.random_access_input
                                              : false;
             if (!callback_input)
                 continue;
@@ -1592,7 +1601,9 @@ BackgroundPropagationWorkspace::prepare(
          index < plan_->ports.size(); ++index) {
         auto const& planned = plan_->ports[index];
         if (planned.direction == graph_jit::PortDirection::input) {
-            prepared.input_regions_by_port_[index] = input_regions(index);
+            prepared.input_regions_by_port_[index] = derive_input_regions(
+                *plan_, candidate_output_region_ranges_, index,
+                &input_requirements_by_port_[index]);
         }
     }
     prepared.output_coverages_ = std::move(candidate_output_coverages_);

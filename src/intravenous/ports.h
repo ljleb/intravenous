@@ -71,6 +71,13 @@ namespace iv {
         }
     };
 
+    // A value at an event timestamp. Holding or interpolation belongs to the
+    // consumer, so ordinary event transformations can operate on these points.
+    struct SampleEvent {
+        Sample value{};
+        static constexpr size_t average_event_size_bytes() { return sizeof(Sample); }
+    };
+
     struct EmptyEvent {
         static constexpr size_t average_event_size_bytes()
         {
@@ -83,6 +90,7 @@ namespace iv {
         trigger,
         boundary,
         midi,
+        sample,
         count,
     };
 
@@ -118,7 +126,7 @@ namespace iv {
         return realtime_port_window(block_index, block_size, latency, 0);
     }
 
-    using Event = std::variant<MidiEvent, TriggerEvent, BoundaryEvent, EmptyEvent>;
+    using Event = std::variant<MidiEvent, TriggerEvent, BoundaryEvent, EmptyEvent, SampleEvent>;
 
     struct TimedEvent {
         GlobalIndex time{};
@@ -411,6 +419,8 @@ namespace iv {
             return BoundaryEvent::average_event_size_bytes();
         case EventTypeId::empty:
             return EmptyEvent::average_event_size_bytes();
+        case EventTypeId::sample:
+            return SampleEvent::average_event_size_bytes();
         case EventTypeId::count:
             break;
         }
@@ -1819,6 +1829,9 @@ namespace iv {
         // does not constrain how events are distributed among sample timestamps.
         double max_events_per_index = DEFAULT_MAX_EVENTS_PER_SAMPLE;
         OutputProductionConfig production = OutputProductionKind::tick;
+        // A finite bound over the complete authored output coverage. When
+        // present, this replaces density-based capacity sizing.
+        std::optional<std::size_t> max_event_count{};
         constexpr bool operator==(EventOutputProperties const&) const = default;
     };
 
@@ -2134,6 +2147,9 @@ namespace iv {
 
     struct EventOutputOptions {
         double max_events_per_index = DEFAULT_MAX_EVENTS_PER_SAMPLE;
+        // A finite bound over the complete authored output coverage. When
+        // present, this replaces density-based capacity sizing.
+        std::optional<std::size_t> max_event_count{};
         constexpr bool operator==(EventOutputOptions const&) const = default;
     };
 
@@ -2712,6 +2728,7 @@ namespace iv {
                 .max_events_per_index = config.options.max_events_per_index,
                 .production = static_cast<OutputProductionConfig>(
                     Config::production),
+                .max_event_count = config.options.max_event_count,
             },
             config.retention,
         };
@@ -2733,6 +2750,9 @@ namespace iv {
         double max_events_per_index = DEFAULT_MAX_EVENTS_PER_SAMPLE;
         OutputProductionConfig production = OutputProductionKind::tick;
         OutputRetention retention = OutputRetention::ephemeral;
+        // A finite bound over the complete authored output coverage. When
+        // present, this replaces density-based capacity sizing.
+        std::optional<std::size_t> max_event_count{};
         constexpr bool operator==(EventOutputConfig const&) const = default;
     };
 
@@ -3001,6 +3021,7 @@ namespace iv {
             .max_events_per_index = properties.max_events_per_index,
             .production = output_production(config),
             .retention = config.retention,
+            .max_event_count = properties.max_event_count,
         };
     }
 
@@ -3047,6 +3068,7 @@ namespace iv {
                 .type = config.type,
                 .max_events_per_index = config.max_events_per_index,
                 .production = config.production,
+                .max_event_count = config.max_event_count,
             },
             config.retention,
         };

@@ -1080,18 +1080,34 @@ An event chunk's explicit range is authoritative. A published empty event chunk 
 the **complete event set for every position in that range is known to be empty**; it is
 not equivalent to missing capture or unavailable coverage.
 
-`EventOutputProperties::max_events_per_index` remains density/capacity metadata, not
-a literal per-timestamp quota. For one selected range:
+`EventOutputProperties::max_events_per_index` is density/capacity metadata, not
+a literal per-timestamp quota. Without a finite output count, a selected range
+uses:
 
 ```text
 required_event_entries = ceil(max_events_per_index * range.extent)
 ```
 
-For a generated live event representation spanning `W` positions, the analogous
-capacity uses the appropriate compiler-known effective fan-in bound over `W`.
-When several event connections are combined into one buffer, GraphJit must account
-for all incoming effective capacity bounds so every legal incoming sequence fits
-without audio-thread allocation.
+_Accepted clarification, 2026-11-13:_ a sparse producer can declare a finite
+`max_event_count` over its complete output coverage through
+`ctx.output<"name">().max_event_count()` in `constrain_ports()`. Background
+storage uses that count instead of estimating the clip's event count from its
+sample duration. The bound counts events across all logical Regions; it does
+not merge or identify those Regions. Multiple declared upper bounds use the
+smallest bound. The earlier density-only wording is
+[preserved here](historical/event_capacity_before_finite_point_counts_2026-11-13.md).
+
+Background event storage may grow as events are written. It must still reject a
+write that exceeds the selected bound, and failed evaluation must not publish
+partial data. A long, sparse event Region must not reserve one entry per sample
+before its callback runs.
+
+Sequential playback and background replay allocate their event buffers before
+execution. Finite source counts survive conversion and fan-in. Sources without
+a finite count retain their density bound for the selected window. Fan-in must
+reserve enough for every source contribution, including bursts, without
+allocating in Tick. Ordinary authored realtime event outputs retain their
+existing rate-based callback-storage contract.
 
 Background evaluation may dynamically commit persisted event data capacity off the
 realtime thread. Tick-produced persisted events and explicit recording use
@@ -2731,3 +2747,25 @@ recording merely because that planning metadata exists.
 16. Tick reader pins and `TickMaterializationSnapshot` lifetimes cross one complete
     root callback without audio-thread allocation, blocking or final-owner
     reclamation. Replay work is split into compiler-legal block-sized invocations.
+
+
+## Sparse Sample events and replayed curve readers (2026-11-13)
+
+`SampleEvent` carries one Sample value at its `TimedEvent::time` position.
+Holding and interpolation are consumer policies. The event type does not impose
+a curve shape or a persistent point ID.
+
+`EventRegion::neighbors(position)` returns the last event at or before a position
+and the first strictly later event in that same logical Region. Equal-position
+events preserve their semantic order. Sorted storage supports binary search
+relative to the Region's beginning, including across circular index seams.
+Neighbor search must not borrow a point from another overlapping Region.
+
+A sparse Tock source can provide a complete point Region to a replayable Tick
+interpreter. The interpreter's authored forward callback publishes positional
+`IndexCoverage` for its Tick output; its reverse callback requests the point
+Region needed to interpret the demanded output positions. This does not change
+the output's Tick production into Region or Coverage production. Replayed Tick
+sample storage follows the demanded positions rather than copying the source's
+entire availability range. Authored Tock Regions and recorded Regions keep their
+complete membership and storage.

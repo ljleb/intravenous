@@ -1,4 +1,5 @@
 #include "test_support.h"
+#include <intravenous/graph_jit/background_storage_plan.h>
 
 namespace iv::test::graph_jit_tests {
 
@@ -430,6 +431,67 @@ TEST(GraphJitSampleStoragePlan, PacksExactTransientByteRangesAcrossLifetimes)
     ASSERT_LT(
         storage->sequential_pace_cursors[0].region.index,
         layout.regions.size());
+}
+
+TEST(GraphJitSampleStoragePlan, SharesOneProducerBetweenRealtimeAndReplayConnections)
+{
+    using namespace iv::graph_jit::detail;
+
+    iv::ChannelLayout const mono{
+        .channel_type = iv::ChannelTypeId::mono,
+        .sample_layout = iv::SampleStreamLayout::planar,
+    };
+    iv::NodeBundlePortId const source_port{1, iv::PortKind::sample, 0};
+    iv::SampleOutputChannelId const source_channel{1, 0, 0};
+    ConnectionAnalysisPlan connections;
+    SampleConnectionPlan realtime;
+    realtime.source_channels = {source_channel};
+    realtime.source_channel_timings = {SampleSourceChannelTimingPlan{
+        .source = source_channel, .source_layout = mono}};
+    realtime.canonical_source_port = source_port;
+    realtime.canonical_source_layout = mono;
+    realtime.target_port = {2, iv::PortKind::sample, 0};
+    realtime.target_layout = mono;
+    connections.sample_connections.push_back(realtime);
+    auto replay = realtime;
+    replay.target_port = {3, iv::PortKind::sample, 0};
+    replay.destination_access = PlannedDestinationAccess::random_access;
+    replay.source_channel_timings[0].destination_access = PlannedDestinationAccess::random_access;
+    replay.source_channel_timings[0].delivery = PlannedDeliveryMechanism::replayed_tick_to_random_access;
+    replay.source_channel_timings[0].contextually_replayable = true;
+    connections.sample_connections.push_back(replay);
+    connections.schedule.bundle_execution_position.resize(4);
+    connections.schedule.bundle_execution_position[1] = 0;
+    connections.schedule.bundle_execution_position[2] = 1;
+
+    SampleProducerGroupPlan group;
+    group.source_port = source_port;
+    group.source_channels = {source_channel};
+    group.canonical_source_layout = mono;
+    group.connection_indices = {0, 1};
+    group.has_realtime_connections = true;
+    group.has_background_connections = true;
+    group.storage_plan = iv::SampleConnectionStoragePlan{
+        iv::RealtimeBufferStorageKind::transient_stack};
+    group.live_interval = {.begin = 0, .end = 1};
+    connections.sample_producer_groups.push_back(group);
+
+    auto storage = build_sample_storage_plan(connections, 64);
+    ASSERT_TRUE(storage.has_value()) << storage.error();
+    ASSERT_EQ(storage->connection_representations.size(), 2u);
+    EXPECT_TRUE(storage->connection_representations[0].has_value());
+    EXPECT_FALSE(storage->connection_representations[1].has_value());
+    ASSERT_EQ(storage->producer_groups.size(), 1u);
+    EXPECT_TRUE(storage->producer_groups[0].has_value());
+    EXPECT_EQ(storage->representations.size(), 1u);
+    EXPECT_TRUE(storage->persistent_allocations.empty());
+    EXPECT_TRUE(storage->materializations.empty());
+
+    // A background connection from a different producer remains invalid.
+    connections.sample_connections[1].source_channel_timings[0].source = {4, 0, 0};
+    auto invalid = build_sample_storage_plan(connections, 64);
+    ASSERT_FALSE(invalid.has_value());
+    EXPECT_NE(invalid.error().find("foreign source port"), std::string::npos);
 }
 
 TEST(GraphJitSampleStoragePlan, LeavesBackgroundAccessBranchesUnresolved)
@@ -1889,6 +1951,29 @@ TEST(GraphJitSampleStoragePlan, RejectsTransientStorageThatCrossesKernelCalls)
     EXPECT_NE(
         storage.error().find("cross-kernel retained storage"),
         std::string::npos);
+}
+
+TEST(GraphJitBackgroundStoragePlan, SparseEventCountsSurviveConversionAndMixedFanin)
+{
+    iv::graph_jit::BackgroundStoragePlan plan;
+    plan.ports.resize(4);
+    for (auto& port : plan.ports) port.kind = iv::PortKind::event;
+    plan.ports[0].max_event_count = 3;
+    plan.ports[0].max_events_per_index = 100;
+    plan.ports[1].max_events_per_index = .5;
+    plan.ports[2].inputs = {0, 1};
+    plan.ports[2].max_events_per_index = 100.5;
+    plan.ports[3].inputs = {2}; // A conversion keeps the input's count bound.
+    plan.ports[3].max_events_per_index = 100.5;
+    auto bound = iv::graph_jit::detail::background_event_count_bound(plan, 3, 4);
+    ASSERT_TRUE(bound);
+    EXPECT_TRUE(bound->uses_finite_count);
+    EXPECT_EQ(bound->count, 5u); // three finite points plus ceil(.5 * 4)
+    auto empty = iv::graph_jit::detail::background_event_count_bound(plan, 3, 0);
+    ASSERT_TRUE(empty);
+    EXPECT_EQ(empty->count, 0u);
+    plan.ports[3].inputs = {3};
+    EXPECT_FALSE(iv::graph_jit::detail::background_event_count_bound(plan, 3, 4));
 }
 
 } // namespace iv::test::graph_jit_tests

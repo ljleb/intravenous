@@ -1045,8 +1045,14 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     "GraphJit sample producer group references an invalid connection");
             }
             auto const& connection = connections.sample_connections[connection_index];
+            // One producer can have both live and replay consumers. Ownership
+            // depends on the source port, not the connection's delivery domain.
             auto const belongs_to_group = !group.source_port
-                || connection_has_realtime_source_for_group(connection, group);
+                || std::ranges::any_of(
+                    connection.source_channel_timings,
+                    [&](SampleSourceChannelTimingPlan const& timing) {
+                        return source_channel_belongs_to_group(timing, group);
+                    });
             if (!belongs_to_group) {
                 return std::unexpected(
                     "GraphJit sample producer group contains a foreign source port");

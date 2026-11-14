@@ -5,6 +5,7 @@
 #include <intravenous/graph/builder/shape_traits.h>
 
 #include <concepts>
+#include <optional>
 #include <type_traits>
 #include <utility>
 
@@ -15,14 +16,31 @@ namespace iv::details {
     template<class T>
     concept graph_builder_event_port_like = std::convertible_to<std::remove_cvref_t<T>, EventPortRef>;
 
-    // This intentionally does not depend on the DSL's NodeLike concept. The
-    // builder reference layer needs the same event lifting before dsl.h has
-    // introduced its convenience concepts.
+    // Keep this independent of dsl.h's NodeLike convenience concept.
     template<class T>
-    concept graph_builder_single_event_output_like = requires(
-        std::remove_cvref_t<T> const& value) {
-        { value.node_ref().event_port() } -> std::same_as<EventPortRef>;
+    concept graph_builder_node_output_like = requires(std::remove_cvref_t<T> const& value) {
+        value.node_ref();
     };
+
+    template<class T>
+    consteval std::optional<PortKind> static_default_output_kind()
+    {
+        using Value = std::remove_cvref_t<T>;
+        if constexpr (requires { typename Value::NodeType; }) {
+            using Node = typename Value::NodeType;
+            if constexpr (has_outputs<Node> && has_constexpr_port_configs<Node>) {
+                if constexpr (port_config_count_v<decltype(Node::outputs())> != 0) {
+                    return is_continuous(port_config_at<0>(Node::outputs()))
+                        ? PortKind::sample : PortKind::event;
+                }
+            }
+        }
+        return std::nullopt;
+    }
+
+    template<class T>
+    inline constexpr bool dynamic_node_output_kind_v =
+        graph_builder_node_output_like<T> && !static_default_output_kind<T>();
 
     template<class T>
     constexpr EventPortRef lift_node_call_event_operand(T&& value)
@@ -30,8 +48,8 @@ namespace iv::details {
         if constexpr (graph_builder_event_port_like<T>) {
             return static_cast<EventPortRef>(std::forward<T>(value));
         } else {
-            static_assert(graph_builder_single_event_output_like<T>,
-                "an event input requires an event port or a node with one event output");
+            static_assert(graph_builder_node_output_like<T>,
+                "an event input requires an event port or a node with an event output");
             return std::forward<T>(value).node_ref().event_port();
         }
     }
@@ -105,16 +123,28 @@ namespace iv::details {
     inline constexpr bool unique_named_args_v = unique_named_args<Args...>::value;
 
     template<class T>
-    inline constexpr bool arg_targets_sample_input_v = !std::convertible_to<std::remove_cvref_t<T>, EventPortRef>;
+    inline constexpr bool arg_targets_sample_input_v = [] {
+        if constexpr (graph_builder_node_output_like<T>)
+            return static_default_output_kind<T>() == PortKind::sample;
+        else return !graph_builder_event_port_like<T>;
+    }();
 
     template<fixed_string Name, class T, NamedPortKind Kind>
     inline constexpr bool arg_targets_sample_input_v<NamedArg<Name, T, Kind>> = (Kind == NamedPortKind::sample);
 
     template<class T>
-    inline constexpr bool arg_targets_event_input_v = std::convertible_to<std::remove_cvref_t<T>, EventPortRef>;
+    inline constexpr bool arg_targets_event_input_v = [] {
+        if constexpr (graph_builder_node_output_like<T>)
+            return static_default_output_kind<T>() == PortKind::event;
+        else return graph_builder_event_port_like<T>;
+    }();
 
     template<fixed_string Name, class T, NamedPortKind Kind>
     inline constexpr bool arg_targets_event_input_v<NamedArg<Name, T, Kind>> = (Kind == NamedPortKind::event);
+
+    template<class... Args>
+    inline constexpr size_t dynamic_input_arg_count_v =
+        (0 + ... + (dynamic_node_output_kind_v<std::remove_cvref_t<Args>> ? 1u : 0u));
 
     template<class... Args>
     inline constexpr size_t sample_input_arg_count_v =

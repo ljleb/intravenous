@@ -127,6 +127,7 @@ public:
   constexpr size_t append_boundary_event_input(EventInputConfig);
   constexpr size_t append_boundary_event_output(EventOutputConfig);
   constexpr void clear_boundary_event_outputs();
+  constexpr void reorder_boundary_outputs(std::span<PortKind const>);
 
   constexpr ChannelLayout sample_input_layout(size_t) const;
   constexpr ChannelLayout sample_output_layout(size_t) const;
@@ -145,6 +146,8 @@ public:
   constexpr size_t event_input_index(std::string_view) const;
   constexpr size_t event_output_index(std::string_view) const;
   constexpr NodeBundlePortId input_port_at(
+      NodeBundleHandle, size_t) const;
+  constexpr NodeBundlePortId output_port_at(
       NodeBundleHandle, size_t) const;
   constexpr void import_into(size_t node_bundle_offset);
   // Rewrites every node-bundle handle this bundle stores (tiled members,
@@ -200,6 +203,7 @@ struct ConfiguredNodeBundleRecord {
   ReflectedNodeOperations operations{};
   std::shared_ptr<void const> node_storage{};
   std::shared_ptr<NodeStateStructures const> state_structures_storage{};
+  NodeConfigRelocations config_relocations{};
   NodeCodeKey code_key{};
   std::optional<RegisteredNodeTypeIdentity> registered_node_type_identity{};
   size_t node_size = 0;
@@ -317,6 +321,7 @@ public:
       NodeBundlePortId) const;
 
   constexpr NodeBundlePortId input_port_at(NodeBundleHandle, size_t) const;
+  constexpr NodeBundlePortId output_port_at(NodeBundleHandle, size_t) const;
   constexpr NodePorts const &typed_ports(NodeBundleHandle) const;
   constexpr NodeBundleHandle tiled_member(
       NodeBundleHandle, size_t channel) const;
@@ -534,6 +539,16 @@ constexpr NodeBundlePortId GraphBuilderNodeBundles::input_port_at(
     return {handle, resolved.port_kind, resolved.port_index};
   }
   return candidate.input_port_at(handle, position);
+}
+
+constexpr NodeBundlePortId GraphBuilderNodeBundles::output_port_at(
+    NodeBundleHandle handle, size_t position) const {
+  auto const& candidate = bundle(handle);
+  if (auto const boundary = candidate.subgraph_boundary_handle()) {
+    auto const resolved = output_port_at(*boundary, position);
+    return {handle, resolved.port_kind, resolved.port_index};
+  }
+  return candidate.output_port_at(handle, position);
 }
 
 constexpr std::optional<NodeBundleHandle>
@@ -908,6 +923,27 @@ constexpr void NodeBundle::clear_boundary_event_outputs() {
   });
 }
 
+constexpr void NodeBundle::reorder_boundary_outputs(std::span<PortKind const> kinds) {
+  if (!_payload) details::error("empty NodeBundle");
+  auto* boundary = std::get_if<BoundaryNodeBundle>(&*_payload);
+  if (!boundary) details::error("output declaration order requires a boundary bundle");
+  auto& configs = boundary->ports.output_configs;
+  if (kinds.size() != configs.size()) details::error("output declaration order has the wrong size");
+  std::vector<size_t> sample_positions, event_positions;
+  for (size_t i = 0; i < configs.size(); ++i)
+    (is_continuous(configs[i]) ? sample_positions : event_positions).push_back(i);
+  std::vector<OutputConfig> ordered;
+  ordered.reserve(configs.size());
+  size_t sample = 0, event = 0;
+  for (auto kind : kinds) {
+    auto const& positions = kind == PortKind::sample ? sample_positions : event_positions;
+    auto& index = kind == PortKind::sample ? sample : event;
+    if (index >= positions.size()) details::error("output declaration order has inconsistent kinds");
+    ordered.push_back(std::move(configs[positions[index++]]));
+  }
+  configs = std::move(ordered);
+}
+
 constexpr ChannelLayout NodeBundle::sample_input_layout(size_t i) const {
   return sample_input_descriptor(i).config.channel_layout;
 }
@@ -1009,6 +1045,21 @@ constexpr NodeBundlePortId NodeBundle::input_port_at(
       return payload.ports.input_port_at(handle, position);
     } else {
       details::error("subgraph input order must resolve through its boundary");
+    }
+  }, *_payload);
+}
+
+constexpr NodeBundlePortId NodeBundle::output_port_at(
+    NodeBundleHandle handle, size_t position) const {
+  if (!_payload) details::error("empty NodeBundle");
+  return std::visit([&](auto const& payload) -> NodeBundlePortId {
+    using Bundle = std::remove_cvref_t<decltype(payload)>;
+    if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>
+                  || std::is_same_v<Bundle, TiledNodeBundle>
+                  || std::is_same_v<Bundle, BoundaryNodeBundle>) {
+      return payload.ports.output_port_at(handle, position);
+    } else {
+      details::error("subgraph output order must resolve through its boundary");
     }
   }, *_payload);
 }
@@ -1502,6 +1553,7 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_configured_recor
           .operations = operations,
           .node_storage = record.node_storage,
           .state_structures_storage = record.state_structures_storage,
+          .config_relocations = record.config_relocations,
           .code_key = record.code_key,
           .registered_node_type_identity = record.registered_node_type_identity,
           .node_size = record.node_size,

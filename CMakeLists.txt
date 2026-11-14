@@ -14,9 +14,9 @@ endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 enable_testing()
 
-if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 23)
+if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR NOT CMAKE_CXX_COMPILER_VERSION MATCHES "^23\\.")
     message(FATAL_ERROR
-        "Intravenous modules require Clang 23 or newer for the LLVM reload pipeline; "
+        "Intravenous requires Clang 23 to match its LLVM and package metadata plugin; "
         "configured compiler is ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} "
         "(${CMAKE_CXX_COMPILER})")
 endif()
@@ -30,6 +30,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(LLVM REQUIRED CONFIG)
 find_package(Clang REQUIRED CONFIG)
+
+# The environment belongs to this installation and survives automatic
+# regeneration from a desktop process outside the original development shell.
+set(IV_APPLICATION_ENVIRONMENT_DIRECTORY "${CMAKE_BINARY_DIR}/src/intravenous")
+include("${CMAKE_SOURCE_DIR}/src/intravenous/module/template/ApplicationEnvironment.cmake")
+foreach(iv_language C CXX)
+    list(PREPEND CMAKE_${iv_language}_COMPILER_LAUNCHER "${IV_APPLICATION_ENVIRONMENT_LAUNCHER}")
+    list(PREPEND CMAKE_${iv_language}_LINKER_LAUNCHER "${IV_APPLICATION_ENVIRONMENT_LAUNCHER}")
+endforeach()
 if(NOT LLVM_VERSION_MAJOR EQUAL 23)
     message(FATAL_ERROR "Intravenous requires LLVM 23; found LLVM ${LLVM_PACKAGE_VERSION}")
 endif()

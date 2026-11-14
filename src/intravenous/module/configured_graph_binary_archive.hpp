@@ -461,6 +461,8 @@ inline void write_event_output(Writer& w, EventOutputConfig const& value)
     w.pod(value.max_events_per_index);
     write_output_production(w, value.production);
     write_output_retention(w, value.retention);
+    w.flag(value.max_event_count.has_value());
+    if (value.max_event_count) w.size(*value.max_event_count);
 }
 
 inline EventOutputConfig read_event_output(Reader& r)
@@ -471,6 +473,7 @@ inline EventOutputConfig read_event_output(Reader& r)
         .max_events_per_index = r.pod<double>(),
         .production = read_output_production(r),
         .retention = read_output_retention(r),
+        .max_event_count = r.flag() ? std::optional(r.size()) : std::nullopt,
     };
 }
 
@@ -896,6 +899,11 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
                     || config.bytes.size() - relocation.byte_offset < sizeof(char const*)) {
                     throw std::runtime_error("node configuration pointer relocation is out of bounds");
                 }
+                if (relocation.immutable_data) {
+                    // Persist the owned bytes, never their process address.
+                    std::fill_n(config.bytes.begin() + relocation.byte_offset,
+                        sizeof(void*), std::byte{});
+                }
             }
             result.node_configs.push_back(std::move(config));
         } else if (view.kind == ConfiguredNodeBundleKind::tiled) {
@@ -1008,6 +1016,20 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
         auto* storage = ::operator new(
             config.bytes.size(), std::align_val_t{allocation_alignment});
         std::memcpy(storage, config.bytes.data(), config.bytes.size());
+        for (auto const& relocation : config.relocations) {
+            if (!relocation.immutable_data) continue;
+            auto const& data = *relocation.immutable_data;
+            if (relocation.retained_global_index || !data.storage
+                || relocation.addend >= data.bytes.size()
+                || relocation.byte_offset > config.bytes.size()
+                || sizeof(void*) > config.bytes.size() - relocation.byte_offset) {
+                ::operator delete(storage, std::align_val_t{allocation_alignment});
+                throw std::runtime_error("invalid serialized immutable configuration data");
+            }
+            auto* pointer = static_cast<std::byte const*>(data.storage.get()) + relocation.addend;
+            std::memcpy(static_cast<std::byte*>(storage) + relocation.byte_offset,
+                &pointer, sizeof(pointer));
+        }
         return std::shared_ptr<void const>(
             storage,
             [allocation_alignment](void const* pointer) {
@@ -1045,7 +1067,10 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
                 throw std::runtime_error(
                     "serialized node config layout does not match configured graph");
             }
-            record.node_storage = node_config_storage.empty()
+            record.config_relocations = config.relocations;
+            bool const has_immutable_data = std::ranges::any_of(config.relocations,
+                [](auto const& relocation) { return bool(relocation.immutable_data); });
+            record.node_storage = node_config_storage.empty() || has_immutable_data
                 ? make_owned_config_storage(config)
                 : node_config_storage[index];
             if (!record.node_storage) {

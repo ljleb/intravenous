@@ -2,6 +2,7 @@
 
 #include <intravenous/compat.h>
 #include <intravenous/graph_jit/event_conversion_runtime.h>
+#include <intravenous/graph_jit/background_storage_plan.h>
 
 #include <algorithm>
 #include <array>
@@ -104,6 +105,8 @@ public:
         return std::holds_alternative<TriggerEvent>(event);
     case EventTypeId::boundary:
         return std::holds_alternative<BoundaryEvent>(event);
+    case EventTypeId::sample:
+        return std::holds_alternative<SampleEvent>(event);
     case EventTypeId::midi:
         return std::holds_alternative<MidiEvent>(event);
     case EventTypeId::count:
@@ -349,6 +352,8 @@ class TransactionEventStorage {
     EventTypeId type_ = EventTypeId::empty;
     std::vector<GlobalIndexRange> region_ranges_{};
     std::vector<Region> regions_{};
+    std::optional<std::size_t> max_event_count_{};
+    std::size_t written_events_ = 0;
 
     [[nodiscard]] bool write_to_region(
         std::size_t region_index,
@@ -360,13 +365,26 @@ class TransactionEventStorage {
         if (!region.range.contains(event.time)
             || !event_matches_type(type_, event.value)
             || region.events.size() == region.capacity
+            || (max_event_count_ && written_events_ == *max_event_count_)
             || (!region.events.empty()
                 && RangeRelativeIndexOrder{region.range.begin}(
                     event.time, region.events.back().time))) {
             return false;
         }
-        region.events.push_back(event);
-        region.source_indices.push_back(source_index);
+        try {
+            // Tock storage is background-owned. Grow with actual events,
+            // rather than reserving the density bound over an entire clip.
+            region.events.push_back(event);
+            try {
+                region.source_indices.push_back(source_index);
+            } catch (...) {
+                region.events.pop_back();
+                return false;
+            }
+        } catch (...) {
+            return false;
+        }
+        ++written_events_;
         return true;
     }
 
@@ -377,7 +395,7 @@ class TransactionEventStorage {
             TimedEvent const* event = nullptr;
             std::size_t source_index = 0;
             std::size_t region = 0;
-            std::size_t ordinal = 0;
+            std::size_t event_index = 0;
         };
         std::vector<Entry> entries;
         for (std::size_t region_index = 0;
@@ -389,7 +407,7 @@ class TransactionEventStorage {
                     .event = std::addressof(region.events[event]),
                     .source_index = region.source_indices[event],
                     .region = region_index,
-                    .ordinal = event,
+                    .event_index = event,
                 });
             }
         }
@@ -405,7 +423,7 @@ class TransactionEventStorage {
                 if (left.region != right.region) {
                     return left.region < right.region;
                 }
-                return left.ordinal < right.ordinal;
+                return left.event_index < right.event_index;
             });
         for (auto const& entry : entries) {
             visit(*entry.event, entry.source_index);
@@ -417,9 +435,11 @@ public:
         IndexCoverage const& coverage,
         std::span<GlobalIndexRange const> regions,
         EventTypeId type,
-        double max_events_per_index)
+        double max_events_per_index,
+        std::optional<std::size_t> max_event_count = std::nullopt)
         : coverage_(&coverage)
         , type_(type)
+        , max_event_count_(max_event_count)
     {
         if (type >= EventTypeId::count) {
             throw std::invalid_argument(
@@ -441,7 +461,7 @@ public:
                 throw std::invalid_argument(
                     "background event storage has an invalid Region");
             }
-            auto const capacity = event_count_for_sample_span(
+            auto const capacity = max_event_count ? max_event_count : event_count_for_sample_span(
                 max_events_per_index, static_cast<std::size_t>(range.extent));
             if (!capacity) {
                 throw std::length_error(
@@ -451,8 +471,9 @@ public:
                 .range = range,
                 .capacity = *capacity,
             };
-            region.events.reserve(region.capacity);
-            region.source_indices.reserve(region.capacity);
+            auto const initial_capacity = std::min(region.capacity, std::size_t{64});
+            region.events.reserve(initial_capacity);
+            region.source_indices.reserve(initial_capacity);
             regions_.push_back(std::move(region));
         }
     }
@@ -497,8 +518,8 @@ public:
     {
         if (region_index >= regions_.size()) return;
         auto const& region = regions_[region_index];
-        for (auto const& event : region.events) {
-            if (requested.contains(event.time)) visitor(visitor_data, event);
+        for (auto const& event : sorted_event_range(region.events, region.range, requested)) {
+            visitor(visitor_data, event);
         }
     }
 
@@ -545,6 +566,12 @@ public:
                 static_cast<TransactionEventStorage const*>(opaque)
                     ->for_each_region(
                         region_index, region, visitor_data, visitor);
+            },
+            .find_neighbors = +[](void const* opaque, std::size_t region, GlobalIndex position) {
+                auto const& self = *static_cast<TransactionEventStorage const*>(opaque);
+                if (region >= self.regions_.size()) return EventNeighbors{};
+                auto const& selected = self.regions_[region];
+                return sorted_event_neighbors(selected.events, selected.range.begin, position);
             },
             .for_each_indexed_event = +[](
                 void const* opaque,
@@ -806,6 +833,12 @@ public:
                     ->for_each_region(
                         region_index, region, visitor_data, visitor);
             },
+            .find_neighbors = +[](void const* opaque, std::size_t region, GlobalIndex position) {
+                auto const& self = *static_cast<PersistedEventReader const*>(opaque);
+                if (region >= self.source_regions_.size()) return EventNeighbors{};
+                return self.snapshot_->event_neighbors(self.output_, self.type_,
+                    self.source_regions_[region], position);
+            },
         };
     }
 };
@@ -1064,7 +1097,8 @@ BackgroundStorageRealization::BackgroundStorageRealization(
                             != first_storage.continuous_geometry
                     : candidate.event_type != first_storage.event_type
                         || candidate.max_events_per_index
-                            != first_storage.max_events_per_index;
+                            != first_storage.max_events_per_index
+                        || candidate.max_event_count != first_storage.max_event_count;
             })) {
             throw std::invalid_argument(
                 "background output storage roles disagree on value representation");
@@ -1162,6 +1196,16 @@ BackgroundStorageRealization::BackgroundStorageRealization(
                 created->sample_read = created->owned_sample->read_view();
                 created->sample_write = created->owned_sample->write_view();
             } else {
+                std::size_t selected_extent = 0;
+                for (auto region : selection_.storage_regions[index]) {
+                    if (region.extent > std::numeric_limits<std::size_t>::max() - selected_extent)
+                        throw std::length_error("background event selection is too large");
+                    selected_extent += static_cast<std::size_t>(region.extent);
+                }
+                auto bound = graph_jit::detail::background_event_count_bound(plan_->storage, index, selected_extent);
+                if (!bound) throw std::length_error("background event bound is not representable");
+                auto finite_count = bound->uses_finite_count
+                    ? std::optional<std::size_t>{bound->count} : std::nullopt;
                 if (planned.output_port
                     && *planned.output_port < output_events.size()) {
                     auto& shared = output_events[*planned.output_port];
@@ -1170,7 +1214,7 @@ BackgroundStorageRealization::BackgroundStorageRealization(
                             *created->coverage,
                             selection_.storage_regions[index],
                             planned.event_type,
-                            planned.max_events_per_index);
+                            planned.max_events_per_index, finite_count);
                     }
                     created->owned_event = shared;
                 } else {
@@ -1179,7 +1223,7 @@ BackgroundStorageRealization::BackgroundStorageRealization(
                             *created->coverage,
                             selection_.storage_regions[index],
                             planned.event_type,
-                            planned.max_events_per_index);
+                            planned.max_events_per_index, finite_count);
                 }
                 created->event_read = created->owned_event->read_view();
                 created->event_write = created->owned_event->write_view();

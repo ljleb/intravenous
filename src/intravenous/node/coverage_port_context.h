@@ -5,6 +5,7 @@
 // views only expose the storage selected for one node invocation.
 
 #include <intravenous/coverage.h>
+#include <intravenous/event_sequence.h>
 #include <intravenous/node/static_port_access.h>
 #include <intravenous/node/traits.h>
 
@@ -92,6 +93,7 @@ struct RandomAccessEventInputPort {
     std::size_t region_count = 0;
     IndexCoverage const* coverage_value = nullptr;
     ForEachEvent for_each_event = nullptr;
+    EventNeighbors (*find_neighbors)(void const*, std::size_t, GlobalIndex) = nullptr;
 
     [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
@@ -330,7 +332,8 @@ public:
     {}
 
     [[nodiscard]] IndexCoverage const& required() const noexcept
-    requires (Production == OutputProductionKind::coverage)
+    requires (Production == OutputProductionKind::coverage
+        || Production == OutputProductionKind::tick)
     {
         return requirement_.required();
     }
@@ -362,6 +365,13 @@ public:
     [[nodiscard]] GlobalIndexRange range() const noexcept
     {
         return port_->region_ranges[index_];
+    }
+
+    [[nodiscard]] EventNeighbors neighbors(GlobalIndex position) const
+    {
+        IV_ASSERT(range().contains(position), "event neighbor lookup lies outside its logical Region");
+        IV_ASSERT(port_->find_neighbors != nullptr, "event input has no indexed lookup binding");
+        return port_->find_neighbors(port_->data, index_, position);
     }
 
     template<typename Fn>
@@ -529,6 +539,14 @@ public:
         const noexcept
     {
         return change_.previous_regions();
+    }
+
+    // Replay availability is positional. It does not turn a Tick output into
+    // an authored Region/Coverage output or assign clip membership to samples.
+    void publish(IndexCoverage const& coverage) const
+    requires (Production == OutputProductionKind::tick)
+    {
+        change_.publish_coverage(coverage);
     }
 
     void publish(std::span<GlobalIndexRange const> regions) const
@@ -864,17 +882,29 @@ struct PropagateForwardCoverageContext {
     [[nodiscard]] auto input() const
     requires details::has_constexpr_port_configs<Node>
     {
-        static_assert(details::static_input_port_is_random_access<Node, Name>(),
-            "forward coverage can only inspect background inputs");
+        static_assert(details::has_tick_family_v<Node>
+                || details::static_input_port_is_random_access<Node, Name>(),
+            "forward coverage requires Tock inputs or replayable Tick inputs");
         if constexpr (details::static_input_port_kind<Node, Name>()
             == PortKind::sample) {
-            constexpr auto index = details::static_random_access_input_port_index<Node, Name>();
+            constexpr auto index = [] {
+                if constexpr (details::has_tick_family_v<Node>) {
+                    return details::static_input_port_index<Node, Name>();
+                } else {
+                    return details::static_random_access_input_port_index<Node, Name>();
+                }
+            }();
             IV_ASSERT(index < inputs.size(),
                 "background sample input is absent from forward context");
             return details::StaticInputCoverageChange{inputs[index]};
         } else {
-            constexpr auto index =
-                details::static_random_access_event_input_port_index<Node, Name>();
+            constexpr auto index = [] {
+                if constexpr (details::has_tick_family_v<Node>) {
+                    return details::static_event_input_port_index<Node, Name>();
+                } else {
+                    return details::static_random_access_event_input_port_index<Node, Name>();
+                }
+            }();
             IV_ASSERT(index < event_inputs.size(),
                 "background event input is absent from forward context");
             return details::StaticInputCoverageChange{event_inputs[index]};
@@ -885,21 +915,31 @@ struct PropagateForwardCoverageContext {
     [[nodiscard]] auto output() const
     requires details::has_constexpr_port_configs<Node>
     {
-        static_assert(
-            details::static_output_port_is_tock<Node, Name>(),
-            "forward coverage can only publish background outputs");
-        constexpr auto production =
-            details::static_output_port_production<Node, Name>();
+        static_assert(details::has_tick_family_v<Node>
+                || details::static_output_port_is_tock<Node, Name>(),
+            "forward coverage requires Tock outputs or replayable Tick outputs");
+        constexpr auto production = details::static_output_port_production<Node, Name>();
         if constexpr (details::static_output_port_kind<Node, Name>()
             == PortKind::sample) {
-            constexpr auto index = details::static_tock_output_port_index<Node, Name>();
+            constexpr auto index = [] {
+                if constexpr (details::has_tick_family_v<Node>) {
+                    return details::static_output_port_index<Node, Name>();
+                } else {
+                    return details::static_tock_output_port_index<Node, Name>();
+                }
+            }();
             IV_ASSERT(index < outputs.size(),
                 "background sample output is absent from forward context");
             return details::StaticOutputCoverageChange<production>{
                 outputs[index]};
         } else {
-            constexpr auto index =
-                details::static_tock_event_output_port_index<Node, Name>();
+            constexpr auto index = [] {
+                if constexpr (details::has_tick_family_v<Node>) {
+                    return details::static_event_output_port_index<Node, Name>();
+                } else {
+                    return details::static_tock_event_output_port_index<Node, Name>();
+                }
+            }();
             IV_ASSERT(index < event_outputs.size(),
                 "background event output is absent from forward context");
             return details::StaticOutputCoverageChange<production>{
@@ -921,21 +961,31 @@ struct PropagateReverseCoverageContext {
     [[nodiscard]] auto output() const
     requires details::has_constexpr_port_configs<Node>
     {
-        static_assert(
-            details::static_output_port_is_tock<Node, Name>(),
-            "reverse coverage can only inspect background outputs");
-        constexpr auto production =
-            details::static_output_port_production<Node, Name>();
+        static_assert(details::has_tick_family_v<Node>
+                || details::static_output_port_is_tock<Node, Name>(),
+            "reverse coverage requires Tock outputs or replayable Tick outputs");
+        constexpr auto production = details::static_output_port_production<Node, Name>();
         if constexpr (details::static_output_port_kind<Node, Name>()
             == PortKind::sample) {
-            constexpr auto index = details::static_tock_output_port_index<Node, Name>();
+            constexpr auto index = [] {
+                if constexpr (details::has_tick_family_v<Node>) {
+                    return details::static_output_port_index<Node, Name>();
+                } else {
+                    return details::static_tock_output_port_index<Node, Name>();
+                }
+            }();
             IV_ASSERT(index < outputs.size(),
                 "background sample output is absent from reverse context");
             return details::StaticOutputCoverageRequirement<production>{
                 outputs[index]};
         } else {
-            constexpr auto index =
-                details::static_tock_event_output_port_index<Node, Name>();
+            constexpr auto index = [] {
+                if constexpr (details::has_tick_family_v<Node>) {
+                    return details::static_event_output_port_index<Node, Name>();
+                } else {
+                    return details::static_tock_event_output_port_index<Node, Name>();
+                }
+            }();
             IV_ASSERT(index < event_outputs.size(),
                 "background event output is absent from reverse context");
             return details::StaticOutputCoverageRequirement<production>{
@@ -947,19 +997,32 @@ struct PropagateReverseCoverageContext {
     [[nodiscard]] auto input() const
     requires details::has_constexpr_port_configs<Node>
     {
-        static_assert(details::static_input_port_is_random_access<Node, Name>(),
-            "reverse coverage can only require background inputs");
-        constexpr auto access = details::static_input_port_access<Node, Name>();
+        static_assert(details::has_tick_family_v<Node>
+                || details::static_input_port_is_random_access<Node, Name>(),
+            "reverse coverage requires Tock inputs or replayable Tick inputs");
+        constexpr auto access = details::has_tick_family_v<Node>
+            ? InputAccessKind::coverage : details::static_input_port_access<Node, Name>();
         if constexpr (details::static_input_port_kind<Node, Name>()
             == PortKind::sample) {
-            constexpr auto index = details::static_random_access_input_port_index<Node, Name>();
+            constexpr auto index = [] {
+                if constexpr (details::has_tick_family_v<Node>) {
+                    return details::static_input_port_index<Node, Name>();
+                } else {
+                    return details::static_random_access_input_port_index<Node, Name>();
+                }
+            }();
             IV_ASSERT(index < inputs.size(),
                 "background sample input is absent from reverse context");
             return details::StaticInputCoverageRequirement<access>{
                 inputs[index]};
         } else {
-            constexpr auto index =
-                details::static_random_access_event_input_port_index<Node, Name>();
+            constexpr auto index = [] {
+                if constexpr (details::has_tick_family_v<Node>) {
+                    return details::static_event_input_port_index<Node, Name>();
+                } else {
+                    return details::static_random_access_event_input_port_index<Node, Name>();
+                }
+            }();
             IV_ASSERT(index < event_inputs.size(),
                 "background event input is absent from reverse context");
             return details::StaticInputCoverageRequirement<access>{

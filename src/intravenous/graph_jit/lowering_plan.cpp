@@ -236,6 +236,10 @@ std::expected<GraphAnalysis, std::string> analyze_graph(
             return std::unexpected(
                 "resolved primitive implementation is incomplete at the GraphJit lowering boundary");
         }
+        if (implementation->intrinsically_replayable && !has_tick) {
+            return std::unexpected(
+                "only Tick primitives may declare intrinsic replayability");
+        }
         if (has_tick && (implementation->tick_block_batch.empty()
                 || implementation->skip_block.empty()
                 || implementation->skip_block_batch.empty())) {
@@ -251,11 +255,14 @@ std::expected<GraphAnalysis, std::string> analyze_graph(
         if ((!has_tick && (!implementation->tick_block_batch.empty()
                 || !implementation->skip_block.empty()
                 || !implementation->skip_block_batch.empty()))
-            || (!has_tock && (!implementation->tock_coverage_batch.empty()
-                || !implementation->propagate_forward_coverage.empty()
-                || !implementation->propagate_forward_coverage_batch.empty()
-                || !implementation->propagate_reverse_coverage.empty()
-                || !implementation->propagate_reverse_coverage_batch.empty()))
+            || (!has_tock && !implementation->tock_coverage_batch.empty())
+            || (!has_tock && !implementation->intrinsically_replayable
+                && (!implementation->propagate_forward_coverage.empty()
+                    || !implementation->propagate_forward_coverage_batch.empty()
+                    || !implementation->propagate_reverse_coverage.empty()
+                    || !implementation->propagate_reverse_coverage_batch.empty()))
+            || (implementation->propagate_forward_coverage.empty()
+                != implementation->propagate_forward_coverage_batch.empty())
             || (implementation->propagate_reverse_coverage.empty()
                 != implementation->propagate_reverse_coverage_batch.empty())) {
             return std::unexpected(
@@ -2561,6 +2568,8 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
                     implementation.tock_coverage_batch,
                     "tock_coverage_batch",
                     CallbackImportAbi::batch);
+            }
+            if (node.authored_forward_coverage) {
                 callbacks.propagate_forward_coverage = add_callback(
                     package,
                     implementation.propagate_forward_coverage,
@@ -2571,6 +2580,8 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
                     implementation.propagate_forward_coverage_batch,
                     "propagate_forward_coverage_batch",
                     CallbackImportAbi::batch);
+            }
+            if (node.authored_reverse_coverage) {
                 if (node.accumulators.input_requirement_count != 0) {
                     if (implementation.propagate_reverse_coverage.empty()) {
                         return std::unexpected(
@@ -2596,6 +2607,16 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
         if (!relocation.relocation) {
             return std::unexpected(
                 "GraphJit lowering received an empty configuration relocation record");
+        }
+        if (relocation.relocation->immutable_data) {
+            auto const& data = *relocation.relocation->immutable_data;
+            if (relocation.relocation->retained_global_index || relocation.revision
+                || relocation.retained_global || !data.storage || data.bytes.empty()
+                || !std::has_single_bit(data.alignment)
+                || relocation.relocation->addend >= data.bytes.size()) {
+                return std::unexpected("invalid immutable configuration data relocation");
+            }
+            continue;
         }
         if (!relocation.relocation->retained_global_index) {
             if (relocation.revision || relocation.retained_global) {
@@ -2718,7 +2739,8 @@ std::expected<ConfigurationPlan, std::string> plan_node_configurations(
             }
             auto imported = imported_global_symbol(relocation);
             if (!imported) return std::unexpected(std::move(imported.error()));
-            if (imported->empty() && relocation.relocation->addend != 0) {
+            if (imported->empty() && !relocation.relocation->immutable_data
+                && relocation.relocation->addend != 0) {
                 return std::unexpected(
                     "explicit-null configuration relocation has a non-zero addend");
             }
@@ -2729,6 +2751,7 @@ std::expected<ConfigurationPlan, std::string> plan_node_configurations(
                 .byte_offset = offset,
                 .addend = relocation.relocation->addend,
                 .retained_global_symbol = std::move(*imported),
+                .immutable_data = relocation.relocation->immutable_data,
             });
         }
         std::ranges::sort(node.relocations, {}, &NodeConfigurationRelocationPlan::byte_offset);

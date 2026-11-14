@@ -1,4 +1,5 @@
 #include "test_support.h"
+#include <intravenous/graph/names.h>
 
 namespace iv::test::graph_jit_tests {
 
@@ -440,6 +441,75 @@ TEST(GraphJitEventMergeRuntime, StagedMergePreservesWrappedRingOrder)
         EXPECT_EQ(event->bytes[1], expected_notes[i]);
         EXPECT_EQ(source_indices[index], expected_indices[i]);
     }
+}
+
+} // namespace iv::test::graph_jit_tests
+
+namespace iv::test::graph_jit_tests {
+TEST(GraphJitEventSearch, FindsSurroundingPointsWhenRequestedRangeContainsNoEvents)
+{
+    std::array events{
+        iv::TimedEvent{.time = index(0), .value = iv::SampleEvent{iv::Sample{0}}},
+        iv::TimedEvent{.time = index(100), .value = iv::SampleEvent{iv::Sample{1}}},
+    };
+    EXPECT_TRUE(iv::sorted_event_range(events, range(0, 101), range(40, 50)).empty());
+    auto neighbors = iv::sorted_event_neighbors(events, index(0), index(40));
+    ASSERT_TRUE(neighbors.at_or_before);
+    ASSERT_TRUE(neighbors.after);
+    EXPECT_EQ(neighbors.at_or_before->time, index(0));
+    EXPECT_EQ(neighbors.after->time, index(100));
+    EXPECT_EQ(std::get<iv::SampleEvent>(neighbors.after->value).value, iv::Sample{1});
+}
+
+TEST(GraphJitEventSearch, UsesLastEqualPositionAndKeepsCircularRegionOrder)
+{
+    auto const begin = iv::GlobalIndex::from_bits(std::uint64_t{1} << 63).retreated_by(2);
+    std::array events{
+        iv::TimedEvent{.time = begin, .value = iv::SampleEvent{iv::Sample{1}}},
+        iv::TimedEvent{.time = begin.advanced_by(2), .value = iv::SampleEvent{iv::Sample{2}}},
+        iv::TimedEvent{.time = begin.advanced_by(2), .value = iv::SampleEvent{iv::Sample{3}}},
+        iv::TimedEvent{.time = begin.advanced_by(5), .value = iv::SampleEvent{iv::Sample{4}}},
+    };
+    auto neighbors = iv::sorted_event_neighbors(events, begin, begin.advanced_by(2));
+    ASSERT_TRUE(neighbors.at_or_before);
+    ASSERT_TRUE(neighbors.after);
+    EXPECT_EQ(std::get<iv::SampleEvent>(neighbors.at_or_before->value).value, iv::Sample{3});
+    EXPECT_EQ(neighbors.after->time, begin.advanced_by(5));
+    auto selected = iv::sorted_event_range(events, {begin, 6}, {begin.advanced_by(2), 3});
+    ASSERT_EQ(selected.size(), 2u);
+    EXPECT_EQ(std::get<iv::SampleEvent>(selected[0].value).value, iv::Sample{2});
+    EXPECT_EQ(std::get<iv::SampleEvent>(selected[1].value).value, iv::Sample{3});
+}
+
+TEST(GraphJitEventSearch, EmptySequenceAndEdgesHaveNoInventedNeighbor)
+{
+    EXPECT_FALSE(iv::sorted_event_neighbors({}, index(0), index(1)).at_or_before);
+    std::array events{iv::TimedEvent{.time = index(10), .value = iv::SampleEvent{iv::Sample{1}}}};
+    EXPECT_FALSE(iv::sorted_event_neighbors(events, index(0), index(5)).at_or_before);
+    EXPECT_FALSE(iv::sorted_event_neighbors(events, index(0), index(15)).after);
+    EXPECT_EQ(iv::details::event_type_name(iv::EventTypeId::sample), "sample");
+    EXPECT_THROW(iv::EventConversionRegistry::plan(iv::EventTypeId::sample, iv::EventTypeId::midi), std::logic_error);
+}
+TEST(GraphJitEventSearch, MaterializedNeighborsPreserveOverlappingRegionMembershipAcrossWrap)
+{
+    auto const begin = iv::GlobalIndex::from_bits(~std::uint64_t{0} - 2);
+    auto event = [&](std::size_t offset, float value) {
+        return iv::TimedEvent{.time = begin.advanced_by(offset), .value = iv::SampleEvent{iv::Sample{value}}};
+    };
+    auto input = iv::make_tick_materialized_event_input(0, iv::EventTypeId::sample,
+        std::vector<iv::GlobalIndexRange>{{begin, 7}, {begin, 7}},
+        std::vector<std::vector<iv::TimedEvent>>{{event(0, 1), event(6, 2)}, {event(1, 10), event(5, 20)}},
+        std::vector<std::vector<std::size_t>>{{0, 0}, {1, 1}});
+    auto const first = input.neighbors(0, begin.advanced_by(3));
+    auto const second = input.neighbors(1, begin.advanced_by(3));
+    ASSERT_TRUE(first.at_or_before);
+    ASSERT_TRUE(first.after);
+    ASSERT_TRUE(second.at_or_before);
+    ASSERT_TRUE(second.after);
+    EXPECT_FLOAT_EQ(static_cast<float>(std::get<iv::SampleEvent>(first.at_or_before->value).value), 1);
+    EXPECT_FLOAT_EQ(static_cast<float>(std::get<iv::SampleEvent>(first.after->value).value), 2);
+    EXPECT_FLOAT_EQ(static_cast<float>(std::get<iv::SampleEvent>(second.at_or_before->value).value), 10);
+    EXPECT_FLOAT_EQ(static_cast<float>(std::get<iv::SampleEvent>(second.after->value).value), 20);
 }
 
 } // namespace iv::test::graph_jit_tests

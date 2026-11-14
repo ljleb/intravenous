@@ -262,12 +262,21 @@ try {
 NodeRef::operator SamplePortRef() const
 try {
     if (!_session) details::error("attempted to use a null NodeRef");
-    if (sample_output_count() != 1) {
-        details::error(to_string() + " does not have exactly 1 output port");
+    if (sample_output_count() == 0) {
+        details::error(to_string() + " has no sample output port");
     }
     return (*this)[0];
 } catch (...) {
     // An exception leaving a session operation fails the session.
+    details::iv_builder_record_failure(_session, std::current_exception(), {});
+    throw;
+}
+
+NodeBundlePortId NodeRef::output_port_at(size_t position) const
+try {
+    if (!_session) details::error("attempted to use a null NodeRef");
+    return details::iv_builder_output_port_at(_session, _index, position);
+} catch (...) {
     details::iv_builder_record_failure(_session, std::current_exception(), {});
     throw;
 }
@@ -462,8 +471,8 @@ try {
 
 EventPortRef NodeRef::event_port() const
 try {
-    if (event_output_count() != 1) {
-        details::error(to_string() + " does not have exactly 1 event output port");
+    if (event_output_count() == 0) {
+        details::error(to_string() + " has no event output port");
     }
     return event_port(0);
 } catch (...) {

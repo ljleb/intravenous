@@ -623,13 +623,16 @@ public:
             && method->getParent()->getName() == "GraphBuilder"
             && sources_.is_user_source(call->getExprLoc())) {
             auto* builder = call->getImplicitObjectArgument();
+            unsigned sample_index = 0, event_index = 0;
             for (unsigned i = 0; i < call->getNumArgs(); ++i) {
                 auto const binding = named_port_binding(call->getArg(i));
+                bool const event = method_name == "event_outputs" || (binding && binding->event);
+                auto const index = event ? event_index++ : sample_index++;
                 if (!binding) continue;
                 result_.public_outputs.push_back({
                     .builder = builder,
-                    .event = method_name == "event_outputs",
-                    .index = i,
+                    .event = event,
+                    .index = index,
                     .span = binding->span,
                 });
             }
