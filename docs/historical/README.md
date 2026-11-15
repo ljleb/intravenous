@@ -6,6 +6,12 @@ These documents are retained because they record deleted architectures, supersed
 
 ## Superseded application and execution architecture
 
+- [Coverage Before Suspendable Propagation (2026-11-15)](./coverage_before_suspendable_propagation_2026-11-15.md)
+  retains the earlier value-blind, once-per-phase propagation and event
+  conversion contract. Its normative replacement is
+  [Suspendable Coverage Propagation And Cyclic Automation](../automation_and_suspendable_coverage_direction.md).
+
+
 - [Application Module Cleanup Direction](./application_module_cleanup_direction.md)
 - [Execution Model Direction](./execution_model_direction.md)
 - [Execution Recovery Blueprint](./execution_recovery_blueprint.md)

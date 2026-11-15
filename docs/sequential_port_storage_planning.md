@@ -1276,8 +1276,14 @@ Empty    -> (nothing except identity)
 `Trigger -> Boundary` is invalid because a trigger carries no duration/end
 semantics. `Trigger -> MIDI` and `Boundary -> MIDI` are invalid because a note,
 channel, velocity, and related MIDI details cannot be chosen objectively.
-Conversely, information-rich event types may collapse into `Trigger`, and any
-event type may be discarded into `Empty`.
+Conversely, information-rich event types may have **explicit** projections into
+`Trigger` or `Empty` when those projections have meaningful semantics; there
+is no universal requirement that every new event type convert to either.
+`EventConversionRegistry` represents directed, possibly branching conversions,
+not a complete graph or a strict type hierarchy. A type may have no outgoing
+or incoming conversion edges. The intended `CurvePointEvent` candidates and
+type-set event-port compatibility are described in
+[Cyclic Automation, Event Projections, And Suspendable Coverage Propagation](./automation_and_suspendable_coverage_direction.md).
 
 This rule also removes the old conversions which generated a second event at
 `t + 1`; current built-in conversions never invent a later timestamp. Tick-window

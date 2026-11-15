@@ -32,6 +32,7 @@ The primary application-architecture entry points are:
 - [Circular Global Timeline Indexing](./global_indexing.md)
 - [Circular Global Index Migration Status](./global_index_migration_status.md)
 - [Coverage, Random Access, And Background Evaluation](./coverage_and_background_evaluation.md)
+- [Cyclic Automation, Event Projections, And Suspendable Coverage Propagation](./automation_and_suspendable_coverage_direction.md)
 - [Random-Access Port Data, Audio Value Types, And Input Contract Direction](./random_access_port_data_direction.md)
 - [Sequential Port Storage And Connection Planning](./sequential_port_storage_planning.md)
 - [Event Propagation Tree Constraint](./event_propagation_tree_constraint.md)

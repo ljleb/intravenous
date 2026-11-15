@@ -5,6 +5,13 @@ full suite passed all 592 tests after the Front 4 background-delivery dependency
 landed. The superseded pre-implementation and intermediate statuses are retained in
 [Front 2 pre-implementation status](./historical/front_2_preimplementation_status.md)._
 
+> **Superseding planning direction (2026-11-15):**
+> [Suspendable coverage propagation](./automation_and_suspendable_coverage_direction.md)
+> keeps existing synchronous batch callbacks but also permits coroutine scalar
+> forward/reverse propagation. The old one-propagation-visit-per-node rule
+> below is replaced by readiness-driven scheduling; the original wording is
+> preserved [historically](./historical/coverage_before_suspendable_propagation_2026-11-15.md).
+
 The traits layer and reflected compiler ABI provide normalized scalar and batch Tick
 and skip operations. GraphJit invokes a compatible ready group through
 `tick_block_batch()`. When any lane has TTL activity, the generated Tick root first
@@ -109,8 +116,13 @@ static void propagate_reverse_coverage_batch(
     PropagateReverseCoverageBatchContext<MyNode>&);
 ```
 
-Where a propagation operation is compiler-generated rather than authored, that
-generated operation participates in the same normalization rules.
+A node may alternatively author the corresponding scalar
+`propagate_forward_coverage()` or `propagate_reverse_coverage()` with a
+suspendable coroutine task result instead of `void`. The concrete task ABI is
+an implementation decision. The initial suspendable contract does **not**
+require coroutine `_batch()` implementations. Where a propagation operation
+is compiler-generated rather than authored, it continues to participate in
+normalization without allocating a coroutine frame unnecessarily.
 
 Batch callbacks are `static`: no arbitrary lane is the distinguished `this` object.
 Every instance in the batch is a peer and is available through its lane view.
@@ -250,8 +262,9 @@ Therefore:
 
 - lane count must not change the semantic result of a lane;
 - lane ordering must not create a graph-visible dependency between lanes;
-- a node instance appears at most once in one batch invocation for a given scheduled
-  operation/phase;
+- a node instance appears at most once in one **batch invocation** for a given
+  scheduled operation; this does not prohibit a planning operation from being
+  resumed or re-invoked with newly resolved requirements in one transaction;
 - GraphJit may split one candidate group into several batches or scalar invocations;
 - GraphJit may invoke a batch-only authored implementation with exactly one lane.
 
@@ -493,15 +506,18 @@ Each lane still carries its own exact changed/required/requested `IndexCoverage`
 bindings, and Tock state. A batch callback is not one shared `IndexCoverage` over
 several nodes.
 
-The existing transaction invariant generalizes from "one callback per implicated node"
-to:
+The historical one-visit-per-node batching invariant is superseded for
+suspendable propagation. A suspended forward/reverse scalar operation may
+resume as additional required information becomes ready, and separate output
+coverage results may become internally ready independently. Compatible
+**ready** synchronous operations can still be batched without conflating
+individual lane requirements. The scheduler should use ready-frontier bucketing
+rather than violating actual dependency ordering merely to construct a larger batch.
 
-> In one applicable transaction phase, each implicated node participates at most once
-> in the normalized operation, whether that operation is emitted as a scalar callback
-> or as one lane of a batch callback.
-
-The scheduler should use ready-frontier bucketing rather than violating propagation
-ordering merely to construct a larger batch.
+For Tock evaluation, every lane's Region/Coverage inputs expose only the
+reverse-required **requested-and-covered** positions for that invocation,
+regardless of additional available or cached storage. The scalar and batch
+forms must see equivalent input views for the same requested positions.
 
 Small propagation callbacks are particularly good batching candidates because the
 instruction-front-end overhead of repeatedly switching among node implementations may
