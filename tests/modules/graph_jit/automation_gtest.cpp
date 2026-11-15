@@ -117,17 +117,21 @@ TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPoi
         capture = {};
         handler->invoke(handler->receiver.get(), operations,
             iv::NodeAddress{.instance_id = "curve"}, handler->module_local_refs.get(), event.data());
-        EXPECT_EQ(capture.definition, "iv.automation.curve");
+        EXPECT_EQ(capture.definition, "iv.builtin.automation.curve");
         return nlohmann::ordered_json::parse(capture.arguments);
     };
     auto added = invoke("AddPoint", {{"point", {{"id", 4}, {"seconds", 1.0}, {"value", .25}}}});
     ASSERT_TRUE(added.is_array());
-    ASSERT_EQ(added.size(), 2u);
+    // The point list is the only construction argument.
+    ASSERT_EQ(added.size(), 1u);
     ASSERT_EQ(added[0].size(), 4u);
+    // The stored list is sorted; the handler appends without sorting.
+    EXPECT_EQ(added[0][0]["id"], 1);
+    EXPECT_EQ(added[0][2]["id"], 3);
     EXPECT_EQ(added[0][3]["id"], 4);
-    EXPECT_EQ(added[1], 36000);
     auto removed = invoke("RemovePoint", {{"id", 2}});
     ASSERT_TRUE(removed.is_array());
+    ASSERT_EQ(removed.size(), 1u);
     ASSERT_EQ(removed[0].size(), 2u);
     EXPECT_EQ(removed[0][0]["id"], 1);
     EXPECT_EQ(removed[0][1]["id"], 3);

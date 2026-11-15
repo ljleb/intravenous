@@ -1110,10 +1110,10 @@ public:
                 range,
                 [&](TimedEvent const& event) { visitor(visitor_data, event); });
         }
-        [[nodiscard]] EventNeighbors neighbors(std::size_t region, GlobalIndex position) const {
-            if (materialized) return materialized->neighbors(region, position);
+        [[nodiscard]] EventNeighbors neighbors(std::size_t region, GlobalIndex position, EventNeighborMode mode) const {
+            if (materialized) return materialized->neighbors(region, position, mode);
             if (!snapshot || !output) return {};
-            return snapshot->event_neighbors(*output, type, region, position);
+            return snapshot->event_neighbors(*output, type, region, position, mode);
         }
 
     };
@@ -1348,8 +1348,8 @@ public:
                     static_cast<EventSlot const*>(opaque)->for_each_region(
                         region, range, visitor_data, visitor);
                 },
-                .find_neighbors = +[](void const* opaque, std::size_t region, GlobalIndex position) {
-                    return static_cast<EventSlot const*>(opaque)->neighbors(region, position);
+                .find_neighbors = +[](void const* opaque, std::size_t region, GlobalIndex position, EventNeighborMode mode) {
+                    return static_cast<EventSlot const*>(opaque)->neighbors(region, position, mode);
                 },
             };
         }

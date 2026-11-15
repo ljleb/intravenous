@@ -12,6 +12,7 @@ The procedures are:
 - [User connection mutation](./user_connection_mutation.md)
 - [Startup and project replay](./startup_and_project_replay.md)
 - [Node message interaction](./node_message_interaction.md)
+- [Node message gesture](./node_message_gesture.md)
 - [Graph scope read](./graph_scope_read.md)
 - [Manual-control gesture](./manual_control_gesture.md)
 

@@ -2469,39 +2469,42 @@ TEST(NodeBuildRequest, ReplayableCurveRetainsItsCoverageCallbacks)
     EXPECT_TRUE(description.operations.runtime.has_propagate_reverse_coverage);
 }
 
-TEST(NodeBuildRequest, SparsePointCountDoesNotDependOnClipDuration)
+TEST(NodeBuildRequest, EmptyPointSourcePublishesNoEventsOrRegion)
 {
-    iv::automation::PointSource source{{}, 36000};
+    iv::automation::PointSource source{{}};
     auto const request = iv::details::make_node_build_request(source);
     auto storage = iv::details::copy_node_config_bytes(request.config,
         request.config_size, request.config_alignment);
     auto description = iv::details::materialize_node_description(request, std::move(storage));
     ASSERT_EQ(description.event_outputs().size(), 1u);
     EXPECT_EQ(description.event_outputs()[0].max_event_count, 0u);
-    EXPECT_EQ(source.range(88200).extent, 36000ULL * 88200 + 1);
+    EXPECT_TRUE(source.range(88200).empty());
 }
 
-TEST(NodeBuildRequest, CurveInterpolatesNeighborsAndUsesNeutralOutsideItsClip)
+namespace {
+// Ticks one LinearCurve block. The point input has one logical Region, clip,
+// whose events are sorted relative to clip.begin; an empty clip models an
+// input with no accepted point materialization.
+std::array<float, 8> tick_linear_curve(
+    std::vector<iv::TimedEvent> const& events, iv::GlobalIndexRange clip, iv::GlobalIndex begin)
 {
-    auto const clip = range(0, 5);
-    iv::IndexCoverage const coverage{clip};
-    std::vector<iv::TimedEvent> events{
-        {.time = index(0), .value = iv::SampleEvent{iv::Sample{0}}},
-        {.time = index(2), .value = iv::SampleEvent{iv::Sample{2}}},
-        {.time = index(2), .value = iv::SampleEvent{iv::Sample{3}}},
-        {.time = index(4), .value = iv::SampleEvent{iv::Sample{5}}},
-    };
+    struct Points {
+        std::vector<iv::TimedEvent> const* events;
+        iv::GlobalIndex origin;
+    } const points{&events, clip.begin};
+    auto const coverage = clip.empty() ? iv::IndexCoverage{} : iv::IndexCoverage{clip};
     std::array<iv::Sample, 8> samples{};
     std::array outputs{sample_output_binding(std::span{samples})};
     std::array<iv::ReflectedEventInputPortBinding, 1> sequential_placeholders{};
     std::array inputs{iv::RandomAccessEventInputPort{
-        .data = &events, .region_ranges = &clip, .region_count = 1,
+        .data = &points, .region_ranges = &clip, .region_count = clip.empty() ? 0u : 1u,
         .coverage_value = &coverage,
         .for_each_event = +[](void const*, std::size_t, iv::GlobalIndexRange,
                              void*, iv::RandomAccessEventInputPort::VisitEvent) {},
-        .find_neighbors = +[](void const* data, std::size_t, iv::GlobalIndex position) {
-            auto const& values = *static_cast<std::vector<iv::TimedEvent> const*>(data);
-            return iv::sorted_event_neighbors(values, iv::GlobalIndex::from_bits(0), position);
+        .find_neighbors = +[](void const* data, std::size_t, iv::GlobalIndex position,
+                              iv::EventNeighborMode mode) {
+            auto const& selected = *static_cast<Points const*>(data);
+            return iv::sorted_event_neighbors(*selected.events, selected.origin, position, mode);
         },
     }};
     iv::automation::LinearCurve curve;
@@ -2510,21 +2513,50 @@ TEST(NodeBuildRequest, CurveInterpolatesNeighborsAndUsesNeutralOutsideItsClip)
         .continuous_output_bindings = outputs,
         .event_input_bindings = sequential_placeholders,
         .random_access_event_inputs = inputs,
-    }, index(0), 8);
-    std::array<float, 8> const expected{0, 1, 3, 4, 5, 0, 0, 0};
-    for (std::size_t i = 0; i < samples.size(); ++i)
-        EXPECT_FLOAT_EQ(static_cast<float>(samples[i]), expected[i]);
+    }, begin, samples.size());
+    std::array<float, 8> values{};
+    for (std::size_t i = 0; i < samples.size(); ++i) values[i] = static_cast<float>(samples[i]);
+    return values;
+}
+} // namespace
+
+TEST(NodeBuildRequest, CurveInterpolatesNeighborsAndHoldsTheLastPointTowardTheDistantFirst)
+{
+    std::vector<iv::TimedEvent> const events{
+        {.time = index(0), .value = iv::SampleEvent{iv::Sample{0}}},
+        {.time = index(2), .value = iv::SampleEvent{iv::Sample{2}}},
+        {.time = index(2), .value = iv::SampleEvent{iv::Sample{3}}},
+        {.time = index(4), .value = iv::SampleEvent{iv::Sample{5}}},
+    };
+    // After the last point the curve heads back to the first point across
+    // the rest of the cycle, so nearby samples stay at the last value.
+    std::array<float, 8> const expected{0, 1, 3, 4, 5, 5, 5, 5};
+    auto const values = tick_linear_curve(events, range(0, 5), index(0));
+    for (std::size_t i = 0; i < values.size(); ++i) EXPECT_FLOAT_EQ(values[i], expected[i]) << i;
 
     // At startup no accepted point materialization may be available yet.
-    iv::IndexCoverage const empty;
-    inputs[0].coverage_value = &empty;
-    inputs[0].region_count = 0;
-    operations.tick_block(&curve, iv::ReflectedNodeTickContext{
-        .continuous_output_bindings = outputs,
-        .event_input_bindings = sequential_placeholders,
-        .random_access_event_inputs = inputs,
-    }, index(0), 8);
-    for (auto value : samples) EXPECT_FLOAT_EQ(static_cast<float>(value), 0);
+    for (auto value : tick_linear_curve(events, {}, index(0))) EXPECT_FLOAT_EQ(value, 0);
+}
+
+TEST(NodeBuildRequest, CurveInterpolatesTheLastPointWithTheFirstAcrossTheWrap)
+{
+    // The largest gap lies between index 0 and the last point, so the logical
+    // Region begins at 0 and the four-sample gap closes the cycle.
+    auto const last = iv::GlobalIndex::from_bits(0).retreated_by(4);
+    std::vector<iv::TimedEvent> const events{
+        {.time = index(0), .value = iv::SampleEvent{iv::Sample{0}}},
+        {.time = last, .value = iv::SampleEvent{iv::Sample{4}}},
+    };
+    // After index 0 the curve rises toward 4 across almost the whole cycle,
+    // so those samples are only approximately 0.
+    std::array<float, 8> const expected{4, 3, 2, 1, 0, 0, 0, 0};
+    auto const values = tick_linear_curve(events,
+        iv::GlobalIndexRange::from_begin_and_end(index(0), last.advanced_by(1)), last);
+    for (std::size_t i = 0; i < values.size(); ++i) EXPECT_NEAR(values[i], expected[i], 1e-6f) << i;
+
+    // One point is constant over the whole cycle.
+    std::vector<iv::TimedEvent> const single{{.time = index(7), .value = iv::SampleEvent{iv::Sample{.25f}}}};
+    for (auto value : tick_linear_curve(single, {index(7), 1}, index(0))) EXPECT_FLOAT_EQ(value, .25f);
 }
 
 struct ReplayWithoutRandomAccessPropagation {
@@ -2539,8 +2571,14 @@ static_assert(!iv::details::replay_declaration_is_valid_v<ReplayWithoutRandomAcc
 
 TEST(NodeBuildRequest, AutomationRejectsInvalidConstructionData)
 {
-    EXPECT_THROW((iv::automation::AutomationCurve{{{1, 0, 0}, {1, 1, 1}}, 1}), std::invalid_argument);
-    EXPECT_THROW((iv::automation::AutomationCurve{{{1, 2, 0}}, 1}), std::invalid_argument);
-    EXPECT_THROW((iv::automation::AutomationCurve{{{1, 0, std::numeric_limits<float>::quiet_NaN()}}, 1}), std::invalid_argument);
-    EXPECT_THROW((iv::automation::PointSource{{}, 0}), std::invalid_argument);
+    EXPECT_THROW((iv::automation::AutomationCurve{{{1, 0, 0}, {1, 1, 1}}}), std::invalid_argument);
+    EXPECT_THROW((iv::automation::AutomationCurve{{{1, std::numeric_limits<double>::infinity(), 0}}}),
+        std::invalid_argument);
+    EXPECT_THROW((iv::automation::AutomationCurve{{{1, 0, std::numeric_limits<float>::quiet_NaN()}}}), std::invalid_argument);
+    // Time is cyclic: negative seconds and unsorted lists are valid construction data.
+    EXPECT_NO_THROW((iv::automation::AutomationCurve{{{2, 3, 0}, {1, -2, 1}}}));
+    // Seconds whose rounded frame leaves the signed timeline view are rejected.
+    EXPECT_THROW((void)iv::automation::point_index(0x1p63, 1), std::length_error);
+    EXPECT_EQ(iv::automation::point_index(-0x1p63, 1), index(std::numeric_limits<std::int64_t>::min()));
+    EXPECT_EQ(iv::automation::point_index(-1, 48000), index(-48000));
 }

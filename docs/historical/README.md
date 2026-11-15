@@ -224,3 +224,11 @@ These documents are retained because they record deleted architectures, supersed
 - [Knob Settling Before Release-Time Preparation](./knob_settling_before_release_preparation_2026-11-14.md)
   preserves the release/leave lifecycle before predictive settled compilation was
   explicitly requested at release.
+
+- [Stage 3 before typed frontend dispatch](stage_3_before_typed_frontend_dispatch_2026-11-14.md): the superseded current-stage checkpoint and its replacement.
+
+- [Stage 3 before the automation presentation](stage_3_before_automation_presentation_2026-11-14.md) preserves the previous implementation checkpoint and package/bindings status.
+
+- [Automation before builtin promotion](automation_before_builtin_promotion_2026-11-14.md) preserves the optional package guide and IDs before automation joined the default builtin package.
+
+- [Automation before cyclic semantics](automation_before_cyclic_semantics_2026-11-14.md) preserves the duration-bounded automation guide, interpolation policy, and pending status before the cyclic curve replaced them.

@@ -6,6 +6,7 @@ import { semanticNodeFromScopeChild } from "../presentation/semanticNode";
 import PresentationHost from "../presentation/PresentationHost.vue";
 import { nodeDisplayName } from "../presentation/nodeSummary";
 import TimeRuler from "../timeline/TimeRuler.vue";
+import { provideTimelineWindow } from "../timeline/timelineContext";
 import { moveMiddlePan, timelineWheelAction, wheelPixels, zoomTimelineHorizontally,
     zoomTimelineVertically, type MiddlePan } from "../../src/timelineViewport";
 import { useGraphEditor } from "./context";
@@ -30,6 +31,7 @@ const timeRegion = ref<HTMLElement | null>(null);
 const timeWidth = ref(0);
 const timeWindow = computed(() => ({ beginSeconds: viewport.value.beginSeconds,
     endSeconds: viewport.value.beginSeconds + Math.max(1, timeWidth.value) * viewport.value.secondsPerPixel }));
+provideTimelineWindow(timeWindow);
 const pan = shallowRef<MiddlePan | null>(null);
 let panMoved = false;
 let observer: ResizeObserver | null = null;

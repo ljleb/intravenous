@@ -24,17 +24,22 @@ struct AddPoint { Point point; };
 struct RemovePoint { std::uint32_t id = 0; };
 struct MovePoint { std::uint32_t id = 0; double seconds = 0; float value = 0; };
 
+// Seconds are a signed authoring coordinate, not a boundary of the timeline.
+// Convert only after checking the rounded sample coordinate fits its signed view.
+[[nodiscard]] inline GlobalIndex point_index(double seconds, std::size_t rate) {
+    auto const frames = std::round(static_cast<long double>(seconds) * rate);
+    auto const half = std::ldexp(1.0L, 63);
+    if (!std::isfinite(frames) || frames < -half || frames >= half)
+        throw std::length_error("automation point is outside the signed timeline coordinate range");
+    return GlobalIndex::from_signed(static_cast<std::int64_t>(frames));
+}
+
 struct PointSource {
     ImmutableArray<Point> points;
-    double duration;
-    explicit PointSource(ImmutableArray<Point> points_, double duration_)
-        : points(points_), duration(duration_) {
-        if (!std::isfinite(duration) || duration <= 0)
-            throw std::invalid_argument("automation duration must be positive and finite");
-        double previous = 0;
+    explicit PointSource(ImmutableArray<Point> points_) : points(points_) {
+        auto previous = -std::numeric_limits<double>::infinity();
         for (auto const& point : points) {
-            if (!std::isfinite(point.seconds) || point.seconds < previous
-                || point.seconds > duration || !std::isfinite(point.value))
+            if (!std::isfinite(point.seconds) || point.seconds < previous || !std::isfinite(point.value))
                 throw std::invalid_argument("automation source points must be valid and sorted by time");
             previous = point.seconds;
         }
@@ -48,29 +53,45 @@ struct PointSource {
         ctx.output<"points">().max_event_count() = points.size();
     }
     [[nodiscard]] GlobalIndexRange range(std::size_t rate) const {
-        auto const frames = static_cast<long double>(duration) * rate;
-        if (!std::isfinite(frames) || frames < 0
-            || std::round(frames) >= static_cast<long double>(std::numeric_limits<std::int64_t>::max()))
-            throw std::length_error("automation duration exceeds the supported timeline span");
-        return {GlobalIndex::from_bits(0), static_cast<std::uint64_t>(std::round(frames)) + 1};
+        if (points.empty()) return {};
+        auto const first = point_index(points.values().front().seconds, rate);
+        auto previous = point_index(points.values().back().seconds, rate);
+        if (first == previous) return {first, 1};
+        // Exclude the largest gap. The remaining finite Region contains every
+        // event, including when the closest points straddle a storage seam.
+        GlobalIndexRange result;
+        std::uint64_t largest_gap = 0;
+        for (auto const& point : points) {
+            auto const current = point_index(point.seconds, rate);
+            auto const gap = previous.forward_distance_to(current);
+            if (gap > largest_gap) {
+                largest_gap = gap;
+                result = {current, current.forward_distance_to(previous) + 1};
+            }
+            previous = current;
+        }
+        if (result.empty()) throw std::length_error("automation point storage occupies the entire timeline");
+        return result;
     }
     void propagate_forward_coverage(PropagateForwardCoverageContext<PointSource>& ctx) const {
         auto region = range(ctx.sample_rate);
-        ctx.output<"points">().publish(region);
+        if (!region.empty()) ctx.output<"points">().publish(region);
         if (ctx.local_state_changed) ctx.output<"points">().change(IndexCoverage{region});
     }
     void tock_coverage(TockCoverageContext<PointSource>& ctx) const {
         auto output = ctx.output<"points">().region();
         auto const selected = output.range();
-        auto const index = [rate = ctx.sample_rate](Point const& point) {
-            return static_cast<std::uint64_t>(std::round(static_cast<long double>(point.seconds) * rate));
+        auto const values = points.values();
+        auto const pivot = std::ranges::lower_bound(values, selected.begin.signed_value(), {},
+            [rate = ctx.sample_rate](Point const& point) { return point_index(point.seconds, rate).signed_value(); });
+        auto write = [&](auto first, auto last) {
+            for (; first != last; ++first) {
+                auto const time = point_index(first->seconds, ctx.sample_rate);
+                if (selected.contains(time)) output.write({.time = time, .value = SampleEvent{Sample{first->value}}});
+            }
         };
-        auto const first = std::ranges::lower_bound(points.values(), selected.begin.bits(), {}, index);
-        auto const last = std::ranges::lower_bound(points.values(), selected.end().bits(), {}, index);
-        for (auto point = first; point != last; ++point) {
-            output.write({.time = GlobalIndex::from_bits(index(*point)),
-                .value = SampleEvent{Sample{point->value}}});
-        }
+        write(pivot, values.end());
+        write(values.begin(), pivot);
     }
 };
 
@@ -84,11 +105,13 @@ struct LinearCurve {
     }
     void propagate_forward_coverage(PropagateForwardCoverageContext<LinearCurve>& ctx) const {
         auto input = ctx.input<"points">();
-        ctx.output<"value">().publish(input.coverage());
-        // A changed point can affect an entire interpolation segment. Until
-        // exact changed segments are represented, invalidate the clip's range.
+        // A full circle needs two ranges because one extent cannot hold 2^64.
+        constexpr auto half = std::uint64_t{1} << 63;
+        IndexCoverage const full{{GlobalIndex::from_bits(0), half},
+                                 {GlobalIndex::from_bits(half), half}};
+        ctx.output<"value">().publish(full);
         if (ctx.local_state_changed || !input.changed().empty())
-            ctx.output<"value">().change(input.coverage());
+            ctx.output<"value">().change(full);
     }
     void propagate_reverse_coverage(PropagateReverseCoverageContext<LinearCurve>& ctx) const {
         // Point storage is sparse. Retaining the logical Region provides the
@@ -105,32 +128,33 @@ struct LinearCurve {
             return;
         }
         auto input = port.region();
-        auto const region = input.range();
         auto const begin = ctx.index.whole();
         EventNeighbors neighbors;
+        double first_value = 0, last_value = 0, inverse_distance = 0;
         bool initialized = false;
         for (std::size_t frame = 0; frame < output.size(); ++frame) {
             auto const position = begin.advanced_by(frame);
-            if (!region.contains(position)) {
-                output[frame] = Sample{0};
-                initialized = false;
-                continue;
-            }
-            if (!initialized || (neighbors.after
-                    && !RangeRelativeIndexOrder{region.begin}(position, neighbors.after->time))) {
-                neighbors = input.neighbors(position);
+            if (!initialized || (neighbors.after && position == neighbors.after->time)) {
+                neighbors = input.neighbors(position, EventNeighborMode::cyclic);
+                if (!neighbors.at_or_before || !neighbors.after) {
+                    for (; frame < output.size(); ++frame) output[frame] = Sample{0};
+                    return;
+                }
+                first_value = static_cast<float>(std::get<SampleEvent>(neighbors.at_or_before->value).value);
+                last_value = static_cast<float>(std::get<SampleEvent>(neighbors.after->value).value);
+                auto const distance = neighbors.at_or_before->time.forward_distance_to(neighbors.after->time);
+                // Equal timestamps span the full circle in cyclic mode. This
+                // also handles a single point, whose values are identical.
+                inverse_distance = 1.0 / (distance ? static_cast<double>(distance) : 0x1p64);
                 initialized = true;
             }
-            float value = neighbors.at_or_before
-                ? static_cast<float>(std::get<SampleEvent>(neighbors.at_or_before->value).value) : 0;
-            if (neighbors.at_or_before && neighbors.after) {
-                auto const first = neighbors.at_or_before->time;
-                auto const distance = first.forward_distance_to(neighbors.after->time);
-                auto const fraction = static_cast<double>(first.forward_distance_to(position)) / distance;
-                auto const last = static_cast<float>(std::get<SampleEvent>(neighbors.after->value).value);
-                value += static_cast<float>((last - value) * fraction);
-            }
-            output[frame] = Sample{value};
+            auto const elapsed = neighbors.at_or_before->time.forward_distance_to(position);
+            auto const remaining = position.forward_distance_to(neighbors.after->time);
+            // Use the nearer endpoint to retain precision beside the wrap.
+            auto const value = elapsed <= remaining
+                ? first_value + (last_value - first_value) * (static_cast<double>(elapsed) * inverse_distance)
+                : last_value + (first_value - last_value) * (static_cast<double>(remaining) * inverse_distance);
+            output[frame] = Sample{static_cast<float>(value)};
         }
     }
 };
@@ -138,15 +162,10 @@ struct LinearCurve {
 // The module is the editable semantic node. Its two leaves retain fixed schemas.
 class AutomationCurve {
     std::vector<Point> points_;
-    double duration_;
 public:
-    explicit AutomationCurve(std::vector<Point> points, double duration)
-        : points_(std::move(points)), duration_(duration) {
-        if (!std::isfinite(duration_) || duration_ <= 0)
-            throw std::invalid_argument("automation duration must be positive and finite");
+    explicit AutomationCurve(std::vector<Point> points) : points_(std::move(points)) {
         for (auto const& point : points_) {
-            if (!std::isfinite(point.seconds) || point.seconds < 0 || point.seconds > duration_
-                || !std::isfinite(point.value)) throw std::invalid_argument("invalid automation point");
+            if (!std::isfinite(point.seconds) || !std::isfinite(point.value)) throw std::invalid_argument("invalid automation point");
         }
         std::vector<std::uint32_t> ids;
         for (auto const& point : points_) ids.push_back(point.id);
@@ -156,8 +175,8 @@ public:
         std::ranges::stable_sort(points_, {}, &Point::seconds);
     }
     void build_graph(GraphBuilder& g) const {
-        auto points = g.node<"iv.automation.point_source">(g.immutable_array<Point>(points_), duration_);
-        auto curve = g.node<"iv.automation.linear_curve">();
+        auto points = g.node<"iv.builtin.automation.point_source">(g.immutable_array<Point>(points_));
+        auto curve = g.node<"iv.builtin.automation.linear_curve">();
 
         curve("points"_F = points);
 
@@ -166,14 +185,14 @@ public:
     void on_message(ModuleMessageContext<AutomationCurve>& ctx, AddPoint const& event) const {
         auto points = points_;
         points.push_back(event.point);
-        ctx.replace<"iv.automation.curve">(points, duration_);
+        ctx.replace<"iv.builtin.automation.curve">(points);
     }
     void on_message(ModuleMessageContext<AutomationCurve>& ctx, RemovePoint const& event) const {
         auto points = points_;
         auto const found = std::ranges::find(points, event.id, &Point::id);
         if (found == points.end()) throw std::invalid_argument("automation point does not exist");
         points.erase(found);
-        ctx.replace<"iv.automation.curve">(points, duration_);
+        ctx.replace<"iv.builtin.automation.curve">(points);
     }
     void on_message(ModuleMessageContext<AutomationCurve>& ctx, MovePoint const& event) const {
         auto points = points_;
@@ -181,7 +200,7 @@ public:
         if (found == points.end()) throw std::invalid_argument("automation point does not exist");
         found->seconds = event.seconds;
         found->value = event.value;
-        ctx.replace<"iv.automation.curve">(points, duration_);
+        ctx.replace<"iv.builtin.automation.curve">(points);
     }
 };
 } // namespace iv::automation

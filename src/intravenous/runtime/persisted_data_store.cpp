@@ -1968,10 +1968,11 @@ PersistedDataStore::Snapshot::event_timeline(
 
 EventNeighbors PersistedDataStore::Snapshot::event_neighbors(
     PersistedOutputHandle output, EventTypeId type, std::size_t region_index,
-    GlobalIndex position) const
+    GlobalIndex position, EventNeighborMode mode) const
 {
     auto const ranges = event_region_ranges(output, type);
-    if (region_index >= ranges.size() || !ranges[region_index].contains(position)) return {};
+    if (region_index >= ranges.size()
+        || (mode == EventNeighborMode::bounded && !ranges[region_index].contains(position))) return {};
     auto const region = ranges[region_index];
     // Authored logical Regions own independent, range-relative sequences.
     auto const* selected = find_output<EventOutputNode, EventOutputState>(
@@ -1980,11 +1981,12 @@ EventNeighbors PersistedDataStore::Snapshot::event_neighbors(
     if (!selected->positional_recording) {
         if (!selected->logical_regions || region_index >= selected->logical_regions->size()) return {};
         return sorted_event_neighbors((*selected->logical_regions)[region_index].events,
-            region.begin, position);
+            region.begin, position, mode);
     }
     // Positional recordings have one signed-sorted timeline. A circular Region
     // intersects at most two signed-order spans; each is searched separately.
     EventNeighbors result;
+    std::optional<TimedEvent> first_event, last_event;
     auto timeline = event_timeline(output, type);
     region.for_each_signed_order_segment([&](GlobalIndexRange segment) {
         auto const first = std::ranges::lower_bound(timeline, segment.begin,
@@ -1994,6 +1996,10 @@ EventNeighbors PersistedDataStore::Snapshot::event_neighbors(
         // select the start of the timeline instead of the end.
         if (segment.begin.signed_value() >= 0 && segment.end().signed_value() < 0) last = timeline.end();
         else last = std::ranges::lower_bound(timeline, segment.end(), SignedGlobalIndexOrder{}, &TimedEvent::time);
+        if (mode == EventNeighborMode::cyclic && first != last) {
+            if (!first_event) first_event = *first;
+            last_event = *std::prev(last);
+        }
         auto found = sorted_event_neighbors(std::span<TimedEvent const>{first, last}, region.begin, position);
         if (found.at_or_before && (!result.at_or_before
             || region.begin.forward_distance_to(found.at_or_before->time)
@@ -2001,6 +2007,10 @@ EventNeighbors PersistedDataStore::Snapshot::event_neighbors(
         if (found.after && (!result.after || region.begin.forward_distance_to(found.after->time)
                 < region.begin.forward_distance_to(result.after->time))) result.after = found.after;
     });
+    if (mode == EventNeighborMode::cyclic) {
+        if (!result.at_or_before) result.at_or_before = last_event;
+        if (!result.after) result.after = first_event;
+    }
     return result;
 }
 

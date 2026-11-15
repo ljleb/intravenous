@@ -294,7 +294,8 @@ public:
         // may span several retained chunks and is visited as their merged
         // canonical IndexCoverage range.
         [[nodiscard]] EventNeighbors event_neighbors(
-            PersistedOutputHandle, EventTypeId, std::size_t region, GlobalIndex) const;
+            PersistedOutputHandle, EventTypeId, std::size_t region, GlobalIndex,
+            EventNeighborMode mode = EventNeighborMode::bounded) const;
 
         void for_each_event_region(
             PersistedOutputHandle output,

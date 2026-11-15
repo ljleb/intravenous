@@ -1,4 +1,5 @@
 #pragma once
+#include <intravenous/runtime/node_message_gesture.h>
 
 #include <intravenous/runtime/project_edit.h>
 
@@ -101,6 +102,7 @@ struct DispatchNodeMessageRequest {
     std::string event_type_nominal_id{};
     std::string event_type_definition_fingerprint{};
     std::shared_ptr<nlohmann::ordered_json const> payload{};
+    std::optional<NodeMessageGestureId> gesture{};
 };
 struct GetNodeEventProtocolRequest {};
 
@@ -150,6 +152,8 @@ using SocketRpcRequestPayload = std::variant<
     EndManualControlInteractionRequest,
     GetNodeEventProtocolRequest,
     DispatchNodeMessageRequest,
+    BeginNodeMessageGestureRequest,
+    EndNodeMessageGestureRequest,
     GetAudioDevicesRequest,
     SetProjectToolchainRequest,
     SetAudioDevicesRequest,

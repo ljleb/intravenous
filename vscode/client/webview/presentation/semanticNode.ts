@@ -52,6 +52,8 @@ export type SemanticNode = {
     realized?: boolean;
     errorMessage?: string;
     address?: NodeAddress;
+    construction?: GraphScopeNode["construction"];
+    constructionError?: string;
     // Present only when this presentation hosts an opened graph scope.
     scope?: GraphScope;
     // Source-introspection virtual-node ID or project instance ID.
@@ -87,12 +89,14 @@ export function semanticNodeFromScopeChild(child: GraphScopeNode, scope: GraphSc
     };
     return {
         address: child.address, id: child.instance.instanceId,
+        construction: child.construction,
+        constructionError: child.constructionError,
         displayName: child.instance.displayName,
         realized: child.instance.realized,
         loadState: child.loadState,
         errorMessage: child.errorMessage,
-        instanceId: child.instance.instanceId, definitionId: child.instance.definitionId,
-        kind: child.instance.definitionId, sourceIdentity: "", memberCount: 1,
+        instanceId: child.instance.instanceId, definitionId: child.definitionId ?? child.instance.definitionId,
+        kind: child.definitionId ?? child.instance.definitionId, sourceIdentity: "", memberCount: 1,
         members: [], sourceSpans: [],
         ports: [
             ...child.sampleInputs.map((entry) => port(entry, "continuous", "input")),

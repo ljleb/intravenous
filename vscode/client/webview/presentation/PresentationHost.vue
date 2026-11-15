@@ -6,6 +6,8 @@ import { provideNode } from "./nodeContext";
 import { presentations } from "./presentations";
 import type { SemanticNode } from "./semanticNode";
 import { provideLane } from "./laneContext";
+import { useNodeEventMessaging } from "./nodeEventContext";
+import type { NodeEvent } from "../../src/nodeEvents";
 
 // Hosts one node: selects its presentation, provides its semantic node, and
 // supplies the one display mode that presentation receives.
@@ -19,7 +21,12 @@ const props = defineProps<{
 const emit = defineEmits<{ copyDebugDetails: [] }>();
 provideLane(props.lane ? { copyDebugDetails: () => emit("copyDebugDetails") } : null);
 
-const semanticNode = computed(() => props.node);
+const nodeEvents = useNodeEventMessaging();
+const semanticNode = computed(() => {
+    const node = props.node;
+    return { ...node, send: (event: NodeEvent) => nodeEvents.send(node.address, event),
+        gesture: () => nodeEvents.gesture(node.address) };
+});
 provideNode(semanticNode);
 
 const selection = computed(() => presentations.select(semanticNode.value.definitionId));

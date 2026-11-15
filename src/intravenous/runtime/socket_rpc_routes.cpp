@@ -8,6 +8,7 @@
 #include <functional>
 #include <stdexcept>
 #include <typeindex>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -382,8 +383,10 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
         "nodeMessages.dispatch", "project.write", true, false,
         [](auto const& request, int id, Context const& context) {
             SocketRpcNodeMessageResultBuilder builder;
+            auto bound = request;
+            if (bound.gesture) bound.gesture->client_id = context.client_id;
             IV_INVOKE_LINKER_EVENT(
-                iv_socket_rpc_dispatch_node_message_event, request, builder);
+                iv_socket_rpc_dispatch_node_message_event, bound, builder);
             if (!builder.has_response()) builder.fail("project graph service is unavailable");
             // The request's committed read-model changes go out after its response.
             if (context.publish_project_graph) {
@@ -391,6 +394,20 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
             }
             return builder.build(id);
         });
+    auto register_node_gesture = [&]<class Request>(Request, char const* method) {
+        impl_->add<Request>(method, "project.write", true, false,
+            [](auto const& request, int id, Context const& context) {
+                SocketRpcAckResponseBuilder builder;
+                NodeMessageGestureRequest bound = request;
+                bound.begin = std::is_same_v<Request, BeginNodeMessageGestureRequest>;
+                bound.id.client_id = context.client_id;
+                IV_INVOKE_LINKER_EVENT(iv_socket_rpc_node_message_gesture_event, bound, builder);
+                if (!builder.has_response()) builder.fail("project graph service is unavailable");
+                return builder.build(id);
+            });
+    };
+    register_node_gesture(BeginNodeMessageGestureRequest{}, "nodeMessages.beginGesture");
+    register_node_gesture(EndNodeMessageGestureRequest{}, "nodeMessages.endGesture");
     impl_->add<GetAudioDevicesRequest>(
         "audioDevices.get", "project.read", false, false,
         [](auto const& request, int id, Context const&) {

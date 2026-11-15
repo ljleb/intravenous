@@ -1,0 +1,5 @@
+{
+  "AddPoint": "c:$@N@iv@N@automation@S@AddPoint",
+  "MovePoint": "c:$@N@iv@N@automation@S@MovePoint",
+  "RemovePoint": "c:$@N@iv@N@automation@S@RemovePoint"
+}

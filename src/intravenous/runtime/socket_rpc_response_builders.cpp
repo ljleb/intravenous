@@ -497,6 +497,8 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
         nodes.push_back(Json{
             {"address", node_address_json(node.address, ProjectConnectionJsonNames::socket_rpc)},
             {"instance", iv_module_instance_json(node.instance)},
+            {"definitionId", node.construction_definition_id.empty()
+                ? node.instance.definition_id : node.construction_definition_id},
             {"sampleInputs", graph_scope_ports_json(node.interface.sample_inputs, node.manual_controls)},
             {"sampleOutputs", graph_scope_ports_json(node.interface.sample_outputs)},
             {"eventInputs", graph_scope_ports_json(node.interface.event_inputs)},
@@ -504,6 +506,11 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
             {"hasChildren", node.interface.has_children},
             {"errorMessage", node.error_message},
             {"loadState", graph_scope_node_state_json(node.load_state)},
+            {"construction", node.construction_arguments_json ? Json{
+                {"definitionId", node.construction_definition_id},
+                {"arguments", Json::parse(*node.construction_arguments_json)},
+            } : Json(nullptr)},
+            {"constructionError", node.construction_error},
         });
     }
     auto connections = Json::array();
@@ -517,6 +524,7 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
     }
     return jsonrpc_result(request_id, Json{
         {"generation", result->generation ? Json(*result->generation) : Json(nullptr)},
+        {"sampleRate", result->sample_rate ? Json(*result->sample_rate) : Json(nullptr)},
         {"editable", result->editable},
         {"nodes", std::move(nodes)},
         {"connections", std::move(connections)},

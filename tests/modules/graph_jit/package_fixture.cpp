@@ -19,7 +19,13 @@ std::string_view graph_jit_runtime_package_source()
     // stable fragments instead of relying on one oversized literal.
     static constexpr std::string_view part_1 = R"cpp(
 #include <intravenous/dsl.h>
-#include <intravenous/builtin_packages/automation/module.cpp>
+#include <intravenous/basic_nodes/automation.h>
+
+// This fixture has an independent package catalog. Register the automation
+// implementations here without loading the rest of the builtin package.
+IV_NODE("iv.builtin.automation.point_source", iv::automation::PointSource);
+IV_NODE("iv.builtin.automation.linear_curve", iv::automation::LinearCurve);
+IV_MODULE_CLASS("iv.builtin.automation.curve", iv::automation::AutomationCurve);
 
 #include <algorithm>
 #include <array>
@@ -7354,10 +7360,10 @@ struct AutomationWindow {
 IV_NODE("iv.test.automation.window", AutomationWindow);
 void automation_window_module(iv::GraphBuilder& graph) {
     // Ten hours of sparse coverage, but only three event records. None lies
-    // inside the two-sample replay window.
-    auto curve = graph.node<"iv.automation.curve">(
-        std::vector<iv::automation::Point>{{1, 0, 0}, {2, 4.0 / 88200, 1}, {3, 36000, 0}},
-        36000.0);
+    // inside the two-sample replay window. The list is deliberately unsorted:
+    // the curve sorts it before PointSource, which rejects unsorted points.
+    auto curve = graph.node<"iv.builtin.automation.curve">(
+        std::vector<iv::automation::Point>{{3, 36000, 0}, {1, 0, 0}, {2, 4.0 / 88200, 1}});
     auto window = graph.node<"iv.test.automation.window">();
     window(curve);
     auto live = graph.node<"iv.test.graph_jit.state_context.manual_control_slice_probe">();

@@ -1,6 +1,8 @@
 import { ManualControlInteractions } from "./manualControls";
 import { ControlCompilationProgress, type ControlCompileStatus } from "./controlCompilation";
 import type { NodeAddress } from "./graphScope";
+import { validateNodeEventTarget, type SerializedNodeEvent } from "./nodeEvents";
+import { NodeEventInteractions } from "./nodeEventInteractions";
 import * as vscode from "vscode";
 import * as childProcess from "child_process";
 import * as crypto from "crypto";
@@ -102,10 +104,39 @@ export class WorkspaceSession {
     private readonly manualChanges = new vscode.EventEmitter<void>();
     readonly onDidChangeManualControls = this.manualChanges.event;
     readonly manualControls = new ManualControlInteractions(() => this.rpc, () => this.manualChanges.fire());
+    readonly nodeEvents = new NodeEventInteractions({
+        begin: (target, id) => this.nodeEventGesture(target, id, true),
+        send: (target, event, id) => this.sendNodeEvent(target, event, id),
+        end: (target, id) => this.nodeEventGesture(target, id, false),
+        report: (error) => this.outputChannel.appendLine(`Intravenous node gesture cleanup failed: ${String(error)}`),
+    });
+
+    private async nodeEventGesture(target: NodeAddress, id: string, begin: boolean): Promise<number> {
+        if (this.graphSessionStatus !== "running" || !this.rpc) return Promise.reject(new Error("The Intravenous server is unavailable"));
+        await this.rpc.nodeEventGesture(target, id, begin);
+        return this.lastSessionRevision;
+    }
 
     async readGraphScope() {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
         return this.rpc.getGraphScope();
+    }
+
+    async sendNodeEvent(target: NodeAddress, event: SerializedNodeEvent, interactionId?: string): Promise<number> {
+        // A semantic edit belongs to the running session that received it.
+        // Do not hold it across startup/restart and apply it to a later graph.
+        if (this.graphSessionStatus !== "running" || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        const rpc = this.rpc;
+        const revision = this.lastSessionRevision;
+        const protocol = await rpc.getNodeEventProtocol();
+        if (this.rpc !== rpc) throw new Error("The Intravenous session changed before event dispatch");
+        validateNodeEventTarget(protocol, target, event);
+        // A concurrent revision rejects this mutation. Never retry a semantic
+        // event against another graph: its target or meaning can have changed.
+        const result = await rpc.dispatchNodeEvent(target, event, revision, interactionId);
+        if (!result.ok || result.diagnostics.length)
+            throw new Error(result.diagnostics.map((entry) => entry.message).join("\n") || "Node event was not accepted");
+        return result.sessionRevision ?? this.lastSessionRevision;
     }
 
     async connectGraphPorts(id: string, first: GraphPortEndpoint, second: GraphPortEndpoint): Promise<void> {
@@ -905,6 +936,7 @@ export class WorkspaceSession {
     ): void {
         if (this.client !== client) return;
         this.manualControls.disconnect();
+        this.nodeEvents.disconnected();
         this.resetControlCompilationStatus();
         this.client = null;
         this.rpc = null;
@@ -1372,6 +1404,7 @@ export class WorkspaceSession {
 
     async shutdown(): Promise<void> {
         this.manualControls.disconnect();
+        this.nodeEvents.disconnected();
         this.resetControlCompilationStatus();
         this.controlCompilationStatus.dispose();
         this.manualChanges.dispose();

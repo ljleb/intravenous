@@ -5,6 +5,7 @@
 #include <intravenous/dsl.h>
 
 #include <intravenous/basic_nodes/arithmetic.h>
+#include <intravenous/basic_nodes/automation.h>
 #include <intravenous/basic_nodes/constant.h>
 #include <intravenous/basic_nodes/debug_probe.h>
 #include <intravenous/basic_nodes/filters.h>
@@ -17,6 +18,10 @@
 
 IV_NODE("iv.builtin.constant", iv::Constant);
 IV_NODE("iv.builtin.debug_probe", ::DebugProbe);
+
+IV_NODE("iv.builtin.automation.point_source", iv::automation::PointSource);
+IV_NODE("iv.builtin.automation.linear_curve", iv::automation::LinearCurve);
+IV_MODULE_CLASS("iv.builtin.automation.curve", iv::automation::AutomationCurve);
 
 IV_NODE("iv.builtin.invert", iv::Invert);
 IV_NODE("iv.builtin.power", iv::Power);

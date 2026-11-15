@@ -14,6 +14,9 @@ export type GraphScopePort = {
 export type GraphScopeNode = {
     loadState: "waitingForDefinition" | "waitingForGraph" | "ready" | "failed";
     address: NodeAddress;
+    // Accepted definition when realized; instance.definitionId is the desired
+    // declaration and can differ after a durable node replacement.
+    definitionId?: string;
     instance: {
         instanceId: string;
         definitionId: string;
@@ -28,6 +31,9 @@ export type GraphScopeNode = {
     eventOutputs: GraphScopePort[];
     hasChildren: boolean;
     errorMessage?: string;
+    // Accepted constructor values, independent of desired configurationSource.
+    construction?: { definitionId: string; arguments: unknown[] } | null;
+    constructionError?: string;
 };
 export type GraphPortMatcher = NodeAddress & {
     port: { name?: string; index?: number; channel?: number };
@@ -45,6 +51,8 @@ export type GraphScopeConnection = {
     };
 };
 export type GraphScope = {
+    sessionRevision?: number;
+    sampleRate?: number | null;
     generation: number | null;
     editable: boolean;
     nodes: GraphScopeNode[];

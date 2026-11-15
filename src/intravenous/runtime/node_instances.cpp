@@ -4,6 +4,7 @@
 #include <intravenous/graph/builder/host.hpp>
 #include <intravenous/module/builder_session.h>
 #include <intravenous/module/package_definitions.h>
+#include <intravenous/node/message.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
 #include <intravenous/runtime/configuration_expression.h>
@@ -189,7 +190,7 @@ public:
         return result;
     }
 
-    details::ConfigurationArgument argument() noexcept
+    details::ConfigurationArgument argument() const noexcept
     {
         return details::ConfigurationArgument{
             .data = storage_,
@@ -265,13 +266,42 @@ namespace {
 struct RetainedConfigurationArguments {
     std::vector<OwnedConfigurationArgument> values{};
 };
+
+std::string construction_arguments_json(std::span<details::ConfigurationArgument const> arguments)
+{
+    std::string json = "[";
+    for (auto const& argument : arguments) {
+        if (!argument.type || !argument.type->expression_schema || argument.is_array_decay)
+            throw std::invalid_argument("construction argument has no supported JSON value schema");
+        if (json.size() != 1) json += ',';
+        json += details::configuration_schema_json_value(argument.data, *argument.type->expression_schema);
+    }
+    return json + ']';
+}
+
+// This cache belongs to the retained configured invocation, not to a frontend
+// or a graph generation. Distinct readers can share it safely.
+struct ConstructionArgumentsJson {
+    std::once_flag once{};
+    NodeConstructionArguments result{};
+    NodeConstructionArguments read(std::span<OwnedConfigurationArgument const> values)
+    {
+        std::call_once(once, [&] {
+            std::vector<details::ConfigurationArgument> arguments;
+            for (auto const& value : values) arguments.push_back(value.argument());
+            try { result.json = construction_arguments_json(arguments); }
+            catch (std::invalid_argument const& failure) { result.error = failure.what(); }
+        });
+        return result;
+    }
+};
 }
 
 struct NodeInstances::CacheEntry {
     std::shared_ptr<ConfiguredNodeInstance const> configured{};
     std::optional<ChannelLayout> tiled_layout{};
     std::size_t argument_hash = 0;
-    std::vector<OwnedConfigurationArgument> key_arguments{};
+    std::shared_ptr<RetainedConfigurationArguments const> key_arguments{};
     std::vector<ProjectNodeReplacement> subtree_replacements{};
 };
 
@@ -739,12 +769,12 @@ NodeInstances::RealizedInvocation NodeInstances::configure_cached(
                 || candidate->tiled_layout != tiled_layout
                 || candidate->argument_hash != argument_hash
                 || candidate->subtree_replacements != subtree_replacements
-                || candidate->key_arguments.size() != arguments.size()) {
+                || candidate->key_arguments->values.size() != arguments.size()) {
                 continue;
             }
             bool equal = true;
             for (std::size_t index = 0; index < arguments.size(); ++index) {
-                if (!candidate->key_arguments[index].matches(
+                if (!candidate->key_arguments->values[index].matches(
                         arguments[index], signature->parameter_operations[index])) {
                     equal = false;
                     break;
@@ -762,6 +792,26 @@ NodeInstances::RealizedInvocation NodeInstances::configure_cached(
             session, *cached->configured->graph, cached->configured->local_root,
             qualifier);
         return {.root = root, .configured = cached->configured};
+    }
+
+    std::shared_ptr<RetainedConfigurationArguments> pristine_arguments;
+    std::function<NodeConstructionArguments()> read_construction_arguments;
+    if (cacheable) {
+        pristine_arguments = std::make_shared<RetainedConfigurationArguments>();
+        pristine_arguments->values = std::move(key_arguments);
+        // Reuse the pristine cache-key values. Provider construction can move
+        // from its separate invocation copy without changing this read model.
+        auto json = std::make_shared<ConstructionArgumentsJson>();
+        read_construction_arguments = [pristine_arguments, json] {
+            return json->read(pristine_arguments->values);
+        };
+    } else {
+        // Uncacheable values need the same pre-invocation semantics. Freeze a
+        // supported JSON value now, before a provider can consume its arguments.
+        NodeConstructionArguments frozen;
+        try { frozen.json = construction_arguments_json(arguments); }
+        catch (std::invalid_argument const& failure) { frozen.error = failure.what(); }
+        read_construction_arguments = [frozen = std::move(frozen)] { return frozen; };
     }
 
     ConfigurationStackEntry const stack_entry(context.stack, definition_id);
@@ -821,6 +871,7 @@ NodeInstances::RealizedInvocation NodeInstances::configure_cached(
         .dependencies = std::move(dependencies),
         .message_handlers = std::move(finished.message_handlers),
         .graph = std::move(finished.snapshot),
+        .read_construction_arguments = std::move(read_construction_arguments),
     });
 
     if (cacheable && configured->graph) {
@@ -828,7 +879,7 @@ NodeInstances::RealizedInvocation NodeInstances::configure_cached(
         entry->configured = configured;
         entry->tiled_layout = tiled_layout;
         entry->argument_hash = argument_hash;
-        entry->key_arguments = std::move(key_arguments);
+        entry->key_arguments = std::move(pristine_arguments);
         entry->subtree_replacements = std::move(subtree_replacements);
         // Equality/hash callbacks belong to package code and may execute user
         // operators. Never invoke them while holding the app-module mutex.

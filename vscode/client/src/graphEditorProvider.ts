@@ -6,6 +6,7 @@ import { nodeDebugDetails } from "./nodeDebugDetails";
 import type { GraphEditorAction, GraphEditorState, GraphEditorWebviewMessage } from "./graphEditorProtocol";
 import type { WorkspaceSession } from "./workspaceSession";
 import type { ManualControlHint } from "./manualControlGesture";
+import { isNodeEventRequest, isNodeEventGestureRequest, replyToNodeEvent, replyToNodeEventGesture } from "./nodeEventMessaging";
 
 export class GraphEditorProvider implements vscode.Disposable {
     private readonly panels = new Set<vscode.WebviewPanel>();
@@ -144,14 +145,23 @@ export class GraphEditorProvider implements vscode.Disposable {
         const root = vscode.Uri.joinPath(this.extensionUri, "dist", "webview");
         panel.webview.options = { enableScripts: true, localResourceRoots: [root] };
         const messages = panel.webview.onDidReceiveMessage(async (message: GraphEditorWebviewMessage) => {
-            if (message?.type === "graphReady") {
+            if (isNodeEventRequest(message) || isNodeEventGestureRequest(message)) {
+                const owner = this.controlOwners.get(panel);
+                if (!owner) return;
+                const response = message.type === "sendNodeEvent"
+                    ? await replyToNodeEvent(message, (target, event, id) => this.session.nodeEvents.send(owner, target, event, id))
+                    : await replyToNodeEventGesture(message, (target, id, begin) => begin
+                        ? this.session.nodeEvents.begin(owner, target, id) : this.session.nodeEvents.end(owner, target, id));
+                if (this.panels.has(panel)) void panel.webview.postMessage(response);
+                if (response.error) void vscode.window.showErrorMessage(`Cannot send node event: ${response.error}`);
+            } else if (message?.type === "graphReady") {
                 await this.layoutLoaded;
                 if (!this.panels.has(panel)) return;
                 this.interactionHints.delete(panel);
                 this.updateInteractionStatus();
                 if (this.ready.has(panel)) {
                     const owner = this.controlOwners.get(panel);
-                    if (owner) this.session.manualControls.releaseOwner(owner);
+                    if (owner) { this.session.manualControls.releaseOwner(owner); this.session.nodeEvents.releaseOwner(owner); }
                 }
                 this.ready.add(panel);
                 this.postControls(panel);
@@ -229,7 +239,7 @@ export class GraphEditorProvider implements vscode.Disposable {
         });
         panel.onDidDispose(() => {
             const owner = this.controlOwners.get(panel);
-            if (owner) this.session.manualControls.releaseOwner(owner);
+            if (owner) { this.session.manualControls.releaseOwner(owner); this.session.nodeEvents.releaseOwner(owner); }
             this.controlOwners.delete(panel);
             this.interactionHints.delete(panel);
             messages.dispose(); viewState.dispose(); this.panels.delete(panel); this.ready.delete(panel);

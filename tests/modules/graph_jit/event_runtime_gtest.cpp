@@ -490,6 +490,53 @@ TEST(GraphJitEventSearch, EmptySequenceAndEdgesHaveNoInventedNeighbor)
     EXPECT_EQ(iv::details::event_type_name(iv::EventTypeId::sample), "sample");
     EXPECT_THROW(iv::EventConversionRegistry::plan(iv::EventTypeId::sample, iv::EventTypeId::midi), std::logic_error);
 }
+
+TEST(GraphJitEventSearch, CyclicNeighborsJoinTheLastEventToTheFirst)
+{
+    std::array events{
+        iv::TimedEvent{.time = index(10), .value = iv::SampleEvent{iv::Sample{1}}},
+        iv::TimedEvent{.time = index(10), .value = iv::SampleEvent{iv::Sample{2}}},
+        iv::TimedEvent{.time = index(20), .value = iv::SampleEvent{iv::Sample{3}}},
+        iv::TimedEvent{.time = index(30), .value = iv::SampleEvent{iv::Sample{4}}},
+        iv::TimedEvent{.time = index(30), .value = iv::SampleEvent{iv::Sample{5}}},
+    };
+    auto const value = [](std::optional<iv::TimedEvent> const& event) {
+        return std::get<iv::SampleEvent>(event->value).value;
+    };
+    constexpr auto cyclic = iv::EventNeighborMode::cyclic;
+    // Positions after the last event and before the first one lie in the same
+    // gap: the last event is held and the first event is next. Equal positions
+    // keep their semantic order on both sides of the gap.
+    for (auto position : {index(35), index(5), index(-100)}) {
+        auto const neighbors = iv::sorted_event_neighbors(events, index(10), position, cyclic);
+        ASSERT_TRUE(neighbors.at_or_before && neighbors.after);
+        EXPECT_EQ(value(neighbors.at_or_before), iv::Sample{5});
+        EXPECT_EQ(value(neighbors.after), iv::Sample{1});
+    }
+    // At the last position, the held event is its last equal event.
+    auto const at_last = iv::sorted_event_neighbors(events, index(10), index(30), cyclic);
+    ASSERT_TRUE(at_last.at_or_before && at_last.after);
+    EXPECT_EQ(value(at_last.at_or_before), iv::Sample{5});
+    EXPECT_EQ(value(at_last.after), iv::Sample{1});
+    // Interior lookups agree with bounded mode.
+    auto const interior = iv::sorted_event_neighbors(events, index(10), index(15), cyclic);
+    ASSERT_TRUE(interior.at_or_before && interior.after);
+    EXPECT_EQ(value(interior.at_or_before), iv::Sample{2});
+    EXPECT_EQ(value(interior.after), iv::Sample{3});
+
+    // One event is both neighbors of every position, including its own.
+    std::array single{iv::TimedEvent{.time = index(10), .value = iv::SampleEvent{iv::Sample{1}}}};
+    for (auto position : {index(0), index(10), index(11)}) {
+        auto const neighbors = iv::sorted_event_neighbors(single, index(10), position, cyclic);
+        ASSERT_TRUE(neighbors.at_or_before && neighbors.after);
+        EXPECT_EQ(neighbors.at_or_before->time, index(10));
+        EXPECT_EQ(neighbors.after->time, index(10));
+    }
+    auto const empty = iv::sorted_event_neighbors({}, index(0), index(1), cyclic);
+    EXPECT_FALSE(empty.at_or_before);
+    EXPECT_FALSE(empty.after);
+}
+
 TEST(GraphJitEventSearch, MaterializedNeighborsPreserveOverlappingRegionMembershipAcrossWrap)
 {
     auto const begin = iv::GlobalIndex::from_bits(~std::uint64_t{0} - 2);
@@ -510,6 +557,17 @@ TEST(GraphJitEventSearch, MaterializedNeighborsPreserveOverlappingRegionMembersh
     EXPECT_FLOAT_EQ(static_cast<float>(std::get<iv::SampleEvent>(first.after->value).value), 2);
     EXPECT_FLOAT_EQ(static_cast<float>(std::get<iv::SampleEvent>(second.at_or_before->value).value), 10);
     EXPECT_FLOAT_EQ(static_cast<float>(std::get<iv::SampleEvent>(second.after->value).value), 20);
+
+    // A cyclic lookup wraps within its own Region, also from a position outside
+    // it; a bounded lookup outside the Region has no neighbors.
+    EXPECT_FALSE(input.neighbors(1, begin.retreated_by(1)).at_or_before);
+    for (auto position : {begin.advanced_by(6), begin.retreated_by(1)}) {
+        auto const wrapped = input.neighbors(1, position, iv::EventNeighborMode::cyclic);
+        ASSERT_TRUE(wrapped.at_or_before);
+        ASSERT_TRUE(wrapped.after);
+        EXPECT_FLOAT_EQ(static_cast<float>(std::get<iv::SampleEvent>(wrapped.at_or_before->value).value), 20);
+        EXPECT_FLOAT_EQ(static_cast<float>(std::get<iv::SampleEvent>(wrapped.after->value).value), 10);
+    }
 }
 
 } // namespace iv::test::graph_jit_tests

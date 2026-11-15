@@ -13,6 +13,9 @@ export type PresentationRegistration<Component> = {
     displayName: string;
     definitionIds: readonly string[];
     component: Component;
+    // Construction source for a new instance, when the presentation edits the
+    // node's construction data itself; users need not type it.
+    initialConfiguration?: string;
 };
 
 export type GenericPresentationRegistration<Component> = Omit<

@@ -8,6 +8,8 @@
 #include <span>
 
 namespace iv {
+enum class EventNeighborMode { bounded, cyclic };
+
 struct EventNeighbors {
     // Equal-position events keep their semantic order: the last event at the
     // requested position is the held value, and after is strictly later.
@@ -18,7 +20,8 @@ struct EventNeighbors {
 // The sequence is sorted relative to origin. This ordering crosses either
 // the signed ordering seam or the unsigned wrap without changing the search.
 [[nodiscard]] inline EventNeighbors sorted_event_neighbors(
-    std::span<TimedEvent const> events, GlobalIndex origin, GlobalIndex position)
+    std::span<TimedEvent const> events, GlobalIndex origin, GlobalIndex position,
+    EventNeighborMode mode = EventNeighborMode::bounded)
 {
     auto const offset = origin.forward_distance_to(position);
     auto const next = std::ranges::upper_bound(events, offset, {},
@@ -26,6 +29,10 @@ struct EventNeighbors {
     EventNeighbors result;
     if (next != events.begin()) result.at_or_before = *std::prev(next);
     if (next != events.end()) result.after = *next;
+    if (mode == EventNeighborMode::cyclic && !events.empty()) {
+        if (!result.at_or_before) result.at_or_before = events.back();
+        if (!result.after) result.after = events.front();
+    }
     return result;
 }
 

@@ -749,11 +749,15 @@ TEST(SocketRpcAudioDevicesResultBuilder, SerializesSnapshot)
 TEST(SocketRpcProjectHistory, RequiresProjectWriteAndChecksRevisionBeforeInvokingEveryMutationRoute)
 {
     iv::SocketRpcRouteRegistry routes;
-    for (auto const* method : {"project.undo", "project.redo", "project.applyEdit", "project.setToolchain"}) {
+    for (auto const* method : {"project.undo", "project.redo", "project.applyEdit", "project.setToolchain", "nodeMessages.beginGesture", "nodeMessages.endGesture"}) {
         Json params = Json::object();
         params["expectedRevision"] = 17;
         if (std::string_view(method) == "project.applyEdit") params["operations"] = Json::array();
         if (std::string_view(method) == "project.setToolchain") params["toolchain"] = Json::object();
+        if (std::string_view(method).starts_with("nodeMessages.")) {
+            params["interactionId"] = "drag";
+            params["target"] = {{"instanceId", "curve"}, {"path", Json::array()}};
+        }
         auto request = iv::parse_socket_rpc_request(Json{{"id", 1}, {"method", method}, {"params", params}}.dump());
         bool checked_revision = false;
         std::string capability;
@@ -788,4 +792,26 @@ TEST(SocketRpcProjectHistory, ParsesCompleteSettingsRecordsAndRejectsDuplicateSi
     EXPECT_EQ(parsed.expected_revision, 23u);
     EXPECT_THROW(iv::parse_socket_rpc_request(R"({"id":1,"method":"project.applyEdit","params":{"operations":[{"method":"audioDevices.set","params":{}},{"method":"audioDevices.set","params":{}}]}})"), std::invalid_argument);
     EXPECT_THROW(iv::parse_socket_rpc_request(R"({"id":1,"method":"project.applyEdit","params":{"operations":[{"method":"project.setToolchain","params":{"toolchain":{}}},{"method":"project.setToolchain","params":{"toolchain":{}}}]}})"), std::invalid_argument);
+}
+
+TEST(SocketRpcRequestParser, NodeMessageGestureRoutesHaveDistinctPayloadsAndNeverTrustAClientIdentity)
+{
+    auto begin = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":1,"method":"nodeMessages.beginGesture","params":{"interactionId":"drag","clientId":"forged","target":{"instanceId":"curve","path":[]}}})");
+    auto const* opening = std::get_if<iv::BeginNodeMessageGestureRequest>(&begin.payload);
+    ASSERT_NE(opening, nullptr);
+    EXPECT_EQ(opening->id.interaction_id, "drag");
+    EXPECT_TRUE(opening->id.client_id.empty());
+    EXPECT_TRUE(opening->begin);
+    EXPECT_TRUE(opening->target.path.empty());
+    auto end = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":2,"method":"nodeMessages.endGesture","params":{"interactionId":"drag","target":{"instanceId":"curve","path":[]}}})");
+    EXPECT_NE(std::get_if<iv::EndNodeMessageGestureRequest>(&end.payload), nullptr);
+    auto message = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":3,"method":"nodeMessages.dispatch","params":{"interactionId":"drag","target":{"instanceId":"curve","path":[]},"eventTypeNominalId":"point","eventTypeDefinitionFingerprint":"v0","payload":{}}})");
+    auto const* dispatched = std::get_if<iv::DispatchNodeMessageRequest>(&message.payload);
+    ASSERT_NE(dispatched, nullptr);
+    ASSERT_TRUE(dispatched->gesture);
+    EXPECT_EQ(dispatched->gesture->interaction_id, "drag");
+    EXPECT_TRUE(dispatched->gesture->client_id.empty());
 }

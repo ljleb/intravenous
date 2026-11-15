@@ -78,4 +78,6 @@ IV_SUBSCRIBE_LINKER_EVENT(
     socket_rpc_project_graph_bridge,
     iv_socket_rpc_dispatch_node_message_event,
     &ProjectGraph::handle_socket_rpc_dispatch_node_message)
+IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_project_graph_bridge,
+    iv_socket_rpc_node_message_gesture_event, &ProjectGraph::handle_socket_rpc_node_message_gesture)
 } // namespace iv

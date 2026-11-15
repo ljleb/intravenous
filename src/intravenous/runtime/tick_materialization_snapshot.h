@@ -134,7 +134,8 @@ struct TickMaterializedEventInput {
         GlobalIndexRange range,
         void* visitor_data,
         VisitIndexedEvent visitor) const;
-    [[nodiscard]] EventNeighbors neighbors(std::size_t region, GlobalIndex position) const;
+    [[nodiscard]] EventNeighbors neighbors(std::size_t region, GlobalIndex position,
+        EventNeighborMode mode = EventNeighborMode::bounded) const;
     void for_each_region(
         std::size_t region,
         GlobalIndexRange range,

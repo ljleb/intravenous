@@ -474,6 +474,16 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
     if (method == "nodeMessages.getProtocol") {
         return parsed(GetNodeEventProtocolRequest{});
     }
+    if (method == "nodeMessages.beginGesture" || method == "nodeMessages.endGesture") {
+        NodeMessageGestureRequest gesture{
+            .id = {.interaction_id = parse_string_param(params, "interactionId")},
+            .target = parse_node_address_json(params.at("target"), ProjectConnectionJsonNames::socket_rpc),
+            .begin = method == "nodeMessages.beginGesture",
+        };
+        if (gesture.id.interaction_id.empty()) throw std::invalid_argument("node-message gesture requires an interaction id");
+        if (gesture.begin) return parsed(BeginNodeMessageGestureRequest{std::move(gesture)});
+        return parsed(EndNodeMessageGestureRequest{std::move(gesture)});
+    }
     if (method == "nodeMessages.dispatch") {
         auto const target = params.find("target");
         if (target == params.end() || !target->is_object()) {
@@ -493,6 +503,9 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
                 .event_type_definition_fingerprint = parse_string_param(
                     params, "eventTypeDefinitionFingerprint"),
                 .payload = std::make_shared<Json>(*payload),
+                .gesture = params.contains("interactionId")
+                    ? std::optional<NodeMessageGestureId>(NodeMessageGestureId{.interaction_id = parse_string_param(params, "interactionId")})
+                    : std::nullopt,
             });
     }
     if (method == "audioDevices.get") {

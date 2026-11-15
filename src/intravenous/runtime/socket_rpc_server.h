@@ -73,6 +73,7 @@ namespace iv {
         EndManualControlInteractionRequest const&, SocketRpcAckResponseBuilder&);
     using SocketRpcClientDisconnectedEvent =
         void (*)(SocketRpcClientDisconnectedRequest&);
+    using SocketRpcNodeMessageGestureEvent = void (*)(NodeMessageGestureRequest const&, SocketRpcAckResponseBuilder&);
     using SocketRpcDispatchNodeMessageEvent =
         void (*)(DispatchNodeMessageRequest const&, SocketRpcNodeMessageResultBuilder&);
     using SocketRpcGetNodeEventProtocolEvent =
@@ -120,6 +121,7 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcEndManualControlInteractionEvent, iv_socket_rpc_end_manual_control_interaction_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcClientDisconnectedEvent, iv_socket_rpc_client_disconnected_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcDispatchNodeMessageEvent, iv_socket_rpc_dispatch_node_message_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcNodeMessageGestureEvent, iv_socket_rpc_node_message_gesture_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetNodeEventProtocolEvent, iv_socket_rpc_get_node_event_protocol_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetAudioDevicesEvent, iv_socket_rpc_get_audio_devices_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetAudioDevicesEvent, iv_socket_rpc_set_audio_devices_event);

@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -62,6 +63,10 @@ struct NodeInstanceConfigurationRequest {
     std::optional<ChannelLayout> tiled_layout{};
 };
 
+struct NodeConstructionArguments {
+    std::optional<std::string> json{};
+    std::string error{};
+};
 // The record of one configured invocation: its definition provenance, the
 // lifetimes its live graph state depends on, and its message handlers. A
 // reusable invocation additionally carries a closed copy of its contents
@@ -94,6 +99,11 @@ struct ConfiguredNodeInstance {
     // Null when the invocation was not reusable: uncacheable arguments, or a
     // construction that refers to graph state outside itself.
     std::shared_ptr<ConfiguredGraph const> graph{};
+    // Accepted construction values, separate from mutable invocation arguments.
+    // Cacheable values serialize lazily. Other supported values are frozen
+    // before provider invocation can consume or mutate the arguments.
+    // Unsupported provider values report an error without failing construction.
+    std::function<NodeConstructionArguments()> read_construction_arguments{};
 };
 
 struct NodeInstancePlacement {

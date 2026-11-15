@@ -106,3 +106,54 @@ test("audio output diagnostics read the existing audioDevices endpoint without a
     assert.deepEqual(await rpc.getAudioDevices(), snapshot);
     assert.deepEqual(calls, [{ method: "audioDevices.get", params: {} }]);
 });
+
+test("typed node messages pin the revision before reading receiver support and retain exact event identity", async () => {
+    const { MovePoint } = await import("../src/generated/automationEvents");
+    const { serializeNodeEvent } = await import("../src/nodeEvents");
+    const event = serializeNodeEvent(MovePoint({ id: 4, seconds: 2, value: .5 }));
+    const calls: unknown[] = [];
+    let revision = 17;
+    const client = { request: async (method, params) => {
+        calls.push({ method, params });
+        if (method === "nodeMessages.getProtocol") revision = 18;
+        return { ok: true, diagnostics: [] };
+    } } as unknown as JsonRpcSocketClient;
+    const rpc = new WorkspaceRpc(client, () => revision);
+    const beforeRead = revision;
+    await rpc.getNodeEventProtocol();
+    await rpc.dispatchNodeEvent({ instanceId: "curve" }, event, beforeRead);
+    assert.deepEqual(calls, [
+        { method: "nodeMessages.getProtocol", params: {} },
+        { method: "nodeMessages.dispatch", params: {
+            target: { instanceId: "curve", path: [] },
+            eventTypeNominalId: event.eventType.nominalId,
+            eventTypeDefinitionFingerprint: event.eventType.definitionFingerprint,
+            payload: { id: 4, seconds: 2, value: .5 }, expectedRevision: 17,
+        } },
+    ]);
+});
+
+test("node gesture requests supply root paths and preserve explicit selector paths", async () => {
+    const calls: unknown[] = [];
+    const client = { request: async (method, params) => { calls.push({ method, params }); } } as unknown as JsonRpcSocketClient;
+    const rpc = new WorkspaceRpc(client, () => 23);
+    for (const target of [
+        { instanceId: "curve" },
+        { instanceId: "curve", path: [] },
+        { instanceId: "curve", path: [{ kind: "virtualNode", sourceIdentity: "inner" }] },
+    ]) {
+        calls.length = 0;
+        const original = structuredClone(target);
+        await rpc.nodeEventGesture(target, "drag", true);
+        await rpc.dispatchNodeEvent(target, { eventType: { nominalId: "point", definitionFingerprint: "v0" }, payload: {} }, 24, "drag");
+        await rpc.nodeEventGesture(target, "drag", false);
+        const wireTarget = { ...target, path: target.path ?? [] };
+        assert.deepEqual(calls, [
+            { method: "nodeMessages.beginGesture", params: { target: wireTarget, interactionId: "drag", expectedRevision: 23 } },
+            { method: "nodeMessages.dispatch", params: { target: wireTarget, eventTypeNominalId: "point", eventTypeDefinitionFingerprint: "v0",
+                payload: {}, interactionId: "drag", expectedRevision: 24 } },
+            { method: "nodeMessages.endGesture", params: { target: wireTarget, interactionId: "drag", expectedRevision: 23 } },
+        ]);
+        assert.deepEqual(target, original);
+    }
+});

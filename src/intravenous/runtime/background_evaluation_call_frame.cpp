@@ -277,13 +277,13 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
     }
 
     static EventNeighbors event_neighbors(
-        void const* opaque, std::size_t region_index, GlobalIndex position)
+        void const* opaque, std::size_t region_index, GlobalIndex position, EventNeighborMode mode)
     {
         auto const& self = *static_cast<BindingAdapter const*>(opaque);
         auto const route = self.event_input_regions.at(region_index);
         auto const& view = self.event_reads.at(route.view);
         IV_ASSERT(view.find_neighbors != nullptr, "background event view has no indexed lookup binding");
-        return view.find_neighbors(view.data, route.region, position);
+        return view.find_neighbors(view.data, route.region, position, mode);
     }
 
     static void write_event(void* opaque, TimedEvent const& event) noexcept

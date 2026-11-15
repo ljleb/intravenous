@@ -11,6 +11,7 @@
 #include <intravenous/runtime/project_node_path_resolver.h>
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -48,6 +49,7 @@ iv::details::ConfigurationExpressionTypeSchema const int_expression_schema{
     .integer_bit_width = sizeof(int) * 8,
     .construct_scalar =
         &iv::details::configuration_expression_details::construct_scalar<int>,
+    .read_scalar = &iv::details::configuration_expression_details::read_scalar<int>,
     .default_construct =
         &iv::details::configuration_expression_details::default_construct<int>,
     .destroy = &iv::details::configuration_expression_details::destroy<int>,
@@ -1541,4 +1543,66 @@ TEST(NodeInstancesConfiguration, ProjectNodeReferenceMustSelectExactlyOneNode)
     ASSERT_EQ(matches.size(), 1u);
     ASSERT_EQ(matches.front().kind, iv::ProjectNodePathMatch::Kind::bundle);
     EXPECT_TRUE(reads_from(graph, matches.front().bundle));
+}
+
+TEST(NodeInstancesConfiguration, AcceptedArgumentsRemainPristineWhenTheProviderConsumesItsInvocationCopy)
+{
+    for (bool cacheable : {true, false}) {
+        auto snapshot = make_snapshot(1, {DefinitionSpec{
+            .id = counted_id,
+            .module_build = +[](iv::GraphBuilder& graph, std::span<ConfigurationArgument> arguments) {
+                *static_cast<int*>(arguments[0].data) = 1234;
+                graph.outputs();
+            },
+            .signature = cacheable ? &int_signature_callback : &noncacheable_int_signature_callback,
+        }});
+        iv::NodeInstances instances;
+        iv::GraphBuilder root;
+        int value = 4;
+        std::array arguments{int_argument(value)};
+        std::array requests{request("first", counted_id, arguments), request("second", counted_id, arguments)};
+        auto result = instances.configure_and_embed(snapshot, root, requests);
+        ASSERT_TRUE(result.diagnostics.empty());
+        for (auto const& [id, placement] : result.placements) {
+            ASSERT_TRUE(placement.configured->read_construction_arguments);
+            EXPECT_EQ(nlohmann::ordered_json::parse(placement.configured->read_construction_arguments().json.value()),
+                nlohmann::ordered_json::array({4}));
+        }
+        EXPECT_EQ(value, 4);
+        if (cacheable) EXPECT_EQ(result.placements.at("first").configured, result.placements.at("second").configured);
+    }
+}
+
+TEST(NodeInstancesConfiguration, UnsupportedConstructionReadDoesNotRejectValidConstruction)
+{
+    static auto const identity = [] {
+        auto result = int_identity;
+        result.expression_schema = nullptr;
+        return result;
+    }();
+    static ConfigurationTypeIdentity const* const types[]{&identity};
+    static RegisteredSignature const signature{
+        .parameter_types = types,
+        .parameter_operations = int_operations,
+        .required_argument_count = 1,
+        .argument_count = 1,
+    };
+    auto snapshot = make_snapshot(1, {DefinitionSpec{
+        .id = counted_id,
+        .module_build = +[](iv::GraphBuilder& graph, std::span<ConfigurationArgument>) { graph.outputs(); },
+        .signature = +[]() -> RegisteredSignature const* { return &signature; },
+    }});
+    iv::NodeInstances instances;
+    iv::GraphBuilder root;
+    int value = 4;
+    auto argument = int_argument(value);
+    argument.type = &identity;
+    std::array arguments{argument};
+    std::array requests{request("first", counted_id, arguments)};
+    auto result = instances.configure_and_embed(snapshot, root, requests);
+    ASSERT_TRUE(result.diagnostics.empty());
+    ASSERT_EQ(result.placements.size(), 1u);
+    auto read = result.placements.at("first").configured->read_construction_arguments();
+    EXPECT_FALSE(read.json);
+    EXPECT_FALSE(read.error.empty());
 }

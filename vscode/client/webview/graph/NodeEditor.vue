@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import type { GraphScopeNode } from "../../src/graphScope";
 import { webviewApi } from "../host";
+import { presentations } from "../presentation/presentations";
 
 const props = defineProps<{ node?: GraphScopeNode; definitions: string[] }>();
 const emit = defineEmits<{ close: [] }>();
@@ -11,6 +12,16 @@ const previousDisplayName = instance?.displayName ?? "";
 const previousConfigurationSource = instance?.configurationSource ?? "";
 const displayName = ref(previousDisplayName);
 const configurationSource = ref(previousConfigurationSource);
+// A new node starts from its presentation's construction data, until the user
+// types their own arguments.
+const initialConfiguration = (id: string) =>
+    presentations.candidates(id).find((entry) => entry.initialConfiguration !== undefined)?.initialConfiguration ?? "";
+let suggested = "";
+watch(definitionId, (id) => {
+    if (instance || configurationSource.value !== suggested) return;
+    suggested = initialConfiguration(id);
+    configurationSource.value = suggested;
+}, { immediate: true });
 function save() {
     if (instance) {
         webviewApi.postMessage({ type: "updateGraphNode", instanceId: instance.instanceId,

@@ -2,6 +2,9 @@ import * as crypto from "crypto";
 import * as vscode from "vscode";
 
 import { VirtualNode } from "./graphModel";
+import { isNodeEventRequest, isNodeEventGestureRequest, replyToNodeEvent, replyToNodeEventGesture } from "./nodeEventMessaging";
+import type { NodeAddress } from "./graphScope";
+import type { SerializedNodeEvent } from "./nodeEvents";
 import {
     LiveGraphInstanceRecord,
     liveGraphInstances,
@@ -24,6 +27,9 @@ export class LiveGraphViewProvider implements vscode.WebviewViewProvider {
     private webviewReady = false;
     private postScheduled = false;
     private controlHandler: LiveGraphControlHandler | null = null;
+    private nodeEventHandler: ((target: NodeAddress, event: SerializedNodeEvent, interactionId?: string) => Promise<number | void>) | null = null;
+    private nodeGestureHandler: ((target: NodeAddress, interactionId: string, begin: boolean) => Promise<number | void>) | null = null;
+    private releaseNodeGestures: (() => void) | null = null;
     private readonly state: LiveGraphViewState = {
         sessionStatus: "starting",
         instances: [],
@@ -76,6 +82,13 @@ export class LiveGraphViewProvider implements vscode.WebviewViewProvider {
         this.controlHandler = handler;
     }
 
+    setNodeEventHandler(handler: (target: NodeAddress, event: SerializedNodeEvent, interactionId?: string) => Promise<number | void>,
+        gesture: (target: NodeAddress, interactionId: string, begin: boolean) => Promise<number | void>, release: () => void): void {
+        this.nodeEventHandler = handler;
+        this.nodeGestureHandler = gesture;
+        this.releaseNodeGestures = release;
+    }
+
     resolveWebviewView(webviewView: vscode.WebviewView): void {
         this.view = webviewView;
         this.webviewReady = false;
@@ -84,10 +97,23 @@ export class LiveGraphViewProvider implements vscode.WebviewViewProvider {
             localResourceRoots: [this.webviewRoot],
         };
         webviewView.webview.onDidReceiveMessage(async (message) => {
+            if (isNodeEventRequest(message) || isNodeEventGestureRequest(message)) {
+                const response = message.type === "sendNodeEvent" ? await replyToNodeEvent(message, (target, event, id) => {
+                    if (!this.nodeEventHandler) throw new Error("The node-event service is unavailable");
+                    return this.nodeEventHandler(target, event, id);
+                }) : await replyToNodeEventGesture(message, (target, id, begin) => {
+                    if (!this.nodeGestureHandler) throw new Error("The node-event gesture service is unavailable");
+                    return this.nodeGestureHandler(target, id, begin);
+                });
+                if (this.view === webviewView) void webviewView.webview.postMessage(response);
+                if (response.error) void vscode.window.showErrorMessage(`Cannot send node event: ${response.error}`);
+                return;
+            }
             if (!isLiveGraphWebviewMessage(message)) {
                 return;
             }
             if (message.type === "ready") {
+                if (this.webviewReady) this.releaseNodeGestures?.();
                 // The webview (re)loaded; it has no state until it receives
                 // this snapshot.
                 if (this.view === webviewView) {
@@ -105,6 +131,7 @@ export class LiveGraphViewProvider implements vscode.WebviewViewProvider {
             }
         });
         webviewView.onDidDispose(() => {
+            this.releaseNodeGestures?.();
             if (this.view === webviewView) {
                 this.view = null;
                 this.webviewReady = false;

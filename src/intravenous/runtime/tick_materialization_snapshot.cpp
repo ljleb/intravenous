@@ -269,12 +269,14 @@ void TickMaterializedEventInput::for_each_indexed(
     });
 }
 
-EventNeighbors TickMaterializedEventInput::neighbors(std::size_t region, GlobalIndex position) const
+EventNeighbors TickMaterializedEventInput::neighbors(std::size_t region, GlobalIndex position,
+    EventNeighborMode mode) const
 {
-    if (region >= chunks.size() || !chunks[region].range.contains(position)) return {};
+    if (region >= chunks.size()
+        || (mode == EventNeighborMode::bounded && !chunks[region].range.contains(position))) return {};
     auto const& chunk = chunks[region];
     return sorted_event_neighbors(std::span<TimedEvent const>{*chunk.events}
-        .subspan(chunk.begin, chunk.end - chunk.begin), chunk.range.begin, position);
+        .subspan(chunk.begin, chunk.end - chunk.begin), chunk.range.begin, position, mode);
 }
 
 void TickMaterializedEventInput::for_each_region(

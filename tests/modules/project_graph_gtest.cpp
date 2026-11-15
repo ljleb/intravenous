@@ -130,6 +130,7 @@ iv::details::ConfigurationExpressionTypeSchema const int_schema{
     .integer_bit_width = sizeof(int) * 8,
     .construct_scalar =
         &iv::details::configuration_expression_details::construct_scalar<int>,
+    .read_scalar = &iv::details::configuration_expression_details::read_scalar<int>,
     .default_construct =
         &iv::details::configuration_expression_details::default_construct<int>,
     .destroy = &iv::details::configuration_expression_details::destroy<int>,
@@ -2194,7 +2195,126 @@ nlohmann::ordered_json const& scope_node(
     }
     throw std::runtime_error("graph scope has no node " + std::string(instance_id));
 }
+
+void node_message_gesture(iv::ProjectGraph& graph, iv::NodeMessageGestureId const& id,
+    iv::NodeAddress const& target, bool begin)
+{
+    iv::SocketRpcAckResponseBuilder response;
+    in_event_source([&] { graph.handle_socket_rpc_node_message_gesture({.id = id, .target = target, .begin = begin}, response); });
+    auto result = nlohmann::ordered_json::parse(response.build(1));
+    if (result.contains("error")) throw std::runtime_error(result["error"]["message"].get<std::string>());
+}
 } // namespace
+
+TEST_F(ProjectGraphFixture, GraphScopeReportsAcceptedArgumentsAfterReplacementUndoAndFailedConfiguration)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({.instance_id = "curve",
+        .definition_id = replacing_definition_id, .configuration_source = "30"}, create); });
+    ASSERT_EQ(create.build(), "curve");
+    auto original = project_graph.current_generation()->placements.at("curve").configured;
+    auto scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(scope, "curve")["construction"]["arguments"], nlohmann::ordered_json::array({30}));
+    auto result = in_event_source([&] { return project_graph.dispatch_node_message(
+        {.instance_id = "curve"}, iv::OwnedNodeMessage(ReplaceWithValue{.value = 12})); });
+    ASSERT_TRUE(result.project_state_changed);
+    scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(scope, "curve")["construction"]["definitionId"], successor_definition_id);
+    EXPECT_EQ(scope_node(scope, "curve")["definitionId"], successor_definition_id);
+    EXPECT_EQ(scope_node(scope, "curve")["construction"]["arguments"], nlohmann::ordered_json::array({42}));
+    EXPECT_EQ(nlohmann::ordered_json::parse(original->read_construction_arguments().json.value()), nlohmann::ordered_json::array({30}));
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(scope, "curve")["construction"]["arguments"], nlohmann::ordered_json::array({30}));
+    iv::ProjectAckBuilder invalid;
+    in_event_source([&] { project_graph.handle_project_update_node_instances({.updates = {{.instance_id = "curve",
+        .configuration_source = "unknown_argument"}}}, invalid); });
+    ASSERT_NO_THROW(invalid.build());
+    scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(scope, "curve")["loadState"], "failed");
+    EXPECT_EQ(scope_node(scope, "curve")["construction"]["arguments"], nlohmann::ordered_json::array({30}));
+}
+
+TEST_F(ProjectGraphFixture, NodeMessageGestureCombinesAcceptedMessagesAndRedoDoesNotInvokeThemAgain)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({.instance_id = "curve",
+        .definition_id = replacing_definition_id, .configuration_source = "30"}, create); });
+    ASSERT_EQ(create.build(), "curve");
+    iv::NodeAddress target{.instance_id = "curve"};
+    iv::NodeMessageGestureId gesture{.client_id = "editor", .interaction_id = "drag"};
+    ASSERT_NO_THROW(node_message_gesture(project_graph, gesture, target, true));
+    for (int value : {12, 99}) {
+        auto result = in_event_source([&] { return project_graph.dispatch_node_message(target,
+            iv::OwnedNodeMessage(ReplaceWithValue{.value = value}), gesture); });
+        ASSERT_TRUE(result.project_state_changed);
+    }
+    ASSERT_NO_THROW(node_message_gesture(project_graph, gesture, target, false));
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_TRUE(instances.desired_node_replacements().empty());
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    EXPECT_EQ(nlohmann::ordered_json::parse(instances.desired_node_replacements()[0].configuration_arguments_json),
+        nlohmann::ordered_json::array({99}));
+    EXPECT_THROW(in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 101}), gesture); }), std::invalid_argument);
+}
+
+TEST_F(ProjectGraphFixture, ConflictingEditClosesNodeGestureBeforeItsOwnHistoryAndRejectsLateUpdates)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({.instance_id = "curve",
+        .definition_id = replacing_definition_id, .configuration_source = "30"}, create); });
+    ASSERT_EQ(create.build(), "curve");
+    iv::NodeAddress target{.instance_id = "curve"};
+    iv::NodeMessageGestureId gesture{.client_id = "editor", .interaction_id = "drag"};
+    node_message_gesture(project_graph, gesture, target, true);
+    auto first = in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 12}), gesture); });
+    ASSERT_TRUE(first.project_state_changed);
+    auto other = in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 99})); });
+    ASSERT_TRUE(other.project_state_changed);
+    EXPECT_THROW(in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 101}), gesture); }), std::invalid_argument);
+    for (int expected : {42, 30}) {
+        iv::ProjectAckBuilder undo;
+        in_event_source([&] { project_graph.handle_project_undo(undo); });
+        ASSERT_NO_THROW(undo.build());
+        auto scope = read_graph_scope(project_graph);
+        EXPECT_EQ(scope_node(scope, "curve")["construction"]["arguments"], nlohmann::ordered_json::array({expected}));
+    }
+}
+
+TEST_F(ProjectGraphFixture, ClientDisconnectClosesNodeMessageHistoryAtItsLastAcceptedValue)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({.instance_id = "curve",
+        .definition_id = replacing_definition_id, .configuration_source = "30"}, create); });
+    ASSERT_EQ(create.build(), "curve");
+    iv::NodeAddress target{.instance_id = "curve"};
+    iv::NodeMessageGestureId gesture{.client_id = "editor", .interaction_id = "drag"};
+    node_message_gesture(project_graph, gesture, target, true);
+    auto changed = in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 12}), gesture); });
+    ASSERT_TRUE(changed.project_state_changed);
+    iv::SocketRpcClientDisconnectedRequest disconnect{.client_id = "editor"};
+    in_event_source([&] { project_graph.handle_socket_rpc_client_disconnected(disconnect); });
+    EXPECT_TRUE(disconnect.project_state_changed);
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_TRUE(instances.desired_node_replacements().empty());
+}
 
 TEST_F(ProjectGraphFixture, GraphScopeListsInstancesWithRealizedPortsAndConnectionState)
 {
@@ -3698,4 +3818,61 @@ TEST_F(ProjectGraphFixture, DisabledModuleManualValueKeepsTheAuthoredDefaultAndI
     EXPECT_FALSE(control.at("enabled").get<bool>());
     EXPECT_FALSE(control.at("participates").get<bool>());
     EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.75f});
+}
+
+TEST_F(ProjectGraphFixture, DisjointNodeEditsStayOutsideTheGestureAndUndoDuringADragEndsIt)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    for (auto const* id : {"a", "b"}) {
+        iv::ProjectStringBuilder create;
+        in_event_source([&] { project_graph.handle_project_create_node_instance({.instance_id = id,
+            .definition_id = replacing_definition_id, .configuration_source = "30"}, create); });
+        ASSERT_EQ(create.build(), id);
+    }
+    iv::NodeAddress target{.instance_id = "a"};
+    iv::NodeMessageGestureId gesture{.client_id = "editor", .interaction_id = "drag"};
+    node_message_gesture(project_graph, gesture, target, true);
+    auto first = in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 12}), gesture); });
+    ASSERT_TRUE(first.project_state_changed);
+    auto other = in_event_source([&] { return project_graph.dispatch_node_message({.instance_id = "b"},
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 12})); });
+    ASSERT_TRUE(other.project_state_changed);
+    auto second = in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 99}), gesture); });
+    ASSERT_TRUE(second.project_state_changed);
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    auto scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(scope, "a")["construction"]["arguments"], nlohmann::ordered_json::array({30}));
+    EXPECT_EQ(scope_node(scope, "b")["construction"]["arguments"], nlohmann::ordered_json::array({42}));
+    EXPECT_THROW(in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 101}), gesture); }), std::invalid_argument);
+}
+
+TEST_F(ProjectGraphFixture, BeginningAnotherGestureDoesNotCloseHistoryButItsFirstConflictingEditDoes)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({.instance_id = "curve",
+        .definition_id = replacing_definition_id, .configuration_source = "30"}, create); });
+    ASSERT_EQ(create.build(), "curve");
+    iv::NodeAddress target{.instance_id = "curve"};
+    iv::NodeMessageGestureId first{.client_id = "one", .interaction_id = "drag"};
+    iv::NodeMessageGestureId second{.client_id = "two", .interaction_id = "drag"};
+    node_message_gesture(project_graph, first, target, true);
+    node_message_gesture(project_graph, second, target, true);
+    auto changed = in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 12}), first); });
+    ASSERT_TRUE(changed.project_state_changed);
+    EXPECT_THROW(in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 99}), second); }), std::invalid_argument);
+    iv::ProjectAckBuilder replay;
+    in_event_source([&] { project_graph.handle_project_replace_graph({}, replay); });
+    ASSERT_NO_THROW(replay.build());
+    EXPECT_THROW(in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 99}), first); }), std::exception);
+    iv::ProjectAckBuilder undo;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(undo); }), std::runtime_error);
 }

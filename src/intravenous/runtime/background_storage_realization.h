@@ -84,7 +84,7 @@ struct BackgroundEventReadView {
     ForEachEvent for_each_event = nullptr;
     void (*for_each_region_event)(
         void const*, std::size_t, GlobalIndexRange, void*, VisitEvent) = nullptr;
-    EventNeighbors (*find_neighbors)(void const*, std::size_t, GlobalIndex) = nullptr;
+    EventNeighbors (*find_neighbors)(void const*, std::size_t, GlobalIndex, EventNeighborMode) = nullptr;
     void (*for_each_indexed_event)(
         void const*, GlobalIndexRange, void*, VisitIndexedEvent) = nullptr;
 

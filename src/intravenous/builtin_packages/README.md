@@ -8,3 +8,7 @@ or loaded merely by building or starting Intravenous.
 For a source-tree run, add an optional package's own directory to
 `IV_MODULE_SEARCH_PATH` to select it for discovery. A selected package controls its own
 native dependencies through its package-local CMake project.
+
+The default package includes automation points and curves without additional
+dependencies. See [the automation guide](builtin/AUTOMATION.md) for the
+`iv.builtin.automation.*` definitions and curve-editor construction arguments.

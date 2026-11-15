@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/runtime/project_edit.h>
+#include <intravenous/runtime/node_message_gesture.h>
 
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/runtime/graph_connections.h>
@@ -145,6 +146,7 @@ struct SerializedNodeMessage {
     std::string event_type_nominal_id{};
     std::string event_type_definition_fingerprint{};
     std::shared_ptr<nlohmann::ordered_json const> payload{};
+    std::optional<NodeMessageGestureId> gesture{};
 };
 
 // Root-graph transaction coordinator. It deliberately does not own desired
@@ -224,6 +226,16 @@ class ProjectGraph {
     std::vector<ProjectEditEffect> edit_history_{};
     std::size_t history_position_ = 0;
     std::uint64_t history_serial_ = 0;
+    struct NodeMessageGesture {
+        NodeMessageGestureId id{};
+        NodeAddress target{};
+        ProjectEditEffect effect{};
+    };
+    std::vector<NodeMessageGesture> node_message_gestures_{};
+    void append_history_effect_locked(ProjectEditEffect effect);
+    void close_conflicting_node_gestures_locked(ProjectEditEffect const& effect,
+        std::optional<NodeMessageGestureId> const& except = std::nullopt);
+    bool close_node_message_gestures_locked(std::optional<std::string> client = std::nullopt);
     void record_manual_edit_locked(std::optional<ProjectManualControl> before,
         std::optional<ProjectManualControl> after,
         ActiveManualControlInteraction& interaction);
@@ -287,7 +299,8 @@ class ProjectGraph {
     void dispatch_root_node_message_locked(
         NodeAddress const& target,
         OwnedNodeMessage message,
-        NodeMessageDispatchResult& result);
+        NodeMessageDispatchResult& result,
+        std::optional<NodeMessageGestureId> const& gesture = std::nullopt);
     [[nodiscard]] std::vector<ManualControlId>
     desired_dynamic_inputs_locked(bool include_predictive_hover,
         std::string_view exclude_retained_client = {}) const;
@@ -341,7 +354,8 @@ public:
     [[nodiscard]] std::vector<ProjectManualControl> manual_controls() const;
     [[nodiscard]] std::shared_ptr<NodeDefinitionsSnapshot const> definitions_snapshot() const;
     [[nodiscard]] NodeMessageDispatchResult dispatch_node_message(
-        NodeAddress const& target, OwnedNodeMessage message);
+        NodeAddress const& target, OwnedNodeMessage message,
+        std::optional<NodeMessageGestureId> const& gesture = std::nullopt);
     [[nodiscard]] NodeMessageDispatchResult dispatch_node_message(
         NodeAddress const& target, SerializedNodeMessage const& message);
     [[nodiscard]] NodeEventProtocolSnapshot node_event_protocol() const;
@@ -435,6 +449,8 @@ public:
     void handle_socket_rpc_dispatch_node_message(
         DispatchNodeMessageRequest const& request,
         SocketRpcNodeMessageResultBuilder& builder);
+    void handle_socket_rpc_node_message_gesture(NodeMessageGestureRequest const& request,
+        SocketRpcAckResponseBuilder& builder);
     void handle_socket_rpc_get_node_event_protocol(
         GetNodeEventProtocolRequest const& request,
         SocketRpcNodeEventProtocolResultBuilder& builder);

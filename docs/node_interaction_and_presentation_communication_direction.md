@@ -555,6 +555,33 @@ by the first Vue read model, while preserving one coherent accepted result.
 
 ## Do not introduce `PresentationState` just to duplicate application data
 
+### Accepted constructor values and grouped message gestures
+
+The application read model exposes accepted constructor values separately from
+desired configuration source. Failed desired configuration must not replace the
+values used by the accepted node. A presentation reconstructs its curve or other
+semantic editor from these values after reload, undo, or another client's edit.
+Unsupported value serialization reports its limitation; it must not invalidate
+an otherwise valid node construction.
+
+A continuous semantic editing gesture can group several accepted node messages
+into one undo operation. Each message keeps its normal validation, transaction,
+compilation, and reliable publication behavior. The gesture groups history; it
+does not hold a builder transaction open between messages or defer accepted data.
+
+An accepted conflicting edit closes the existing group before recording itself.
+Further updates from that gesture are rejected. There is no automatic history
+rebasing or retry against another semantic revision. Disjoint edits can remain
+independent. Beginning another gesture alone is not a conflicting edit. Undo and
+redo close open groups before navigating history. Disconnect closes that client's
+groups at their last accepted changes. The server derives client identity from
+the connection, rather than trusting an identity in the payload.
+
+See [Node message gesture](event_flows/node_message_gesture.md) for the current
+application flow.
+
+### Application data and execution state
+
 `PresentationState` is not implemented. It is no longer a planned distinct C++
 projection or a required generated frontend schema. Configuration, typed
 construction arguments, identities, resolved ports and connections, manual-control

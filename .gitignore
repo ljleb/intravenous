@@ -18,3 +18,4 @@ node_modules
 *.vsix
 vscode/client/dist
 vscode/client/dist-test
+vscode/client/dist-tools

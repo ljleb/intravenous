@@ -77,6 +77,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }));
 
     provider.setControlHandler(async (message) => session.dispatchLiveGraphControl(message));
+    provider.setNodeEventHandler((target, event, id) => session.nodeEvents.send("source-inspection", target, event, id),
+        (target, id, begin) => begin ? session.nodeEvents.begin("source-inspection", target, id)
+            : session.nodeEvents.end("source-inspection", target, id),
+        () => session.nodeEvents.releaseOwner("source-inspection"));
 
     context.subscriptions.push({ dispose: () => void session.shutdown() });
     context.subscriptions.push(vscode.window.onDidChangeVisibleTextEditors(() => {

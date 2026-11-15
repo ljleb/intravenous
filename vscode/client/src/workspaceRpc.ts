@@ -2,6 +2,8 @@ import type { ManualControlId } from "./manualControls";
 import { JsonRpcSocketClient } from "./rpcClient";
 import { VirtualNode, SourceSpan } from "./graphModel";
 import type { GraphScope } from "./graphScope";
+import type { NodeAddress } from "./graphScope";
+import type { NodeEventProtocol, SerializedNodeEvent } from "./nodeEvents";
 
 export type SourceQueryRange = {
     start: { line: number; column: number };
@@ -56,6 +58,24 @@ export class WorkspaceRpc {
 
     getGraphScope(): Promise<GraphScope> {
         return this.client.request("graph.getScope", {});
+    }
+
+    getNodeEventProtocol(): Promise<NodeEventProtocol> {
+        return this.client.request("nodeMessages.getProtocol", {});
+    }
+
+    dispatchNodeEvent(target: NodeAddress, event: SerializedNodeEvent, expectedRevision: number, interactionId?: string): Promise<{
+        ok: boolean; diagnostics: Array<{ target: NodeAddress; message: string }>; sessionRevision?: number;
+    }> {
+        return this.client.request("nodeMessages.dispatch", this.mutationParams({ target: { ...target, path: target.path ?? [] },
+            eventTypeNominalId: event.eventType.nominalId,
+            eventTypeDefinitionFingerprint: event.eventType.definitionFingerprint,
+            payload: event.payload, ...(interactionId ? { interactionId } : {}) }, expectedRevision));
+    }
+
+    nodeEventGesture(target: NodeAddress, interactionId: string, begin: boolean): Promise<void> {
+        return this.client.request(`nodeMessages.${begin ? "beginGesture" : "endGesture"}`,
+            this.mutationParams({ target: { ...target, path: target.path ?? [] }, interactionId }));
     }
 
     getAudioDevices(): Promise<AudioDevicesSnapshot> {

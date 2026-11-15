@@ -122,9 +122,13 @@ TEST(PackagePipeline, DirtyDeclarationsBuildAndPublishDefinitions)
     EXPECT_TRUE(package_snapshot->by_package_id.contains("iv.test.local_cmake"));
 
     auto const modules = pipeline.definitions.loaded_module_definitions();
-    ASSERT_EQ(modules.size(), 1u);
-    EXPECT_EQ(modules.front().definition_id, "iv.test.local_cmake");
-    EXPECT_NE(modules.front().configured_graph, nullptr);
+    auto const local_module = std::ranges::find(
+        modules, "iv.test.local_cmake", &iv::ModuleNodeDefinition::definition_id);
+    ASSERT_NE(local_module, modules.end());
+    EXPECT_NE(local_module->configured_graph, nullptr);
+    // The default package now publishes an automation module as well as leaves.
+    EXPECT_NE(std::ranges::find(modules, "iv.builtin.automation.curve",
+        &iv::ModuleNodeDefinition::definition_id), modules.end());
 
     auto const leaves = pipeline.definitions.loaded_leaf_definitions();
     EXPECT_NE(

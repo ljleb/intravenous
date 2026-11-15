@@ -73,6 +73,58 @@ struct ProjectEditEffect {
     }
 };
 
+template<class Record>
+bool project_changes_overlap(std::vector<ProjectRecordChange<Record>> const& left,
+    std::vector<ProjectRecordChange<Record>> const& right)
+{
+    return std::ranges::any_of(left, [&](auto const& a) {
+        auto const& key = project_record_key(a.after ? *a.after : *a.before);
+        return std::ranges::any_of(right, [&](auto const& b) {
+            return key == project_record_key(b.after ? *b.after : *b.before);
+        });
+    });
+}
+
+inline bool project_effects_overlap(ProjectEditEffect const& left, ProjectEditEffect const& right)
+{
+    return project_changes_overlap(left.instances, right.instances)
+        || project_changes_overlap(left.replacements, right.replacements)
+        || project_changes_overlap(left.connections, right.connections)
+        || project_changes_overlap(left.manual_controls, right.manual_controls)
+        || (left.audio_devices && right.audio_devices) || (left.toolchain && right.toolchain);
+}
+
+template<class Record>
+void merge_project_changes(std::vector<ProjectRecordChange<Record>>& into,
+    std::vector<ProjectRecordChange<Record>> changes)
+{
+    for (auto& change : changes) {
+        auto const& key = project_record_key(change.after ? *change.after : *change.before);
+        auto existing = std::ranges::find_if(into, [&](auto const& value) {
+            return key == project_record_key(value.after ? *value.after : *value.before);
+        });
+        if (existing == into.end()) into.push_back(std::move(change));
+        else existing->after = std::move(change.after);
+    }
+    std::erase_if(into, [](auto const& change) { return change.before == change.after; });
+}
+
+inline void merge_project_effect(ProjectEditEffect& into, ProjectEditEffect effect)
+{
+    merge_project_changes(into.instances, std::move(effect.instances));
+    merge_project_changes(into.replacements, std::move(effect.replacements));
+    merge_project_changes(into.connections, std::move(effect.connections));
+    merge_project_changes(into.manual_controls, std::move(effect.manual_controls));
+    auto merge_setting = [](auto& target, auto source) {
+        if (!source) return;
+        if (target) target->after = std::move(source->after);
+        else target = std::move(source);
+        if (target->before == target->after) target.reset();
+    };
+    merge_setting(into.audio_devices, std::move(effect.audio_devices));
+    merge_setting(into.toolchain, std::move(effect.toolchain));
+}
+
 struct ProjectRecordKeyHash {
     std::size_t operator()(std::string const& value) const { return std::hash<std::string>{}(value); }
     std::size_t operator()(NodeAddress const& value) const {

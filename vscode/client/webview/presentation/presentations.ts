@@ -1,6 +1,7 @@
 import { markRaw, type Component } from "vue";
 
 import GenericPresentation from "./GenericPresentation.vue";
+import AutomationCurvePresentation from "./AutomationCurvePresentation.vue";
 import { PresentationRegistry } from "./registry";
 
 export const genericPresentationId = "iv.generic";
@@ -12,3 +13,7 @@ export const presentations = new PresentationRegistry<Component>({
     displayName: "Generic",
     component: markRaw(GenericPresentation),
 });
+presentations.register({ presentationId: "iv.builtin.automation.curve", displayName: "Automation curve",
+    definitionIds: ["iv.builtin.automation.curve"], component: markRaw(AutomationCurvePresentation),
+    // An empty point list; points are added and edited on the curve.
+    initialConfiguration: "{}" });

@@ -1621,12 +1621,16 @@ void ProjectGraph::dispatch_node_message_locked(
 void ProjectGraph::dispatch_root_node_message_locked(
     NodeAddress const& target,
     OwnedNodeMessage message,
-    NodeMessageDispatchResult& result)
+    NodeMessageDispatchResult& result,
+    std::optional<NodeMessageGestureId> const& gesture)
 {
     if (!current_generation_) {
         throw std::runtime_error(
             "cannot dispatch a node message without a project graph");
     }
+    if (gesture && std::ranges::none_of(node_message_gestures_, [&](auto const& open) {
+            return open.id == *gesture && open.target == target;
+        })) throw std::invalid_argument("node-message gesture ended or conflicted with another edit");
     NodeMessageInteraction interaction{
         .generation = current_generation_,
         .original_replacements = current_generation_->node_replacements,
@@ -1636,6 +1640,7 @@ void ProjectGraph::dispatch_root_node_message_locked(
         target, std::move(message), interaction, result);
     if (interaction.replacements == interaction.original_replacements) return;
 
+    ProjectEditEffect effect;
     auto rebuilt = rebuild_locked(
         NodeReplacementsReplaceMutation{
             .replacements = std::move(interaction.replacements),
@@ -1643,20 +1648,29 @@ void ProjectGraph::dispatch_root_node_message_locked(
         std::monostate{},
         true,
         nullptr,
-        &interaction.transactions);
+        &interaction.transactions,
+        nullptr,
+        !gesture,
+        gesture ? &effect : nullptr);
+    if (gesture && !effect.empty()) {
+        close_conflicting_node_gestures_locked(effect, gesture);
+        auto open = std::ranges::find(node_message_gestures_, *gesture, &NodeMessageGesture::id);
+        merge_project_effect(open->effect, std::move(effect));
+    }
     result.project_state_changed = true;
     result.publication = std::move(rebuilt.publication);
 }
 
 NodeMessageDispatchResult ProjectGraph::dispatch_node_message(
     NodeAddress const& target,
-    OwnedNodeMessage message)
+    OwnedNodeMessage message,
+    std::optional<NodeMessageGestureId> const& gesture)
 {
     NodeMessageDispatchResult result;
     {
         std::scoped_lock lock(mutex_);
         dispatch_root_node_message_locked(
-            target, std::move(message), result);
+            target, std::move(message), result, gesture);
     }
     if (result.project_state_changed) {
         IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
@@ -1734,7 +1748,7 @@ NodeMessageDispatchResult ProjectGraph::dispatch_node_message(
         auto owned = OwnedNodeMessage::from_owned(
             value, value->data(), selected_type);
         dispatch_root_node_message_locked(
-            target, std::move(owned), result);
+            target, std::move(owned), result, message.gesture);
     }
     if (result.project_state_changed) {
         IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
@@ -1769,13 +1783,55 @@ void ProjectGraph::handle_node_definitions_snapshot_changed(
     }
 }
 
-void ProjectGraph::record_edit_locked(ProjectEditEffect effect)
+void ProjectGraph::append_history_effect_locked(ProjectEditEffect effect)
 {
     if (effect.empty()) return;
     edit_history_.resize(history_position_);
     edit_history_.push_back(std::move(effect));
     history_position_ = edit_history_.size();
     ++history_serial_;
+}
+
+void ProjectGraph::close_conflicting_node_gestures_locked(ProjectEditEffect const& effect,
+    std::optional<NodeMessageGestureId> const& except)
+{
+    for (auto at = node_message_gestures_.begin(); at != node_message_gestures_.end();) {
+        auto& open = *at;
+        if (except && open.id == *except) { ++at; continue; }
+        auto const changes_constructor = std::ranges::any_of(effect.instances, [&](auto const& change) {
+            auto const& record = change.after ? *change.after : *change.before;
+            return record.instance_id == open.target.instance_id && (!change.before || !change.after
+                || change.before->definition_id != change.after->definition_id
+                || change.before->configuration_source != change.after->configuration_source);
+        });
+        auto const replaces_target = std::ranges::any_of(effect.replacements, [&](auto const& change) {
+            auto const& address = (change.after ? *change.after : *change.before).address;
+            return address.instance_id == open.target.instance_id && address.path.size() <= open.target.path.size()
+                && std::equal(address.path.begin(), address.path.end(), open.target.path.begin());
+        });
+        if (!changes_constructor && !replaces_target && !project_effects_overlap(open.effect, effect)) { ++at; continue; }
+        append_history_effect_locked(std::move(open.effect));
+        at = node_message_gestures_.erase(at);
+    }
+}
+
+bool ProjectGraph::close_node_message_gestures_locked(std::optional<std::string> client)
+{
+    bool changed = false;
+    for (auto at = node_message_gestures_.begin(); at != node_message_gestures_.end();) {
+        auto& open = *at;
+        if (client && open.id.client_id != *client) { ++at; continue; }
+        changed |= !open.effect.empty();
+        append_history_effect_locked(std::move(open.effect));
+        at = node_message_gestures_.erase(at);
+    }
+    return changed;
+}
+
+void ProjectGraph::record_edit_locked(ProjectEditEffect effect)
+{
+    close_conflicting_node_gestures_locked(effect);
+    append_history_effect_locked(std::move(effect));
 }
 
 void ProjectGraph::record_manual_edit_locked(std::optional<ProjectManualControl> before,
@@ -1997,6 +2053,7 @@ void ProjectGraph::handle_project_undo(ProjectAckBuilder& builder, std::function
 {
     {
         std::scoped_lock lock(mutex_);
+        close_node_message_gestures_locked();
         auto rebuilt = apply_edit_locked({}, false, true, authorize_audio);
         builder.set_publication(std::move(rebuilt.publication));
     }
@@ -2008,6 +2065,7 @@ void ProjectGraph::handle_project_redo(ProjectAckBuilder& builder, std::function
 {
     {
         std::scoped_lock lock(mutex_);
+        close_node_message_gestures_locked();
         auto rebuilt = apply_edit_locked({}, false, false, authorize_audio);
         builder.set_publication(std::move(rebuilt.publication));
     }
@@ -2193,6 +2251,7 @@ void ProjectGraph::handle_project_replace_graph(
                     .connections = request.connections,
                 }, true, nullptr, nullptr, nullptr, false);
             edit_history_.clear();
+            node_message_gestures_.clear();
             history_position_ = 0;
             ++history_serial_;
             builder.set_publication(std::move(rebuilt.publication));
@@ -2788,7 +2847,7 @@ void ProjectGraph::handle_socket_rpc_client_disconnected(
             reconcile_manual_control_activity_locked(
                 settled_dynamic_input, std::move(ended));
         }
-        request.project_state_changed = manual_controls_ != controls_before;
+        request.project_state_changed = close_node_message_gestures_locked(client_id) || manual_controls_ != controls_before;
     }
     if (request.project_state_changed) {
         IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
@@ -2807,6 +2866,7 @@ void ProjectGraph::handle_socket_rpc_dispatch_node_message(
                 .event_type_definition_fingerprint =
                     request.event_type_definition_fingerprint,
                 .payload = request.payload,
+                .gesture = request.gesture,
             });
         builder.set_publication(std::move(result.publication));
         std::vector<SocketRpcNodeMessageDiagnostic> diagnostics;
@@ -2821,6 +2881,34 @@ void ProjectGraph::handle_socket_rpc_dispatch_node_message(
     } catch (std::exception const& error) {
         builder.fail(error.what());
     }
+}
+
+void ProjectGraph::handle_socket_rpc_node_message_gesture(NodeMessageGestureRequest const& request,
+    SocketRpcAckResponseBuilder& builder)
+{
+    try {
+        if (request.id.client_id.empty() || request.id.interaction_id.empty())
+            throw std::invalid_argument("node-message gesture requires a client and interaction id");
+        bool changed = false;
+        {
+            std::scoped_lock lock(mutex_);
+            auto open = std::ranges::find(node_message_gestures_, request.id, &NodeMessageGesture::id);
+            if (request.begin) {
+                if (open != node_message_gestures_.end()) throw std::invalid_argument("node-message gesture is already open");
+                if (!current_generation_ || std::ranges::none_of(current_generation_->message_handlers,
+                        [&](auto const& handler) { return handler.address == request.target; }))
+                    throw std::invalid_argument("node-message gesture target is unavailable");
+                node_message_gestures_.push_back({.id = request.id, .target = request.target});
+            } else if (open != node_message_gestures_.end()) {
+                if (open->target != request.target) throw std::invalid_argument("node-message gesture target changed");
+                changed = !open->effect.empty();
+                append_history_effect_locked(std::move(open->effect));
+                node_message_gestures_.erase(open);
+            }
+        }
+        builder.succeed();
+        if (changed) IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+    } catch (std::exception const& error) { builder.fail(error.what()); }
 }
 
 void ProjectGraph::handle_socket_rpc_get_node_event_protocol(
@@ -2888,6 +2976,8 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
         ProjectGraphScope scope;
         auto const generation = current_generation_;
         if (generation) scope.generation = generation->generation;
+        if (generation && generation->compiled_graph)
+            scope.sample_rate = generation->compiled_graph->specialization.sample_rate;
         std::unordered_map<std::string, IvPackageInfo const*> packages_by_root;
         std::unordered_map<std::string, IvPackageInfo const*> packages_by_definition;
         for (auto const& package : packages.packages) {
@@ -2929,6 +3019,18 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                 }
             }
             node.instance = std::move(instance);
+            if (generation) {
+                auto const placement = generation->placements.find(node.instance.instance_id);
+                if (placement != generation->placements.end() && placement->second.configured) {
+                    auto const& configured = *placement->second.configured;
+                    node.construction_definition_id = configured.definition_id;
+                    if (configured.read_construction_arguments) {
+                        auto values = configured.read_construction_arguments();
+                        node.construction_arguments_json = std::move(values.json);
+                        node.construction_error = std::move(values.error);
+                    } else node.construction_error = "accepted construction values are unavailable";
+                }
+            }
             IvPackageInfo const* package = nullptr;
             if (auto found = packages_by_definition.find(node.instance.definition_id); found != packages_by_definition.end()) {
                 package = found->second;

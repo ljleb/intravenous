@@ -10,7 +10,7 @@ import {
     portGroups,
     portTypeSummary,
 } from "../webview/presentation/nodeSummary";
-import { semanticNodeFromVirtualNode } from "../webview/presentation/semanticNode";
+import { semanticNodeFromScopeChild, semanticNodeFromVirtualNode } from "../webview/presentation/semanticNode";
 
 function oscillator(): VirtualNode {
     const sample = { type: "Sample", rank: 0, channelCapability: "audio" as const };
@@ -124,4 +124,15 @@ test("node identity comes from the source identity, then the node ID", () => {
     assert.equal(
         nodeIdentitySummary({ ...node, sourceIdentity: "", id: "instance-1::voice@Filter" }),
         "Filter");
+});
+
+test("scope presentations use the accepted replacement definition and its construction data", () => {
+    const construction = { definitionId: "iv.builtin.automation.curve", arguments: [[]] };
+    const child = { address: { instanceId: "curve" }, definitionId: "iv.builtin.automation.curve", loadState: "ready" as const,
+        instance: { instanceId: "curve", definitionId: "original.declaration", realized: true },
+        construction, sampleInputs: [], sampleOutputs: [], eventInputs: [], eventOutputs: [], hasChildren: true };
+    const node = semanticNodeFromScopeChild(child, { generation: 1, editable: true, nodes: [child], connections: [] });
+    assert.equal(node.definitionId, "iv.builtin.automation.curve");
+    assert.deepEqual(node.construction, construction);
+    assert.equal(child.instance.definitionId, "original.declaration");
 });

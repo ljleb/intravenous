@@ -93,7 +93,7 @@ struct RandomAccessEventInputPort {
     std::size_t region_count = 0;
     IndexCoverage const* coverage_value = nullptr;
     ForEachEvent for_each_event = nullptr;
-    EventNeighbors (*find_neighbors)(void const*, std::size_t, GlobalIndex) = nullptr;
+    EventNeighbors (*find_neighbors)(void const*, std::size_t, GlobalIndex, EventNeighborMode) = nullptr;
 
     [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
@@ -367,11 +367,13 @@ public:
         return port_->region_ranges[index_];
     }
 
-    [[nodiscard]] EventNeighbors neighbors(GlobalIndex position) const
+    [[nodiscard]] EventNeighbors neighbors(GlobalIndex position,
+        EventNeighborMode mode = EventNeighborMode::bounded) const
     {
-        IV_ASSERT(range().contains(position), "event neighbor lookup lies outside its logical Region");
+        IV_ASSERT(mode == EventNeighborMode::cyclic || range().contains(position),
+            "bounded event neighbor lookup lies outside its logical Region");
         IV_ASSERT(port_->find_neighbors != nullptr, "event input has no indexed lookup binding");
-        return port_->find_neighbors(port_->data, index_, position);
+        return port_->find_neighbors(port_->data, index_, position, mode);
     }
 
     template<typename Fn>

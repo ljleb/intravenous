@@ -202,12 +202,13 @@ Stage 3, started 2026-11-13. The owner has verified Stages 1–2, including
 project history and durable settings history. Earlier checkpoints below retain
 their original dates and are superseded by the later verification updates.
 
-Current checkpoint (2026-11-14): generic lane wiring and live manual controls are
-implemented and owner-tested. Complete the typed frontend `node.send(event)` API
-and the specialized automation-curve presentation next. Its remaining scope
-includes authoritative point data after reload/undo and grouped message gestures.
-Live output meters and other Tick observation remain in Stage 4.
-
+Current checkpoint (2026-11-14): generic lane wiring, live manual controls,
+and typed frontend dispatch have passed the owner's checks. The accepted
+construction-data read model, grouped semantic-message gestures, and bundled
+automation presentation are implemented in source and await owner verification.
+See [the source checkpoint](#automation-presentation-source-checkpoint-2026-11-14).
+Live output meters and other Tick observation remain in Stage 4. The previous
+checkpoint is preserved in [historical documentation](historical/stage_3_before_automation_presentation_2026-11-14.md).
 After Stage 3, revisit the display of unbounded knobs with the owner. The current
 angle compresses values beyond approximately ±10, so widely different magnitudes
 look almost identical. The owner requests useful visual magnitude feedback for
@@ -1307,24 +1308,28 @@ The owner approved a Tock source for the sparse control points. The curve
 interpreter remains replayable Tick code. The distinction applies to the two
 leaves, rather than forcing the editable module into one execution domain.
 
-The new optional `builtin_packages/automation` package registers:
+The default `builtin_packages/builtin` package registers these definitions
+(promoted from the optional automation package on 2026-11-14):
 
-- `iv.automation.point_source`: a persisted Tock event Region containing
+- `iv.builtin.automation.point_source`: a persisted Tock event Region containing
   `SampleEvent` values. The point list is frozen with `ImmutableArray<Point>`.
-- `iv.automation.linear_curve`: a stateless, replayable Tick node with a Region
+- `iv.builtin.automation.linear_curve`: a stateless, replayable Tick node with a Region
   event input and a sequential Sample output. It finds the neighboring points
   and samples only its current block or requested replay window.
-- `iv.automation.curve`: a class module owning the editable point list. Its
+- `iv.builtin.automation.curve`: a class module owning the editable point list. Its
   independent `AddPoint`, `RemovePoint`, and `MovePoint` message types reconstruct
   the module through the existing durable replacement mechanism. It exposes
   both the interpreted values and the underlying point events.
 
 The first interpolation policy is linear. Events at the same position retain
 stable order. The last event at a position supplies that position's held value;
-interpolation approaching that position uses the first event there. An empty
-point list, a position before the first point, or a position outside the bound
-Region produces zero. After the last point, its value is held to the Region's
-end. Point-source coverage includes the rounded sample position of `duration`.
+interpolation approaching that position uses the first event there. Time is
+cyclic: interpolation runs between successive points in cyclic order, including
+from the last point to the first across the global wrap, so one point is
+constant and only an empty point list produces zero. See
+[Cyclic automation semantics](#cyclic-automation-semantics-2026-11-14); the
+superseded duration-bounded policy is preserved in
+[historical documentation](historical/automation_before_cyclic_semantics_2026-11-14.md).
 These are the initial node's policies, not universal rules for Sample events.
 
 `EventRegion::neighbors()` now exposes the last event at or before a position
@@ -2375,3 +2380,188 @@ ghost-cursor fix; not built or tested by the agent):
   denied-lock note in the knob's status hint remains, as does the connection-time
   "Intravenous audio output" line, which the owner keeps as useful in normal use.
   See [Knob pointer-lock diagnostics](knob_pointer_lock_diagnostics.md).
+
+### Stage 3 continuation, 2026-11-14
+
+The owner verified the ghost-cursor behavior and asks to resume this stage after
+its review fixes and cleanup. The next coherent feature is the automation
+presentation, through the existing neutral semantic-event protocol:
+
+1. Provide frontend-owned typed event factories and codecs, plus `node.send()`.
+   Validate exact event identity and current receiver support before dispatch.
+2. Expose accepted construction values through the application read model, so
+   curve points survive reload, undo, and edits from another client.
+3. Keep point-drag ownership and coalesced semantic messages outside component
+   lifetimes. Group accepted changes into one project-history operation.
+4. Register the bundled automation presentation and cover the complete path with
+   focused client and backend regressions. Observation remains Stage 4 work.
+
+This entry records the implementation plan, not completion. Builds and tests
+remain owner-run. Unexpected ownership or transaction friction must be reported
+before choosing a workaround.
+
+### Typed frontend node dispatch, 2026-11-14
+
+Source checkpoint. This completes the typed-event API slice of the continuation
+plan above. It does not mark Stage 3 or the automation presentation complete.
+
+- `generateNodeEventBindings.ts` reads a neutral compiler sidecar or runtime
+  protocol snapshot. A frontend names file selects nominal identities and assigns
+  export names. Generated bindings retain exact fingerprints and validate payloads.
+  Display names never select an event. The bundled automation factories come from
+  the compiler-produced shared-package sidecar. Regeneration instructions are in
+  [the bindings guide](../vscode/client/bindings/README.md).
+- `useNode()` supplies `node.send(event)` through the presentation host. The
+  webview root owns requests across presentation remounts and mode changes.
+  Disconnect rejects pending completions. A presentation without a stable semantic
+  address receives an explicit error.
+- Both webview hosts dispatch through `WorkspaceSession.sendNodeEvent()` and the
+  existing `nodeMessages.getProtocol`/`nodeMessages.dispatch` routes. The session
+  captures its revision before reading receiver support. It checks exact event
+  identity and payload, then submits that revision. It neither retries stale edits
+  nor carries a request across server startup. Backend validation remains final.
+- The existing backend owns durable replacement, history, and project publication.
+  This slice adds no backend route, C++ event schema, or realtime work.
+- Light client regressions cover generated payload types, immutable payload
+  snapshots, range validation, schema/export collisions, receiver removal, changed
+  fingerprints, revision pinning, remount-independent completion, out-of-order
+  replies, and disconnect. Generation also has a checked-in-output regression.
+
+The agent did not run builds, typechecks, or tests. `git diff --check` is clean.
+Owner verification from `vscode/client`: `npm test` and `npm run typecheck`.
+Then resume the accepted construction-data read model and grouped point gestures
+before registering the interactive automation presentation.
+
+### Accepted point data and message-gesture history, 2026-11-14
+
+The owner reports passing npm tests and typecheck for typed frontend dispatch.
+The next feature uses accepted constructor values as the curve's authoritative
+read model. `graph.getScope` reports the accepted definition and argument values,
+separately from desired source text. A failed desired configuration must not
+replace that accepted data. Reusable invocations retain their pristine cache-key
+values for lazy reads, without copying another point array.
+
+History friction: debounced messages can interleave with another client's edit.
+An A→B drag, B→C external edit, and C→D drag cannot be combined into A→D without
+absorbing the external edit. The owner selected **end conflicting gestures**:
+close the current undo group before a conflicting edit, then reject further
+updates from its old gesture. Do not silently rebase those updates. Disjoint
+record edits can remain independent. Undo/redo and client disconnect must close
+open groups before operating on history or releasing the client.
+
+This records the accepted behavior and implementation work, not a completed UI
+or a new verification result. The constructor read model and grouped message
+path must be tested before the automation presentation is marked complete.
+
+
+### Automation presentation source checkpoint, 2026-11-14
+
+Implemented; builds, tests, and manual UI verification remain owner-run.
+
+- `ConfiguredNodeInstance::read_construction_arguments` reads accepted values.
+  Cacheable invocations reuse their pristine cache-key arguments and serialize
+  lazily. Uncacheable invocations freeze supported JSON before provider code can
+  consume the invocation values. An unsupported read returns a diagnostic without
+  invalidating an otherwise valid construction. `graph.getScope` separates these
+  accepted values and definition ID from desired configuration source.
+- `node.gesture()` groups a sequence of typed messages. Each message still applies
+  through the normal coordinated replacement path. `ProjectGraph` merges their
+  `ProjectEditEffect` records into one history entry. A conflicting accepted edit
+  closes the group before recording itself; later messages with that gesture ID
+  fail. Merely beginning a second gesture changes no history. Undo/redo close open
+  groups; disconnect closes that client's groups. No history rebasing or retries.
+- The webview owns `AutomationCurveEditing`, pointer capture, pending requests,
+  and debounced point drafts independently of presentation component lifetimes.
+  Release flushes the latest position and closes history. A final draft remains
+  visible until a scope read reaches its last accepted payload revision; ending
+  the history group alone is not a newer point value. Errors restore accepted data.
+- The bundled `iv.builtin.automation.curve` presentation shares the parent timeline's time
+  window. Double-click adds a point, drag moves it, and right-click removes it.
+  Visible-window lookup uses binary search and neighboring segments. This edits
+  constructor data; it adds no audio-thread observation or sampling work.
+- Automation ships in the default builtin package. To exercise the specialized
+  editor, create a direct `iv.builtin.automation.curve` instance; see the
+  [automation guide](../src/intravenous/builtin_packages/builtin/AUTOMATION.md).
+  The owner requested builtin packaging and `iv.builtin` IDs on 2026-11-14;
+  the prior packaging is preserved in [historical documentation](historical/automation_before_builtin_promotion_2026-11-14.md).
+- Added light regressions for pristine accepted values, replacement/undo/failure
+  reads, grouped history, conflict rejection, disjoint edits, disconnect cleanup,
+  RPC authority/revisions, remount-independent queues, draft flushing, and sparse
+  curve geometry. The agent has not run these tests.
+
+Owner verification: the normal C++ build and CTest run, then `npm test` and
+`npm run typecheck` in `vscode/client`, followed by point add/move/remove,
+undo/redo, reload, and a conflicting edit from a second client. Only after these
+checks should Stage 3 be called complete. The agreed `Node::State` lifecycle
+cleanup remains before Stage 4.
+
+
+### Automation builtin promotion, 2026-11-14
+
+Owner decision: the dependency-free automation nodes and class module belong in
+the default builtin package, under `iv.builtin`. Source now registers
+`iv.builtin.automation.curve`, `iv.builtin.automation.point_source`, and
+`iv.builtin.automation.linear_curve` in that package. The separate automation
+manifest and entry were removed, and internal construction/replacement IDs and
+the Vue presentation selection were updated. The shared JIT fixture still tests
+the same implementations through its independent catalog. The builtin-loader
+regression now checks the shipped definitions and three module-message handlers.
+The owner reported passing C++ tests before this packaging change; this change
+awaits owner rebuild and verification. There is no constructor-data or event
+payload migration in this pre-alpha repository.
+
+### Cyclic automation semantics, 2026-11-14
+
+Accepted owner correction. The global timeline is
+cyclic. Automation has no semantic beginning, end, or duration. The point list
+alone defines the curve: interpolate between successive points in cyclic order,
+including the segment from the last stored point to the first across the global
+wrap. This uses the actual `GlobalIndex` cycle, not a repeating clip whose period
+is the distance between the earliest and latest displayed points. One point
+therefore defines a constant curve. An empty list keeps the existing zero-value
+behavior.
+
+Remove the explicit duration argument and the restrictions that pin points to
+`[0, duration]`. A finite event-storage Region is an implementation representation
+of the stored point set; it must not cut off the interpreted curve outside that
+Region. Cyclic interpolation uses modular index distances.
+
+The curve module sorts the points it receives, keeping equal times in their given
+order. Owner decision, 2026-11-14: `PointSource` may keep rejecting unsorted input.
+
+The specialized presentation supplies the initial construction data and manages
+ordinary edits through typed semantic messages. Users should not need to type
+constructor expressions for normal creation or editing. Raw configuration remains
+available for advanced use. Displayed time windows do not bound the curve.
+
+Implementation status: implemented in source; the agent has not built it or run
+its tests, so it awaits owner rebuild and verification.
+
+- `EventNeighborMode::cyclic` on `EventRegion::neighbors()` and
+  `sorted_event_neighbors()`: when no event lies on one side of the position, the
+  last event of the Region is held and its first event is next. Bounded mode is
+  unchanged. `TickMaterializedEventInput`, the background storage views, and
+  `PersistedDataStore::Snapshot::event_neighbors()` (including positional
+  recordings split at the signed seam) forward the mode. A cyclic lookup may name
+  a position outside the Region.
+- `AutomationCurve(std::vector<Point>)` takes only the point list, validates finite
+  times and values and unique IDs, and stable-sorts by time. `point_index()`
+  accepts any signed second whose rounded sample position fits `[-2^63, 2^63)`.
+- `PointSource::range()` stores one finite Region that excludes the largest cyclic
+  gap between neighboring points; `tock_coverage()` writes its points in cyclic
+  order from that Region's beginning.
+- `LinearCurve` publishes coverage for the whole cycle as two half-cycle ranges and
+  interpolates with modular distances from the nearer endpoint. Equal neighbor
+  times, as for one point, span the full 2^64-sample cycle.
+- `ProjectGraphScope` carries `sample_rate` (`sampleRate` in JSON). The frontend
+  model uses `2^64 / sampleRate` seconds as the cycle and interpolates the
+  visible window's edges across the wrap. `readAutomationCurve()` accepts only the
+  one-argument form and sorts the points.
+- The curve's `PresentationRegistration` supplies `initialConfiguration: "{}"`;
+  `NodeEditor` fills it into an untouched creation form.
+- Tests (not run): neighbor lookup wrap, equal positions, single and empty
+  sequences, materialized-input wrap outside its Region, `LinearCurve` wrap and
+  single-point blocks, construction validation and `point_index()` limits, an
+  unsorted point list in the JIT window fixture, one-argument message payloads,
+  and the frontend cyclic model. No JIT runtime regression yet exercises
+  `PersistedDataStore` cyclic lookups on a positional recording.

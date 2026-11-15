@@ -567,11 +567,11 @@ public:
                     ->for_each_region(
                         region_index, region, visitor_data, visitor);
             },
-            .find_neighbors = +[](void const* opaque, std::size_t region, GlobalIndex position) {
+            .find_neighbors = +[](void const* opaque, std::size_t region, GlobalIndex position, EventNeighborMode mode) {
                 auto const& self = *static_cast<TransactionEventStorage const*>(opaque);
                 if (region >= self.regions_.size()) return EventNeighbors{};
                 auto const& selected = self.regions_[region];
-                return sorted_event_neighbors(selected.events, selected.range.begin, position);
+                return sorted_event_neighbors(selected.events, selected.range.begin, position, mode);
             },
             .for_each_indexed_event = +[](
                 void const* opaque,
@@ -833,11 +833,11 @@ public:
                     ->for_each_region(
                         region_index, region, visitor_data, visitor);
             },
-            .find_neighbors = +[](void const* opaque, std::size_t region, GlobalIndex position) {
+            .find_neighbors = +[](void const* opaque, std::size_t region, GlobalIndex position, EventNeighborMode mode) {
                 auto const& self = *static_cast<PersistedEventReader const*>(opaque);
                 if (region >= self.source_regions_.size()) return EventNeighbors{};
                 return self.snapshot_->event_neighbors(self.output_, self.type_,
-                    self.source_regions_[region], position);
+                    self.source_regions_[region], position, mode);
             },
         };
     }

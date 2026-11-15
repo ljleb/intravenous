@@ -42,6 +42,11 @@ struct ProjectGraphScopeNode {
     // independently of the previous executable generation.
     NodeInstanceInterface interface{};
     std::vector<ProjectGraphScopeManualControl> manual_controls{};
+    // Construction values of the accepted placement, never a parse of the
+    // desired source text. These remain from the previous generation on failure.
+    std::string construction_definition_id{};
+    std::optional<std::string> construction_arguments_json{};
+    std::string construction_error{};
 };
 
 struct ProjectGraphScopeConnection {
@@ -58,6 +63,7 @@ struct ProjectGraphScope {
     // The current successful ProjectGraph generation, which can differ from
     // the desired configuration whose interfaces are displayed.
     std::optional<std::uint64_t> generation{};
+    std::optional<std::size_t> sample_rate{};
     bool editable = true;
     std::vector<ProjectGraphScopeNode> nodes{};
     std::vector<ProjectGraphScopeConnection> connections{};
