@@ -459,6 +459,16 @@ From the owner's run of the staged tree (185 failures: 177 not run behind
 - `BackgroundEvaluationCallFrame.OwnsOperationFramesAndTockBindings` predates
   the requested-only binding: its input binding coverage was narrower than its
   whole selected Region. The test now binds that Region's union.
+- `GeneratedReplayCoverageFollowsTheDeclaredTickReplayMode` exposed an older
+  replay addressing defect, found under gdb by dumping the replay storage at
+  `finalize_replay()`. A Tick wrapper addresses each continuous binding at
+  `sequential_begin_index` plus the frame offset, while `prepare_replay()` and
+  `finalize_replay()` address replay storage at `index & (capacity - 1)`. The
+  generated replay loop never set `sequential_begin_index`, so every region's
+  invocation used slot 0. Earlier replays passed only because each had one
+  region beginning at a multiple of its capacity. The loop in `lowering.cpp`
+  now stores each region's begin into every continuous input and output binding
+  of the replay context before invoking the Tick wrapper.
 - Six persisted `GraphExecutorFixture` tests committed without evaluation. A
   persisted demand records its requirement without activating the producer;
   demand expansion then activated it for the same range, but the staged

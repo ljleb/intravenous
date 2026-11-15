@@ -950,6 +950,78 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
                     advance);
 
                 builder.SetInsertPoint(invoke);
+                // A Tick wrapper addresses each continuous binding at its
+                // sequential_begin_index plus the frame offset. Replay storage
+                // is indexed by global position, so each region's invocation
+                // begins at that region's begin, as the realtime root selects
+                // the physical index for each of its callbacks.
+                auto* tick_context = byte_offset_pointer(
+                    builder,
+                    node_frame,
+                    offsets.replay_tick_context,
+                    "replay.tick.context");
+                auto store_begin = [&](std::size_t span_offset,
+                                       std::size_t pointer_offset,
+                                       std::size_t extent_offset,
+                                       std::size_t stride,
+                                       std::size_t member,
+                                       char const* name) {
+                    auto* bindings = builder.CreateLoad(
+                        pointer_type,
+                        byte_offset_pointer(
+                            builder, tick_context, span_offset + pointer_offset,
+                            "replay.bindings.index"),
+                        "replay.bindings");
+                    auto* binding_count = builder.CreateLoad(
+                        size_type,
+                        byte_offset_pointer(
+                            builder, tick_context, span_offset + extent_offset,
+                            "replay.binding.count.index"),
+                        "replay.binding.count");
+                    auto* entry = builder.GetInsertBlock();
+                    auto* body = llvm::BasicBlock::Create(
+                        context, std::string{name} + ".body", function);
+                    auto* exit = llvm::BasicBlock::Create(
+                        context, std::string{name} + ".done", function);
+                    builder.CreateCondBr(
+                        builder.CreateICmpNE(
+                            binding_count, llvm::ConstantInt::get(size_type, 0)),
+                        body, exit);
+                    builder.SetInsertPoint(body);
+                    auto* binding = builder.CreatePHI(size_type, 2, "replay.binding");
+                    binding->addIncoming(llvm::ConstantInt::get(size_type, 0), entry);
+                    auto* address = builder.CreateInBoundsGEP(
+                        byte_type,
+                        bindings,
+                        builder.CreateAdd(
+                            builder.CreateMul(
+                                binding, llvm::ConstantInt::get(size_type, stride)),
+                            llvm::ConstantInt::get(size_type, member)),
+                        "replay.binding.begin");
+                    builder.CreateStore(begin, address);
+                    auto* next = builder.CreateAdd(
+                        binding, llvm::ConstantInt::get(size_type, 1), "replay.binding.next");
+                    binding->addIncoming(next, body);
+                    builder.CreateCondBr(
+                        builder.CreateICmpULT(next, binding_count), body, exit);
+                    builder.SetInsertPoint(exit);
+                };
+                using InputSpan = ReflectedSpan<ReflectedContinuousInputPortBinding const>;
+                using OutputSpan = ReflectedSpan<ReflectedContinuousOutputPortBinding const>;
+                store_begin(
+                    offsetof(ReflectedNodeTickContext, continuous_input_bindings),
+                    offsetof(InputSpan, pointer),
+                    offsetof(InputSpan, extent),
+                    sizeof(ReflectedContinuousInputPortBinding),
+                    offsetof(ReflectedContinuousInputPortBinding, sequential_begin_index),
+                    "replay.input.begin");
+                store_begin(
+                    offsetof(ReflectedNodeTickContext, continuous_output_bindings),
+                    offsetof(OutputSpan, pointer),
+                    offsetof(OutputSpan, extent),
+                    sizeof(ReflectedContinuousOutputPortBinding),
+                    offsetof(ReflectedContinuousOutputPortBinding, sequential_begin_index),
+                    "replay.output.begin");
                 builder.CreateCall(
                     primitive_block_operation_type(context),
                     tick,
