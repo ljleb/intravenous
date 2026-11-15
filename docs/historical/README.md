@@ -213,6 +213,10 @@ These documents are retained because they record deleted architectures, supersed
   preserves the silent-output probe investigation after the owner asked to remove
   the probes.
 
+- [Knob Pointer-Lock Diagnostics Before Message Removal (2026-11-14)](./knob_pointer_lock_diagnostics_before_message_removal_2026-11-14.md)
+  preserves the description of the automatic pointer-lock output messages before
+  the owner asked to remove them.
+
 - [Knob Recording Analysis Before The Direct Oscillator Capture](./knob_recording_analysis_before_direct_oscillator_capture_2026-11-14.md)
   preserves the first panner recording analysis and its incorrect conclusion
   about oscillator phase continuity before the direct recording exposed the bug.

@@ -1,8 +1,7 @@
 import type { Point } from "./graphScope";
 
 type Host = { request: () => void | Promise<void>; exit: () => void; locked: () => boolean };
-type Session = { pointerId: number; origin: Point; pending: boolean; granted: boolean; mouse: boolean;
-    lockedPosition?: Point; positionWarning?: boolean };
+type Session = { pointerId: number; origin: Point; pending: boolean; granted: boolean; mouse: boolean };
 
 // The webview owns the DOM listeners; this owner keeps asynchronous lock
 // acquisition tied to one drag, including release before acquisition finishes.
@@ -76,16 +75,8 @@ export class KnobPointerLock {
         this.session.pending = false;
         this.failed(message);
     }
-    move(delta: number, position?: Point): boolean {
+    move(delta: number): boolean {
         if (!this.session?.granted || this.exiting || !this.host.locked()) return false;
-        if (position) {
-            const anchor = this.session.lockedPosition;
-            if (!anchor) this.session.lockedPosition = position;
-            else if (!this.session.positionWarning && Math.hypot(position.x - anchor.x, position.y - anchor.y) > 2) {
-                this.session.positionWarning = true;
-                this.failed(`Browser reports pointer lock but client coordinates moved: ${JSON.stringify({ anchor, position })}`);
-            }
-        }
         this.moved(this.session.pointerId, delta);
         return true;
     }

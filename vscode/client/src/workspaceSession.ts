@@ -108,10 +108,6 @@ export class WorkspaceSession {
         return this.rpc.getGraphScope();
     }
 
-    reportGraphInteractionDiagnostic(message: string): void {
-        this.outputChannel.appendLine(`Intravenous knob pointer: ${message}`);
-    }
-
     async connectGraphPorts(id: string, first: GraphPortEndpoint, second: GraphPortEndpoint): Promise<void> {
         const scope = await this.readGraphScope();
         const connection = connectionFromPorts(scope, id, first, second);

@@ -168,8 +168,6 @@ export class GraphEditorProvider implements vscode.Disposable {
                 if (message.hint && panel.active && vscode.window.state.focused) this.interactionHints.set(panel, message.hint);
                 else this.interactionHints.delete(panel);
                 this.updateInteractionStatus();
-            } else if (message?.type === "graphInteractionDiagnostic" && typeof message.message === "string") {
-                this.session.reportGraphInteractionDiagnostic(message.message);
             } else if (message?.type === "manualControlAction") {
                 const owner = this.controlOwners.get(panel);
                 if (!owner) return;

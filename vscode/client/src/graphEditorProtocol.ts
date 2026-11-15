@@ -18,7 +18,6 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "graphAction"; action: "addNode" | "editNode" | "createPackage"; instanceId?: string };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "graphInteractionHint"; hint: ManualControlHint | null }
-    | { type: "graphInteractionDiagnostic"; message: string }
     | { type: "manualControlAction"; action: ManualControlAction }
     | { type: "projectHistory"; direction: "undo" | "redo" }
     | { type: "copyNodeDebugDetails"; nodeKey: string }

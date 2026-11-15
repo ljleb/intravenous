@@ -125,25 +125,13 @@ test("a denied first press can retry after native focus arrives, but an external
     assert.deepEqual(ends, [[1, null]]);
 });
 
-test("relative travel remains unbounded while the browser's locked client position stays fixed", () => {
+test("relative travel remains unbounded while locked", () => {
     const { owner, lock, errors, moves } = harness();
     owner.start(1, { x: 100, y: 100 }); lock(true);
-    owner.move(10000, { x: 100, y: 100 });
-    owner.move(10000, { x: 100, y: 100 });
+    owner.move(10000);
+    owner.move(10000);
     assert.deepEqual(errors, []);
     assert.deepEqual(moves, [[1, 10000], [1, 10000]]);
-});
-
-test("reported lock with a drifting client position emits one diagnostic per drag", () => {
-    const { owner, lock, errors, moves } = harness();
-    owner.start(1, { x: 100, y: 100 }); lock(true);
-    owner.move(1, { x: 100, y: 100 });
-    owner.move(3, { x: 100, y: 97 });
-    owner.move(10, { x: 100, y: 87 });
-    assert.equal(errors.length, 1);
-    assert.match(errors[0], /Browser reports pointer lock but client coordinates moved/);
-    assert.equal(owner.status().locked, true);
-    assert.equal(moves.length, 3);
 });
 
 test("a browser rejection preserves its exception name and leaves the drag available for focus recovery", async () => {

@@ -13,8 +13,11 @@ VSCodium. It offers an editor update or the main-window fallback and does not
 block startup. Browser hosts do not receive the desktop-specific warning.
 
 The owner requested removal of the recorder command on 2026-11-14. The command,
-recorder, and JSON file writer were removed. Automatic acquisition-failure and
-unexpected-unlock messages still appear in the Intravenous output channel.
+recorder, and JSON file writer were removed. On the same day the owner also asked
+to remove the automatic acquisition-failure, unexpected-unlock and coordinate-drift
+messages from the Intravenous output channel. A denied lock is still shown in the
+knob's status hint tooltip. The previous wording is preserved in
+[historical documentation](historical/knob_pointer_lock_diagnostics_before_message_removal_2026-11-14.md).
 
 The investigation and retired tools remain documented in the historical
 [host-workaround record](historical/vscodium_pointer_lock_host_workaround_2026-11-14.md)

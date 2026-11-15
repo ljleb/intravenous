@@ -51,13 +51,7 @@ const manualPointer = new KnobPointerLock({
     if (surface.value?.hasPointerCapture(id)) surface.value.releasePointerCapture(id);
 }, (message) => {
     manualLockError = message; publishManualHint();
-    reportPointerDiagnostic(message);
 });
-function reportPointerDiagnostic(reason: string) {
-    webviewApi.postMessage({ type: "graphInteractionDiagnostic", message: JSON.stringify({
-        reason, ...manualPointer.status(), userAgent: navigator.userAgent, pixelRatio: window.devicePixelRatio,
-    }) });
-}
 provideManualControls({ gestures: manualGestures, version: manualVersion, startKnob: (event, control, descriptor, limits) => {
     if (manualGestures.pointerControl()) return;
     surface.value?.focus({ preventScroll: true });
@@ -105,7 +99,7 @@ function lockedManualMove(event: MouseEvent) {
     // A synthesized move with an empty buttons mask is not a mouse release.
     // Mouseup, pointerup, native focus loss and pointerlockchange own termination.
     knobClicks.move(event.movementX, event.movementY);
-    manualPointer.move(-event.movementY, { x: event.clientX, y: event.clientY });
+    manualPointer.move(-event.movementY);
 }
 function lockedManualRelease(event: MouseEvent) {
     const id = manualGestures.pointerId();
@@ -115,8 +109,6 @@ function lockedManualRelease(event: MouseEvent) {
     }
 }
 function manualLockChanged() {
-    const before = manualPointer.status();
-    if (before.granted && document.pointerLockElement !== surface.value) reportPointerDiagnostic("Browser released pointer lock before mouse release");
     manualPointer.changed();
     if (document.pointerLockElement === surface.value) {
         // Capture is only a fallback while the lock is pending. A successful

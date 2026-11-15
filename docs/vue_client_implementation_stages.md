@@ -2367,6 +2367,11 @@ ghost-cursor fix; not built or tested by the agent):
   `WorkspaceSession.recordKnobAudio()`, `WorkspaceRpc.captureAudioOutput()`, the
   gesture observer in `ManualControlInteractions`, the graph webview's pointer
   trace and its `knobTrace` protocol messages, and the recorder tests.
-- The recordings analysed above remain dated evidence in this document. The
-  automatic pointer-lock failure messages described in
-  [Knob pointer-lock diagnostics](knob_pointer_lock_diagnostics.md) are unchanged.
+- The recordings analysed above remain dated evidence in this document.
+- Also removed at the owner's request: the automatic pointer-lock messages in the
+  Intravenous output channel (`graphInteractionDiagnostic`,
+  `WorkspaceSession.reportGraphInteractionDiagnostic()`), and `KnobPointerLock`'s
+  coordinate-drift warning with its `move()` position argument and test. The
+  denied-lock note in the knob's status hint remains, as does the connection-time
+  "Intravenous audio output" line, which the owner keeps as useful in normal use.
+  See [Knob pointer-lock diagnostics](knob_pointer_lock_diagnostics.md).
