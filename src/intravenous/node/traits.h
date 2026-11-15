@@ -1,5 +1,6 @@
 #pragma once
 #include <intravenous/node/coverage_task.h>
+#include <intravenous/node/tick_replay_mode.h>
 
 #include <intravenous/ports.h>
 
@@ -450,22 +451,34 @@ namespace iv {
                 || (declares_tock_outputs_v<Node>
                     && !declares_tick_outputs_v<Node>));
 
-        // The author opts into a deterministic, side-effect-free Tick contract.
-        // This is a type-level fact, not a producer mode; contextual replay is
+        // The author opts into a deterministic, side-effect-free Tick contract
+        // with `static constexpr TickReplayMode replay_mode`. This is a
+        // type-level fact, not a producer mode; contextual replay is
         // established by the whole-graph planner after checking live sources.
         template<typename Node>
-        consteval bool intrinsically_replayable()
+        consteval TickReplayMode tick_replay_mode()
         {
-            if constexpr (requires { Node::intrinsically_replayable; }) {
-                return std::bool_constant<Node::intrinsically_replayable>::value;
+            static_assert(!requires { Node::intrinsically_replayable; },
+                "intrinsically_replayable was replaced by "
+                "static constexpr TickReplayMode replay_mode");
+            if constexpr (requires { Node::replay_mode; }) {
+                static_assert(std::is_same_v<
+                        std::remove_cvref_t<decltype(Node::replay_mode)>,
+                        TickReplayMode>,
+                    "replay_mode must be a TickReplayMode");
+                return Node::replay_mode;
             } else {
-                return false;
+                return TickReplayMode::disabled;
             }
         }
 
         template<typename Node>
+        inline constexpr TickReplayMode tick_replay_mode_v =
+            tick_replay_mode<Node>();
+
+        template<typename Node>
         inline constexpr bool intrinsically_replayable_v =
-            intrinsically_replayable<Node>();
+            tick_replay_mode_v<Node> != TickReplayMode::disabled;
 
         template<typename Node>
         inline constexpr bool has_coverage_propagation_domain_v =

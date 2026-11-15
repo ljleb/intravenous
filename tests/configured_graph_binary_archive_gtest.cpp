@@ -17,7 +17,7 @@
 namespace {
 
 struct ReplayableArchiveNode {
-    static constexpr bool intrinsically_replayable = true;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>("output", iv::OutputProduction::tick)};
@@ -226,7 +226,7 @@ TEST(ConfiguredGraphBinaryArchive, PreservesIntrinsicReplayMetadata)
     decoded.node_bundles.for_each_configured_bundle(
         [&](ConfiguredNodeBundleView const& view) {
             if (view.kind != ConfiguredNodeBundleKind::concrete) return;
-            EXPECT_TRUE(view.intrinsically_replayable);
+            EXPECT_EQ(view.replay_mode, iv::TickReplayMode::full);
             ++replayable_nodes;
         });
     EXPECT_EQ(replayable_nodes, 1u);

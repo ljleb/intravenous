@@ -139,6 +139,74 @@ The default policy remains neutral, preserving existing input behavior. A
 Sequential Sample input can opt into manual fallback. Existing non-Sample
 neutral rules remain unchanged where no manual-control representation exists.
 
+**Sequential inputs resolve absence; Tick output coverage is declared**
+(owner decision, 2026-11-15). A Sequential input exposes no optional value or
+absence marker to `tick()`: absent upstream positions resolve to its declared
+neutral or manual fallback. Tick computes an ordinary sample at every position
+from those resolved values; `tick()` and `tick_block()` do not return optional
+values. A replayable Tick node's output `IndexCoverage` decides which computed
+samples are output; a computed sample outside that coverage contributes to no
+downstream input. Realtime execution and background replay honor the same
+coverage, without a per-sample validity buffer or a new output-production kind.
+
+Tick processes the combined Sequential input, not individual input Regions.
+`f(2 + 3)` is generally not `f(2)` combined with `f(3)`, so where only some
+inputs are covered, the uncovered ones use their fallback inside the same call.
+
+A node declares one `static constexpr TickReplayMode replay_mode`; there is no
+per-output policy field for now:
+
+| Mode | Replay eligibility | Compiler-generated output coverage |
+| --- | --- | --- |
+| `disabled` (default) | not intrinsically replayable | none |
+| `input_union` | intrinsically replayable | union of the input coverages |
+| `full` | intrinsically replayable | the whole circular index domain |
+
+`input_union` suits transformations whose output should exist only where an
+upstream contribution exists; `full` suits generators, including those without
+inputs, and computations whose output stays meaningful with no upstream
+contribution. An authored `propagate_forward_coverage()` takes precedence over
+generated coverage and may publish different coverage per output. `LinearCurve`
+keeps its authored callback, so `empty` segments have no coverage independently
+of its point Region. Existing boolean eligibility checks derive from
+`replay_mode != TickReplayMode::disabled`.
+
+For an `input_union` node with Sequential inputs A and B:
+
+| A | B | Tick computation | Output coverage |
+| --- | --- | --- | --- |
+| covered | covered | both actual values | covered |
+| covered | uncovered | A plus B's fallback | covered |
+| uncovered | covered | A's fallback plus B | covered |
+| uncovered | uncovered | both fallback values | uncovered |
+
+The last row is deliberate; a `full` node covers it. For example, automation
+with an `empty` segment feeds a gain whose Sequential input has manual fallback
+0.5, and the gain feeds a cutoff whose Sequential input has manual fallback 0.3.
+If the gain is `input_union`, its output is uncovered in the gap and the cutoff
+resolves to its own 0.3. If the gain is `full`, the cutoff receives the gain's
+computed result. Both are valid; the gain's declared mode decides.
+
+Sequential is an input access mode, not an output-production type. A PCM
+recorder consuming a Sequential input receives a sample at every processed
+position, its fallback included, so a recording does not skip positions or
+compress time over upstream gaps; with neutral fallback zero, gaps are written as
+silence. A Region or Coverage consumer can instead keep absence distinct from an
+actual zero.
+
+Output existence remains distinct from the availability of the dependencies
+needed to replay it:
+
+| Sequential dependency during replay | Replay behavior |
+| --- | --- |
+| Known uncovered | Use the input's declared fallback |
+| Covered, value available for the selected version | Use the source value |
+| Covered, value unavailable | Resolve the dependency, or leave the replay request unsatisfied |
+
+This changes neither Region/Coverage inputs, nor authored output coverage, nor
+the existing replayability requirements. The superseded wording is preserved
+[historically](./historical/replay_coverage_before_tick_replay_mode_2026-11-15.md).
+
 Fallback is not another contribution in fan-in. It applies where no upstream
 contribution covers the position, and neither changes upstream coverage nor
 fabricates Regions. Live manual gestures and their explicit source override

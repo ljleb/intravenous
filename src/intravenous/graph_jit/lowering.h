@@ -3,6 +3,7 @@
 #include <intravenous/graph_jit/package_callback_abi.h>
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
 #include <intravenous/graph_jit/region_specialization.h>
+#include <intravenous/node/tick_replay_mode.h>
 #include <intravenous/graph_jit/realtime_port_state_transition.h>
 #include <intravenous/graph_jit/port_realization.h>
 #include <intravenous/node/layout.h>
@@ -52,7 +53,7 @@ struct NodeImplementation {
     std::size_t state_alignment = 1;
     std::size_t background_state_size = 0;
     std::size_t background_state_alignment = 1;
-    bool intrinsically_replayable = false;
+    TickReplayMode replay_mode = TickReplayMode::disabled;
     bool pointwise_tick = false;
     bool block_input_access = false;
 

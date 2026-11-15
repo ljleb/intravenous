@@ -236,7 +236,7 @@ std::expected<GraphAnalysis, std::string> analyze_graph(
             return std::unexpected(
                 "resolved primitive implementation is incomplete at the GraphJit lowering boundary");
         }
-        if (implementation->intrinsically_replayable && !has_tick) {
+        if (implementation->replay_mode != TickReplayMode::disabled && !has_tick) {
             return std::unexpected(
                 "only Tick primitives may declare intrinsic replayability");
         }
@@ -256,7 +256,7 @@ std::expected<GraphAnalysis, std::string> analyze_graph(
                 || !implementation->skip_block.empty()
                 || !implementation->skip_block_batch.empty()))
             || (!has_tock && !implementation->tock_coverage_batch.empty())
-            || (!has_tock && !implementation->intrinsically_replayable
+            || (!has_tock && implementation->replay_mode == TickReplayMode::disabled
                 && (!implementation->propagate_forward_coverage.empty()
                     || !implementation->propagate_forward_coverage_batch.empty()
                     || !implementation->propagate_reverse_coverage.empty()
@@ -9508,7 +9508,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     input.graph.node_bundles.for_each_configured_bundle(
         [&](ConfiguredNodeBundleView const& view) {
             intrinsically_replayable.at(reflected_bundle++) =
-                view.intrinsically_replayable;
+                view.replay_mode != TickReplayMode::disabled;
         });
 
     for (NodeBundleHandle bundle = 0;

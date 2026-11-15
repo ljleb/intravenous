@@ -2,6 +2,7 @@
 #include <intravenous/module/abi.h>
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/node/node_state_structure.h>
+#include <intravenous/node/tick_replay_mode.h>
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -40,6 +41,10 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Coroutines/CoroCleanup.h"
+#include "llvm/Transforms/Coroutines/CoroConditionalWrapper.h"
+#include "llvm/Transforms/Coroutines/CoroEarly.h"
+#include "llvm/Transforms/Coroutines/CoroSplit.h"
 #include "llvm/Transforms/IPO/GlobalDCE.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
@@ -376,9 +381,9 @@ std::vector<IrNodeRecord> scan_node_records(Module& module)
             fail("node compiler record does not contain a constant type name");
         auto const name_size = constant_size(record->getOperand(3), "type name size");
         if (name_size > name.size()) fail("node compiler record type name length is invalid");
-        auto const replay_marker = constant_u64(record->getOperand(8));
-        if (replay_marker > 1) {
-            fail("malformed iv_node_types intrinsic replayability flag");
+        auto const replay_mode = constant_u64(record->getOperand(8));
+        if (replay_mode > static_cast<std::uint64_t>(iv::TickReplayMode::full)) {
+            fail("malformed iv_node_types Tick replay mode");
         }
         auto const pointwise_marker = constant_u64(record->getOperand(9));
         if (pointwise_marker > 1) {
@@ -2301,8 +2306,25 @@ void prelink_optimize_package(Module& module)
     pass_builder.registerLoopAnalyses(loops);
     pass_builder.crossRegisterProxies(loops, functions, cgscc, modules);
     auto pipeline = pass_builder.buildThinLTOPreLinkDefaultPipeline(OptimizationLevel::O2);
+    // ThinLTO pre-link leaves coroutines unsplit for a post-link pipeline. The
+    // package's configuration ORC JIT runs no IR passes before code generation,
+    // so lower them here, once per package build, as LLVM's O0 pipeline does.
+    // Node code's O3 pipeline then sees ordinary resume/destroy functions.
+    ModulePassManager coroutines;
+    coroutines.addPass(CoroEarlyPass());
+    CGSCCPassManager split;
+    split.addPass(CoroSplitPass());
+    coroutines.addPass(createModuleToPostOrderCGSCCPassAdaptor(std::move(split)));
+    coroutines.addPass(CoroCleanupPass());
+    pipeline.addPass(CoroConditionalWrapper(std::move(coroutines)));
     pipeline.addPass(GlobalDCEPass());
     pipeline.run(module, modules);
+    for (auto const& function : module) {
+        if (function.isPresplitCoroutine()) {
+            fail("finalized IV package LLVM retains unsplit coroutine '"
+                + function.getName().str() + "'");
+        }
+    }
 }
 
 void verify_finalized_package(Module const& module)

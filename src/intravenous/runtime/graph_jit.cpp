@@ -2087,7 +2087,7 @@ public:
                     .state_alignment = accepted.state_alignment,
                     .background_state_size = accepted.background_state_size,
                     .background_state_alignment = accepted.background_state_alignment,
-                    .intrinsically_replayable = accepted.intrinsically_replayable,
+                    .replay_mode = accepted.replay_mode,
                     .pointwise_tick = accepted.pointwise_tick,
                     .block_input_access = accepted.block_input_access,
                     .node_data = captured_node.node_data,

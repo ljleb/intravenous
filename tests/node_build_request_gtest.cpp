@@ -697,7 +697,7 @@ static_assert(!EventRegionOutputHasOrdering<OrderingConstraintContext>);
 static_assert(EventCoverageOutputHasOrdering<OrderingConstraintContext>);
 
 struct ReplayableNode {
-    static constexpr bool intrinsically_replayable = true;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
     std::size_t latency = 0;
 
     static constexpr auto inputs()
@@ -713,13 +713,13 @@ struct ReplayableNode {
 };
 
 struct ReplayWithState {
-    static constexpr bool intrinsically_replayable = true;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
     struct State {};
     void tick(iv::TickSampleContext<ReplayWithState> const&) const {}
 };
 
 struct ReplayWithInputHistory {
-    static constexpr bool intrinsically_replayable = true;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::Sample>("input", iv::InputAccess::sequential)};
@@ -733,7 +733,7 @@ struct ReplayWithInputHistory {
 };
 
 struct ReplayWithOutputLatency {
-    static constexpr bool intrinsically_replayable = true;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>("output", iv::OutputProduction::tick)};
@@ -756,12 +756,12 @@ TEST(NodeBuildRequest, ValidatesAndReflectsIntrinsicReplayability)
     ReplayableNode node{};
     auto request = iv::details::make_node_build_request(node);
     ASSERT_NE(request.compiler_record, nullptr);
-    EXPECT_TRUE(request.compiler_record->intrinsically_replayable);
+    EXPECT_EQ(request.compiler_record->replay_mode, iv::TickReplayMode::input_union);
     auto storage = iv::details::copy_node_config_bytes(
         request.config, request.config_size, request.config_alignment);
     auto description = iv::details::materialize_node_description(
         request, std::move(storage));
-    EXPECT_TRUE(description.intrinsically_replayable);
+    EXPECT_EQ(description.replay_mode, iv::TickReplayMode::input_union);
     EXPECT_FALSE(description.operations.runtime.has_propagate_forward_coverage);
     EXPECT_FALSE(description.operations.runtime.has_propagate_reverse_coverage);
     EXPECT_EQ(description.internal_latency_samples, 0u);
@@ -2560,7 +2560,7 @@ TEST(NodeBuildRequest, CurveInterpolatesTheLastPointWithTheFirstAcrossTheWrap)
 }
 
 struct ReplayWithoutRandomAccessPropagation {
-    static constexpr bool intrinsically_replayable = true;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
     static constexpr auto inputs() {
         return std::array{iv::event_input("points", iv::EventTypeId::sample, iv::InputAccess::region)};
     }

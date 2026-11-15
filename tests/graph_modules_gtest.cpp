@@ -42,7 +42,7 @@ struct CStringConfigNode {
 struct ImmutablePointsNode {
     ImmutableArray<Sample> points;
     explicit ImmutablePointsNode(ImmutableArray<Sample> points_) : points(points_) {}
-    static constexpr bool intrinsically_replayable = true;
+    static constexpr TickReplayMode replay_mode = TickReplayMode::full;
     static constexpr auto outputs() {
         return std::array{output<Sample>("out", OutputProduction::tick)};
     }

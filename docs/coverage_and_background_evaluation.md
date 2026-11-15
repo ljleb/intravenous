@@ -570,7 +570,11 @@ outgoing types, then publish exact active output coverage. This does not make
 `LinearCurve`'s staged full-circle coverage an accepted fallback.
 
 A replayable Tick node with mechanically pointwise dependencies may continue
-using compiler-generated propagation. More complex replayable Tick nodes use
+using compiler-generated propagation. Its declared `TickReplayMode` selects the
+union of its input coverages or the whole circle as output coverage; its
+Sequential inputs resolve absent upstream positions either way (see
+[absence and Sequential fallback](./automation_and_suspendable_coverage_direction.md#4-absence-and-sequential-fallback)).
+More complex replayable Tick nodes use
 these same authored propagation semantics without changing their Tick evaluation
 into Tock evaluation.
 
@@ -757,9 +761,15 @@ its own contract.
 ### Replayable node trait
 
 A node opts into the intrinsic replay **type trait** by declaring
-`static constexpr bool intrinsically_replayable = true` (default false).
-`iv::details::intrinsically_replayable_v<Node>` is the validated compiler-facing
-value; it is not a port field or an additional DSP callback. An opted-in node must define the
+`static constexpr TickReplayMode replay_mode` as `input_union` or `full`
+(default `disabled`; owner decision, 2026-11-15). The mode also selects the
+compiler-generated output coverage: the union of the input coverages, or the
+whole circle; see
+[Sequential inputs resolve absence](./automation_and_suspendable_coverage_direction.md#4-absence-and-sequential-fallback).
+`iv::details::tick_replay_mode_v<Node>` is the validated compiler-facing value,
+and `intrinsically_replayable_v<Node>` derives eligibility from it; neither is a
+port field or an additional DSP callback. The earlier boolean declaration is
+preserved [historically](./historical/replay_coverage_before_tick_replay_mode_2026-11-15.md). An opted-in node must define the
 existing `tick()` but **not** its own native `tick_block()`, have no `State`, no
 input/output history or latency after resolution, and zero internal latency. Random
 Access inputs are permitted. Its tick computation must be deterministic and side-effect-free

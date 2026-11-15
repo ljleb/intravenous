@@ -196,6 +196,7 @@ class PreparedCoveragePropagation {
     std::vector<BackgroundCoverageReadDependency> read_dependencies_{};
     std::vector<std::vector<GlobalIndexRange>> output_regions_by_port_{};
     std::vector<std::vector<GlobalIndexRange>> input_regions_by_port_{};
+    std::vector<IndexCoverage> input_coverages_by_port_{};
     std::vector<std::vector<GlobalIndexRange>> requested_input_regions_by_port_{};
     std::vector<graph_jit::BackgroundNodeActivity> node_activity_{};
 
@@ -241,6 +242,17 @@ public:
     {
         if (port >= input_regions_by_port_.size()) return {};
         return input_regions_by_port_[port];
+    }
+
+    // Positions where at least one upstream contribution reaches the input,
+    // with the routing rules of derive_input_coverage(). A Sequential input
+    // resolves every other position by its declared fallback.
+    [[nodiscard]] IndexCoverage const& input_coverage(
+        graph_jit::BackgroundPortIndex port) const noexcept
+    {
+        static IndexCoverage const none{};
+        if (port >= input_coverages_by_port_.size()) return none;
+        return input_coverages_by_port_[port];
     }
 
     // Whole logical Regions selected by the original reverse request, retaining
@@ -387,9 +399,14 @@ class BackgroundPropagationWorkspace {
                                                IndexCoverage const& changed);
     static void publish_input_requirement_callback(void* accumulator,
                                                    IndexCoverage const& required);
+    // Generated forward propagation for TickReplayMode::input_union and
+    // TickReplayMode::full respectively.
     static void
     replay_forward_coverage(void*,
                             ReflectedNodeForwardCoverageContext const& context);
+    static void
+    replay_full_forward_coverage(void*,
+                                 ReflectedNodeForwardCoverageContext const& context);
     static void
     replay_reverse_coverage(void*,
                             ReflectedNodeReverseCoverageContext const& context);

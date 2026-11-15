@@ -870,7 +870,7 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
             bundles.flag(has_default_ttl);
             if (has_default_ttl) bundles.size(**view.default_ttl_samples);
             bundles.flag(view.block_skippable);
-            bundles.flag(view.intrinsically_replayable);
+            write_enum(bundles, view.replay_mode);
             auto const has_static_value = view.static_sample_value && *view.static_sample_value;
             bundles.flag(has_static_value);
             if (has_static_value) bundles.pod((**view.static_sample_value).value);
@@ -1086,13 +1086,17 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
             record.maximum_block_size = reader.size();
             if (reader.flag()) record.default_ttl_samples = reader.size();
             record.block_skippable = reader.flag();
-            record.intrinsically_replayable = reader.flag();
-            if (record.intrinsically_replayable
-                != find_type(node_types, record.code_key).intrinsically_replayable
-                || (record.intrinsically_replayable
+            record.replay_mode = read_enum<TickReplayMode>(reader);
+            if (record.replay_mode > TickReplayMode::full) {
+                throw std::runtime_error(
+                    "configured graph archive has invalid replay mode");
+            }
+            if (record.replay_mode
+                    != find_type(node_types, record.code_key).replay_mode
+                || (record.replay_mode != TickReplayMode::disabled
                     && record.internal_latency_samples != 0)) {
                 throw std::runtime_error(
-                    "configured graph intrinsic replayability disagrees with compiler metadata");
+                    "configured graph replay mode disagrees with compiler metadata");
             }
             if (reader.flag()) record.static_sample_value = Sample{reader.pod<Sample::storage>()};
             if (reader.flag()) {

@@ -3,6 +3,7 @@
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/graph/error.h>
 #include <intravenous/graph/names.h>
+#include <intravenous/node/tick_replay_mode.h>
 #include <intravenous/graph/port_ids.h>
 #include <intravenous/graph/builder/concrete_node.hpp>
 
@@ -58,7 +59,7 @@ class NodeBundle {
     size_t maximum_block_size = MAX_BLOCK_SIZE;
     std::optional<size_t> default_ttl_samples{};
     bool block_skippable = false;
-    bool intrinsically_replayable = false;
+    TickReplayMode replay_mode = TickReplayMode::disabled;
     std::optional<Sample> static_sample_value{};
   };
 
@@ -215,7 +216,7 @@ struct ConfiguredNodeBundleRecord {
   size_t maximum_block_size = MAX_BLOCK_SIZE;
   std::optional<size_t> default_ttl_samples{};
   bool block_skippable = false;
-  bool intrinsically_replayable = false;
+  TickReplayMode replay_mode = TickReplayMode::disabled;
   std::optional<Sample> static_sample_value{};
 
   std::vector<NodeBundleHandle> tiled_members{};
@@ -256,7 +257,7 @@ struct ConfiguredNodeBundleView {
   size_t maximum_block_size = MAX_BLOCK_SIZE;
   std::optional<size_t> const* default_ttl_samples = nullptr;
   bool block_skippable = false;
-  bool intrinsically_replayable = false;
+  TickReplayMode replay_mode = TickReplayMode::disabled;
   std::optional<Sample> const* static_sample_value = nullptr;
 
   std::span<NodeBundleHandle const> tiled_members{};
@@ -409,7 +410,7 @@ constexpr ConcreteNode GraphBuilderNodeBundles::make_concrete_node(
       .maximum_block_size = description.maximum_block_size,
       .default_ttl_samples = description.default_ttl_samples,
       .block_skippable = description.block_skippable,
-      .intrinsically_replayable = description.intrinsically_replayable,
+      .replay_mode = description.replay_mode,
       .static_sample_value = description.static_sample_value,
   };
 }
@@ -441,7 +442,7 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
       .maximum_block_size = lowered.maximum_block_size,
       .default_ttl_samples = lowered.default_ttl_samples,
       .block_skippable = lowered.block_skippable,
-      .intrinsically_replayable = lowered.intrinsically_replayable,
+      .replay_mode = lowered.replay_mode,
       .static_sample_value = lowered.static_sample_value,
   };
   auto const handle = _bundles.size();
@@ -1348,7 +1349,7 @@ GraphBuilderNodeBundles::materialize_concrete_description(
       .maximum_block_size = payload->maximum_block_size,
       .default_ttl_samples = payload->default_ttl_samples,
       .block_skippable = payload->block_skippable,
-      .intrinsically_replayable = payload->intrinsically_replayable,
+      .replay_mode = payload->replay_mode,
       .static_sample_value = payload->static_sample_value,
   };
 }
@@ -1502,7 +1503,7 @@ constexpr void GraphBuilderNodeBundles::for_each_configured_bundle(
         view.maximum_block_size = payload.maximum_block_size;
         view.default_ttl_samples = &payload.default_ttl_samples;
         view.block_skippable = payload.block_skippable;
-        view.intrinsically_replayable = payload.intrinsically_replayable;
+        view.replay_mode = payload.replay_mode;
         view.static_sample_value = &payload.static_sample_value;
       } else if constexpr (std::same_as<Payload, NodeBundle::TiledNodeBundle>) {
         view.kind = ConfiguredNodeBundleKind::tiled;
@@ -1565,7 +1566,7 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_configured_recor
           .maximum_block_size = record.maximum_block_size,
           .default_ttl_samples = record.default_ttl_samples,
           .block_skippable = record.block_skippable,
-          .intrinsically_replayable = record.intrinsically_replayable,
+          .replay_mode = record.replay_mode,
           .static_sample_value = record.static_sample_value,
       });
       break;

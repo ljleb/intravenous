@@ -75,3 +75,7 @@ expect_invalid(
 expect_invalid(
     invalid_replayable_node.cpp
     "IV_NODE intrinsically replayable nodes must author a Tick callback")
+
+expect_invalid(
+    invalid_replay_boolean.cpp
+    "intrinsically_replayable was replaced by static constexpr TickReplayMode replay_mode")

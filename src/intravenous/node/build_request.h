@@ -51,7 +51,7 @@ public:
     void set_default_ttl(std::optional<std::size_t>) const;
     void set_block_skippable(bool) const;
     void set_static_sample_value(std::optional<Sample>) const;
-    void set_intrinsically_replayable(bool) const;
+    void set_replay_mode(TickReplayMode) const;
     ReflectedPortConstraintSink port_constraint_sink() const;
 };
 
@@ -1435,7 +1435,7 @@ IV_NODE_COMPILER_RECORD_ATTR inline const NodeCompilerRecord
         .state_alignment = node_state_alignment<Node>(),
         .background_state_size = node_background_state_size<Node>(),
         .background_state_alignment = node_background_state_alignment<Node>(),
-        .intrinsically_replayable = intrinsically_replayable_v<Node>,
+        .replay_mode = tick_replay_mode_v<Node>,
         .pointwise_tick = has_tick<Node>,
         .block_input_access = has_tick_block<Node>
             || has_tick_block_batch<Node>
@@ -1477,7 +1477,7 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
         "and declare only Tick outputs; resolved timing is validated by "
         "the whole-graph planner");
     sink.set_internal_latency(get_internal_latency(node));
-    sink.set_intrinsically_replayable(intrinsically_replayable_v<Node>);
+    sink.set_replay_mode(tick_replay_mode_v<Node>);
     sink.set_maximum_block_size(get_max_block_size(node));
     sink.set_default_ttl(get_ttl_samples(node));
     sink.set_block_skippable(

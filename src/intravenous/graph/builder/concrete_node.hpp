@@ -3,6 +3,7 @@
 #include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/graph/source_info.h>
 #include <intravenous/node/registered_type_identity.h>
+#include <intravenous/node/tick_replay_mode.h>
 
 #include <cstddef>
 #include <memory>
@@ -43,7 +44,7 @@ struct ConcreteNode {
   std::size_t maximum_block_size = MAX_BLOCK_SIZE;
   std::optional<std::size_t> default_ttl_samples{};
   bool block_skippable = false;
-  bool intrinsically_replayable = false;
+  TickReplayMode replay_mode = TickReplayMode::disabled;
   // Static data attached to a configured node survives graph composition so
   // later compiler passes can materialize it without a ticking producer.
   std::optional<Sample> static_sample_value{};

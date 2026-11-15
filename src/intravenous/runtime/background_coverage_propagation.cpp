@@ -228,6 +228,7 @@ bool node_local_semantics_equal(
             == previous.uses_replay_forward_coverage
         && current.uses_replay_reverse_coverage
             == previous.uses_replay_reverse_coverage
+        && current.replay_mode == previous.replay_mode
         && current.uses_imported_tick_block_for_replay
             == previous.uses_imported_tick_block_for_replay
         && node_ports_equal(
@@ -1240,7 +1241,18 @@ void BackgroundPropagationWorkspace::require_output(
         return;
     auto const previous = output_requirements_[requirement_index].required;
     output_requirements_[requirement_index].required.include(required);
-    if (activate_producer && previous != output_requirements_[requirement_index].required) {
+    if (!activate_producer) return;
+    // A repeated requirement, for example from a resumed consumer, does not
+    // reschedule a producer that already plans for it. A persisted boundary
+    // first records its demand without activating the producer; demand
+    // expansion then activates it for that same range when stored data are
+    // missing, so an unscheduled producer is activated even without growth.
+    auto const grew = previous != output_requirements_[requirement_index].required;
+    auto const scheduled = planning_state_
+        ? planning_state_->group(this).reverse[planned.node]->queued
+        : graph_jit::has_activity(node_calls_[planned.node].activity,
+            graph_jit::BackgroundNodeActivity::reverse);
+    if (grew || !scheduled) {
         activate_node(planned.node, graph_jit::BackgroundNodeActivity::reverse);
     }
 }
@@ -1325,24 +1337,26 @@ void BackgroundPropagationWorkspace::publish_input_requirement_callback(
     accumulator.owner->require_input(accumulator.port, required);
 }
 
-void BackgroundPropagationWorkspace::replay_forward_coverage(
-    void*, ReflectedNodeForwardCoverageContext const& context)
+namespace {
+// Every Sequential input change changes resolved input values, also where
+// upstream coverage appears or disappears.
+IndexCoverage replay_input_changes(ReflectedNodeForwardCoverageContext const& context)
 {
-    IndexCoverage coverage;
     IndexCoverage changed;
     for (auto const& input :
          static_cast<std::span<InputCoverageChange const>>(context.inputs)) {
-        coverage.include(input.coverage());
         changed.include(input.changed());
     }
     for (auto const& input : static_cast<std::span<InputCoverageChange const>>(
              context.event_inputs)) {
-        coverage.include(input.coverage());
         changed.include(input.changed());
     }
-    if (context.local_state_changed) {
-        changed.include(coverage);
-    }
+    return changed;
+}
+
+void publish_replay_outputs(ReflectedNodeForwardCoverageContext const& context,
+    IndexCoverage const& coverage, IndexCoverage const& changed)
+{
     for (auto const& output :
          static_cast<std::span<OutputCoverageChange>>(context.outputs)) {
         output.publish_coverage(coverage);
@@ -1354,6 +1368,49 @@ void BackgroundPropagationWorkspace::replay_forward_coverage(
         output.change(changed);
     }
     context.planning.finish();
+}
+} // namespace
+
+// TickReplayMode::input_union. Every input of a node using generated
+// propagation is Sequential: replay_ports_are_valid() requires authored
+// propagation for Region and Coverage inputs. Tick computes a value at every
+// position from the resolved inputs, but an output exists only where at least
+// one input has upstream coverage.
+void BackgroundPropagationWorkspace::replay_forward_coverage(
+    void*, ReflectedNodeForwardCoverageContext const& context)
+{
+    IndexCoverage coverage;
+    for (auto const& input :
+         static_cast<std::span<InputCoverageChange const>>(context.inputs)) {
+        coverage.include(input.coverage());
+    }
+    for (auto const& input : static_cast<std::span<InputCoverageChange const>>(
+             context.event_inputs)) {
+        coverage.include(input.coverage());
+    }
+    auto changed = replay_input_changes(context);
+    if (context.local_state_changed) {
+        changed.include(coverage);
+    }
+    publish_replay_outputs(context, coverage, changed);
+}
+
+// TickReplayMode::full. The output exists at every position, including where
+// every Sequential input resolves to its fallback and for nodes without
+// inputs. Reverse propagation still requires only covered upstream positions.
+void BackgroundPropagationWorkspace::replay_full_forward_coverage(
+    void*, ReflectedNodeForwardCoverageContext const& context)
+{
+    // A full circle needs two ranges because one extent cannot hold 2^64.
+    constexpr auto half = std::uint64_t{1} << 63;
+    IndexCoverage const coverage{
+        GlobalIndexRange{GlobalIndex::from_bits(0), half},
+        GlobalIndexRange{GlobalIndex::from_bits(half), half}};
+    auto changed = replay_input_changes(context);
+    if (context.local_state_changed) {
+        changed = coverage;
+    }
+    publish_replay_outputs(context, coverage, changed);
 }
 
 void BackgroundPropagationWorkspace::replay_reverse_coverage(
@@ -1507,7 +1564,9 @@ void BackgroundPropagationWorkspace::initialize_calls()
             .sample_rate = sample_rate_,
         };
         if (node.uses_replay_forward_coverage) {
-            frame.replay_forward = &replay_forward_coverage;
+            frame.replay_forward = node.replay_mode == TickReplayMode::full
+                ? &replay_full_forward_coverage
+                : &replay_forward_coverage;
         }
         if (node.uses_replay_reverse_coverage) {
             frame.replay_reverse = &replay_reverse_coverage;
@@ -2056,6 +2115,7 @@ BackgroundPropagationWorkspace::prepare(
     }
     prepared.result_ = std::move(result);
     prepared.input_regions_by_port_.resize(plan_->ports.size());
+    prepared.input_coverages_by_port_.resize(plan_->ports.size());
     prepared.requested_input_regions_by_port_.resize(plan_->ports.size());
     for (graph_jit::BackgroundPortIndex index = 0;
          index < plan_->ports.size(); ++index) {
@@ -2064,6 +2124,8 @@ BackgroundPropagationWorkspace::prepare(
             prepared.input_regions_by_port_[index] = derive_input_regions(
                 *plan_, candidate_output_region_ranges_, index,
                 &input_requirements_by_port_[index]);
+            prepared.input_coverages_by_port_[index] = derive_input_coverage(
+                *plan_, candidate_output_coverages_, index);
             auto const& requested = input_selection_requests_by_port_[index];
             auto const regions = derive_input_regions(
                 *plan_, candidate_output_region_ranges_, index, &requested);

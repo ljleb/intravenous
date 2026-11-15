@@ -3,6 +3,7 @@
 #include <intravenous/channel_layout.h>
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph/realtime_port_planning.h>
+#include <intravenous/node/tick_replay_mode.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
 #include <intravenous/graph_jit/port_realization.h>
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
@@ -42,7 +43,7 @@ struct PlannedGraphNode {
     // Tock-only primitives participate in background dependency planning but
     // never acquire a position in the realtime execution schedule.
     bool tick_execution = true;
-    bool intrinsically_replayable = false;
+    TickReplayMode replay_mode = TickReplayMode::disabled;
     bool contextually_replayable = false;
     bool authored_forward_coverage = false;
     bool authored_reverse_coverage = false;

@@ -282,3 +282,185 @@ exact segment coverage/evaluation, and the messages/presentation migration.
 Earlier proposals and the incomplete source checkpoint are retained
 [historically](historical/automation_random_access_fallback_before_sequential_resolution_2026-11-15.md).
 No new build or tests have been run by the agent.
+
+### Friction observed: Sequential fallback at the Sequential execution boundary, 2026-11-15
+
+_Observation, not a requirement. Revised the same day after owner review; the
+representation remains open._ The agent has not changed source for this step.
+Codex's last source change adds `SequentialFallback {neutral, manual_control}` to
+`SampleContinuousValueExtension::BoundaryInputOptions`, `SequentialInputOptions`,
+and `SequentialInputMetadata` (including its binary form). No planning, lowering,
+or runtime code reads it yet.
+
+Owner framing: this is an unimplemented part of the existing coverage semantics
+at the Sequential execution boundary, not a missing product decision. Three
+states stay distinct: known uncovered (apply the declared fallback), covered and
+materialized (use the upstream value), and covered but not materialized (missing
+data; a separate playback-underrun concern that never activates manual
+fallback). Warm and cold caches must not change whether a position is covered.
+Fallback applies only where the **aggregate** of all contributions reaching
+the destination is uncovered, after their latency, detach, pace, and channel
+routing. Coverage transitions may occur inside a block.
+
+Traced source facts:
+
+- `SampleConnectionPlan::source_channel_timings` gives each source channel a
+  `PlannedDeliveryMechanism`. Sequential destinations receive
+  `tick_to_sequential` (same-slice realtime) and `tock_to_sequential`
+  (background data through `TickInvocationCall` slots) contributions. No plan
+  record carries source coverage.
+- Contributions combine in three places: linear `ChannelMix` terms in
+  `compose_samples()`; slot values merged with the realtime operand by the
+  node's `combine_sequential_input_values` in `stage_sample_timelines()`; and
+  participating manual controls in `stage_manual_control_sample_timelines()`.
+- `random_access_port_data_direction.md` makes `neutral_value` the identity of
+  an associative, commutative `combine_values` and reduces fan-in from neutral.
+  An uncovered contribution is therefore equivalent to a neutral contribution.
+  Its Coverage-to-Sequential rendering leaves positions with no contribution at
+  neutral; the new policy changes only that last step.
+- `TickInvocationFrame::SequentialSampleSlot::populate()` clears to neutral and
+  copies published and materialized Regions. `TickMaterializedSampleInput::coverage`
+  is the union of materialized Regions, not upstream semantic coverage, so the
+  slot cannot tell absence from unmaterialized covered data.
+- Manual values come from `ManualControlPlan` and the NodeStorage
+  `ManualControlRuntimeState`: settled constants, or dynamic interpolation from
+  `effective_bits` to the latched target over a callback. A module public
+  input's control (`boundary_source`) carries channel coefficients and a delay
+  ring from `ManualSampleRoutePlan`. Non-participating controls are not staged.
+- `realtime_root.cpp`, `SampleStoragePlan`, and `TickMaterializationSnapshot`
+  carry no producer coverage. `LinearCurve::propagate_forward_coverage()`
+  publishes only to background planning.
+
+Rejected as worded: masking each destination from `TickMaterializationSnapshot`
+with one lookup per block. Masking a single connection ignores the other
+contributions, and one lookup per block ignores routing and in-block
+transitions. A per-sample validity sideband on every Tick output, or feeding
+live consumers from background replay, remain worse alternatives.
+
+Direction under investigation: coverage becomes part of a Sequential
+contribution's execution semantics through connection planning, storage
+planning, and composition. A destination resolves its fallback where the
+aggregate contribution coverage is empty, using version-consistent coverage
+pinned with the data it describes. Manual fallback reuses the existing control
+state; it is neither a fixed copied value nor a fan-in contribution.
+
+Second owner review, same day. Rejected: an agent proposal to classify
+contributions as dense or sparse, and to make replayability depend on
+`SequentialFallback`. Direction:
+
+- add no source classification. Exact output `IndexCoverage`, `InputAccess`, and
+  `OutputProduction` already carry the facts. Plan records such as
+  `SampleCompositionInputPlan` identify which output's coverage applies; the
+  runtime supplies that coverage version-consistently, outside compiled plans
+  and separate from sample storage and materialization availability;
+- route coverage with the rules of `derive_input_coverage()` (intersection
+  within one projection's source channels, union across projections and
+  connections, read-latency shifts), shared with realtime resolution rather
+  than reinterpreted. Background and realtime must agree whether a
+  contribution exists;
+- resolve covered contributions with `combine_values`, then fill only empty
+  aggregate positions. Fallback is never staged as a contribution. Separate
+  obtaining the manual value (authoritative `ManualControlRuntimeState`,
+  shared interpolation) from deciding how it participates;
+- replayability follows the manual-control state actually used, not the enum;
+  replay must name the semantic version and control state it evaluates;
+- before `CurvePointEvent`, test with a producer publishing disconnected
+  coverage, a module-boundary manual control, overlapping contributions, and
+  coverage that changes between published versions.
+
+Open question: can every contribution's coverage come from the same committed
+version as its sample values? Trace so far:
+
+- Tock outputs: final commit promotes prepared coverage together with the data
+  snapshot, so the mailbox pair can carry both. Today
+  `SequentialSampleSlot::populate()` receives only materialized and stored
+  Regions.
+- Tick outputs with authored forward coverage (for example `LinearCurve`):
+  the transaction computes coverage from the same Random Access views that the
+  live `tick_block()` reads from that pair. This is consistent if both come from
+  one pair and authored coverage depends only on semantic state and inputs.
+- Tick outputs with compiler-generated coverage: `replay_forward_coverage()`
+  published the union of input coverages, Sequential inputs included. This
+  conflicted with existing intent rather than raising a new question: §4 says
+  Sequential inputs provide a value at every position, so absence stops at a
+  Sequential input (owner clarification, now explicit in §4). The union also
+  gave a replayed node without inputs empty coverage. Resolved below.
+- Ordinary live Tick outputs outside `BackgroundEvaluationPlan` have no coverage
+  record. Activation of a generation before its first committed transaction
+  has not been traced.
+
+### TickReplayMode accepted; source checkpoint, 2026-11-15
+
+Owner decision, recorded normatively in
+[automation direction, section 4](automation_and_suspendable_coverage_direction.md#4-absence-and-sequential-fallback):
+one node-level `TickReplayMode {disabled, input_union, full}` replaces the
+boolean `intrinsically_replayable`. It sets eligibility and selects generated
+output coverage (union of input coverages, or the whole circle). Authored
+forward coverage takes precedence; there is no per-output field. An earlier
+same-day agent change that made generated coverage always full, and the pending
+per-output proposal, are preserved
+[historically](historical/replay_coverage_before_tick_replay_mode_2026-11-15.md).
+
+Implemented in source; build and tests remain owner-run:
+
+- `TickReplayMode` in `node/tick_replay_mode.h`. `tick_replay_mode_v<Node>` reads
+  `Node::replay_mode`; a node still declaring `intrinsically_replayable` fails
+  to compile. `intrinsically_replayable_v` derives from the mode.
+- The mode replaces the boolean in `NodeCompilerRecord`, the reflected node
+  description, the builder's bundle records, the `ConfiguredGraph` binary
+  archive (format version unchanged), `PlannedGraphNode`, the lowering
+  implementation record, and `BackgroundNodePlan`.
+- `replay_forward_coverage()` again publishes the union of input coverages for
+  `input_union`; `replay_full_forward_coverage()` publishes the whole circle for
+  `full`. Both report input changes, or their whole coverage after a local
+  change.
+- `LinearCurve` declares `input_union`; its authored callbacks decide coverage.
+  Test nodes without inputs declare `full`; the others `input_union`.
+- `GeneratedReplayCoverageFollowsTheDeclaredTickReplayMode` checks an
+  `input_union` node covering only its source's [20, 24), a `full` node and a
+  `full` generator covering the circle, a cold-source requirement of exactly
+  [20, 24), and computed values where the `full` node's input is uncovered. A
+  static-validation case rejects the removed boolean.
+
+- Background replay resolves its Sequential inputs over the scheduled
+  positions. `PreparedCoveragePropagation::input_coverage()` exposes each
+  input's upstream coverage (`derive_input_coverage()`), and the transaction
+  passes it per binding slot as
+  `BackgroundEvaluationCallFrameSelection::binding_upstream_coverage`.
+  `prepare_replay()` reads selected data, writes the input's neutral value on
+  known-absent positions (no events for event inputs), and still fails on
+  covered positions outside the selection. Before this, a `full` node replaying
+  over uncovered upstream failed with "background replay sample input is not
+  fully selected". Manual-control fallback will resolve at the same place.
+
+The live path does not yet honor `input_union` coverage: realtime Sequential
+consumers still receive every computed sample. That is part of the pending
+coverage-aware Sequential resolution.
+
+This resolves the earlier step-3 observation, now preserved historically: a
+pointwise Tick event transformer between the point source and the interpreter
+declares `input_union`, so its output keeps the finite point Region and the
+interpreter's whole-coverage reverse requirement stays finite.
+
+### Staged-tree test fixes, 2026-11-15
+
+From the owner's run of the staged tree (185 failures: 177 not run behind
+`GraphJitSharedRuntimeFixture.BuildPackage`, 8 failed):
+
+- `BuildPackage` aborted with `LLVM ERROR: Do not know how to promote this
+  operator!` in the test process. The finalized package LLVM from
+  `buildThinLTOPreLinkDefaultPipeline(O2)` still held the unsplit coroutines of
+  `SuspendableCoverageProbe`'s propagation callbacks (`presplitcoroutine`,
+  `llvm.coro.suspend`), and the package's configuration ORC JIT generates code
+  without IR passes. `prelink_optimize_package()` now runs CoroEarly, CoroSplit
+  and CoroCleanup in a `CoroConditionalWrapper` after the pre-link pipeline and
+  rejects any remaining pre-split coroutine. This is the first package with
+  coroutine callbacks; the builtin package was unaffected.
+- `BackgroundEvaluationCallFrame.OwnsOperationFramesAndTockBindings` predates
+  the requested-only binding: its input binding coverage was narrower than its
+  whole selected Region. The test now binds that Region's union.
+- Six persisted `GraphExecutorFixture` tests committed without evaluation. A
+  persisted demand records its requirement without activating the producer;
+  demand expansion then activated it for the same range, but the staged
+  `require_output()` activated only when the requirement grew. It now also
+  activates a producer whose reverse operation is not yet scheduled.

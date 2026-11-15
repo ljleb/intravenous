@@ -2232,6 +2232,9 @@ TEST(BackgroundEvaluationCallFrame, OwnsOperationFramesAndTockBindings)
     auto tock_states = tock_layout.create_storage(resources);
     tock_states.initialize();
 
+    // Both storage roles of output 1 share one producer Region, [9, 12). The
+    // input reads it at latency 1, so its whole selected Region is [10, 13);
+    // a Tock input's coverage is the union of its selected whole Regions.
     iv::BackgroundEvaluationCallFrame frame{
         plan,
         realization,
@@ -2239,13 +2242,14 @@ TEST(BackgroundEvaluationCallFrame, OwnsOperationFramesAndTockBindings)
         {
             .binding_coverage =
                 {
-                    index_coverage({{10, 12}}),
+                    index_coverage({{10, 13}}),
                     index_coverage({{10, 12}}),
                     index_coverage({{10, 12}}),
                 },
             .sample_rate = 96000,
         }};
-    ASSERT_TRUE(frame.seal().has_value());
+    auto const sealed = frame.seal();
+    ASSERT_TRUE(sealed.has_value()) << sealed.error();
     ASSERT_EQ(frame.call().nodes.size(), 1);
     auto& node = frame.nodes().front();
     EXPECT_NE(node.operation_frame, nullptr);

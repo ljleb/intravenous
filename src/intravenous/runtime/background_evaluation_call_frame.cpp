@@ -478,8 +478,28 @@ struct BackgroundEvaluationCallFrame::ReplayFrameStorage {
     std::vector<BindingAdapter*> sample_input_adapters{};
     std::vector<BindingAdapter*> sample_output_adapters{};
     std::vector<BindingAdapter*> event_input_adapters{};
+    // Per Sequential input: upstream contribution coverage, or null when the
+    // selection did not supply it, and the input's neutral fallback value.
+    std::vector<IndexCoverage const*> sample_input_upstream{};
+    std::vector<Sample> sample_input_neutral{};
+    std::vector<IndexCoverage const*> event_input_upstream{};
     std::vector<BindingAdapter*> event_output_adapters{};
 };
+
+namespace {
+// A Sequential replay input resolves each scheduled position: selected
+// upstream data where it exists, its fallback where no upstream contribution
+// exists. Covered data outside the selection is unavailable, never a gap.
+// Returns the scheduled positions that are known absent.
+IndexCoverage known_absent_replay_positions(GlobalIndexRange region,
+    IndexCoverage const& selected, IndexCoverage const* upstream, char const* unavailable)
+{
+    auto missing = IndexCoverage{region} - selected;
+    if (missing.empty()) return missing;
+    if (!upstream || !(missing & *upstream).empty()) throw std::runtime_error(unavailable);
+    return missing;
+}
+} // namespace
 
 void BackgroundEvaluationCallFrame::prepare_replay(void* opaque)
 {
@@ -489,17 +509,29 @@ void BackgroundEvaluationCallFrame::prepare_replay(void* opaque)
         auto& raw = *replay.sample_input_storage[input];
         auto const& adapter = *replay.sample_input_adapters[input];
         for (auto const region : replay.regions) {
-            if (!adapter.coverage->contains(region)) {
-                throw std::runtime_error(
-                    "background replay sample input is not fully selected");
+            auto const absent = known_absent_replay_positions(region, *adapter.coverage,
+                replay.sample_input_upstream[input],
+                "background replay sample input is not fully selected");
+            for (auto const selected : IndexCoverage{region} & *adapter.coverage) {
+                for (GlobalIndex::extent_type offset = 0;
+                     offset < selected.extent; ++offset) {
+                    auto const index = selected.begin.advanced_by(offset);
+                    for (std::size_t channel = 0;
+                         channel < channel_count(raw.layout); ++channel) {
+                        raw.at(index, channel) =
+                            BindingAdapter::read_sample(&adapter, index, channel);
+                    }
+                }
             }
-            for (GlobalIndex::extent_type offset = 0;
-                 offset < region.extent; ++offset) {
-                auto const index = region.begin.advanced_by(offset);
-                for (std::size_t channel = 0;
-                     channel < channel_count(raw.layout); ++channel) {
-                    raw.at(index, channel) =
-                        BindingAdapter::read_sample(&adapter, index, channel);
+            // The declared fallback. Only the neutral policy is implemented;
+            // manual-control fallback resolves here once it lands.
+            for (auto const gap : absent) {
+                for (GlobalIndex::extent_type offset = 0; offset < gap.extent; ++offset) {
+                    auto const index = gap.begin.advanced_by(offset);
+                    for (std::size_t channel = 0;
+                         channel < channel_count(raw.layout); ++channel) {
+                        raw.at(index, channel) = replay.sample_input_neutral[input];
+                    }
                 }
             }
         }
@@ -509,22 +541,33 @@ void BackgroundEvaluationCallFrame::prepare_replay(void* opaque)
         auto& raw = *replay.event_input_storage[input];
         auto const& adapter = *replay.event_input_adapters[input];
         raw.count() = 0;
-        for (auto const region : replay.regions) {
-            if (!adapter.coverage->contains(region)) {
-                throw std::runtime_error(
-                    "background replay event input is not fully selected");
+        for (auto const scheduled : replay.regions) {
+            // A known-absent event position has no events. Selected parts are
+            // visited in timeline order from the scheduled region's start,
+            // which signed-order coverage iteration does not give across the
+            // signed seam.
+            (void)known_absent_replay_positions(scheduled, *adapter.coverage,
+                replay.event_input_upstream[input],
+                "background replay event input is not fully selected");
+            auto const selected = IndexCoverage{scheduled} & *adapter.coverage;
+            std::vector<GlobalIndexRange> ordered;
+            for (auto const range : selected) ordered.push_back(range);
+            std::ranges::sort(ordered, {}, [&](GlobalIndexRange range) {
+                return scheduled.begin.forward_distance_to(range.begin);
+            });
+            for (auto const region : ordered) {
+                BindingAdapter::for_each_event(
+                    &adapter, region, &raw,
+                    +[](void* data, TimedEvent const& event) {
+                        auto& storage = *static_cast<
+                            ReplayFrameStorage::EventStorage*>(data);
+                        if (storage.count() == storage.capacity) {
+                            throw std::runtime_error(
+                                "background replay event input exceeded its bound");
+                        }
+                        storage.events()[storage.count()++] = event;
+                    });
             }
-            BindingAdapter::for_each_event(
-                &adapter, region, &raw,
-                +[](void* data, TimedEvent const& event) {
-                    auto& storage = *static_cast<
-                        ReplayFrameStorage::EventStorage*>(data);
-                    if (storage.count() == storage.capacity) {
-                        throw std::runtime_error(
-                            "background replay event input exceeded its bound");
-                    }
-                    storage.events()[storage.count()++] = event;
-                });
         }
     }
     for (auto& output : replay.event_output_storage) {
@@ -1321,6 +1364,11 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                             contiguous_value_capacity,
                     };
                     storage.sample_input_adapters.push_back(adapter);
+                    storage.sample_input_upstream.push_back(
+                        binding_slot < selection_.binding_upstream_coverage.size()
+                            ? &selection_.binding_upstream_coverage[binding_slot]
+                            : nullptr);
+                    storage.sample_input_neutral.push_back(port.sample_neutral_value);
                     storage.sample_input_storage.push_back(std::move(raw));
                     ++sample_input;
                 } else {
@@ -1338,6 +1386,10 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                     storage.event_inputs[event_input].storage =
                         raw->binding(port.event_type);
                     storage.event_input_adapters.push_back(adapter);
+                    storage.event_input_upstream.push_back(
+                        binding_slot < selection_.binding_upstream_coverage.size()
+                            ? &selection_.binding_upstream_coverage[binding_slot]
+                            : nullptr);
                     storage.event_input_storage.push_back(std::move(raw));
                     ++event_input;
                 }

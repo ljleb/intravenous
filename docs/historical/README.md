@@ -258,3 +258,5 @@ These documents are retained because they record deleted architectures, supersed
 - [Random-access fallback before Sequential resolution](automation_random_access_fallback_before_sequential_resolution_2026-11-15.md)
   preserves the superseded Region/Coverage fallback and resolved-read proposals
   before the owner restricted fallback to Sequential inputs.
+
+- [Replay coverage before TickReplayMode](replay_coverage_before_tick_replay_mode_2026-11-15.md) preserves the boolean replay opt-in, the same-day full-coverage reading of generated replay propagation, and the pending per-output proposal that `TickReplayMode` replaced.

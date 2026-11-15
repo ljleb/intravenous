@@ -3547,7 +3547,7 @@ struct NativeBatchAliasingProbe {
 
 struct NativeBatchReplaySource {
     std::uint64_t id = 0;
-    static constexpr bool intrinsically_replayable = true;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
 
     constexpr explicit NativeBatchReplaySource(std::uint64_t id_) : id(id_) {}
 
@@ -7371,6 +7371,91 @@ void automation_window_module(iv::GraphBuilder& graph) {
     graph.outputs();
 }
 IV_MODULE("iv.test.automation.window_module", automation_window_module);
+
+// Replayable pointwise Tick nodes whose only input is Sequential. Both compute
+// a value at every position; an input position without upstream coverage
+// resolves to the input's neutral value. Their declared TickReplayMode decides
+// where that value is output.
+struct ReplayAddOne {
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
+    static constexpr auto inputs() { return std::array{iv::input<iv::Sample>("in")}; }
+    static constexpr auto outputs() { return std::array{iv::output<iv::Sample>("out")}; }
+    void tick_block(iv::TickBlockContext<ReplayAddOne> const& ctx) const {
+        auto input = ctx.input<"in">();
+        auto output = ctx.output<"out">().block();
+        for (std::size_t frame = 0; frame < output.size(); ++frame)
+            output[frame] = iv::Sample{static_cast<float>(input.get_value(frame)) + 1.0f};
+    }
+};
+IV_NODE("iv.test.replay.add_one", ReplayAddOne);
+struct ReplayTenMinus {
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr auto inputs() { return std::array{iv::input<iv::Sample>("in")}; }
+    static constexpr auto outputs() { return std::array{iv::output<iv::Sample>("out")}; }
+    void tick_block(iv::TickBlockContext<ReplayTenMinus> const& ctx) const {
+        auto input = ctx.input<"in">();
+        auto output = ctx.output<"out">().block();
+        for (std::size_t frame = 0; frame < output.size(); ++frame)
+            output[frame] = iv::Sample{10.0f - static_cast<float>(input.get_value(frame))};
+    }
+};
+IV_NODE("iv.test.replay.ten_minus", ReplayTenMinus);
+// A persisted Tock window that demands one configured range of its input,
+// forcing background replay of the Tick node that feeds it.
+struct ReplayWindow {
+    std::int64_t begin = 0;
+    std::uint64_t extent = 0;
+    constexpr ReplayWindow(std::int64_t begin_, std::uint64_t extent_)
+        : begin(begin_), extent(extent_) {}
+    static constexpr auto inputs() {
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::region)};
+    }
+    static constexpr auto outputs() {
+        return std::array{iv::output<iv::Sample>("window", iv::OutputProduction::region,
+            iv::OutputRetention::persisted)};
+    }
+    [[nodiscard]] iv::GlobalIndexRange window() const {
+        return {iv::GlobalIndex::from_signed(begin), extent};
+    }
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<ReplayWindow>& ctx) const {
+        ctx.output<"window">().publish(window());
+        if (ctx.local_state_changed || !ctx.input<"in">().changed().empty())
+            ctx.output<"window">().change(iv::IndexCoverage{window()});
+    }
+    void propagate_reverse_coverage(iv::PropagateReverseCoverageContext<ReplayWindow>& ctx) const {
+        ctx.input<"in">().require(ctx.output<"window">().required());
+    }
+    void tock_coverage(iv::TockCoverageContext<ReplayWindow>& ctx) const {
+        auto input = ctx.input<"in">().region();
+        auto output = ctx.output<"window">().region();
+        for (std::size_t i = 0; i < output.frame_count(); ++i)
+            output.value(i) = input.value(i);
+    }
+};
+IV_NODE("iv.test.replay.window", ReplayWindow);
+void replay_sequential_resolution_module(iv::GraphBuilder& graph) {
+    // The source covers only [20, 24), with values 4, 5, 6 and 7.
+    auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
+    auto add = graph.node<"iv.test.replay.add_one">();
+    auto flip = graph.node<"iv.test.replay.ten_minus">();
+    add(source);
+    flip(source);
+    // input_union: add_one exists only where the source does.
+    auto added = graph.node<"iv.test.replay.window">(std::int64_t{20}, std::uint64_t{4});
+    added(add);
+    // full: [18, 26) straddles the source Region; [100, 104) lies outside it.
+    auto spanning = graph.node<"iv.test.replay.window">(std::int64_t{18}, std::uint64_t{8});
+    spanning(flip);
+    auto uncovered = graph.node<"iv.test.replay.window">(std::int64_t{100}, std::uint64_t{4});
+    uncovered(flip);
+    // A full-mode replayable generator without inputs writes 11 + position.
+    auto generator = graph.node<"iv.test.graph_jit.state_context.native_batch_replay">(
+        std::uint64_t{11});
+    auto generated = graph.node<"iv.test.replay.window">(std::int64_t{40}, std::uint64_t{3});
+    generated(generator);
+    graph.outputs();
+}
+IV_MODULE("iv.test.replay.sequential_resolution_module", replay_sequential_resolution_module);
 
 )cpp";
     static constexpr std::string_view internal_nodes = R"cpp(

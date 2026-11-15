@@ -5,6 +5,7 @@
 // that build has been finalized.
 
 #include <intravenous/node/code_key.h>
+#include <intravenous/node/tick_replay_mode.h>
 #include <intravenous/global_index.h>
 
 #include <cstddef>
@@ -119,7 +120,7 @@ struct NodeCompilerRecord {
     std::size_t background_state_alignment = 1;
     // Authored and statically validated; the project planner must separately
     // prove that a specific instance can replay its transitive dependencies.
-    bool intrinsically_replayable = false;
+    TickReplayMode replay_mode = TickReplayMode::disabled;
     // Pointwise tick() can only be realized when every relevant Sequential
     // input and Tick output uses one equal absolute pace. Native tick_block()
     // nodes may observe heterogeneous per-port projections directly.

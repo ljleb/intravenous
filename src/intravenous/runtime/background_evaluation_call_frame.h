@@ -22,6 +22,12 @@ namespace iv {
 struct BackgroundEvaluationCallFrameSelection {
     std::vector<IndexCoverage> binding_coverage{};
     std::vector<std::vector<GlobalIndexRange>> binding_regions{};
+    // Per binding slot, for Sequential replay inputs: positions where an
+    // upstream contribution exists. Replay resolves a scheduled position
+    // outside it as known absent, by the input's fallback; a covered position
+    // outside binding_coverage is unavailable data and fails the replay. When
+    // empty, every scheduled position must be selected.
+    std::vector<IndexCoverage> binding_upstream_coverage{};
     std::size_t sample_rate = 48000;
 };
 

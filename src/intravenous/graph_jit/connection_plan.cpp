@@ -137,7 +137,7 @@ bool source_is_intrinsically_replayable(
     ConnectionAnalysisPlan const& plan, NodeBundleHandle bundle) noexcept
 {
     auto const* node = planned_node_for_bundle(plan, bundle);
-    return node && node->intrinsically_replayable;
+    return node && node->replay_mode != TickReplayMode::disabled;
 }
 
 std::optional<StableConcreteNodeId> stable_concrete_node_identity(
@@ -364,7 +364,7 @@ std::expected<void, std::string> inventory_nodes(
                 .event_input_count = view.ports->event_input_count(),
                 .event_output_count = view.ports->event_output_count(),
                 .tick_execution = has_tick_callback,
-                .intrinsically_replayable = view.intrinsically_replayable,
+                .replay_mode = view.replay_mode,
                 .authored_forward_coverage = view.operations->runtime.has_propagate_forward_coverage,
                 .authored_reverse_coverage = view.operations->runtime.has_propagate_reverse_coverage,
             });
@@ -2240,7 +2240,7 @@ std::expected<void, std::string> derive_contextual_replayability(
                 "GraphJit contextual replay reached an unavailable live source bundle "
                 + std::to_string(bundle));
         }
-        if (!node->intrinsically_replayable) {
+        if (node->replay_mode == TickReplayMode::disabled) {
             return std::unexpected(
                 "GraphJit contextual replay requires bundle "
                 + std::to_string(bundle)
@@ -2289,7 +2289,7 @@ std::expected<void, std::string> derive_contextual_replayability(
                     + port_description(dependency)
                     + "; an explicit recorder is required");
             }
-            if (!source->intrinsically_replayable) {
+            if (source->replay_mode == TickReplayMode::disabled) {
                 stack.pop_back();
                 state[bundle] = VisitState::unseen;
                 return std::unexpected(
@@ -2765,7 +2765,7 @@ std::expected<void, std::string> populate_background_topology(
 {
     plan.intrinsic_replay_candidates.clear();
     for (auto const& node : connections.nodes) {
-        if (node.intrinsically_replayable
+        if (node.replay_mode != TickReplayMode::disabled
             && is_internal_bundle(node.bundle, connections.boundary_bundle)) {
             plan.intrinsic_replay_candidates.push_back(node.bundle);
         }
@@ -2857,6 +2857,7 @@ std::expected<void, std::string> populate_background_topology(
                 && node.authored_reverse_coverage,
             .uses_replay_forward_coverage = node.contextually_replayable && !node.authored_forward_coverage,
             .uses_replay_reverse_coverage = node.contextually_replayable && !node.authored_reverse_coverage,
+            .replay_mode = node.contextually_replayable ? node.replay_mode : TickReplayMode::disabled,
             .uses_imported_tick_block_for_replay = node.contextually_replayable,
             .replay_maximum_block_size = node.contextually_replayable
                 ? std::min(kernel_block_size, node.maximum_block_size)

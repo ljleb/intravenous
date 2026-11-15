@@ -579,6 +579,7 @@ iv::CompiledGraph replay_probe_graph()
         .replays_tick = true,
         .uses_replay_forward_coverage = true,
         .uses_replay_reverse_coverage = true,
+        .replay_mode = iv::TickReplayMode::input_union,
         .uses_imported_tick_block_for_replay = true,
         .replay_maximum_block_size = 4,
         .outputs = {0, 1},

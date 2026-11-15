@@ -613,7 +613,7 @@ struct RealtimeSink {
 };
 
 struct ReplayableSource {
-    static constexpr bool intrinsically_replayable = true;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
 
     static constexpr auto inputs()
     {
@@ -629,7 +629,7 @@ struct ReplayableSource {
 };
 
 struct ReplayableFFTSource {
-    static constexpr bool intrinsically_replayable = true;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
 
     static constexpr auto inputs() { return std::tuple{}; }
 
@@ -650,7 +650,7 @@ struct ReplayableFFTSource {
 };
 
 struct ReplayableFastSampleSource {
-    static constexpr bool intrinsically_replayable = true;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
 
     static constexpr auto inputs() { return std::tuple{}; }
 
@@ -684,7 +684,7 @@ struct BackgroundFFTSink {
 };
 
 struct ReplayablePass {
-    static constexpr bool intrinsically_replayable = true;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
 
     static constexpr auto inputs()
     {

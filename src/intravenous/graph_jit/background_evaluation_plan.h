@@ -6,6 +6,7 @@
 #include <intravenous/graph_jit/stable_graph_identity.h>
 #include <intravenous/node/port_constraints.h>
 #include <intravenous/node/registered_type_identity.h>
+#include <intravenous/node/tick_replay_mode.h>
 #include <intravenous/ports.h>
 
 #include <cstddef>
@@ -271,6 +272,10 @@ struct BackgroundNodePlan {
     bool authored_reverse_coverage = false;
     bool uses_replay_forward_coverage = false;
     bool uses_replay_reverse_coverage = false;
+    // The node's declared mode. With generated forward propagation, it selects
+    // each output's coverage: the union of the input coverages, or the full
+    // circle. An authored forward callback publishes its own coverage instead.
+    TickReplayMode replay_mode = TickReplayMode::disabled;
     bool uses_imported_tick_block_for_replay = false;
     // Zero for non-replay nodes. Replay transactions split dynamic IndexCoverage
     // into invocations no larger than this compiled constraint.

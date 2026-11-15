@@ -96,7 +96,8 @@ struct PointSource {
 };
 
 struct LinearCurve {
-    static constexpr bool intrinsically_replayable = true;
+    // Replayable; its authored forward propagation publishes its coverage.
+    static constexpr TickReplayMode replay_mode = TickReplayMode::input_union;
     static constexpr auto inputs() {
         return std::array{event_input("points", EventTypeId::sample, InputAccess::region)};
     }

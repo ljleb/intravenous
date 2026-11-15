@@ -1707,4 +1707,100 @@ TEST_F(GraphJitRuntimeFixture, SuspendableForwardAndReverseCallbacksRetainTheirC
     EXPECT_FLOAT_EQ(state.first, 4.0f);
 }
 
+TEST_F(GraphJitRuntimeFixture, GeneratedReplayCoverageFollowsTheDeclaredTickReplayMode)
+{
+    auto compiled = compile("iv.test.replay.sequential_resolution_module", 3002);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    auto const& plan = graph.background_evaluation_plan;
+    auto const source = std::ranges::find(plan.ports,
+        std::string{"single-region-sample-source-output"}, &iv::graph_jit::BackgroundPortPlan::name);
+    ASSERT_NE(source, plan.ports.end());
+    std::vector<iv::graph_jit::BackgroundPortIndex> replayed, windows;
+    for (iv::graph_jit::BackgroundPortIndex port = 0; port < plan.ports.size(); ++port) {
+        if (plan.ports[port].replayed_tick_output) replayed.push_back(port);
+        if (plan.ports[port].name == "window") windows.push_back(port);
+    }
+    // add_one (input_union), ten_minus (full) and the generator (full).
+    ASSERT_EQ(replayed.size(), 3u);
+    ASSERT_EQ(windows.size(), 4u);
+
+    iv::PersistedDataStore data;
+    auto reader = data.register_reader();
+    auto states = graph.tock_state_layout.create_storage(resources);
+    states.initialize();
+    iv::BackgroundCoverageState coverage{plan.accumulators.output_change_count};
+    iv::BackgroundPropagationWorkspace propagation{plan, graph.specialization.sample_rate};
+    iv::CoveragePropagationRequest roots;
+    for (std::size_t node = 0; node < plan.nodes.size(); ++node)
+        roots.locally_changed_nodes.push_back(node);
+    // Each window's exact coverage selects its own range from this demand.
+    for (auto const window : windows) {
+        roots.output_demands.push_back({.port = window,
+            .required = index_coverage({{18, 26}, {40, 43}, {100, 104}})});
+    }
+    iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data,
+        {.semantic_version = 1, .roots = std::move(roots)}};
+    auto result = transaction.execute();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
+
+    // input_union covers only where the source does; full covers the circle,
+    // also for the generator without inputs.
+    constexpr auto half = std::uint64_t{1} << 63;
+    iv::IndexCoverage const full{
+        iv::GlobalIndexRange{iv::GlobalIndex::from_bits(0), half},
+        iv::GlobalIndexRange{iv::GlobalIndex::from_bits(half), half}};
+    std::vector<iv::IndexCoverage> replayed_coverage;
+    for (auto const port : replayed) {
+        auto const change = std::ranges::find(result->coverage.output_changes, port,
+            &iv::PropagatedOutputChange::port);
+        ASSERT_NE(change, result->coverage.output_changes.end());
+        replayed_coverage.push_back(change->coverage);
+    }
+    EXPECT_EQ(std::ranges::count(replayed_coverage, index_coverage({{20, 24}})), 1);
+    EXPECT_EQ(std::ranges::count(replayed_coverage, full), 2);
+    // Replay requires the actual upstream values wherever the source is
+    // covered, so the cold source is materialized there instead of resolved
+    // by fallback. Uncovered positions require nothing upstream.
+    auto const source_port = static_cast<iv::graph_jit::BackgroundPortIndex>(source - plan.ports.begin());
+    auto const required = std::ranges::find(result->coverage.output_requirements, source_port,
+        &iv::RequiredOutputCoverage::port);
+    ASSERT_NE(required, result->coverage.output_requirements.end());
+    EXPECT_EQ(required->required, index_coverage({{20, 24}}));
+
+    auto pinned = reader.pin();
+    std::vector<std::vector<float>> stored;
+    for (auto const window : windows) {
+        auto const storage = std::ranges::find_if(plan.storage.ports, [&](auto const& candidate) {
+            return candidate.output_port == window
+                && candidate.storage == iv::graph_jit::PortStorageKind::persisted_data;
+        });
+        ASSERT_NE(storage, plan.storage.ports.end());
+        auto const handle = data.resolve_output(iv::persisted_output_id(plan,
+            static_cast<iv::graph_jit::PortStorageIndex>(storage - plan.storage.ports.begin()),
+            graph.project_generation));
+        for (auto const begin : {18, 20, 40, 100}) {
+            auto const* region = pinned->find_sample_region(handle, index(begin));
+            if (!region) continue;
+            std::vector<float> values;
+            for (iv::GlobalIndex::extent_type offset = 0; offset < region->range.extent; ++offset)
+                values.push_back(static_cast<float>(region->at(region->range.begin.advanced_by(offset), 0)));
+            stored.push_back(std::move(values));
+            break;
+        }
+    }
+    // The source values 4..7 appear only on [20, 24). Elsewhere the input
+    // resolves to the neutral value 0, and the full-mode node outputs 10 - 0.
+    std::vector<std::vector<float>> const expected{
+        {5, 6, 7, 8},
+        {10, 10, 6, 5, 4, 3, 10, 10},
+        {10, 10, 10, 10},
+        {51, 52, 53},
+    };
+    EXPECT_EQ(stored.size(), expected.size());
+    for (auto const& values : expected) EXPECT_TRUE(std::ranges::contains(stored, values));
+}
+
 } // namespace iv::test::graph_jit_tests

@@ -703,8 +703,19 @@ class BackgroundEvaluationTransaction::Impl {
             .binding_regions =
                 std::vector<std::vector<GlobalIndexRange>>(
                     plan.runtime.bindings.size()),
+            .binding_upstream_coverage =
+                std::vector<IndexCoverage>(plan.runtime.bindings.size()),
             .sample_rate = graph_->specialization.sample_rate,
         };
+        for (graph_jit::BackgroundPortIndex port = 0;
+             port < std::min(plan.ports.size(), plan.runtime.port_bindings.size()); ++port) {
+            auto const& planned = plan.ports[port];
+            auto const slot = plan.runtime.port_bindings[port];
+            if (slot && planned.direction == graph_jit::PortDirection::input
+                && planned.input_access == InputAccessKind::sequential) {
+                selection.binding_upstream_coverage[*slot] = prepared_->input_coverage(port);
+            }
+        }
         auto assign_intersecting_regions = [](
             std::vector<GlobalIndexRange>& target,
             std::span<GlobalIndexRange const> regions,
