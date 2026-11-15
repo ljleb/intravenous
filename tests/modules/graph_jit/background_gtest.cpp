@@ -1670,4 +1670,41 @@ TEST_F(GraphJitRuntimeFixture, PersistedTickCaptureAcceptsResolvedNonProjectPace
     ASSERT_EQ(plan.tick_runtime.sample_captures.size(), 1u);
 }
 
+TEST_F(GraphJitRuntimeFixture, SuspendableForwardAndReverseCallbacksRetainTheirContextsThroughDiscovery)
+{
+    auto compiled = compile("iv.test.graph_jit.suspendable_coverage_module", 3001);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    auto const& plan = graph.background_evaluation_plan;
+    auto found = std::ranges::find(plan.ports, std::string{"suspendable-output"},
+        &iv::graph_jit::BackgroundPortPlan::name);
+    ASSERT_NE(found, plan.ports.end());
+    auto const output = static_cast<iv::graph_jit::BackgroundPortIndex>(found - plan.ports.begin());
+    auto states = graph.tock_state_layout.create_storage(resources);
+    states.initialize();
+    iv::BackgroundCoverageState coverage{plan.accumulators.output_change_count};
+    iv::BackgroundPropagationWorkspace propagation{plan, graph.specialization.sample_rate};
+    iv::PersistedDataStore data;
+    iv::CoveragePropagationRequest roots;
+    for (std::size_t node = 0; node < plan.nodes.size(); ++node)
+        roots.locally_changed_nodes.push_back(node);
+    roots.output_demands.push_back({.port = output, .required = index_coverage({{4, 5}})});
+    iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data,
+        {.semantic_version = 1, .roots = std::move(roots)}};
+    auto result = transaction.execute();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
+    auto change = std::ranges::find(result->coverage.output_changes, output,
+        &iv::PropagatedOutputChange::port);
+    ASSERT_NE(change, result->coverage.output_changes.end());
+    EXPECT_EQ(change->coverage, index_coverage({{4, 8}}));
+    ASSERT_TRUE(plan.nodes[found->node].tock_state_node.has_value());
+    struct ProbeState { std::uint64_t calls; float first; };
+    auto const& state = *static_cast<ProbeState const*>(states.state_ptr(
+        *plan.nodes[found->node].tock_state_node));
+    EXPECT_EQ(state.calls, 1u);
+    EXPECT_FLOAT_EQ(state.first, 4.0f);
+}
+
 } // namespace iv::test::graph_jit_tests

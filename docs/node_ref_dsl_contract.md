@@ -95,8 +95,11 @@ Output-selection rules superseded on 2026-11-14 are preserved in
   mono so the enclosing bundle can promote matching ports consistently. If
   that condition is not met, the entire node-construction call fails without
   adding its attempted module children to the caller's graph.
-- Concrete typed construction remains a private provider, lowering, and
-  finalization operation.
+- Concrete typed construction **currently** remains a private provider, lowering, and
+  finalization operation. A future package-internal `g.node<Type>(...)`
+  operation is proposed for unregistered private leaves; see
+  [Node Definitions And Instances](./node_definitions_and_instances_direction.md#future-package-identity-publication-and-type-construction-2026-11-15-clarification).
+  Do not treat this proposed syntax as an implemented public DSL operation.
 - `g.subgraph(...)`, embedding, and module loading return `NodeRef` to one
   subgraph bundle.
 - `ref(...)`, `connect_input`, and `connect_event_input` connect positional or

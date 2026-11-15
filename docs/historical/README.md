@@ -4,7 +4,15 @@ Everything in this directory is non-normative historical material.
 
 These documents are retained because they record deleted architectures, superseded design directions, completed migrations, profiling experiments, or implementation checkpoints that may still explain why the repository looks the way it does. They must not be treated as current requirements when they conflict with documents in the parent [`docs/`](../README.md) directory.
 
+## Superseded backup proposal
+
+- [Backup/Checkpoint Proposals Before Git-Based Project Versioning (2026-11-15)](./backup_checkpoint_proposals_before_git_versioning_2026-11-15.md)
+
 ## Superseded application and execution architecture
+
+- [Tock Binding Before Explicit Provided-Region Semantics (2026-11-15)](./tock_binding_before_explicit_selection_2026-11-15.md)
+  retains the earlier requested-only input binding wording, replaced by
+  [Tock Input And Output Views](../automation_and_suspendable_coverage_direction.md#6-tock-input-and-output-views).
 
 - [Coverage Before Suspendable Propagation (2026-11-15)](./coverage_before_suspendable_propagation_2026-11-15.md)
   retains the earlier value-blind, once-per-phase propagation and event
@@ -238,3 +246,15 @@ These documents are retained because they record deleted architectures, supersed
 - [Automation before builtin promotion](automation_before_builtin_promotion_2026-11-14.md) preserves the optional package guide and IDs before automation joined the default builtin package.
 
 - [Automation before cyclic semantics](automation_before_cyclic_semantics_2026-11-14.md) preserves the duration-bounded automation guide, interpolation policy, and pending status before the cyclic curve replaced them.
+
+- [Automation fallback before the random-access policy](automation_manual_fallback_before_random_access_policy_2026-11-15.md)
+  preserves the Sequential fallback proposal and open point/tension choices
+  superseded by the owner's Region/Coverage fallback and coincident-point decisions.
+
+- [Automation fallback accessors before resolved reads](automation_fallback_accessors_before_resolved_reads_2026-11-15.md)
+  preserves the rejected primary uncovered-value accessor and filled-Region
+  alternatives before raw Region access and resolved reads were selected.
+
+- [Random-access fallback before Sequential resolution](automation_random_access_fallback_before_sequential_resolution_2026-11-15.md)
+  preserves the superseded Region/Coverage fallback and resolved-read proposals
+  before the owner restricted fallback to Sequential inputs.

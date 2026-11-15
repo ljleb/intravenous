@@ -210,6 +210,7 @@ struct ReflectedNodeForwardCoverageContext {
     ReflectedSpan<OutputCoverageChange> event_outputs {};
     bool local_state_changed = false;
     std::size_t sample_rate = 48000;
+    CoveragePlanningContext planning{};
 };
 
 struct ReflectedNodeReverseCoverageContext {
@@ -218,6 +219,7 @@ struct ReflectedNodeReverseCoverageContext {
     ReflectedSpan<InputCoverageRequirement> event_inputs {};
     ReflectedSpan<OutputCoverageRequirement const> event_outputs {};
     std::size_t sample_rate = 48000;
+    CoveragePlanningContext planning{};
 };
 
 // Compact compiler-facing batch records. These carry only one configured node

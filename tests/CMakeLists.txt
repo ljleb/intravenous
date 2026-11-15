@@ -186,6 +186,9 @@ add_iv_gtest(
     intravenous_persisted_data_store_tests
     persisted_data_store_gtest.cpp)
 add_iv_gtest(
+    intravenous_background_planning_tests
+    background_planning_gtest.cpp)
+add_iv_gtest(
     intravenous_background_storage_realization_tests
     background_storage_realization_gtest.cpp)
 # Keep one executable and one package-build fixture. Each behavior's tests

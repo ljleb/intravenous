@@ -1,11 +1,12 @@
-# Project Undo, Redo, And Backup Direction
+# Project Undo And Redo Direction
 
 _Status: accepted design direction, 2026-11-12. The initial graph-edit implementation
 and the audio-selection and toolchain-settings extension have passed owner
 build/test verification; see
 [Vue Client Implementation Stages](./vue_client_implementation_stages.md).
-This document specifies reversible user edits and their ownership, not a backup
-format. The preceding version is retained under
+This document specifies reversible user edits and their ownership. The
+filename is retained for existing documentation links; a separate backup system
+is not planned. The preceding version is retained under
 [Historical Undo/Redo Direction](./historical/project_undo_redo_before_first_implementation_2026-11-13.md)._
 
 Related: [Project Graph Application Architecture](./project_graph_application_architecture.md),
@@ -125,7 +126,7 @@ It would require detecting and resolving dependencies between users' edits; simp
 keeping separate stacks could undo a state on which another user's later action
 relies. This is not a reason to delay a useful global session history.
 
-## Relationship to project JSONL, saves, and backups
+## Relationship to project JSONL, saves, and Git
 
 `iv_project.jsonl` is a **normalized snapshot of current project intent**, not
 an append-only action log. Its accepted command vocabulary is useful for forward
@@ -135,15 +136,12 @@ reader verbatim. Ordinary save/autosave writes the current normalized project,
 not each action or history entry. Project replay reconstructs the current state;
 it does not create an undo entry for each replayed line.
 
-Backup/checkpoint support is a promising **future use of the same project-state
-capture and serialization facilities**. A backup is a restorable snapshot at a
-point in time; an inverse-only undo entry is not by itself a complete backup.
-A future history store could mix full snapshots/checkpoints with reversible
-change records, or serialize a chosen undo point together with the base state
-needed to reconstruct it. This is a candidate design, not a requirement to
-persist session undo history now or to change the canonical project file format.
-Backups must preserve the full durable project model and stable identities and
-must not confuse runtime/executor state with reconstructable project intent.
+The normalized, human-readable `iv_project.jsonl` is intended for ordinary
+version control with Git. There is no planned separate restorable
+backup/checkpoint feature. Session undo/redo remains an independent
+editing convenience; save/replay does not imply persistent history.
+The superseded backup proposal is preserved in
+[Backup/Checkpoint Proposals Before Git-Based Project Versioning](./historical/backup_checkpoint_proposals_before_git_versioning_2026-11-15.md).
 
 ## First implementation and verification boundary
 
@@ -157,8 +155,9 @@ undo/redo; the application-event tree must contain no repeat module visits.
 
 Then group manual-control gestures as one step, including cancel/disconnect,
 component remounts, and multiple clients. Verify stale-action rejection and the
-single global history order. Backup persistence, per-user selective history, and
-non-project side-effect reversal are deferred.
+single global history order. Per-user selective history and non-project
+side-effect reversal are deferred; separate backup persistence is not on the
+roadmap.
 
 ## First implementation contract (2026-11-13)
 

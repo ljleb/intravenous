@@ -74,6 +74,17 @@ one package to be discovered or compiled twice. Definition-ID
 collisions across distinct packages remain an explicit namespace/publication
 matter, not an implicit source-directory precedence rule.
 
+### Proposed logical package namespaces (2026-11-15; not implemented)
+
+Future packages may have stable logical identifiers usable as prefixes for
+public `IV_NODE`/`IV_MODULE` definitions. These are distinct from the already
+implemented discovery provenance (`built_in`, `common`, `project_local`) and
+build artifact/cache identity. This proposal should extend GraphBuilder's
+existing `iv.builtin` lookup and planned namespace imports, not silently
+replace them. Neither an `iv_package.json` field spelling nor collision/
+import precedence was finalized in the discussion. See
+[Node Definitions And Instances](./node_definitions_and_instances_direction.md#future-package-identity-publication-and-type-construction-2026-11-15-clarification).
+
 ### Built-ins belong to the executable, not the opened project
 
 The build that produces an executable should also produce its built-in package

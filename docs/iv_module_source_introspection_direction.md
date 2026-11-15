@@ -47,5 +47,15 @@ Behavior:
 - node lookup requests may still fail for unknown node ids, because that is a real lookup failure
 - once definitions arrive through events, introspection becomes queryable automatically
 
+**Clarification (2026-11-15):** Source-focused presentation should navigate
+and interact with the same configured module instance and stable semantic
+paths used by the project graph. It is not an independent set of editable
+nodes. Unregistered concrete leaves can have compiler records when used in a
+package; that fact alone does not provide a public `IV_NODE` definition or
+replace the source annotations needed to associate virtual/logical nodes
+with C++ source. Source ownership limits structural deletion, not graph
+connection or observation of an addressable internal port. See
+[Module Interoperability And Graph Macros](./module_interoperability_and_graph_macros_direction.md).
+
 The superseded live-value claim is preserved in
 [Source Introspection With Fake Live Port Values](./historical/source_introspection_fake_live_port_values.md).

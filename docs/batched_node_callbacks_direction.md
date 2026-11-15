@@ -514,10 +514,12 @@ coverage results may become internally ready independently. Compatible
 individual lane requirements. The scheduler should use ready-frontier bucketing
 rather than violating actual dependency ordering merely to construct a larger batch.
 
-For Tock evaluation, every lane's Region/Coverage inputs expose only the
-reverse-required **requested-and-covered** positions for that invocation,
-regardless of additional available or cached storage. The scalar and batch
-forms must see equivalent input views for the same requested positions.
+For Tock evaluation, every lane receives the complete input Regions
+explicitly selected through reverse planning, independently of other
+materialized/cached Regions. Its input `coverage()` is the positional union
+of those Regions, not a separate narrow reverse-required mask. Scalar and
+batch execution must produce equivalent values for overlapping requested
+output positions at the same semantic snapshot, regardless of batch grouping.
 
 Small propagation callbacks are particularly good batching candidates because the
 instruction-front-end overhead of repeatedly switching among node implementations may

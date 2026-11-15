@@ -82,6 +82,13 @@ public:
         return nodes_;
     }
 
+    // Read-only discovery facades for a selected input binding. Their backing
+    // remains owned by this sealed frame and its storage realization.
+    [[nodiscard]] RandomAccessContinuousInputPort discovery_continuous_input(
+        graph_jit::BackgroundPortIndex) const;
+    [[nodiscard]] RandomAccessEventInputPort discovery_event_input(
+        graph_jit::BackgroundPortIndex) const;
+
     // Replay binding arrays have their final addresses at construction; seal()
     // populates them with isolated transaction-local backing derived from the
     // replay regions. Mutable access remains available for focused frame/ABI

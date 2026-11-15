@@ -147,6 +147,10 @@ inline constexpr ChannelLayout default_audio_channel_layout {
 
 } // namespace continuous_value_details
 
+// Only Sequential Sample inputs resolve missing upstream positions. Region
+// and Coverage inputs preserve absence and expose no fallback configuration.
+enum class SequentialFallback : std::uint8_t { neutral, manual_control };
+
 // A registered value extension owns every type-dependent fact used by generic
 // realization code. Storage elements must remain trivial: generated execution
 // may copy, clear, persist and relocate them without invoking C++ object code.
@@ -205,6 +209,8 @@ struct SampleContinuousValueExtension {
         Sample min = -std::numeric_limits<Sample::storage>::infinity();
         Sample max = std::numeric_limits<Sample::storage>::infinity();
 
+        SequentialFallback fallback = SequentialFallback::neutral;
+
         constexpr bool operator==(BoundaryInputOptions const&) const = default;
     };
 
@@ -216,6 +222,7 @@ struct SampleContinuousValueExtension {
         Sample max = std::numeric_limits<Sample::storage>::infinity();
         Sample neutral_value = 0.0f;
         combine_values_type combine_values = &add;
+        SequentialFallback fallback = SequentialFallback::neutral;
 
         constexpr bool operator==(SequentialInputOptions const&) const = default;
     };
@@ -229,6 +236,7 @@ struct SampleContinuousValueExtension {
             .default_value = options.default_value,
             .min = options.min,
             .max = options.max,
+            .fallback = options.fallback,
         };
     }
 
@@ -237,6 +245,7 @@ struct SampleContinuousValueExtension {
         Sample min = -std::numeric_limits<Sample::storage>::infinity();
         Sample max = std::numeric_limits<Sample::storage>::infinity();
         Sample neutral_value = 0.0f;
+        SequentialFallback fallback = SequentialFallback::neutral;
 
         constexpr bool operator==(SequentialInputMetadata const&) const = default;
 
@@ -247,6 +256,7 @@ struct SampleContinuousValueExtension {
             writer.pod(min.value);
             writer.pod(max.value);
             writer.pod(neutral_value.value);
+            writer.pod(static_cast<std::uint8_t>(fallback));
         }
 
         template<class Reader>
@@ -260,6 +270,7 @@ struct SampleContinuousValueExtension {
                 .max = Sample{reader.template pod<Sample::storage>()},
                 .neutral_value = Sample{
                     reader.template pod<Sample::storage>()},
+                .fallback = static_cast<SequentialFallback>(reader.template pod<std::uint8_t>()),
             };
         }
     };
@@ -361,6 +372,7 @@ struct SampleContinuousValueExtension {
             .min = options.min,
             .max = options.max,
             .neutral_value = options.neutral_value,
+            .fallback = options.fallback,
         };
     }
 

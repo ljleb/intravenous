@@ -198,6 +198,14 @@ the whole Vue client to be finished.
 
 ## Current stage
 
+2026-11-15 update: the accepted
+[automation and suspendable-propagation direction](automation_and_suspendable_coverage_direction.md)
+supersedes the cyclic linear automation checkpoint below. The implementation
+order is recorded in [Automation And Background Planning Migration](automation_and_background_migration_plan.md):
+requested-only Tock bindings, suspendable propagation and scheduling, then the
+complete segment/coverage/manual-fallback/presentation feature. Variant event
+ports and optional event projections do not block the initial one-type path.
+
 Stage 3, started 2026-11-13. The owner has verified Stages 1–2, including
 project history and durable settings history. Earlier checkpoints below retain
 their original dates and are superseded by the later verification updates.

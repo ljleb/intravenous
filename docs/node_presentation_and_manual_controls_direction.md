@@ -360,6 +360,23 @@ source selection can dynamically change the visible lanes without changing the
 project graph. The prior prohibition is preserved in
 [Lane Layout Before Fixed Vertical Zoom And Source Selection](./historical/vue_lane_layout_before_fixed_zoom_and_selection_2026-11-12.md).
 
+**Expanded C++ module interaction (clarified 2026-11-15; unimplemented UI work).**
+A module lane can show a collapsible region of the C++-constructed child
+structure, not only a separate inspector. The module still owns its authored
+children and internal edges; project-owned wiring may target their semantically
+addressable ports, including nested virtual-node ports, without making those
+children independently deletable. All such ports are connectable by default:
+no "activate port" action or new enablement state is needed. Port grouping and
+hiding are presentation only, and existing neutral/composition semantics apply
+to multiple connections. This also provides direct wiring for automation.
+
+**Future source/project conversion.** `Inline Module` replaces the enclosing
+module instance with a project-owned scope containing its immediate children,
+without recursively flattening nested module instances. `Extract Module`
+generates C++ module construction from a project-owned scope. They are not
+implemented in this stage. See
+[Module Interoperability And Graph Macros](./module_interoperability_and_graph_macros_direction.md).
+
 The intended side-panel replacement is another host of the same lane UI, filtered
 by source selection. It should share presentation and interaction state with
 editor webviews through the client session, rather than maintain a second lane

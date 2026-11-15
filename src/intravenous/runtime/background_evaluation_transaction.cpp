@@ -732,12 +732,8 @@ class BackgroundEvaluationTransaction::Impl {
                     selection.binding_regions[*slot].assign(
                         coverage.begin(), coverage.end());
                 } else {
-                    auto const regions =
-                        prepared_->input_regions(required.port);
-                    assign_intersecting_regions(
-                        selection.binding_regions[*slot],
-                        regions,
-                        selection.binding_coverage[*slot]);
+                    auto const regions = prepared_->requested_input_regions(required.port);
+                    selection.binding_regions[*slot].assign(regions.begin(), regions.end());
                 }
             }
         }
@@ -1113,6 +1109,85 @@ class BackgroundEvaluationTransaction::Impl {
         }
     }
 
+    struct Evaluation {
+        std::unique_ptr<BackgroundStorageRealization> realization{};
+        std::unique_ptr<BackgroundEvaluationCallFrame> frame{};
+    };
+
+    [[nodiscard]] std::shared_ptr<Evaluation> prepare_evaluation()
+    {
+        auto binding = binding_selection();
+        auto storage = storage_selection(binding, *working_data_);
+        expand_output_binding_selection(binding, storage);
+        auto realization = std::make_unique<BackgroundStorageRealization>(
+            graph_->background_evaluation_plan,
+            *data_,
+            std::move(storage),
+            graph_->root_operations.combine_sequential_input,
+            graph_->root_operations.initialize_sequential_input);
+        if (auto sealed = realization->seal(); !sealed) {
+            throw std::runtime_error(sealed.error());
+        }
+
+        auto frame = std::make_unique<BackgroundEvaluationCallFrame>(
+            graph_->background_evaluation_plan, *realization, *tock_states_, binding);
+        for (std::size_t node = 0; node < prepared_->node_activity().size();
+             ++node) {
+            frame->nodes()[node].activity = prepared_->node_activity()[node];
+        }
+        auto const& runtime = graph_->background_evaluation_plan.runtime;
+        for (graph_jit::BackgroundReplayInvocationSlot slot = 0;
+             slot < runtime.replay_invocations.size(); ++slot) {
+            IndexCoverage requested;
+            auto const& replay = runtime.replay_invocations[slot];
+            for (auto const binding_slot : replay.output_bindings) {
+                requested.include(binding.binding_coverage[binding_slot]);
+            }
+            if (requested.empty()) {
+                for (auto const binding_slot : replay.input_bindings) {
+                    requested.include(binding.binding_coverage[binding_slot]);
+                }
+            }
+            auto set = frame->set_replay_regions(
+                slot, replay_regions(requested, replay.maximum_block_size));
+            if (!set) throw std::runtime_error(set.error());
+        }
+        if (auto sealed = frame->seal(); !sealed) {
+            throw std::runtime_error(sealed.error());
+        }
+
+        return std::make_shared<Evaluation>(Evaluation{
+            .realization = std::move(realization), .frame = std::move(frame)});
+    }
+
+    static BackgroundDiscoveredInput materialize_discovery(void* opaque,
+        PreparedCoveragePropagation&& request, graph_jit::BackgroundPortIndex input)
+    {
+        auto& self = *static_cast<Impl*>(opaque);
+        // Recursive discovery uses separate reverse selections. Save only the
+        // active selection pointer/value; the selected data root stays fixed.
+        auto previous = std::move(self.prepared_);
+        self.prepared_.emplace(std::move(request));
+        try {
+            auto evaluation = self.prepare_evaluation();
+            self.graph_->background_operations.evaluate(&evaluation->frame->call());
+            if (auto complete = evaluation->frame->validate_evaluation(); !complete) {
+                throw std::runtime_error(complete.error());
+            }
+            BackgroundDiscoveredInput result{.owner = evaluation};
+            if (self.graph_->background_evaluation_plan.ports[input].kind == PortKind::sample) {
+                result.continuous = evaluation->frame->discovery_continuous_input(input);
+            } else {
+                result.events = evaluation->frame->discovery_event_input(input);
+            }
+            self.prepared_ = std::move(previous);
+            return result;
+        } catch (...) {
+            self.prepared_ = std::move(previous);
+            throw;
+        }
+    }
+
     [[nodiscard]] std::expected<BackgroundEvaluationResult, std::string> run()
     {
         if (executed_) {
@@ -1206,47 +1281,15 @@ class BackgroundEvaluationTransaction::Impl {
                                       .data = this,
                                       .expand_output = &expand_output_demand,
                                       .restrict_input = &restrict_input_demand,
+                                  },
+                                  BackgroundCoverageDiscovery{
+                                      .data = this,
+                                      .materialize = &materialize_discovery,
                                   }));
 
-        auto binding = binding_selection();
-        auto storage = storage_selection(binding, *working_data_);
-        expand_output_binding_selection(binding, storage);
-        auto realization = std::make_unique<BackgroundStorageRealization>(
-            graph_->background_evaluation_plan,
-            *data_,
-            std::move(storage),
-            graph_->root_operations.combine_sequential_input,
-            graph_->root_operations.initialize_sequential_input);
-        if (auto sealed = realization->seal(); !sealed) {
-            return std::unexpected(std::move(sealed.error()));
-        }
-
-        BackgroundEvaluationCallFrame frame{graph_->background_evaluation_plan,
-                                            *realization, *tock_states_, binding};
-        for (std::size_t node = 0; node < prepared_->node_activity().size();
-             ++node) {
-            frame.nodes()[node].activity = prepared_->node_activity()[node];
-        }
-        auto const& runtime = graph_->background_evaluation_plan.runtime;
-        for (graph_jit::BackgroundReplayInvocationSlot slot = 0;
-             slot < runtime.replay_invocations.size(); ++slot) {
-            IndexCoverage requested;
-            auto const& replay = runtime.replay_invocations[slot];
-            for (auto const binding_slot : replay.output_bindings) {
-                requested.include(binding.binding_coverage[binding_slot]);
-            }
-            if (requested.empty()) {
-                for (auto const binding_slot : replay.input_bindings) {
-                    requested.include(binding.binding_coverage[binding_slot]);
-                }
-            }
-            auto set = frame.set_replay_regions(
-                slot, replay_regions(requested, replay.maximum_block_size));
-            if (!set) return std::unexpected(std::move(set.error()));
-        }
-        if (auto sealed = frame.seal(); !sealed) {
-            return std::unexpected(std::move(sealed.error()));
-        }
+        auto evaluation = prepare_evaluation();
+        auto& realization = evaluation->realization;
+        auto& frame = *evaluation->frame;
 
         auto const& storage_selection = realization->selection();
         bool has_produced_data = false;

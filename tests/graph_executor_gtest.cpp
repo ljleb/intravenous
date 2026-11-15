@@ -3569,3 +3569,351 @@ TEST_F(
 }
 
 } // namespace
+
+TEST_F(BackgroundCoveragePropagationFixture,
+       RequestedInputRegionsStayIndependentOfExpandedProducerMaterialization)
+{
+    using namespace iv::graph_jit;
+    for (auto const kind : {iv::PortKind::sample, iv::PortKind::event}) {
+        auto plan = background_fanin_plan();
+        plan.connections.resize(1);
+        plan.ports[1].outgoing_connections.clear();
+        plan.ports[2].incoming_connections = {0};
+        for (auto& port : plan.ports) {
+            port.kind = kind;
+            port.configured_port.port_kind = kind;
+            if (kind == iv::PortKind::event) port.event_type = iv::EventTypeId::trigger;
+        }
+        if (kind == iv::PortKind::event) {
+            auto& connection = plan.connections[0];
+            connection.kind = kind;
+            connection.event_source_type = iv::EventTypeId::trigger;
+            connection.event_target_type = iv::EventTypeId::trigger;
+            connection.event_deliveries = {{
+                .source_type = iv::EventTypeId::trigger,
+                .source_port = BackgroundPortIndex{0},
+                .target_port = BackgroundPortIndex{2},
+                .semantic_source_index = 0,
+                .mechanism = PlannedDeliveryMechanism::tock_to_random_access,
+            }};
+        }
+        sorted_source_region_shapes = {{
+            {range(0, 10), range(0, 10), range(5, 15), range(20, 30)},
+            {},
+        }};
+        iv::BackgroundCoverageState coverage(plan.accumulators.output_change_count);
+        iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+        auto const operations = iv::CompiledGraphBackgroundOperations{
+            .propagate_forward = kind == iv::PortKind::event
+                ? &propagate_sorted_source_event_regions : &propagate_sorted_source_regions,
+            .propagate_reverse = &no_op_background_evaluate,
+            .evaluate = &no_op_background_evaluate,
+        };
+        auto prepared = workspace.prepare(operations, coverage, {
+            .locally_changed_nodes = {0, 1},
+            .input_demands = {{.port = 2, .required = index_coverage({{0, 1}})}},
+        });
+        ASSERT_EQ(prepared.result().input_requirements.size(), 1u);
+        EXPECT_EQ(prepared.result().input_requirements[0].required, index_coverage({{0, 10}}));
+        EXPECT_EQ(std::vector<iv::GlobalIndexRange>(prepared.requested_input_regions(2).begin(),
+            prepared.requested_input_regions(2).end()),
+            (std::vector<iv::GlobalIndexRange>{range(0, 10), range(0, 10)}));
+        // Producer completion also selects its overlapping [5,15) Region. It
+        // must not appear in the consumer's independent resolved selection.
+        auto const producer = std::ranges::find(prepared.result().output_requirements,
+            BackgroundPortIndex{0}, &iv::RequiredOutputCoverage::port);
+        ASSERT_NE(producer, prepared.result().output_requirements.end());
+        EXPECT_EQ(producer->required, index_coverage({{0, 15}}));
+        (void)workspace.commit(coverage, std::move(prepared));
+
+        auto retained = workspace.prepare(operations, coverage, {
+            .input_demands = {{.port = 2, .required = index_coverage({{20, 21}})}},
+        });
+        EXPECT_EQ(std::vector<iv::GlobalIndexRange>(retained.requested_input_regions(2).begin(),
+            retained.requested_input_regions(2).end()),
+            (std::vector<iv::GlobalIndexRange>{range(20, 30)}));
+        workspace.discard(std::move(retained));
+        auto empty = workspace.prepare(operations, coverage, {});
+        EXPECT_TRUE(empty.requested_input_regions(2).empty());
+        EXPECT_TRUE(empty.result().input_requirements.empty());
+        workspace.discard(std::move(empty));
+    }
+}
+
+namespace {
+
+iv::CoverageTask discover_event_control(
+    iv::ReflectedNodeForwardCoverageContext& context)
+{
+    auto const metadata_id = context.planning.request_input(
+        true, 0, iv::CoverageInformation::coverage);
+    auto const& metadata = co_await iv::CoverageRequest<iv::CoverageInputInfo>{
+        context.planning.access, metadata_id};
+    if (metadata.coverage.empty()) {
+        auto outputs = static_cast<std::span<iv::OutputCoverageChange>>(context.event_outputs);
+        outputs[0].publish_regions({});
+        co_return;
+    }
+    auto positions = index_coverage({{10, 11}});
+    auto const contents_id = context.planning.request_input(
+        true, 0, iv::CoverageInformation::contents, &positions);
+    auto const& input = co_await iv::CoverageRequest<iv::RandomAccessEventInputPort>{
+        context.planning.access, contents_id};
+    bool active = false;
+    for (std::size_t region = 0; region < input.region_count; ++region) {
+        input.for_each(region, input.regions()[region], [&](iv::TimedEvent const& event) {
+            active = std::get<iv::SampleEvent>(event.value).value.value > 0.0f;
+        });
+    }
+    auto outputs = static_cast<std::span<iv::OutputCoverageChange>>(context.event_outputs);
+    auto regions = active ? std::vector{range(100, 104)} : std::vector<iv::GlobalIndexRange>{};
+    outputs[0].publish_regions(regions);
+    outputs[0].change(index_coverage({{100, 104}}));
+}
+
+void propagate_discovery_forward(iv::graph_jit::BackgroundEvaluationCall* call)
+{
+    auto nodes = static_cast<std::span<iv::graph_jit::BackgroundNodeCall>>(call->nodes);
+    for (std::size_t node = 0; node < nodes.size(); ++node) {
+        auto& frame = nodes[node];
+        if (!iv::graph_jit::has_activity(frame.activity,
+                iv::graph_jit::BackgroundNodeActivity::forward)) continue;
+        if (node == 0) {
+            auto outputs = static_cast<std::span<iv::OutputCoverageChange>>(frame.forward.event_outputs);
+            std::array regions{range(0, 4), range(10, 14)};
+            outputs[0].publish_regions(regions);
+            outputs[0].change(index_coverage({{0, 4}, {10, 14}}));
+            frame.forward.planning.finish();
+        } else if (node == 2) {
+            auto context = std::make_unique<iv::ReflectedNodeForwardCoverageContext>(frame.forward);
+            auto task = discover_event_control(*context);
+            task.own_context(context.release());
+            frame.forward.planning.submit(std::move(task));
+        }
+    }
+}
+
+void propagate_discovery_reverse(iv::graph_jit::BackgroundEvaluationCall* call)
+{
+    auto nodes = static_cast<std::span<iv::graph_jit::BackgroundNodeCall>>(call->nodes);
+    if (iv::graph_jit::has_activity(nodes[2].activity,
+            iv::graph_jit::BackgroundNodeActivity::reverse)) {
+        auto inputs = static_cast<std::span<iv::InputCoverageRequirement>>(nodes[2].reverse.event_inputs);
+        inputs[0].require(range(0, 1));
+        nodes[2].reverse.planning.finish();
+    }
+}
+
+struct DiscoveryEvents {
+    iv::IndexCoverage coverage{};
+    std::vector<iv::GlobalIndexRange> regions{};
+    iv::TimedEvent event{};
+};
+
+TEST_F(BackgroundCoveragePropagationFixture,
+       ContentDiscoveryDoesNotWidenFinalTockInputsAndInvalidatesOnAnInputEdit)
+{
+    using namespace iv::graph_jit;
+    auto plan = background_fanin_plan();
+    plan.connections.resize(1);
+    plan.ports[1].outgoing_connections.clear();
+    plan.ports[2].incoming_connections = {0};
+    for (auto& port : plan.ports) {
+        port.kind = iv::PortKind::event;
+        port.configured_port.port_kind = iv::PortKind::event;
+        port.event_type = iv::EventTypeId::sample;
+    }
+    auto& connection = plan.connections[0];
+    connection.kind = iv::PortKind::event;
+    connection.event_deliveries = {{
+        .source_type = iv::EventTypeId::sample,
+        .source_port = BackgroundPortIndex{0},
+        .target_port = BackgroundPortIndex{2},
+        .semantic_source_index = 0,
+        .mechanism = PlannedDeliveryMechanism::tock_to_random_access,
+    }};
+    iv::BackgroundCoverageState coverage(plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace{plan, 48000};
+    iv::CompiledGraphBackgroundOperations operations{
+        .propagate_forward = &propagate_discovery_forward,
+        .propagate_reverse = &propagate_discovery_reverse,
+        .evaluate = &no_op_background_evaluate,
+    };
+    float selected_value = 1.0f;
+    iv::BackgroundCoverageDiscovery discovery{
+        .data = &selected_value,
+        .materialize = +[](void* opaque, iv::PreparedCoveragePropagation&& prepared,
+            BackgroundPortIndex input) {
+            EXPECT_EQ(input, 2u);
+            auto selected = prepared.requested_input_regions(input);
+            EXPECT_EQ(std::vector(selected.begin(), selected.end()),
+                (std::vector{range(10, 14)}));
+            EXPECT_FALSE(has_activity(prepared.node_activity()[2], BackgroundNodeActivity::evaluate));
+            auto events = std::make_shared<DiscoveryEvents>();
+            events->regions.assign(selected.begin(), selected.end());
+            for (auto region : selected) events->coverage.include(region);
+            events->event = {.time = index(10),
+                .value = iv::SampleEvent{iv::Sample{*static_cast<float*>(opaque)}}};
+            return iv::BackgroundDiscoveredInput{
+                .owner = events,
+                .events = {
+                    .data = events.get(), .region_ranges = events->regions.data(),
+                    .region_count = events->regions.size(), .coverage_value = &events->coverage,
+                    .for_each_event = +[](void const* opaque, std::size_t,
+                        iv::GlobalIndexRange requested, void* target,
+                        iv::RandomAccessEventInputPort::VisitEvent visit) {
+                        auto const& events = *static_cast<DiscoveryEvents const*>(opaque);
+                        if (requested.contains(events.event.time)) visit(target, events.event);
+                    },
+                },
+            };
+        },
+    };
+    iv::CoveragePropagationRequest request{
+        .locally_changed_nodes = {0},
+        .output_demands = {{.port = 3, .required = index_coverage({{100, 101}})}},
+    };
+    auto first = workspace.prepare(operations, coverage, request, {}, discovery);
+    EXPECT_EQ(std::vector(first.requested_input_regions(2).begin(),
+        first.requested_input_regions(2).end()), (std::vector{range(0, 4)}));
+    EXPECT_TRUE(std::ranges::any_of(first.read_dependencies(), [](auto const& dependency) {
+        return dependency.node == 2 && !dependency.reverse && dependency.input == 2
+            && dependency.information == iv::CoverageInformation::contents
+            && dependency.positions == index_coverage({{10, 11}});
+    }));
+    EXPECT_EQ(first.result().output_changes.back().coverage, index_coverage({{100, 104}}));
+    (void)workspace.commit(coverage, std::move(first));
+
+    // Same input Region ranges, different contents. Successful discovery reads
+    // remain semantic dependencies even though their old waits are gone.
+    selected_value = 0.0f;
+    auto second = workspace.prepare(operations, coverage, request, {}, discovery);
+    auto output = std::ranges::find(second.result().output_changes, BackgroundPortIndex{3},
+        &iv::PropagatedOutputChange::port);
+    ASSERT_NE(output, second.result().output_changes.end());
+    EXPECT_TRUE(output->coverage.empty());
+    EXPECT_TRUE(second.requested_input_regions(2).empty());
+    workspace.discard(std::move(second));
+}
+
+} // namespace
+
+namespace {
+
+iv::CoverageTask discover_sample_output(iv::ReflectedNodeForwardCoverageContext& context)
+{
+    auto const metadata_id = context.planning.request_input(false, 0, iv::CoverageInformation::coverage);
+    auto const& metadata = co_await iv::CoverageRequest<iv::CoverageInputInfo>{
+        context.planning.access, metadata_id};
+    auto const data_id = context.planning.request_input(false, 0,
+        iv::CoverageInformation::contents, &metadata.coverage);
+    auto const& input = co_await iv::CoverageRequest<iv::RandomAccessContinuousInputPort>{
+        context.planning.access, data_id};
+    auto region = iv::ContinuousRegion<iv::Sample>{input.region_views()[0]};
+    auto const value = static_cast<std::int64_t>(region.at(index(10)).value);
+    std::array regions{range(value, value + 4)};
+    auto outputs = static_cast<std::span<iv::OutputCoverageChange>>(context.outputs);
+    outputs[0].publish_regions(regions);
+}
+
+void propagate_sample_discovery(iv::graph_jit::BackgroundEvaluationCall* call)
+{
+    auto nodes = static_cast<std::span<iv::graph_jit::BackgroundNodeCall>>(call->nodes);
+    for (std::size_t node = 0; node < nodes.size(); ++node) {
+        auto& frame = nodes[node];
+        if (!iv::graph_jit::has_activity(frame.activity,
+                iv::graph_jit::BackgroundNodeActivity::forward)) continue;
+        if (node == 0) {
+            auto outputs = static_cast<std::span<iv::OutputCoverageChange>>(frame.forward.outputs);
+            std::array regions{range(10, 14)};
+            outputs[0].publish_regions(regions);
+            frame.forward.planning.finish();
+        } else {
+            auto context = std::make_unique<iv::ReflectedNodeForwardCoverageContext>(frame.forward);
+            auto task = discover_sample_output(*context);
+            task.own_context(context.release());
+            frame.forward.planning.submit(std::move(task));
+        }
+    }
+}
+
+void reverse_sample_discovery(iv::graph_jit::BackgroundEvaluationCall* call)
+{
+    auto nodes = static_cast<std::span<iv::graph_jit::BackgroundNodeCall>>(call->nodes);
+    if (!iv::graph_jit::has_activity(nodes[1].activity,
+            iv::graph_jit::BackgroundNodeActivity::reverse)) return;
+    auto inputs = static_cast<std::span<iv::InputCoverageRequirement>>(nodes[1].reverse.inputs);
+    inputs[0].require(range(10, 11));
+    nodes[1].reverse.planning.finish();
+}
+
+TEST_F(GraphExecutorFixture, ForwardDiscoveryRunsOrdinaryTockInsideTheSelectedTransaction)
+{
+    using namespace iv::graph_jit;
+    auto graph = ephemeral_tock_graph();
+    auto& plan = graph.background_evaluation_plan;
+    plan.nodes.push_back({.bundle = 1, .tock_state_node = 1,
+        .authored_tock_execution = true, .inputs = {1}, .outputs = {2},
+        .accumulators = {.input_change_count = 1, .output_change_begin = 1,
+            .output_change_count = 1, .output_requirement_begin = 1,
+            .output_requirement_count = 1, .input_requirement_count = 1}});
+    graph.tock_state_layout.nodes.emplace_back();
+    auto source = plan.ports[0];
+    plan.ports[0].outgoing_connections = {0};
+    auto input = source;
+    input.node = 1;
+    input.configured_port = {1, iv::PortKind::sample, 0};
+    input.direction = PortDirection::input;
+    input.input_access = iv::InputAccessKind::coverage;
+    input.random_access_input = true;
+    input.authored_tock_output = false;
+    input.retention.reset();
+    input.incoming_connections = {0};
+    input.accumulators = {.input_change = 0, .input_requirement = 0};
+    plan.ports.push_back(input);
+    auto output = source;
+    output.node = 1;
+    output.configured_port = {1, iv::PortKind::sample, 0};
+    output.accumulators = {.output_change = 1, .output_requirement = 1};
+    plan.ports.push_back(output);
+    plan.connections = {{.kind = iv::PortKind::sample,
+        .source_coverage_ports = {0}, .target_coverage_ports = {1}}};
+    plan.sample_target_subsets = {{.port = input.configured_port,
+        .target_layout = input.sample_layout, .geometry = input.continuous_geometry,
+        .access = PlannedDestinationAccess::random_access,
+        .channels = {{.bundle = 1, .port = 0, .channel = 0}}}};
+    plan.storage.ports[0].target_subsets = {0};
+    auto destination_storage = plan.storage.ports[0];
+    destination_storage.source_port = output.configured_port;
+    destination_storage.output_port = 2;
+    destination_storage.target_subsets.clear();
+    plan.storage.ports.push_back(destination_storage);
+    plan.runtime.bindings.push_back({.node = 1, .port = 1,
+        .kind = iv::PortKind::sample, .direction = PortDirection::input, .storage = {0}});
+    plan.runtime.bindings.push_back({.node = 1, .port = 2,
+        .kind = iv::PortKind::sample, .direction = PortDirection::output, .storage = {1}});
+    plan.runtime.port_bindings = {0, 1, 2};
+    plan.runtime.node_operations.resize(2);
+    plan.runtime.node_replay_invocations.resize(2);
+    plan.accumulators = {.input_change_count = 1, .output_change_count = 2,
+        .output_requirement_count = 2, .input_requirement_count = 1};
+    graph.background_operations = {.propagate_forward = &propagate_sample_discovery,
+        .propagate_reverse = &reverse_sample_discovery, .evaluate = &evaluate_persisted_probe};
+    auto states = initialize_tock_states(graph);
+    iv::BackgroundCoverageState coverage{2};
+    iv::BackgroundPropagationWorkspace propagation{plan, 48000};
+    iv::PersistedDataStore data;
+    iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data,
+        {.roots = {.locally_changed_nodes = {0},
+            .output_demands = {{.port = 2, .required = index_coverage({{110, 111}})}}}}};
+    auto result = transaction.execute();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
+    auto output_change = std::ranges::find(result->coverage.output_changes, BackgroundPortIndex{2},
+        &iv::PropagatedOutputChange::port);
+    ASSERT_NE(output_change, result->coverage.output_changes.end());
+    EXPECT_EQ(output_change->coverage, index_coverage({{110, 114}}));
+    EXPECT_EQ(persisted_probe_evaluate_calls, 3u);
+}
+
+} // namespace

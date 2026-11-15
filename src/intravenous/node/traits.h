@@ -1,4 +1,5 @@
 #pragma once
+#include <intravenous/node/coverage_task.h>
 
 #include <intravenous/ports.h>
 
@@ -343,11 +344,19 @@ namespace iv {
             { Node::tock_coverage_batch(context) } -> std::same_as<void>;
         };
 
+        template<class Result>
+        concept coverage_callback_result = std::same_as<Result, void> || std::same_as<Result, CoverageTask>;
+
         template<typename Node>
         concept has_propagate_forward_coverage = requires(Node const& node) {
             { node.propagate_forward_coverage(
                 std::declval<PropagateForwardCoverageContext<Node>&>()) }
-                -> std::same_as<void>;
+                -> coverage_callback_result;
+        };
+
+        template<typename Node>
+        concept has_suspendable_forward_coverage = requires(Node const& node, PropagateForwardCoverageContext<Node>& context) {
+            { node.propagate_forward_coverage(context) } -> std::same_as<CoverageTask>;
         };
 
         template<typename Node>
@@ -361,7 +370,12 @@ namespace iv {
         concept has_propagate_reverse_coverage = requires(Node const& node) {
             { node.propagate_reverse_coverage(
                 std::declval<PropagateReverseCoverageContext<Node>&>()) }
-                -> std::same_as<void>;
+                -> coverage_callback_result;
+        };
+
+        template<typename Node>
+        concept has_suspendable_reverse_coverage = requires(Node const& node, PropagateReverseCoverageContext<Node>& context) {
+            { node.propagate_reverse_coverage(context) } -> std::same_as<CoverageTask>;
         };
 
         template<typename Node>

@@ -28,6 +28,13 @@ conversion, not a replacement for the exact index.
 No built-in tempo map is required for this contract. The interpretation and
 display of beats remain a separate presentation question.
 
+**Later macro integration (not an implementation change):** when graph macros
+are implemented, they should be able to read and command the session playhead,
+seek, and playback state through the appropriate transport boundary. Seeking
+or navigating a viewport is not a persistent project graph edit and should not
+create a project undo entry merely because a macro requested it. See
+[Module Interoperability And Graph Macros](./module_interoperability_and_graph_macros_direction.md).
+
 ## Playback and continuous Tick execution
 
 Playback has running and paused states. While running, the project playhead

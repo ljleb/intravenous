@@ -6,9 +6,13 @@
 > [Cyclic Automation, Event Projections, And Suspendable Coverage Propagation](./automation_and_suspendable_coverage_direction.md)
 > replaces the previous value-blind, single-visit forward/reverse planning rule.
 > Both propagation directions remain, but may suspend on explicitly requested
-> input information. `tock_coverage()` receives **requested-only** input
-> Region/Coverage views, not all available or cached input positions. The
-> superseded sections are retained [historically](./historical/coverage_before_suspendable_propagation_2026-11-15.md).
+> input information. `tock_coverage()` receives **explicitly selected,
+> complete input Regions**, never arbitrary cached Regions; the positional
+> `coverage()` convenience is their union, not the narrow reverse requirement.
+> The superseded propagation sections are retained
+> [historically](./historical/coverage_before_suspendable_propagation_2026-11-15.md),
+> and the superseded Tock binding wording is preserved
+> [here](./historical/tock_binding_before_explicit_selection_2026-11-15.md).
 > Checked-in source continues to describe the earlier execution model until
 > the migration is implemented.
 
@@ -72,7 +76,7 @@ The central rules are:
 > contracts. `SequentialInputConfig` declares a bounded sequential read window;
 > `RegionInputConfig` declares one finite ordered region; and
 > `CoverageInputConfig` declares arbitrary reads within the exact bound coverage
-> (selected requested Regions during Tock evaluation).
+> (explicitly selected full Regions during Tock evaluation).
 > `TickOutputConfig` selects sequential production by the existing generated
 > `tick_block()` implementation; `RegionOutputConfig` and `CoverageOutputConfig`
 > select demand-driven production by the appropriate Tock callback. Any output may be
@@ -225,9 +229,10 @@ A random-access input's **intrinsic available** coverage is the canonical union
 of the mapped, available coverages of its connected sources, including tock
 outputs, finalized published persisted tick outputs, and contextually replayable
 tick outputs. `tick_block()` may inspect its selected prepared available view;
-`tock_coverage()` inspects instead the exact **requested-and-covered** input
-view prepared for that evaluation, which never exposes unrelated available
-positions. The
+`tock_coverage()` inspects instead the complete input Region views
+explicitly selected by reverse planning and Region closure. Those Region
+views may contain more positions than the narrow reverse requirement, but
+never include unrelated cached Regions. The
 replayable `tick()` subset may itself have random-access inputs; those inputs must be
 available through the immutable prepared view selected for the live/replay invocation.
 An ordinary unretained, unreproducible tick stream has no arbitrary historical coverage.
@@ -600,31 +605,32 @@ requirements are intersected with exact input availability before evaluation.
 invocations: every lane has its own exact output request, input requirements,
 bindings and Tock `State`.
 
-**Requested-only input invariant:** for every `RegionInputConfig` and
-`CoverageInputConfig` bound to a `tock_coverage()` invocation (or an individual
-`_batch()` lane), node-facing Region enumeration, positional `coverage()`,
-accessible data and event iteration describe exactly the **selected covered
-logical input Regions** explicitly requested by reverse planning. The request
-is normalized to complete logical Regions before binding: no cropped Region
-is substituted for a selected source Region, and a Region input still receives
-one contiguous Region. The source's wider output coverage, a persisted
-snapshot's additional Regions, a cached upstream materialization, or unused
-discovery reads from a propagation coroutine do not widen the selection. A
-node may explicitly reverse-require a full finite input Region, in which case
-seeing it is intentional. Event Regions may be complete while containing
-zero events. Reads of unselected Regions are invalid even if the addresses
-happen to be backed by retained storage.
+**Explicit input selection invariant:** for every `RegionInputConfig`
+and `CoverageInputConfig` bound to Tock, the readable `region()`/`regions()`
+contains exactly the complete input Regions deliberately selected by the
+reverse planner and Region closure, not extra cached Regions. The input's
+`coverage()` convenience (where supported) is the positional union of those
+selected Regions, **not** the possibly smaller reverse-required positional
+set. Overlapping and duplicate Regions remain separate, and a selected event
+Region may legitimately contain zero events. Accessing unselected Regions is
+invalid despite their presence in retained storage. Planning-only discovery
+reads do not enlarge this finalized input selection.
 
-Thus, at fixed semantic/data versions and authored configuration, two Tock
-calls with the same selected logical input/output Region requests see equivalent
-inputs and produce the same observable result regardless of other positions
-previously materialized. This also holds for each batch lane independently. Batching
-several demand roots can union their **explicit** requested regions before a
-single callback; there is no promise that two different requests present
-identical views.
+Thus, at fixed semantic/data versions and authored configuration,
+cache history cannot alter selected callback-visible input Regions or computed
+results. Compatible demand roots can be coalesced before invocation, so
+different demands may select different Region collections; nevertheless any
+overlapping output positions must have equivalent computed results, independent
+of demand grouping. This also holds for each batch lane independently.
+The ordinary evaluator does not need an input `required_coverage()` or
+upstream-wide `produced_coverage()` accessor: requirements belong to reverse
+planning; readable input `regions()` and selected writable output `regions()`
+provide the semantic evaluation bounds. See
+[section 6 of the automation/propagation direction](./automation_and_suspendable_coverage_direction.md#6-tock-input-and-output-views)
+for examples and the distinction from the current source binding.
 
-The callback can inspect the selected sample rate and the requested input
-views, but cannot read mutable/unavailable live Tick data or depend on
+The callback can inspect the selected sample rate and the explicitly
+provided input Region views, but cannot read mutable/unavailable live Tick data or depend on
 Tick-owned `State`. Tock-owned `State` is solely non-semantic acceleration:
 it cannot affect values, coverage, input requirements or output Region lists.
 Successful sample completion initializes every demanded covered sample/channel;
@@ -667,7 +673,7 @@ The ordinary `tock_coverage()` and replay evaluation operations are invoked
 with their selected prepared requests. The scheduler may preserve efficient
 single-invocation/coalesced evaluation when dependencies allow it. A hard
 single-visit rule does not constrain **planning**, and scratch/storage decisions
-must not leak additional requested input coverage to the evaluation callback.
+must not leak unrelated cached or exploratory input Regions into evaluation.
 
 ## 12. Readiness-driven propagation and batching
 
@@ -1875,8 +1881,10 @@ segmented ordered iterator/range rather than requiring contiguous storage. The
 iterator preserves global timestamp/source/local order and never exposes or
 requests outside input coverage.
 
-Random-access accessors expose exact bound input coverage: requested-and-covered
-for Tock evaluation, and the selected prepared view for replay/Tick. Debug validation catches
+Random-access accessors expose the selected input view for the invocation:
+Tock receives complete explicitly provided Regions, and replay/Tick receives
+its selected prepared view. In the intended Tock API, `coverage()` is the union
+of the provided Regions, not a separate reverse-demand mask. Debug validation catches
 requests outside coverage. A `tock_coverage()` accessor reads Random Access inputs from the selected immutable
 transaction view, which may include canonical persisted data regardless of Tick/Tock
 provenance, background-replayed Tick values, transaction-local Tock/replay
@@ -2081,7 +2089,7 @@ implementation; stale-data-as-is/missing-position-per-input-neutral Sequential p
 subset-first storage requirement inference before storage coalescing; no persisted
 data eviction except loss of covered positions; exact output coverage and sound
 conservative forward invalidation; suspendable value-dependent forward/reverse
-planning when needed; requested-only Tock Region/Coverage input views; fixed
+planning when needed; explicitly selected full Tock input Region views; fixed
 capture-prefix transactions; callback-boundary-safe
 capture-block reuse; transaction-wide coverage/data/frontier commit; compiler-owned
 materialization scheduling; narrow transaction-local generated-root hooks with no

@@ -836,33 +836,39 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                                            "has no complete route");
                 }
             }
+            std::vector<std::pair<std::span<ContinuousRegionStorageView const>, std::size_t>> visited_region_views;
             for (auto const& route : adapter->sample_reads) {
                 if (route.view.geometry != port.continuous_geometry
                     || route.view.layout != port.sample_layout) {
                     continue;
                 }
+                // Several channel routes can share one source view. Visit it
+                // once, while retaining duplicate logical entries inside it,
+                // even if those entries alias the same immutable bytes.
+                if (std::ranges::any_of(visited_region_views, [&](auto const& visited) {
+                    return visited.first.data() == route.view.regions.data()
+                        && visited.first.size() == route.view.regions.size()
+                        && visited.second == route.read_latency;
+                })) continue;
+                visited_region_views.emplace_back(route.view.regions, route.read_latency);
                 for (auto const& source : route.view.regions) {
                     auto region = source;
                     region.range.begin =
                         region.range.begin.advanced_by(route.read_latency);
                     if ((IndexCoverage{region.range} & *adapter->coverage).empty())
                         continue;
-                    auto const duplicate = std::ranges::any_of(
-                        adapter->sample_input_regions,
-                        [&](ContinuousRegionStorageView const& existing) {
-                            return existing.storage == region.storage
-                                && existing.range == region.range;
-                        });
-                    if (!duplicate) {
-                        adapter->sample_input_regions.push_back(region);
-                    }
+                    adapter->sample_input_regions.push_back(region);
                 }
             }
             auto const expected_regions = selection_.binding_regions.empty()
                 ? std::span<GlobalIndexRange const>{}
                 : std::span<GlobalIndexRange const>{
                     selection_.binding_regions[slot]};
-            if (!expected_regions.empty()) {
+            if (!selection_.binding_regions.empty()) {
+                IndexCoverage selected;
+                for (auto const region : expected_regions) selected.include(region);
+                if (selected != *adapter->coverage) return std::unexpected(
+                    "background continuous input coverage differs from its requested Regions");
                 auto regions = adapter->sample_input_regions;
                 std::vector<bool> used(regions.size(), false);
                 adapter->sample_input_regions.clear();
@@ -882,10 +888,6 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                     used[found] = true;
                     adapter->sample_input_regions.push_back(regions[found]);
                 }
-                if (std::ranges::contains(used, false)) {
-                    return std::unexpected(
-                        "background continuous input has storage outside its propagated Region list");
-                }
             } else if (port.ordering == CoverageOrdering::sorted) {
                 std::stable_sort(
                     adapter->sample_input_regions.begin(),
@@ -898,6 +900,12 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                         return SignedGlobalIndexOrder{}(
                             left.range.begin, right.range.begin);
                     });
+            }
+            if (port.random_access_input) {
+                IndexCoverage visible;
+                for (auto const& region : adapter->sample_input_regions) visible.include(region.range);
+                if (visible != *adapter->coverage) return std::unexpected(
+                    "background continuous input request was not normalized to whole Regions");
             }
             if (!adapter->coverage->empty()
                 && port.input_access == InputAccessKind::region
@@ -1025,7 +1033,11 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                 ? std::span<GlobalIndexRange const>{}
                 : std::span<GlobalIndexRange const>{
                     selection_.binding_regions[slot]};
-            if (!expected_regions.empty()) {
+            if (!selection_.binding_regions.empty()) {
+                IndexCoverage selected;
+                for (auto const region : expected_regions) selected.include(region);
+                if (selected != *adapter->coverage) return std::unexpected(
+                    "background event input coverage differs from its requested Regions");
                 auto routes = adapter->event_input_regions;
                 auto ranges = adapter->event_input_ranges;
                 std::vector<bool> used(ranges.size(), false);
@@ -1047,10 +1059,6 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                     adapter->event_input_regions.push_back(routes[found]);
                     adapter->event_input_ranges.push_back(ranges[found]);
                 }
-                if (std::ranges::contains(used, false)) {
-                    return std::unexpected(
-                        "background event input has storage outside its propagated Region list");
-                }
             } else if (port.ordering == CoverageOrdering::sorted) {
                 std::vector<std::size_t> order(
                     adapter->event_input_ranges.size());
@@ -1068,6 +1076,12 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                     adapter->event_input_regions[index] = routes[order[index]];
                     adapter->event_input_ranges[index] = ranges[order[index]];
                 }
+            }
+            if (port.random_access_input) {
+                IndexCoverage visible;
+                for (auto const region : adapter->event_input_ranges) visible.include(region);
+                if (visible != *adapter->coverage) return std::unexpected(
+                    "background event input request was not normalized to whole Regions");
             }
             if (!adapter->coverage->empty()
                 && port.input_access == InputAccessKind::region
@@ -1419,6 +1433,38 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
     call_.nodes = nodes_;
     sealed_ = true;
     return {};
+}
+
+RandomAccessContinuousInputPort BackgroundEvaluationCallFrame::discovery_continuous_input(
+    graph_jit::BackgroundPortIndex input) const
+{
+    if (!sealed_ || input >= plan_->ports.size()
+        || plan_->ports[input].direction != graph_jit::PortDirection::input
+        || plan_->ports[input].kind != PortKind::sample
+        || !plan_->runtime.port_bindings[input]) {
+        throw std::invalid_argument("continuous discovery input has no sealed binding");
+    }
+    auto const& adapter = *binding_adapters_[*plan_->runtime.port_bindings[input]];
+    return {.regions = adapter.sample_input_regions.data(),
+        .region_count = adapter.sample_input_regions.size(),
+        .coverage_value = adapter.coverage,
+        .geometry = plan_->ports[input].continuous_geometry};
+}
+
+RandomAccessEventInputPort BackgroundEvaluationCallFrame::discovery_event_input(
+    graph_jit::BackgroundPortIndex input) const
+{
+    if (!sealed_ || input >= plan_->ports.size()
+        || plan_->ports[input].direction != graph_jit::PortDirection::input
+        || plan_->ports[input].kind != PortKind::event
+        || !plan_->runtime.port_bindings[input]) {
+        throw std::invalid_argument("event discovery input has no sealed binding");
+    }
+    auto const* adapter = binding_adapters_[*plan_->runtime.port_bindings[input]].get();
+    return {.data = adapter, .region_ranges = adapter->event_input_ranges.data(),
+        .region_count = adapter->event_input_ranges.size(), .coverage_value = adapter->coverage,
+        .for_each_event = &BindingAdapter::for_each_event_region,
+        .find_neighbors = &BindingAdapter::event_neighbors};
 }
 
 std::expected<void, std::string>

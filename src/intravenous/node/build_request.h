@@ -818,6 +818,7 @@ IV_FORCEINLINE void propagate_node_forward_coverage(
         .event_outputs = reflected.event_outputs,
         .local_state_changed = reflected.local_state_changed,
         .sample_rate = reflected.sample_rate,
+        .planning = reflected.planning,
     };
     do_propagate_forward_coverage(node, context);
 }
@@ -846,6 +847,7 @@ IV_FORCEINLINE void propagate_node_forward_coverage_batch(
             .event_outputs = lane.context.event_outputs,
             .local_state_changed = lane.context.local_state_changed,
             .sample_rate = lane.context.sample_rate,
+            .planning = lane.context.planning,
         });
         std::construct_at(bindings + i, Binding{
             .node = static_cast<Node const*>(lane.node_data),
@@ -871,6 +873,7 @@ IV_FORCEINLINE void propagate_node_reverse_coverage(
         .event_inputs = reflected.event_inputs,
         .event_outputs = reflected.event_outputs,
         .sample_rate = reflected.sample_rate,
+        .planning = reflected.planning,
     };
     do_propagate_reverse_coverage(node, context);
 }
@@ -898,6 +901,7 @@ IV_FORCEINLINE void propagate_node_reverse_coverage_batch(
             .event_inputs = lane.context.event_inputs,
             .event_outputs = lane.context.event_outputs,
             .sample_rate = lane.context.sample_rate,
+            .planning = lane.context.planning,
         });
         std::construct_at(bindings + i, Binding{
             .node = static_cast<Node const*>(lane.node_data),

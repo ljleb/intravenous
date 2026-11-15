@@ -2277,7 +2277,7 @@ TEST(BackgroundEvaluationCallFrame, OwnsOperationFramesAndTockBindings)
 }
 
 TEST(BackgroundEvaluationCallFrame,
-     SortedCoveragePreservesTheOrderOfExactDuplicateRegions)
+     RequestedCoveragePreservesDuplicatesAndHidesUnselectedStoredRegions)
 {
     auto const selected = range(10, 12);
     auto const geometry = *iv::continuous_value_storage_geometry(
@@ -2346,18 +2346,31 @@ TEST(BackgroundEvaluationCallFrame,
             .geometry = geometry,
             .channel_layout = iv::mono_planar_channel_layout,
         },
+        iv::ContinuousRegionStorageView{
+            .storage = reinterpret_cast<std::byte*>(second_values.data()),
+            .range = range(11, 13),
+            .geometry = geometry,
+            .channel_layout = iv::mono_planar_channel_layout,
+        },
+        iv::ContinuousRegionStorageView{
+            .storage = reinterpret_cast<std::byte*>(first_values.data()),
+            .range = selected,
+            .geometry = geometry,
+            .channel_layout = iv::mono_planar_channel_layout,
+        },
     };
     iv::IndexCoverage const coverage{selected};
+    iv::IndexCoverage const stored_coverage{range(10, 13)};
     std::array<std::size_t, 1> channels{0};
     iv::PersistedDataStore data;
     iv::BackgroundStorageRealization realization{
         plan,
         data,
         {
-            .storage_coverage = {coverage},
+            .storage_coverage = {stored_coverage},
         }};
     realization.bind_sample(0, {
-        .coverage_value = &coverage,
+        .coverage_value = &stored_coverage,
         .regions = regions,
         .geometry = geometry,
         .layout = iv::mono_planar_channel_layout,
@@ -2376,18 +2389,30 @@ TEST(BackgroundEvaluationCallFrame,
         tock_states,
         {
             .binding_coverage = {coverage},
+            .binding_regions = {{selected, selected, selected}},
             .sample_rate = 48000,
         }};
     ASSERT_TRUE(frame.seal().has_value());
-    auto const views = frame.nodes().front().tock.inputs.data()[0]
-        .region_views();
-    ASSERT_EQ(views.size(), 2u);
+    auto const& input = frame.nodes().front().tock.inputs.data()[0];
+    EXPECT_EQ(input.coverage(), coverage);
+    auto const views = input.region_views();
+    ASSERT_EQ(views.size(), 3u);
     EXPECT_FLOAT_EQ(
         iv::ContinuousRegion<iv::Sample>{views[0]}.value(0).value,
         1.0f);
     EXPECT_FLOAT_EQ(
         iv::ContinuousRegion<iv::Sample>{views[1]}.value(0).value,
         3.0f);
+    EXPECT_FLOAT_EQ(iv::ContinuousRegion<iv::Sample>{views[2]}.value(0).value, 1.0f);
+
+    iv::BackgroundEvaluationCallFrame empty_frame{plan, realization, tock_states, {
+        .binding_coverage = {iv::IndexCoverage{}},
+        .binding_regions = {{}},
+    }};
+    ASSERT_TRUE(empty_frame.seal().has_value());
+    auto const& empty_input = empty_frame.nodes().front().tock.inputs.data()[0];
+    EXPECT_TRUE(empty_input.coverage().empty());
+    EXPECT_TRUE(empty_input.region_views().empty());
 }
 
 TEST(BackgroundEvaluationCallFrame,
@@ -2808,3 +2833,83 @@ TEST(
 }
 
 } // namespace
+
+TEST(BackgroundEvaluationCallFrame, RequestedEventRegionsHideExtraStoredEventsAndKeepEmptyRegions)
+{
+    using namespace iv::graph_jit;
+    auto const selected = range(0, 10);
+    struct External {
+        iv::IndexCoverage coverage{range(0, 15)};
+        std::array<iv::GlobalIndexRange, 3> regions{range(0, 10), range(0, 10), range(5, 15)};
+    } external;
+    BackgroundEvaluationPlan plan;
+    plan.nodes = {{.tock_state_node = 0, .authored_tock_execution = true, .inputs = {0}}};
+    plan.ports = {{.node = 0, .configured_port = {0, iv::PortKind::event, 0},
+        .kind = iv::PortKind::event, .direction = PortDirection::input,
+        .input_access = iv::InputAccessKind::coverage, .random_access_input = true,
+        .event_type = iv::EventTypeId::trigger}};
+    plan.event_target_subsets = {{.port = {0, 0}, .type = iv::EventTypeId::trigger,
+        .access = PlannedDestinationAccess::random_access}};
+    plan.storage.ports = {{.kind = iv::PortKind::event, .storage = PortStorageKind::current_tick,
+        .event_type = iv::EventTypeId::trigger}};
+    plan.storage.direct_events = {{.target_subset = 0, .storage = 0}};
+    plan.runtime.bindings = {{.node = 0, .port = 0, .kind = iv::PortKind::event,
+        .direction = PortDirection::input, .storage = {0}}};
+    plan.runtime.port_bindings = {0};
+    plan.runtime.node_operations.resize(1);
+    plan.runtime.node_replay_invocations.resize(1);
+    // A second node/lane reads a different Region from the same backing view.
+    plan.nodes.push_back({.tock_state_node = 1, .authored_tock_execution = true, .inputs = {1}});
+    auto second_port = plan.ports.front();
+    second_port.node = 1;
+    second_port.configured_port.node_bundle_handle = 1;
+    plan.ports.push_back(second_port);
+    plan.event_target_subsets.push_back({.port = {1, 0}, .type = iv::EventTypeId::trigger,
+        .access = PlannedDestinationAccess::random_access});
+    plan.storage.direct_events.push_back({.target_subset = 1, .storage = 0});
+    plan.runtime.bindings.push_back({.node = 1, .port = 1, .kind = iv::PortKind::event,
+        .direction = PortDirection::input, .storage = {0}});
+    plan.runtime.port_bindings.push_back(1);
+    plan.runtime.node_operations.resize(2);
+    plan.runtime.node_replay_invocations.resize(2);
+    iv::PersistedDataStore data;
+    iv::BackgroundStorageRealization realization{plan, data, {.storage_coverage = {external.coverage}}};
+    realization.bind_event(0, {
+        .data = &external, .coverage_value = &external.coverage,
+        .regions = external.regions, .type = iv::EventTypeId::trigger,
+        .for_each_event = +[](void const*, iv::GlobalIndexRange, void*, iv::BackgroundEventReadView::VisitEvent) {},
+        .for_each_region_event = +[](void const*, std::size_t region, iv::GlobalIndexRange requested,
+                void* visitor_data, iv::BackgroundEventReadView::VisitEvent visitor) {
+            // The second duplicate Region is valid but contains no events.
+            if (region == 1) return;
+            iv::TimedEvent const event{.time = index(region == 2 ? 12 : 6), .value = iv::TriggerEvent{}};
+            if (requested.contains(event.time)) visitor(visitor_data, event);
+        },
+    });
+    ASSERT_TRUE(realization.seal().has_value());
+    iv::ResourceContext resources;
+    iv::TockStateLayout layout;
+    layout.nodes.resize(2);
+    auto states = layout.create_storage(resources);
+    states.initialize();
+    for (bool request_points : {true, false}) {
+        iv::BackgroundEvaluationCallFrame frame{plan, realization, states, {
+            .binding_coverage = {request_points ? iv::IndexCoverage{selected} : iv::IndexCoverage{}, iv::IndexCoverage{range(5, 15)}},
+            .binding_regions = {request_points ? std::vector{selected, selected} : std::vector<iv::GlobalIndexRange>{}, {range(5, 15)}},
+        }};
+        ASSERT_TRUE(frame.seal().has_value());
+        auto const& input = frame.nodes().front().tock.event_inputs.data()[0];
+        ASSERT_EQ(input.regions().size(), request_points ? 2u : 0u);
+        EXPECT_EQ(input.coverage(), request_points ? iv::IndexCoverage{selected} : iv::IndexCoverage{});
+        std::size_t count = 0;
+        for (std::size_t region = 0; region < input.regions().size(); ++region)
+            input.for_each(region, selected, [&](iv::TimedEvent const&) { ++count; });
+        EXPECT_EQ(count, request_points ? 1u : 0u);
+        auto const& other = frame.nodes()[1].tock.event_inputs.data()[0];
+        ASSERT_EQ(other.regions().size(), 1u);
+        EXPECT_EQ(other.regions()[0], range(5, 15));
+        std::vector<iv::GlobalIndex> times;
+        other.for_each(0, range(5, 15), [&](iv::TimedEvent const& event) { times.push_back(event.time); });
+        EXPECT_EQ(times, (std::vector<iv::GlobalIndex>{index(12)}));
+    }
+}

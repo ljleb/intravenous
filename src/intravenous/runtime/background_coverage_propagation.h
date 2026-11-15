@@ -4,6 +4,7 @@
 #include <intravenous/runtime/graph_jit.h>
 
 #include <cstddef>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -101,6 +102,31 @@ struct BackgroundCoverageDemandExpansion {
         IndexCoverage& required) = nullptr;
 };
 
+class PreparedCoveragePropagation;
+
+// Discovery views own their sealed evaluation frame and its storage. They are
+// private to the selected candidate and never become playback publications.
+struct BackgroundDiscoveredInput {
+    std::shared_ptr<void const> owner{};
+    RandomAccessContinuousInputPort continuous{};
+    RandomAccessEventInputPort events{};
+};
+
+struct BackgroundCoverageDiscovery {
+    void* data = nullptr;
+    BackgroundDiscoveredInput (*materialize)(void*, PreparedCoveragePropagation&&,
+        graph_jit::BackgroundPortIndex) = nullptr;
+};
+
+struct BackgroundCoverageReadDependency {
+    graph_jit::BackgroundNodeIndex node = 0;
+    bool reverse = false;
+    graph_jit::BackgroundPortIndex input = 0;
+    CoverageInformation information = CoverageInformation::coverage;
+    IndexCoverage positions{};
+    std::vector<GlobalIndexRange> regions{};
+};
+
 class BackgroundPropagationWorkspace;
 
 // Long-lived semantic coverage committed for one compiled realization. It is
@@ -113,6 +139,7 @@ public:
 private:
     std::vector<IndexCoverage> output_coverages_{};
     std::vector<std::vector<GlobalIndexRange>> output_region_ranges_{};
+    std::vector<BackgroundCoverageReadDependency> read_dependencies_{};
 
     friend class BackgroundPropagationWorkspace;
 
@@ -166,8 +193,10 @@ class PreparedCoveragePropagation {
     CoveragePropagationResult result_{};
     std::vector<IndexCoverage> output_coverages_{};
     std::vector<std::vector<GlobalIndexRange>> output_region_ranges_{};
+    std::vector<BackgroundCoverageReadDependency> read_dependencies_{};
     std::vector<std::vector<GlobalIndexRange>> output_regions_by_port_{};
     std::vector<std::vector<GlobalIndexRange>> input_regions_by_port_{};
+    std::vector<std::vector<GlobalIndexRange>> requested_input_regions_by_port_{};
     std::vector<graph_jit::BackgroundNodeActivity> node_activity_{};
 
     PreparedCoveragePropagation() = default;
@@ -202,11 +231,25 @@ public:
         return output_regions_by_port_[port];
     }
 
+    [[nodiscard]] std::span<BackgroundCoverageReadDependency const>
+    read_dependencies() const noexcept { return read_dependencies_; }
+
+    // Intrinsic logical input Regions, before the evaluation request selects
+    // any of them. Storage planning may inspect these without exposing them.
     [[nodiscard]] std::span<GlobalIndexRange const> input_regions(
         graph_jit::BackgroundPortIndex port) const noexcept
     {
         if (port >= input_regions_by_port_.size()) return {};
         return input_regions_by_port_[port];
+    }
+
+    // Whole logical Regions selected by the original reverse request, retaining
+    // their ordering and multiplicity independently of wider producer work.
+    [[nodiscard]] std::span<GlobalIndexRange const> requested_input_regions(
+        graph_jit::BackgroundPortIndex port) const noexcept
+    {
+        if (port >= requested_input_regions_by_port_.size()) return {};
+        return requested_input_regions_by_port_[port];
     }
 
 };
@@ -216,6 +259,13 @@ public:
 // component knows accumulator topology and generated F/R roots, but owns no
 // persisted data, materialized storage or transaction publication policy.
 class BackgroundPropagationWorkspace {
+    struct PlanningState;
+    struct MetadataRead {
+        BackgroundPropagationWorkspace* owner = nullptr;
+        graph_jit::BackgroundPortIndex input = 0;
+        bool reverse = false;
+    };
+
     struct InputChangeAccumulator {
         std::vector<GlobalIndexRange> regions{};
         std::span<GlobalIndexRange const> region_view{};
@@ -244,6 +294,8 @@ class BackgroundPropagationWorkspace {
     };
 
     struct NodeCoverageCallData {
+        std::vector<graph_jit::BackgroundPortIndex> sample_inputs{};
+        std::vector<graph_jit::BackgroundPortIndex> event_inputs{};
         std::vector<InputCoverageChange> sample_input_changes{};
         std::vector<InputCoverageChange> event_input_changes{};
         std::vector<OutputCoverageChange> sample_output_changes{};
@@ -263,6 +315,9 @@ class BackgroundPropagationWorkspace {
     std::vector<InputRequirementAccumulator> input_requirements_{};
     std::vector<OutputRequirementAccumulator> output_requirements_{};
     std::vector<IndexCoverage> input_requirements_by_port_{};
+    // Original request positions select logical Regions. Their normalized
+    // coverage can overlap other available Regions without selecting them.
+    std::vector<IndexCoverage> input_selection_requests_by_port_{};
     std::vector<InputCoverageChange> callback_input_changes_{};
     std::vector<OutputCoverageChange> callback_output_changes_{};
     std::vector<InputCoverageRequirement> callback_input_requirements_{};
@@ -270,6 +325,24 @@ class BackgroundPropagationWorkspace {
     std::vector<NodeCoverageCallData> node_call_data_{};
     std::vector<graph_jit::BackgroundNodeCall> node_calls_{};
     graph_jit::BackgroundEvaluationCall call_{};
+    PlanningState* planning_state_ = nullptr;
+    std::vector<MetadataRead> forward_reads_{};
+    std::vector<MetadataRead> reverse_reads_{};
+    std::vector<bool> output_ready_{};
+    std::vector<bool> published_outputs_{};
+    std::vector<bool> finalized_outputs_{};
+
+    static void before_metadata_read(void*);
+    void refresh_input(graph_jit::BackgroundPortIndex);
+    [[nodiscard]] bool input_information_ready(graph_jit::BackgroundPortIndex) const;
+    [[nodiscard]] CoverageRequestId request_information(void* operation, bool event,
+        std::size_t input, CoverageInformation, IndexCoverage const*);
+    void initialize_planning();
+    void run_planning(bool reverse);
+    void mark_forward_pending(graph_jit::BackgroundNodeIndex);
+    [[nodiscard]] PreparedCoveragePropagation prepare_discovery(
+        graph_jit::BackgroundPortIndex, IndexCoverage const&);
+
 
     [[nodiscard]] graph_jit::BackgroundPortPlan const&
     port(graph_jit::BackgroundPortIndex index) const;
@@ -339,7 +412,8 @@ public:
     prepare(CompiledGraphBackgroundOperations const& operations,
             BackgroundCoverageState const& coverage,
             CoveragePropagationRequest const& request,
-            BackgroundCoverageDemandExpansion expansion = {});
+            BackgroundCoverageDemandExpansion expansion = {},
+            BackgroundCoverageDiscovery discovery = {});
     [[nodiscard]] CoveragePropagationResult
     commit(BackgroundCoverageState& coverage,
            PreparedCoveragePropagation&& prepared) noexcept;

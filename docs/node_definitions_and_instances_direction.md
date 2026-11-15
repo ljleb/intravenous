@@ -166,6 +166,43 @@ import then becomes one such import that every builder starts with; whether an
 exact ID may still shadow a built-in name, as it does today, is part of that
 design.
 
+### Future package identity, publication, and type construction (2026-11-15 clarification)
+
+The existing exact-ID lookup and implicit `iv.builtin.<id>` fallback above are
+**implemented behavior**. The planned import mechanism should **extend** that
+behavior, treating `iv.builtin` as the default import instead of replacing it
+with an unrelated special resolver. A future stable logical package identifier
+may supply the namespace prefix for canonical public definition IDs, and the
+owning package's namespace may be imported automatically in its builders.
+Import collisions and precedence remain subject to the previously recorded
+namespace-import design; no manifest syntax or exact resolution rule is
+selected here. Package identity for namespacing must not be confused with
+filesystem provenance or build-artifact identity.
+
+**Proposed API simplification, not implemented:** allow `g.node<Type>(...)`
+for package-internal concrete leaves without an `IV_NODE` declaration. Reserve
+`IV_NODE(...)` for **public** leaf definition registration and `IV_MODULE(...)`
+for **public** module registration; no parallel `_PUBLIC` macro family is
+wanted. Private module construction may remain ordinary C++ functions/classes;
+whether a distinct private, addressable module definition is needed is not
+settled. The goal of retiring `IV_MODULE_CLASS` is to register functions and
+classes through one `IV_MODULE` entry point, but the exact valid C++ spelling
+and compiler-plugin mechanism are open.
+
+Package-private means available throughout the owning package, **not** limited
+to one translation unit. An unregistered private concrete leaf may already
+contribute a compiler record once instantiated, but that is not the same as
+publishing a configurable definition or automatically creating a virtual-node
+source annotation. Registration currently performs eager declaration checks;
+unused unregistered types may receive no equivalent static validation until
+instantiated. This tradeoff is acknowledged; no automatic validation of every
+unused class has been specified. Direct type construction must also respect the
+intended package privacy boundary; omitting registration alone is not a
+cross-package C++ access-control mechanism.
+
+See [Module Interoperability And Graph Macros](./module_interoperability_and_graph_macros_direction.md)
+for construction/interaction ownership and future project editing.
+
 ## Project configuration source
 
 The initial generic project configuration surface stores one restricted C++-like

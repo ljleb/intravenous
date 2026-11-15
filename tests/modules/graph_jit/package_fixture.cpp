@@ -7374,6 +7374,50 @@ IV_MODULE("iv.test.automation.window_module", automation_window_module);
 
 )cpp";
     static constexpr std::string_view internal_nodes = R"cpp(
+struct SuspendableCoverageProbe {
+    struct TockState { std::uint64_t calls = 0; float first = 0; };
+    static constexpr auto inputs() {
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::region)};
+    }
+    static constexpr auto outputs() {
+        return std::array{iv::output<iv::Sample>("suspendable-output",
+            iv::OutputProduction::region, iv::OutputRetention::persisted)};
+    }
+    iv::CoverageTask propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<SuspendableCoverageProbe>& ctx) const {
+        auto const& metadata = co_await ctx.request_input_coverage<"in">();
+        auto input = co_await ctx.request_input<"in">(metadata.coverage);
+        auto const begin = iv::GlobalIndex::from_signed(
+            static_cast<std::int64_t>(input.region().value(0).value));
+        auto output = ctx.output<"suspendable-output">();
+        auto const region = iv::GlobalIndexRange{begin, input.region().range().extent};
+        output.publish(region);
+        output.change(region);
+    }
+    iv::CoverageTask propagate_reverse_coverage(
+        iv::PropagateReverseCoverageContext<SuspendableCoverageProbe>& ctx) const {
+        auto const& metadata = co_await ctx.request_input_coverage<"in">();
+        auto input = co_await ctx.request_input<"in">(metadata.coverage);
+        ctx.input<"in">().require(input.region().range());
+    }
+    void tock_coverage(iv::TockCoverageContext<SuspendableCoverageProbe>& ctx) const {
+        auto input = ctx.input<"in">().region();
+        auto output = ctx.output<"suspendable-output">().region();
+        ++ctx.tock_state().calls;
+        ctx.tock_state().first = input.value(0).value;
+        for (std::size_t frame = 0; frame < output.frame_count(); ++frame)
+            output.value(frame) = input.value(frame);
+    }
+};
+IV_NODE("iv.test.graph_jit.suspendable_coverage_probe", SuspendableCoverageProbe);
+void suspendable_coverage_module(iv::GraphBuilder& graph) {
+    auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
+    auto probe = graph.node<"iv.test.graph_jit.suspendable_coverage_probe">();
+    probe(source);
+    graph.outputs();
+}
+IV_MODULE("iv.test.graph_jit.suspendable_coverage_module", suspendable_coverage_module);
+
 // Deliberately private: no IV_NODE registration for this concrete type.
 struct PrivateArithmeticProbe {
     struct State {

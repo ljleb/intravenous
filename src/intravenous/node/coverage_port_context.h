@@ -169,21 +169,27 @@ struct InputCoverageChange {
     IndexCoverage const* coverage_value = nullptr;
     IndexCoverage const* changed_value = nullptr;
 
-    [[nodiscard]] std::span<GlobalIndexRange const> regions() const noexcept
+    void* read_owner = nullptr;
+    void (*before_read)(void*) = nullptr;
+
+    [[nodiscard]] std::span<GlobalIndexRange const> regions() const
     {
+        if (before_read) before_read(read_owner);
         if (region_ranges_view_value != nullptr) {
             return *region_ranges_view_value;
         }
         return {region_ranges_value, region_range_count};
     }
 
-    [[nodiscard]] IndexCoverage const& coverage() const noexcept
+    [[nodiscard]] IndexCoverage const& coverage() const
     {
+        if (before_read) before_read(read_owner);
         return background_port_details::bound_coverage(coverage_value);
     }
 
-    [[nodiscard]] IndexCoverage const& changed() const noexcept
+    [[nodiscard]] IndexCoverage const& changed() const
     {
+        if (before_read) before_read(read_owner);
         return background_port_details::bound_coverage(changed_value);
     }
 };
@@ -273,8 +279,12 @@ struct InputCoverageRequirement {
     IndexCoverage const* coverage_value = nullptr;
     PublishRequirement publish_required_value = nullptr;
 
-    [[nodiscard]] IndexCoverage const& coverage() const noexcept
+    void* read_owner = nullptr;
+    void (*before_read)(void*) = nullptr;
+
+    [[nodiscard]] IndexCoverage const& coverage() const
     {
+        if (before_read) before_read(read_owner);
         return background_port_details::bound_coverage(coverage_value);
     }
 
@@ -304,7 +314,7 @@ public:
         : requirement_(requirement)
     {}
 
-    [[nodiscard]] IndexCoverage const& coverage() const noexcept
+    [[nodiscard]] IndexCoverage const& coverage() const
     {
         return requirement_.coverage();
     }
@@ -506,17 +516,17 @@ public:
         : change_(change)
     {}
 
-    [[nodiscard]] std::span<GlobalIndexRange const> regions() const noexcept
+    [[nodiscard]] std::span<GlobalIndexRange const> regions() const
     {
         return change_.regions();
     }
 
-    [[nodiscard]] IndexCoverage const& coverage() const noexcept
+    [[nodiscard]] IndexCoverage const& coverage() const
     {
         return change_.coverage();
     }
 
-    [[nodiscard]] IndexCoverage const& changed() const noexcept
+    [[nodiscard]] IndexCoverage const& changed() const
     {
         return change_.changed();
     }
@@ -871,6 +881,73 @@ struct TockCoverageContext {
     }
 };
 
+namespace details {
+
+template<class Binding, class Facade>
+class CoverageInputRequest : public CoverageRequest<Binding> {
+public:
+    using CoverageRequest<Binding>::CoverageRequest;
+    [[nodiscard]] Facade get() const { return Facade{CoverageRequest<Binding>::get()}; }
+    [[nodiscard]] Facade await_resume() const { return get(); }
+};
+
+template<class Node, fixed_string Name>
+[[nodiscard]] auto request_planning_input(CoveragePlanningContext planning,
+    IndexCoverage const& positions)
+{
+    constexpr auto event = static_input_port_kind<Node, Name>() == PortKind::event;
+    constexpr auto input = [] {
+        if constexpr (event) {
+            if constexpr (has_tick_family_v<Node>) return static_event_input_port_index<Node, Name>();
+            else return static_random_access_event_input_port_index<Node, Name>();
+        } else {
+            if constexpr (has_tick_family_v<Node>) return static_input_port_index<Node, Name>();
+            else return static_random_access_input_port_index<Node, Name>();
+        }
+    }();
+    // Discovery returns selected whole Regions, including for replay Sequential
+    // inputs. It does not pretend to be a live Sequential Tick binding.
+    constexpr auto access = has_tick_family_v<Node>
+        ? InputAccessKind::coverage : static_input_port_access<Node, Name>();
+    auto id = planning.request_input(event, input, CoverageInformation::contents, &positions);
+    if constexpr (event) {
+        return CoverageInputRequest<RandomAccessEventInputPort,
+            StaticBackgroundEventInputAccess<access>>{planning.access, id};
+    } else {
+        constexpr auto declaration = static_input_declaration_index<Node, Name>();
+        using Config = std::remove_cvref_t<decltype(port_config_at<declaration>(
+            std::declval<decltype(Node::inputs()) const&>()))>;
+        using Values = typename Config::value_types;
+        if constexpr (std::tuple_size_v<Values> == 1) {
+            using Value = std::tuple_element_t<0, Values>;
+            return CoverageInputRequest<RandomAccessContinuousInputPort,
+                StaticBackgroundContinuousInputAccess<Value, access>>{planning.access, id};
+        } else {
+            return CoverageInputRequest<RandomAccessContinuousInputPort,
+                StaticVariantBackgroundContinuousInputAccess<Values, access>>{planning.access, id};
+        }
+    }
+}
+
+template<class Node, fixed_string Name>
+[[nodiscard]] auto request_planning_input_coverage(CoveragePlanningContext planning)
+{
+    constexpr auto event = static_input_port_kind<Node, Name>() == PortKind::event;
+    constexpr auto input = [] {
+        if constexpr (event) {
+            if constexpr (has_tick_family_v<Node>) return static_event_input_port_index<Node, Name>();
+            else return static_random_access_event_input_port_index<Node, Name>();
+        } else {
+            if constexpr (has_tick_family_v<Node>) return static_input_port_index<Node, Name>();
+            else return static_random_access_input_port_index<Node, Name>();
+        }
+    }();
+    return CoverageRequest<CoverageInputInfo>{planning.access,
+        planning.request_input(event, input, CoverageInformation::coverage)};
+}
+
+} // namespace details
+
 template<typename Node>
 struct PropagateForwardCoverageContext {
     std::span<InputCoverageChange const> inputs {};
@@ -879,6 +956,22 @@ struct PropagateForwardCoverageContext {
     std::span<OutputCoverageChange> event_outputs {};
     bool local_state_changed = false;
     std::size_t sample_rate = 48000;
+    CoveragePlanningContext planning{};
+
+    template<fixed_string Name>
+    [[nodiscard]] auto request_input_coverage() const
+    requires details::has_constexpr_port_configs<Node>
+    {
+        return details::request_planning_input_coverage<Node, Name>(planning);
+    }
+
+    template<fixed_string Name>
+    [[nodiscard]] auto request_input(IndexCoverage const& positions) const
+    requires details::has_constexpr_port_configs<Node>
+    {
+        return details::request_planning_input<Node, Name>(planning, positions);
+    }
+
 
     template<fixed_string Name>
     [[nodiscard]] auto input() const
@@ -958,6 +1051,22 @@ struct PropagateReverseCoverageContext {
     std::span<InputCoverageRequirement> event_inputs {};
     std::span<OutputCoverageRequirement const> event_outputs {};
     std::size_t sample_rate = 48000;
+    CoveragePlanningContext planning{};
+
+    template<fixed_string Name>
+    [[nodiscard]] auto request_input_coverage() const
+    requires details::has_constexpr_port_configs<Node>
+    {
+        return details::request_planning_input_coverage<Node, Name>(planning);
+    }
+
+    template<fixed_string Name>
+    [[nodiscard]] auto request_input(IndexCoverage const& positions) const
+    requires details::has_constexpr_port_configs<Node>
+    {
+        return details::request_planning_input<Node, Name>(planning, positions);
+    }
+
 
     template<fixed_string Name>
     [[nodiscard]] auto output() const
@@ -1252,9 +1361,17 @@ void do_propagate_forward_coverage(
         PropagateForwardCoverageBatchContext<Node> batch{
             {std::addressof(lane), 1}};
         Node::propagate_forward_coverage_batch(batch);
+    } else if constexpr (details::has_suspendable_forward_coverage<Node>) {
+        auto owned = std::make_unique<PropagateForwardCoverageContext<Node>>(context);
+        auto task = node.propagate_forward_coverage(*owned);
+        task.own_context(owned.release());
+        context.planning.submit(std::move(task));
     } else {
         node.propagate_forward_coverage(context);
     }
+    if constexpr (details::has_propagate_forward_coverage_batch<Node>
+        || !details::has_suspendable_forward_coverage<Node>) context.planning.finish();
+
 }
 
 template<typename Node>
@@ -1264,9 +1381,10 @@ void do_propagate_forward_coverage_batch(
     if (context.empty()) return;
     if constexpr (details::has_propagate_forward_coverage_batch<Node>) {
         Node::propagate_forward_coverage_batch(context);
+        for (auto lane : context) lane.context().planning.finish();
     } else {
         for (auto lane : context) {
-            lane.node().propagate_forward_coverage(lane.context());
+            do_propagate_forward_coverage(lane.node(), lane.context());
         }
     }
 }
@@ -1284,6 +1402,11 @@ void do_propagate_reverse_coverage(
         PropagateReverseCoverageBatchContext<Node> batch{
             {std::addressof(lane), 1}};
         Node::propagate_reverse_coverage_batch(batch);
+    } else if constexpr (details::has_suspendable_reverse_coverage<Node>) {
+        auto owned = std::make_unique<PropagateReverseCoverageContext<Node>>(context);
+        auto task = node.propagate_reverse_coverage(*owned);
+        task.own_context(owned.release());
+        context.planning.submit(std::move(task));
     } else if constexpr (details::has_propagate_reverse_coverage<Node>) {
         node.propagate_reverse_coverage(context);
     } else {
@@ -1294,10 +1417,13 @@ void do_propagate_reverse_coverage(
         for (auto const& output : context.event_outputs) {
             required = required || !output.required().empty();
         }
-        if (!required) return;
+        if (!required) { context.planning.finish(); return; }
         for (auto const& input : context.inputs) input.require(input.coverage());
         for (auto const& input : context.event_inputs) input.require(input.coverage());
     }
+    if constexpr (details::has_propagate_reverse_coverage_batch<Node>
+        || !details::has_suspendable_reverse_coverage<Node>) context.planning.finish();
+
 }
 
 template<typename Node>
@@ -1307,6 +1433,7 @@ void do_propagate_reverse_coverage_batch(
     if (context.empty()) return;
     if constexpr (details::has_propagate_reverse_coverage_batch<Node>) {
         Node::propagate_reverse_coverage_batch(context);
+        for (auto lane : context) lane.context().planning.finish();
     } else {
         for (auto lane : context) {
             do_propagate_reverse_coverage(lane.node(), lane.context());

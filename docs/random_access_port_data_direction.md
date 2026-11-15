@@ -134,13 +134,14 @@ range. It must not expose a clipped intersection as a new logical Region. This k
 the node-facing Region list independent of transaction request boundaries. If that
 complete range makes the positional replacement domain intersect another Region, the
 producer receives that second complete Region too. This continues until the
-replacement domain stops growing. A consuming callback still receives only the
-Regions selected by its own resolved input requirement; extra producer Regions
-cannot become visible merely because other work materialized them. In
-`tock_coverage()` and each `tock_coverage_batch()` lane this is a strict
-requested-only input binding rule: the scheduler first normalizes the request
-to complete logical Regions, then exposes only those selected Regions,
-independent of wider retained/cached availability. A node whose Region ranges
+replacement domain stops growing. A consuming callback still receives only the complete Regions selected
+by its own resolved input requirement; extra producer Regions cannot become
+visible merely because other work materialized them. For
+`tock_coverage()` and each `tock_coverage_batch()` lane, the bound
+`region()`/`regions()` contains the explicitly provided, readable Regions;
+`coverage()` is the union of those Regions, not the narrower reverse-required
+positional set. The final selection is independent of retained/cached data
+outside the requirements. A node whose Region ranges
 depend on input data must determine and retain those ranges during suspendable
 forward propagation, before value production. See
 [Cyclic Automation And Suspendable Coverage Propagation](./automation_and_suspendable_coverage_direction.md).

@@ -241,7 +241,7 @@ project-state modules. An action may carry a complete batch of instance,
 replacement, connection, and manual-value changes. Its reverse restores the
 **actual prior durable records**, including stable IDs, rather than sending an
 inverse node event or assuming that deleting a node also deletes dangling
-connection intent. See [Project Undo, Redo, And Backup Direction](./project_undo_redo_and_backups_direction.md).
+connection intent. See [Project Undo And Redo Direction](./project_undo_redo_and_backups_direction.md).
 
 The normal `ProjectGraph` coordination path must accept a coherent multi-domain
 mutation per user action, including undo and redo, **without** repeatedly

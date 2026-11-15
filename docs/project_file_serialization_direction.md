@@ -127,17 +127,17 @@ remove this project connection
 
 The normalized file is not an append-only edit history.
 
-### Undo records and backup checkpoints are separate from the project file
+### Undo records are separate from the project file
 
-Undo/redo is planned as server-owned history of **reversible batches of accepted
-durable project changes**, constructed from authoritative before/after records.
-It may reuse this command vocabulary without serializing each user action into
-`iv_project.jsonl`. Saving or replaying a normalized snapshot does not append or
-replay undo steps. A future backup/checkpoint system may reuse the same complete
-project snapshot and serialization facilities, possibly alongside an action
-journal; an inverse-only undo record is not a complete restorable backup.
+Undo/redo is server-owned history of reversible batches of accepted durable
+project changes, built from authoritative before/after records. A save
+writes the normalized current intent; loading it does not replay undo
+steps. `iv_project.jsonl` is deliberately human-readable and Git-compatible.
+A separate restorable backup/checkpoint subsystem is not planned; the
+[earlier proposal](./historical/backup_checkpoint_proposals_before_git_versioning_2026-11-15.md)
+is retained as historical context.
 
-See [Project Undo, Redo, And Backup Direction](./project_undo_redo_and_backups_direction.md).
+See [Project Undo And Redo Direction](./project_undo_redo_and_backups_direction.md).
 
 The implemented normalized commands are:
 
