@@ -1302,7 +1302,7 @@ public:
                 binding.storage, [&](auto const storage) {
                     return storage < plan.storage.ports.size()
                         && plan.storage.ports[storage].storage
-                            == graph_jit::PortStorageKind::tick_random_access;
+                            != graph_jit::PortStorageKind::current_tick;
                 });
 
             selected.output = direct_persisted_sample_output(
@@ -1329,7 +1329,7 @@ public:
                 binding.storage, [&](auto const storage) {
                     return storage < plan.storage.ports.size()
                         && plan.storage.ports[storage].storage
-                            == graph_jit::PortStorageKind::tick_random_access;
+                            != graph_jit::PortStorageKind::current_tick;
                 });
 
             selected.output = direct_persisted_event_output(
@@ -1390,7 +1390,7 @@ public:
             if (port.kind != PortKind::sample
                 || port.direction != graph_jit::PortDirection::output
                 || !port.persisted_tick_output
-                || port.retention != OutputRetention::persisted
+                || port.realization != OutputRealization::buffered
                 || port.sample_layout.sample_layout
                     != SampleStreamLayout::interleaved) {
                 throw std::invalid_argument(
@@ -1455,7 +1455,7 @@ public:
             if (port.kind != PortKind::event
                 || port.direction != graph_jit::PortDirection::output
                 || !port.persisted_tick_output
-                || port.retention != OutputRetention::persisted) {
+                || port.realization != OutputRealization::buffered) {
                 throw std::invalid_argument(
                     "Tick event capture references a non-persisted output");
             }
@@ -1638,7 +1638,12 @@ public:
                     : std::span<ContinuousRegionStorageView const>{};
             sample_views[slot].regions = selected.regions.data();
             sample_views[slot].region_count = selected.regions.size();
-            sample_views[slot].coverage_value = selected.coverage;
+            sample_views[slot].coverage_value = selected.materialized
+                ? &selected.materialized->logical_coverage
+                : selected.output ? published.find_sample_logical_coverage(*selected.output)
+                    : selected.coverage;
+            if (!sample_views[slot].coverage_value) sample_views[slot].coverage_value = selected.coverage;
+            sample_views[slot].prepared_coverage_value = selected.coverage;
         }
         for (std::size_t slot = 0; slot < event_slots.size(); ++slot) {
             auto& selected = event_slots[slot];
@@ -1668,7 +1673,12 @@ public:
                     : std::span<GlobalIndexRange const>{};
             event_views[slot].region_ranges = selected.regions.data();
             event_views[slot].region_count = selected.regions.size();
-            event_views[slot].coverage_value = selected.coverage;
+            event_views[slot].coverage_value = selected.materialized
+                ? &selected.materialized->logical_coverage
+                : selected.output ? published.find_event_logical_coverage(*selected.output)
+                    : selected.coverage;
+            if (!event_views[slot].coverage_value) event_views[slot].coverage_value = selected.coverage;
+            event_views[slot].prepared_coverage_value = selected.coverage;
         }
         return {
             .sequential_sample_inputs = sequential_sample_views,

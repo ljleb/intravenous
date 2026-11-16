@@ -30,7 +30,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<TickOutputConfig<Sample>, 1>{};
+            return std::array<SequentialOutputConfig<Sample>, 1>{};
         }
 
         static constexpr size_t num_inputs()
@@ -59,7 +59,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<TickOutputConfig<Sample>, 1>{};
+            return std::array<SequentialOutputConfig<Sample>, 1>{};
         }
 
         void tick(auto const& ctx) const
@@ -92,7 +92,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array{output<Sample>("out", OutputProduction::tick, {
+            return std::array{output<Sample>("out", OutputProduction::sequential, {
                 .channel_layout = ChannelLayout{
                     .channel_type = ChannelTypeTraits<ChannelType>::id,
                     .sample_layout = Layout,
@@ -131,7 +131,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<TickOutputConfig<Sample>, 1>{};
+            return std::array<SequentialOutputConfig<Sample>, 1>{};
         }
 
         void tick(auto const& state) const
@@ -148,7 +148,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<TickOutputConfig<Sample>, 1>{};
+            return std::array<SequentialOutputConfig<Sample>, 1>{};
         }
 
         void tick(auto const& ctx) const

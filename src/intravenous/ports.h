@@ -723,9 +723,9 @@ namespace iv {
     // GraphJit therefore treats InputPort/OutputPort as invocation-local API
     // facades reconstructed from compiler-resolved bindings, never as
     // persistent connection state or NodeStorage-owned objects. A
-    // Tick/persisted output binding may additionally retain invocation-local
+    // Tick/Sequential/buffered output binding may additionally retain invocation-local
     // authored disposition for its post-step recording operation; ordinary
-    // ephemeral/Tock output writes do not observe it.
+    // computed/Tock output writes do not observe it.
     struct SampleChannelStorageView {
         Sample* storage = nullptr;
         size_t frame_capacity = 0;
@@ -993,7 +993,7 @@ namespace iv {
         }
     };
 
-    // Invocation state for a statically known Tick/persisted output binding.
+    // Invocation state for a statically known Tick/Sequential/buffered output binding.
     // OutputPort and EventOutputPort deliberately neither store nor update it.
     enum class OutputDisposition : std::uint8_t {
         untouched,
@@ -1666,15 +1666,22 @@ namespace iv {
         coverage,
     };
 
+    // Region metadata is always complete. Content access determines whether
+    // the consumer needs prepared windows or one entire contiguous buffer.
+    enum class InputContentAccess : std::uint8_t {
+        windowed,
+        complete_buffer,
+    };
+
     enum class OutputProductionKind : std::uint8_t {
-        tick,
+        sequential,
         region,
         coverage,
     };
 
-    enum class OutputRetention : std::uint8_t {
-        ephemeral,
-        persisted,
+    enum class OutputRealization : std::uint8_t {
+        computed,
+        buffered,
     };
 
     using InputAccessConfig = InputAccessKind;
@@ -1717,16 +1724,17 @@ namespace iv {
         };
         ContinuousInputAccessProperties access {};
 
+        InputContentAccess content_access = InputContentAccess::windowed;
         constexpr bool operator==(
             ContinuousInputProperties const&) const = default;
     };
 
-    struct TickContinuousOutputProperties {
-        std::vector<ContinuousTickOutputMetadata> value_metadata {
-            ContinuousTickOutputMetadata{
-                SampleContinuousValueExtension::TickOutputMetadata{}}};
+    struct SequentialContinuousOutputProperties {
+        std::vector<ContinuousSequentialOutputMetadata> value_metadata {
+            ContinuousSequentialOutputMetadata{
+                SampleContinuousValueExtension::SequentialOutputMetadata{}}};
         constexpr bool operator==(
-            TickContinuousOutputProperties const&) const = default;
+            SequentialContinuousOutputProperties const&) const = default;
     };
 
     struct RegionContinuousOutputProperties {
@@ -1746,7 +1754,7 @@ namespace iv {
     };
 
     using ContinuousOutputProductionProperties = std::variant<
-        TickContinuousOutputProperties,
+        SequentialContinuousOutputProperties,
         RegionContinuousOutputProperties,
         CoverageContinuousOutputProperties>;
 
@@ -1819,6 +1827,7 @@ namespace iv {
     struct EventInputProperties {
         EventTypeId type {};
         InputAccessConfig access = InputAccessKind::sequential;
+        InputContentAccess content_access = InputContentAccess::windowed;
         constexpr bool operator==(EventInputProperties const&) const = default;
     };
 
@@ -1828,7 +1837,7 @@ namespace iv {
         // GraphJIT reserves ceil(max_events_per_index * W) event entries. This
         // does not constrain how events are distributed among sample timestamps.
         double max_events_per_index = DEFAULT_MAX_EVENTS_PER_SAMPLE;
-        OutputProductionConfig production = OutputProductionKind::tick;
+        OutputProductionConfig production = OutputProductionKind::sequential;
         // A finite bound over the complete authored output coverage. When
         // present, this replaces density-based capacity sizing.
         std::optional<std::size_t> max_event_count{};
@@ -1840,14 +1849,14 @@ namespace iv {
         return config != InputAccessKind::sequential;
     }
 
-    [[nodiscard]] constexpr bool is_tock(OutputProductionConfig const& config)
+    [[nodiscard]] constexpr bool is_random_access_output(OutputProductionConfig const& config)
     {
-        return config != OutputProductionKind::tick;
+        return config != OutputProductionKind::sequential;
     }
 
-    [[nodiscard]] constexpr bool is_persisted(OutputRetention retention)
+    [[nodiscard]] constexpr bool is_buffered(OutputRealization realization)
     {
-        return retention == OutputRetention::persisted;
+        return realization == OutputRealization::buffered;
     }
 
     [[nodiscard]] constexpr bool is_sequential(InputAccessConfig const& config)
@@ -1855,9 +1864,9 @@ namespace iv {
         return config == InputAccessKind::sequential;
     }
 
-    [[nodiscard]] constexpr bool is_tick(OutputProductionConfig const& config)
+    [[nodiscard]] constexpr bool is_sequential_output(OutputProductionConfig const& config)
     {
-        return config == OutputProductionKind::tick;
+        return config == OutputProductionKind::sequential;
     }
 
     template<class Config>
@@ -1923,14 +1932,14 @@ namespace iv {
         };
     }
 
-    [[nodiscard]] inline constexpr TickContinuousOutputProperties
-    default_tick_output_properties(ContinuousValueTypeSet value_types)
+    [[nodiscard]] inline constexpr SequentialContinuousOutputProperties
+    default_sequential_output_properties(ContinuousValueTypeSet value_types)
     {
         return {
             .value_metadata = default_continuous_metadata<
-                ContinuousTickOutputMetadata>(
+                ContinuousSequentialOutputMetadata>(
                     value_types,
-                    default_tick_output_metadata),
+                    default_sequential_output_metadata),
         };
     }
 
@@ -1986,7 +1995,7 @@ namespace iv {
     struct OutputConfig {
         std::string name {};
         std::variant<ContinuousOutputProperties, EventOutputProperties> kind {};
-        OutputRetention retention = OutputRetention::ephemeral;
+        OutputRealization realization = OutputRealization::computed;
 
         constexpr OutputConfig() = default;
         constexpr explicit OutputConfig(std::string name)
@@ -1995,18 +2004,18 @@ namespace iv {
         constexpr OutputConfig(
             std::string name,
             ContinuousOutputProperties config,
-            OutputRetention retention = OutputRetention::ephemeral)
+            OutputRealization realization = OutputRealization::computed)
             : name(std::move(name))
             , kind(std::move(config))
-            , retention(retention)
+            , realization(realization)
         {}
         constexpr OutputConfig(
             std::string name,
             EventOutputProperties config,
-            OutputRetention retention = OutputRetention::ephemeral)
+            OutputRealization realization = OutputRealization::computed)
             : name(std::move(name))
             , kind(std::move(config))
-            , retention(retention)
+            , realization(realization)
         {}
 
 
@@ -2027,11 +2036,11 @@ namespace iv {
     };
 
     struct OutputProduction {
-        struct Tick {};
+        struct Sequential {};
         struct Region {};
         struct Coverage {};
 
-        inline static constexpr Tick tick {};
+        inline static constexpr Sequential sequential {};
         inline static constexpr Region region {};
         inline static constexpr Coverage coverage {};
     };
@@ -2061,6 +2070,7 @@ namespace iv {
         std::string name {};
         std::tuple<typename ContinuousValueType<Types>::RegionInputOptions...>
             options {};
+        InputContentAccess content_access = InputContentAccess::windowed;
         constexpr bool operator==(RegionInputConfig const&) const = default;
     };
 
@@ -2075,22 +2085,23 @@ namespace iv {
         std::string name {};
         std::tuple<typename ContinuousValueType<Types>::CoverageInputOptions...>
             options {};
+        InputContentAccess content_access = InputContentAccess::windowed;
         constexpr bool operator==(CoverageInputConfig const&) const = default;
     };
 
     template<RegisteredContinuousValue... Types>
-    struct TickOutputConfig {
+    struct SequentialOutputConfig {
         static_assert(sizeof...(Types) != 0);
         static_assert(
             ContinuousValueTypeSet::of<Types...>().size() == sizeof...(Types),
             "a continuous port must not repeat a value type");
         using value_types = std::tuple<Types...>;
-        static constexpr auto production = OutputProductionKind::tick;
+        static constexpr auto production = OutputProductionKind::sequential;
         std::string name {};
-        OutputRetention retention = OutputRetention::ephemeral;
-        std::tuple<typename ContinuousValueType<Types>::TickOutputOptions...>
+        OutputRealization realization = OutputRealization::computed;
+        std::tuple<typename ContinuousValueType<Types>::SequentialOutputOptions...>
             options {};
-        constexpr bool operator==(TickOutputConfig const&) const = default;
+        constexpr bool operator==(SequentialOutputConfig const&) const = default;
     };
 
     template<RegisteredContinuousValue... Types>
@@ -2102,7 +2113,7 @@ namespace iv {
         using value_types = std::tuple<Types...>;
         static constexpr auto production = OutputProductionKind::region;
         std::string name {};
-        OutputRetention retention = OutputRetention::ephemeral;
+        OutputRealization realization = OutputRealization::computed;
         std::tuple<typename ContinuousValueType<Types>::RegionOutputOptions...>
             options {};
         constexpr bool operator==(RegionOutputConfig const&) const = default;
@@ -2117,7 +2128,7 @@ namespace iv {
         using value_types = std::tuple<Types...>;
         static constexpr auto production = OutputProductionKind::coverage;
         std::string name {};
-        OutputRetention retention = OutputRetention::ephemeral;
+        OutputRealization realization = OutputRealization::computed;
         std::tuple<typename ContinuousValueType<Types>::CoverageOutputOptions...>
             options {};
         constexpr bool operator==(CoverageOutputConfig const&) const = default;
@@ -2135,6 +2146,7 @@ namespace iv {
         std::string name {};
         EventTypeId type {};
         static constexpr auto access = InputAccessKind::region;
+        InputContentAccess content_access = InputContentAccess::windowed;
         constexpr bool operator==(RegionEventInputConfig const&) const = default;
     };
 
@@ -2142,6 +2154,7 @@ namespace iv {
         std::string name {};
         EventTypeId type {};
         static constexpr auto access = InputAccessKind::coverage;
+        InputContentAccess content_access = InputContentAccess::windowed;
         constexpr bool operator==(CoverageEventInputConfig const&) const = default;
     };
 
@@ -2158,11 +2171,11 @@ namespace iv {
         std::string name {};                                             \
         EventTypeId type {};                                             \
         EventOutputOptions options {};                                   \
-        OutputRetention retention = OutputRetention::ephemeral;          \
+        OutputRealization realization = OutputRealization::computed;          \
         static constexpr auto production = Kind;                         \
         constexpr bool operator==(Name const&) const = default;          \
     }
-    IV_EVENT_OUTPUT_CONFIG(TickEventOutputConfig, OutputProductionKind::tick);
+    IV_EVENT_OUTPUT_CONFIG(SequentialEventOutputConfig, OutputProductionKind::sequential);
     IV_EVENT_OUTPUT_CONFIG(RegionEventOutputConfig, OutputProductionKind::region);
     IV_EVENT_OUTPUT_CONFIG(
         CoverageEventOutputConfig, OutputProductionKind::coverage);
@@ -2188,7 +2201,7 @@ namespace iv {
 
     template<class Config>
     concept AuthoredEventOutputConfig =
-        std::same_as<std::remove_cvref_t<Config>, TickEventOutputConfig>
+        std::same_as<std::remove_cvref_t<Config>, SequentialEventOutputConfig>
         || std::same_as<std::remove_cvref_t<Config>, RegionEventOutputConfig>
         || std::same_as<std::remove_cvref_t<Config>, CoverageEventOutputConfig>;
 
@@ -2264,16 +2277,48 @@ namespace iv {
         return input<Types...>(std::move(name), InputAccess::sequential);
     }
 
+    template<RegisteredContinuousValue... Types, class Access>
+    [[nodiscard]] constexpr auto input(std::string name, Access access,
+        InputContentAccess content_access)
+    requires (std::same_as<Access, InputAccess::Region> || std::same_as<Access, InputAccess::Coverage>)
+    {
+        auto config = input<Types...>(std::move(name), access);
+        config.content_access = content_access;
+        return config;
+    }
+
+    template<RegisteredContinuousValue... Types, class Access>
+    [[nodiscard]] constexpr auto input(std::string name, Access access,
+        InputContentAccess content_access,
+        typename ContinuousValueType<Types>::RegionInputOptions... options)
+    requires std::same_as<Access, InputAccess::Region>
+    {
+        auto config = input<Types...>(std::move(name), access, std::move(options)...);
+        config.content_access = content_access;
+        return config;
+    }
+
+    template<RegisteredContinuousValue... Types, class Access>
+    [[nodiscard]] constexpr auto input(std::string name, Access access,
+        InputContentAccess content_access,
+        typename ContinuousValueType<Types>::CoverageInputOptions... options)
+    requires std::same_as<Access, InputAccess::Coverage>
+    {
+        auto config = input<Types...>(std::move(name), access, std::move(options)...);
+        config.content_access = content_access;
+        return config;
+    }
+
 #define IV_DEFINE_CONTINUOUS_OUTPUT_HELPERS(Token, Config, Options)      \
     template<RegisteredContinuousValue... Types>                         \
     [[nodiscard]] constexpr auto output(                                 \
         std::string name,                                                \
         OutputProduction::Token,                                         \
-        OutputRetention retention = OutputRetention::ephemeral)          \
+        OutputRealization realization = OutputRealization::computed)          \
     {                                                                    \
         return Config<Types...>{                                         \
             .name = std::move(name),                                     \
-            .retention = retention,                                      \
+            .realization = realization,                                      \
         };                                                               \
     }                                                                    \
                                                                          \
@@ -2294,18 +2339,18 @@ namespace iv {
     [[nodiscard]] constexpr auto output(                                 \
         std::string name,                                                \
         OutputProduction::Token,                                         \
-        OutputRetention retention,                                       \
+        OutputRealization realization,                                       \
         typename ContinuousValueType<Types>::Options... options)         \
         requires(sizeof...(Types) != 0)                                  \
     {                                                                    \
         return Config<Types...>{                                         \
             .name = std::move(name),                                     \
-            .retention = retention,                                      \
+            .realization = realization,                                      \
             .options = {std::move(options)...},                          \
         };                                                               \
     }
     IV_DEFINE_CONTINUOUS_OUTPUT_HELPERS(
-        Tick, TickOutputConfig, TickOutputOptions)
+        Sequential, SequentialOutputConfig, SequentialOutputOptions)
     IV_DEFINE_CONTINUOUS_OUTPUT_HELPERS(
         Region, RegionOutputConfig, RegionOutputOptions)
     IV_DEFINE_CONTINUOUS_OUTPUT_HELPERS(
@@ -2316,40 +2361,40 @@ namespace iv {
     [[nodiscard]] constexpr auto output(std::string name)
         requires(sizeof...(Types) != 0)
     {
-        return output<Types...>(std::move(name), OutputProduction::tick);
+        return output<Types...>(std::move(name), OutputProduction::sequential);
     }
 
     template<RegisteredContinuousValue... Types>
     [[nodiscard]] constexpr auto output(
         std::string name,
-        OutputRetention retention)
+        OutputRealization realization)
         requires(sizeof...(Types) != 0)
     {
         return output<Types...>(
-            std::move(name), OutputProduction::tick, retention);
+            std::move(name), OutputProduction::sequential, realization);
     }
 
     template<RegisteredContinuousValue... Types>
     [[nodiscard]] constexpr auto output(
         std::string name,
-        typename ContinuousValueType<Types>::TickOutputOptions... options)
+        typename ContinuousValueType<Types>::SequentialOutputOptions... options)
         requires(sizeof...(Types) != 0)
     {
         return output<Types...>(
-            std::move(name), OutputProduction::tick, std::move(options)...);
+            std::move(name), OutputProduction::sequential, std::move(options)...);
     }
 
     template<RegisteredContinuousValue... Types>
     [[nodiscard]] constexpr auto output(
         std::string name,
-        OutputRetention retention,
-        typename ContinuousValueType<Types>::TickOutputOptions... options)
+        OutputRealization realization,
+        typename ContinuousValueType<Types>::SequentialOutputOptions... options)
         requires(sizeof...(Types) != 0)
     {
         return output<Types...>(
             std::move(name),
-            OutputProduction::tick,
-            retention,
+            OutputProduction::sequential,
+            realization,
             std::move(options)...);
     }
 
@@ -2360,15 +2405,17 @@ namespace iv {
     }
 
     [[nodiscard]] constexpr RegionEventInputConfig event_input(
-        std::string name, EventTypeId type, InputAccess::Region)
+        std::string name, EventTypeId type, InputAccess::Region,
+        InputContentAccess content_access = InputContentAccess::windowed)
     {
-        return {.name = std::move(name), .type = type};
+        return {.name = std::move(name), .type = type, .content_access = content_access};
     }
 
     [[nodiscard]] constexpr CoverageEventInputConfig event_input(
-        std::string name, EventTypeId type, InputAccess::Coverage)
+        std::string name, EventTypeId type, InputAccess::Coverage,
+        InputContentAccess content_access = InputContentAccess::windowed)
     {
-        return {.name = std::move(name), .type = type};
+        return {.name = std::move(name), .type = type, .content_access = content_access};
     }
 
 #define IV_DEFINE_EVENT_OUTPUT_HELPER(Token, Config)                     \
@@ -2389,17 +2436,17 @@ namespace iv {
         std::string name,                                                \
         EventTypeId type,                                                \
         OutputProduction::Token,                                         \
-        OutputRetention retention = OutputRetention::ephemeral,          \
+        OutputRealization realization = OutputRealization::computed,          \
         EventOutputOptions options = {})                                 \
     {                                                                    \
         return {                                                         \
             .name = std::move(name),                                     \
             .type = type,                                                \
             .options = options,                                          \
-            .retention = retention,                                      \
+            .realization = realization,                                      \
         };                                                               \
     }
-    IV_DEFINE_EVENT_OUTPUT_HELPER(Tick, TickEventOutputConfig)
+    IV_DEFINE_EVENT_OUTPUT_HELPER(Sequential, SequentialEventOutputConfig)
     IV_DEFINE_EVENT_OUTPUT_HELPER(Region, RegionEventOutputConfig)
     IV_DEFINE_EVENT_OUTPUT_HELPER(Coverage, CoverageEventOutputConfig)
 #undef IV_DEFINE_EVENT_OUTPUT_HELPER
@@ -2495,21 +2542,21 @@ namespace iv {
     }
 
     template<AuthoredOutputConfig Config>
-    [[nodiscard]] constexpr bool is_tock(Config const&)
+    [[nodiscard]] constexpr bool is_random_access_output(Config const&)
     {
-        return Config::production != OutputProductionKind::tick;
+        return Config::production != OutputProductionKind::sequential;
     }
 
     template<AuthoredOutputConfig Config>
-    [[nodiscard]] constexpr bool is_tick(Config const&)
+    [[nodiscard]] constexpr bool is_sequential_output(Config const&)
     {
-        return Config::production == OutputProductionKind::tick;
+        return Config::production == OutputProductionKind::sequential;
     }
 
     template<AuthoredOutputConfig Config>
-    [[nodiscard]] constexpr bool is_persisted(Config const& config)
+    [[nodiscard]] constexpr bool is_buffered(Config const& config)
     {
-        return is_persisted(config.retention);
+        return is_buffered(config.realization);
     }
 
     namespace port_config_details {
@@ -2543,6 +2590,8 @@ namespace iv {
             ContinuousInputProperties properties {
                 .channel_layout = common_channel_layout<Types...>(config, indices),
             };
+            if constexpr (Config::access != InputAccessKind::sequential)
+                properties.content_access = config.content_access;
 
             if constexpr (Config::access == InputAccessKind::sequential) {
                 std::vector<ContinuousSequentialInputMetadata> metadata;
@@ -2583,8 +2632,8 @@ namespace iv {
         {
             auto channel_layout =
                 common_channel_layout<Types...>(config, indices);
-            if constexpr (Config::production == OutputProductionKind::tick) {
-                if (config.retention == OutputRetention::persisted) {
+            if constexpr (Config::production == OutputProductionKind::sequential) {
+                if (config.realization == OutputRealization::buffered) {
                     channel_layout.sample_layout =
                         SampleStreamLayout::interleaved;
                 }
@@ -2593,12 +2642,12 @@ namespace iv {
                 .channel_layout = channel_layout,
             };
 
-            if constexpr (Config::production == OutputProductionKind::tick) {
-                std::vector<ContinuousTickOutputMetadata> metadata;
+            if constexpr (Config::production == OutputProductionKind::sequential) {
+                std::vector<ContinuousSequentialOutputMetadata> metadata;
                 metadata.reserve(sizeof...(Types));
                 (metadata.emplace_back(ContinuousValueType<Types>::metadata(
                     std::get<I>(config.options))), ...);
-                properties.production = TickContinuousOutputProperties{
+                properties.production = SequentialContinuousOutputProperties{
                     .value_metadata = std::move(metadata),
                 };
             } else if constexpr (
@@ -2623,7 +2672,7 @@ namespace iv {
             return {
                 config.name,
                 std::move(properties),
-                config.retention,
+                config.realization,
             };
         }
     }
@@ -2650,8 +2699,8 @@ namespace iv {
         }, config.options);
         auto layout = result.value_or(
             continuous_value_details::default_audio_channel_layout);
-        if constexpr (Config::production == OutputProductionKind::tick) {
-            if (config.retention == OutputRetention::persisted) {
+        if constexpr (Config::production == OutputProductionKind::sequential) {
+            if (config.realization == OutputRealization::buffered) {
                 layout.sample_layout = SampleStreamLayout::interleaved;
             }
         }
@@ -2684,7 +2733,7 @@ namespace iv {
 
     template<RegisteredContinuousValue... Types>
     [[nodiscard]] OutputConfig erase_port_config(
-        TickOutputConfig<Types...> const& config)
+        SequentialOutputConfig<Types...> const& config)
     {
         return port_config_details::erase_continuous_output<Types...>(
             config, std::index_sequence_for<Types...>{});
@@ -2714,6 +2763,11 @@ namespace iv {
             EventInputProperties{
                 .type = config.type,
                 .access = static_cast<InputAccessConfig>(Config::access),
+                .content_access = [&] {
+                    if constexpr (Config::access != InputAccessKind::sequential)
+                        return config.content_access;
+                    else return InputContentAccess::windowed;
+                }(),
             },
         };
     }
@@ -2730,17 +2784,18 @@ namespace iv {
                     Config::production),
                 .max_event_count = config.options.max_event_count,
             },
-            config.retention,
+            config.realization,
         };
     }
 
     // The configured graph keeps storage sample/event lists because lowering
-    // uses separate sample and event collections. Production and retention
+    // uses separate sample and event collections. Production and realization
     // remain independent; Tock output configs have no Tick history/latency.
     struct EventInputConfig {
         std::string name {};
         EventTypeId type {};
         InputAccessConfig access = InputAccessKind::sequential;
+        InputContentAccess content_access = InputContentAccess::windowed;
         constexpr bool operator==(EventInputConfig const&) const = default;
     };
 
@@ -2748,8 +2803,8 @@ namespace iv {
         std::string name {};
         EventTypeId type {};
         double max_events_per_index = DEFAULT_MAX_EVENTS_PER_SAMPLE;
-        OutputProductionConfig production = OutputProductionKind::tick;
-        OutputRetention retention = OutputRetention::ephemeral;
+        OutputProductionConfig production = OutputProductionKind::sequential;
+        OutputRealization realization = OutputRealization::computed;
         // A finite bound over the complete authored output coverage. When
         // present, this replaces density-based capacity sizing.
         std::optional<std::size_t> max_event_count{};
@@ -2763,6 +2818,7 @@ namespace iv {
             .sample_layout = SampleStreamLayout::planar,
         };
         ContinuousInputAccessProperties access {};
+        InputContentAccess content_access = InputContentAccess::windowed;
         constexpr bool operator==(ContinuousInputConfig const&) const = default;
     };
 
@@ -2773,7 +2829,7 @@ namespace iv {
             .sample_layout = SampleStreamLayout::planar,
         };
         ContinuousOutputProductionProperties production {};
-        OutputRetention retention = OutputRetention::ephemeral;
+        OutputRealization realization = OutputRealization::computed;
         constexpr bool operator==(ContinuousOutputConfig const&) const = default;
     };
 
@@ -2889,8 +2945,8 @@ namespace iv {
             using Properties = std::remove_cvref_t<decltype(properties)>;
             if constexpr (std::same_as<
                               Properties,
-                              TickContinuousOutputProperties>) {
-                return OutputProductionKind::tick;
+                              SequentialContinuousOutputProperties>) {
+                return OutputProductionKind::sequential;
             } else if constexpr (std::same_as<
                                      Properties,
                                      RegionContinuousOutputProperties>) {
@@ -2943,10 +2999,10 @@ namespace iv {
     }
 
     template<class Config>
-    [[nodiscard]] constexpr bool is_tock(Config const& config)
+    [[nodiscard]] constexpr bool is_random_access_output(Config const& config)
         requires requires { output_production(config); }
     {
-        return is_tock(output_production(config));
+        return is_random_access_output(output_production(config));
     }
 
     template<class Config>
@@ -2957,25 +3013,25 @@ namespace iv {
     }
 
     template<class Config>
-    [[nodiscard]] constexpr bool is_tick(Config const& config)
+    [[nodiscard]] constexpr bool is_sequential_output(Config const& config)
         requires requires { output_production(config); }
     {
-        return is_tick(output_production(config));
+        return is_sequential_output(output_production(config));
     }
 
-    [[nodiscard]] constexpr bool is_persisted(OutputConfig const& config)
+    [[nodiscard]] constexpr bool is_buffered(OutputConfig const& config)
     {
-        return is_persisted(config.retention);
+        return is_buffered(config.realization);
     }
 
-    [[nodiscard]] constexpr bool is_persisted(ContinuousOutputConfig const& config)
+    [[nodiscard]] constexpr bool is_buffered(ContinuousOutputConfig const& config)
     {
-        return is_persisted(config.retention);
+        return is_buffered(config.realization);
     }
 
-    [[nodiscard]] constexpr bool is_persisted(EventOutputConfig const& config)
+    [[nodiscard]] constexpr bool is_buffered(EventOutputConfig const& config)
     {
-        return is_persisted(config.retention);
+        return is_buffered(config.realization);
     }
 
     [[nodiscard]] constexpr ContinuousInputConfig materialize_continuous_config(
@@ -2986,6 +3042,7 @@ namespace iv {
             .name = config.name,
             .channel_layout = properties.channel_layout,
             .access = properties.access,
+            .content_access = properties.content_access,
         };
     }
 
@@ -2997,7 +3054,7 @@ namespace iv {
             .name = config.name,
             .channel_layout = properties.channel_layout,
             .production = properties.production,
-            .retention = config.retention,
+            .realization = config.realization,
         };
     }
 
@@ -3008,6 +3065,7 @@ namespace iv {
             .name = config.name,
             .type = std::get<EventInputProperties>(config.kind).type,
             .access = input_access(config),
+            .content_access = std::get<EventInputProperties>(config.kind).content_access,
         };
     }
 
@@ -3020,7 +3078,7 @@ namespace iv {
             .type = properties.type,
             .max_events_per_index = properties.max_events_per_index,
             .production = output_production(config),
-            .retention = config.retention,
+            .realization = config.realization,
             .max_event_count = properties.max_event_count,
         };
     }
@@ -3033,6 +3091,7 @@ namespace iv {
             ContinuousInputProperties{
                 .channel_layout = config.channel_layout,
                 .access = config.access,
+                .content_access = config.content_access,
             },
         };
     }
@@ -3042,7 +3101,7 @@ namespace iv {
     {
         return {
             config.name,
-            EventInputProperties{.type = config.type, .access = config.access},
+            EventInputProperties{.type = config.type, .access = config.access, .content_access = config.content_access},
         };
     }
 
@@ -3055,7 +3114,7 @@ namespace iv {
                 .channel_layout = config.channel_layout,
                 .production = config.production,
             },
-            config.retention,
+            config.realization,
         };
     }
 
@@ -3070,7 +3129,7 @@ namespace iv {
                 .production = config.production,
                 .max_event_count = config.max_event_count,
             },
-            config.retention,
+            config.realization,
         };
     }
 

@@ -340,7 +340,7 @@ struct SampleContinuousValueExtension {
     }
     IV_AUDIO_CHANNEL_OPTIONS(RegionInputOptions);
     IV_AUDIO_CHANNEL_OPTIONS(CoverageInputOptions);
-    IV_AUDIO_CHANNEL_OPTIONS(TickOutputOptions);
+    IV_AUDIO_CHANNEL_OPTIONS(SequentialOutputOptions);
     IV_AUDIO_CHANNEL_OPTIONS(RegionOutputOptions);
     IV_AUDIO_CHANNEL_OPTIONS(CoverageOutputOptions);
 #undef IV_AUDIO_CHANNEL_OPTIONS
@@ -360,7 +360,7 @@ struct SampleContinuousValueExtension {
     };
     using RegionInputMetadata = StatelessMetadata;
     using CoverageInputMetadata = StatelessMetadata;
-    using TickOutputMetadata = StatelessMetadata;
+    using SequentialOutputMetadata = StatelessMetadata;
     using RegionOutputMetadata = StatelessMetadata;
     using CoverageOutputMetadata = StatelessMetadata;
 
@@ -384,7 +384,7 @@ struct SampleContinuousValueExtension {
     }
     IV_STATELESS_METADATA_OVERLOAD(RegionInputOptions, RegionInputMetadata)
     IV_STATELESS_METADATA_OVERLOAD(CoverageInputOptions, CoverageInputMetadata)
-    IV_STATELESS_METADATA_OVERLOAD(TickOutputOptions, TickOutputMetadata)
+    IV_STATELESS_METADATA_OVERLOAD(SequentialOutputOptions, SequentialOutputMetadata)
     IV_STATELESS_METADATA_OVERLOAD(RegionOutputOptions, RegionOutputMetadata)
     IV_STATELESS_METADATA_OVERLOAD(CoverageOutputOptions, CoverageOutputMetadata)
 #undef IV_STATELESS_METADATA_OVERLOAD
@@ -591,24 +591,24 @@ struct FractionalGlobalIndexContinuousValueExtension {
     using RegionInputMetadata = RegionInputOptions;
     using CoverageInputOptions = RegionInputOptions;
     using CoverageInputMetadata = RegionInputMetadata;
-    struct TickOutputOptions {
-        constexpr bool operator==(TickOutputOptions const&) const = default;
+    struct SequentialOutputOptions {
+        constexpr bool operator==(SequentialOutputOptions const&) const = default;
 
         template<class Writer>
         void write_binary(Writer&) const
         {}
 
         template<class Reader>
-        [[nodiscard]] static TickOutputOptions read_binary(Reader&)
+        [[nodiscard]] static SequentialOutputOptions read_binary(Reader&)
         {
             return {};
         }
     };
-    using TickOutputMetadata = TickOutputOptions;
-    using RegionOutputOptions = TickOutputOptions;
-    using RegionOutputMetadata = TickOutputMetadata;
-    using CoverageOutputOptions = TickOutputOptions;
-    using CoverageOutputMetadata = TickOutputMetadata;
+    using SequentialOutputMetadata = SequentialOutputOptions;
+    using RegionOutputOptions = SequentialOutputOptions;
+    using RegionOutputMetadata = SequentialOutputMetadata;
+    using CoverageOutputOptions = SequentialOutputOptions;
+    using CoverageOutputMetadata = SequentialOutputMetadata;
 
     [[nodiscard]] static constexpr SequentialInputMetadata metadata(
         SequentialInputOptions const& options) noexcept
@@ -800,7 +800,7 @@ struct FFTBlockContinuousValueExtension {
     }
     IV_AUDIO_CHANNEL_OPTIONS(RegionInputOptions);
     IV_AUDIO_CHANNEL_OPTIONS(CoverageInputOptions);
-    IV_AUDIO_CHANNEL_OPTIONS(TickOutputOptions);
+    IV_AUDIO_CHANNEL_OPTIONS(SequentialOutputOptions);
     IV_AUDIO_CHANNEL_OPTIONS(RegionOutputOptions);
     IV_AUDIO_CHANNEL_OPTIONS(CoverageOutputOptions);
 #undef IV_AUDIO_CHANNEL_OPTIONS
@@ -820,7 +820,7 @@ struct FFTBlockContinuousValueExtension {
     };
     using RegionInputMetadata = StatelessMetadata;
     using CoverageInputMetadata = StatelessMetadata;
-    using TickOutputMetadata = StatelessMetadata;
+    using SequentialOutputMetadata = StatelessMetadata;
     using RegionOutputMetadata = StatelessMetadata;
     using CoverageOutputMetadata = StatelessMetadata;
 
@@ -838,7 +838,7 @@ struct FFTBlockContinuousValueExtension {
     }
     IV_STATELESS_METADATA_OVERLOAD(RegionInputOptions, RegionInputMetadata)
     IV_STATELESS_METADATA_OVERLOAD(CoverageInputOptions, CoverageInputMetadata)
-    IV_STATELESS_METADATA_OVERLOAD(TickOutputOptions, TickOutputMetadata)
+    IV_STATELESS_METADATA_OVERLOAD(SequentialOutputOptions, SequentialOutputMetadata)
     IV_STATELESS_METADATA_OVERLOAD(RegionOutputOptions, RegionOutputMetadata)
     IV_STATELESS_METADATA_OVERLOAD(CoverageOutputOptions, CoverageOutputMetadata)
 #undef IV_STATELESS_METADATA_OVERLOAD
@@ -1288,8 +1288,8 @@ struct MetadataVariants<ExtensionList<Ignored, Extensions...>> {
         typename Extensions::RegionInputMetadata...>;
     using CoverageInput = std::variant<
         typename Extensions::CoverageInputMetadata...>;
-    using TickOutput = std::variant<
-        typename Extensions::TickOutputMetadata...>;
+    using SequentialOutput = std::variant<
+        typename Extensions::SequentialOutputMetadata...>;
     using RegionOutput = std::variant<
         typename Extensions::RegionOutputMetadata...>;
     using CoverageOutput = std::variant<
@@ -1309,8 +1309,8 @@ using ContinuousRegionInputMetadata =
     continuous_value_details::RegisteredMetadataVariants::RegionInput;
 using ContinuousCoverageInputMetadata =
     continuous_value_details::RegisteredMetadataVariants::CoverageInput;
-using ContinuousTickOutputMetadata =
-    continuous_value_details::RegisteredMetadataVariants::TickOutput;
+using ContinuousSequentialOutputMetadata =
+    continuous_value_details::RegisteredMetadataVariants::SequentialOutput;
 using ContinuousRegionOutputMetadata =
     continuous_value_details::RegisteredMetadataVariants::RegionOutput;
 using ContinuousCoverageOutputMetadata =
@@ -1336,8 +1336,8 @@ consteval bool metadata_variants_match_registry(
             std::variant_alternative_t<Index, typename Variants::CoverageInput>,
             typename Extensions::CoverageInputMetadata>
         && std::same_as<
-            std::variant_alternative_t<Index, typename Variants::TickOutput>,
-            typename Extensions::TickOutputMetadata>
+            std::variant_alternative_t<Index, typename Variants::SequentialOutput>,
+            typename Extensions::SequentialOutputMetadata>
         && std::same_as<
             std::variant_alternative_t<Index, typename Variants::RegionOutput>,
             typename Extensions::RegionOutputMetadata>
@@ -1369,7 +1369,7 @@ static_assert(
     std::variant_size_v<ContinuousCoverageInputMetadata>
     == continuous_value_type_registry.size());
 static_assert(
-    std::variant_size_v<ContinuousTickOutputMetadata>
+    std::variant_size_v<ContinuousSequentialOutputMetadata>
     == continuous_value_type_registry.size());
 static_assert(
     std::variant_size_v<ContinuousRegionOutputMetadata>
@@ -1390,7 +1390,7 @@ concept ContinuousMetadataVariant =
     || std::same_as<std::remove_cvref_t<Variant>,
         ContinuousCoverageInputMetadata>
     || std::same_as<std::remove_cvref_t<Variant>,
-        ContinuousTickOutputMetadata>
+        ContinuousSequentialOutputMetadata>
     || std::same_as<std::remove_cvref_t<Variant>,
         ContinuousRegionOutputMetadata>
     || std::same_as<std::remove_cvref_t<Variant>,
@@ -1507,12 +1507,12 @@ default_coverage_input_metadata(ContinuousValueTypeId type)
     throw "unregistered continuous value type";
 }
 
-[[nodiscard]] constexpr ContinuousTickOutputMetadata
-default_tick_output_metadata(ContinuousValueTypeId type)
+[[nodiscard]] constexpr ContinuousSequentialOutputMetadata
+default_sequential_output_metadata(ContinuousValueTypeId type)
 {
     switch (type) {
 #define IV_CASE(key, extension)                                          \
-    IV_DEFAULT_CONTINUOUS_METADATA_CASE(TickOutput, key, extension)
+    IV_DEFAULT_CONTINUOUS_METADATA_CASE(SequentialOutput, key, extension)
         IV_CONTINUOUS_VALUE_TYPES(IV_CASE)
 #undef IV_CASE
     case ContinuousValueTypeId::count: break;

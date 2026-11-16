@@ -44,7 +44,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<TickOutputConfig<Sample>, 1>{};
+            return std::array<SequentialOutputConfig<Sample>, 1>{};
         }
 
         struct State {
@@ -123,7 +123,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<TickOutputConfig<Sample>, 1>{};
+            return std::array<SequentialOutputConfig<Sample>, 1>{};
         }
 
         void tick(TickSampleContext<DeterministicUniformNoise> const& state) const
@@ -192,7 +192,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<TickOutputConfig<Sample>, 1>{};
+            return std::array<SequentialOutputConfig<Sample>, 1>{};
         }
 
         void tick_block(TickBlockContext<DeterministicUniformAESNoise> const& ctx) const
@@ -246,7 +246,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<TickOutputConfig<Sample>, 1>{};
+            return std::array<SequentialOutputConfig<Sample>, 1>{};
         }
 
         void tick(TickSampleContext<UniformToCauchy> const& state) const
@@ -288,7 +288,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<TickOutputConfig<Sample>, 1>{};
+            return std::array<SequentialOutputConfig<Sample>, 1>{};
         }
 
         void declare(DeclarationContext<UniformToPower> const& ctx) const
@@ -354,7 +354,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<TickOutputConfig<Sample>, 1>{};
+            return std::array<SequentialOutputConfig<Sample>, 1>{};
         }
 
         void tick(TickSampleContext<UniformToGaussian> const& state) const
@@ -422,7 +422,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<TickOutputConfig<Sample>, 1>{};
+            return std::array<SequentialOutputConfig<Sample>, 1>{};
         }
 
         void tick(TickSampleContext<DeterministicGaussianAESNoise> const& state) const

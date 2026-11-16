@@ -1,6 +1,18 @@
 # Coverage, Random Access, And Background Evaluation
 
-[DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md) defines the normative vocabulary used here.
+[DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md) defines the vocabulary used here.
+
+> **2026-11-16 accepted design supersession:** [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md)
+> governs the intended `SequentialOutputConfig` and
+> `OutputRealization::{computed, buffered}` contracts, disjoint Tick/Tock output
+> shapes, computed-vs-buffered input compatibility, demand-scoped Region content,
+> partial buffered publication, cache policy, recording, and realtime feedback.
+> Any older passage below about `TickOutputConfig`,
+> `OutputRetention::{ephemeral,persisted}`, mandatory retention, whole-Region
+> materialization, full-coverage publication, or feedback coverage proofs is
+> **superseded**, not a competing requirement. Original wording is preserved in
+> the [historical predecessor](./historical/output_ports_before_computed_buffered_2026-11-16.md). Source names and migration-status notes continue to describe
+> the checked-in implementation, not the destination.
 
 > **2026-11-15 accepted direction:**
 > [Cyclic Automation, Event Projections, And Suspendable Coverage Propagation](./automation_and_suspendable_coverage_direction.md)
@@ -72,131 +84,85 @@ planning visit per node.
 
 The central rules are:
 
-> Input access, output production, and output retention are independent authored
-> contracts. `SequentialInputConfig` declares a bounded sequential read window;
-> `RegionInputConfig` declares one finite ordered region; and
-> `CoverageInputConfig` declares arbitrary reads within the exact bound coverage
-> (explicitly selected full Regions during Tock evaluation).
-> `TickOutputConfig` selects sequential production by the existing generated
-> `tick_block()` implementation; `RegionOutputConfig` and `CoverageOutputConfig`
-> select demand-driven production by the appropriate Tock callback. Any output may be
-> `ephemeral` or `persisted`.
+> Input access, output production, and output realization are separate authored
+> properties. Input access is `SequentialInputConfig`, `RegionInputConfig` or
+> `CoverageInputConfig`; output shape is `SequentialOutputConfig`,
+> `RegionOutputConfig` or `CoverageOutputConfig`; output realization is
+> `OutputRealization::computed` or `OutputRealization::buffered`. Tick primitives
+> declare only Sequential outputs. Tock primitives declare only Region or
+> Coverage outputs. Both callback domains use the same realization modes; a
+> concrete primitive uses one primary callback domain.
 
-> One concrete executable primitive nevertheless belongs to exactly one execution
-> domain. It authors one Tick form or one Tock form, never both, and all of its outputs
-> use that family's production forms. A module node groups separate primitives when an
-> authored abstraction needs both domains. Eligible Tick replay is generated
-> off-thread Tick execution; it is not an implicit Tock callback. Authored Tock never
-> synthesizes an implicit Tick callback.
+> `computed` supplies demand-executable data without a proportional allocation
+> obligation. `buffered` supplies an independently addressable data resource;
+> a complete contiguous Region buffer is promised only to a compatible
+> complete-buffer consumer, after explicit complete-Region preparation. Neither
+> setting chooses a cache-retention policy. Recorded Tick Sequential/buffered
+> data are part of the selected authoritative data snapshot.
 
-> All concrete GraphJit node types have static constexpr port schemas. Graph
-> topology, node instance count, and connections remain dynamic graph data.
-> Replayability is a separately declared and validated **node trait**, not a new
-> `tick()` contract, port field, or alternate DSP callback. Contextual replayability
-> additionally requires every upstream value for the requested coverage to be
-> available or reproducible.
+> A Coverage output never feeds a Region input. Region inputs select one
+> Region and can require windowed or complete-buffer access. A computed source
+> cannot directly satisfy a complete-buffer request: an explicit bounded
+> materialization node is required. Tock evaluation sees the exact logical
+> Regions chosen by the planner and only their requested prepared content
+> windows; cached unrelated data do not leak into node-visible inputs.
 
-> `tock_coverage()` and its propagation/evaluation transactions run **only off the
-> audio thread**. An audio-thread sequential input reads the currently published
-> persisted-data root even when it is out of date; for a missing position it supplies that particular
-> input's `neutral_value`. No cache miss invokes tock or blocks the audio thread.
+> Output coverage and logical Region range do not determine how many samples
+> are computed. The background planner resolves exact existence, conservative
+> changes and reverse dependencies; demand and declared buffer requirements
+> determine necessary materialization. A buffered output may have known covered
+> positions not yet computed. Complete published **requested windows**, not
+> complete output coverage, are the publication requirement.
 
-> A random-access input may consume a Tock output (through canonical persisted data or an
-> ephemeral addressable materialization), a Tick/persisted output's published data,
-> or a contextually replayable Tick output. An unreproducible Tick/ephemeral output
-> cannot directly satisfy random-access demand: the DSP author must select persistence
-> or place an explicit recording node at the authored boundary. The restriction
-> prevents **implicit recording**, not a technically impossible connection. The
-> preliminary Tick-time Random Access path reads only a pinned published/materialized
-> immutable view; it never aliases current mutable Tick output.
+> Tock evaluation and coverage/dependency discovery run exclusively off the
+> audio thread. Live Tick Sequential streams produce samples continuously;
+> background-prepared Sequential windows must be ready before realtime use.
+> Stateful `.detach()` feedback is scheduled in realtime, not replayed through
+> an unresolved background cycle. A cache miss is never an audio-thread request
+> to run Tock, allocate or block.
 
-> Tiling is a non-materializing composition of source channels. It preserves each
-> source's production, retention, and effective access capabilities. A whole-tile
-> random-access connection requires every selected source channel to satisfy the
-> requested random-access contract; channel projection retains its own capabilities.
+> A recorded Tick Sequential/buffered output is Coverage-shaped when read from
+> its published historical buffer, not a Region output. Recording queue blocks
+> become readable only after background publication; data required to reproduce
+> a committed recorded snapshot must survive cache eviction. Graph configuration
+> plus the selected input/recording snapshot determine background results.
 
-> Computed Tock continuous and event outputs publish an exact finite logical
-> Region-range list. A Region output publishes exactly one range; a Coverage output
-> publishes zero or more ordered ranges. The runtime derives the exact positional
-> `IndexCoverage` union. Forward propagation
-> may conservatively over-report positions whose values could have changed; reverse
-> propagation may likewise conservatively over-request input positions. Under-reporting
-> either dependency direction is a correctness error, while over-reporting is a
-> performance cost. Physical record boundaries never widen the logical Region list or
-> the already-reported forward may-change positions. Mechanically pointwise replayable
-> Tick dependencies may still use compiler-generated propagation.
+> Tiling and event/channel conversions preserve per-channel producer
+> capabilities; explicit nodes perform materialization or shape conversions.
+> Forward and reverse propagation may suspend on selected data and must remain
+> independent of cache contents. Published readers pin coherent versions.
 
-> Event Region lists are anonymous in the initial contract. A callback can use list
-> position to keep Regions separate during that evaluation, but no stable Region ID is
-> promised across evaluations. A Sequential event consumer receives a merged
-> timeline-ordered stream in which overlapping Regions and equal-time duplicates are
-> preserved.
-
-> Invalidation and requested coverage are processed as batched background
-> evaluation transactions. All roots available for a selected transaction are
-> accumulated and compatible requirements are unioned. Forward/reverse planning
-> may revisit a node after explicitly awaited information becomes ready; ready
-> work is batched where possible. Ordinary Tock value production remains separate
-> from suspendable propagation. Tock `State` remains non-semantic acceleration
-> available only to tock.
-
-> No unresolved random-access computation dependency may participate in a cycle.
-> Replayable tick subgraphs must be acyclic when expanded for background demand;
-> valid published persisted values can terminate replay traversal. Ordinary
-> Tick-to-Sequential feedback retains its existing scheduling semantics.
-
-> Persisted output data are **never evicted** for age, cache limits, memory
-> pressure, or invalidation. Retained regions/chunks may be removed only when
-> output coverage no longer includes them or an authored recording publishes an
-> explicit erasure; replacement storage versions are
-> reclaimed only after their readers release them. Unbounded memory use is an
-> explicit consequence of the author's persistence declaration.
-
-> A Tick/persisted output is the recording output; there is no third retention mode or
-> separate recorder-port marker. An explicit recording node is an ordinary authored
-> node that consumes the live Sequential input and writes a Tick/persisted output. It
-> uses already-provisioned producer-reserve storage for each block actually written to
-> that output. Leaving the output untouched preserves
-> previously recorded RAM data at that timeline position; `write_void()` publishes an
-> authoritative erasure. Each background pass independently pins one finite prefix
-> from every relevant producer queue; selected changes enter ordinary exact
-> invalidation, reverse planning, background computation, and coherent publication.
-> Pending queue storage is transaction input, not the recorder's Random Access
-> representation.
-
-This is an incremental coverage-evaluation model integrated with Tick execution,
-not a second audio-thread scheduler and not a storage class.
+For the complete connection matrix and realization details, see [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md).
 
 ## 1. Port model
 
-Port data/value type, input access, output production, and output retention
-are independent. The callback that *uses* an input does not determine that input's
-access: a `tick_block()` implementation can consume random-access inputs, including
-when that Tick implementation is replayed in the background.
+The intended port configuration has `SequentialInputConfig`,
+`RegionInputConfig`, and `CoverageInputConfig`. Tick primitives declare
+`SequentialOutputConfig`; Tock primitives declare `RegionOutputConfig` or
+`CoverageOutputConfig`. The shared realization property is
+`OutputRealization::computed` or `OutputRealization::buffered` (not a
+retention flag). Data/value types and port pacing remain independent. Source
+migration and verification status are recorded in the
+[implementation plan](./automation_and_background_migration_plan.md).
 
-The independent output-production axis applies across schemas and module composition,
-but one concrete executable primitive is homogeneous: exactly one Tick callback form
-owns only Tick outputs, or exactly one Tock callback form owns only Region/Coverage
-outputs. This keeps realtime scheduling and background evaluation as disjoint
-primitive domains. Grouping both domains is the job of a module node.
+Input access describes the consumer's addressing requirements, not the
+producer's execution domain. A `tick_block()` may read prepared Random Access
+views; a Tock output can prepare a Sequential consumer's rolling window.
+Region/Coverage inputs can require bounded window access or complete buffer
+access. Connection compatibility follows
+[Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md), including the absolute Coverage-to-Region prohibition.
 
-| Axis | Authored alternatives | Meaning |
-| --- | --- | --- |
-| input access | `SequentialInputConfig`, `RegionInputConfig`, `CoverageInputConfig` | bounded sequential window, one finite ordered region, or arbitrary positions inside coverage |
-| output production | `TickOutputConfig`, `RegionOutputConfig`, `CoverageOutputConfig` | generated Tick data, one finite background region, or background coverage |
-| output retention | `OutputRetention::{ephemeral,persisted}` | whether generated finalized values must be retained |
-| data | registered continuous value type, event type | value/event representation and bounds |
+The initial Tick API requires `InputContentAccess::complete_buffer` for every
+Region/Coverage input, including on outputless sinks. The background executor
+requests and prepares their complete selected logical Regions before activation.
+Windowed Random Access inputs are initially available to Tock callbacks only.
+Tick Sequential inputs retain bounded background playback preparation.
 
-Sequential input history and Tick output history/latency are finite realization
-constraints. Region/Coverage input and output declarations do not acquire these
-properties. Output retention never selects a callback. The concrete sample/event
-schema is in section 13; the direct-connection rule is in section 22.
-
-`tick()` already exists: the node traits generate its `tick_block()` wrapper, and
-GraphJit imports that wrapper's LLVM definition. The new replayability trait
-permits **some** such nodes to execute through that same wrapper in the background
-evaluation DAG. It does not make all `tick()` implementations pure or replayable.
-No `tock_coverage()` call occurs on the audio thread.
+`IndexCoverage` remains positional existence; logical Region descriptors and
+partially materialized readable windows are distinct objects. Realtime
+Sequential input fallback applies only to known absence, never to an uncomputed
+covered position. Coverage propagation and data production do not run on the
+audio thread.
 
 ## 2. `IndexCoverage` is the positional coverage boundary
 
@@ -351,12 +317,14 @@ prefix or suffix. The whole-graph Tick block size does not partition persisted d
 
 One published root contains both sample and event output directories. A candidate
 path-copies only the output-directory and per-output range-tree paths affected by its
-mutations; unchanged outputs, records, and subtrees remain shared. Publication makes
-the complete candidate visible as one coherent data version. Candidate completeness
-is a transaction property, not a validity bit attached to fixed storage quanta.
+mutations; unchanged outputs, records, and subtrees remain shared. Publication makes a coherent candidate visible as one immutable data version.
+Completeness applies to the **requested windows promised by that version**;
+other covered positions may remain uncomputed. Each published result tracks
+which requested ranges are valid. This metadata is distinct from exact
+`IndexCoverage`, logical Region identity and physical storage quanta.
 
-RAM placement is intentionally not part of coverage or retention semantics. A complete
-stored output may later use ordinary heap memory, stable arenas, mmap-backed files,
+RAM placement is intentionally not part of logical coverage or output realization.
+A prepared window may use ordinary heap memory, stable arenas, mmap-backed files,
 compressed backing, or another representation. Such choices must still satisfy
 the audio-thread read requirements of the generated graph, for example by pinning or
 prefaulting live regions where the backing mechanism can otherwise fault or block.
@@ -364,43 +332,26 @@ They do not reintroduce semantic holes into a published stored output.
 
 ## 5. Sparse logical requests and stored materialization
 
-External random-access requests may be sparse. UI waveform rendering may ask for a few
-positions from a very large coverage, for example. Sparse demand behaves according to the output's access and retention semantics, not according to a generic cache policy.
+A sparse demand does **not** automatically select or compute a complete
+logical Region. The planner preserves the full Region's identity, range and
+order, and selects only the **needed content windows** for evaluation.
+The requested windows may be widened by explicit dependencies or a
+consumer's complete-buffer requirement, not by Region membership alone.
+Clipping a materialization window does not create a new logical Region.
 
-A `tock/ephemeral` output has no persisted materialization obligation. A sparse
-request is intersected with exact coverage; the runtime selects the complete
-logical Regions implicated by that request. Its `tock_coverage()` work then
-computes the selected Regions, writing directly into caller/result or
-transaction-local storage. In that
-callback, each random-access input's visible Region/Coverage is restricted to
-the exact logical input Regions selected by reverse propagation, even if
-other source data have already been computed. A selected logical Region is
-kept whole, not replaced by a clipped pseudo-Region.
+This rule applies equally to Tock/computed and Tock/buffered outputs. Computed
+outputs may use bounded scratch storage regardless of full-circle coverage.
+Buffered outputs can be materialized incrementally; published coverage may
+include uncomputed positions. The executor records which demanded windows
+are valid in a selected immutable version and never exposes a partial required
+window. Buffered/cached values may be reclaimed if recoverable; recorded
+inputs are authoritative snapshot data and must remain recoverable.
 
-A published `tock/persisted` output is different: the whole output coverage has
-already been materialized before publication. A sparse external request merely
-reads the requested subset from that complete stored representation. It does not
-cause the executor to create a partially populated stored output.
-
-A persisted candidate applies exact-range overwrites and erasures. If a mutation
-replaces `[20,21)` inside a retained region covering `[10,100)`, the store preserves
-the unaffected `[10,20)` and `[21,100)` values and inserts the replacement record for
-`[20,21)`. It does not invalidate or recompute unrelated positions merely because
-they once shared an allocation unit. Once the background transaction has completed
-all semantic demand required for its target output coverage, the candidate may be
-published as one `(semantic_version, data_version)` result.
-
-A tick/persisted output retains finalized sequentially produced values; its
-published coverage is a random-access **stored boundary** without requiring tock
-or an additional recording node. A replayable tick/ephemeral output can instead
-satisfy random-access demand by recomputing from available upstream values. Only
-an unreproducible tick/ephemeral source requires explicit recording before such
-demand. Semantic changes to any published retained source start downstream sound
-invalidation; they do not erase the older readable published data.
-
-There is no persisted sample page width or page index. Changing the whole-graph root
-block size changes Tick scheduling but does not repartition canonical persisted
-samples or events and requires no repaging transition.
+A Tick/Sequential/computed live stream exists for every executed position;
+if it must supply historical background Random Access, contextual replay or
+an explicit Sequential/buffered recording is required. The realtime audio
+thread never computes missing background data. See
+[Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md).
 
 ### Vue output queries are consumers of existing coverage
 
@@ -603,50 +554,32 @@ requirements are intersected with exact input availability before evaluation.
 
 ## 10. Tock coverage evaluation callbacks
 
-`tock_coverage()` produces values/events into prepared output storage for
-**only the selected exact demanded covered output regions**. Its multi-node
-`tock_coverage_batch()` form remains an optimization over independent scalar
-invocations: every lane has its own exact output request, input requirements,
-bindings and Tock `State`.
+`tock_coverage()` and `tock_coverage_batch()` evaluate **only the exact
+prepared demanded covered output windows**, widened when dependencies or
+complete-buffer input requirements make that necessary. A callback still
+receives the full metadata/identity of each explicitly selected logical
+Region. The selected materialized content may be a strict subrange of that
+Region; a clipped content window is not a clipped logical Region.
 
-**Explicit input selection invariant:** for every `RegionInputConfig`
-and `CoverageInputConfig` bound to Tock, the readable `region()`/`regions()`
-contains exactly the complete input Regions deliberately selected by the
-reverse planner and Region closure, not extra cached Regions. The input's
-`coverage()` convenience (where supported) is the positional union of those
-selected Regions, **not** the possibly smaller reverse-required positional
-set. Overlapping and duplicate Regions remain separate, and a selected event
-Region may legitimately contain zero events. Accessing unselected Regions is
-invalid despite their presence in retained storage. Planning-only discovery
-reads do not enlarge this finalized input selection.
+For `RegionInputConfig` and `CoverageInputConfig`, node-visible Region
+collections are determined by the planner from the declared request and
+reverse requirements, not from incidental cache contents. `coverage()` is
+the union of the selected logical Regions, not a claim that all their
+contents have been computed. Explicit prepared windows are the only
+readable portions for a windowed input; a complete-buffer input is bound
+only after its whole selected Region is materialized and pinned. Duplicate
+and overlapping Regions remain distinct.
 
-Thus, at fixed semantic/data versions and authored configuration,
-cache history cannot alter selected callback-visible input Regions or computed
-results. Compatible demand roots can be coalesced before invocation, so
-different demands may select different Region collections; nevertheless any
-overlapping output positions must have equivalent computed results, independent
-of demand grouping. This also holds for each batch lane independently.
-The ordinary evaluator does not need an input `required_coverage()` or
-upstream-wide `produced_coverage()` accessor: requirements belong to reverse
-planning; readable input `regions()` and selected writable output `regions()`
-provide the semantic evaluation bounds. See
-[section 6 of the automation/propagation direction](./automation_and_suspendable_coverage_direction.md#6-tock-input-and-output-views)
-for examples and the distinction from the current source binding.
+Input/window selection and computed output values are deterministic for a
+fixed semantic/data snapshot and request, independent of cache history,
+work batching or hidden discovery reads. Selected prepared values must be
+complete for each requested sample/channel; events must respect the
+corresponding ordering and capacity rules. Failure or cancellation does not
+publish incomplete windows. Tock-owned `State` remains non-semantic
+acceleration; neither Tock nor dependency propagation executes on the
+audio thread.
 
-The callback can inspect the selected sample rate and the explicitly
-provided input Region views, but cannot read mutable/unavailable live Tick data or depend on
-Tick-owned `State`. Tock-owned `State` is solely non-semantic acceleration:
-it cannot affect values, coverage, input requirements or output Region lists.
-Successful sample completion initializes every demanded covered sample/channel;
-event completion emits every event within each demanded covered Region, including
-valid zero-event results. Events remain in nondecreasing timestamp order per
-Region, preserving equal-time producer-local order. Cancellation and failure
-publish no partial results.
-
-Ordinary Tock callbacks remain separate from propagation coroutines. A node
-cannot observe unrequested data through its Tock inputs simply because its
-planner earlier requested larger discovery regions. `tock_coverage()` never
-executes on the audio thread; replayable Tick callbacks remain Tick callbacks.
+Detailed semantics: [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md).
 
 ## 11. Coalesced demand and coherent candidate completion
 
@@ -704,83 +637,55 @@ sufficient for suspension, and no partially resolved candidate is exposed as a
 committed data version. The previous value-blind, single-phase contract is
 preserved in [historical documentation](./historical/coverage_before_suspendable_propagation_2026-11-15.md).
 
-## 13. Authored port schema, retention, and replayability
+## 13. Authored port schema, realization, and replayability
 
-The port schema has independent input access, output production, and output
-retention. Data properties remain separate for samples and events:
+The authored port schema separates input access from output shape:
 
 ```cpp
 SequentialInputConfig<Types...>
 RegionInputConfig<Types...>
 CoverageInputConfig<Types...>
 
-TickOutputConfig<Types...>
+SequentialOutputConfig<Types...>
 RegionOutputConfig<Types...>
 CoverageOutputConfig<Types...>
 
-enum class OutputRetention { ephemeral, persisted };
+enum class OutputRealization { computed, buffered };
 ```
 
-These are abbreviated authored-schema sketches. Event declarations have the same
-three access and production forms but remain separate event config types. Sequential
-history and Tick output history/latency are contributed by each configured instance
-through `constrain_ports()` rather than stored in static authored configs. Reflection
-then erases the heterogeneous typed declarations into the configured graph's access
-and production variants.
-Input access, output production and output retention are independent in reflection,
-configured-graph serialization and the compiler record interface. GraphJit classifies
-per-channel compatibility and delivery using those orthogonal contracts; execution of
-the retained background plan begins in step 4.
+Tick primitives declare only `SequentialOutputConfig`; Tock primitives declare
+only `RegionOutputConfig` or `CoverageOutputConfig`. Both use
+`OutputRealization::{computed, buffered}`. One concrete primitive has one primary
+callback domain. Input access, output shape and output realization remain
+distinct static properties; the callback domain constrains output shape.
+Sample/event data properties remain separate. One input
+capability determines whether a Region/Coverage consumer accepts prepared
+windowed content or requires complete contiguous buffers. Computed outputs
+do not directly satisfy the latter. Output realization **does not** prescribe
+cache lifetime. See [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md) for the valid callback/shape combinations and
+connection rules.
 
-| production | retention | producer and retention semantics |
-| --- | --- | --- |
-| tick | ephemeral | sequential generation; no post-window retention obligation |
-| tick | persisted | sequential generation; every written/voided callback block is retained |
-| region or coverage | ephemeral | background demand-driven generation; transaction-local materialization permitted |
-| region or coverage | persisted | background demand-driven generation; generated covered data retained |
-
-`ephemeral` does not forbid transaction-local materialization. `persisted` is a strict runtime
-retention guarantee, not a best-effort cache or a promise of project-file
-serialization. No persisted data are evicted for memory pressure, age, inactivity,
-invalidation, or lack of readers. Retained regions/chunks are removed only when output
-coverage ceases to include them; old storage versions are freed only after their
-pins are released. A persisted Tick output becomes subject to that guarantee whenever
-one callback leaves the output `written` or `voided`; the addressed callback block is
-then mandatory recording work. An untouched callback block makes no retention change.
-An author opting into persistence also opts into potentially unbounded memory use;
-the compiler does not invent an eviction or recording policy to cap it. Backing
-storage (RAM, file, mmap, etc.) is an implementation choice that must preserve this
-guarantee.
-
-`TickOutputConfig` does not imply that its output can only be read sequentially.
-Persisted Tick data can be read at recorded published positions; an ephemeral Tick
-output may also be randomly accessible when GraphJit proves contextual replayability.
-No retention or access mode is inferred from a tiled expression: each member keeps
-its own contract.
+`TickOutputConfig`, `OutputRetention::ephemeral` and
+`OutputRetention::persisted` are historical implementation identifiers.
+The old retention contract and its complete-publication obligations are
+preserved in the [historical predecessor](./historical/output_ports_before_computed_buffered_2026-11-16.md).
 
 ### Replayable node trait
 
-A node opts into the intrinsic replay **type trait** by declaring
-`static constexpr TickReplayMode replay_mode` as `input_union` or `full`
-(default `disabled`; owner decision, 2026-11-15). The mode also selects the
-compiler-generated output coverage: the union of the input coverages, or the
-whole circle; see
-[Sequential inputs resolve absence](./automation_and_suspendable_coverage_direction.md#4-absence-and-sequential-fallback).
-`iv::details::tick_replay_mode_v<Node>` is the validated compiler-facing value,
-and `intrinsically_replayable_v<Node>` derives eligibility from it; neither is a
-port field or an additional DSP callback. The earlier boolean declaration is
-preserved [historically](./historical/replay_coverage_before_tick_replay_mode_2026-11-15.md). An opted-in node must define the
-existing `tick()` but **not** its own native `tick_block()`, have no `State`, no
-input/output history or latency after resolution, and zero internal latency. Random
-Access inputs are permitted. Its tick computation must be deterministic and side-effect-free
-under one immutable semantic/configuration version, declared inputs, and absolute
-sample position; no mutable external or live-only resource may affect its result.
-Validate instance-dependent properties such as internal latency after configuration.
+Intrinsic replay eligibility remains separate from port output shape and
+realization. Replay is permitted only for deterministic, side-effect-free Tick
+computations with no stateful Sequential history/latency and only when
+contextual dependencies can be obtained from the same immutable snapshot.
+The former `TickReplayMode::{disabled,input_union,full}` coverage coupling is
+historical. Intrinsic replay permission is independent of output realization;
+`TickReplayMode::{disabled,full}` retains that permission in the current source
+migration. A replayable node's own outputs must be computed Sequential outputs.
+It may consume published buffered data from other nodes. Live Tick/Sequential output
+existence is continuous without authored sparse replay coverage.
+Stateful `.detach()` delays make unresolved feedback SCCs ineligible for
+background replay. Port declaration validation still has to ensure that
+replay cannot write into or mutate buffered resources as a side effect.
 
-A replayable Tick node must declare only ephemeral Tick outputs, for both
-continuous values and events (owner clarification, 2026-11-15). It can consume
-another node's persisted output as a recorded dependency. The output-declaration
-restriction does not prohibit these incoming connections.
 
 Event replay, if enabled, must additionally preserve deterministic timestamp/order
 and declared capacity; do not silently infer event replay from the sample rule.
@@ -1243,8 +1148,11 @@ coverage are rebound unless semantic configuration, random-access input connecti
 implementation semantics, sample rate, or another explicit forward cause requires
 recomputation.
 
-A `tock/persisted` candidate must become complete over its full new coverage
-before publication. A `tock/ephemeral` output has no persisted precomputation obligation.
+Under the 2026-11-16 destination, both Tock/computed and Tock/buffered outputs
+may leave undemanded covered positions uncomputed. Each demanded published
+window must be complete for its selected semantic/data version. The old
+whole-coverage `tock/persisted` publication rule is superseded; see
+[Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md).
 
 ## 20. Executor-controlled semantic mutation entry points
 
@@ -1286,7 +1194,7 @@ create candidate semantic version
 run exact forward coverage/change phase
         |
         v
-complete affected tock/persisted outputs
+prepare affected demanded output windows
 ```
 
 The mutation may have zero changed random-access inputs and still change output coverage
@@ -1395,49 +1303,31 @@ pending queue input remains available for retry rather than being silently consu
 
 ## 22. Direct connection compatibility and explicit recording
 
-The port validator checks **each source channel** against the destination input's
-access contract, not equality of the producer callback and consumer callback.
-These are connection permissions, not guarantees of audio-thread scheduling:
+Connection validation independently checks output shape, realization, input
+access, consumer content-access capability, type, timing and execution
+availability. A Coverage output **never** connects directly to a Region
+input. A Region/computed output cannot satisfy a complete-buffer Region
+input; the author can insert an explicit materialization node that bounds
+the requested range and produces Region/buffered. A Region/buffered output
+can supply the full contiguous pointer once that Region has actually been
+prepared, whereas both realizations can supply planned windowed reads.
 
-| Source output | Sequential input | Random Access input |
-| --- | --- | --- |
-| Tick/ephemeral, unreproducible for demanded coverage | allowed | authored Tick persistence or an explicit recording node required |
-| Tick/ephemeral, contextually replayable | allowed | allowed by background replay into an addressable materialization |
-| Tick/persisted | allowed from the current Tick representation | Coverage input only, through the selected published persisted-data snapshot; a Region input is rejected |
-| Tock/ephemeral | allowed with a materialized sequential/addressable window | allowed with transaction-local materialization in background or materialized addressable data for Tick use |
-| Tock/persisted | allowed from published data generated ahead of playback | allowed through the selected published persisted-data snapshot |
+A Tick/Sequential/buffered output is an ordinary recording producer.
+`write_void()` erases positions, `untouched` preserves previously recorded
+positions, and writes overwrite addressed positions; queue staging precedes
+immutable background publication. Historical recording reads are
+Coverage-shaped and cannot directly feed Region inputs. An unreproducible
+Tick/Sequential/computed stream requires an explicitly authored buffered
+recording boundary for historical Random Access demand. An eligible Tick
+computation may instead be replayed where every upstream dependency is
+reproducible and the replay DAG is acyclic. Feedback `.detach()` is a
+non-replayable history boundary.
 
-An unreproducible Tick/ephemeral output cannot acquire implicit historical storage
-merely because it feeds a random-access input. The restriction applies whether the
-random-access input is consumed by tick or tock. A Tick/persisted recording has a
-second restriction: it may feed a Coverage input but not a Region input. Recording
-writes are positional overwrites. Their `IndexCoverage` merges overlapping and
-touching ranges into maximal contiguous Regions, so individual Tick block boundaries
-do not become authored Region identities. Tock outputs may feed sequential inputs.
-Tiling does not change these permissions or silently materialize a new output: a
-whole-tile random-access connection requires every selected source channel to satisfy
-it. Projections preserve their source channel's original capability.
-
-A Tock-produced output directly feeding another node's Random Access input must
-be materialized into an immutable addressable representation before that consumer
-evaluates. For an ephemeral output, a background-only consumer may use a
-transaction-local addressable materialization; a Tick-time consumer requires a
-materialized addressable window that survives through the callback. Persisted data
-follow the strict retention guarantee. Replayable tick subgraphs
-may be fused and materialized only where their consumers' addressing contracts
-require it. Every tock callback, forward/reverse propagation callback, and persisted-data
-recomputation runs off the audio thread.
-
-An explicit recording node is required where an unreproducible ephemeral tick
-stream must supply historical random-access demand. It declares an ordinary
-Tick/persisted output; no additional recorder port kind or retention value exists.
-Its semantics are fixed: output
-writes overwrite the RAM recording at their timeline range, leaving an output
-untouched preserves any previous recording there, and `write_void()` erases the
-range authoritatively. Seeking changes the addressed timeline position, not those
-rules. GraphJit does not insert an implicit generic recorder. Any independently
-authored Tick/persisted producer is already recording its finalized output and needs
-no additional recorder boundary.
+Tock-produced Region or Coverage data feed a Tick consumer's Sequential input
+through prepared bounded windows. The source remains a Region or Coverage output. Realtime Random Access likewise uses only prepared pinned windows
+or complete buffers; no callback can cause background work or allocation
+synchronously. Output realization does not select cache retention. See
+[Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md) for the normative compatibility matrix.
 
 ### Storage requirements are inferred over overlapping port subsets
 
@@ -1696,30 +1586,42 @@ See
 [realtime_background_execution_and_queues.md](./realtime_background_execution_and_queues.md)
 for the normative cutover protocol.
 
-## 23. Complete persisted outputs and backing storage
+## 23. Demand-complete buffered outputs and backing storage
 
-The persisted-data store is canonical for both Tick/persisted and Tock/persisted
-outputs. A candidate successor is never exposed as a partially complete published
-snapshot. Tock/persisted completion may require its entire exact candidate coverage
-to be materialized before publication; Tick/persisted data become eligible when
-their recorded callback blocks are incorporated into a coherent successor data
-version.
+A buffered output may publish its exact logical coverage and Region list
+without materializing every covered position. The executor tracks which
+content windows have been prepared and validated for each immutable data
+version. A requested window is published only when **that window** is
+complete; an uncomputed covered position remains a dependency, not absence.
+Previously prepared unchanged windows can be reused in newer coherent
+versions. Source data needed to reproduce a version (notably committed
+recordings) remain authoritative; caches of recomputable content and
+prepared buffers can be evicted, remapped or regenerated.
 
-Complete materialization does not require all bytes to remain in anonymous RAM.
-Backing storage may use mmap/files, compression, deduplicated immutable regions/chunks,
-or copy-on-write roots, but **never automatic eviction** of persisted covered
-data. Invalidation retains readable old published data while a successor is
-computed. Records may be removed from the logical retained output only when its
-coverage no longer includes them. Superseded immutable storage versions may be
-reclaimed after their readers release them. Any representation accessed directly by the audio-thread Tick path must meet
-audio-thread access requirements.
+A full-buffer Region consumer is an explicit exception: every sample of the
+selected logical Region must be prepared, pinned and contiguous before the
+consumer executes. If that requirement exceeds the available resources, fail
+before attempting an uncontrolled allocation. For ordinary Sequential and
+windowed random-access consumers, neither buffered nor computed outputs
+require whole-Region or whole-coverage production. Linux mmap, sparse pages,
+file backing and copy-on-write roots are optional storage realizations;
+none changes the demand semantics.
 
-Tick/persisted output differs only in **how persisted data are populated**:
-`tick_block()` may revise storage under normal history/latency semantics, while each
-recorded Tick invocation authors its addressed callback block as a whole or leaves it
-untouched. Tock output retains exact arbitrary-coverage authoring and does not acquire
-this block disposition. Once published, Tick- and Tock-produced persisted data use the
-same range lookup, versioning, pinning, and consumer read path.
+A Tick/Sequential/buffered source differs from a Tock/buffered source only
+in the population mechanism and producer queue timing. Both use one shared,
+background-managed versioned buffer resource and backend-selection policy:
+where appropriate, sparse Linux virtual mappings can place newly computed
+pages at their final offsets without copying existing unchanged pages. The
+executor limits both the per-view mapping span and aggregate reserved virtual
+address space. It also budgets process-wide VMA fragmentation, physical
+backing and realtime-resident prepared pages independently. Physical backing
+runs should be mapped together when possible; a logical page is not
+necessarily one VMA. Obsolete backing must be reclaimed/reused only after
+all version and reader pins release it, without discarding authoritative
+recorded contents. Large logical Regions can still be served through bounded
+windows; complete-buffer consumers cannot be given segmented pointers as if
+they were contiguous. Published versions provide the same coherent read
+boundary. See [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md), §8.
 
 ## 24. Realtime-produced persistence/recording queues and reclamation
 
@@ -2088,40 +1990,40 @@ between the realtime and background actors.
 
 ## 30. Deliberately open implementation/tuning choices
 
-Implementation choices include record backing, range-tree/directory representation,
-the concrete callback-boundary/epoch mechanism used for audio-safe reader pins,
-transaction-workspace reuse, queue block sizes and capacity-watermark strategy,
-worker scheduling, cancellation granularity, and post-correctness SIMD/fusion/
-value-specialization cost models. None of these may weaken the authored persisted
-retention obligation or introduce audio-thread tock execution.
+The executor may choose physical backing, window sizes, cache eviction,
+read-ahead, range-tree/directory representation, buffer pooling, queue block
+sizes, cancellation granularity, mmap/file backing, and SIMD/fusion cost
+models. These choices must not affect output values, exact logical Region
+structure, authoritative recording information, dependency validity,
+versioned snapshot coherence, or realtime deadlines.
 
-The following are **not** implementation choices: static constexpr concrete node
-port schemas; independent input access/output production/output retention; explicit
-opt-in replayability with contextual dependency validation; no implicit recording of
-unreproducible Tick/ephemeral sources; one canonical persisted-data read abstraction
-for Tick/persisted and Tock/persisted outputs; background-only Tock and propagation;
-published/materialized-snapshot-only Tick-time Random Access in the preliminary
-implementation; stale-data-as-is/missing-position-per-input-neutral Sequential playback;
-subset-first storage requirement inference before storage coalescing; no persisted
-data eviction except loss of covered positions; exact output coverage and sound
-conservative forward invalidation; suspendable value-dependent forward/reverse
-planning when needed; explicitly selected full Tock input Region views; fixed
-capture-prefix transactions; callback-boundary-safe
-capture-block reuse; transaction-wide coverage/data/frontier commit; compiler-owned
-materialization scheduling; narrow transaction-local generated-root hooks with no
-executor/runtime-owner backdoor; legal-size replay invocation splitting; and no
-unresolved Random Access evaluation cycles.
+The following remain semantic requirements, not optional optimizations:
+static constexpr concrete schemas; Sequential outputs for Tick and
+Region/Coverage outputs for Tock; computed/buffered output realization; a separate
+windowed/complete-buffer Random Access input capability; Coverage-to-Region
+prohibition; explicit bounded materialization where required; exact
+`IndexCoverage` and sound forward/reverse propagation; no incidental cache
+influence on selected Tock inputs; partial demand-complete buffered
+publication; separately preserved recorded snapshot data; contextual replay
+with no unresolved delayed feedback SCCs; background-only Tock and
+propagation; immutable prepared input windows in Tick; audio-safe
+publication/reader pins and reclamation; and exact committed producer-queue
+prefix semantics. The earlier strict retention/whole-Region rules are
+preserved in historical documentation and superseded by
+[Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md).
 
 ## 31. Static validation
 
 Target node/package validation rejects non-static or non-constexpr concrete port
 schemas at **every** construction path (including internal builder paths), malformed
-authored `State` in either execution domain, conflicting callback/production declarations, invalid event
-capacity declarations, and invalid replayability trait declarations. The planned batch
+authored `State` in either execution domain, invalid event capacity
+and invalid replayability trait declarations. Tick permits only Sequential
+outputs; Tock permits only Region or Coverage outputs. A primitive selects
+exactly one primary Tick or Tock callback family. The planned batch
 API additionally rejects ambiguous authored shapes: a primitive authors exactly one
 primary form across `tick()`/`tick_block()`/`tick_block_batch()` or
-`tock_coverage()`/`tock_coverage_batch()`; every output matches that selected domain;
-and skip plus each authored
+`tock_coverage()`/`tock_coverage_batch()`, with the same disjoint output-shape
+rule for scalar and batch callbacks; skip plus each authored
 propagation direction choose one supported synchronous scalar, coroutine scalar,
 or synchronous batch form as specified in
 [Batched Node Callback Direction](./batched_node_callbacks_direction.md).
@@ -2138,11 +2040,13 @@ contract still requires pure deterministic evaluation under a fixed version.
 
 Whole-project GraphJit validation resolves per-channel connections and semantic
 SCCs, derives contextual replayability and exact available coverage, rejects
-unreproducible tick/ephemeral -> random-access demand unless an explicit recorder
-intervenes, and rejects unresolved background evaluation cycles. A Tock ->
-Random Access consumer requires an immutable addressable materialization; persisted
-outputs use canonical persisted data, while ephemeral storage lifetime depends on the
-consumer callback context. Explicit recorder bridges must have their valid authored
+unreproducible Tick/Sequential/computed historical Random Access demand
+unless an explicit recording node intervenes, and rejects unresolved
+background evaluation cycles. It also rejects Coverage-to-Region and
+computed-to-complete-buffer input connections; the latter require an
+explicit bounded materialization node. A Tock -> Random Access consumer
+requires version-consistent prepared windows or complete buffers as declared;
+cache lifetime belongs to the executor. Explicit recorder bridges must have their valid authored
 input/output shape; any realtime-produced queue plan must have realtime-safe pre-provisioned
 capacity and pass-boundary-safe ownership/reclamation. Unsupported event-
 replay contracts must be rejected, not silently treated as sample replay. Errors
@@ -2164,13 +2068,18 @@ validation, stable and anonymous output identities, authoritative empty event ch
 deterministic equal-time event ordering, missing Sequential-input neutral values, and
 the prohibition on audio-thread Tock/allocation/blocking/final-owner reclamation.
 
-## 32. Implementation landing order
+## 32. Prior implementation landing order (source checkpoint)
 
-This is the **normative dependency order** for the next documentation/implementation
-migration; [graph_jit_direction.md](./graph_jit_direction.md) and the application
-architecture should reference this list rather than propose a divergent one.
-The legacy executor deletion, final schema/intrinsic trait changes, and the
-connection/background-dependency planner rewrite are now separate landed stages
+The steps below document the pre-2026-11-16 implementation sequence and
+checked-in source checkpoints; **they are not the normative remaining-work
+order** after the computed/buffered redesign. See
+[Automation And Background Planning Migration](./automation_and_background_migration_plan.md)
+for the superseding feature dependencies, and
+[Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md)
+for the intended architecture. The earlier source checkpoints are retained
+here as implementation history.
+The legacy executor deletion, previous schema/intrinsic trait changes, and the
+connection/background-dependency planner rewrite were separate landed stages
 before GraphJit background execution. Through step 3, GraphJit retains orthogonal
 production/retention/access/delivery facts, contextual replay proofs, and a
 background evaluation DAG; it still does not execute Tock/replay work or imply
@@ -2501,71 +2410,36 @@ recording merely because that planning metadata exists.
 
 ## 33. Summary invariants
 
-1. Concrete GraphJit nodes have static constexpr port schemas; only graph topology
-   and instance/connection composition are dynamic.
-2. Input access (`SequentialInputConfig`/`RegionInputConfig`/`CoverageInputConfig`),
-   output production (`TickOutputConfig`/`RegionOutputConfig`/
-   `CoverageOutputConfig`) and output retention
-   (`ephemeral`/`persisted`) are independent declarations.
-   One concrete executable primitive still selects exactly one primary callback
-   domain and declares only outputs produced by that domain; module nodes compose
-   Tick and Tock primitives.
-3. `tick()` already lowers to an imported, optimizable generated `tick_block()`.
-   The planned batch layer retains `tick()` as a first-class authoring form and
-   normalizes every accepted Tick shape to both `do_tick_block()` and
-   `do_tick_block_batch()`. A separately declared node trait establishes intrinsic
-   replay eligibility; GraphJit proves contextual replayability through available
-   upstream coverage.
-4. An unreproducible Tick/ephemeral source cannot directly satisfy Random Access
-   demand. Tick/persisted, replayable Tick, and either Tock output can. Persisted
-   outputs use canonical persisted sample regions/event chunks; ephemeral Tock/replay
-   results use immutable
-   addressable materialization with transaction or materialized-window lifetime according
-   to the consumer callback context.
-5. Tiling preserves per-channel contracts and creates neither an implicit recording
-   policy nor an implicit producer.
-6. `tock_coverage()`/`tock_coverage_batch()` and authored scalar/batched propagation
-   callbacks run only off the audio thread. A sequential input plays stale published
-   persisted data as-is and substitutes **its own** `neutral_value` for an uncovered
-   requested position without waiting.
-7. Persisted outputs retain all generated/finalized covered data without automatic
-   eviction. Coverage removal alone ends the semantic retention obligation;
-   superseded storage versions are reclaimed only after readers release them.
-   Memory growth is author-selected.
-8. Exact output `IndexCoverage`, conservative forward may-change ranges and
-   conservative reverse requirements are independent of persisted record boundaries. Both dependency
-   directions may over-approximate but never under-approximate actual dependencies.
-   Mechanically pointwise replayable Tick propagation is generated from static
-   dependencies; non-pointwise Random Access footprints use authored background
-   propagation.
-9. The background evaluation DAG has no unresolved cycles; feedback in the
-   same-Tick scheduling graph retains its separate temporal semantics.
-10. Realtime-produced recording and Tick/persisted data use producer-specific reserves and background pending queues backed by power-of-two blocks. Producers build chains
-    privately and publish them cheaply at pass boundaries; background independently
-    pins one finite prefix per queue. There is no cross-queue atomic snapshot. Queue
-    insertion is not persisted-data publication, and released blocks return
-    through non-realtime capacity management.
-11. Tock-owned `State` is non-semantic Tock-only acceleration; canonical persisted-data
-    stores and pending producer queues are background-owned sidecars, distinct from
-    realtime fixed `NodeStorage`.
-12. Storage requirements are joined over exact overlapping port atoms, not chosen
-    independently per connection or promoted wholesale per authored port. storage
-    coalescing happens only after those correctness requirements are known.
-13. The legacy generated-node graph executor and dynamic concrete-port fallbacks
-    are deleted; the package/configuration JIT and GraphJit's imported concrete-
-    node LLVM remain.
-14. F/R propagation produces prepared coverage only. Coverage/data publication and
-    release of the selected producer-queue prefixes become authoritative together at
-    final transaction commit; every failure path leaves committed state and required
-    pending inputs unchanged.
-15. The generated background root owns static node/materialization interleaving and
-    calls only narrow transaction-local prepare/finalize hooks. Generated Tick and
-    background roots receive explicit binding frames, never executor pointers, a
-    persisted-data store, queue/capacity-manager internals, or a transaction object.
-16. Tick reader pins and `TickMaterializationSnapshot` lifetimes cross one complete
-    root callback without audio-thread allocation, blocking or final-owner
-    reclamation. Replay work is split into compiler-legal block-sized invocations.
-
+1. Input access is Sequential/Region/Coverage. Tick output production is
+   Sequential; Tock output production is Region/Coverage. Both share
+   `computed`/`buffered` realization.
+2. A computed output provides computation, not proportional storage or full
+   logical Region buffer pointers. A buffered output provides independently
+   accessible data, but neither mode forces eager computation or cache policy.
+3. Coverage outputs never feed Region inputs. Complete-buffer Region access
+   needs a buffered Region source (or an explicit bounded materialization
+   node). Windowed Region/Coverage access preserves logical Region identity.
+4. Exact `IndexCoverage`, logical Region decomposition, reverse demand and
+   already-materialized positions are independent. The executor computes only
+   what consumers and actual dependencies require.
+5. Published buffered snapshots can be partially materialized. Every
+   promised requested window is complete, pinned and version-consistent.
+   Uncomputed covered positions are not gaps; missing realtime preparation
+   is an underrun, not Sequential fallback.
+6. The executor controls caching and must retain or reconstruct all semantic
+   information required by selected snapshots. Recording is a normal
+   Tick/Sequential/buffered output, not a third category.
+7. Tick and Tock output shapes are disjoint; realization modes are shared.
+   Tick Sequential production is continuous and its `.detach()` feedback history
+   remains non-replayable; Tock and coverage/dependency propagation remain
+   on background workers. Realtime consumers use prepared bounded windows.
+8. Contextual Tick replay, where supported, requires deterministic and
+   acyclic dependencies or a published recorded boundary, independently of
+   output shape and realization.
+9. The existing static graph and storage analysis, queue publication, Tock
+   binding, coherence and change-propagation requirements remain, except
+   where superseded explicitly by
+   [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md).
 
 ## Sparse Sample events and replayed curve readers (2026-11-13)
 

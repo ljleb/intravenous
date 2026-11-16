@@ -33,7 +33,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("", OutputProduction::tick) };
+            return std::array { output<Sample>("", OutputProduction::sequential) };
         }
 
         void constrain_ports(ConstrainPortsContext<NlmsPredictor>& ctx) const
@@ -108,7 +108,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("", OutputProduction::tick) };
+            return std::array { output<Sample>("", OutputProduction::sequential) };
         }
 
         void constrain_ports(ConstrainPortsContext<TanhResidualPredictor>& ctx) const
@@ -211,7 +211,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("", OutputProduction::tick) };
+            return std::array { output<Sample>("", OutputProduction::sequential) };
         }
 
         void constrain_ports(ConstrainPortsContext<TanhResidualAR2Predictor>& ctx) const
@@ -347,7 +347,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("", OutputProduction::tick) };
+            return std::array { output<Sample>("", OutputProduction::sequential) };
         }
 
         void constrain_ports(ConstrainPortsContext<PolyResidualPredictor>& ctx) const

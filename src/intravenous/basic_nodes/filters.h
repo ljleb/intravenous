@@ -14,7 +14,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<TickOutputConfig<Sample>, 2>{};
+            return std::array<SequentialOutputConfig<Sample>, 2>{};
         }
 
         void tick(TickSampleContext<WhackIirThing> const& ctx) const

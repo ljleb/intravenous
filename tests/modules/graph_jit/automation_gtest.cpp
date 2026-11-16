@@ -2,7 +2,7 @@
 
 namespace iv::test::graph_jit_tests {
 
-TEST_F(GraphJitRuntimeFixture, SparseTockPointsReplayOnlyTheRequestedCurveWindow)
+TEST_F(GraphJitRuntimeFixture, SparseTockPointsComputeOnlyTheRequestedCurveWindow)
 {
     auto compiled = compile("iv.test.automation.window_module", 710);
     ASSERT_TRUE(compiled.succeeded())
@@ -22,7 +22,8 @@ TEST_F(GraphJitRuntimeFixture, SparseTockPointsReplayOnlyTheRequestedCurveWindow
     ASSERT_NE(curve, plan.ports.end());
     ASSERT_NE(window, plan.ports.end());
     EXPECT_EQ(source->max_event_count, 3u);
-    EXPECT_TRUE(plan.nodes[curve->node].replays_tick);
+    EXPECT_TRUE(plan.nodes[curve->node].authored_tock_execution);
+    EXPECT_FALSE(plan.nodes[curve->node].replays_tick);
     EXPECT_TRUE(plan.nodes[curve->node].authored_forward_coverage);
     EXPECT_TRUE(plan.nodes[curve->node].authored_reverse_coverage);
     auto const source_port = static_cast<iv::graph_jit::BackgroundPortIndex>(source - plan.ports.begin());

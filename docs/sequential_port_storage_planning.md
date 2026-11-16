@@ -1329,38 +1329,32 @@ JIT may then specialize it away when the authored access is statically valid.
 Arbitrary `TimedEvent` insertion outside that window is not part of the Tick-output
 contract.
 
-## Sequential timing is independent of output production and retention
+## Sequential timing is independent of output shape and realization
 
-Input access, output production and output retention are independent; continuous/event
-data properties remain a separate axis. The declaration shape is:
+Input access, output shape and realization are independent authored
+properties, and Tick/Tock callback domain is a separate execution property.
+The intended declaration shape is:
 
 ```cpp
 SequentialInputConfig<Types...>
 RegionInputConfig<Types...>
 CoverageInputConfig<Types...>
 
-TickOutputConfig<Types...>
+SequentialOutputConfig<Types...>
 RegionOutputConfig<Types...>
 CoverageOutputConfig<Types...>
 
-enum class OutputRetention { ephemeral, persisted };
-
+enum class OutputRealization { computed, buffered };
 ```
 
-The static access/production alternatives are separate from instance-authored timing.
-Sequential input `history()` and Tick output `history()`/`latency()` are contributed
-through the configured node's `constrain_ports()` phase. A Region or Coverage input
-can be consumed in either execution callback. A tick-produced output can satisfy
-random-access demand through finalized persisted data or contextually replayable
-computation; a Region/Coverage-produced output can feed a sequential input if its data is
-materialized off the audio thread. Production does not select the consumer's access.
-
-`ephemeral` permits transaction-local addressable materialization but
-makes no lasting retention promise. `persisted` retains **all generated/finalized
-covered data**: there is no automatic eviction for memory pressure, cache size,
-age, invalidation, or lack of current readers. Coverage removal is the only semantic
-reason to stop retaining that data; superseded storage versions can be reclaimed
-after readers unpin them. Memory growth is the graph author's retention choice.
+Sequential input history and Sequential output history/latency remain
+configured node constraints. A Region/Coverage input can be consumed by Tick
+or Tock only with its chosen windowed/complete-buffer content access prepared.
+A Tock output can satisfy Sequential demand by bounded background preparation.
+A computed output offers no full logical Region pointer; a buffered Region
+output can offer it after explicit complete preparation. Realization does not
+select cache policy; authoritative recording data survives cache eviction.
+See [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md).
 
 `InputConfig` / `OutputConfig` independently carry sample/event data properties
 and the above access/production/retention contracts. Static concrete node types

@@ -279,7 +279,7 @@ std::optional<PortStorageIndex> storage_for_delivery(
     // Replay reads background-evaluation storage, never the live current-Tick
     // buffer.
     if (requested_storage == PortStorageKind::background) {
-        if (subset.retention == OutputRetention::persisted) {
+        if (subset.realization == OutputRealization::buffered) {
             return find_storage(
                 plan,
                 storage_indices,
@@ -290,7 +290,7 @@ std::optional<PortStorageIndex> storage_for_delivery(
             storage_indices,
             PortStorageKind::background);
     }
-    if (subset.retention == OutputRetention::persisted) {
+    if (subset.realization == OutputRealization::buffered) {
         if (delivery == PlannedDeliveryMechanism::tick_to_sequential) {
             return find_storage(
                 plan,
@@ -894,8 +894,8 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                         std::vector<PortStorageIndex> selected;
                         if (target_subset.access
                             == PlannedDestinationAccess::random_access
-                            && source_subset.retention
-                                == OutputRetention::ephemeral) {
+                            && source_subset.realization
+                                == OutputRealization::computed) {
                             for (auto const storage_kind : {
                                      PortStorageKind::tick_random_access,
                                      PortStorageKind::background}) {
@@ -1303,7 +1303,7 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                 std::vector<PortStorageIndex> selected;
                 if (target_subset.access
                     == PlannedDestinationAccess::random_access
-                    && subset.retention == OutputRetention::ephemeral) {
+                    && subset.realization == OutputRealization::computed) {
                     for (auto const storage_kind : {
                              PortStorageKind::tick_random_access,
                              PortStorageKind::background}) {
@@ -2224,7 +2224,7 @@ std::expected<void, std::string> validate_tick_runtime_plan(
         if (port.node != node || port.kind != kind
             || port.direction != PortDirection::output
             || !port.persisted_tick_output
-            || port.retention != OutputRetention::persisted
+            || port.realization != OutputRealization::buffered
             || binding.maximum_block_size == 0
             || binding.maximum_invocations_per_callback == 0) {
             return std::unexpected(

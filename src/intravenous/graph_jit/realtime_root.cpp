@@ -2071,7 +2071,7 @@ void update_primitive_activity(
 }
 
 // Events outside a Tick output's declared coverage are not contributions.
-// Compact its callback-owned sequence before retention, fan-out and capture;
+// Compact its callback-owned sequence before realization, fan-out and capture;
 // every downstream event input then sees the same authoritative stream.
 void resolve_event_output_coverage(RootFrame& frame, RootPrimitive const& primitive) noexcept
 {
@@ -3717,7 +3717,7 @@ private:
                 if (port.node != node || port.kind != kind
                     || port.direction != PortDirection::output
                     || !port.persisted_tick_output
-                    || port.retention != OutputRetention::persisted
+                    || port.realization != OutputRealization::buffered
                     || authored >= outputs.size() || !outputs[authored].realtime) {
                     return invalid("GraphJit Tick capture has no matching realtime output");
                 }

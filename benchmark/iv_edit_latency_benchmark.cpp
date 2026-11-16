@@ -440,7 +440,7 @@ struct StorageSampleSource {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::tick)};
+            "out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -523,7 +523,7 @@ struct StorageEventSource {
         return std::array{iv::event_output(
             "events",
             iv::EventTypeId::trigger,
-            iv::OutputProduction::tick,
+            iv::OutputProduction::sequential,
             {.max_events_per_index = 0.25})};
     }
 

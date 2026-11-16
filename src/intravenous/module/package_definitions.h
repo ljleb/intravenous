@@ -629,12 +629,14 @@ RegisteredSignature const* node_constructor_signature()
         "Dynamic-arity or configuration-dependent nodes must remain internal lowering nodes."); \
     static_assert(::iv::details::primary_callback_declaration_is_valid_v<Node>, \
         "IV_NODE requires exactly one primary callback: one scalar or batch Tick/Tock form. " \
-        "Tick nodes may declare only Tick outputs; Tock nodes may " \
-        "declare only Tock outputs. Use a module node to group both domains."); \
+        "Tick primitives declare only Sequential outputs; Tock primitives declare only Region or Coverage outputs. " \
+        "Use a module node to group both domains."); \
+    static_assert(::iv::details::tick_input_content_is_valid<Node>(), \
+        "IV_NODE Tick Region/Coverage inputs initially require complete-buffer access."); \
     static_assert(::iv::details::replay_declaration_is_valid_v<Node>, \
         "IV_NODE intrinsically replayable nodes must author a Tick callback, " \
         "have no State/TockState, provide propagation for Random Access inputs, " \
-        "and declare only ephemeral Tick outputs; resolved timing is validated by " \
+        "and declare only computed Sequential outputs; resolved timing is validated by " \
         "the whole-graph planner."); \
     static_assert(::iv::details::background_state_type_is_valid_v<Node>, \
         "IV_NODE Node::TockState must be a mutable, non-volatile, default-constructible object type."); \

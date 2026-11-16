@@ -83,6 +83,7 @@ public:
 struct SampleOutputState {
     PersistedOutputHandle output{};
     IndexCoverage coverage{};
+    std::optional<IndexCoverage> logical_coverage{};
     ChannelLayout layout{};
     ContinuousValueStorageGeometry geometry{};
     std::shared_ptr<RangeNode<PersistedSampleRegion> const> regions{};
@@ -99,6 +100,7 @@ struct SampleOutputState {
 struct EventOutputState {
     PersistedOutputHandle output{};
     IndexCoverage coverage{};
+    std::optional<IndexCoverage> logical_coverage{};
     EventTypeId type = EventTypeId::empty;
     std::shared_ptr<RangeNode<PersistedEventChunk> const> chunks{};
     std::shared_ptr<std::vector<PersistedEventChunk> const> logical_regions{};
@@ -441,6 +443,22 @@ void validate(PersistedSampleRegion const& region)
         throw std::invalid_argument(
             "sample region has invalid continuous-value geometry");
     }
+    if (region.windows) {
+        if (!region.values.empty() || !region.continuous_values.empty()
+            || !region.window_views || region.window_views->size() != region.windows->size())
+            throw std::invalid_argument("windowed sample Region has inconsistent owners");
+        IndexCoverage prepared;
+        for (auto const& window : *region.windows) {
+            validate(window);
+            if (prepared.intersects(window.range))
+                throw std::invalid_argument("sample content windows overlap within one logical Region");
+            prepared.include(window.range);
+            if (window.windows || !region.range.contains(window.range) || window.output != region.output
+                || window.layout != region.layout || window.geometry != region.geometry)
+                throw std::invalid_argument("sample content window lies outside its logical Region");
+        }
+        return;
+    }
     auto const frames = checked_frame_count(region.range);
     auto const values = checked_product(frames, channel_count(region.layout));
     auto const expected_bytes = checked_product(
@@ -470,11 +488,15 @@ void validate(PersistedEventChunk const& chunk)
     if (chunk.range.empty() || chunk.type >= EventTypeId::count) {
         throw std::invalid_argument("event chunk metadata is invalid");
     }
+    if (chunk.prepared_coverage
+        && !(*chunk.prepared_coverage - IndexCoverage{chunk.range}).empty())
+        throw std::invalid_argument("prepared event coverage lies outside its logical Region");
     GlobalIndex::extent_type previous = 0;
     bool first = true;
     for (auto const& event : chunk.events) {
         auto const offset = chunk.range.offset_of(event.time);
-        if (!offset || !event_matches_type(chunk.type, event.value)) {
+        if (!offset || (chunk.prepared_coverage && !chunk.prepared_coverage->contains(event.time))
+            || !event_matches_type(chunk.type, event.value)) {
             throw std::invalid_argument(
                 "event chunk contains an event outside its typed range");
         }
@@ -1320,6 +1342,9 @@ make_sample_region_views(
                 .range = region.range,
                 .geometry = region.geometry,
                 .channel_layout = region.layout,
+                .windows = region.window_views
+                    ? std::span<ContinuousRegionStorageView const>{*region.window_views}
+                    : std::span<ContinuousRegionStorageView const>{},
             });
         }
     }
@@ -1642,6 +1667,34 @@ PersistedContinuousStorage PersistedContinuousStorage::mapped(
     return result;
 }
 
+void PersistedSampleRegion::set_prepared_windows(std::vector<PersistedSampleRegion> prepared)
+{
+    windows = std::make_shared<std::vector<PersistedSampleRegion> const>(std::move(prepared));
+    auto views = std::make_shared<std::vector<ContinuousRegionStorageView>>();
+    views->reserve(windows->size());
+    for (auto const& window : *windows) views->push_back({
+        .storage = const_cast<std::byte*>(window.storage_data()),
+        .range = window.range, .geometry = window.geometry, .channel_layout = window.layout});
+    window_views = std::move(views);
+}
+
+IndexCoverage PersistedSampleRegion::materialized_coverage() const
+{
+    if (!windows) return IndexCoverage{range};
+    IndexCoverage result;
+    for (auto const& window : *windows) result.include(window.range);
+    return result;
+}
+
+PersistedSampleRegion const* PersistedSampleRegion::prepared_window(GlobalIndex index) const noexcept
+{
+    if (!range.contains(index)) return nullptr;
+    if (!windows) return this;
+    for (auto const& window : *windows)
+        if (auto const* prepared = window.prepared_window(index)) return prepared;
+    return nullptr;
+}
+
 std::byte* PersistedSampleRegion::storage_data() noexcept
 {
     return values.empty()
@@ -1667,6 +1720,12 @@ Sample PersistedSampleRegion::at(
     GlobalIndex index,
     std::size_t channel) const noexcept
 {
+    if (windows) {
+        auto const* window = prepared_window(index);
+        IV_ASSERT(window, "persisted Region read lies outside prepared windows");
+        return window ? window->at(index, channel) : Sample{};
+    }
+
     auto const frame = range.offset_of(index);
     auto const channels = channel_count(layout);
     if (geometry.value_type != continuous_value_type_id_v<Sample>
@@ -1779,11 +1838,11 @@ PersistedDataStore::Snapshot::find_sample_region(
         auto const found = std::ranges::find_if(
             *selected->logical_regions,
             [&](PersistedSampleRegion const& region) {
-                return region.range.contains(index);
+                return region.prepared_window(index) != nullptr;
             });
         return found == selected->logical_regions->end()
             ? nullptr
-            : std::addressof(*found);
+            : found->prepared_window(index);
     }
     return find_record(selected->regions, index);
 }
@@ -1806,7 +1865,8 @@ PersistedEventChunk const* PersistedDataStore::Snapshot::find_event_chunk(
         auto const found = std::ranges::find_if(
             *selected->logical_regions,
             [&](PersistedEventChunk const& region) {
-                return region.range.contains(index);
+                return region.range.contains(index)
+                    && (!region.prepared_coverage || region.prepared_coverage->contains(index));
             });
         return found == selected->logical_regions->end()
             ? nullptr
@@ -1832,14 +1892,17 @@ void PersistedDataStore::Snapshot::for_each_sample_region(
         sample_output_levels_,
         PersistedDataStore::output_directory_index(output));
     if (!selected || !selected->logical_regions) return;
-    for (auto const& record : *selected->logical_regions) {
+    auto visit_window = [&](PersistedSampleRegion const& window) {
         range.for_each_signed_order_segment([&](GlobalIndexRange requested) {
-            record.range.for_each_signed_order_segment(
-                [&](GlobalIndexRange stored) {
-                    auto const part = intersection(stored, requested);
-                    if (!part.empty()) visitor(visitor_data, record, part);
-                });
+            window.range.for_each_signed_order_segment([&](GlobalIndexRange stored) {
+                auto const part = intersection(stored, requested);
+                if (!part.empty()) visitor(visitor_data, window, part);
+            });
         });
+    };
+    for (auto const& record : *selected->logical_regions) {
+        if (record.windows) for (auto const& window : *record.windows) visit_window(window);
+        else visit_window(record);
     }
 }
 
@@ -2072,6 +2135,35 @@ void PersistedDataStore::Snapshot::for_each_event_region(
                 }
             }
         });
+}
+
+IndexCoverage const* PersistedDataStore::Snapshot::find_event_logical_coverage(
+    PersistedOutputHandle output) const noexcept
+{
+    if (!output.valid() || output.kind() != PortKind::event
+        || PersistedDataStore::output_owner_token(output) != output_owner_token_) return nullptr;
+    auto const* selected = find_output<EventOutputNode, EventOutputState>(
+        event_outputs_, event_output_levels_, PersistedDataStore::output_directory_index(output));
+    return selected ? (selected->logical_coverage ? &*selected->logical_coverage : &selected->coverage) : nullptr;
+}
+
+std::shared_ptr<void const> PersistedDataStore::Snapshot::sample_output_owner(
+    PersistedOutputHandle output) const
+{
+    if (!output.valid() || output.kind() != PortKind::sample
+        || PersistedDataStore::output_owner_token(output) != output_owner_token_) return {};
+    return find_output_owner<SampleOutputNode, SampleOutputState>(sample_outputs_, sample_output_levels_,
+        PersistedDataStore::output_directory_index(output));
+}
+
+IndexCoverage const* PersistedDataStore::Snapshot::find_sample_logical_coverage(
+    PersistedOutputHandle output) const noexcept
+{
+    if (!output.valid() || output.kind() != PortKind::sample
+        || PersistedDataStore::output_owner_token(output) != output_owner_token_) return nullptr;
+    auto const* selected = find_output<SampleOutputNode, SampleOutputState>(
+        sample_outputs_, sample_output_levels_, PersistedDataStore::output_directory_index(output));
+    return selected ? (selected->logical_coverage ? &*selected->logical_coverage : &selected->coverage) : nullptr;
 }
 
 IndexCoverage const* PersistedDataStore::Snapshot::find_sample_coverage(
@@ -2368,114 +2460,78 @@ void PersistedDataStore::Candidate::replace_sample_regions(
     }
     for (auto const& region : regions) {
         validate(region);
-        if (region.output != output || region.layout != layout
-            || region.geometry != geometry
-            || !domain.contains(region.range)) {
-            throw std::invalid_argument(
-                "sample Region batch lies outside its replacement domain");
-        }
+        if (region.output != output || region.layout != layout || region.geometry != geometry
+            || !(region.materialized_coverage() - domain).empty())
+            throw std::invalid_argument("sample windows lie outside their replacement domain");
     }
-    if (std::ranges::any_of(
-            logical_order,
-            [](GlobalIndexRange region) { return region.empty(); })) {
-        throw std::invalid_argument(
-            "sample Region logical order contains an empty Region");
-    }
-
-    auto const output_index =
-        PersistedDataStore::output_directory_index(output);
+    auto const output_index = PersistedDataStore::output_directory_index(output);
     auto const* current = find_output<SampleOutputNode, SampleOutputState>(
-        successor_->sample_outputs_,
-        successor_->sample_output_levels_,
-        output_index);
-    if (current && (current->layout != layout
-            || current->geometry != geometry)) {
-        throw std::invalid_argument(
-            "persisted sample output Regions disagree on layout or geometry");
-    }
-    if (current && current->positional_recording) {
-        throw std::invalid_argument(
-            "persisted sample output cannot mix positional recording with authored Regions");
-    }
-
+        successor_->sample_outputs_, successor_->sample_output_levels_, output_index);
+    if (current && (current->layout != layout || current->geometry != geometry
+        || current->positional_recording))
+        throw std::invalid_argument("authored sample Regions disagree on representation");
     auto const previous_size = current && current->logical_regions
-        ? current->logical_regions->size()
-        : 0;
-    std::vector<PersistedSampleRegion> retained;
-    retained.reserve(previous_size);
-    if (current && current->logical_regions) {
-        for (auto const& existing : *current->logical_regions) {
-            auto const intersects = domain.intersects(existing.range);
-            if (intersects && !domain.contains(existing.range)) {
-                throw std::invalid_argument(
-                    "sample Region replacement domain clips an old logical Region");
-            }
-            if (!intersects) retained.push_back(existing);
-        }
-    }
-
-    std::vector<bool> used_replacements(regions.size(), false);
-    std::vector<bool> used_retained(retained.size(), false);
+        ? current->logical_regions->size() : 0;
     std::vector<PersistedSampleRegion> next;
-    next.reserve(logical_order.size());
+    std::vector<bool> used_new(regions.size(), false), used_old(previous_size, false);
+    auto share_payload = [](PersistedSampleRegion window) {
+        // One owner per immutable physical payload. Retaining a window must
+        // not retain the other (possibly replaced) windows of an old version.
+        auto owner = std::make_shared<PersistedSampleRegion const>(std::move(window));
+        return PersistedSampleRegion{.output = owner->output, .range = owner->range,
+            .layout = owner->layout, .geometry = owner->geometry,
+            .continuous_values = PersistedContinuousStorage::mapped(owner,
+                owner->storage_data(), owner->storage_size_bytes(), owner->geometry.element_alignment)};
+    };
     for (auto const expected : logical_order) {
-        auto const replacement = [&]() -> std::optional<std::size_t> {
-            for (std::size_t index = 0; index < regions.size(); ++index) {
-                if (!used_replacements[index]
-                    && regions[index].range == expected) {
-                    return index;
+        if (expected.empty()) throw std::invalid_argument("logical Region is empty");
+        PersistedSampleRegion merged{.output = output, .range = expected,
+            .layout = layout, .geometry = geometry};
+        std::vector<PersistedSampleRegion> windows;
+        auto append_retained = [&](PersistedSampleRegion const& prior) {
+            auto retain = [&](PersistedSampleRegion const& window) {
+                for (auto const range : IndexCoverage{window.range} - domain)
+                    if (range != window.range) windows.push_back(share_payload(slice(window, range)));
+                    else windows.push_back(window);
+            };
+            if (prior.windows) for (auto const& window : *prior.windows) retain(window);
+            else retain(prior);
+        };
+        if (current && current->logical_regions) {
+            for (std::size_t index = 0; index < previous_size; ++index) {
+                auto const& prior = (*current->logical_regions)[index];
+                if (!used_old[index] && prior.range == expected) {
+                    used_old[index] = true; append_retained(prior); break;
                 }
             }
-            return std::nullopt;
-        }();
-        if (replacement) {
-            used_replacements[*replacement] = true;
-            next.push_back(std::move(regions[*replacement]));
-            continue;
         }
-        auto const previous = [&]() -> std::optional<std::size_t> {
-            for (std::size_t index = 0; index < retained.size(); ++index) {
-                if (!used_retained[index]
-                    && retained[index].range == expected) {
-                    return index;
-                }
-            }
-            return std::nullopt;
-        }();
-        if (!previous && domain.intersects(expected)) {
-            throw std::invalid_argument(
-                "sample Region replacement cannot realize the published logical order");
+        for (std::size_t index = 0; index < regions.size(); ++index) {
+            if (used_new[index] || regions[index].range != expected) continue;
+            used_new[index] = true;
+            if (regions[index].windows) {
+                for (auto const& window : *regions[index].windows)
+                    windows.push_back(share_payload(window));
+            } else windows.push_back(share_payload(std::move(regions[index])));
+            break;
         }
-        if (!previous) continue;
-        used_retained[*previous] = true;
-        next.push_back(std::move(retained[*previous]));
+        if (windows.size() == 1 && windows.front().range == expected)
+            next.push_back(std::move(windows.front()));
+        else { merged.set_prepared_windows(std::move(windows)); next.push_back(std::move(merged)); }
     }
-    if (std::ranges::contains(used_replacements, false)
-        || std::ranges::contains(used_retained, false)) {
-        throw std::invalid_argument(
-            "sample Region replacement has records outside the published logical order");
-    }
-
-    if (next.empty()) {
-        successor_->sample_region_count_ -= previous_size;
-        successor_->sample_outputs_ = erase_output_node<SampleOutputNode>(
-            successor_->sample_outputs_,
-            successor_->sample_output_levels_,
-            output_index);
-        return;
-    }
-
+    if (std::ranges::contains(used_new, false))
+        throw std::invalid_argument("sample windows have no published logical Region");
     std::shared_ptr<RangeNode<PersistedSampleRegion> const> root{};
     IndexCoverage coverage;
     for (auto const& region : next) {
-        coverage.include(region.range);
-        region.range.for_each_signed_order_segment(
-            [&](GlobalIndexRange segment) {
-                root = put_record(
-                    root,
-                    std::make_shared<PersistedSampleRegion const>(
-                        slice(region, segment)));
+        auto index_window = [&](PersistedSampleRegion const& window) {
+            coverage.include(window.range);
+            window.range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
+                root = put_record(root, std::make_shared<PersistedSampleRegion const>(
+                    segment == window.range ? window : slice(window, segment)));
             });
+        };
+        if (region.windows) for (auto const& window : *region.windows) index_window(window);
+        else index_window(region);
     }
     auto logical = std::make_shared<std::vector<PersistedSampleRegion> const>(
         std::move(next));
@@ -2490,6 +2546,11 @@ void PersistedDataStore::Candidate::replace_sample_regions(
     auto state = std::make_shared<SampleOutputState const>(SampleOutputState{
         .output = output,
         .coverage = std::move(coverage),
+        .logical_coverage = [&] {
+            IndexCoverage logical;
+            for (auto const range : logical_order) logical.include(range);
+            return logical;
+        }(),
         .layout = layout,
         .geometry = geometry,
         .regions = std::move(root),
@@ -2521,85 +2582,47 @@ void PersistedDataStore::Candidate::replace_event_regions(
     for (auto const& region : regions) {
         validate(region);
         if (region.output != output || region.type != type
-            || !domain.contains(region.range)) {
-            throw std::invalid_argument(
-                "event Region batch lies outside its replacement domain");
-        }
+            || !(region.materialized_coverage() - domain).empty())
+            throw std::invalid_argument("event windows lie outside their replacement domain");
     }
-    if (std::ranges::any_of(
-            logical_order,
-            [](GlobalIndexRange region) { return region.empty(); })) {
-        throw std::invalid_argument(
-            "event Region logical order contains an empty Region");
-    }
-
-    auto const output_index =
-        PersistedDataStore::output_directory_index(output);
+    auto const output_index = PersistedDataStore::output_directory_index(output);
     auto const* current = find_output<EventOutputNode, EventOutputState>(
-        successor_->event_outputs_,
-        successor_->event_output_levels_,
-        output_index);
-    if (current && current->type != type) {
-        throw std::invalid_argument(
-            "persisted event output Regions disagree on event type");
-    }
-    if (current && current->positional_recording) {
-        throw std::invalid_argument(
-            "persisted event output cannot mix positional recording with authored Regions");
-    }
-
-    std::vector<PersistedEventChunk> retained;
-    if (current && current->logical_regions) {
-        retained.reserve(current->logical_regions->size());
-        for (auto const& existing : *current->logical_regions) {
-            auto const intersects = domain.intersects(existing.range);
-            if (intersects && !domain.contains(existing.range)) {
-                throw std::invalid_argument(
-                    "event Region replacement domain clips an old logical Region");
-            }
-            if (!intersects) retained.push_back(existing);
-        }
-    }
-
-    std::vector<bool> used_replacements(regions.size(), false);
-    std::vector<bool> used_retained(retained.size(), false);
+        successor_->event_outputs_, successor_->event_output_levels_, output_index);
+    if (current && (current->type != type || current->positional_recording))
+        throw std::invalid_argument("authored event Regions disagree on representation");
+    auto const old_count = current && current->logical_regions ? current->logical_regions->size() : 0;
+    std::vector<bool> used_new(regions.size(), false), used_old(old_count, false);
     std::vector<PersistedEventChunk> next;
-    next.reserve(logical_order.size());
     for (auto const expected : logical_order) {
-        auto replacement = std::optional<std::size_t>{};
+        if (expected.empty()) throw std::invalid_argument("logical event Region is empty");
+        PersistedEventChunk merged{.output = output, .range = expected, .type = type};
+        IndexCoverage valid;
+        if (current && current->logical_regions) {
+            for (std::size_t index = 0; index < old_count; ++index) {
+                auto const& prior = (*current->logical_regions)[index];
+                if (used_old[index] || prior.range != expected) continue;
+                used_old[index] = true;
+                valid.include(prior.materialized_coverage() - domain);
+                for (auto const& event : prior.events)
+                    if (!domain.contains(event.time)) merged.events.push_back(event);
+                break;
+            }
+        }
         for (std::size_t index = 0; index < regions.size(); ++index) {
-            if (!used_replacements[index]
-                && regions[index].range == expected) {
-                replacement = index;
-                break;
-            }
+            if (used_new[index] || regions[index].range != expected) continue;
+            used_new[index] = true;
+            valid.include(regions[index].materialized_coverage());
+            merged.events.insert(merged.events.end(), regions[index].events.begin(), regions[index].events.end());
+            break;
         }
-        if (replacement) {
-            used_replacements[*replacement] = true;
-            next.push_back(std::move(regions[*replacement]));
-            continue;
-        }
-        auto previous = std::optional<std::size_t>{};
-        for (std::size_t index = 0; index < retained.size(); ++index) {
-            if (!used_retained[index]
-                && retained[index].range == expected) {
-                previous = index;
-                break;
-            }
-        }
-        if (!previous && domain.intersects(expected)) {
-            throw std::invalid_argument(
-                "event Region replacement cannot realize the published logical order");
-        }
-        if (!previous) continue;
-        used_retained[*previous] = true;
-        next.push_back(std::move(retained[*previous]));
+        std::stable_sort(merged.events.begin(), merged.events.end(), [expected](auto const& left, auto const& right) {
+            return RangeRelativeIndexOrder{expected.begin}(left.time, right.time);
+        });
+        merged.prepared_coverage = std::move(valid);
+        next.push_back(std::move(merged));
     }
-    if (std::ranges::contains(used_replacements, false)
-        || std::ranges::contains(used_retained, false)) {
-        throw std::invalid_argument(
-            "event Region replacement has records outside the published logical order");
-    }
+    if (std::ranges::contains(used_new, false))
+        throw std::invalid_argument("event windows have no published logical Region");
 
     auto const previous_count = current ? current->chunk_count : 0;
     if (next.empty()) {
@@ -2615,16 +2638,12 @@ void PersistedDataStore::Candidate::replace_event_regions(
     IndexCoverage coverage;
     std::size_t physical_count = 0;
     for (auto const& region : next) {
-        coverage.include(region.range);
-        region.range.for_each_signed_order_segment(
-            [&](GlobalIndexRange segment) {
-                remove_range(root, physical_count, segment);
-                root = put_record(
-                    root,
-                    std::make_shared<PersistedEventChunk const>(
-                        slice(region, segment)));
-                ++physical_count;
-            });
+        auto const valid = region.materialized_coverage();
+        coverage.include(valid);
+        for (auto const window : valid) window.for_each_signed_order_segment([&](GlobalIndexRange segment) {
+            root = put_record(root, std::make_shared<PersistedEventChunk const>(slice(region, segment)));
+            ++physical_count;
+        });
     }
     auto logical = std::make_shared<std::vector<PersistedEventChunk> const>(
         std::move(next));
@@ -2635,6 +2654,11 @@ void PersistedDataStore::Candidate::replace_event_regions(
     auto state = std::make_shared<EventOutputState const>(EventOutputState{
         .output = output,
         .coverage = std::move(coverage),
+        .logical_coverage = [&] {
+            IndexCoverage logical;
+            for (auto const range : logical_order) logical.include(range);
+            return logical;
+        }(),
         .type = type,
         .chunks = std::move(root),
         .logical_regions = std::move(logical),
@@ -2673,6 +2697,12 @@ void PersistedDataStore::Candidate::erase_sample(
             "persisted sample erasure has the wrong channel layout");
     }
 
+    if (!current->positional_recording && current->logical_regions) {
+        std::vector<GlobalIndexRange> logical_order;
+        for (auto const& region : *current->logical_regions) logical_order.push_back(region.range);
+        replace_sample_regions(output, layout, current->geometry, IndexCoverage{range}, logical_order, {});
+        return;
+    }
     if (current->positional_recording) {
         auto coverage = current->coverage;
         coverage.exclude(range);
@@ -2788,6 +2818,12 @@ void PersistedDataStore::Candidate::erase_events(
             "persisted event erasure has the wrong event type");
     }
 
+    if (!current->positional_recording && current->logical_regions) {
+        std::vector<GlobalIndexRange> logical_order;
+        for (auto const& region : *current->logical_regions) logical_order.push_back(region.range);
+        replace_event_regions(output, type, IndexCoverage{range}, logical_order, {});
+        return;
+    }
     auto root = current->chunks;
     auto count = current->chunk_count;
     range.for_each_signed_order_segment([&](GlobalIndexRange segment) {

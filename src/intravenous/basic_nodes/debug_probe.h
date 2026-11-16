@@ -27,7 +27,7 @@ struct DebugProbe {
 
     static constexpr auto outputs()
     {
-        return std::array<iv::TickOutputConfig<iv::Sample>, 1>{};
+        return std::array<iv::SequentialOutputConfig<iv::Sample>, 1>{};
     }
 
     void tick(iv::TickSampleContext<DebugProbe> const& ctx) const

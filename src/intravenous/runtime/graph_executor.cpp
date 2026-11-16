@@ -1,6 +1,7 @@
 #include <intravenous/runtime/graph_executor.h>
 
 #include <intravenous/node/layout.h>
+#include <intravenous/graph_jit/sequential_coverage.h>
 
 #include <algorithm>
 #include <atomic>
@@ -104,6 +105,7 @@ bool compatible_realtime_code(
         if (old_port.configured_port != new_port.configured_port
             || old_port.direction != new_port.direction
             || old_port.input_access != new_port.input_access
+            || old_port.content_access != new_port.content_access
             || old_port.full_live_tick_coverage != new_port.full_live_tick_coverage
             || old_port.sample_fallback_value != new_port.sample_fallback_value
             || old_port.sample_manual_contribution != new_port.sample_manual_contribution
@@ -297,6 +299,16 @@ void append_tick_materialization_demands(
     IndexCoverage const& playback,
     CoveragePropagationRequest& roots)
 {
+    auto demand_complete = [&](auto const& bindings) {
+        for (auto const& binding : bindings) {
+            auto existing = std::ranges::find(roots.input_demands, binding.port, &InputCoverageRequest::port);
+            if (existing == roots.input_demands.end()) roots.input_demands.push_back({
+                .port = binding.port, .required = graph_jit::full_index_coverage()});
+            else existing->required = graph_jit::full_index_coverage();
+        }
+    };
+    demand_complete(plan.tick_runtime.random_access_sample_inputs);
+    demand_complete(plan.tick_runtime.random_access_event_inputs);
     if (playback.empty()) return;
     for (auto const port_index : plan.tick_sequential_inputs) {
         if (port_index >= plan.ports.size()) {

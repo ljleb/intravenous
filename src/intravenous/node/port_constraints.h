@@ -336,7 +336,7 @@ public:
         constexpr bool continuous = kind == PortKind::sample;
         constexpr auto production =
             details::static_output_port_production_at<Node, declaration>();
-        constexpr bool tick = production == OutputProductionKind::tick;
+        constexpr bool tick = production == OutputProductionKind::sequential;
         constexpr bool coverage =
             production == OutputProductionKind::coverage;
         constexpr bool dimensioned = [&] {

@@ -16,7 +16,7 @@ IV_NODE("iv.test.invalid_input_only_tock_callback", InvalidInputOnlyTockCallback
 struct InvalidInputOnlyForwardCallback {
     static constexpr auto inputs()
     {
-        return std::array {iv::input<iv::Sample>("input", iv::InputAccess::coverage)};
+        return std::array {iv::input<iv::Sample>("input", iv::InputAccess::coverage, iv::InputContentAccess::complete_buffer)};
     }
 
     void tick_block(

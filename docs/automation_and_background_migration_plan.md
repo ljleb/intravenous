@@ -9,6 +9,61 @@ The implementation baseline is `6826b784` (`automation clip v1`). The worktree
 was clean when this comparison began. The earlier Stage 3 checkpoints describe
 that baseline, not completion of this migration.
 
+## 2026-11-16 superseding implementation destination
+
+The previously accepted `TickReplayMode::input_union`/`full` coverage coupling,
+whole-Region `tock_coverage()` materialization, and strict
+`OutputRetention::persisted` retention are **superseded** by [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md). The
+historical decisions and source checkpoints later in this file remain useful
+as records of the staged implementation, not instructions to retain those
+semantics. Former wording is preserved in the [historical predecessor](./historical/output_ports_before_computed_buffered_2026-11-16.md).
+
+The complete follow-up migration must:
+
+1. Rename authored Tick output shape to `SequentialOutputConfig`, expose
+   Sequential outputs for Tick primitives and Region/Coverage outputs for Tock primitives,
+   and replace `OutputRetention::{ephemeral,persisted}` with
+   `OutputRealization::{computed,buffered}` across static traits, reflection,
+   configured graphs, serialization, GraphJit plans and public tests.
+2. Separate replay eligibility from output coverage. Live Tick Sequential
+   streams are full during physical execution; `.detach()` remains a
+   non-replayable stateful feedback boundary. Remove the generated
+   input-union/full live Tick coverage proof as a normative requirement.
+3. Add windowed versus complete-buffer Region/Coverage input capabilities.
+   Reject Coverage-to-Region and computed-to-complete-buffer connections;
+   make explicit materialization nodes author a bounded buffered result.
+   Initially require complete-buffer Region/Coverage inputs on Tick primitives,
+   including outputless sinks; prepare their complete selected Regions before
+   execution. Tock consumers may declare windowed access. Do not add a
+   playback-window callback as part of this initial implementation.
+4. Replace whole-selected-Region allocation with demand-scoped windows,
+   preserving Region identity, overlap and output `IndexCoverage`. Extend
+   background storage/binding frames and reverse dependency requests to
+   separately track requested, materialized and published-valid positions.
+5. Permit partially materialized buffered versions, require coherence and
+   per-window completion, and move cache/eviction choices to the executor.
+   Retain authoritative recording information separately from disposable
+   prepared caches. Share a single background-managed page/window storage
+   realization between Tick/Sequential/buffered recordings and Tock/buffered
+   outputs rather than duplicating their backing and publication machinery.
+   Make sparse virtual mappings an optional backend with configurable limits
+   on one mapping's byte span and aggregate reserved virtual address space;
+   separately budget process-wide VMAs/physical-run fragmentation, physical
+   backing and realtime-resident pages. Preserve run-based mapping assembly,
+   implement pin-safe reclamation/reuse of obsolete `memfd` backing after old
+   snapshots retire, and select initial limits from measured fragmented
+   overwrite and sparse Tock workloads rather than fixed port semantics.
+   Fall back to bounded/segmented storage only where input access permits.
+6. Stage future Sequential consumer windows with a bounded rolling buffer;
+   prepare every realtime Random Access window in advance and reject
+   unbounded/dynamic realtime reads that cannot be prepared.
+7. Migrate the automation interpreter to Tock/computed Region/Coverage
+   generation with exact empty/hold/bezier coverage and windowed computation.
+   Update tests after the final API and scheduler behavior are in place.
+
+This document is implementation coordination, not an alternate normative
+port configuration reference.
+
 ## What changes
 
 - A point describes an outgoing `empty`, `hold`, or automatic `bezier` segment.
@@ -1101,3 +1156,176 @@ step 3's automation feature: `CurvePointEvent`, content-derived sparse coverage,
 `empty`/`hold`/automatic Bézier segments, replacement messages, and the matching
 presentation. Skipping unnecessary resolution-stage copies remains a separate
 performance follow-up; it is not a prerequisite for that feature.
+
+
+#### Active implementation order after the output-capability revision
+
+Accepted sequencing clarification: the output-capability documentation dated
+2026-11-16 supersedes the prerequisite order in the earlier verification note.
+The owner's 1023-test passing run remains the verified baseline for the existing
+Sequential-resolution implementation, not verification of the revised output
+architecture.
+
+1. Implement the complete computed-output prerequisite across authored ports,
+   reflection/serialization, connection validation, recording, background
+   planning/evaluation and callback views. Replace `TickOutputConfig` with
+   `SequentialOutputConfig` and `OutputRetention` with
+   `OutputRealization::{computed, buffered}` without compatibility aliases.
+   Separate callback domain from output shape. Preserve full logical Region
+   metadata while computing and allocating only demanded windows, and prepare
+   those windows before Sequential Tick consumers execute.
+2. Complete Stage 3 automation using Tock/computed production: `CurvePointEvent`,
+   exact sparse segment coverage, empty/hold/automatic Bézier interpolation,
+   agreed equal-position semantics, replacement messages, serialization and the
+   Vue presentation. Sequential destinations retain their neutral/manual
+   fallback in known gaps. Do not extend Tick `input_union` replay to implement
+   the curve.
+3. Generalize buffered storage for recording and Tock/buffered results under one
+   versioned-page contract, including sparse mappings, pin-safe backing reuse,
+   VMA accounting and resource limits. The computed-output milestone can use
+   ordinary bounded allocations; it must not create another paging engine or
+   wait for the general virtual-memory migration.
+4. Resume complete-buffer materialization nodes, multi-type event ports,
+   optional event projections and later observation/UI work unless a concrete
+   dependency requires an earlier item.
+
+Current active feature: item 1, the computed-output prerequisite. Implementation
+starts by tracing output declarations and background selection/storage together,
+so a renamed API does not preserve whole-Region evaluation implicitly. New
+verification must cover bounded work within huge logical Regions, unchanged
+Region identities, sparse gaps, demand-order independence, connection capability
+rejection, preparation-before-activation and existing buffered recordings.
+
+
+#### Output-domain correction during the computed-output migration
+
+The owner corrected the over-broad shape symmetry in the initial documentation
+revision. Tick permits only Sequential outputs; Tock permits only Region or
+Coverage outputs. Both share computed/buffered realization. Tock data prepared
+for a Sequential consumer retain their authored Region/Coverage shape. The
+incorrect passages are preserved in
+[historical documentation](./historical/output_shape_symmetry_before_correction.md).
+
+This replaces the active implementation note's statement that Tock could produce
+Sequential data. The implementation order is unchanged: complete the computed
+Region/Coverage demand-window path, then automation, then shared buffered-page
+optimization. The output API and demand-window migration are still in progress;
+the 1023-test passing run predates these source edits. No new build or test run
+has verified the migration, and the working tree is not yet ready for one.
+
+Implementation checkpoint after the output-domain correction (unfinished):
+
+- Output API identifiers, value-extension metadata/options, configured-graph
+  serialization and existing source/test declarations have begun migrating to
+  Sequential/computed/buffered naming. There are no old-name compatibility
+  aliases. Tick/Tock output-shape restrictions are restored in authored traits
+  and GraphJit, with separate static rejection cases for the three forbidden
+  combinations. These tests have not been run.
+- `ContinuousRegionStorageView` has an initial prepared-window representation;
+  `TransactionSampleStorage` allocates intersections with demand instead of
+  entire logical Regions. Generic materialization, snapshot freezing, shifted
+  bindings, event bounds and storage validation still need matching changes.
+- Initial demand-widening removal and `InputContentAccess` declaration/archive
+  plumbing are incomplete. Connection capability validation, callback-visible
+  logical coverage versus prepared windows, and buffered publication still need
+  to be reconciled before this is a complete execution path.
+- Existing project source declarations using `OutputProduction::tick` still
+  need migration. The earlier replay/live-coverage coupling and Tick-based
+  automation also remain migration work.
+
+The next bottom-up connection is the content-view/storage path: preserve whole
+logical Region metadata and duplicates while validating and freezing only the
+selected prepared windows. Continue through connection capability checks and
+execution before requesting a build. The working tree may currently have
+compiler errors owned by this migration; it is not a new verified baseline.
+
+
+#### Computed-output source pass and complete-buffer Tick decision
+
+This checkpoint supersedes the unfinished source checklist immediately above.
+The owner chose to initially require **complete-buffer Tick Region/Coverage
+inputs**, rather than adding a callback for future playback requests. The rule
+is enforced in authored traits and GraphJit. Tock inputs may be windowed.
+Computed-to-complete-buffer connections are rejected; a buffered source or an
+explicit bounded materialization node is required. Outputless Tick sinks issue
+complete input demands and wait for preparation before activation.
+
+The current source pass includes:
+
+- Sequential output configs and computed/buffered realization throughout the
+  authored API, value-extension metadata, reflection, configured-graph archive,
+  node declarations and plans. Tick and Tock enforce the disjoint output matrix.
+- Demand-scoped continuous and event storage, conversion work, and callback
+  views. Logical Region ranges, duplicate entries and overlap remain intact;
+  prepared content windows are tracked separately. Extra cached content is
+  hidden from a windowed invocation, including discovery views.
+- Partial buffered publication with separate logical coverage and valid content
+  coverage. Unchanged continuous windows share independent immutable payload
+  owners; obsolete version lists need not remain alive. Complete-buffer reads
+  gather cached fragments only when their full contents are available.
+- Tick snapshots retain bounded physical owners and whole logical metadata;
+  identity routes can share prepared payloads. The executor continues to prepare
+  before activation and treats unavailable covered playback as an underrun.
+- Live Sequential output coverage no longer depends on `input_union` replay.
+  Intrinsic replay remains a separate permission; a replayable node's own
+  outputs must be computed Sequential outputs. The existing linear automation
+  interpreter now executes as Tock/Coverage/computed, while richer segment
+  semantics remain item 2 of the active order.
+- Regression cases for forbidden output domains, windowed Tick inputs,
+  computed-to-complete-buffer rejection, huge logical Regions with tiny content
+  windows, conversion work bounded by demand, duplicate and cache-independent
+  callback views, partial sample/event validity, snapshot sharing/reclamation,
+  and complete preparation for an outputless Tick sink.
+
+The source pass is ready for the owner's build and test run. **No build or tests
+have been run for these changes.** `git diff --check` and fixture-literal size
+checks pass. The earlier 1,023-test result remains the last verified baseline.
+The subsequent automation and general page-backed buffered-storage work are
+still outstanding; neither is claimed complete here.
+
+
+#### First computed-output test run and repair pass
+
+The owner built the source pass above and ran 1,032 tests: 25 failed. This
+supersedes the untested checkpoint above as an observation of that source pass;
+it does not establish a new successful baseline.
+
+The current repair pass addresses two runtime defects:
+
+- `BackgroundPropagationWorkspace::require_output` now checks buffered content
+  availability when reverse callbacks discover new requirements. These
+  dependencies could previously arrive after the initial demand-expansion pass
+  and never activate their producer. Changed cached contents also count as
+  missing for a required window. Discovery scopes retain their own bounded
+  demand-expansion callback.
+- `TickMaterializationSnapshot::carry_forward` preserves complete Region order
+  and duplicate occurrences, and maps retained physical windows to the current
+  logical Region list when that list changes order. Partial replacement shares
+  unchanged payload owners without clipping logical Region metadata.
+
+The remaining failing fixtures have been aligned with the migrated contracts:
+Tock curve invocation, bounded output writes with complete logical metadata,
+computed versus buffered source storage, dense Sequential replay, and mapped
+immutable payload access. GDB on the existing FFT replay test also identified
+an unconstrained fixture output size that prevented the intended rejection
+check from being reached. Regression cases cover delayed buffered dependency
+activation, partial sample replacement, and reordered logical Regions.
+
+**These repairs have not been built or tested.** The next step is the owner's
+build and complete test run. The richer automation feature remains next after
+this execution path has a successful baseline.
+
+
+The next owner run built successfully and passed 1,032 of 1,034 tests. Two
+failures remained. The current follow-up changes are not yet built or tested.
+
+`BackgroundStorageRealization::make_tick_materialization_snapshot` now receives
+explicit requirements for each input. Shared storage availability no longer
+selects an unrelated Tick input. This prevents a narrow producer request from
+trying to freeze an unrequested complete-buffer event input. Selected Sequential
+contents also stay within their requested windows.
+
+The buffered-publication test now distinguishes a logical coverage change from
+a request for new contents. It tests metadata-only invalidation followed by a
+bounded refill. The snapshot test also checks that undemanded inputs stay absent
+and that sample and event contents obey the selected input windows.

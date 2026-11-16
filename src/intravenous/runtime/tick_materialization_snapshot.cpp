@@ -44,6 +44,41 @@ namespace {
 
 } // namespace
 
+void TickMaterializedSampleInput::rebuild_region_views()
+{
+    region_views.clear();
+    region_windows.clear();
+    logical_coverage = {};
+    auto view = [&](TickMaterializedSampleRegion const& region) {
+        return ContinuousRegionStorageView{
+            .storage = const_cast<std::byte*>(region.storage_data()),
+            .range = region.range, .geometry = geometry, .channel_layout = layout,
+            .storage_frames = region.storage_frames, .first_frame = region.first_frame};
+    };
+    if (logical_regions.empty()) {
+        for (auto const& region : regions) {
+            region_views.push_back(view(region));
+            logical_coverage.include(region.range);
+        }
+        return;
+    }
+    region_windows.resize(logical_regions.size());
+    for (auto const& region : regions) {
+        if (region.logical_region_index >= region_windows.size())
+            throw std::invalid_argument("prepared sample window lost its logical Region");
+        region_windows[region.logical_region_index].push_back(view(region));
+    }
+    for (std::size_t index = 0; index < logical_regions.size(); ++index) {
+        auto const range = logical_regions[index];
+        logical_coverage.include(range);
+        auto const& windows = region_windows[index];
+        if (windows.size() == 1 && windows.front().range == range)
+            region_views.push_back(windows.front());
+        else region_views.push_back({.range = range, .geometry = geometry,
+            .channel_layout = layout, .windows = windows});
+    }
+}
+
 bool TickMaterializedSampleInput::has_channel(
     std::size_t channel) const noexcept
 {
@@ -354,6 +389,7 @@ TickMaterializedSampleInput make_tick_materialized_sample_input(
         value_cursor += value_count;
     }
     result.coverage = std::move(coverage);
+    result.logical_coverage = result.coverage;
     return result;
 }
 
@@ -422,6 +458,7 @@ TickMaterializedSampleInput make_tick_materialized_continuous_input(
         byte_cursor += byte_count;
     }
     result.coverage = std::move(coverage);
+    result.logical_coverage = result.coverage;
     return result;
 }
 
@@ -602,6 +639,11 @@ TickMaterializationSnapshot::TickMaterializationSnapshot(
     , samples_(std::move(samples))
     , events_(std::move(events))
 {
+    for (auto& sample : samples_) sample.rebuild_region_views();
+    for (auto& event : events_) {
+        event.logical_coverage = {};
+        for (auto const range : event.region_ranges) event.logical_coverage.include(range);
+    }
     validate();
 }
 
@@ -611,7 +653,8 @@ void TickMaterializationSnapshot::validate() const
     ports.reserve(samples_.size() + events_.size());
     for (auto const& sample : samples_) {
         IndexCoverage covered;
-        bool valid = sample.region_views.size() == sample.regions.size()
+        bool valid = sample.region_views.size() == (sample.logical_regions.empty()
+                ? sample.regions.size() : sample.logical_regions.size())
             && is_registered_continuous_value_type(sample.geometry.value_type)
             && sample.geometry.value_size_bytes != 0
             && is_valid_channel_type(sample.layout.channel_type)
@@ -652,12 +695,9 @@ void TickMaterializationSnapshot::validate() const
                 && (sample_owner || continuous_owner)
                 && region.first_frame <= region.storage_frames
                 && extent <= region.storage_frames - region.first_frame
-                && index < sample.region_views.size()
-                && sample.region_views[index].range == region.range
-                && sample.region_views[index].channel_layout == sample.layout
-                && sample.region_views[index].geometry == sample.geometry
-                && sample.region_views[index].storage
-                    == const_cast<std::byte*>(region.storage_data());
+                && (sample.logical_regions.empty()
+                    || (region.logical_region_index < sample.logical_regions.size()
+                        && sample.logical_regions[region.logical_region_index].contains(region.range)));
             covered.include(region.range);
         }
         if (!valid || covered != sample.coverage) {
@@ -702,7 +742,7 @@ void TickMaterializationSnapshot::validate() const
                         || !RangeRelativeIndexOrder{chunk.range.begin}(
                             value.time, (*chunk.events)[offset - 1].time));
             }
-            covered.include(chunk.range);
+            covered.include(chunk.prepared_coverage ? *chunk.prepared_coverage : IndexCoverage{chunk.range});
         }
         for (std::size_t index = 0;
              valid && index < event.merged_events->size(); ++index) {
@@ -760,24 +800,51 @@ void TickMaterializationSnapshot::carry_forward(
                     "carried Tick sample materialization changed its layout");
             }
 
-            target->regions = merge_tick_materialization_regions(
-                std::span<GlobalIndexRange const>{retained.logical_regions},
-                std::move(target->regions),
-                std::span<TickMaterializedSampleRegion const>{source->regions},
-                produced,
-                retained.retained);
-            target->region_views.clear();
-            target->coverage = {};
-            target->region_views.reserve(target->regions.size());
-            for (auto const& region : target->regions) {
-                target->coverage.include(region.range);
-                target->region_views.push_back(ContinuousRegionStorageView{
-                    .storage = const_cast<std::byte*>(region.storage_data()),
-                    .range = region.range,
-                    .geometry = target->geometry,
-                    .channel_layout = target->layout,
-                });
+            // Inputs without separate logical metadata contain complete
+            // Region records. Preserve their order and duplicate occurrences.
+            if (source->logical_regions.empty() && target->logical_regions.empty()) {
+                target->regions = merge_tick_materialization_regions(
+                    std::span<GlobalIndexRange const>{retained.logical_regions},
+                    std::move(target->regions),
+                    std::span<TickMaterializedSampleRegion const>{source->regions},
+                    produced, retained.retained);
+            } else {
+                if (target->logical_regions.empty() && !source->logical_regions.empty())
+                    target->logical_regions = source->logical_regions;
+                std::vector<std::size_t> source_to_target(source->logical_regions.size(),
+                    std::numeric_limits<std::size_t>::max());
+                std::vector<bool> used(target->logical_regions.size(), false);
+                for (std::size_t old = 0; old < source->logical_regions.size(); ++old)
+                    for (std::size_t next = 0; next < target->logical_regions.size(); ++next)
+                        if (!used[next] && source->logical_regions[old] == target->logical_regions[next]) {
+                            used[next] = true;
+                            source_to_target[old] = next;
+                            break;
+                        }
+                for (auto const& previous_region : source->regions) {
+                    auto logical = previous_region.logical_region_index;
+                    if (!source->logical_regions.empty()) {
+                        if (logical >= source_to_target.size()
+                            || source_to_target[logical] == std::numeric_limits<std::size_t>::max()) continue;
+                        logical = source_to_target[logical];
+                    }
+                    for (auto const part : (IndexCoverage{previous_region.range} & retained.retained) - produced) {
+                        auto window = previous_region;
+                        window.first_frame += static_cast<std::size_t>(previous_region.range.begin.forward_distance_to(part.begin));
+                        window.range = part;
+                        window.logical_region_index = logical;
+                        target->regions.push_back(std::move(window));
+                    }
+                }
+                if (!target->logical_regions.empty())
+                    std::stable_sort(target->regions.begin(), target->regions.end(),
+                        [](auto const& left, auto const& right) {
+                            return left.logical_region_index < right.logical_region_index;
+                        });
             }
+            target->coverage = {};
+            for (auto const& region : target->regions) target->coverage.include(region.range);
+            target->rebuild_region_views();
         }
         if (auto const* source = previous.find_event(retained.port)) {
             IndexCoverage produced;
@@ -805,10 +872,13 @@ void TickMaterializationSnapshot::carry_forward(
                 retained.retained);
             target->region_ranges.clear();
             target->coverage = {};
+            target->logical_coverage = {};
             target->region_ranges.reserve(target->chunks.size());
             for (auto const& region : target->chunks) {
                 target->region_ranges.push_back(region.range);
-                target->coverage.include(region.range);
+                target->logical_coverage.include(region.range);
+                target->coverage.include(region.prepared_coverage
+                    ? *region.prepared_coverage : IndexCoverage{region.range});
             }
             rebuild_merged_event_storage(*target);
         }

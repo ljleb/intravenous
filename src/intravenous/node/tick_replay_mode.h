@@ -4,23 +4,15 @@
 
 namespace iv {
 
-// A Tick node's replay declaration, `static constexpr TickReplayMode
-// replay_mode`. Any mode except `disabled` makes the node intrinsically
-// replayable. It also selects the output coverage that the compiler generates
-// when the node authors no forward propagation. Tick still computes an ordinary
-// sample at every position, from its resolved Sequential inputs; the output's
-// IndexCoverage decides which of those samples are output, in realtime and in
-// replay alike. An authored propagate_forward_coverage() takes precedence.
-// Replayable nodes declare only ephemeral Tick outputs. They may consume a
-// different node's persisted output through its selected recorded-data view.
+// Intrinsic permission to replay a deterministic, stateless Tick computation.
+// Live Sequential outputs always exist at executed positions. Replay additionally
+// requires contextual input availability and an acyclic dependency path; it
+// never crosses a stateful .detach() delay. Known gaps in replay inputs are
+// resolved by their declared Sequential fallback.
+// Replayable nodes author computed Sequential outputs. Recorded incoming data
+// from other nodes remain valid replay dependencies.
 enum class TickReplayMode : std::uint8_t {
-    // Not intrinsically replayable.
     disabled,
-    // Each output covers the union of the node's input coverages: it exists
-    // only where at least one upstream contribution exists.
-    input_union,
-    // Each output covers the whole circular index domain, including where no
-    // upstream contribution exists and for nodes without inputs.
     full,
 };
 

@@ -120,11 +120,11 @@ namespace iv::details {
             "static output port index is out of bounds");
         static_assert(static_output_port_kind_at<Node, Index>() == PortKind::sample,
             "static output port is not a sample port");
-        static_assert(!is_tock(port_config_at<Index>(Node::outputs())),
+        static_assert(!is_random_access_output(port_config_at<Index>(Node::outputs())),
             "static output port is not produced by Tick execution");
         auto const configs = Node::outputs();
         return count_static_configs_before<Index>(configs, [](auto const& config) {
-            return is_continuous(config) && is_tick(config);
+            return is_continuous(config) && is_sequential_output(config);
         });
     }
 
@@ -147,11 +147,11 @@ namespace iv::details {
             "static output port index is out of bounds");
         static_assert(static_output_port_kind_at<Node, Index>() == PortKind::event,
             "static output port is not an event port");
-        static_assert(!is_tock(port_config_at<Index>(Node::outputs())),
+        static_assert(!is_random_access_output(port_config_at<Index>(Node::outputs())),
             "static output port is not produced by Tick execution");
         auto const configs = Node::outputs();
         return count_static_configs_before<Index>(configs, [](auto const& config) {
-            return !is_continuous(config) && is_tick(config);
+            return !is_continuous(config) && is_sequential_output(config);
         });
     }
 
@@ -210,7 +210,7 @@ namespace iv::details {
     consteval bool static_output_port_is_tock_at()
     {
         return static_output_port_production_at<Node, Index>()
-            != OutputProductionKind::tick;
+            != OutputProductionKind::sequential;
     }
 
     template<typename Node, size_t Index>
@@ -220,7 +220,7 @@ namespace iv::details {
             "static output port index is out of bounds");
         auto const configs = Node::outputs();
         auto const& config = port_config_at<Index>(configs);
-        return is_tick(config) && is_persisted(config);
+        return is_sequential_output(config) && is_buffered(config);
     }
 
     template<typename Node>
@@ -228,8 +228,8 @@ namespace iv::details {
     {
         if constexpr (requires { Node::outputs(); }) {
             return count_port_configs(Node::outputs(), [](auto const& config) {
-                return is_continuous(config) && is_tick(config)
-                    && is_persisted(config);
+                return is_continuous(config) && is_sequential_output(config)
+                    && is_buffered(config);
             });
         } else {
             return 0;
@@ -241,8 +241,8 @@ namespace iv::details {
     {
         if constexpr (requires { Node::outputs(); }) {
             return count_port_configs(Node::outputs(), [](auto const& config) {
-                return !is_continuous(config) && is_tick(config)
-                    && is_persisted(config);
+                return !is_continuous(config) && is_sequential_output(config)
+                    && is_buffered(config);
             });
         } else {
             return 0;
@@ -267,7 +267,7 @@ namespace iv::details {
             "static output port is not a Tick/persisted sample port");
         auto const configs = Node::outputs();
         return count_static_configs_before<Index>(configs, [](auto const& config) {
-            return is_continuous(config) && is_tick(config) && is_persisted(config);
+            return is_continuous(config) && is_sequential_output(config) && is_buffered(config);
         });
     }
 
@@ -281,7 +281,7 @@ namespace iv::details {
             "static output port is not a Tick/persisted event port");
         auto const configs = Node::outputs();
         return count_static_configs_before<Index>(configs, [](auto const& config) {
-            return !is_continuous(config) && is_tick(config) && is_persisted(config);
+            return !is_continuous(config) && is_sequential_output(config) && is_buffered(config);
         });
     }
 
@@ -511,7 +511,7 @@ namespace iv::details {
             if (is_continuous(config) && !result) {
                 if (sample_index == port_index) result = realtime_index;
                 else {
-                    if (is_tick(config)) ++realtime_index;
+                    if (is_sequential_output(config)) ++realtime_index;
                     ++sample_index;
                 }
             }
@@ -536,7 +536,7 @@ namespace iv::details {
             if (is_continuous(config) && !result) {
                 if (sample_index == port_index) result = tock_index;
                 else {
-                    if (is_tock(config)) ++tock_index;
+                    if (is_random_access_output(config)) ++tock_index;
                     ++sample_index;
                 }
             }
@@ -629,7 +629,7 @@ namespace iv::details {
             if (!is_continuous(config) && !result) {
                 if (event_index == port_index) result = realtime_index;
                 else {
-                    if (is_tick(config)) ++realtime_index;
+                    if (is_sequential_output(config)) ++realtime_index;
                     ++event_index;
                 }
             }
@@ -679,7 +679,7 @@ namespace iv::details {
             if (!is_continuous(config) && !result) {
                 if (event_index == port_index) result = tock_index;
                 else {
-                    if (is_tock(config)) ++tock_index;
+                    if (is_random_access_output(config)) ++tock_index;
                     ++event_index;
                 }
             }

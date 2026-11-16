@@ -2905,7 +2905,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             auto const config = input.graph.node_bundles.resolve_sample_output(
                 {bundle, PortKind::sample, port}).config;
             plan.primitives[i].outputs[port].realtime =
-                is_tick(config);
+                is_sequential_output(config);
             auto const& resolved = realization.output(bundle, port);
             auto geometry = continuous_value_storage_geometry(
                 resolved.value_type, resolved.size);
@@ -3084,7 +3084,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             auto const source = input.graph.node_bundles
                 .resolve_sample_output(source_port).config;
             auto const& group = connections.sample_producer_groups[*group_index];
-            if (!is_tick(source)
+            if (!is_sequential_output(source)
                 || source.channel_layout != timing.source_layout
                 || !group.canonical_source_layout
                 || *group.canonical_source_layout != source.channel_layout
@@ -3695,7 +3695,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
 
             auto const config = input.graph.node_bundles.resolve_sample_output(
                 NodeBundlePortId{bundle, PortKind::sample, port}).config;
-            if (!is_tick(config)) continue;
+            if (!is_sequential_output(config)) continue;
             disconnected_outputs.push_back(DisconnectedSampleOutput{
                 .primitive = primitive_index,
                 .port = port,
@@ -4517,7 +4517,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             auto const config = input.graph.node_bundles.resolve_event_output(
                 {bundle, PortKind::event, port}).config;
             plan.primitives[i].outputs[port].realtime =
-                is_tick(config);
+                is_sequential_output(config);
         }
     }
 
@@ -4876,7 +4876,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             output.bundle, PortKind::event, output.port};
         auto const config = input.graph.node_bundles
             .resolve_event_output(port_id).config;
-        if (!is_tick(config)) {
+        if (!is_sequential_output(config)) {
             return std::unexpected(
                 "GraphJit realtime event source disagrees with its declaration");
         }
@@ -5446,7 +5446,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                     source_id.bundle, PortKind::event, source_id.port};
                 auto const source = input.graph.node_bundles
                     .resolve_event_output(source_port).config;
-                if (!is_tick(source.production)
+                if (!is_sequential_output(source.production)
                     || source.type != source_conversion.source_type
                     || source_conversion.target_type != group.source_type) {
                     return std::unexpected(
@@ -6575,7 +6575,7 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
             std::distance(group.sources.begin(), source_position));
         auto const& source_conversion =
             group.source_conversions[semantic_source_index];
-        if (!is_tick(source.production)
+        if (!is_sequential_output(source.production)
             || source.type != source_conversion.source_type
             || source_conversion.target_type != group.source_type) {
             return std::unexpected(
@@ -9560,7 +9560,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         auto const output = input.graph.node_bundles.resolve_sample_output(
             output_port).config;
         auto const& resolved = port_realization->output(bundle, 0);
-        if (!is_tick(output) || is_persisted(output)
+        if (!is_sequential_output(output) || is_buffered(output)
             || resolved.value_type != ContinuousValueTypeId::sample
             || resolved.size.has_value()) {
             return std::unexpected(
@@ -9678,7 +9678,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
              port < configured.sample_output_count(); ++port) {
             auto const config = input.graph.node_bundles.resolve_sample_output(
                 {bundle, PortKind::sample, port}).config;
-            if (is_tick(config)
+            if (is_sequential_output(config)
                 && !accept_pace(port_realization->output(bundle, port).absolute_pace)) {
                 return std::unexpected(
                     "pointwise tick() node resolves incompatible continuous-port paces");

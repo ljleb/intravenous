@@ -23,7 +23,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<TickOutputConfig<Sample>, 1>{};
+            return std::array<SequentialOutputConfig<Sample>, 1>{};
         }
 
         void declare(DeclarationContext<Latency> const& ctx) const

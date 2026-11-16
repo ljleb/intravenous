@@ -853,10 +853,9 @@ TEST_F(GraphJitRuntimeFixture,
             0,
         }));
 
-    // The narrow demand intersects only the first published Region directly.
-    // Replacing that complete Region also intersects the second Region, so the
-    // producer must receive both pre-allocated output Regions. Consumers remain
-    // absent from this transaction because neither consumer output is demanded.
+    // A narrow demand selects the first logical Region and prepares only
+    // [10,11). The overlapping second Region does not widen the request.
+    // Consumers remain absent because neither consumer output is demanded.
     iv::BackgroundEvaluationTransaction narrow_transaction{
         graph,
         tock_states,
@@ -889,11 +888,16 @@ TEST_F(GraphJitRuntimeFixture,
         narrow_result->status, iv::BackgroundEvaluationStatus::committed);
     EXPECT_EQ(coverage_state->calls, 1u);
     EXPECT_EQ(event_coverage_state->calls, 1u);
+    for (auto port : {*source_output, *event_source_output}) {
+        auto required = std::ranges::find(narrow_result->coverage.output_requirements,
+            port, &iv::RequiredOutputCoverage::port);
+        ASSERT_NE(required, narrow_result->coverage.output_requirements.end());
+        EXPECT_EQ(required->required, index_coverage({{10, 11}}));
+    }
 
-    // Reverse propagation must widen the narrow output demand before the
-    // Coverage transforms require their inputs. In particular, the event
-    // transform cannot receive one partial input Region and two complete
-    // pre-allocated output Regions.
+    // These inspection probes explicitly request both complete finite inputs,
+    // while only their demanded output window is writable. Input selection and
+    // output computation are independent even with overlapping Regions.
     iv::BackgroundEvaluationTransaction narrow_transform_transaction{
         graph,
         tock_states,
@@ -1869,7 +1873,7 @@ TEST_F(GraphJitRuntimeFixture, ReplayResolvesStoredManualFallbackBeforeModuleFan
     }
 }
 
-TEST_F(GraphJitRuntimeFixture, GeneratedReplayCoverageFollowsTheDeclaredTickReplayMode)
+TEST_F(GraphJitRuntimeFixture, ReplaySequentialCoverageRemainsFullAcrossSparseUpstreamData)
 {
     auto compiled = compile("iv.test.replay.sequential_resolution_module", 3002);
     ASSERT_TRUE(compiled.succeeded())
@@ -1884,7 +1888,7 @@ TEST_F(GraphJitRuntimeFixture, GeneratedReplayCoverageFollowsTheDeclaredTickRepl
         if (plan.ports[port].replayed_tick_output) replayed.push_back(port);
         if (plan.ports[port].name == "window") windows.push_back(port);
     }
-    // add_one (input_union), ten_minus (full) and the generator (full).
+    // Both processors and the generator have dense Sequential outputs.
     ASSERT_EQ(replayed.size(), 3u);
     ASSERT_EQ(windows.size(), 4u);
 
@@ -1908,8 +1912,8 @@ TEST_F(GraphJitRuntimeFixture, GeneratedReplayCoverageFollowsTheDeclaredTickRepl
     ASSERT_TRUE(result.has_value()) << result.error();
     ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
 
-    // input_union covers only where the source does; full covers the circle,
-    // also for the generator without inputs.
+    // Replay resolves known upstream absence before computing each Sequential
+    // output, including the processor that used to declare input_union.
     constexpr auto half = std::uint64_t{1} << 63;
     iv::IndexCoverage const full{
         iv::GlobalIndexRange{iv::GlobalIndex::from_bits(0), half},
@@ -1921,8 +1925,7 @@ TEST_F(GraphJitRuntimeFixture, GeneratedReplayCoverageFollowsTheDeclaredTickRepl
         ASSERT_NE(change, result->coverage.output_changes.end());
         replayed_coverage.push_back(change->coverage);
     }
-    EXPECT_EQ(std::ranges::count(replayed_coverage, index_coverage({{20, 24}})), 1);
-    EXPECT_EQ(std::ranges::count(replayed_coverage, full), 2);
+    EXPECT_EQ(std::ranges::count(replayed_coverage, full), 3);
     // Replay requires the actual upstream values wherever the source is
     // covered, so the cold source is materialized there instead of resolved
     // by fallback. Uncovered positions require nothing upstream.
@@ -1956,13 +1959,90 @@ TEST_F(GraphJitRuntimeFixture, GeneratedReplayCoverageFollowsTheDeclaredTickRepl
     // The source values 4..7 appear only on [20, 24). Elsewhere the input
     // resolves to the neutral value 0, and the full-mode node outputs 10 - 0.
     std::vector<std::vector<float>> const expected{
-        {5, 6, 7, 8},
+        {1, 1, 5, 6, 7, 8, 1, 1},
         {10, 10, 6, 5, 4, 3, 10, 10},
         {10, 10, 10, 10},
         {51, 52, 53},
     };
     EXPECT_EQ(stored.size(), expected.size());
     for (auto const& values : expected) EXPECT_TRUE(std::ranges::contains(stored, values));
+}
+
+TEST_F(GraphJitRuntimeFixture, ComputedTockRegionMaterializesOnlyTheDemandedPlaybackWindow)
+{
+    auto compiled = compile("iv.test.computed.huge_playback", 3004);
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    auto const& plan = graph.background_evaluation_plan;
+    ASSERT_EQ(plan.tick_runtime.sequential_sample_inputs.size(), 1u);
+    auto const input = plan.tick_runtime.sequential_sample_inputs.front().port;
+    auto source = std::ranges::find(plan.ports, std::string{"huge"}, &iv::graph_jit::BackgroundPortPlan::name);
+    ASSERT_NE(source, plan.ports.end());
+    auto states = graph.tock_state_layout.create_storage(resources);
+    states.initialize();
+    iv::PersistedDataStore data;
+    auto reader = data.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    iv::BackgroundCoverageState coverage{plan.accumulators.output_change_count};
+    iv::BackgroundPropagationWorkspace propagation{plan, graph.specialization.sample_rate};
+    iv::CoveragePropagationRequest roots;
+    for (std::size_t node = 0; node < plan.nodes.size(); ++node) roots.locally_changed_nodes.push_back(node);
+    roots.input_demands.push_back({.port = input, .required = iv::IndexCoverage{range(100, 612)}});
+    iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data, materializations,
+        {.semantic_version = 1, .roots = std::move(roots)}};
+    auto result = transaction.execute();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
+    struct SourceState { std::uint64_t values_written; std::uint64_t logical_extent; };
+    auto const state_node = plan.nodes[source->node].tock_state_node;
+    ASSERT_TRUE(state_node.has_value());
+    auto const* state = static_cast<SourceState const*>(states.state_ptr(*state_node));
+    EXPECT_EQ(state->values_written, 512u);
+    EXPECT_EQ(state->logical_extent, std::uint64_t{1} << 50);
+    auto pinned = materialization_reader.pin();
+    auto const* prepared = pinned->find_sample(input);
+    ASSERT_NE(prepared, nullptr);
+    EXPECT_EQ(prepared->coverage, iv::IndexCoverage{range(100, 612)});
+    EXPECT_FLOAT_EQ(prepared->at(index(100), 0).value, 100.f);
+    EXPECT_FLOAT_EQ(prepared->at(index(611), 0).value, 611.f);
+    auto output = std::ranges::find(result->coverage.output_requirements,
+        static_cast<iv::graph_jit::BackgroundPortIndex>(source - plan.ports.begin()),
+        &iv::RequiredOutputCoverage::port);
+    ASSERT_NE(output, result->coverage.output_requirements.end());
+    EXPECT_EQ(output->required, iv::IndexCoverage{range(100, 612)});
+}
+
+TEST_F(GraphJitRuntimeFixture, ComputedOutputCannotImplicitlyMaterializeACompleteRegionBuffer)
+{
+    auto compiled = compile("iv.test.computed.invalid_complete_connection", 3005);
+    EXPECT_FALSE(compiled.succeeded());
+    ASSERT_FALSE(compiled.diagnostics.empty());
+    EXPECT_NE(compiled.diagnostics.front().message.find("computed output cannot satisfy a complete-buffer input"), std::string::npos);
+}
+
+TEST_F(GraphJitRuntimeFixture, OutputlessTickSinkPreparesItsCompleteRandomAccessInputBeforeActivation)
+{
+    auto compiled = compile("iv.test.computed.complete_tick_input", 3006);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto graph = std::const_pointer_cast<iv::CompiledGraph>(compiled.compiled_graph);
+    ASSERT_TRUE(graph->background_evaluation_plan.tick_sequential_inputs.empty());
+    ASSERT_EQ(graph->background_evaluation_plan.tick_runtime.random_access_sample_inputs.size(), 1u);
+    observed_playback_root = graph->root_operations.tick_block.function;
+    observed_playback_calls = 0;
+    graph->root_operations.tick_block.function = &count_playback_root;
+    iv::GraphExecutor executor{resources};
+    ASSERT_EQ(executor.stage(graph), iv::GraphExecutorStageResult::accepted);
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    bool activated = false;
+    while (!(activated = executor.activate_pending(index(0)))
+        && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+    ASSERT_TRUE(activated);
+    // The callback asserts full native storage and values at both Region ends.
+    executor.tick_block(index(0), 64);
+    EXPECT_EQ(observed_playback_calls, 1u);
+    EXPECT_FALSE(executor.background_execution_failures().any());
 }
 
 } // namespace iv::test::graph_jit_tests

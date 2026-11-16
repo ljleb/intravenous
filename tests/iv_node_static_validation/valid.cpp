@@ -64,8 +64,8 @@ struct ValidBackgroundInputOnlyNode {
     static constexpr auto inputs()
     {
         return std::tuple {
-            iv::input<iv::Sample>("samples", iv::InputAccess::coverage),
-            iv::event_input("events", iv::EventTypeId::trigger, iv::InputAccess::coverage),
+            iv::input<iv::Sample>("samples", iv::InputAccess::coverage, iv::InputContentAccess::complete_buffer),
+            iv::event_input("events", iv::EventTypeId::trigger, iv::InputAccess::coverage, iv::InputContentAccess::complete_buffer),
         };
     }
 
@@ -83,7 +83,7 @@ struct ValidPersistedRealtimeNode {
 
     static constexpr auto outputs()
     {
-        return std::array {iv::output<iv::Sample>("recording", iv::OutputProduction::tick, iv::OutputRetention::persisted)};
+        return std::array {iv::output<iv::Sample>("recording", iv::OutputProduction::sequential, iv::OutputRealization::buffered)};
     }
 
     void tick_block(
@@ -101,14 +101,14 @@ IV_NODE("iv.test.valid_persisted_realtime_node", ValidPersistedRealtimeNode);
 
 // Intrinsic replayability is an opt-in Tick trait, not a Tock output mode.
 struct ValidReplayableNode {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
     static constexpr auto inputs()
     {
         return std::array {iv::input<iv::Sample>("input", iv::InputAccess::sequential)};
     }
     static constexpr auto outputs()
     {
-        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::tick)};
+        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::sequential)};
     }
     void tick(iv::TickSampleContext<ValidReplayableNode> const&) const {}
 };
@@ -116,14 +116,14 @@ struct ValidReplayableNode {
 static_assert(iv::details::replay_declaration_is_valid_v<ValidReplayableNode>);
 static_assert(iv::details::intrinsically_replayable_v<ValidReplayableNode>);
 static_assert(iv::details::tick_replay_mode_v<ValidReplayableNode>
-    == iv::TickReplayMode::input_union);
+    == iv::TickReplayMode::full);
 IV_NODE("iv.test.valid_replayable_node", ValidReplayableNode);
 
 struct ValidBatchTickNode {
     static constexpr auto outputs()
     {
         return std::array {
-            iv::output<iv::Sample>("output", iv::OutputProduction::tick),
+            iv::output<iv::Sample>("output", iv::OutputProduction::sequential),
         };
     }
 
@@ -191,7 +191,7 @@ struct ValidReplayableBlockNode {
     static constexpr auto outputs()
     {
         return std::array {
-            iv::output<iv::Sample>("output", iv::OutputProduction::tick),
+            iv::output<iv::Sample>("output", iv::OutputProduction::sequential),
         };
     }
     void tick_block(
@@ -205,10 +205,10 @@ IV_NODE("iv.test.valid_replayable_block_node", ValidReplayableBlockNode);
 // Registered replayable Tick nodes can author the dependency mapping required
 // by their Random Access inputs, without declaring a Tock output.
 struct ValidRandomAccessReplayNode {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("input", iv::InputAccess::region)};
+        return std::array{iv::input<iv::Sample>("input", iv::InputAccess::region, iv::InputContentAccess::complete_buffer)};
     }
     static constexpr auto outputs()
     {

@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <ranges>
 #include <span>
 #include <type_traits>
 
@@ -66,9 +67,10 @@ struct ContinuousOutputPortBinding {
     mutable std::uint64_t sequential_begin_index = 0;
 };
 
-// One logical random-access Region. storage addresses one contiguous native-
-// layout buffer containing range.extent values for every channel. The backing
-// of two descriptors is independent even when their logical ranges overlap.
+// One logical random-access Region. A complete buffer uses storage directly.
+// A demand-generated Region retains its full range while windows describes only
+// the prepared contiguous portions. Overlapping logical Regions own independent
+// window lists; a content window never changes their identity or extent.
 // This is a non-owning reflected ABI record; transaction/snapshot owners keep
 // the storage alive for the callback that receives it.
 struct ContinuousRegionStorageView {
@@ -83,6 +85,34 @@ struct ContinuousRegionStorageView {
         .channel_type = ChannelTypeId::mono,
         .sample_layout = SampleStreamLayout::planar,
     };
+    std::span<ContinuousRegionStorageView const> windows{};
+    // A retained subwindow can share a larger immutable native-layout owner.
+    std::size_t storage_frames = 0;
+    std::size_t first_frame = 0;
+
+    [[nodiscard]] constexpr ContinuousRegionStorageView const* prepared_window(
+        GlobalIndex index) const noexcept
+    {
+        if (!range.contains(index)) return nullptr;
+        if (storage) return this;
+        for (auto const& window : windows)
+            if (auto const* result = window.prepared_window(index)) return result;
+        return nullptr;
+    }
+
+    [[nodiscard]] constexpr std::byte* value_storage(
+        GlobalIndex index, std::size_t channel, bool mark_written = false) const noexcept
+    {
+        auto const* window = prepared_window(index);
+        if (!window || channel >= channel_count(channel_layout)) return nullptr;
+        auto const frame = window->first_frame + static_cast<std::size_t>(*window->range.offset_of(index));
+        auto const frames = window->storage_frames ? window->storage_frames : window->frame_count();
+        auto const value = window->channel_layout.sample_layout == SampleStreamLayout::planar
+            ? channel * frames + frame
+            : frame * channel_count(window->channel_layout) + channel;
+        if (mark_written && window->written_values) window->written_values[value] = 1;
+        return window->storage + value * geometry.value_size_bytes;
+    }
 
     [[nodiscard]] constexpr std::size_t frame_count() const noexcept
     {
@@ -129,12 +159,7 @@ class ContinuousRegionView {
             "continuous Region frame is out of bounds");
         IV_ASSERT(channel < channel_count(region_->channel_layout),
             "continuous Region channel is out of bounds");
-        auto const channels = channel_count(region_->channel_layout);
-        auto const value = region_->channel_layout.sample_layout
-                == SampleStreamLayout::planar
-            ? channel * frame_count() + frame
-            : frame * channels + channel;
-        return region_->storage + value * region_->geometry.value_size_bytes;
+        return region_->value_storage(range().begin.advanced_by(frame), channel);
     }
 
     constexpr void mark_value_written(
@@ -142,13 +167,7 @@ class ContinuousRegionView {
         std::size_t channel) const noexcept
     requires Mutable
     {
-        if (!region_->written_values) return;
-        auto const channels = channel_count(region_->channel_layout);
-        auto const value = region_->channel_layout.sample_layout
-                == SampleStreamLayout::planar
-            ? channel * frame_count() + frame
-            : frame * channels + channel;
-        region_->written_values[value] = 1;
+        (void)region_->value_storage(range().begin.advanced_by(frame), channel, true);
     }
 
 public:
@@ -189,6 +208,14 @@ public:
         std::size_t frame,
         std::size_t channel = 0) const noexcept
     {
+        if (!region_->storage) {
+            auto const index = range().begin.advanced_by(frame);
+            auto const window = std::ranges::find_if(region_->windows,
+                [&](auto const& view) { return view.range.contains(index); });
+            IV_ASSERT(frame < frame_count() && window != region_->windows.end(),
+                "continuous Region read/write lies outside prepared windows");
+            return ContinuousRegionView<Value, Mutable>{*window}.at(index, channel);
+        }
         auto* bytes = value_storage(frame, channel);
         IV_ASSERT(reinterpret_cast<std::uintptr_t>(bytes) % alignof(Element) == 0,
             "continuous Region value storage is misaligned");
@@ -214,12 +241,32 @@ public:
         return value(static_cast<std::size_t>(*offset), channel);
     }
 
+    // These are content windows of this logical Region, not new Regions.
+    [[nodiscard]] constexpr auto prepared_windows() const noexcept
+    {
+        auto const views = region_->storage
+            ? std::span<ContinuousRegionStorageView const>{region_, 1}
+            : region_->windows;
+        return views | std::views::transform([](auto const& view) {
+            return ContinuousRegionView<Value, Mutable>{view};
+        });
+    }
+
+    [[nodiscard]] constexpr bool has_complete_buffer() const noexcept
+    {
+        return region_ && region_->storage && region_->first_frame == 0
+            && (!region_->storage_frames || region_->storage_frames == frame_count());
+    }
+
     // Dense native-layout storage. Planar storage contains complete channels
     // consecutively; interleaved storage contains complete frames
     // consecutively. The ChannelLayout says which interpretation applies.
     [[nodiscard]] constexpr std::span<StorageElement> elements() const noexcept
     {
         if (frame_count() == 0) return {};
+        IV_ASSERT(region_->first_frame == 0
+                && (!region_->storage_frames || region_->storage_frames == frame_count()),
+            "prepared subwindow has no complete native-layout span");
         IV_ASSERT(region_ != nullptr && region_->storage != nullptr,
             "continuous Region storage is absent");
         if constexpr (Mutable) {
@@ -241,23 +288,27 @@ public:
     [[nodiscard]] constexpr std::span<StorageElement> channel_elements(
         std::size_t channel) const noexcept
     {
+        IV_ASSERT(region_ != nullptr && region_->storage != nullptr,
+            "windowed Region has no complete contiguous channel buffer");
         IV_ASSERT(region_->channel_layout.sample_layout
                 == SampleStreamLayout::planar,
             "an interleaved Region has no contiguous channel span");
         IV_ASSERT(channel < channel_count(region_->channel_layout),
             "continuous Region channel is out of bounds");
         auto const count = frame_count() * region_->geometry.elements_per_value;
+        auto const storage_frames = region_->storage_frames ? region_->storage_frames : frame_count();
+        auto const first = channel * storage_frames + region_->first_frame;
         if constexpr (Mutable) {
             if (region_->written_values) {
                 std::fill_n(
-                    region_->written_values + channel * frame_count(),
+                    region_->written_values + first,
                     frame_count(),
                     std::uint8_t{1});
             }
         }
         return {
             reinterpret_cast<StorageElement*>(region_->storage)
-                + channel * count,
+                + first * region_->geometry.elements_per_value,
             count,
         };
     }

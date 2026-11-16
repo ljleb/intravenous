@@ -28,7 +28,7 @@ struct MixedIdentity {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample, iv::FractionalGlobalIndex>(
-            "out", iv::OutputProduction::tick)};
+            "out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -45,7 +45,7 @@ struct FractionalSource {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::FractionalGlobalIndex>(
-            "out", iv::OutputProduction::tick)};
+            "out", iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<FractionalSource> const&) const {}
@@ -55,7 +55,7 @@ struct FractionalOnly {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::FractionalGlobalIndex>(
-            "out", iv::OutputProduction::tick)};
+            "out", iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<FractionalOnly> const&) const {}
@@ -68,7 +68,7 @@ struct AnchoredChoice {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample, iv::FractionalGlobalIndex>(
-            "out", iv::OutputProduction::tick)};
+            "out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -83,7 +83,7 @@ struct AnchoredChoice {
 struct SampleSource {
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
     void tick_block(iv::TickBlockContext<SampleSource> const&) const {}
 };
@@ -95,7 +95,7 @@ struct RateDoubler {
     }
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
     void constrain_ports(iv::ConstrainPortsContext<RateDoubler>& ctx) const
     {
@@ -109,7 +109,7 @@ struct AbsolutelyAnchoredRateDoubler {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::tick)};
+            "out", iv::OutputProduction::sequential)};
     }
     void constrain_ports(
         iv::ConstrainPortsContext<AbsolutelyAnchoredRateDoubler>& ctx) const
@@ -144,7 +144,7 @@ struct OrdinaryIdentity {
     }
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
     void tick_block(iv::TickBlockContext<OrdinaryIdentity> const&) const {}
 };
@@ -153,7 +153,7 @@ struct FftSizedOutput {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::FFTBlock>(
-            "out", iv::OutputProduction::tick)};
+            "out", iv::OutputProduction::sequential)};
     }
     void constrain_ports(iv::ConstrainPortsContext<FftSizedOutput>& ctx) const
     {
@@ -166,7 +166,7 @@ struct InvalidFftSizedOutput {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::FFTBlock>(
-            "out", iv::OutputProduction::tick)};
+            "out", iv::OutputProduction::sequential)};
     }
     void constrain_ports(
         iv::ConstrainPortsContext<InvalidFftSizedOutput>& ctx) const
@@ -179,7 +179,7 @@ struct InvalidFftSizedOutput {
 struct UnsupportedDyadicPace {
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
     void constrain_ports(
         iv::ConstrainPortsContext<UnsupportedDyadicPace>& ctx) const
@@ -196,7 +196,7 @@ struct TimedPorts {
     }
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
     void constrain_ports(iv::ConstrainPortsContext<TimedPorts>& ctx) const
     {
@@ -221,7 +221,7 @@ struct PaceRelation {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::tick)};
+            "out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(iv::ConstrainPortsContext<PaceRelation>& ctx) const
@@ -301,10 +301,10 @@ struct MixedSortedCoverageSink {
     {
         return std::tuple{
             iv::input<iv::Sample>(
-                "samples", iv::InputAccess::coverage),
+                "samples", iv::InputAccess::coverage, iv::InputContentAccess::complete_buffer),
             iv::event_input(
                 "events", iv::EventTypeId::trigger,
-                iv::InputAccess::coverage),
+                iv::InputAccess::coverage, iv::InputContentAccess::complete_buffer),
         };
     }
 

@@ -30,7 +30,7 @@ struct CStringConfigNode {
 
     static constexpr auto outputs()
     {
-        return std::array<TickOutputConfig<Sample>, 1>{};
+        return std::array<SequentialOutputConfig<Sample>, 1>{};
     }
 
     void tick(TickSampleContext<CStringConfigNode> const& ctx) const
@@ -44,7 +44,7 @@ struct ImmutablePointsNode {
     explicit ImmutablePointsNode(ImmutableArray<Sample> points_) : points(points_) {}
     static constexpr TickReplayMode replay_mode = TickReplayMode::full;
     static constexpr auto outputs() {
-        return std::array{output<Sample>("out", OutputProduction::tick)};
+        return std::array{output<Sample>("out", OutputProduction::sequential)};
     }
     void tick(TickSampleContext<ImmutablePointsNode> const& ctx) const {
         ctx.output<"out">().push(points.empty() ? Sample{} : points[0]);
@@ -57,7 +57,7 @@ struct NodeCallEventSource {
     static constexpr auto outputs()
     {
         return std::array{
-            event_output("trigger", EventTypeId::trigger, iv::OutputProduction::tick),
+            event_output("trigger", EventTypeId::trigger, iv::OutputProduction::sequential),
         };
     }
 
@@ -67,9 +67,9 @@ struct NodeCallEventSource {
 struct NodeCallEventFirstOutputs {
     static constexpr auto outputs() {
         return std::tuple{
-            event_output("event-first", EventTypeId::trigger, OutputProduction::tick),
+            event_output("event-first", EventTypeId::trigger, OutputProduction::sequential),
             output<Sample>("sample-first"),
-            event_output("event-second", EventTypeId::trigger, OutputProduction::tick),
+            event_output("event-second", EventTypeId::trigger, OutputProduction::sequential),
             output<Sample>("sample-second"),
         };
     }
@@ -114,7 +114,7 @@ struct IntrospectionContinuousDomainNode {
     static constexpr auto outputs()
     {
         return std::array{output<Sample, FractionalGlobalIndex, FFTBlock>(
-            "out", OutputProduction::tick)};
+            "out", OutputProduction::sequential)};
     }
 
     void tick_block(
@@ -138,7 +138,7 @@ struct StructuredCStringConfigNode {
 
     static constexpr auto outputs()
     {
-        return std::array<TickOutputConfig<Sample>, 1>{};
+        return std::array<SequentialOutputConfig<Sample>, 1>{};
     }
 
     void tick(TickSampleContext<StructuredCStringConfigNode> const& ctx) const

@@ -28,6 +28,7 @@ struct BackgroundSampleReadView {
     ContinuousValueStorageGeometry geometry{};
     ChannelLayout layout{};
     std::span<std::size_t const> channels{};
+    std::shared_ptr<void const> owner{};
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
@@ -105,6 +106,8 @@ struct BackgroundEventReadView {
             "background event storage Region is out of bounds");
         IV_ASSERT(regions[region_index].contains(requested),
             "background event storage read lies outside its Region");
+        IV_ASSERT(coverage().contains(requested),
+            "background event storage read lies outside prepared windows");
         if (requested.empty()) return;
         IV_ASSERT(for_each_region_event != nullptr,
             "background event storage has no Region reader");
@@ -316,14 +319,17 @@ public:
     validate_produced_storage() const;
 
     // Freezes every selected Tick-visible owned representation into an
-    // immutable callback-lifetime snapshot. This is background work and may
-    // allocate; publication of the completed owner is separately noexcept.
+    // immutable callback-lifetime snapshot. input_requirements is indexed by
+    // BackgroundPortIndex; an empty entry selects no input data, even if shared
+    // storage was prepared for another consumer. This is background work and
+    // may allocate; publication of the completed owner is separately noexcept.
     [[nodiscard]] std::expected<
         std::unique_ptr<TickMaterializationSnapshot>, std::string>
     make_tick_materialization_snapshot(
         std::uint64_t generation,
         std::uint64_t semantic_version,
-        PersistedDataVersion data_version) const;
+        PersistedDataVersion data_version,
+        std::span<IndexCoverage const> input_requirements) const;
 
     // Serializes every selected runtime-produced persisted slot into the
     // transaction's private candidate. No retained record becomes visible

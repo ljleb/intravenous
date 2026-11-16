@@ -97,7 +97,7 @@ consteval std::size_t reflected_sample_output_count()
 {
     if constexpr (has_outputs<Node> && has_constexpr_port_configs<Node>) {
         return count_port_configs(Node::outputs(), [](auto const& config) {
-            return is_continuous(config) && is_tick(config);
+            return is_continuous(config) && is_sequential_output(config);
         });
     } else {
         return 0;
@@ -127,7 +127,7 @@ consteval std::size_t reflected_event_output_count()
 {
     if constexpr (has_outputs<Node> && has_constexpr_port_configs<Node>) {
         return count_port_configs(Node::outputs(), [](auto const& config) {
-            return !is_continuous(config) && is_tick(config);
+            return !is_continuous(config) && is_sequential_output(config);
         });
     } else {
         return 0;
@@ -179,8 +179,8 @@ consteval bool reflected_sample_output_is_recording()
     std::size_t tick_sample_index = 0;
     std::optional<bool> result;
     for_each_port_config(Node::outputs(), [&](auto const& config) {
-        if (is_continuous(config) && is_tick(config) && !result) {
-            if (tick_sample_index++ == Index) result = is_persisted(config);
+        if (is_continuous(config) && is_sequential_output(config) && !result) {
+            if (tick_sample_index++ == Index) result = is_buffered(config);
         }
     });
     if (result) {
@@ -195,8 +195,8 @@ consteval bool reflected_event_output_is_recording()
     std::size_t tick_event_index = 0;
     std::optional<bool> result;
     for_each_port_config(Node::outputs(), [&](auto const& config) {
-        if (!is_continuous(config) && is_tick(config) && !result) {
-            if (tick_event_index++ == Index) result = is_persisted(config);
+        if (!is_continuous(config) && is_sequential_output(config) && !result) {
+            if (tick_event_index++ == Index) result = is_buffered(config);
         }
     });
     if (result) {
@@ -919,7 +919,7 @@ IV_FORCEINLINE void propagate_node_reverse_coverage_batch(
 template<class Node>
 consteval auto node_tock_coverage_operation()
 {
-    if constexpr (details::declares_tock_outputs_v<Node>) {
+    if constexpr (details::has_tock_family_v<Node>) {
         static_assert(details::has_tock_coverage<Node>
                 || details::has_tock_coverage_batch<Node>,
             "background-output node has no valid tock_coverage implementation");
@@ -933,7 +933,7 @@ consteval auto node_tock_coverage_operation()
 template<class Node>
 consteval auto node_tock_coverage_batch_operation()
 {
-    if constexpr (details::declares_tock_outputs_v<Node>) {
+    if constexpr (details::has_tock_family_v<Node>) {
         return &tock_node_coverage_batch<Node>;
     } else {
         return static_cast<void (*)(
@@ -944,7 +944,7 @@ consteval auto node_tock_coverage_batch_operation()
 template<class Node>
 consteval auto node_propagate_forward_coverage_operation()
 {
-    if constexpr (details::declares_tock_outputs_v<Node>
+    if constexpr (details::has_tock_family_v<Node>
         || details::has_propagate_forward_coverage<Node>
         || details::has_propagate_forward_coverage_batch<Node>) {
         static_assert(details::has_propagate_forward_coverage<Node>
@@ -960,7 +960,7 @@ consteval auto node_propagate_forward_coverage_operation()
 template<class Node>
 consteval auto node_propagate_forward_coverage_batch_operation()
 {
-    if constexpr (details::declares_tock_outputs_v<Node>
+    if constexpr (details::has_tock_family_v<Node>
         || details::has_propagate_forward_coverage<Node>
         || details::has_propagate_forward_coverage_batch<Node>) {
         return &propagate_node_forward_coverage_batch<Node>;
@@ -973,7 +973,7 @@ consteval auto node_propagate_forward_coverage_batch_operation()
 template<class Node>
 consteval auto node_propagate_reverse_coverage_operation()
 {
-    if constexpr ((details::declares_tock_outputs_v<Node>
+    if constexpr ((details::has_tock_family_v<Node>
             && details::declares_random_access_inputs_v<Node>)
         || details::has_propagate_reverse_coverage<Node>
         || details::has_propagate_reverse_coverage_batch<Node>) {
@@ -987,7 +987,7 @@ consteval auto node_propagate_reverse_coverage_operation()
 template<class Node>
 consteval auto node_propagate_reverse_coverage_batch_operation()
 {
-    if constexpr ((details::declares_tock_outputs_v<Node>
+    if constexpr ((details::has_tock_family_v<Node>
             && details::declares_random_access_inputs_v<Node>)
         || details::has_propagate_reverse_coverage<Node>
         || details::has_propagate_reverse_coverage_batch<Node>) {
@@ -1295,8 +1295,8 @@ constexpr NodeCompilerOperations node_compiler_operations()
 {
     static_assert(primary_callback_declaration_is_valid_v<Node>,
         "a concrete node must author exactly one scalar or batch Tick/Tock "
-        "primary callback; Tick nodes may declare only Tick outputs and Tock "
-        "nodes may declare only Tock outputs");
+        "primary callback; Tick nodes declare only Sequential outputs and Tock "
+        "nodes declare only Region or Coverage outputs");
     return {
         .declare_node = &declare_node<Node>,
         .tick_block = [] {
@@ -1474,7 +1474,7 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
     static_assert(replay_declaration_is_valid_v<Node>,
         "intrinsically replayable nodes must author a Tick callback, "
         "have no State/TockState, provide propagation for Random Access inputs, "
-        "and declare only ephemeral Tick outputs; resolved timing is validated by "
+        "and declare only computed Sequential outputs; resolved timing is validated by "
         "the whole-graph planner");
     sink.set_internal_latency(get_internal_latency(node));
     sink.set_replay_mode(tick_replay_mode_v<Node>);
@@ -1501,7 +1501,7 @@ NodeBuildRequest make_node_build_request(Node const& node)
     static_assert(replay_declaration_is_valid_v<Value>,
         "intrinsically replayable nodes must author a Tick callback, "
         "have no State/TockState, provide propagation for Random Access inputs, "
-        "and declare only ephemeral Tick outputs; resolved timing is validated by "
+        "and declare only computed Sequential outputs; resolved timing is validated by "
         "the whole-graph planner");
     // Emit the build-local record in the LLVM module.  The builder consumes
     // it synchronously and retains only copied data and the NodeCodeKey.

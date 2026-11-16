@@ -21,8 +21,8 @@ namespace iv {
         static constexpr auto outputs()
         {
             return std::array {
-                output<Sample>("anti_aliased", OutputProduction::tick),
-                output<Sample>("aliased", OutputProduction::tick),
+                output<Sample>("anti_aliased", OutputProduction::sequential),
+                output<Sample>("aliased", OutputProduction::sequential),
             };
         }
 
@@ -68,7 +68,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("phase", OutputProduction::tick) };
+            return std::array { output<Sample>("phase", OutputProduction::sequential) };
         }
 
         void constrain_ports(ConstrainPortsContext<PhaseIntegrator>& ctx) const
@@ -105,7 +105,7 @@ namespace iv {
         static constexpr auto outputs()
         {
             return std::array {
-                output<Sample>("out", OutputProduction::tick),
+                output<Sample>("out", OutputProduction::sequential),
             };
         }
 
@@ -161,7 +161,7 @@ namespace iv {
         static constexpr auto outputs()
         {
             return std::array {
-                output<Sample>("out", OutputProduction::tick),
+                output<Sample>("out", OutputProduction::sequential),
             };
         }
 
@@ -324,7 +324,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("offset", OutputProduction::tick) };
+            return std::array { output<Sample>("offset", OutputProduction::sequential) };
         }
 
         void tick(TickSampleContext<PhaseOffsetPredictor> const& state) const
@@ -347,7 +347,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("out", OutputProduction::tick) };
+            return std::array { output<Sample>("out", OutputProduction::sequential) };
         }
 
         void tick(TickSampleContext<Interpolation> const& state) const

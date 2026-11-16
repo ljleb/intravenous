@@ -231,7 +231,7 @@ namespace iv {
             } else {
                 return any_port_config(
                     Node::outputs(),
-                    [](auto const& config) { return is_tock(config); });
+                    [](auto const& config) { return is_random_access_output(config); });
             }
         }
 
@@ -243,7 +243,7 @@ namespace iv {
             } else {
                 return any_port_config(
                     Node::outputs(),
-                    [](auto const& config) { return is_tick(config); });
+                    [](auto const& config) { return is_sequential_output(config); });
             }
         }
 
@@ -266,7 +266,7 @@ namespace iv {
                 return false;
             } else {
                 return any_port_config(Node::outputs(), [](auto const& config) {
-                    return is_continuous(config) && is_tock(config);
+                    return is_continuous(config) && is_random_access_output(config);
                 });
             }
         }
@@ -290,7 +290,7 @@ namespace iv {
                 return false;
             } else {
                 return any_port_config(Node::outputs(), [](auto const& config) {
-                    return !is_continuous(config) && is_tock(config);
+                    return !is_continuous(config) && is_random_access_output(config);
                 });
             }
         }
@@ -424,6 +424,18 @@ namespace iv {
         inline constexpr bool has_tock_family_v =
             has_tock_coverage<Node> || has_tock_coverage_batch<Node>;
 
+        template<typename Node>
+        consteval bool tick_input_content_is_valid()
+        {
+            if constexpr (!has_tick_family_v<Node> || !has_inputs<Node>
+                || !has_constexpr_port_configs<Node>) return true;
+            else return !any_port_config(Node::inputs(), [](auto const& config) {
+                if constexpr (std::remove_cvref_t<decltype(config)>::access != InputAccessKind::sequential)
+                    return config.content_access != InputContentAccess::complete_buffer;
+                else return false;
+            });
+        }
+
         // One concrete primitive has one authored execution domain. Tick and
         // tick_block are alternative realtime forms; tock_coverage is the
         // background form. A module node is the composition mechanism when a
@@ -445,11 +457,10 @@ namespace iv {
                     has_propagate_reverse_coverage_batch<Node>) <= 1)
             && (!(has_skip_block<Node> || has_skip_block_batch<Node>)
                 || has_tick_family_v<Node>)
-            && (!declares_tock_outputs_v<Node>
-                || has_tock_family_v<Node>)
+            && tick_input_content_is_valid<Node>()
+            && (!declares_tock_outputs_v<Node> || has_tock_family_v<Node>)
             && (!has_tock_family_v<Node>
-                || (declares_tock_outputs_v<Node>
-                    && !declares_tick_outputs_v<Node>));
+                || (declares_tock_outputs_v<Node> && !declares_tick_outputs_v<Node>));
 
         // The author opts into a deterministic, side-effect-free Tick contract
         // with `static constexpr TickReplayMode replay_mode`. This is a
@@ -482,19 +493,14 @@ namespace iv {
 
         template<typename Node>
         inline constexpr bool has_coverage_propagation_domain_v =
-            declares_tock_outputs_v<Node>
-            || (has_tick_family_v<Node> && intrinsically_replayable_v<Node>);
+            has_tock_family_v<Node> || (has_tick_family_v<Node> && intrinsically_replayable_v<Node>);
 
         template<typename Node>
         inline constexpr bool background_dsp_node_declaration_is_valid_v =
             background_state_type_is_valid_v<Node>
             && has_constexpr_port_configs<Node>
             && primary_callback_declaration_is_valid_v<Node>
-            && (!declares_tock_outputs_v<Node>
-                || has_tock_family_v<Node>)
             && (!has_tock_family_v<Node>
-                || declares_tock_outputs_v<Node>)
-            && (!declares_tock_outputs_v<Node>
                 || has_propagate_forward_coverage<Node>
                 || has_propagate_forward_coverage_batch<Node>)
             && (!(has_propagate_forward_coverage<Node>
@@ -525,8 +531,8 @@ namespace iv {
                 }
                 if constexpr (has_outputs<Node>) {
                     if (any_port_config(Node::outputs(), [](auto const& config) {
-                        return !is_tick(config)
-                            || config.retention != OutputRetention::ephemeral;
+                        return !is_sequential_output(config)
+                            || config.realization != OutputRealization::computed;
                     })) return false;
                 }
                 return true;

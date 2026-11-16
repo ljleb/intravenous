@@ -35,7 +35,7 @@ struct SystemAudioInput {
     {
         return std::array{output<Sample>(
             "out",
-            OutputProduction::tick,
+            OutputProduction::sequential,
             {.channel_layout = system_audio_channel_layout})};
     }
 

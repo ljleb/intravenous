@@ -7,7 +7,7 @@ struct InvalidDualExecutionCallbacks {
     {
         return std::tuple {
             iv::output<iv::Sample>(
-                "realtime", iv::OutputProduction::tick),
+                "realtime", iv::OutputProduction::sequential),
             iv::output<iv::Sample>(
                 "background", iv::OutputProduction::coverage),
         };

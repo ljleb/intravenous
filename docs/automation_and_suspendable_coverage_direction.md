@@ -5,7 +5,9 @@ _Status: accepted normative design direction (2026-11-15). The implementation in
 background scheduler have not yet been migrated to this contract. This document
 records intended behavior, not a claim about the checked-in implementation._
 
-This design extends [Coverage, Random Access, And Background Evaluation](./coverage_and_background_evaluation.md),
+This design follows [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md), which supersedes the
+old replay-mode/coverage coupling and establishes demand-scoped computed data.
+It also extends [Coverage, Random Access, And Background Evaluation](./coverage_and_background_evaluation.md),
 [Sequential Port Storage And Connection Planning](./sequential_port_storage_planning.md),
 [Batched Node Callback Direction](./batched_node_callbacks_direction.md), and
 [Node Presentation And Manual Controls Direction](./node_presentation_and_manual_controls_direction.md).
@@ -139,121 +141,50 @@ The default policy remains neutral, preserving existing input behavior. A
 Sequential Sample input can opt into manual fallback. Existing non-Sample
 neutral rules remain unchanged where no manual-control representation exists.
 
-**Sequential inputs resolve absence; Tick output coverage is declared**
-(owner decision, 2026-11-15). A Sequential input exposes no optional value or
-absence marker to `tick()`: absent upstream positions resolve to its declared
-neutral or manual fallback. Tick computes an ordinary sample at every position
-from those resolved values; `tick()` and `tick_block()` do not return optional
-values. A replayable Tick node's output `IndexCoverage` decides which computed
-samples are output; a computed sample outside that coverage contributes to no
-downstream input. Realtime execution and background replay honor the same
-coverage, without a per-sample validity buffer or a new output-production kind.
+**Sequential inputs resolve absence; live Tick Sequential outputs are
+continuous.** Each Sequential input supplies a resolved stream: it combines
+covered upstream contributions and uses its own neutral/manual fallback only
+when the selected source coverage is known absent. The callback receives an
+ordinary value for each executed position, with no optional sample type.
+The input's fallback is not an additional source contribution.
 
-Tick processes the combined Sequential input, not individual input Regions.
-`f(2 + 3)` is generally not `f(2)` combined with `f(3)`, so where only some
-inputs are covered, the uncovered ones use their fallback inside the same call.
+A live Tick `SequentialOutputConfig` produces a value for each physical
+execution position, including positions where its inputs used fallback.
+Its output existence is not the union of sparse source coverage. A buffered
+recording of those live samples has a separately published, possibly sparse
+**historical** recording coverage. If a Tick computation is intrinsically
+eligible for background replay, GraphJit must still prove contextual
+availability of upstream data and avoid non-replayable `.detach()` delays.
+The checked-in `TickReplayMode::{disabled,input_union,full}` and
+`prove_full_live_tick_coverage()` rules are implementation details to replace,
+not the intended output coverage semantics.
 
-A node declares one `static constexpr TickReplayMode replay_mode`; there is no
-per-output policy field for now:
+Automation is a Tock-produced **computed** Region/Coverage result, not a
+realtime Tick node with special authored sparse output coverage. The outgoing
+`empty`, `hold`, and `bezier` point segments determine its exact output
+`IndexCoverage`; only the demanded positions in nonempty segments are
+computed. The procedure may span very large intervals without allocating
+buffers proportional to its declared coverage. A downstream Sequential input
+handles `empty` gaps through its own fallback, while a Region or Coverage
+input preserves them without substitution. A consumer requiring an entire
+contiguous Region must use an explicit bounded materialization node.
 
-| Mode | Replay eligibility | Compiler-generated output coverage |
-| --- | --- | --- |
-| `disabled` (default) | not intrinsically replayable | none |
-| `input_union` | intrinsically replayable | union of the input coverages |
-| `full` | intrinsically replayable | the whole circular index domain |
+The same node's values must be deterministic for the same point/recording
+snapshot and requested positions, regardless of cache history or query
+batching. Tock forward/reverse propagation discovers relevant point
+information and prepares exact required windows before the evaluator runs.
+For a Sequential consumer, values are prepared in a bounded rolling window
+before the audio-thread Tick callback. Known-covered but unavailable data
+are an underrun, not an absence/fallback.
 
-`input_union` suits transformations whose output should exist only where an
-upstream contribution exists; `full` suits generators, including those without
-inputs, and computations whose output stays meaningful with no upstream
-contribution. An authored `propagate_forward_coverage()` takes precedence over
-generated coverage and may publish different coverage per output. `LinearCurve`
-keeps its authored callback, so `empty` segments have no coverage independently
-of its point Region. Existing boolean eligibility checks derive from
-`replay_mode != TickReplayMode::disabled`.
-
-Replayable Tick nodes cannot declare persisted outputs (owner decision,
-2026-11-15). Every output of an `input_union` or `full` node must be an
-**ephemeral Tick output**, for both continuous values and events. The static
-node declaration rejects a persisted output. An explicit recording node can
-retain the replayable node's output instead. This restriction applies only to
-its own outputs. A replayable Tick node can consume a persisted output from
-another node as a recorded dependency, using the selected retained-data view.
-
-For an `input_union` node with Sequential inputs A and B:
-
-| A | B | Tick computation | Output coverage |
-| --- | --- | --- | --- |
-| covered | covered | both actual values | covered |
-| covered | uncovered | A plus B's fallback | covered |
-| uncovered | covered | A's fallback plus B | covered |
-| uncovered | uncovered | both fallback values | uncovered |
-
-The last row is deliberate; a `full` node covers it. For example, automation
-with an `empty` segment feeds a gain whose Sequential input has manual fallback
-0.5, and the gain feeds a cutoff whose Sequential input has manual fallback 0.3.
-If the gain is `input_union`, its output is uncovered in the gap and the cutoff
-resolves to its own 0.3. If the gain is `full`, the cutoff receives the gain's
-computed result. Both are valid; the gain's declared mode decides.
-
-Sequential is an input access mode, not an output-production type. A PCM
-recorder consuming a Sequential input receives a sample at every processed
-position, its fallback included, so a recording does not skip positions or
-compress time over upstream gaps; with neutral fallback zero, gaps are written as
-silence. A Region or Coverage consumer can instead keep absence distinct from an
-actual zero.
-
-Output existence remains distinct from the availability of the dependencies
-needed to replay it:
-
-| Sequential dependency during replay | Replay behavior |
-| --- | --- |
-| Known uncovered | Use the input's declared fallback |
-| Covered, value available for the selected version | Use the source value |
-| Covered, value unavailable | Resolve the dependency, or leave the replay request unsatisfied |
-
-This changes neither Region/Coverage inputs, nor authored output coverage, nor
-the existing replayability requirements. The superseded wording is preserved
-[historically](./historical/replay_coverage_before_tick_replay_mode_2026-11-15.md).
-
-Fallback is not another contribution in fan-in. It applies where no upstream
-contribution covers the position, and neither changes upstream coverage nor
-fabricates Regions. Live manual gestures and their explicit source override
-remain separate from this absence policy. Region/Coverage inputs have no
-manual-control interface.
-
-Public module inputs declare Sequential, Region or Coverage access (owner
-decision, 2026-11-15). Sequential is the default, as for leaf inputs. A module
-that forwards sparse Regions declares Region or Coverage access explicitly.
-These access declarations govern the public input's semantics rather than
-being discarded when the module is flattened. Region/Coverage public inputs
-preserve absence and do not expose manual controls.
-
-For a module's public Sequential input, resolution occurs before the module's
-internal routing, conversions and fan-out (owner decision, 2026-11-15).
-GraphJit retains an internal resolution stage for that input. It can share or
-inline the stage's work and select storage through its normal planning rules.
-Flattening module structure must not erase this resolution boundary or move
-its fallback to the final leaf inputs. The stage is not a visible project node
-or a new authored leaf-node interface.
-
-The resolved Sequential module input is a covered internal signal, including
-positions supplied by fallback (owner decision, 2026-11-15). An internal
-`input_union` Tick consumer therefore sees those positions as covered. This
-creates the module input's resolved signal without changing the original
-upstream output's coverage. Region/Coverage module inputs continue preserving
-absence.
-
-Automation is independent of destination controls: `empty` segments produce no
-coverage, `hold` segments produce constant values, and `bezier` segments
-interpolate. The same automation output may feed destinations with different
-Sequential fallback policies; Region/Coverage destinations preserve its gaps.
-
-The scheduler must distinguish known upstream absence from missing requested
-materialization. Sequential fallback applies only on **known absent** positions;
-pending or missing covered data cannot be treated as a gap. Previously accepted
-playback data remain in use until a coherent replacement is ready. At the same
-semantic snapshot and request, incidental cache history cannot change input
-values or the selected Region views.
+Public module inputs retain Sequential, Region and Coverage access contracts.
+A module's public Sequential input resolves fallback **before** internal
+routing/conversions/fan-out; flattening does not move that boundary to leaf
+inputs. The resolved internal Sequential stream is covered as a live signal.
+Random Access module inputs preserve sparse Region/Coverage identity, and
+expose no manual fallback. The planner must not expose data outside its
+explicitly selected Regions and prepared windows. See
+[Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md).
 
 ## 5. Keep forward and reverse coverage semantics; allow suspension
 
@@ -311,115 +242,92 @@ input views or configuration references cannot outlive their selected version.
 
 ### 6.1 What is selected, and what may be read
 
-A `tock_coverage()` invocation (and each `tock_coverage_batch()` lane)
-receives **explicitly selected complete input Region views**, rather than the
-union of anything already computed or cached. Its input `region()` (for
-`RegionInputConfig`) or `regions()` (for `CoverageInputConfig`) is the readable
-collection selected by reverse dependency planning and complete-Region
-closure. Reading beyond that collection is invalid, even if backing storage
-exists. A selected Region's full range is readable: a narrow requirement
-intersecting a larger Region never turns the Region into a cropped pseudo-Region.
-Overlapping or duplicate Regions remain separate, and zero-event event Regions
-remain valid. Exploratory data reads made during propagation do not
-silently enter the Tock invocation's selected input Regions.
+`tock_coverage()` receives the **explicitly selected logical Region metadata**
+for every `RegionInputConfig` and `CoverageInputConfig` (and corresponding
+output). Logical Region selection is determined by semantic reverse planning,
+not by what the cache happens to contain. A Region's full range, ordering and
+identity are preserved even when its content is only partially materialized.
+Duplicate/overlapping Regions remain distinct. Valid zero-event Regions remain
+selected metadata even when they have no event payloads.
 
-An `IndexCoverage` is a positional set, **not** a Region collection. On the
-intended Tock-facing API, `input.coverage()` (if exposed) is precisely the
-positional **union of the Region views provided to that invocation**. It is a
-convenience over their ranges, not a second, separately selected source of
-truth. For example, provided Regions `[0,100)` and `[50,150)` retain two
-independent values at index 75 while their coverage is `[0,150)`. The
-reverse planner's potentially smaller or conservatively larger input
-requirement is **not** this coverage and is not implicitly exposed as
-`input.required_coverage()`.
+Node-facing content access is separate:
 
-The reverse propagation callback already knows the positions it required;
-the ordinary Tock evaluator only needs the finalized readable input Regions.
-If evaluation depends on a value obtained while planning, it must either
-recompute the same pure determination from its selected inputs or consume an
-explicit, versioned semantic result of planning; it must not take the
-reverse requirement as a substitute for semantic input values.
+- A **windowed** input exposes only the prepared read windows deliberately
+  selected for its demand. Those windows may be contiguous spans but need not
+  cover the enclosing Region. Access outside them is invalid, even if a warm
+  cache contains more data elsewhere in that Region.
+- A **complete-buffer** input exposes the whole selected Region as one
+  contiguous buffer, but only after the background planner has established
+  the requirement and the executor has materialized/pinned all its contents.
+  A computed producer cannot directly meet that requirement; use an explicit
+  bounded materialization node.
+- Output `region()`/`regions()` describe the same full logical Regions, while
+  writable **windows** describe the requested covered positions the evaluator
+  is responsible for filling. Do not allocate or fill an entire logical
+  Region merely because one output window intersects it.
 
-An output's `region()` or `regions()` provides the complete writable Region
-selection for the invocation. These ranges establish which output data must
-be produced. The scheduler owns the original downstream demand, intersects it
-with exact output coverage, and expands to complete output Regions as required
-by the Region/Coverage production contract. `output.requested_coverage()` in
-the existing API is a positional summary of selected output work, not a
-source of unrelated content; its information can be derived from the selected
-writable Region ranges once whole-Region closure is complete. The intended
-minimal authored Tock interface therefore has no separate raw-request
-accessor. Keep `region()`/`regions()` for writable data, and optionally
-`coverage()` as a cheap positional union of exactly those writable Regions,
-matching the input-side naming. The current output
-`requested_coverage()` spelling can be retired or renamed during migration;
-reverse propagation retains its own `output.required()` for demand planning.
-Do not introduce `produced_coverage()` or an input-side
-`required_coverage()` without a concrete case that cannot be expressed by
-Region views and propagation.
+`IndexCoverage` is a positional set, not a logical Region collection. An
+input's `coverage()` remains precisely the positional union of its **selected
+logical Region descriptors**, not a statement that every position in those
+Regions is readable or currently computed. The reverse planner's required
+positions and the evaluator's prepared content windows are separate from the
+selected logical union. They do not become another input-side
+`required_coverage()` convenience accessor. The evaluator does need an
+explicit way to enumerate its selected prepared readable/writable windows;
+full logical Regions alone are insufficient to determine the evaluation work.
+
+Discovery reads during suspendable forward/reverse planning never enlarge the
+ordinary evaluator's readable selection. If evaluation depends on discovered
+values, it must receive corresponding selected windows or explicitly versioned
+planning results. The executor must not leak cached unrelated values to the
+callback.
 
 ### 6.2 Examples that test the minimum interface
 
-| Eventual Tock node | Input-side information needed | Output-side information needed | What fails if that information is removed? |
-| --- | --- | --- | --- |
-| Constant or deterministic index-based generator | None | Writable `region()` or `regions()` and their ranges | Cannot know which finite output Regions to fill |
-| Pointwise gain/copy | Input `region()` or `regions()` containing values | Output writable Regions | Cannot access input samples or distinguish separate Regions |
-| Convolution / neighborhood filter | Input Regions including explicitly planned halo samples | Output writable Regions | Cannot evaluate at a boundary without the halo; input requirement itself need not be visible |
-| Mixer with overlapping clips | Input `regions()` preserving Region identity and duplicate ranges | Output writable Regions | Positional `coverage()` alone loses contributions in overlap |
-| Gap/mask-aware mapper | Input Regions; optional derived `coverage()` for set tests | Output writable Regions | Without the convenience union, it must compute the union itself; no expressive power is lost |
-| Sparse point-event interpolator | Event `region()`/`regions()`, timestamps, payloads, and neighbor lookup | Output writable Regions | Cannot inspect control points outside the output window, even though the planner can select their finite Region |
-| Selector whose input A chooses which part of B is needed | Selected A and B Region contents | Output writable Regions | Without suspendable reverse planning, the B requirement cannot be discovered; `input.required_coverage()` is not needed in Tock |
-| Whole-clip normalizer | Full input Region defined by the clip's semantic boundary | Complete writable output Region | If planning supplies only a local sample window, output semantics change with demand; exposing a request accessor cannot fix incorrect selection |
-| Event transformer preserving separate groups | Event `regions()` including Region membership/order | Writable event `regions()` | A coverage union alone discards group membership, multiplicity, and per-Region ordering |
+| Tock node | Logical information | Requested materialization |
+| --- | --- | --- |
+| Automatic Bézier curve | Point-event Regions, outgoing segment and exact curve Region/Coverage ranges | Requested playback/output window only; not the full segment |
+| Pointwise gain/copy | Selected input logical Regions and their identities | Prepared matching source and output windows |
+| Convolution | Selected Regions and input history footprint | Output window plus required halo input windows |
+| Overlapping mixer | Multiple selected Regions, including duplicates | Each contribution's demanded window, with overlap preserved |
+| Event-group transformer | Ordered event Region list, including empty groups | Complete selected event contents as required by event semantics |
+| Whole-clip normalizer | Stable clip Region identity and whole-input statistic | Can explicitly demand full input data to determine gain; output may still be a small window |
+| Full-buffer FFT | Stable Region identity and complete-buffer input access | Entire selected bounded buffer must be realized before the callback |
 
-These are tests of **information required by an evaluator**, not a claim that
-all those nodes already exist. The first two columns follow the authored
-`RegionInputConfig`/`CoverageInputConfig` and
-`RegionOutputConfig`/`CoverageOutputConfig` distinctions: a singular Region
-port uses `region()`, while a Coverage port uses `regions()`.
+The exact callback accessor names for prepared content windows are to be
+settled during implementation. Preserve the existing named `region()` and
+`regions()` concepts for **logical selection** rather than quietly returning
+clipped pseudo-Regions. Avoid `output.requested_coverage()` if it merely
+restates the writable windows; do not erase the windows themselves from the
+interface. The reverse propagation callback keeps its own
+`output.required()` demand contract.
 
 ### 6.3 Request determinism and callback boundaries
 
-What changes the Tock-visible records:
+The selected logical input Region list depends on the authored graph,
+selected semantic/data snapshot, and explicit reverse requirements; the
+selected prepared content windows also depend on the requested output
+positions. Enlarging the requested window may legitimately enlarge the
+writable output window and readable dependency windows without modifying
+Region identities. A larger input dependency requirement need not force a
+larger output computation window unless the node's actual algorithm requires
+it. A complete-buffer consumer is an explicit demand for the whole selected
+Region.
 
-| Runtime change | `input.regions()` / derived `input.coverage()` | `output.regions()` / derived output coverage |
-| --- | --- | --- |
-| Different downstream demanded positions | May change **only because** a different set of complete input Regions is explicitly required | May change as a different set of complete output Regions is selected |
-| Different forward-published Region ranges or existence coverage | May change when the reverse requirement now selects different input Regions | May change when the node's exact output Regions change |
-| Changed point/sample/event values without a Region-range change | Region ranges may stay identical; readable contents/version change | Writable ranges may stay identical; recomputed results change |
-| Conservative enlargement of an authored reverse requirement | May select more full input Regions; this must not change results on overlapping output positions | No automatic widening from the input storage cache |
-| Warmed cache or unrelated materialization | **Must not change** selected Region descriptors or their union | **Must not change** the selected output work for the same demand/snapshot |
-| Different compatible batching of demand roots | May change total explicitly selected Regions for the combined request | May change total selected output Regions; overlapping outputs remain semantically identical |
+For example, if an input Region spans `[0,100)` but reverse planning needs
+only `[40,42)`, `input.region()` still describes `[0,100)`, while the only
+prepared readable content may be `[40,42)`. `input.coverage()` remains
+`[0,100)` as the union of the logical selected Region. Materializing
+`[200,300)` earlier does not add that data to either callback-visible
+selection.
 
-For example, if a reverse callback requests `[40,42)` from an input
-whose selected source Region is `[0,100)`, the input `region()` grants access
-to the **whole** `[0,100)` Region and the proposed `input.coverage()` returns
-`[0,100)` as its union. The scheduler retains `[40,42)` internally as the
-reverse requirement; it is not another Tock input accessor. If previous work
-also happened to materialize `[200,300)`, that extra Region is not added to
-the callback input.
-
-Given an identical semantic/data snapshot, node configuration, and output
-position, the produced value/event sequence must not depend on whether the
-scheduler satisfied a requirement from cold computation, previous persisted
-records, transaction-local materialization, or a different compatible batch.
-An invocation's selected complete Regions must be determined from semantic
-planning and declared output Region closure, not incidental cache contents.
-Different output demands may select different sets of complete Regions, but
-any overlapping produced positions must have the same semantic results.
-
-This is stronger than merely repeating the same invocation and seeing the
-same input spans. A node must not define normalization, interpolation, random
-seeds, or boundary treatment from arbitrary demand grouping unless such
-boundaries are stable parts of its authored semantics. `TockState` may
-accelerate computation but cannot alter the results. Inputs are immutable
-for the selected version and Region iteration order is deterministic.
-
-The background scheduler may read/cache/materialize additional data to
-satisfy independent consumers. Those extra data never become readable by a
-Tock callback just because they happen to exist. A provided Region may
-contain positions outside the smaller reverse-required set **because the
-complete Region was explicitly selected**, and this is intentional.
+For fixed semantic/data versions and the same requested positions, computed
+samples/events must be independent of cache warmth, request coalescing,
+worker scheduling, and different legal ways of partitioning the windows.
+No randomly grouped output window may silently change a normalizer's gain,
+interpolation endpoints, seed or boundary semantics. Cancellation or failure
+cannot expose an incomplete requested window. `TockState` remains purely
+non-semantic acceleration.
 
 ### 6.4 Current implementation mismatch to resolve during migration
 
@@ -441,7 +349,7 @@ new naming rule.
 
 ## 7. Background batching is a scheduling optimization
 
-Keep coherent candidate publication, persisted-output completeness, sound
+Keep coherent candidate publication, **requested-window** completeness, sound
 invalidation, and exact covered request semantics. Relax the old global
 "forward once, reverse once, evaluate once" scheduling constraint for
 **planning**: independently ready requirements can execute in batches; blocked
@@ -470,24 +378,19 @@ feature across event declarations, trait/ABI bindings, scheduler, exact coverage
 manual fallback, and automation rather than adding local compatibility
 workarounds that make those contracts appear implemented when they are not.
 
-### Full-coverage proof before feedback validation
+### Feedback SCCs and recorded boundaries (2026-11-16 supersession)
 
-Accepted clarification, 2026-11-15: a Sequential/Tick SCC is not rejected just
-because it contains `input_union` nodes. The compiler first proves which live
-Tick outputs are fully covered and propagates that proof through generated
-union rules. One fully covered contribution reaching an input proves a
-union node's outputs full. The proof follows the actual port routes and
-channel composition. It does not infer an authored forward callback's result.
-
-Fully covered producers may be inside or outside the SCC. Even a component
-made entirely of `input_union` nodes can therefore have full coverage when an
-independent fully covered contribution reaches it. Reject only the recursive
-sparse-coverage dependencies that remain unresolved. Do not introduce delayed
-coverage history or a background fixed-point scheduler.
-
-This proof concerns live coverage. It does not make cyclic ephemeral value
-dependencies replayable; contextual background replay retains its separate
-acyclic-dependency requirement and selected persisted boundaries.
+The earlier input-union full-coverage proof was needed only because
+`TickReplayMode` combined replay eligibility with sparse live output coverage.
+With `SequentialOutputConfig`, each live Tick Sequential output is continuously
+produced. An initialized `.detach()` feedback delay is part of the realtime
+Sequential schedule, not a background coverage producer or a replayable
+position-addressed input. An unresolved feedback SCC cannot be replayed in
+background, even when its individual Tick computations are intrinsically pure.
+No recursive `input_union` coverage solver is required for live SCC output
+existence. Recorded Tick Sequential/buffered outputs expose actual published
+historical coverage separately. The old proof decision is preserved in the
+[historical predecessor](./historical/output_ports_before_computed_buffered_2026-11-16.md).
 
 ### Playback preparation and missed background deadlines
 

@@ -82,4 +82,20 @@ expect_invalid(
 
 expect_invalid(
     invalid_replay_persisted_output.cpp
-    "and declare only ephemeral Tick outputs")
+    "and declare only computed Sequential outputs")
+
+expect_invalid(
+    invalid_tick_region_output.cpp
+    "Tick primitives declare only Sequential outputs; Tock primitives declare only Region or Coverage outputs")
+
+expect_invalid(
+    invalid_tick_coverage_output.cpp
+    "Tick primitives declare only Sequential outputs; Tock primitives declare only Region or Coverage outputs")
+
+expect_invalid(
+    invalid_tock_sequential_output.cpp
+    "Tick primitives declare only Sequential outputs; Tock primitives declare only Region or Coverage outputs")
+
+expect_invalid(
+    invalid_tick_windowed_input.cpp
+    "IV_NODE Tick Region/Coverage inputs initially require complete-buffer access")

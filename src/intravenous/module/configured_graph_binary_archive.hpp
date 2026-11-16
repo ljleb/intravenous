@@ -304,7 +304,7 @@ inline void write_output_production(Writer& w, OutputProductionConfig const& val
 inline OutputProductionConfig read_output_production(Reader& r)
 {
     auto const value = read_enum<OutputProductionKind>(r);
-    if (value < OutputProductionKind::tick
+    if (value < OutputProductionKind::sequential
         || value > OutputProductionKind::coverage) {
         throw std::runtime_error(
             "configured graph archive has invalid output production");
@@ -312,20 +312,20 @@ inline OutputProductionConfig read_output_production(Reader& r)
     return value;
 }
 
-inline void write_output_retention(Writer& w, OutputRetention retention)
+inline void write_output_realization(Writer& w, OutputRealization realization)
 {
-    write_enum(w, retention);
+    write_enum(w, realization);
 }
 
-inline OutputRetention read_output_retention(Reader& r)
+inline OutputRealization read_output_realization(Reader& r)
 {
-    auto const retention = read_enum<OutputRetention>(r);
-    if (retention < OutputRetention::ephemeral
-        || retention > OutputRetention::persisted) {
+    auto const realization = read_enum<OutputRealization>(r);
+    if (realization < OutputRealization::computed
+        || realization > OutputRealization::buffered) {
         throw std::runtime_error(
-            "configured graph archive has invalid output retention");
+            "configured graph archive has invalid output realization");
     }
-    return retention;
+    return realization;
 }
 
 template<class Metadata>
@@ -351,6 +351,7 @@ inline void write_input(Writer& w, ContinuousInputConfig const& value)
     w.string(value.name);
     write_layout(w, value.channel_layout);
     write_input_access(w, input_access(value));
+    write_enum(w, value.content_access);
     std::visit([&](auto const& access) {
         validate_continuous_metadata(access.value_metadata);
         write_continuous_metadata_list(w, access.value_metadata);
@@ -363,7 +364,11 @@ inline ContinuousInputConfig read_input(Reader& r)
         .name = r.string(),
         .channel_layout = read_layout(r),
     };
-    switch (read_input_access(r)) {
+    auto const access = read_input_access(r);
+    result.content_access = read_enum<InputContentAccess>(r);
+    if (result.content_access > InputContentAccess::complete_buffer)
+        throw std::runtime_error("configured graph archive has invalid input content access");
+    switch (access) {
     case InputAccessKind::sequential:
         result.access = SequentialContinuousInputProperties{
             .value_metadata =
@@ -394,7 +399,7 @@ inline void write_output(Writer& w, ContinuousOutputConfig const& value)
     w.string(value.name);
     write_layout(w, value.channel_layout);
     write_output_production(w, output_production(value));
-    write_output_retention(w, value.retention);
+    write_output_realization(w, value.realization);
     std::visit([&](auto const& production) {
         validate_continuous_metadata(production.value_metadata);
         write_continuous_metadata_list(w, production.value_metadata);
@@ -406,17 +411,17 @@ inline ContinuousOutputConfig read_output(Reader& r)
     auto name = r.string();
     auto channel_layout = read_layout(r);
     auto const production = read_output_production(r);
-    auto const retention = read_output_retention(r);
+    auto const realization = read_output_realization(r);
     ContinuousOutputConfig result {
         .name = std::move(name),
         .channel_layout = channel_layout,
-        .retention = retention,
+        .realization = realization,
     };
     switch (production) {
-    case OutputProductionKind::tick:
-        result.production = TickContinuousOutputProperties{
+    case OutputProductionKind::sequential:
+        result.production = SequentialContinuousOutputProperties{
             .value_metadata =
-                read_continuous_metadata_list<ContinuousTickOutputMetadata>(r),
+                read_continuous_metadata_list<ContinuousSequentialOutputMetadata>(r),
         };
         break;
     case OutputProductionKind::region:
@@ -443,15 +448,20 @@ inline void write_event_input(Writer& w, EventInputConfig const& value)
     w.string(value.name);
     write_enum(w, value.type);
     write_input_access(w, value.access);
+    write_enum(w, value.content_access);
 }
 
 inline EventInputConfig read_event_input(Reader& r)
 {
-    return {
+    auto result = EventInputConfig{
         .name = r.string(),
         .type = read_enum<EventTypeId>(r),
         .access = read_input_access(r),
+        .content_access = read_enum<InputContentAccess>(r),
     };
+    if (result.content_access > InputContentAccess::complete_buffer)
+        throw std::runtime_error("invalid event input content access");
+    return result;
 }
 
 inline void write_event_output(Writer& w, EventOutputConfig const& value)
@@ -460,7 +470,7 @@ inline void write_event_output(Writer& w, EventOutputConfig const& value)
     write_enum(w, value.type);
     w.pod(value.max_events_per_index);
     write_output_production(w, value.production);
-    write_output_retention(w, value.retention);
+    write_output_realization(w, value.realization);
     w.flag(value.max_event_count.has_value());
     if (value.max_event_count) w.size(*value.max_event_count);
 }
@@ -472,7 +482,7 @@ inline EventOutputConfig read_event_output(Reader& r)
         .type = read_enum<EventTypeId>(r),
         .max_events_per_index = r.pod<double>(),
         .production = read_output_production(r),
-        .retention = read_output_retention(r),
+        .realization = read_output_realization(r),
         .max_event_count = r.flag() ? std::optional(r.size()) : std::nullopt,
     };
 }

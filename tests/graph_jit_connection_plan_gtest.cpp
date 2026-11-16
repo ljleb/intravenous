@@ -37,7 +37,7 @@ struct TimedSamplePass {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::output<iv::Sample>("out", iv::OutputProduction::tick),
+            iv::output<iv::Sample>("out", iv::OutputProduction::sequential),
         };
     }
 
@@ -69,14 +69,14 @@ struct TimedStereoStateNode {
     static constexpr auto outputs()
     {
         return std::tuple{
-            iv::output<iv::Sample>("out", iv::OutputProduction::tick,
+            iv::output<iv::Sample>("out", iv::OutputProduction::sequential,
                 {
                     .channel_layout = iv::ChannelLayout{
                         .channel_type = iv::ChannelTypeId::stereo,
                         .sample_layout = iv::SampleStreamLayout::planar,
                     },
                 }),
-            iv::event_output("events_out", iv::EventTypeId::trigger, iv::OutputProduction::tick),
+            iv::event_output("events_out", iv::EventTypeId::trigger, iv::OutputProduction::sequential),
         };
     }
 
@@ -102,7 +102,7 @@ struct PlainSamplePass {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<PlainSamplePass> const&) const {}
@@ -117,8 +117,8 @@ struct PersistedSccPass {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::tick,
-            iv::OutputRetention::persisted)};
+            "out", iv::OutputProduction::sequential,
+            iv::OutputRealization::buffered)};
     }
 
     void tick_block(iv::TickBlockContext<PersistedSccPass> const&) const {}
@@ -133,7 +133,7 @@ struct NeutralSamplePass {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<NeutralSamplePass> const&) const {}
@@ -149,7 +149,7 @@ struct PlainEventPass {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::tick, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void tick_block(iv::TickBlockContext<PlainEventPass> const&) const {}
@@ -163,7 +163,7 @@ struct PersistedTickEventSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::tick, iv::OutputRetention::persisted, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, iv::OutputRealization::buffered, {.max_events_per_index = 0.25})};
     }
 
     void constrain_ports(
@@ -188,7 +188,7 @@ struct TickMidiEventSource {
         return std::array{iv::event_output(
             "out",
             iv::EventTypeId::midi,
-            iv::OutputProduction::tick,
+            iv::OutputProduction::sequential,
             {.max_events_per_index = 0.25})};
     }
 
@@ -203,7 +203,7 @@ struct MonoSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<MonoSource> const&) const {}
@@ -219,8 +219,8 @@ struct PersistedStereoSource {
     {
         return std::array{iv::output<iv::Sample>(
             "out",
-            iv::OutputProduction::tick,
-            iv::OutputRetention::persisted,
+            iv::OutputProduction::sequential,
+            iv::OutputRealization::buffered,
             {
                 .channel_layout = iv::ChannelLayout{
                     .channel_type = iv::ChannelTypeId::stereo,
@@ -240,7 +240,7 @@ struct LimitedMonoSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     constexpr std::size_t max_block_size() const { return 16; }
@@ -278,7 +278,7 @@ struct BackgroundSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage, iv::OutputRealization::buffered)};
     }
 
     void tock_coverage(iv::TockCoverageContext<BackgroundSource>&) const {}
@@ -286,6 +286,26 @@ struct BackgroundSource {
         iv::PropagateForwardCoverageContext<BackgroundSource>& context) const
     {
         context.template output<"out">().publish(
+            std::span<iv::GlobalIndexRange const>{});
+    }
+};
+
+struct ComputedBackgroundSource {
+    static constexpr auto inputs()
+    {
+        return std::tuple{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage)};
+    }
+
+    void tock_coverage(iv::TockCoverageContext<ComputedBackgroundSource>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<ComputedBackgroundSource>& context) const
+    {
+        context.output<"out">().publish(
             std::span<iv::GlobalIndexRange const>{});
     }
 };
@@ -299,7 +319,7 @@ struct BackgroundRegionSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::output<iv::Sample>("out", iv::OutputProduction::region),
+            iv::output<iv::Sample>("out", iv::OutputProduction::region, iv::OutputRealization::buffered),
         };
     }
 
@@ -324,7 +344,7 @@ struct BackgroundStereoSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage,
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage, iv::OutputRealization::buffered,
             {
                 .channel_layout = iv::ChannelLayout{
                     .channel_type = iv::ChannelTypeId::stereo,
@@ -394,7 +414,7 @@ struct BackgroundEventRegionSource {
         return std::array{iv::event_output(
             "out",
             iv::EventTypeId::trigger,
-            iv::OutputProduction::region)};
+            iv::OutputProduction::region, iv::OutputRealization::buffered)};
     }
 
     void tock_coverage(
@@ -415,7 +435,7 @@ struct BackgroundEventRegionSink {
     static constexpr auto inputs()
     {
         return std::array{iv::event_input(
-            "in", iv::EventTypeId::trigger, iv::InputAccess::region)};
+            "in", iv::EventTypeId::trigger, iv::InputAccess::region, iv::InputContentAccess::complete_buffer)};
     }
 
     static constexpr auto outputs() { return std::tuple{}; }
@@ -450,7 +470,7 @@ struct TockTriggerSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::coverage, {.max_events_per_index = 0.5})};
+        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::coverage, iv::OutputRealization::buffered, {.max_events_per_index = 0.5})};
     }
 
     void tock_coverage(iv::TockCoverageContext<TockTriggerSource>&) const {}
@@ -458,10 +478,26 @@ struct TockTriggerSource {
         iv::PropagateForwardCoverageContext<TockTriggerSource>&) const {}
 };
 
+struct ComputedTockTriggerSource {
+    static constexpr auto inputs()
+    {
+        return std::tuple{};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::coverage, {.max_events_per_index = 0.5})};
+    }
+
+    void tock_coverage(iv::TockCoverageContext<ComputedTockTriggerSource>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<ComputedTockTriggerSource>&) const {}
+};
+
 struct BackgroundSink {
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::coverage)};
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::coverage, iv::InputContentAccess::complete_buffer)};
     }
 
     static constexpr auto outputs()
@@ -477,7 +513,7 @@ struct BackgroundStereoSink {
     {
         return std::array{iv::input<iv::Sample>(
             "in",
-            iv::InputAccess::coverage,
+            iv::InputAccess::coverage, iv::InputContentAccess::complete_buffer,
             {
                 .channel_layout = iv::ChannelLayout{
                     .channel_type = iv::ChannelTypeId::stereo,
@@ -498,7 +534,7 @@ struct BackgroundRegionSink {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("in", iv::InputAccess::region),
+            iv::input<iv::Sample>("in", iv::InputAccess::region, iv::InputContentAccess::complete_buffer),
         };
     }
 
@@ -515,7 +551,7 @@ struct BackgroundStereoRegionSink {
     {
         return std::array{iv::input<iv::Sample>(
             "in",
-            iv::InputAccess::region,
+            iv::InputAccess::region, iv::InputContentAccess::complete_buffer,
             {
                 .channel_layout = iv::ChannelLayout{
                     .channel_type = iv::ChannelTypeId::stereo,
@@ -553,7 +589,7 @@ struct BackgroundTwoInputPass {
         iv::PropagateForwardCoverageContext<BackgroundTwoInputPass>&) const {}
 };
 
-struct RealtimeOutputRetentionModes {
+struct RealtimeOutputRealizationModes {
     static constexpr auto inputs()
     {
         return std::tuple{};
@@ -562,23 +598,23 @@ struct RealtimeOutputRetentionModes {
     static constexpr auto outputs()
     {
         return std::tuple{
-            iv::output<iv::Sample>("realtime_ephemeral", iv::OutputProduction::tick, iv::OutputRetention::ephemeral),
-            iv::output<iv::Sample>("realtime_persisted", iv::OutputProduction::tick, iv::OutputRetention::persisted),
+            iv::output<iv::Sample>("realtime_ephemeral", iv::OutputProduction::sequential, iv::OutputRealization::computed),
+            iv::output<iv::Sample>("realtime_persisted", iv::OutputProduction::sequential, iv::OutputRealization::buffered),
         };
     }
 
     void constrain_ports(
-        iv::ConstrainPortsContext<RealtimeOutputRetentionModes>& ctx) const
+        iv::ConstrainPortsContext<RealtimeOutputRealizationModes>& ctx) const
     {
         ctx.output<"realtime_persisted">().history() = 3;
         ctx.output<"realtime_persisted">().latency() = 2;
     }
 
     void tick_block(
-        iv::TickBlockContext<RealtimeOutputRetentionModes> const&) const {}
+        iv::TickBlockContext<RealtimeOutputRealizationModes> const&) const {}
 };
 
-struct BackgroundOutputRetentionModes {
+struct BackgroundOutputRealizationModes {
     static constexpr auto inputs()
     {
         return std::tuple{};
@@ -587,16 +623,16 @@ struct BackgroundOutputRetentionModes {
     static constexpr auto outputs()
     {
         return std::tuple{
-            iv::output<iv::Sample>("background_ephemeral", iv::OutputProduction::coverage, iv::OutputRetention::ephemeral),
-            iv::output<iv::Sample>("background_persisted", iv::OutputProduction::coverage, iv::OutputRetention::persisted),
-            iv::event_output("background_persisted_events", iv::EventTypeId::trigger, iv::OutputProduction::coverage, iv::OutputRetention::persisted, {.max_events_per_index = 0.25}),
+            iv::output<iv::Sample>("background_ephemeral", iv::OutputProduction::coverage, iv::OutputRealization::computed),
+            iv::output<iv::Sample>("background_persisted", iv::OutputProduction::coverage, iv::OutputRealization::buffered),
+            iv::event_output("background_persisted_events", iv::EventTypeId::trigger, iv::OutputProduction::coverage, iv::OutputRealization::buffered, {.max_events_per_index = 0.25}),
         };
     }
 
     void tock_coverage(
-        iv::TockCoverageContext<BackgroundOutputRetentionModes>&) const {}
+        iv::TockCoverageContext<BackgroundOutputRealizationModes>&) const {}
     void propagate_forward_coverage(
-        iv::PropagateForwardCoverageContext<BackgroundOutputRetentionModes>&) const {}
+        iv::PropagateForwardCoverageContext<BackgroundOutputRealizationModes>&) const {}
 };
 
 struct RealtimeSink {
@@ -623,7 +659,7 @@ struct ReplayableSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void tick(iv::TickSampleContext<ReplayableSource> const&) const {}
@@ -637,7 +673,7 @@ struct ReplayableFFTSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::output<iv::FFTBlock>("out", iv::OutputProduction::tick),
+            iv::output<iv::FFTBlock>("out", iv::OutputProduction::sequential),
         };
     }
 
@@ -658,7 +694,7 @@ struct ReplayableFastSampleSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::output<iv::Sample>("out", iv::OutputProduction::tick),
+            iv::output<iv::Sample>("out", iv::OutputProduction::sequential),
         };
     }
 
@@ -672,20 +708,22 @@ struct ReplayableFastSampleSource {
 };
 
 struct BackgroundFFTSink {
-    static constexpr auto inputs()
-    {
-        return std::array{
-            iv::input<iv::FFTBlock>("in", iv::InputAccess::coverage),
-        };
+    static constexpr auto inputs() {
+        return std::array{iv::input<iv::FFTBlock>("in", iv::InputAccess::coverage)};
+    }
+    static constexpr auto outputs() {
+        return std::array{iv::output<iv::FFTBlock>("out", iv::OutputProduction::coverage)};
+    }
+    void tock_coverage(iv::TockCoverageContext<BackgroundFFTSink>&) const {}
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<BackgroundFFTSink>&) const {}
+    void constrain_ports(iv::ConstrainPortsContext<BackgroundFFTSink>& ctx) const {
+        ctx.output<"out">().size() = 513;
     }
 
-    static constexpr auto outputs() { return std::tuple{}; }
-
-    void tick_block(iv::TickBlockContext<BackgroundFFTSink> const&) const {}
 };
 
 struct ReplayablePass {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
 
     static constexpr auto inputs()
     {
@@ -694,19 +732,19 @@ struct ReplayablePass {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void tick(iv::TickSampleContext<ReplayablePass> const&) const {}
 };
 
-struct ReplayableUnionPair {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
+struct ReplayablePair {
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
     static constexpr auto inputs() {
         return std::array{iv::input<iv::Sample>("signal"), iv::input<iv::Sample>("feedback")};
     }
     static constexpr auto outputs() { return std::array{iv::output<iv::Sample>("out")}; }
-    void tick(iv::TickSampleContext<ReplayableUnionPair> const&) const {}
+    void tick(iv::TickSampleContext<ReplayablePair> const&) const {}
 };
 
 struct PersistedTickPass {
@@ -717,7 +755,7 @@ struct PersistedTickPass {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick, iv::OutputRetention::persisted)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential, iv::OutputRealization::buffered)};
     }
 
     void tick_block(iv::TickBlockContext<PersistedTickPass> const&) const {}
@@ -731,7 +769,7 @@ struct LatentSamplePass {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(iv::ConstrainPortsContext<LatentSamplePass>& ctx) const
@@ -772,7 +810,7 @@ struct LatentTwoInputPass {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -794,7 +832,7 @@ struct MediumLatencySamplePass {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -843,9 +881,9 @@ TEST(GraphJitConnectionPlan,
         "out",
         iv::ContinuousOutputProperties{
             .channel_layout = iv::mono_planar_channel_layout,
-            .production = iv::TickContinuousOutputProperties{},
+            .production = iv::SequentialContinuousOutputProperties{},
         },
-        iv::OutputRetention::persisted);
+        iv::OutputRealization::buffered);
     graph.node_bundles.append_concrete(
         iv::GraphBuilderNodeBundles::make_concrete_node(
             std::move(description)));
@@ -1647,7 +1685,7 @@ TEST(GraphJitConnectionPlan, BackgroundConsumerKeepsStaticProducerCallbackSchedu
     GraphBuilder graph;
     auto source = details::configure_concrete_node<ReplayableSource>(graph);
     auto realtime = details::configure_concrete_node<TimedSamplePass>(graph);
-    auto background = details::configure_concrete_node<BackgroundSink>(graph);
+    auto background = details::configure_concrete_node<BackgroundSamplePass>(graph);
     auto const source_handle = source.node_bundle_handle();
     realtime(source);
     background(source);
@@ -2804,9 +2842,9 @@ TEST(GraphJitConnectionPlan, BackgroundConnectionsDoNotUseRealtimeStoragePolicy)
     EXPECT_TRUE(plan->schedule.bundle_execution_position[sink_handle]);
     ASSERT_EQ(plan->background.sample_source_subsets.size(), 1u);
     EXPECT_TRUE(plan->background.sample_source_subsets.front()
-        .storage.tick_random_access);
-    EXPECT_TRUE(plan->background.sample_source_subsets.front()
-        .storage.background_random_access);
+        .storage.persisted_data);
+    EXPECT_FALSE(plan->background.sample_source_subsets.front()
+        .storage.current_tick);
     ASSERT_EQ(plan->background.requestable_outputs.size(), 1u);
     EXPECT_FALSE(plan->background.ports[
         plan->background.requestable_outputs.front()].stable_identity);
@@ -2817,9 +2855,9 @@ TEST(GraphJitConnectionPlan, RetainsCompleteBackgroundTopologyAndRetention)
     using namespace iv;
     GraphBuilder graph;
     auto realtime_source =
-        details::configure_concrete_node<RealtimeOutputRetentionModes>(graph);
+        details::configure_concrete_node<RealtimeOutputRealizationModes>(graph);
     auto source =
-        details::configure_concrete_node<BackgroundOutputRetentionModes>(graph);
+        details::configure_concrete_node<BackgroundOutputRealizationModes>(graph);
     auto left = details::configure_concrete_node<BackgroundSamplePass>(graph);
     auto right = details::configure_concrete_node<BackgroundSamplePass>(graph);
     auto join = details::configure_concrete_node<BackgroundTwoInputPass>(graph);
@@ -2879,7 +2917,7 @@ TEST(GraphJitConnectionPlan, RetainsCompleteBackgroundTopologyAndRetention)
     EXPECT_TRUE(std::ranges::all_of(
         plan.ports,
         [](graph_jit::BackgroundPortPlan const& port) {
-            return port.retention.has_value()
+            return port.realization.has_value()
                 == (port.direction
                     == graph_jit::PortDirection::output);
         }));
@@ -2901,8 +2939,8 @@ TEST(GraphJitConnectionPlan, RetainsCompleteBackgroundTopologyAndRetention)
     EXPECT_EQ(port_named("realtime_ephemeral"), nullptr);
     ASSERT_NE(realtime_persisted, nullptr);
     EXPECT_TRUE(realtime_persisted->persisted_tick_output);
-    ASSERT_TRUE(realtime_persisted->retention.has_value());
-    EXPECT_EQ(*realtime_persisted->retention, OutputRetention::persisted);
+    ASSERT_TRUE(realtime_persisted->realization.has_value());
+    EXPECT_EQ(*realtime_persisted->realization, OutputRealization::buffered);
     ASSERT_EQ(plan.tick_runtime.sample_captures.size(), 1u);
     EXPECT_TRUE(plan.tick_runtime.event_captures.empty());
     EXPECT_EQ(
@@ -2918,15 +2956,15 @@ TEST(GraphJitConnectionPlan, RetainsCompleteBackgroundTopologyAndRetention)
     ASSERT_NE(background_ephemeral, nullptr);
     ASSERT_NE(background_persisted, nullptr);
     ASSERT_NE(background_persisted_events, nullptr);
-    ASSERT_TRUE(background_ephemeral->retention.has_value());
-    ASSERT_TRUE(background_persisted->retention.has_value());
-    ASSERT_TRUE(background_persisted_events->retention.has_value());
+    ASSERT_TRUE(background_ephemeral->realization.has_value());
+    ASSERT_TRUE(background_persisted->realization.has_value());
+    ASSERT_TRUE(background_persisted_events->realization.has_value());
     EXPECT_EQ(
-        *background_ephemeral->retention, OutputRetention::ephemeral);
+        *background_ephemeral->realization, OutputRealization::computed);
     EXPECT_EQ(
-        *background_persisted->retention, OutputRetention::persisted);
+        *background_persisted->realization, OutputRealization::buffered);
     EXPECT_EQ(
-        *background_persisted_events->retention, OutputRetention::persisted);
+        *background_persisted_events->realization, OutputRealization::buffered);
     ASSERT_TRUE(background_ephemeral->stable_identity);
     EXPECT_EQ(background_ephemeral->stable_identity->node.graph, "root");
     EXPECT_TRUE(background_ephemeral->stable_identity->node.virtual_node
@@ -3144,7 +3182,7 @@ TEST(GraphJitConnectionPlan, ExactEventFanoutAliasesPreparedRepresentations)
     using namespace iv;
 
     GraphBuilder graph;
-    auto source = details::configure_concrete_node<TockTriggerSource>(graph);
+    auto source = details::configure_concrete_node<ComputedTockTriggerSource>(graph);
     auto sequential = details::configure_concrete_node<PlainEventPass>(graph);
     auto random_access = details::configure_concrete_node<BackgroundEventPass>(graph);
     sequential.connect_event_input(0, source.event_port());
@@ -3180,7 +3218,7 @@ TEST(GraphJitConnectionPlan, TockToSequentialUsesPreparedBackgroundDelivery)
     using namespace iv;
 
     GraphBuilder graph;
-    auto source = details::configure_concrete_node<BackgroundSource>(graph);
+    auto source = details::configure_concrete_node<ComputedBackgroundSource>(graph);
     auto sink = details::configure_concrete_node<NeutralSamplePass>(graph);
     auto const source_handle = source.node_bundle_handle();
     auto const sink_handle = sink.node_bundle_handle();
@@ -3265,26 +3303,20 @@ TEST(GraphJitConnectionPlan, AddressableAtomSubsumesSequentialWindow)
         });
     ASSERT_NE(subset, plan->background.sample_source_subsets.end());
     EXPECT_EQ(subset->connection_indices.size(), 2u);
-    EXPECT_TRUE(subset->storage.tick_random_access);
-    EXPECT_TRUE(subset->storage.background_random_access);
+    EXPECT_TRUE(subset->storage.persisted_data);
+    EXPECT_FALSE(subset->storage.current_tick);
     EXPECT_FALSE(subset->storage.tick_sequential);
 
     auto const atom_index = static_cast<graph_jit::PortSubsetIndex>(
         std::distance(plan->background.sample_source_subsets.begin(), subset));
     auto const& storage = plan->background.storage;
-    ASSERT_EQ(storage.sample_source_storage[atom_index].size(), 2u);
+    ASSERT_EQ(storage.sample_source_storage[atom_index].size(), 1u);
     std::vector<graph_jit::PortStorageKind> storage_kinds;
     for (auto const port_index :
          storage.sample_source_storage[atom_index]) {
         storage_kinds.push_back(storage.ports[port_index].storage);
     }
-    EXPECT_TRUE(std::ranges::contains(
-        storage_kinds,
-        graph_jit::PortStorageKind::tick_random_access));
-    EXPECT_TRUE(std::ranges::contains(
-        storage_kinds,
-        graph_jit::PortStorageKind::
-            background));
+    EXPECT_EQ(storage_kinds, (std::vector{graph_jit::PortStorageKind::persisted_data}));
     EXPECT_FALSE(std::ranges::contains(
         storage_kinds,
         graph_jit::PortStorageKind::tick_sequential));
@@ -3555,7 +3587,7 @@ TEST(GraphJitConnectionPlan, MixedTickAndTockSampleTilePlansPerSourceChannel)
 
     GraphBuilder graph;
     auto tick = details::configure_concrete_node<MonoSource>(graph);
-    auto tock = details::configure_concrete_node<BackgroundSource>(graph);
+    auto tock = details::configure_concrete_node<ComputedBackgroundSource>(graph);
     auto sink = details::configure_concrete_node<StereoSink>(graph);
     auto const tick_handle = tick.node_bundle_handle();
     auto const tock_handle = tock.node_bundle_handle();
@@ -3636,7 +3668,7 @@ TEST(GraphJitConnectionPlan, MixedTickAndTockEventFanInPlansPerSource)
 
     GraphBuilder graph;
     auto tick = details::configure_concrete_node<PlainEventPass>(graph);
-    auto tock = details::configure_concrete_node<TockTriggerSource>(graph);
+    auto tock = details::configure_concrete_node<ComputedTockTriggerSource>(graph);
     auto sink = details::configure_concrete_node<PlainEventPass>(graph);
     auto const tick_handle = tick.node_bundle_handle();
     auto const tock_handle = tock.node_bundle_handle();
@@ -3766,7 +3798,7 @@ TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
     using namespace iv;
 
     GraphBuilder graph;
-    auto source = details::configure_concrete_node<RealtimeOutputRetentionModes>(graph);
+    auto source = details::configure_concrete_node<RealtimeOutputRealizationModes>(graph);
     auto sink = details::configure_concrete_node<BackgroundSink>(graph);
     auto const source_handle = source.node_bundle_handle();
     auto const sink_handle = sink.node_bundle_handle();
@@ -3923,7 +3955,7 @@ TEST(GraphJitConnectionPlan, IntrinsicTickReplaySuppliesRandomAccess)
 
     GraphBuilder graph;
     auto source = details::configure_concrete_node<ReplayableSource>(graph);
-    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSamplePass>(graph);
     auto const source_handle = source.node_bundle_handle();
     sink(source);
     graph.outputs();
@@ -3964,7 +3996,7 @@ TEST(GraphJitConnectionPlan, RejectsNonSampleContextualReplayAtReplayBoundary)
     EXPECT_NE(
         plan.error().find(
             "background Tick replay does not yet support continuous type 'FFTBlock'"),
-        std::string::npos);
+        std::string::npos) << plan.error();
 }
 
 TEST(GraphJitConnectionPlan, RejectsNonProjectRateContextualReplayAtReplayBoundary)
@@ -3974,7 +4006,7 @@ TEST(GraphJitConnectionPlan, RejectsNonProjectRateContextualReplayAtReplayBounda
     GraphBuilder graph;
     auto source =
         details::configure_concrete_node<ReplayableFastSampleSource>(graph);
-    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSamplePass>(graph);
     sink(source);
     graph.outputs();
 
@@ -3994,7 +4026,7 @@ TEST(GraphJitConnectionPlan, ContextualReplayTraversesSequentialDependencies)
     GraphBuilder graph;
     auto source = details::configure_concrete_node<ReplayableSource>(graph);
     auto pass = details::configure_concrete_node<ReplayablePass>(graph);
-    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSamplePass>(graph);
     auto const source_handle = source.node_bundle_handle();
     auto const pass_handle = pass.node_bundle_handle();
     pass(source);
@@ -4008,7 +4040,7 @@ TEST(GraphJitConnectionPlan, ContextualReplayTraversesSequentialDependencies)
     auto const pass_node = *plan->background.bundle_to_background_node[pass_handle];
     EXPECT_TRUE(plan->background.nodes[source_node].replays_tick);
     EXPECT_TRUE(plan->background.nodes[pass_node].replays_tick);
-    ASSERT_EQ(plan->background.background_evaluation_order.size(), 2u);
+    ASSERT_EQ(plan->background.background_evaluation_order.size(), 3u);
     auto const source_position = std::ranges::find(
         plan->background.background_evaluation_order, source_node);
     auto const pass_position = std::ranges::find(
@@ -4088,7 +4120,7 @@ TEST(GraphJitConnectionPlan, RejectsInvalidBackgroundRuntimeIndicesAndPlacement)
     GraphBuilder graph;
     auto source = details::configure_concrete_node<ReplayableSource>(graph);
     auto pass = details::configure_concrete_node<ReplayablePass>(graph);
-    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSamplePass>(graph);
     auto const source_handle = source.node_bundle_handle();
     auto const pass_handle = pass.node_bundle_handle();
     pass(source);
@@ -4144,9 +4176,9 @@ TEST(GraphJitConnectionPlan, TockDependencyCanFeedSynthesizedReplay)
     using namespace iv;
 
     GraphBuilder graph;
-    auto source = details::configure_concrete_node<BackgroundSource>(graph);
+    auto source = details::configure_concrete_node<ComputedBackgroundSource>(graph);
     auto pass = details::configure_concrete_node<ReplayablePass>(graph);
-    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSamplePass>(graph);
     auto const source_handle = source.node_bundle_handle();
     auto const pass_handle = pass.node_bundle_handle();
     pass(source);
@@ -4207,7 +4239,7 @@ TEST(GraphJitConnectionPlan, PersistedTickBoundaryStopsContextualReplayTraversal
     auto live = details::configure_concrete_node<MonoSource>(graph);
     auto recorder = details::configure_concrete_node<PersistedTickPass>(graph);
     auto replay = details::configure_concrete_node<ReplayablePass>(graph);
-    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSamplePass>(graph);
     auto const recorder_handle = recorder.node_bundle_handle();
     auto const replay_handle = replay.node_bundle_handle();
     recorder(live);
@@ -4290,7 +4322,7 @@ TEST(GraphJitConnectionPlan, RegionInputAcceptsRegionOutputButRejectsCoverage)
     ASSERT_FALSE(rejected.has_value());
     EXPECT_NE(
         rejected.error().find(
-            "GraphJit Coverage output cannot satisfy a Region input"),
+            "GraphJit Region input requires a Region output"),
         std::string::npos);
 }
 
@@ -4301,7 +4333,7 @@ TEST(GraphJitConnectionPlan,
 
     GraphBuilder sample_graph;
     auto sample_source = details::configure_concrete_node<
-        RealtimeOutputRetentionModes>(sample_graph);
+        RealtimeOutputRealizationModes>(sample_graph);
     auto sample_sink = details::configure_concrete_node<
         BackgroundRegionSink>(sample_graph);
     sample_sink(sample_source["realtime_persisted"]);
@@ -4311,7 +4343,7 @@ TEST(GraphJitConnectionPlan,
     ASSERT_FALSE(sample_plan.has_value());
     EXPECT_NE(
         sample_plan.error().find(
-            "GraphJit persisted Tick output cannot satisfy a Region input"),
+            "GraphJit Region input requires a Region output"),
         std::string::npos);
 
     GraphBuilder event_graph;
@@ -4326,7 +4358,7 @@ TEST(GraphJitConnectionPlan,
     ASSERT_FALSE(event_plan.has_value());
     EXPECT_NE(
         event_plan.error().find(
-            "GraphJit persisted Tick event output cannot satisfy an event Region input"),
+            "GraphJit event Region input requires a Region output"),
         std::string::npos);
 }
 
@@ -4358,7 +4390,7 @@ TEST(GraphJitConnectionPlan, EventRegionInputAcceptsOneEventRegionOutput)
     ASSERT_FALSE(rejected.has_value());
     EXPECT_NE(
         rejected.error().find(
-            "GraphJit event Coverage output cannot satisfy an event Region input"),
+            "GraphJit event Region input requires a Region output"),
         std::string::npos);
 }
 
@@ -4419,7 +4451,7 @@ TEST(GraphJitConnectionPlan, RejectsUnreproducibleUpstreamDuringTransitiveReplay
     GraphBuilder graph;
     auto live = details::configure_concrete_node<MonoSource>(graph);
     auto replay = details::configure_concrete_node<ReplayablePass>(graph);
-    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSamplePass>(graph);
     replay(live);
     sink(replay);
     graph.outputs();
@@ -4439,7 +4471,7 @@ TEST(GraphJitConnectionPlan, RejectsUnavailableBoundarySourceDuringTransitiveRep
     GraphBuilder graph;
     auto input = graph.input<"in">();
     auto replay = details::configure_concrete_node<ReplayablePass>(graph);
-    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSamplePass>(graph);
     replay(input);
     sink(replay);
     graph.outputs();
@@ -4452,7 +4484,7 @@ TEST(GraphJitConnectionPlan, RejectsUnavailableBoundarySourceDuringTransitiveRep
     EXPECT_NE(plan.error().find("explicit recorder"), std::string::npos);
 }
 
-TEST(GraphJitConnectionPlan, FullTickProducerProvesUnionCoverageAcrossFeedback)
+TEST(GraphJitConnectionPlan, LiveSequentialFeedbackHasFullCoverageWithoutBackgroundPropagation)
 {
     using namespace iv;
     GraphBuilder graph;
@@ -4475,12 +4507,12 @@ TEST(GraphJitConnectionPlan, FullTickProducerProvesUnionCoverageAcrossFeedback)
     EXPECT_FALSE(plan->background.requires_live_tick_coverage);
 }
 
-TEST(GraphJitConnectionPlan, ExternalFullContributionProvesAnAllUnionFeedbackComponent)
+TEST(GraphJitConnectionPlan, LiveSequentialFeedbackCoverageDoesNotDependOnReplayEligibility)
 {
     using namespace iv;
     GraphBuilder graph;
     auto source = details::configure_concrete_node<ReplayableSource>(graph);
-    auto first = details::configure_concrete_node<ReplayableUnionPair>(graph);
+    auto first = details::configure_concrete_node<ReplayablePair>(graph);
     auto second = details::configure_concrete_node<ReplayablePass>(graph);
     auto const first_bundle = first.node_bundle_handle();
     auto const second_bundle = second.node_bundle_handle();
@@ -4498,14 +4530,14 @@ TEST(GraphJitConnectionPlan, ExternalFullContributionProvesAnAllUnionFeedbackCom
     EXPECT_FALSE(plan->background.requires_live_tick_coverage);
 }
 
-TEST(GraphJitConnectionPlan, AFullCoverageProofDoesNotMakeFeedbackValuesReplayable)
+TEST(GraphJitConnectionPlan, FullLiveSequentialCoverageDoesNotMakeFeedbackValuesReplayable)
 {
     using namespace iv;
     GraphBuilder graph;
     auto source = details::configure_concrete_node<ReplayableSource>(graph);
-    auto first = details::configure_concrete_node<ReplayableUnionPair>(graph);
+    auto first = details::configure_concrete_node<ReplayablePair>(graph);
     auto second = details::configure_concrete_node<ReplayablePass>(graph);
-    auto reader = details::configure_concrete_node<BackgroundSink>(graph);
+    auto reader = details::configure_concrete_node<BackgroundSamplePass>(graph);
     first(source, static_cast<SamplePortRef>(second).detach(3));
     second(first);
     reader(first);
@@ -4523,7 +4555,7 @@ TEST(GraphJitConnectionPlan, RejectsContextualReplayCycles)
     GraphBuilder graph;
     auto first = details::configure_concrete_node<ReplayablePass>(graph);
     auto second = details::configure_concrete_node<ReplayablePass>(graph);
-    auto sink = details::configure_concrete_node<BackgroundSink>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSamplePass>(graph);
     first(second);
     second(static_cast<SamplePortRef>(first).detach(3));
     sink(first);

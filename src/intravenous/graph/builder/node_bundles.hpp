@@ -633,7 +633,7 @@ NodeBundle::sample_input_descriptor(size_t index) const {
           auto const value_types = continuous_value_type_domain(output);
           auto const access = [&]() -> ContinuousInputAccessProperties {
             switch (output_production(output)) {
-            case OutputProductionKind::tick:
+            case OutputProductionKind::sequential:
               return default_sequential_input_properties(
                   value_types);
             case OutputProductionKind::region:
@@ -674,7 +674,7 @@ NodeBundle::sample_output_descriptor(size_t index) const {
           auto const production = [&]() -> ContinuousOutputProductionProperties {
             switch (input_access(input)) {
             case InputAccessKind::sequential:
-              return default_tick_output_properties(
+              return default_sequential_output_properties(
                   value_types);
             case InputAccessKind::region:
               return default_region_output_properties(
@@ -793,7 +793,7 @@ constexpr EventOutputConfig inward_event_output_config(
       .name = config.name,
       .type = config.type,
       .production = is_sequential(config)
-          ? OutputProductionKind::tick
+          ? OutputProductionKind::sequential
           : input_access(config) == InputAccessKind::region
               ? OutputProductionKind::region
               : OutputProductionKind::coverage};
@@ -804,7 +804,7 @@ constexpr EventInputConfig inward_event_input_config(
   return EventInputConfig{
       .name = config.name,
       .type = config.type,
-      .access = is_tick(config)
+      .access = is_sequential_output(config)
           ? InputAccessKind::sequential
           : output_production(config) == OutputProductionKind::region
               ? InputAccessKind::region

@@ -416,11 +416,7 @@ class BackgroundPropagationWorkspace {
                                                IndexCoverage const& changed);
     static void publish_input_requirement_callback(void* accumulator,
                                                    IndexCoverage const& required);
-    // Generated forward propagation for TickReplayMode::input_union and
-    // TickReplayMode::full respectively.
-    static void
-    replay_forward_coverage(void*,
-                            ReflectedNodeForwardCoverageContext const& context);
+    // Generated full-coverage forward propagation for replayable Tick outputs.
     static void
     replay_full_forward_coverage(void*,
                                  ReflectedNodeForwardCoverageContext const& context);

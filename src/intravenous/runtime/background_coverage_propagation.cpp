@@ -157,6 +157,7 @@ bool local_port_semantics_equal(
     if (current.direction != previous.direction
         || current.kind != previous.kind
         || current.input_access != previous.input_access
+        || current.content_access != previous.content_access
         || current.output_production != previous.output_production
         || current.random_access_input != previous.random_access_input
         || current.tick_sequential_input != previous.tick_sequential_input
@@ -171,7 +172,7 @@ bool local_port_semantics_equal(
         || current.sequential_history != previous.sequential_history
         || current.output_history != previous.output_history
         || current.output_latency != previous.output_latency
-        || current.retention != previous.retention
+        || current.realization != previous.realization
         || current.sample_layout != previous.sample_layout
         || current.continuous_geometry != previous.continuous_geometry
         || current.absolute_pace_exponent != previous.absolute_pace_exponent
@@ -640,6 +641,7 @@ bool input_connections_equal(
     auto const& previous = previous_plan.ports[previous_input];
     if (current.kind != previous.kind
         || current.input_access != previous.input_access
+        || current.content_access != previous.content_access
         || current.sample_layout != previous.sample_layout
         || current.continuous_geometry != previous.continuous_geometry
         || current.event_type != previous.event_type
@@ -673,6 +675,7 @@ struct BackgroundPropagationWorkspace::PlanningState {
     using Operation = BackgroundPlanningScheduler::Operation;
     struct Group {
         BackgroundPropagationWorkspace* workspace = nullptr;
+        BackgroundCoverageDemandExpansion expansion{};
         std::vector<Operation*> forward{};
         std::vector<Operation*> reverse{};
     };
@@ -1135,10 +1138,12 @@ void BackgroundPropagationWorkspace::set_input_change(
 }
 
 void BackgroundPropagationWorkspace::publish_output_coverage(
-    graph_jit::BackgroundPortIndex output, IndexCoverage const& coverage)
+    graph_jit::BackgroundPortIndex output, IndexCoverage const& published_coverage)
 {
     auto const& planned = port(output);
-    if (planned.output_production != OutputProductionKind::tick) {
+    auto const& coverage = planned.replayed_tick_output
+        ? graph_jit::full_index_coverage() : published_coverage;
+    if (planned.output_production != OutputProductionKind::sequential) {
         throw std::invalid_argument(
             "Region or Coverage output must publish Region ranges");
     }
@@ -1165,7 +1170,7 @@ void BackgroundPropagationWorkspace::publish_output_regions(
     std::span<GlobalIndexRange const> regions)
 {
     auto const& planned = port(output);
-    if (planned.output_production == OutputProductionKind::tick) {
+    if (planned.output_production == OutputProductionKind::sequential) {
         throw std::invalid_argument(
             "Tick output must publish positional coverage");
     }
@@ -1271,25 +1276,28 @@ void BackgroundPropagationWorkspace::require_output(
         candidate_output_region_ranges_[change_index] = root.candidate_output_region_ranges_[change_index];
     }
     auto required = requested & candidate_output_coverages_[change_index];
-    if (planned.output_production != OutputProductionKind::tick) {
-        bool widened = true;
-        while (widened) {
-            widened = false;
-            for (auto const region :
-                 candidate_output_region_ranges_[change_index]) {
-                if ((IndexCoverage{region} & required).empty()
-                    || required.contains(region)) {
-                    continue;
-                }
-                required.include(region);
-                widened = true;
-            }
-        }
-    }
     if (required.empty())
         return;
     auto const previous = output_requirements_[requirement_index].required;
     output_requirements_[requirement_index].required.include(required);
+    // Reverse callbacks can discover buffered dependencies after the initial
+    // demand pass. Resolve missing/stale contents when the requirement arrives,
+    // so their producers enter the same reverse-planning schedule.
+    if (!activate_producer && planning_state_) {
+        auto const& expansion = planning_state_->group(this).expansion;
+        if (expansion.expand_output) {
+            IndexCoverage missing;
+            expansion.expand_output(expansion.data, output,
+                candidate_output_coverages_[change_index],
+                candidate_output_region_ranges_[change_index],
+                output_changes_[change_index].changed,
+                output_requirements_[requirement_index].required, missing);
+            if (!missing.empty()) {
+                output_requirements_[requirement_index].required.include(missing);
+                activate_producer = true;
+            }
+        }
+    }
     if (!activate_producer) return;
     // A repeated requirement, for example from a resumed consumer, does not
     // reschedule a producer that already plans for it. A persisted boundary
@@ -1323,7 +1331,8 @@ void BackgroundPropagationWorkspace::require_input(
     if (required.empty())
         return;
     input_selection_requests_by_port_[input].include(required);
-    if (planned_input.input_access != InputAccessKind::sequential) {
+    if (planned_input.input_access != InputAccessKind::sequential
+        && planned_input.content_access == InputContentAccess::complete_buffer) {
         auto const& source = planning_state_ ? *planning_state_->root : *this;
         auto const regions = derive_input_regions(
             *plan_, source.candidate_output_region_ranges_, input, &required);
@@ -1340,8 +1349,8 @@ void BackgroundPropagationWorkspace::require_input(
         auto require_source = [&](graph_jit::BackgroundPortIndex source,
                                   IndexCoverage source_required) {
             auto const& planned_source = port(source);
-            auto const stored_boundary = planned_source.retention
-                && *planned_source.retention == OutputRetention::persisted;
+            auto const stored_boundary = planned_source.realization
+                && *planned_source.realization == OutputRealization::buffered;
             require_output(
                 source, source_required, !stored_boundary);
         };
@@ -1419,59 +1428,6 @@ void publish_replay_outputs(ReflectedNodeForwardCoverageContext const& context,
     context.planning.finish();
 }
 } // namespace
-
-// TickReplayMode::input_union. Every input of a node using generated
-// propagation is Sequential: replay_ports_are_valid() requires authored
-// propagation for Region and Coverage inputs. Tick computes a value at every
-// position from the resolved inputs, but an output exists only where at least
-// one input has upstream coverage.
-void BackgroundPropagationWorkspace::replay_forward_coverage(
-    void* opaque, ReflectedNodeForwardCoverageContext const& context)
-{
-    auto* workspace = static_cast<BackgroundPropagationWorkspace*>(opaque);
-    if (workspace && context.planning.owner) {
-        auto const* operation = static_cast<PlanningState::Operation*>(context.planning.owner);
-        auto const& node = workspace->plan_->nodes[operation->node];
-        if (std::ranges::any_of(node.inputs,
-                [&](auto input) { return workspace->port(input).sample_manual_contribution.has_value(); })) {
-            auto changed = replay_input_changes(context);
-            if (context.local_state_changed) changed = graph_jit::full_index_coverage();
-            publish_replay_outputs(context, graph_jit::full_index_coverage(), changed);
-            return;
-        }
-    }
-    if (workspace && workspace->live_tick_inputs_) {
-        auto const* operation = static_cast<PlanningState::Operation*>(context.planning.owner);
-        auto const& node = workspace->plan_->nodes[operation->node];
-        IndexCoverage known;
-        for (auto input : node.inputs) {
-            if (workspace->port(input).input_access != InputAccessKind::sequential) continue;
-            known.include(derive_input_coverage(*workspace->plan_, workspace->candidate_output_coverages_,
-                input, true, &workspace->output_ready_));
-        }
-        if (known == graph_jit::full_index_coverage()) {
-            // Known independent contributions already prove the union full.
-            // Other cyclic inputs need not be queried. Invalidation remains
-            // conservative without inferring a feedback fixed point.
-            publish_replay_outputs(context, known, known);
-            return;
-        }
-    }
-    IndexCoverage coverage;
-    for (auto const& input :
-         static_cast<std::span<InputCoverageChange const>>(context.inputs)) {
-        coverage.include(input.coverage());
-    }
-    for (auto const& input : static_cast<std::span<InputCoverageChange const>>(
-             context.event_inputs)) {
-        coverage.include(input.coverage());
-    }
-    auto changed = replay_input_changes(context);
-    if (context.local_state_changed) {
-        changed.include(coverage);
-    }
-    publish_replay_outputs(context, coverage, changed);
-}
 
 // TickReplayMode::full. The output exists at every position, including where
 // every Sequential input resolves to its fallback and for nodes without
@@ -1643,9 +1599,7 @@ void BackgroundPropagationWorkspace::initialize_calls()
             .sample_rate = sample_rate_,
         };
         if (node.uses_replay_forward_coverage) {
-            frame.replay_forward = node.replay_mode == TickReplayMode::full
-                ? &replay_full_forward_coverage
-                : &replay_forward_coverage;
+            frame.replay_forward = &replay_full_forward_coverage;
         }
         if (node.uses_replay_reverse_coverage) {
             frame.replay_reverse = &replay_reverse_coverage;
@@ -2031,6 +1985,7 @@ BackgroundPropagationWorkspace::prepare(
         }
     } retire{*this};
     initialize_planning();
+    planning_state_->group(this).expansion = expansion;
     reset(coverage);
     for (auto const node : request.forward_nodes)
         activate_node(node, graph_jit::BackgroundNodeActivity::forward);
@@ -2039,7 +1994,7 @@ BackgroundPropagationWorkspace::prepare(
         activate_node(node, graph_jit::BackgroundNodeActivity::forward);
     }
     for (auto const& root : request.output_changes) {
-        if (port(root.port).output_production == OutputProductionKind::tick)
+        if (port(root.port).output_production == OutputProductionKind::sequential)
             publish_output_coverage(root.port, root.coverage);
         else {
             if (region_coverage(root.regions) != root.coverage)
@@ -2113,8 +2068,8 @@ BackgroundPropagationWorkspace::prepare(
     }
     for (auto const& root : request.output_demands) {
         auto const& planned = port(root.port);
-        auto const stored_boundary = planned.retention
-            && *planned.retention == OutputRetention::persisted;
+        auto const stored_boundary = planned.realization
+            && *planned.realization == OutputRealization::buffered;
         require_output(root.port, root.required, !stored_boundary);
     }
     if (expansion.expand_output) {

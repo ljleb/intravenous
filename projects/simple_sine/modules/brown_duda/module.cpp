@@ -98,7 +98,7 @@ struct StereoSourceGeometry
     static constexpr auto outputs()
     {
         return std::array{
-            output<Sample>("azimuth", OutputProduction::tick, {.channel_layout = stereo_planar}),
+            output<Sample>("azimuth", OutputProduction::sequential, {.channel_layout = stereo_planar}),
         };
     }
 
@@ -226,15 +226,15 @@ struct BrownDudaParameters
     static constexpr auto outputs()
     {
         return std::array{
-            output<Sample>("head_b0", OutputProduction::tick, {.channel_layout = stereo_planar}),
-            output<Sample>("head_b1", OutputProduction::tick, {.channel_layout = stereo_planar}),
-            output<Sample>("head_feedback", OutputProduction::tick),
-            output<Sample>("head_delay", OutputProduction::tick, {.channel_layout = stereo_planar}),
-            output<Sample>("d2", OutputProduction::tick, {.channel_layout = stereo_planar}),
-            output<Sample>("d3", OutputProduction::tick, {.channel_layout = stereo_planar}),
-            output<Sample>("d4", OutputProduction::tick, {.channel_layout = stereo_planar}),
-            output<Sample>("d5", OutputProduction::tick, {.channel_layout = stereo_planar}),
-            output<Sample>("d6", OutputProduction::tick, {.channel_layout = stereo_planar}),
+            output<Sample>("head_b0", OutputProduction::sequential, {.channel_layout = stereo_planar}),
+            output<Sample>("head_b1", OutputProduction::sequential, {.channel_layout = stereo_planar}),
+            output<Sample>("head_feedback", OutputProduction::sequential),
+            output<Sample>("head_delay", OutputProduction::sequential, {.channel_layout = stereo_planar}),
+            output<Sample>("d2", OutputProduction::sequential, {.channel_layout = stereo_planar}),
+            output<Sample>("d3", OutputProduction::sequential, {.channel_layout = stereo_planar}),
+            output<Sample>("d4", OutputProduction::sequential, {.channel_layout = stereo_planar}),
+            output<Sample>("d5", OutputProduction::sequential, {.channel_layout = stereo_planar}),
+            output<Sample>("d6", OutputProduction::sequential, {.channel_layout = stereo_planar}),
         };
     }
 
@@ -605,7 +605,7 @@ struct OnePoleOneZero
 
     static constexpr auto outputs()
     {
-        return std::array{output<Sample>("out", OutputProduction::tick)};
+        return std::array{output<Sample>("out", OutputProduction::sequential)};
     }
 
     // After outputs(): naming an output port needs its deduced return type.
@@ -690,7 +690,7 @@ struct SampleDelay
 
     static constexpr auto outputs()
     {
-        return std::array{output<Sample>("out", OutputProduction::tick)};
+        return std::array{output<Sample>("out", OutputProduction::sequential)};
     }
 
     void tick_block(
@@ -767,7 +767,7 @@ struct BrownDudaPinna
 
     static constexpr auto outputs()
     {
-        return std::array{output<Sample>("out", OutputProduction::tick)};
+        return std::array{output<Sample>("out", OutputProduction::sequential)};
     }
 
     void tick_block(

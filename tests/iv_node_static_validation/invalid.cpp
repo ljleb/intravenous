@@ -28,7 +28,7 @@ struct DynamicEventPortNode {
 struct NonConstexprPortNode {
     static auto outputs()
     {
-        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::tick)};
+        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<NonConstexprPortNode> const&) const {}

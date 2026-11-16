@@ -205,7 +205,7 @@ class BackgroundEvaluationTransaction::Impl {
             if (!route.output.valid()
                 || port.direction != graph_jit::PortDirection::output
                 || port.kind != route.kind || !port.persisted_tick_output
-                || port.retention != OutputRetention::persisted
+                || port.realization != OutputRealization::buffered
                 || persisted_output_kind(route.output) != route.kind) {
                 return std::unexpected(
                     "background produced input has an incompatible persisted route");
@@ -543,36 +543,17 @@ class BackgroundEvaluationTransaction::Impl {
     static void
     expand_output_demand(void* opaque, graph_jit::BackgroundPortIndex port,
                          IndexCoverage const& available,
-                         std::span<GlobalIndexRange const> regions,
+                         std::span<GlobalIndexRange const>,
                          IndexCoverage const& changed,
                          IndexCoverage const& required, IndexCoverage& additional)
     {
         auto& self = *static_cast<Impl*>(opaque);
         auto const& plan = self.graph_->background_evaluation_plan;
         auto const& snapshot = *self.working_data_;
-        auto const authored_regions = plan.ports[port].output_production
-            != OutputProductionKind::tick;
-        auto affected = required;
-        if (authored_regions) affected.include(changed);
+        // A change invalidates cached values; it does not demand recomputing
+        // the whole logical Region. Only the consumer's requested positions do.
+        auto const affected = required;
         if (affected.empty() && changed.empty()) return;
-
-        // Authored Region/Coverage production selects complete logical
-        // Regions. Tick production is positional; its replay schedule must
-        // remain bounded by the requested coverage.
-        if (authored_regions) {
-            bool widened = true;
-            while (widened) {
-                widened = false;
-                for (auto const region : regions) {
-                    if ((IndexCoverage{region} & affected).empty()
-                        || affected.contains(region)) {
-                        continue;
-                    }
-                    affected.include(region);
-                    widened = true;
-                }
-            }
-        }
 
         for (graph_jit::PortStorageIndex index = 0;
              index < plan.storage.ports.size(); ++index) {
@@ -599,10 +580,7 @@ class BackgroundEvaluationTransaction::Impl {
             }
 
             auto desired = available & affected;
-            additional.include(desired - existing);
-            if (authored_regions) {
-                additional.include(available & changed);
-            }
+            additional.include(desired - (existing - changed));
 
             auto invalidated = existing & changed;
             if (!invalidated.empty()) {
@@ -672,10 +650,7 @@ class BackgroundEvaluationTransaction::Impl {
         IndexCoverage retained;
         if (auto const* sample = self.previous_materialization_->find_sample(port)) {
             for (auto const& region : sample->regions) {
-                if (!(IndexCoverage{region.range} & required).empty()
-                    && (IndexCoverage{region.range} & changed).empty()) {
-                    retained.include(region.range);
-                }
+                retained.include((IndexCoverage{region.range} & required) - changed);
             }
         } else if (auto const* event =
                        self.previous_materialization_->find_event(port)) {
@@ -762,7 +737,7 @@ class BackgroundEvaluationTransaction::Impl {
             if (slot && node_evaluates(plan.ports[required.port].node)) {
                 selection.binding_coverage[*slot].include(required.required);
                 auto const& port = plan.ports[required.port];
-                if (port.output_production == OutputProductionKind::tick) {
+                if (port.output_production == OutputProductionKind::sequential) {
                     auto const& coverage = selection.binding_coverage[*slot];
                     selection.binding_regions[*slot].assign(
                         coverage.begin(), coverage.end());
@@ -807,7 +782,7 @@ class BackgroundEvaluationTransaction::Impl {
                 continue;
             }
             if (plan.ports[*storage.output_port].output_production
-                == OutputProductionKind::tick) {
+                == OutputProductionKind::sequential) {
                 continue;
             }
             auto const regions = prepared_->output_regions(
@@ -958,7 +933,7 @@ class BackgroundEvaluationTransaction::Impl {
                 }
             } else if (storage.output_port
                 && plan.ports[*storage.output_port].output_production
-                    != OutputProductionKind::tick) {
+                    != OutputProductionKind::sequential) {
                 append_intersecting(
                     prepared_->output_regions(*storage.output_port));
             } else {
@@ -1003,11 +978,7 @@ class BackgroundEvaluationTransaction::Impl {
                     selection.storage_coverage[index].end());
             }
 
-            auto expanded = selection.storage_coverage[index];
-            for (auto const region : selected_regions) expanded.include(region);
-            auto const changed = expanded != selection.storage_coverage[index]
-                || selected_regions != selection.storage_regions[index];
-            selection.storage_coverage[index] = std::move(expanded);
+            auto const changed = selected_regions != selection.storage_regions[index];
             selection.storage_regions[index] = std::move(selected_regions);
             return changed;
         };
@@ -1116,7 +1087,7 @@ class BackgroundEvaluationTransaction::Impl {
             auto& regions = bindings.binding_regions[slot];
             regions.clear();
             if (plan.ports[binding.port].output_production
-                == OutputProductionKind::tick) {
+                == OutputProductionKind::sequential) {
                 regions.assign(selected.begin(), selected.end());
                 continue;
             }
@@ -1394,10 +1365,14 @@ class BackgroundEvaluationTransaction::Impl {
 
         std::unique_ptr<TickMaterializationSnapshot> tick_materialization;
         if (materializations_) {
+            std::vector<IndexCoverage> tick_input_requirements(plan.ports.size());
+            for (auto const& input : prepared_->result().input_requirements)
+                tick_input_requirements[input.port].include(input.required);
             auto frozen = realization->make_tick_materialization_snapshot(
                 graph_->project_generation,
                 semantic_version_,
-                candidate ? candidate->target_version() : base.version());
+                candidate ? candidate->target_version() : base.version(),
+                tick_input_requirements);
             if (!frozen) {
                 return std::unexpected(std::move(frozen.error()));
             }
@@ -1413,40 +1388,40 @@ class BackgroundEvaluationTransaction::Impl {
                         target.push_back(region.range);
                     }
                 };
-                for (auto& retention : materialization_retention_) {
-                    retention.logical_regions.clear();
+                for (auto& realization : materialization_retention_) {
+                    realization.logical_regions.clear();
                     if (auto const* produced =
-                            tick_materialization->find_sample(retention.port)) {
+                            tick_materialization->find_sample(realization.port)) {
                         append_ranges(
-                            retention.logical_regions, produced->regions);
+                            realization.logical_regions, produced->regions);
                     } else if (auto const* produced =
                                    tick_materialization->find_event(
-                                       retention.port)) {
+                                       realization.port)) {
                         append_ranges(
-                            retention.logical_regions, produced->chunks);
+                            realization.logical_regions, produced->chunks);
                     }
                     if (auto const* previous =
                             previous_materialization_->find_sample(
-                                retention.port)) {
+                                realization.port)) {
                         for (auto const& region : previous->regions) {
-                            if (retention.retained.contains(region.range)) {
-                                retention.logical_regions.push_back(
+                            if (realization.retained.contains(region.range)) {
+                                realization.logical_regions.push_back(
                                     region.range);
                             }
                         }
                     } else if (auto const* previous =
                                    previous_materialization_->find_event(
-                                       retention.port)) {
+                                       realization.port)) {
                         for (auto const& region : previous->chunks) {
-                            if (retention.retained.contains(region.range)) {
-                                retention.logical_regions.push_back(
+                            if (realization.retained.contains(region.range)) {
+                                realization.logical_regions.push_back(
                                     region.range);
                             }
                         }
                     }
                     std::stable_sort(
-                        retention.logical_regions.begin(),
-                        retention.logical_regions.end(),
+                        realization.logical_regions.begin(),
+                        realization.logical_regions.end(),
                         [](GlobalIndexRange left, GlobalIndexRange right) {
                             if (left.begin == right.begin) {
                                 return left.extent > right.extent;

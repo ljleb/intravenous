@@ -171,13 +171,10 @@ struct BackgroundExecutionProbe {
         ++state.calls;
         state.sample_rate = context.sample_rate;
         auto output = context.template output<"out">().regions();
-        for (auto region : output) {
-            for (std::uint64_t offset = 0;
-                 offset < region.range().extent;
-                 ++offset) {
-                auto const position = region.range().begin.advanced_by(offset);
-                region.at(position) =
-                    iv::Sample{static_cast<float>(position.signed_value())};
+        for (auto region : output) for (auto window : region.prepared_windows()) {
+            for (std::uint64_t offset = 0; offset < window.range().extent; ++offset) {
+                auto const position = window.range().begin.advanced_by(offset);
+                window.at(position) = iv::Sample{static_cast<float>(position.signed_value())};
             }
         }
     }
@@ -368,7 +365,7 @@ struct SampleRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<SampleRampSource> const& ctx) const
@@ -390,7 +387,7 @@ struct RevisingSampleSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -422,8 +419,8 @@ struct TickCaptureSource {
     static constexpr auto outputs()
     {
         return std::tuple{
-            iv::output<iv::Sample>("samples", iv::OutputProduction::tick, iv::OutputRetention::persisted),
-            iv::event_output("events", iv::EventTypeId::trigger, iv::OutputProduction::tick, iv::OutputRetention::persisted, {.max_events_per_index = 0.25}),
+            iv::output<iv::Sample>("samples", iv::OutputProduction::sequential, iv::OutputRealization::buffered),
+            iv::event_output("events", iv::EventTypeId::trigger, iv::OutputProduction::sequential, iv::OutputRealization::buffered, {.max_events_per_index = 0.25}),
         };
     }
 
@@ -459,7 +456,7 @@ struct PersistentRevisingSampleSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -491,7 +488,7 @@ struct TickFallbackSampleSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -522,7 +519,7 @@ struct LimitedSampleRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     std::size_t max_block_size() const { return 16; }
@@ -592,7 +589,7 @@ struct SampleFeedbackA {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<SampleFeedbackA> const& ctx) const
@@ -639,7 +636,7 @@ struct SampleFeedbackB {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<SampleFeedbackB> const& ctx) const
@@ -693,7 +690,7 @@ struct MultiBranchSampleFeedback {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<MultiBranchSampleFeedback> const& ctx) const
@@ -745,7 +742,7 @@ struct TemporalSampleFeedback {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -799,7 +796,7 @@ struct RevisingSampleFeedback {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -861,7 +858,7 @@ struct ProjectedRevisingSampleFeedback {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -927,7 +924,7 @@ struct ConvertedSampleFeedback {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<ConvertedSampleFeedback> const& ctx) const
@@ -1008,7 +1005,7 @@ struct StereoRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick,
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential,
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -1145,7 +1142,7 @@ struct HistoryRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -1259,7 +1256,7 @@ struct LargeHistoryRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<LargeHistoryRampSource> const& ctx) const
@@ -1320,7 +1317,7 @@ struct FiveSampleDelay {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(iv::ConstrainPortsContext<FiveSampleDelay>& ctx) const
@@ -1355,7 +1352,7 @@ struct NeutralFeedbackCounter {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<NeutralFeedbackCounter> const& ctx) const
@@ -1388,7 +1385,7 @@ struct RoutedHistoryProbe {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(iv::ConstrainPortsContext<RoutedHistoryProbe>& ctx) const
@@ -2055,7 +2052,7 @@ struct TriggerEventSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::tick),
+            iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::sequential),
         };
     }
 
@@ -2078,7 +2075,7 @@ struct MidiEventSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::event_output("midi", iv::EventTypeId::midi, iv::OutputProduction::tick),
+            iv::event_output("midi", iv::EventTypeId::midi, iv::OutputProduction::sequential),
         };
     }
 
@@ -2114,7 +2111,7 @@ struct LimitedTriggerEventSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::tick),
+            iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::sequential),
         };
     }
 
@@ -2138,7 +2135,7 @@ struct FanInBurstEventSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::tick, {.max_events_per_index = 0.125})};
+        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.125})};
     }
 
     void tick_block(iv::TickBlockContext<FanInBurstEventSource> const& ctx) const
@@ -2159,7 +2156,7 @@ struct FanInSparseEventSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::tick, {.max_events_per_index = 0.125})};
+        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.125})};
     }
 
     void tick_block(iv::TickBlockContext<FanInSparseEventSource> const& ctx) const
@@ -2192,7 +2189,7 @@ struct EventFeedbackA {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::tick, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void tick_block(iv::TickBlockContext<EventFeedbackA> const& ctx) const
@@ -2285,7 +2282,7 @@ struct LatentEventFeedbackA {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::tick, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void constrain_ports(
@@ -2340,7 +2337,7 @@ struct PersistentLatentEventFeedbackA {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::tick, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void constrain_ports(
@@ -2386,7 +2383,7 @@ struct PersistentLatentBoundaryEventFeedbackA {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::boundary, iv::OutputProduction::tick, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output("out", iv::EventTypeId::boundary, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void constrain_ports(
@@ -2419,7 +2416,7 @@ struct EventFeedbackBurstA {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::tick, {.max_events_per_index = 16.0})};
+        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 16.0})};
     }
 
     void tick_block(iv::TickBlockContext<EventFeedbackBurstA> const& ctx) const
@@ -2445,7 +2442,7 @@ struct EventFeedbackFanoutA {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::tick, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void tick_block(iv::TickBlockContext<EventFeedbackFanoutA> const& ctx) const
@@ -2482,7 +2479,7 @@ struct EventFeedbackB {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::tick, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void tick_block(iv::TickBlockContext<EventFeedbackB> const& ctx) const
@@ -2540,7 +2537,7 @@ struct RetainedDualEventFeedbackA {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::tick, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void tick_block(
@@ -2588,8 +2585,8 @@ struct DualEventFeedbackB {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::event_output("exact", iv::EventTypeId::trigger, iv::OutputProduction::tick, {.max_events_per_index = 0.25}),
-            iv::event_output("converted", iv::EventTypeId::boundary, iv::OutputProduction::tick, {.max_events_per_index = 0.25}),
+            iv::event_output("exact", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25}),
+            iv::event_output("converted", iv::EventTypeId::boundary, iv::OutputProduction::sequential, {.max_events_per_index = 0.25}),
         };
     }
 
@@ -2712,7 +2709,7 @@ struct BoundaryEventFeedbackA {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::boundary, iv::OutputProduction::tick, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output("out", iv::EventTypeId::boundary, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void tick_block(iv::TickBlockContext<BoundaryEventFeedbackA> const& ctx) const
@@ -2735,7 +2732,7 @@ struct BoundaryEventFeedbackB {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::boundary, iv::OutputProduction::tick, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output("out", iv::EventTypeId::boundary, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void tick_block(iv::TickBlockContext<BoundaryEventFeedbackB> const& ctx) const
@@ -2804,7 +2801,7 @@ struct RetainedTriggerEventSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::tick, {.max_events_per_index = 0.5}),
+            iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.5}),
         };
     }
 
@@ -2886,7 +2883,7 @@ struct PersistentEventRingSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::tick, {.max_events_per_index = 0.5}),
+            iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.5}),
         };
     }
 
@@ -3001,7 +2998,7 @@ struct PortedProbe {
 
     static constexpr auto outputs()
     {
-        return std::array<iv::TickOutputConfig<iv::Sample>, 1>{};
+        return std::array<iv::SequentialOutputConfig<iv::Sample>, 1>{};
     }
 
     void tick(iv::TickSampleContext<PortedProbe> const& ctx) const
@@ -3527,7 +3524,7 @@ struct NativeBatchAliasingProbe {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::tick)};
+            "out", iv::OutputProduction::sequential)};
     }
 
     static void tick_block_batch(
@@ -3555,7 +3552,7 @@ struct NativeBatchReplaySource {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::tick)};
+            "out", iv::OutputProduction::sequential)};
     }
 
     static void tick_block_batch(
@@ -3701,7 +3698,7 @@ struct NativeBatchActivityProbe {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::tick)};
+            "out", iv::OutputProduction::sequential)};
     }
 
     bool can_skip_block() const { return true; }
@@ -3755,7 +3752,7 @@ struct ActivityStepSource {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::tick)};
+            "out", iv::OutputProduction::sequential)};
     }
 
     void tick_block(
@@ -3782,7 +3779,7 @@ struct ActivityProbe {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::tick)};
+            "out", iv::OutputProduction::sequential)};
     }
 
     bool can_skip_block() const { return true; }
@@ -3817,7 +3814,7 @@ struct ActivityTypeDefaultProbe {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::tick)};
+            "out", iv::OutputProduction::sequential)};
     }
 
     std::optional<std::size_t> ttl_samples() const { return 64; }
@@ -3848,7 +3845,7 @@ struct EventActivityStepSource {
         return std::array{iv::event_output(
             "out",
             iv::EventTypeId::trigger,
-            iv::OutputProduction::tick,
+            iv::OutputProduction::sequential,
             {.max_events_per_index = 1.0 / 64.0})};
     }
 
@@ -3877,7 +3874,7 @@ struct EventActivityProbe {
         return std::array{iv::event_output(
             "out",
             iv::EventTypeId::trigger,
-            iv::OutputProduction::tick,
+            iv::OutputProduction::sequential,
             {.max_events_per_index = 1.0 / 64.0})};
     }
 
@@ -4068,7 +4065,7 @@ struct FFTValueProducer {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::output<iv::FFTBlock>("spectra", iv::OutputProduction::tick),
+            iv::output<iv::FFTBlock>("spectra", iv::OutputProduction::sequential),
         };
     }
 
@@ -4166,7 +4163,7 @@ struct FractionalIndexProducer {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::FractionalGlobalIndex>(
-            "coordinates", iv::OutputProduction::tick)};
+            "coordinates", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -4244,8 +4241,8 @@ struct PersistedFFTValueProducer {
     {
         return std::array{iv::output<iv::FFTBlock>(
             "spectra",
-            iv::OutputProduction::tick,
-            iv::OutputRetention::persisted)};
+            iv::OutputProduction::sequential,
+            iv::OutputRealization::buffered)};
     }
 
     void constrain_ports(
@@ -4268,8 +4265,8 @@ struct PersistedNonProjectRateSampleProducer {
     {
         return std::array{iv::output<iv::Sample>(
             "samples",
-            iv::OutputProduction::tick,
-            iv::OutputRetention::persisted)};
+            iv::OutputProduction::sequential,
+            iv::OutputRealization::buffered)};
     }
 
     void constrain_ports(
@@ -4323,6 +4320,8 @@ void persisted_non_project_rate_sample_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+)cpp";
+    static constexpr std::string_view background_region_nodes = R"cpp(
 struct MultiRegionCoverageSource {
     static constexpr auto inputs() { return std::tuple{}; }
 
@@ -4358,15 +4357,9 @@ struct MultiRegionCoverageSource {
         iv::TockCoverageContext<MultiRegionCoverageSource>& ctx) const
     {
         auto output = ctx.output<"multi-region-source-output">().regions();
-        IV_ASSERT(output.size() == 2,
-            "multi-Region source did not receive two output Regions");
-        for (std::size_t region = 0; region < output.size(); ++region) {
-            for (std::size_t frame = 0;
-                 frame < output[region].frame_count(); ++frame) {
-                output[region].value(frame) =
-                    iv::Sample{static_cast<float>(region + 1)};
-            }
-        }
+        for (auto region : output) for (auto window : region.prepared_windows())
+            for (std::size_t frame = 0; frame < window.frame_count(); ++frame)
+                window.value(frame) = iv::Sample{region.range().begin == regions()[0].begin ? 1.0f : 2.0f};
     }
 };
 
@@ -4406,8 +4399,7 @@ struct MultiRegionCoverageConsumer {
     void propagate_reverse_coverage(
         iv::PropagateReverseCoverageContext<MultiRegionCoverageConsumer>& ctx) const
     {
-        ctx.input<"multi-region-coverage-input">().require(
-            ctx.output<"multi-region-consumer-output">().required());
+        for (auto region : ctx.input<"multi-region-coverage-input">().coverage()) ctx.input<"multi-region-coverage-input">().require(region);
     }
 
     void tock_coverage(
@@ -4415,8 +4407,8 @@ struct MultiRegionCoverageConsumer {
     {
         auto input = ctx.input<"multi-region-coverage-input">().regions();
         auto output = ctx.output<"multi-region-consumer-output">().regions();
-        IV_ASSERT(input.size() == 2 && output.size() == input.size(),
-            "multi-Region consumer did not receive two matching Region lists");
+        IV_ASSERT(input.size() == 2,
+            "multi-Region consumer lost its explicitly requested inspection inputs");
 
         auto& state = ctx.tock_state();
         ++state.calls;
@@ -4427,13 +4419,14 @@ struct MultiRegionCoverageConsumer {
         state.first_overlap_value = static_cast<float>(input[0].at(overlap));
         state.second_overlap_value = static_cast<float>(input[1].at(overlap));
 
-        for (std::size_t region = 0; region < input.size(); ++region) {
-            IV_ASSERT(input[region].range() == output[region].range(),
-                "multi-Region consumer input and output ranges differ");
-            for (std::size_t frame = 0;
-                 frame < input[region].frame_count(); ++frame) {
-                output[region].value(frame) = input[region].value(frame);
-            }
+        for (auto destination : output) {
+            auto const source = std::ranges::find_if(input, [&](auto region) {
+                return region.range() == destination.range();
+            });
+            IV_ASSERT(source != input.end(), "multi-Region output lost its source Region");
+            for (auto window : destination.prepared_windows())
+                for (std::size_t frame = 0; frame < window.frame_count(); ++frame)
+                    window.value(frame) = (*source).at(window.range().begin.advanced_by(frame));
         }
     }
 };
@@ -4509,24 +4502,13 @@ struct MultiRegionEventCoverageSource {
     {
         auto output =
             ctx.output<"multi-region-event-source-output">().regions();
-        IV_ASSERT(output.size() == 2,
-            "multi-Region event source did not receive two output Regions");
-        output[0].write({
-            .time = iv::GlobalIndex::from_signed(10),
-            .value = iv::TriggerEvent{},
-        });
-        output[0].write({
-            .time = iv::GlobalIndex::from_signed(13),
-            .value = iv::TriggerEvent{},
-        });
-        output[1].write({
-            .time = iv::GlobalIndex::from_signed(12),
-            .value = iv::TriggerEvent{},
-        });
-        output[1].write({
-            .time = iv::GlobalIndex::from_signed(15),
-            .value = iv::TriggerEvent{},
-        });
+        auto const& requested = ctx.output<"multi-region-event-source-output">().requested_coverage();
+        for (auto region : output) {
+            auto const first = region.range().begin.signed_value();
+            for (auto const time : {first, first + 3})
+                if (requested.contains(iv::GlobalIndex::from_signed(time))) region.write({
+                    .time = iv::GlobalIndex::from_signed(time), .value = iv::TriggerEvent{}});
+        }
     }
 };
 
@@ -4571,8 +4553,7 @@ struct MultiRegionEventCoverageConsumer {
         iv::PropagateReverseCoverageContext<
             MultiRegionEventCoverageConsumer>& ctx) const
     {
-        ctx.input<"multi-region-event-coverage-input">().require(
-            ctx.output<"multi-region-event-consumer-output">().required());
+        for (auto region : ctx.input<"multi-region-event-coverage-input">().coverage()) ctx.input<"multi-region-event-coverage-input">().require(region);
     }
 
     void tock_coverage(
@@ -4582,15 +4563,16 @@ struct MultiRegionEventCoverageConsumer {
             ctx.input<"multi-region-event-coverage-input">().regions();
         auto output =
             ctx.output<"multi-region-event-consumer-output">().regions();
-        IV_ASSERT(input.size() == 2 && output.size() == input.size(),
-            "multi-Region event consumer did not receive matching Region lists");
+        IV_ASSERT(input.size() == 2,
+            "multi-Region event consumer lost its explicitly requested inspection inputs");
 
         auto& state = ctx.tock_state();
         ++state.calls;
         state.region_count = input.size();
         for (std::size_t region = 0; region < input.size(); ++region) {
-            IV_ASSERT(input[region].range() == output[region].range(),
-                "multi-Region event input and output ranges differ");
+            auto const destination = std::ranges::find_if(output, [&](auto value) {
+                return value.range() == input[region].range();
+            });
             input[region].for_each([&](iv::TimedEvent const& event) {
                 if (region == 0) {
                     ++state.first_event_count;
@@ -4601,7 +4583,9 @@ struct MultiRegionEventCoverageConsumer {
                     }
                     ++state.second_event_count;
                 }
-                output[region].write(event);
+                if (destination != output.end()
+                    && ctx.output<"multi-region-event-consumer-output">().requested_coverage().contains(event.time))
+                    (*destination).write(event);
             });
         }
     }
@@ -4673,9 +4657,10 @@ struct SingleRegionSampleSource {
         auto output = ctx.output<"single-region-sample-source-output">().region();
         IV_ASSERT(output.range() == region(),
             "single sample Region source received the wrong output range");
-        for (std::size_t frame = 0; frame < output.frame_count(); ++frame) {
-            output.value(frame) = iv::Sample{static_cast<float>(frame + 4)};
-        }
+        for (auto window : output.prepared_windows())
+            for (std::size_t frame = 0; frame < window.frame_count(); ++frame)
+                window.value(frame) = iv::Sample{static_cast<float>(
+                    output.range().begin.forward_distance_to(window.range().begin) + frame + 4)};
     }
 };
 
@@ -4716,8 +4701,7 @@ struct SingleRegionSampleConsumer {
     void propagate_reverse_coverage(
         iv::PropagateReverseCoverageContext<SingleRegionSampleConsumer>& ctx) const
     {
-        ctx.input<"single-region-sample-input">().require(
-            ctx.output<"single-region-sample-consumer-output">().required());
+        for (auto region : ctx.input<"single-region-sample-input">().coverage()) ctx.input<"single-region-sample-input">().require(region);
     }
 
     void tock_coverage(
@@ -4734,9 +4718,9 @@ struct SingleRegionSampleConsumer {
         state.first_value = static_cast<float>(input.value(0));
         state.last_value = static_cast<float>(
             input.value(input.frame_count() - 1));
-        for (std::size_t frame = 0; frame < input.frame_count(); ++frame) {
-            output.value(frame) = input.value(frame);
-        }
+        for (auto window : output.prepared_windows())
+            for (std::size_t frame = 0; frame < window.frame_count(); ++frame)
+                window.value(frame) = input.at(window.range().begin.advanced_by(frame));
     }
 };
 
@@ -4773,11 +4757,11 @@ struct SingleRegionEventSource {
         auto output = ctx.output<"single-region-event-source-output">().region();
         IV_ASSERT(output.range() == region(),
             "single event Region source received the wrong output range");
-        output.write({
+        if (ctx.output<"single-region-event-source-output">().requested_coverage().contains(iv::GlobalIndex::from_signed(30))) output.write({
             .time = iv::GlobalIndex::from_signed(30),
             .value = iv::TriggerEvent{},
         });
-        output.write({
+        if (ctx.output<"single-region-event-source-output">().requested_coverage().contains(iv::GlobalIndex::from_signed(33))) output.write({
             .time = iv::GlobalIndex::from_signed(33),
             .value = iv::TriggerEvent{},
         });
@@ -4826,8 +4810,7 @@ struct SingleRegionEventConsumer {
     void propagate_reverse_coverage(
         iv::PropagateReverseCoverageContext<SingleRegionEventConsumer>& ctx) const
     {
-        ctx.input<"single-region-event-input">().require(
-            ctx.output<"single-region-event-consumer-output">().required());
+        for (auto region : ctx.input<"single-region-event-input">().coverage()) ctx.input<"single-region-event-input">().require(region);
     }
 
     void tock_coverage(
@@ -4845,7 +4828,7 @@ struct SingleRegionEventConsumer {
             if (state.event_count == 0) state.first_time = event.time.bits();
             state.last_time = event.time.bits();
             ++state.event_count;
-            output.write(event);
+            if (ctx.output<"single-region-event-consumer-output">().requested_coverage().contains(event.time)) output.write(event);
         });
     }
 };
@@ -5065,7 +5048,7 @@ struct OffsetStereoRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick,
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential,
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -5516,10 +5499,8 @@ struct ModuleBoundaryCoverageObserver {
         iv::PropagateReverseCoverageContext<
             ModuleBoundaryCoverageObserver>& ctx) const
     {
-        ctx.input<"module-boundary-sample-input">().require(
-            ctx.output<"module-boundary-sample-output">().required());
-        ctx.input<"module-boundary-event-input">().require(
-            ctx.output<"module-boundary-event-output">().required());
+        for (auto region : ctx.input<"module-boundary-sample-input">().coverage()) ctx.input<"module-boundary-sample-input">().require(region);
+        for (auto region : ctx.input<"module-boundary-event-input">().coverage()) ctx.input<"module-boundary-event-input">().require(region);
     }
 
     void tock_coverage(
@@ -5551,13 +5532,11 @@ struct ModuleBoundaryCoverageObserver {
         });
 
         for (std::size_t region = 0; region < samples.size(); ++region) {
-            for (std::size_t frame = 0;
-                 frame < samples[region].frame_count(); ++frame) {
-                sample_outputs[region].value(frame) =
-                    samples[region].value(frame);
-            }
+            for (auto window : sample_outputs[region].prepared_windows())
+                for (std::size_t frame = 0; frame < window.frame_count(); ++frame)
+                    window.value(frame) = samples[region].at(window.range().begin.advanced_by(frame));
             events[region].for_each([&](iv::TimedEvent const& event) {
-                event_outputs[region].write(event);
+                if (ctx.output<"module-boundary-event-output">().requested_coverage().contains(event.time)) event_outputs[region].write(event);
             });
         }
     }
@@ -5586,8 +5565,8 @@ struct PersistedStereoRecordingSource {
         return std::tuple{
             iv::output<iv::Sample>(
                 "recorded-samples",
-                iv::OutputProduction::tick,
-                iv::OutputRetention::persisted,
+                iv::OutputProduction::sequential,
+                iv::OutputRealization::buffered,
                 {.channel_layout = {
                     .channel_type = iv::ChannelTypeId::stereo,
                     .sample_layout = iv::SampleStreamLayout::planar,
@@ -5595,8 +5574,8 @@ struct PersistedStereoRecordingSource {
             iv::event_output(
                 "recorded-events",
                 iv::EventTypeId::trigger,
-                iv::OutputProduction::tick,
-                iv::OutputRetention::persisted,
+                iv::OutputProduction::sequential,
+                iv::OutputRealization::buffered,
                 {.max_events_per_index = 0.25}),
         };
     }
@@ -5683,10 +5662,8 @@ struct PersistedRecordingCoverageConsumer {
         iv::PropagateReverseCoverageContext<
             PersistedRecordingCoverageConsumer>& ctx) const
     {
-        ctx.input<"recorded-sample-coverage">().require(
-            ctx.output<"observed-sample-coverage">().required());
-        ctx.input<"recorded-event-coverage">().require(
-            ctx.output<"observed-event-coverage">().required());
+        for (auto region : ctx.input<"recorded-sample-coverage">().coverage()) ctx.input<"recorded-sample-coverage">().require(region);
+        for (auto region : ctx.input<"recorded-event-coverage">().coverage()) ctx.input<"recorded-event-coverage">().require(region);
     }
 
     void tock_coverage(
@@ -5731,18 +5708,16 @@ struct PersistedRecordingCoverageConsumer {
         }
 
         for (std::size_t region = 0; region < sample_inputs.size(); ++region) {
-            for (std::size_t frame = 0;
-                 frame < sample_inputs[region].frame_count(); ++frame) {
-                sample_outputs[region].value(frame, 0) =
-                    sample_inputs[region].value(frame, 0);
-                sample_outputs[region].value(frame, 1) =
-                    sample_inputs[region].value(frame, 1);
-            }
+            for (auto window : sample_outputs[region].prepared_windows())
+                for (std::size_t frame = 0; frame < window.frame_count(); ++frame)
+                    for (std::size_t channel = 0; channel < 2; ++channel)
+                        window.value(frame, channel) = sample_inputs[region].at(
+                            window.range().begin.advanced_by(frame), channel);
         }
         for (std::size_t region = 0; region < event_inputs.size(); ++region) {
             event_inputs[region].for_each(
                 [&](iv::TimedEvent const& event) {
-                    event_outputs[region].write(event);
+                    if (ctx.output<"observed-event-coverage">().requested_coverage().contains(event.time)) event_outputs[region].write(event);
                 });
         }
     }
@@ -5922,7 +5897,7 @@ struct LatentWindowSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -5956,7 +5931,7 @@ struct LargeLatentWindowSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -6264,7 +6239,7 @@ struct OffsetSampleRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<OffsetSampleRampSource> const& ctx) const
@@ -6467,7 +6442,7 @@ struct FeedbackCounter {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<FeedbackCounter> const& ctx) const
@@ -6497,7 +6472,7 @@ struct LatencyArgumentRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -6786,7 +6761,7 @@ struct NativeBatchFeedbackProbe {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::tick)};
+            "out", iv::OutputProduction::sequential)};
     }
 
     static void tick_block_batch(
@@ -6927,7 +6902,7 @@ struct LatentTriggerSource {
     static constexpr auto inputs() { return std::tuple{}; }
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::tick, {.max_events_per_index = 0.5})};
+        return std::array{iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.5})};
     }
     void constrain_ports(iv::ConstrainPortsContext<LatentTriggerSource>& ctx) const
     {
@@ -6965,7 +6940,7 @@ struct RevisingPacedCaptureSource {
     static constexpr auto inputs() { return std::tuple{}; }
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("samples", iv::OutputProduction::tick, iv::OutputRetention::persisted)};
+        return std::array{iv::output<iv::Sample>("samples", iv::OutputProduction::sequential, iv::OutputRealization::buffered)};
     }
     void constrain_ports(iv::ConstrainPortsContext<RevisingPacedCaptureSource>& ctx) const
     {
@@ -7002,7 +6977,7 @@ struct LatentWindowHistorySource {
     static constexpr auto inputs() { return std::tuple{}; }
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
     void constrain_ports(iv::ConstrainPortsContext<LatentWindowHistorySource>& ctx) const
     {
@@ -7035,7 +7010,7 @@ struct LoopRampSource {
     }
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
     void tick_block(iv::TickBlockContext<LoopRampSource> const& ctx) const
     {
@@ -7065,7 +7040,7 @@ struct AlignedPairPassthrough {
     }
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
     void tick_block(iv::TickBlockContext<AlignedPairPassthrough> const& ctx) const
     {
@@ -7112,8 +7087,8 @@ struct RevisingCaptureSource {
     static constexpr auto outputs()
     {
         return std::tuple{
-            iv::output<iv::Sample>("samples", iv::OutputProduction::tick, iv::OutputRetention::persisted),
-            iv::event_output("events", iv::EventTypeId::trigger, iv::OutputProduction::tick, iv::OutputRetention::persisted, {.max_events_per_index = 0.25}),
+            iv::output<iv::Sample>("samples", iv::OutputProduction::sequential, iv::OutputRealization::buffered),
+            iv::event_output("events", iv::EventTypeId::trigger, iv::OutputProduction::sequential, iv::OutputRealization::buffered, {.max_events_per_index = 0.25}),
         };
     }
     void constrain_ports(iv::ConstrainPortsContext<RevisingCaptureSource>& ctx) const
@@ -7187,7 +7162,7 @@ struct FeedbackGain {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void tick(iv::TickSampleContext<FeedbackGain> const& ctx) const
@@ -7336,11 +7311,11 @@ IV_MODULE(
 // complete sparse event Region, including the two points outside this window.
 struct AutomationWindow {
     static constexpr auto inputs() {
-        return std::array{iv::input<iv::Sample>("curve", iv::InputAccess::region)};
+        return std::array{iv::input<iv::Sample>("curve", iv::InputAccess::coverage)};
     }
     static constexpr auto outputs() {
         return std::array{iv::output<iv::Sample>("window", iv::OutputProduction::region,
-            iv::OutputRetention::persisted)};
+            iv::OutputRealization::buffered)};
     }
     void propagate_forward_coverage(iv::PropagateForwardCoverageContext<AutomationWindow>& ctx) const {
         auto const window = iv::GlobalIndexRange{iv::GlobalIndex::from_bits(2), 2};
@@ -7352,10 +7327,16 @@ struct AutomationWindow {
         ctx.input<"curve">().require(ctx.output<"window">().required());
     }
     void tock_coverage(iv::TockCoverageContext<AutomationWindow>& ctx) const {
-        auto input = ctx.input<"curve">().region();
+        auto inputs = ctx.input<"curve">().regions();
         auto output = ctx.output<"window">().region();
-        for (std::size_t i = 0; i < output.frame_count(); ++i)
-            output.value(i) = input.value(i);
+        for (auto window : output.prepared_windows()) {
+            for (std::size_t i = 0; i < window.frame_count(); ++i) {
+                auto const index = window.range().begin.advanced_by(i);
+                iv::Sample value{0};
+                for (auto input : inputs) if (input.range().contains(index)) value.value += input.at(index).value;
+                window.value(i) = value;
+            }
+        }
     }
 };
 IV_NODE("iv.test.automation.window", AutomationWindow);
@@ -7378,7 +7359,7 @@ IV_MODULE("iv.test.automation.window_module", automation_window_module);
 // resolves to the input's neutral value. Their declared TickReplayMode decides
 // where that value is output.
 struct ReplayAddOne {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
     static constexpr auto inputs() { return std::array{iv::input<iv::Sample>("in")}; }
     static constexpr auto outputs() { return std::array{iv::output<iv::Sample>("out")}; }
     void tick_block(iv::TickBlockContext<ReplayAddOne> const& ctx) const {
@@ -7409,11 +7390,11 @@ struct ReplayWindow {
     constexpr ReplayWindow(std::int64_t begin_, std::uint64_t extent_)
         : begin(begin_), extent(extent_) {}
     static constexpr auto inputs() {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::region)};
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::coverage)};
     }
     static constexpr auto outputs() {
         return std::array{iv::output<iv::Sample>("window", iv::OutputProduction::region,
-            iv::OutputRetention::persisted)};
+            iv::OutputRealization::buffered)};
     }
     [[nodiscard]] iv::GlobalIndexRange window() const {
         return {iv::GlobalIndex::from_signed(begin), extent};
@@ -7427,10 +7408,16 @@ struct ReplayWindow {
         ctx.input<"in">().require(ctx.output<"window">().required());
     }
     void tock_coverage(iv::TockCoverageContext<ReplayWindow>& ctx) const {
-        auto input = ctx.input<"in">().region();
+        auto inputs = ctx.input<"in">().regions();
         auto output = ctx.output<"window">().region();
-        for (std::size_t i = 0; i < output.frame_count(); ++i)
-            output.value(i) = input.value(i);
+        for (auto window : output.prepared_windows()) {
+            for (std::size_t i = 0; i < window.frame_count(); ++i) {
+                auto const index = window.range().begin.advanced_by(i);
+                iv::Sample value{0};
+                for (auto input : inputs) if (input.range().contains(index)) value.value += input.at(index).value;
+                window.value(i) = value;
+            }
+        }
     }
 };
 IV_NODE("iv.test.replay.window", ReplayWindow);
@@ -7441,8 +7428,8 @@ void replay_sequential_resolution_module(iv::GraphBuilder& graph) {
     auto flip = graph.node<"iv.test.replay.ten_minus">();
     add(source);
     flip(source);
-    // input_union: add_one exists only where the source does.
-    auto added = graph.node<"iv.test.replay.window">(std::int64_t{20}, std::uint64_t{4});
+    // Sequential replay resolves source gaps before evaluating add_one.
+    auto added = graph.node<"iv.test.replay.window">(std::int64_t{18}, std::uint64_t{8});
     added(add);
     // full: [18, 26) straddles the source Region; [100, 104) lies outside it.
     auto spanning = graph.node<"iv.test.replay.window">(std::int64_t{18}, std::uint64_t{8});
@@ -7458,9 +7445,9 @@ void replay_sequential_resolution_module(iv::GraphBuilder& graph) {
 }
 IV_MODULE("iv.test.replay.sequential_resolution_module", replay_sequential_resolution_module);
 
-template<iv::TickReplayMode Mode>
+template<bool ModuleChild>
 struct ReplayManualFallback {
-    static constexpr iv::TickReplayMode replay_mode = Mode;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
     // A nonzero neutral value must remain the combiner's identity, as the
     // Sequential fan-in contract requires: combine(neutral, x) == x.
     static constexpr iv::Sample shifted_add(iv::Sample left, iv::Sample right) noexcept {
@@ -7473,21 +7460,21 @@ struct ReplayManualFallback {
             .fallback = iv::SequentialFallback::manual_control})};
     }
     static constexpr auto outputs() {
-        return std::array{iv::output<iv::Sample>(Mode == iv::TickReplayMode::full
+        return std::array{iv::output<iv::Sample>(!ModuleChild
             ? "manual-full" : "manual-union")};
     }
     void tick_block(iv::TickBlockContext<ReplayManualFallback> const& ctx) const {
         auto input = ctx.template input<"gain">();
         auto output = [&] {
-            if constexpr (Mode == iv::TickReplayMode::full) return ctx.template output<"manual-full">().block();
+            if constexpr (!ModuleChild) return ctx.template output<"manual-full">().block();
             else return ctx.template output<"manual-union">().block();
         }();
         for (std::size_t frame = 0; frame < output.size(); ++frame)
             output[frame] = iv::Sample{static_cast<float>(input.get_value(frame)) + 1.0f};
     }
 };
-using ReplayManualFull = ReplayManualFallback<iv::TickReplayMode::full>;
-using ReplayManualUnion = ReplayManualFallback<iv::TickReplayMode::input_union>;
+using ReplayManualFull = ReplayManualFallback<false>;
+using ReplayManualUnion = ReplayManualFallback<true>;
 IV_NODE("iv.test.replay.manual_full", ReplayManualFull);
 IV_NODE("iv.test.replay.manual_union", ReplayManualUnion);
 struct ReplayLiveProbe {
@@ -7536,7 +7523,7 @@ struct SuspendableCoverageProbe {
     }
     static constexpr auto outputs() {
         return std::array{iv::output<iv::Sample>("suspendable-output",
-            iv::OutputProduction::region, iv::OutputRetention::persisted)};
+            iv::OutputProduction::region, iv::OutputRealization::buffered)};
     }
     iv::CoverageTask propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<SuspendableCoverageProbe>& ctx) const {
@@ -7560,8 +7547,10 @@ struct SuspendableCoverageProbe {
         auto output = ctx.output<"suspendable-output">().region();
         ++ctx.tock_state().calls;
         ctx.tock_state().first = input.value(0).value;
-        for (std::size_t frame = 0; frame < output.frame_count(); ++frame)
-            output.value(frame) = input.value(frame);
+        for (auto window : output.prepared_windows())
+            for (std::size_t frame = 0; frame < window.frame_count(); ++frame)
+                window.value(frame) = input.value(static_cast<std::size_t>(
+                    output.range().begin.forward_distance_to(window.range().begin)) + frame);
     }
 };
 IV_NODE("iv.test.graph_jit.suspendable_coverage_probe", SuspendableCoverageProbe);
@@ -7622,20 +7611,123 @@ void summed_module_boundaries(iv::GraphBuilder& graph) {
     graph.outputs();
 }
 IV_MODULE("iv.test.graph_jit.summed_module_boundaries", summed_module_boundaries);
+
+struct HugeComputedRegionSource {
+    struct TockState { std::uint64_t values_written = 0; std::uint64_t logical_extent = 0; };
+    static constexpr auto outputs() {
+        return std::array{iv::output<iv::Sample>("huge", iv::OutputProduction::region)};
+    }
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<HugeComputedRegionSource>& ctx) const {
+        iv::GlobalIndexRange const region{iv::GlobalIndex::from_bits(0), std::uint64_t{1} << 50};
+        ctx.output<"huge">().publish(region);
+        if (ctx.local_state_changed) ctx.output<"huge">().change(region);
+    }
+    void tock_coverage(iv::TockCoverageContext<HugeComputedRegionSource>& ctx) const {
+        auto region = ctx.output<"huge">().region();
+        ctx.tock_state().logical_extent = region.range().extent;
+        for (auto window : region.prepared_windows()) {
+            for (std::size_t frame = 0; frame < window.frame_count(); ++frame) {
+                auto position = window.range().begin.advanced_by(frame);
+                window.at(position) = iv::Sample{static_cast<float>(position.bits() & 1023)};
+                ++ctx.tock_state().values_written;
+            }
+        }
+    }
+};
+IV_NODE("iv.test.computed.huge_source", HugeComputedRegionSource);
+void huge_computed_playback(iv::GraphBuilder& graph) {
+    auto source = graph.node<"iv.test.computed.huge_source">();
+    auto consumer = graph.node<"iv.test.graph_jit.state_context.manual_control_slice_probe">();
+    consumer(source);
+    graph.outputs();
+}
+IV_MODULE("iv.test.computed.huge_playback", huge_computed_playback);
+
+struct CompleteRegionCopy {
+    static constexpr auto inputs() {
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::region,
+            iv::InputContentAccess::complete_buffer)};
+    }
+    static constexpr auto outputs() {
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::region)};
+    }
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<CompleteRegionCopy>& ctx) const {
+        auto input = ctx.input<"in">();
+        if (!input.regions().empty()) ctx.output<"out">().publish(input.regions()[0]);
+        ctx.output<"out">().change(input.changed());
+    }
+    void propagate_reverse_coverage(iv::PropagateReverseCoverageContext<CompleteRegionCopy>& ctx) const {
+        ctx.input<"in">().require(ctx.output<"out">().required());
+    }
+    void tock_coverage(iv::TockCoverageContext<CompleteRegionCopy>& ctx) const {
+        auto input = ctx.input<"in">().region();
+        for (auto window : ctx.output<"out">().region().prepared_windows())
+            for (std::size_t frame = 0; frame < window.frame_count(); ++frame) {
+                auto index = window.range().begin.advanced_by(frame);
+                window.value(frame) = input.at(index);
+            }
+    }
+};
+IV_NODE("iv.test.computed.complete_copy", CompleteRegionCopy);
+void invalid_computed_complete_connection(iv::GraphBuilder& graph) {
+    auto source = graph.node<"iv.test.computed.huge_source">();
+    auto complete = graph.node<"iv.test.computed.complete_copy">();
+    complete(source);
+    graph.outputs();
+}
+IV_MODULE("iv.test.computed.invalid_complete_connection", invalid_computed_complete_connection);
+struct BufferedRegionForTick {
+    static constexpr auto outputs() {
+        return std::array{iv::output<iv::Sample>("buffered", iv::OutputProduction::region, iv::OutputRealization::buffered)};
+    }
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<BufferedRegionForTick>& ctx) const {
+        ctx.output<"buffered">().publish({iv::GlobalIndex::from_signed(20), 4});
+    }
+    void tock_coverage(iv::TockCoverageContext<BufferedRegionForTick>& ctx) const {
+        for (auto window : ctx.output<"buffered">().region().prepared_windows())
+            for (std::size_t frame = 0; frame < window.frame_count(); ++frame)
+                window.value(frame) = iv::Sample{static_cast<float>(window.range().begin.signed_value() + frame)};
+    }
+};
+IV_NODE("iv.test.computed.buffered_for_tick", BufferedRegionForTick);
+struct CompleteTickRegionSink {
+    static constexpr auto inputs() {
+        return std::array{iv::input<iv::Sample>("complete", iv::InputAccess::region, iv::InputContentAccess::complete_buffer)};
+    }
+    void tick_block(iv::TickBlockContext<CompleteTickRegionSink> const& ctx) const {
+        auto region = ctx.input<"complete">().region();
+        IV_ASSERT(region.has_complete_buffer() && region.frame_count() == 4,
+            "complete-buffer Tick input was not prepared");
+        IV_ASSERT(static_cast<float>(region.value(0)) == 20.0f
+            && static_cast<float>(region.value(3)) == 23.0f,
+            "complete-buffer Tick input has incorrect contents");
+    }
+};
+IV_NODE("iv.test.computed.complete_tick_sink", CompleteTickRegionSink);
+void complete_tick_input_module(iv::GraphBuilder& graph) {
+    auto source = graph.node<"iv.test.computed.buffered_for_tick">();
+    auto sink = graph.node<"iv.test.computed.complete_tick_sink">();
+    sink(source);
+    graph.outputs();
+}
+IV_MODULE("iv.test.computed.complete_tick_input", complete_tick_input_module);
+
 )cpp";
     static_assert(part_1.size() < 60 * 1024);
     static_assert(part_2.size() < 60 * 1024);
     static_assert(part_3.size() < 60 * 1024);
+    static_assert(background_region_nodes.size() < 60 * 1024);
     static_assert(part_4.size() < 60 * 1024);
     static_assert(part_5.size() < 60 * 1024);
     static std::string const source = [] {
         std::string result;
         result.reserve(
             part_1.size() + part_2.size() + part_3.size() + part_4.size()
-            + part_5.size() + internal_nodes.size());
+            + part_5.size() + background_region_nodes.size() + internal_nodes.size());
         result.append(part_1);
         result.append(part_2);
         result.append(part_3);
+        result.append(background_region_nodes);
         result.append(part_4);
         result.append(part_5);
         result.append(internal_nodes);

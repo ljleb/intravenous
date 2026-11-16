@@ -503,8 +503,8 @@ class PortRealizationSolver {
                             continuous_value_type_domain(config)),
                         .size = sizes_.add(),
                         .pace = paces_.add(),
-                        .history = is_tick(config) ? std::optional(histories_.add()) : std::nullopt,
-                        .latency = is_tick(config) ? std::optional(latencies_.add()) : std::nullopt,
+                        .history = is_sequential_output(config) ? std::optional(histories_.add()) : std::nullopt,
+                        .latency = is_sequential_output(config) ? std::optional(latencies_.add()) : std::nullopt,
                         .ordering = output_production(config) == OutputProductionKind::coverage
                             ? std::optional(orderings_.add()) : std::nullopt,
                     });
@@ -522,8 +522,8 @@ class PortRealizationSolver {
                     auto const config = graph_.node_bundles.resolve_event_output(
                         {handle, PortKind::event, index}).config;
                     result.event_outputs.push_back({
-                        .history = is_tick(config) ? std::optional(histories_.add()) : std::nullopt,
-                        .latency = is_tick(config) ? std::optional(latencies_.add()) : std::nullopt,
+                        .history = is_sequential_output(config) ? std::optional(histories_.add()) : std::nullopt,
+                        .latency = is_sequential_output(config) ? std::optional(latencies_.add()) : std::nullopt,
                         .ordering = output_production(config) == OutputProductionKind::coverage
                             ? std::optional(orderings_.add()) : std::nullopt,
                     });

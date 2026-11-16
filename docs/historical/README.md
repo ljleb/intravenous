@@ -8,6 +8,23 @@ These documents are retained because they record deleted architectures, supersed
 
 - [Backup/Checkpoint Proposals Before Git-Based Project Versioning (2026-11-15)](./backup_checkpoint_proposals_before_git_versioning_2026-11-15.md)
 
+## Superseded output realization and background planning
+
+- [Output Shape Symmetry Before Correction](./output_shape_symmetry_before_correction.md)
+  preserves the incorrect all-shapes-on-both-domains wording. The accepted
+  matrix permits Sequential outputs only on Tick and Region/Coverage outputs
+  only on Tock, with computed/buffered realization shared by both.
+
+- [Buffered Storage Before Shared Sparse Realization (2026-11-16)](./buffered_storage_before_shared_realization_2026-11-16.md)
+  preserves displaced RAM-only recording wording and the earlier unspecified
+  backend-selection description; the replacement is §8 of
+  [Output Capabilities, Buffer Access, And Background Demand](../output_capabilities_and_background_demand.md).
+
+- [Output Port Contracts Before Computed/Buffered (2026-11-16)](./output_ports_before_computed_buffered_2026-11-16.md)
+  retains prior `ephemeral`/`persisted` retention, `TickOutputConfig`,
+  whole-Region materialization and complete persisted-publication wording.
+  Its replacement is [Output Capabilities, Buffer Access, And Background Demand](../output_capabilities_and_background_demand.md).
+
 ## Superseded application and execution architecture
 
 - [Tock Binding Before Explicit Provided-Region Semantics (2026-11-15)](./tock_binding_before_explicit_selection_2026-11-15.md)

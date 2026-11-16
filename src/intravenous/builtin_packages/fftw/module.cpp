@@ -51,7 +51,7 @@ struct RealFFT {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::output<iv::FFTBlock>("spectrum", iv::OutputProduction::tick),
+            iv::output<iv::FFTBlock>("spectrum", iv::OutputProduction::sequential),
         };
     }
 
@@ -160,7 +160,7 @@ struct InverseRealFFT {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::output<iv::Sample>("samples", iv::OutputProduction::tick),
+            iv::output<iv::Sample>("samples", iv::OutputProduction::sequential),
         };
     }
 

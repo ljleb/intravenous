@@ -391,15 +391,14 @@ void evaluate_persisted_probe(
         ASSERT_EQ(outputs.size(), 1u);
         for (auto const& descriptor : outputs[0].region_views()) {
             auto region = iv::WritableContinuousRegion<iv::Sample>{descriptor};
-            for (std::uint64_t offset = 0;
-                 offset < region.range().extent;
-                 ++offset) {
-                auto const position = region.range().begin.advanced_by(offset);
+            for (auto window : region.prepared_windows())
+            for (std::uint64_t offset = 0; offset < window.range().extent; ++offset) {
+                auto const position = window.range().begin.advanced_by(offset);
                 if (omit_last_persisted_probe_sample
-                    && offset + 1 == region.range().extent) {
+                    && offset + 1 == window.range().extent) {
                     continue;
                 }
-                region.at(position) = iv::Sample{
+                window.at(position) = iv::Sample{
                     100.0f + static_cast<float>(position.signed_value())};
             }
         }
@@ -422,7 +421,7 @@ void evaluate_persisted_probe(
 }
 
 iv::graph_jit::BackgroundEvaluationPlan probe_tock_plan(
-    iv::OutputRetention retention,
+    iv::OutputRealization realization,
     iv::graph_jit::PortStorageKind storage_kind)
 {
     using namespace iv::graph_jit;
@@ -446,7 +445,7 @@ iv::graph_jit::BackgroundEvaluationPlan probe_tock_plan(
         .direction = PortDirection::output,
         .output_production = iv::OutputProductionKind::coverage,
         .authored_tock_output = true,
-        .retention = retention,
+        .realization = realization,
         .sample_layout = {
             .channel_type = iv::ChannelTypeId::mono,
             .sample_layout = iv::SampleStreamLayout::planar,
@@ -492,7 +491,7 @@ iv::CompiledGraph persisted_tock_graph()
     graph.specialization.block_size = 4;
     graph.tock_state_layout.nodes.emplace_back();
     graph.background_evaluation_plan = probe_tock_plan(
-        iv::OutputRetention::persisted,
+        iv::OutputRealization::buffered,
         iv::graph_jit::PortStorageKind::persisted_data);
     graph.background_operations = {
         .propagate_forward = &propagate_persisted_probe_forward,
@@ -506,7 +505,7 @@ iv::CompiledGraph ephemeral_tock_graph()
 {
     auto graph = persisted_tock_graph();
     graph.background_evaluation_plan = probe_tock_plan(
-        iv::OutputRetention::ephemeral,
+        iv::OutputRealization::computed,
         iv::graph_jit::PortStorageKind::background);
     return graph;
 }
@@ -594,7 +593,7 @@ iv::CompiledGraph replay_probe_graph()
         .replays_tick = true,
         .uses_replay_forward_coverage = true,
         .uses_replay_reverse_coverage = true,
-        .replay_mode = iv::TickReplayMode::input_union,
+        .replay_mode = iv::TickReplayMode::full,
         .uses_imported_tick_block_for_replay = true,
         .replay_maximum_block_size = 4,
         .outputs = {0, 1},
@@ -611,7 +610,7 @@ iv::CompiledGraph replay_probe_graph()
             .kind = iv::PortKind::sample,
             .direction = PortDirection::output,
             .replayed_tick_output = true,
-            .retention = iv::OutputRetention::ephemeral,
+            .realization = iv::OutputRealization::computed,
             .sample_layout = {
                 .channel_type = iv::ChannelTypeId::mono,
                 .sample_layout = iv::SampleStreamLayout::planar,
@@ -626,7 +625,7 @@ iv::CompiledGraph replay_probe_graph()
             .kind = iv::PortKind::sample,
             .direction = PortDirection::output,
             .replayed_tick_output = true,
-            .retention = iv::OutputRetention::ephemeral,
+            .realization = iv::OutputRealization::computed,
             .sample_layout = {
                 .channel_type = iv::ChannelTypeId::mono,
                 .sample_layout = iv::SampleStreamLayout::planar,
@@ -743,7 +742,7 @@ iv::graph_jit::BackgroundEvaluationPlan background_fanin_plan()
             .direction = PortDirection::output,
             .output_production = iv::OutputProductionKind::coverage,
             .authored_tock_output = true,
-            .retention = iv::OutputRetention::ephemeral,
+            .realization = iv::OutputRealization::computed,
             .outgoing_connections = {0},
             .accumulators = PortAccumulatorIndices{
                 .output_change = 0,
@@ -757,7 +756,7 @@ iv::graph_jit::BackgroundEvaluationPlan background_fanin_plan()
             .direction = PortDirection::output,
             .output_production = iv::OutputProductionKind::coverage,
             .authored_tock_output = true,
-            .retention = iv::OutputRetention::ephemeral,
+            .realization = iv::OutputRealization::computed,
             .outgoing_connections = {1},
             .accumulators = PortAccumulatorIndices{
                 .output_change = 1,
@@ -784,7 +783,7 @@ iv::graph_jit::BackgroundEvaluationPlan background_fanin_plan()
             .direction = PortDirection::output,
             .output_production = iv::OutputProductionKind::coverage,
             .authored_tock_output = true,
-            .retention = iv::OutputRetention::ephemeral,
+            .realization = iv::OutputRealization::computed,
             .accumulators = PortAccumulatorIndices{
                 .output_change = 2,
                 .output_requirement = 2,
@@ -836,7 +835,7 @@ iv::graph_jit::BackgroundEvaluationPlan background_mixed_output_plan()
             .kind = iv::PortKind::sample,
             .direction = PortDirection::output,
             .persisted_tick_output = true,
-            .retention = iv::OutputRetention::persisted,
+            .realization = iv::OutputRealization::buffered,
             .accumulators = PortAccumulatorIndices{
                 .output_change = 0,
                 .output_requirement = 0,
@@ -849,7 +848,7 @@ iv::graph_jit::BackgroundEvaluationPlan background_mixed_output_plan()
             .direction = PortDirection::output,
             .output_production = iv::OutputProductionKind::coverage,
             .authored_tock_output = true,
-            .retention = iv::OutputRetention::ephemeral,
+            .realization = iv::OutputRealization::computed,
             .accumulators = PortAccumulatorIndices{
                 .output_change = 1,
                 .output_requirement = 1,
@@ -1030,7 +1029,7 @@ TEST(GraphExecutorPersistedStorageCompatibility,
             .direction = iv::graph_jit::PortDirection::output,
             .output_production = iv::OutputProductionKind::coverage,
             .authored_tock_output = true,
-            .retention = iv::OutputRetention::persisted,
+            .realization = iv::OutputRealization::buffered,
             .sample_layout = iv::mono_planar_channel_layout,
             .continuous_geometry =
                 *iv::continuous_value_storage_geometry(
@@ -1059,7 +1058,7 @@ TEST(GraphExecutorPersistedStorageCompatibility,
     current = previous;
     current.ports[0].authored_tock_output = false;
     current.ports[0].persisted_tick_output = true;
-    current.ports[0].output_production = iv::OutputProductionKind::tick;
+    current.ports[0].output_production = iv::OutputProductionKind::sequential;
     EXPECT_FALSE(iv::graph_jit::persisted_storage_is_compatible(
         current, 0, previous, 0));
     EXPECT_FALSE(iv::graph_jit::persisted_storage_is_compatible(
@@ -1088,7 +1087,7 @@ TEST(GraphExecutorPersistedStorageCompatibility,
         .direction = iv::graph_jit::PortDirection::output,
         .output_production = iv::OutputProductionKind::coverage,
         .authored_tock_output = true,
-        .retention = iv::OutputRetention::persisted,
+        .realization = iv::OutputRealization::buffered,
         .event_type = iv::EventTypeId::trigger,
     }};
     previous.storage.ports = {{
@@ -1103,7 +1102,7 @@ TEST(GraphExecutorPersistedStorageCompatibility,
         current, 0, previous, 0));
     current.ports[0].authored_tock_output = false;
     current.ports[0].persisted_tick_output = true;
-    current.ports[0].output_production = iv::OutputProductionKind::tick;
+    current.ports[0].output_production = iv::OutputProductionKind::sequential;
     EXPECT_FALSE(iv::graph_jit::persisted_storage_is_compatible(
         current, 0, previous, 0));
 
@@ -1822,11 +1821,11 @@ TEST_F(
         auto const* region = pin->find_sample_region(output, index(0));
         ASSERT_NE(region, nullptr);
         EXPECT_EQ(region->range, range(0, 8));
-        ASSERT_EQ(region->values.size(), 8u);
-        EXPECT_FLOAT_EQ(region->values[0].value, 100.0f);
-        EXPECT_FLOAT_EQ(region->values[3].value, 103.0f);
-        EXPECT_FLOAT_EQ(region->values[4].value, 104.0f);
-        EXPECT_FLOAT_EQ(region->values[7].value, 107.0f);
+        ASSERT_EQ(region->storage_size_bytes(), 8u * sizeof(iv::Sample));
+        EXPECT_FLOAT_EQ(region->at(index(0), 0).value, 100.0f);
+        EXPECT_FLOAT_EQ(region->at(index(3), 0).value, 103.0f);
+        EXPECT_FLOAT_EQ(region->at(index(4), 0).value, 104.0f);
+        EXPECT_FLOAT_EQ(region->at(index(7), 0).value, 107.0f);
     }
 
     iv::BackgroundEvaluationTransaction unchanged{
@@ -1872,12 +1871,41 @@ TEST_F(
     EXPECT_EQ(
         *shrink_result->published_data,
         (iv::PersistedDataVersion{.semantic = 8, .revision = 2}));
-    EXPECT_EQ(persisted_probe_evaluate_calls, 2u);
+    // A changed logical shape invalidates cached contents, but no consumer
+    // requested new values. Publication updates metadata without evaluating.
+    EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
     {
         auto pin = reader.pin();
-        EXPECT_NE(pin->find_sample_region(output, index(0)), nullptr);
+        auto const* logical = pin->find_sample_logical_coverage(output);
+        ASSERT_NE(logical, nullptr);
+        EXPECT_EQ(*logical, index_coverage({{0, 4}}));
+        EXPECT_EQ(pin->find_sample_region(output, index(0)), nullptr);
         EXPECT_EQ(pin->find_sample_region(output, index(4)), nullptr);
     }
+
+    // Demand after invalidation computes exactly the requested content window
+    // while retaining the whole producer-published logical Region.
+    iv::BackgroundEvaluationTransaction refill{
+        graph, tock_states, coverage, propagation, data,
+        {.semantic_version = 8,
+         .roots = {.output_demands = {{.port = 0, .required = index_coverage({{1, 3}})}}}}};
+    auto refill_result = refill.execute();
+    ASSERT_TRUE(refill_result.has_value()) << refill_result.error();
+    ASSERT_TRUE(refill_result->published_data.has_value());
+    EXPECT_EQ(*refill_result->published_data,
+        (iv::PersistedDataVersion{.semantic = 8, .revision = 3}));
+    EXPECT_EQ(persisted_probe_evaluate_calls, 2u);
+    auto pin = reader.pin();
+    auto const* logical = pin->find_sample_logical_coverage(output);
+    ASSERT_NE(logical, nullptr);
+    EXPECT_EQ(*logical, index_coverage({{0, 4}}));
+    auto const* available = pin->find_sample_coverage(output, iv::mono_planar_channel_layout);
+    ASSERT_NE(available, nullptr);
+    EXPECT_EQ(*available, index_coverage({{1, 3}}));
+    auto const* region = pin->find_sample_region(output, index(1));
+    ASSERT_NE(region, nullptr);
+    EXPECT_FLOAT_EQ(region->at(index(1), 0).value, 101.0f);
+    EXPECT_FLOAT_EQ(region->at(index(2), 0).value, 102.0f);
 }
 
 TEST_F(
@@ -2114,7 +2142,7 @@ TEST_F(
     };
     auto& output = graph.background_evaluation_plan.ports[0];
     output.persisted_tick_output = true;
-    output.retention = iv::OutputRetention::persisted;
+    output.realization = iv::OutputRealization::buffered;
     output.stable_identity = output_id;
     output.sample_layout = iv::mono_interleaved_channel_layout;
     graph.background_evaluation_plan.storage.ports[0].storage =
@@ -2498,7 +2526,7 @@ TEST_F(
     EXPECT_EQ(background_observation.sink_reverse_calls, 1u);
     EXPECT_EQ(
         background_observation.sink_output_required,
-        index_coverage({{10, 13}, {20, 22}}));
+        index_coverage({{11, 13}, {20, 21}}));
 
     ASSERT_EQ(result.output_changes.size(), 3u);
     EXPECT_EQ(
@@ -2508,20 +2536,20 @@ TEST_F(
     EXPECT_EQ(result.input_requirements[0].port, 2u);
     EXPECT_EQ(
         result.input_requirements[0].required,
-        index_coverage({{10, 13}, {20, 22}}));
+        index_coverage({{11, 13}, {20, 21}}));
     ASSERT_EQ(result.output_requirements.size(), 3u);
     EXPECT_EQ(result.output_requirements[0].port, 0u);
     EXPECT_EQ(
         result.output_requirements[0].required,
-        index_coverage({{10, 13}}));
+        index_coverage({{11, 13}}));
     EXPECT_EQ(result.output_requirements[1].port, 1u);
     EXPECT_EQ(
         result.output_requirements[1].required,
-        index_coverage({{20, 22}}));
+        index_coverage({{20, 21}}));
     EXPECT_EQ(result.output_requirements[2].port, 3u);
     EXPECT_EQ(
         result.output_requirements[2].required,
-        index_coverage({{10, 13}, {20, 22}}));
+        index_coverage({{11, 13}, {20, 21}}));
 
     background_observation = {};
     prepared = workspace.prepare(
@@ -2685,7 +2713,7 @@ TEST_F(
     CoverageMigrationDoesNotTransferEventRegionsAcrossProductionKinds)
 {
     auto previous_plan = probe_tock_plan(
-        iv::OutputRetention::ephemeral,
+        iv::OutputRealization::computed,
         iv::graph_jit::PortStorageKind::background);
     auto current_plan = previous_plan;
     auto const stable_output = iv::graph_jit::StableOutputPortId{
@@ -3173,7 +3201,7 @@ TEST_F(BackgroundCoveragePropagationFixture,
        ContinuousOutputPreservesOverlappingAndDuplicateRegionShape)
 {
     auto plan = probe_tock_plan(
-        iv::OutputRetention::ephemeral,
+        iv::OutputRealization::computed,
         iv::graph_jit::PortStorageKind::background);
     iv::BackgroundCoverageState coverage(
         plan.accumulators.output_change_count);
@@ -3230,7 +3258,7 @@ TEST_F(BackgroundCoveragePropagationFixture,
        RegionOutputRequiresExactlyOnePublishedRegion)
 {
     auto plan = probe_tock_plan(
-        iv::OutputRetention::ephemeral,
+        iv::OutputRealization::computed,
         iv::graph_jit::PortStorageKind::background);
     plan.ports[0].output_production = iv::OutputProductionKind::region;
     auto const operations = iv::CompiledGraphBackgroundOperations{
@@ -3271,7 +3299,7 @@ TEST_F(BackgroundCoveragePropagationFixture,
        CoverageOutputMayPublishAnEmptyRegionList)
 {
     auto const plan = probe_tock_plan(
-        iv::OutputRetention::ephemeral,
+        iv::OutputRealization::computed,
         iv::graph_jit::PortStorageKind::background);
     propagated_region_shape.clear();
     iv::BackgroundCoverageState coverage(
@@ -3293,10 +3321,10 @@ TEST_F(BackgroundCoveragePropagationFixture,
        TickRecordingDerivesProducedRegionsFromCanonicalIndexCoverage)
 {
     auto plan = probe_tock_plan(
-        iv::OutputRetention::persisted,
+        iv::OutputRealization::buffered,
         iv::graph_jit::PortStorageKind::persisted_data);
     auto& output = plan.ports[0];
-    output.output_production = iv::OutputProductionKind::tick;
+    output.output_production = iv::OutputProductionKind::sequential;
     output.authored_tock_output = false;
     output.persisted_tick_output = true;
 
@@ -3335,7 +3363,7 @@ TEST_F(BackgroundCoveragePropagationFixture,
        ContinuousOutputRejectsPositionalCoveragePublication)
 {
     auto const plan = probe_tock_plan(
-        iv::OutputRetention::ephemeral,
+        iv::OutputRealization::computed,
         iv::graph_jit::PortStorageKind::background);
     iv::BackgroundCoverageState coverage(
         plan.accumulators.output_change_count);
@@ -3356,7 +3384,7 @@ TEST_F(BackgroundCoveragePropagationFixture,
        SortedContinuousOutputRejectsNoncanonicalEqualBeginOrder)
 {
     auto plan = probe_tock_plan(
-        iv::OutputRetention::ephemeral,
+        iv::OutputRealization::computed,
         iv::graph_jit::PortStorageKind::background);
     plan.ports[0].ordering = iv::CoverageOrdering::sorted;
     iv::BackgroundCoverageState coverage(
@@ -3722,7 +3750,7 @@ TEST_F(
 } // namespace
 
 TEST_F(BackgroundCoveragePropagationFixture,
-       RequestedInputRegionsStayIndependentOfExpandedProducerMaterialization)
+       RequestedInputRegionsPreserveLogicalMetadataWithoutExpandingContents)
 {
     using namespace iv::graph_jit;
     for (auto const kind : {iv::PortKind::sample, iv::PortKind::event}) {
@@ -3765,16 +3793,16 @@ TEST_F(BackgroundCoveragePropagationFixture,
             .input_demands = {{.port = 2, .required = index_coverage({{0, 1}})}},
         });
         ASSERT_EQ(prepared.result().input_requirements.size(), 1u);
-        EXPECT_EQ(prepared.result().input_requirements[0].required, index_coverage({{0, 10}}));
+        EXPECT_EQ(prepared.result().input_requirements[0].required, index_coverage({{0, 1}}));
         EXPECT_EQ(std::vector<iv::GlobalIndexRange>(prepared.requested_input_regions(2).begin(),
             prepared.requested_input_regions(2).end()),
             (std::vector<iv::GlobalIndexRange>{range(0, 10), range(0, 10)}));
-        // Producer completion also selects its overlapping [5,15) Region. It
-        // must not appear in the consumer's independent resolved selection.
+        // Logical metadata retains both selected duplicate Regions, while
+        // computation stays within the explicitly requested content window.
         auto const producer = std::ranges::find(prepared.result().output_requirements,
             BackgroundPortIndex{0}, &iv::RequiredOutputCoverage::port);
         ASSERT_NE(producer, prepared.result().output_requirements.end());
-        EXPECT_EQ(producer->required, index_coverage({{0, 15}}));
+        EXPECT_EQ(producer->required, index_coverage({{0, 1}}));
         (void)workspace.commit(coverage, std::move(prepared));
 
         auto retained = workspace.prepare(operations, coverage, {
@@ -4018,7 +4046,7 @@ TEST_F(GraphExecutorFixture, ForwardDiscoveryRunsOrdinaryTockInsideTheSelectedTr
     input.input_access = iv::InputAccessKind::coverage;
     input.random_access_input = true;
     input.authored_tock_output = false;
-    input.retention.reset();
+    input.realization.reset();
     input.incoming_connections = {0};
     input.accumulators = {.input_change = 0, .input_requirement = 0};
     plan.ports.push_back(input);
@@ -4069,7 +4097,35 @@ TEST_F(GraphExecutorFixture, ForwardDiscoveryRunsOrdinaryTockInsideTheSelectedTr
 
 } // namespace
 
-TEST_F(BackgroundCoveragePropagationFixture, LiveUnionFeedbackNeedsACompleteFullContribution)
+TEST_F(BackgroundCoveragePropagationFixture, BufferedReverseDependenciesAreActivatedWhenTheirDemandIsDiscovered)
+{
+    using namespace iv::graph_jit;
+    auto plan = background_fanin_plan();
+    for (auto& port : plan.ports)
+        if (port.direction == PortDirection::output) port.realization = iv::OutputRealization::buffered;
+    iv::BackgroundCoverageState coverage(plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+    iv::CompiledGraphBackgroundOperations operations{
+        .propagate_forward = &propagate_background_forward,
+        .propagate_reverse = &propagate_background_reverse,
+        .evaluate = &no_op_background_evaluate};
+    auto prepared = workspace.prepare(operations, coverage,
+        {.locally_changed_nodes = {0, 1},
+         .output_demands = {{.port = 3, .required = index_coverage({{11, 21}})}}},
+        {.expand_output = +[](void*, BackgroundPortIndex, iv::IndexCoverage const&,
+            std::span<iv::GlobalIndexRange const>, iv::IndexCoverage const&,
+            iv::IndexCoverage const& requested, iv::IndexCoverage& missing) {
+            // Cold buffered storage has no valid contents yet. The sink's
+            // reverse callback will discover the source demands later.
+            missing.include(requested);
+        }});
+    for (std::size_t node : {0u, 1u, 2u})
+        EXPECT_TRUE(has_activity(prepared.node_activity()[node], BackgroundNodeActivity::evaluate));
+    EXPECT_EQ(background_observation.sink_reverse_calls, 1u);
+    workspace.discard(std::move(prepared));
+}
+
+TEST_F(BackgroundCoveragePropagationFixture, LiveSequentialFeedbackCoverageDoesNotDependOnAnUpstreamCoverageSeed)
 {
     using namespace iv;
     using namespace iv::graph_jit;
@@ -4078,9 +4134,9 @@ TEST_F(BackgroundCoveragePropagationFixture, LiveUnionFeedbackNeedsACompleteFull
     plan.nodes = {
         {.bundle = 0, .authored_tock_execution = true, .outputs = {0}},
         {.bundle = 1, .tracks_live_tick_coverage = true, .uses_replay_forward_coverage = true,
-         .replay_mode = TickReplayMode::input_union, .inputs = {1}, .outputs = {2}},
+         .replay_mode = TickReplayMode::full, .inputs = {1}, .outputs = {2}},
         {.bundle = 2, .tracks_live_tick_coverage = true, .uses_replay_forward_coverage = true,
-         .replay_mode = TickReplayMode::input_union, .inputs = {3}, .outputs = {4}},
+         .replay_mode = TickReplayMode::full, .inputs = {3}, .outputs = {4}},
     };
     plan.ports = {
         {.node = 0, .configured_port = {0, PortKind::event, 0}, .kind = PortKind::event,
@@ -4123,52 +4179,50 @@ TEST_F(BackgroundCoveragePropagationFixture, LiveUnionFeedbackNeedsACompleteFull
         .propagate_reverse = &no_op_background_evaluate,
         .evaluate = &no_op_background_evaluate,
     };
-    for (bool full_seed : {true, false}) {
-        SCOPED_TRACE(full_seed);
-        BackgroundCoverageState recorded_state(3), live_state(3);
-        BackgroundPropagationWorkspace recorded(plan, 48000), live(plan, 48000);
-        CoveragePropagationRequest roots;
-        OutputCoverageChangeRequest seed{.port = 0,
-            .coverage = full_seed ? full_index_coverage() : IndexCoverage{}, .finalized = true};
-        for (auto region : seed.coverage) seed.regions.push_back(region);
-        roots.output_changes.push_back(std::move(seed));
-        auto selection = recorded.prepare(operations, recorded_state, roots);
-        if (full_seed) {
+    // Production plans mark live Sequential outputs full and never schedule
+    // a sparse-coverage fixed point for their feedback component.
+    plan.requires_live_tick_coverage = false;
+    for (std::size_t node : {1u, 2u}) {
+        plan.nodes[node].tracks_live_tick_coverage = false;
+        plan.nodes[node].uses_replay_forward_coverage = false;
+        plan.nodes[node].full_live_tick_coverage = true;
+    }
+    plan.ports[2].full_live_tick_coverage = true;
+    plan.ports[4].full_live_tick_coverage = true;
+    for (auto kind : {PortKind::event, PortKind::sample}) {
+        if (kind == PortKind::sample) {
+            for (auto& port : plan.ports) {
+                port.kind = kind;
+                port.configured_port.port_kind = kind;
+            }
+            plan.connections = {
+                {.kind = kind, .source_coverage_ports = {0, 4}, .target_coverage_ports = {1},
+                 .sample_source_port_by_channel = {0, 4}, .sample_read_latencies = {0, 0}, .sample_target_port = 1},
+                {.kind = kind, .source_coverage_ports = {2}, .target_coverage_ports = {3},
+                 .sample_source_port_by_channel = {2}, .sample_read_latencies = {0}, .sample_target_port = 3}};
+            plan.ports[1].incoming_connections = {0};
+            plan.ports[2].outgoing_connections = {1};
+            plan.ports[3].incoming_connections = {1};
+            plan.ports[4].outgoing_connections = {0};
+        }
+        for (bool full_seed : {true, false}) {
+            SCOPED_TRACE(full_seed);
+            BackgroundCoverageState recorded_state(3), live_state(3);
+            BackgroundPropagationWorkspace recorded(plan, 48000), live(plan, 48000);
+            CoveragePropagationRequest roots;
+            OutputCoverageChangeRequest seed{.port = 0,
+                .coverage = full_seed ? full_index_coverage() : IndexCoverage{}, .finalized = true};
+            for (auto region : seed.coverage) seed.regions.push_back(region);
+            roots.output_changes.push_back(std::move(seed));
+            auto selection = recorded.prepare(operations, recorded_state, roots);
             auto prepared = live.prepare_live_tick(operations, live_state, selection, {}, true);
             ASSERT_EQ(prepared.output_coverages().size(), 3u);
             EXPECT_EQ(prepared.output_coverages()[1], full_index_coverage());
             EXPECT_EQ(prepared.output_coverages()[2], full_index_coverage());
+            for (std::size_t node : {1u, 2u})
+                EXPECT_FALSE(has_activity(prepared.node_activity()[node], BackgroundNodeActivity::forward));
             live.discard(std::move(prepared));
-        } else {
-            EXPECT_THROW((void)live.prepare_live_tick(operations, live_state, selection, {}, true), std::runtime_error);
+            recorded.discard(std::move(selection));
         }
-        recorded.discard(std::move(selection));
     }
-    // A continuous projection needs both operands. A ready full source beside
-    // an unresolved cyclic operand does not by itself make that projection
-    // full; it must not be mistaken for an independent union contribution.
-    for (auto& port : plan.ports) {
-        port.kind = PortKind::sample;
-        port.configured_port.port_kind = PortKind::sample;
-    }
-    plan.connections = {
-        {.kind = PortKind::sample, .source_coverage_ports = {0, 4}, .target_coverage_ports = {1},
-         .sample_source_port_by_channel = {0, 4}, .sample_read_latencies = {0, 0}, .sample_target_port = 1},
-        {.kind = PortKind::sample, .source_coverage_ports = {2}, .target_coverage_ports = {3},
-         .sample_source_port_by_channel = {2}, .sample_read_latencies = {0}, .sample_target_port = 3},
-    };
-    plan.ports[0].outgoing_connections = {0};
-    plan.ports[1].incoming_connections = {0};
-    plan.ports[2].outgoing_connections = {1};
-    plan.ports[3].incoming_connections = {1};
-    plan.ports[4].outgoing_connections = {0};
-    BackgroundCoverageState recorded_state(3), live_state(3);
-    BackgroundPropagationWorkspace recorded(plan, 48000), live(plan, 48000);
-    CoveragePropagationRequest roots;
-    OutputCoverageChangeRequest seed{.port = 0, .coverage = full_index_coverage(), .finalized = true};
-    for (auto region : seed.coverage) seed.regions.push_back(region);
-    roots.output_changes.push_back(std::move(seed));
-    auto selection = recorded.prepare(operations, recorded_state, roots);
-    EXPECT_THROW((void)live.prepare_live_tick(operations, live_state, selection, {}, true), std::runtime_error);
-    recorded.discard(std::move(selection));
 }

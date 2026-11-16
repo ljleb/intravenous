@@ -1,5 +1,12 @@
 # Realtime / Background Execution, Queues, And Capacity
 
+> **2026-11-16 normative port/executor update:** [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md)
+> supersedes older wording about output retention, whole-Region materialization,
+> and Tick-only Sequential output declarations in this document. Source-status
+> observations using `TickOutputConfig`/`OutputRetention` still describe the
+> unmigrated implementation; they do not redefine the target contract. The
+> displaced design is preserved in the [historical predecessor](./historical/output_ports_before_computed_buffered_2026-11-16.md).
+
 _Status: normative runtime direction for `GraphExecutor` execution ownership, realtime/background handoff, asynchronous capacity provisioning, and hot reload._
 
 ## 1. One app module, two internal execution actors
@@ -109,7 +116,13 @@ versions.
   by realtime;
 - background-only mutable evaluation state and optional Tock-owned `State`
   (authored as `Node::State`, stored separately from realtime `NodeStorage`);
-- canonical persisted-data/recording state and immutable publication roots;
+- canonical recorded/buffered data state, shared page/window realization and
+  immutable publication roots for both Tick/Sequential/buffered recordings and
+  Tock/buffered outputs; the background actor chooses the backing implementation
+  under per-view and aggregate virtual-address budgets, separately accounting
+  for process-wide VMA fragmentation, physical backing and realtime residency;
+  obsolete backing is reclaimed or reused only after all relevant version
+  and reader pins release it, without losing authoritative recording data;
 - one pending queue per producer as required by the compiled generation;
 - pre-sized descriptors used to pin the current finite workload;
 - background coverage/propagation workspaces and transaction-local candidates; and
@@ -452,8 +465,14 @@ write_void()
     -> publish explicit authoritative erase
 ```
 
-Recording is RAM-backed, overwrite-at-addressed-position semantics. It does not append
-or offset subsequent data and has no generic recorder arm/start/stop policy.
+Recording uses buffer-backed, overwrite-at-addressed-position semantics. It does
+not append or offset subsequent data and has no generic recorder arm/start/stop
+policy. The shared background buffer-realization service may select sparse
+page-backed virtual mappings, segmented backing, or another compatible
+implementation; a recording is not assigned a distinct realization type or a
+permanent RAM-residency guarantee. Its authoritative committed contents must
+remain recoverable even when an optional prepared RAM view is reclaimed. See
+[Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md), §8.
 
 A written recording block is never intentionally dropped. Failure to obtain required
 preprovisioned capacity is a recording/resource failure.

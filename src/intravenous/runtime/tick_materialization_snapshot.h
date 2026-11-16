@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <limits>
 #include <mutex>
 #include <span>
 #include <vector>
@@ -41,8 +42,9 @@ constexpr void for_each_range_intersection(
     }
 }
 
-// One immutable contiguous logical Region. Successive snapshots share whole
-// records. Carry-forward never clips one Region into transaction-sized pieces.
+// One immutable prepared content window. Its logical_region_index identifies
+// the unchanged logical Region in TickMaterializedSampleInput::logical_regions.
+// Successive snapshots can retain subwindows by sharing their storage owner.
 struct TickMaterializedSampleRegion {
     GlobalIndexRange range{};
     // Native-layout values with storage_frames frames. range.begin is frame
@@ -51,6 +53,7 @@ struct TickMaterializedSampleRegion {
     std::shared_ptr<PersistedContinuousStorage const> continuous_values{};
     std::size_t storage_frames = 0;
     std::size_t first_frame = 0;
+    std::size_t logical_region_index = std::numeric_limits<std::size_t>::max();
 
     [[nodiscard]] std::byte const* storage_data() const noexcept
     {
@@ -76,6 +79,11 @@ struct TickMaterializedSampleInput {
     // or duplicate logical Regions.
     std::vector<ContinuousRegionStorageView> region_views{};
     IndexCoverage coverage{};
+    std::vector<GlobalIndexRange> logical_regions{};
+    std::vector<std::vector<ContinuousRegionStorageView>> region_windows{};
+    IndexCoverage logical_coverage{};
+
+    void rebuild_region_views();
 
     [[nodiscard]] bool has_channel(std::size_t channel) const noexcept;
     [[nodiscard]] Sample at(
@@ -107,6 +115,7 @@ struct TickMaterializedEventChunk {
     std::shared_ptr<std::vector<std::size_t> const> semantic_source_indices{};
     std::size_t begin = 0;
     std::size_t end = 0;
+    std::optional<IndexCoverage> prepared_coverage{};
 };
 
 struct TickMaterializedEventInput {
@@ -125,6 +134,7 @@ struct TickMaterializedEventInput {
     std::shared_ptr<std::vector<std::size_t> const>
         merged_semantic_source_indices{};
     IndexCoverage coverage{};
+    IndexCoverage logical_coverage{};
 
     void for_each(
         GlobalIndexRange range,

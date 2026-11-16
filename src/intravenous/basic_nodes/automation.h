@@ -47,7 +47,7 @@ struct PointSource {
 
     static constexpr auto outputs() {
         return std::array{event_output("points", EventTypeId::sample,
-            OutputProduction::region, OutputRetention::persisted)};
+            OutputProduction::region, OutputRealization::buffered)};
     }
     void constrain_ports(ConstrainPortsContext<PointSource>& ctx) const {
         ctx.output<"points">().max_event_count() = points.size();
@@ -87,7 +87,7 @@ struct PointSource {
         auto write = [&](auto first, auto last) {
             for (; first != last; ++first) {
                 auto const time = point_index(first->seconds, ctx.sample_rate);
-                if (selected.contains(time)) output.write({.time = time, .value = SampleEvent{Sample{first->value}}});
+                if (ctx.output<"points">().requested_coverage().contains(time)) output.write({.time = time, .value = SampleEvent{Sample{first->value}}});
             }
         };
         write(pivot, values.end());
@@ -96,13 +96,13 @@ struct PointSource {
 };
 
 struct LinearCurve {
-    // Replayable; its authored forward propagation publishes its coverage.
-    static constexpr TickReplayMode replay_mode = TickReplayMode::input_union;
+    // Position-addressed computation. The executor prepares only demanded
+    // content windows; the output remains Coverage data for every consumer.
     static constexpr auto inputs() {
         return std::array{event_input("points", EventTypeId::sample, InputAccess::region)};
     }
     static constexpr auto outputs() {
-        return std::array{output<Sample>("value")};
+        return std::array{output<Sample>("value", OutputProduction::coverage)};
     }
     void propagate_forward_coverage(PropagateForwardCoverageContext<LinearCurve>& ctx) const {
         auto input = ctx.input<"points">();
@@ -110,7 +110,9 @@ struct LinearCurve {
         constexpr auto half = std::uint64_t{1} << 63;
         IndexCoverage const full{{GlobalIndex::from_bits(0), half},
                                  {GlobalIndex::from_bits(half), half}};
-        ctx.output<"value">().publish(full);
+        std::array const regions{GlobalIndexRange{GlobalIndex::from_bits(half), half},
+                                 GlobalIndexRange{GlobalIndex::from_bits(0), half}};
+        ctx.output<"value">().publish(regions);
         if (ctx.local_state_changed || !input.changed().empty())
             ctx.output<"value">().change(full);
     }
@@ -120,44 +122,39 @@ struct LinearCurve {
         auto input = ctx.input<"points">();
         for (auto region : input.coverage()) input.require(region);
     }
-    void tick_block(TickBlockContext<LinearCurve> const& ctx) const {
+    void tock_coverage(TockCoverageContext<LinearCurve>& ctx) const {
         auto port = ctx.input<"points">();
-        auto output = ctx.output<"value">().block();
-        if (port.coverage().empty()) {
-            for (std::size_t frame = 0; frame < output.size(); ++frame)
-                output[frame] = Sample{0};
-            return;
-        }
-        auto input = port.region();
-        auto const begin = ctx.index.whole();
-        EventNeighbors neighbors;
-        double first_value = 0, last_value = 0, inverse_distance = 0;
-        bool initialized = false;
-        for (std::size_t frame = 0; frame < output.size(); ++frame) {
-            auto const position = begin.advanced_by(frame);
-            if (!initialized || (neighbors.after && position == neighbors.after->time)) {
-                neighbors = input.neighbors(position, EventNeighborMode::cyclic);
-                if (!neighbors.at_or_before || !neighbors.after) {
-                    for (; frame < output.size(); ++frame) output[frame] = Sample{0};
-                    return;
+        for (auto region : ctx.output<"value">().regions()) {
+            for (auto output : region.prepared_windows()) {
+                EventNeighbors neighbors;
+                double first_value = 0, last_value = 0, inverse_distance = 0;
+                bool initialized = false;
+                for (std::size_t frame = 0; frame < output.frame_count(); ++frame) {
+                    auto const position = output.range().begin.advanced_by(frame);
+                    if (port.coverage().empty()) { output.value(frame) = Sample{0}; continue; }
+                    auto input = port.region();
+                    if (!initialized || (neighbors.after && position == neighbors.after->time)) {
+                        neighbors = input.neighbors(position, EventNeighborMode::cyclic);
+                        if (!neighbors.at_or_before || !neighbors.after) {
+                            output.value(frame) = Sample{0}; continue;
+                        }
+                        first_value = static_cast<float>(std::get<SampleEvent>(neighbors.at_or_before->value).value);
+                        last_value = static_cast<float>(std::get<SampleEvent>(neighbors.after->value).value);
+                        auto const distance = neighbors.at_or_before->time.forward_distance_to(neighbors.after->time);
+                        inverse_distance = 1.0 / (distance ? static_cast<double>(distance) : 0x1p64);
+                        initialized = true;
+                    }
+                    auto const elapsed = neighbors.at_or_before->time.forward_distance_to(position);
+                    auto const remaining = position.forward_distance_to(neighbors.after->time);
+                    auto const value = elapsed <= remaining
+                        ? first_value + (last_value - first_value) * (static_cast<double>(elapsed) * inverse_distance)
+                        : last_value + (first_value - last_value) * (static_cast<double>(remaining) * inverse_distance);
+                    output.value(frame) = Sample{static_cast<float>(value)};
                 }
-                first_value = static_cast<float>(std::get<SampleEvent>(neighbors.at_or_before->value).value);
-                last_value = static_cast<float>(std::get<SampleEvent>(neighbors.after->value).value);
-                auto const distance = neighbors.at_or_before->time.forward_distance_to(neighbors.after->time);
-                // Equal timestamps span the full circle in cyclic mode. This
-                // also handles a single point, whose values are identical.
-                inverse_distance = 1.0 / (distance ? static_cast<double>(distance) : 0x1p64);
-                initialized = true;
             }
-            auto const elapsed = neighbors.at_or_before->time.forward_distance_to(position);
-            auto const remaining = position.forward_distance_to(neighbors.after->time);
-            // Use the nearer endpoint to retain precision beside the wrap.
-            auto const value = elapsed <= remaining
-                ? first_value + (last_value - first_value) * (static_cast<double>(elapsed) * inverse_distance)
-                : last_value + (first_value - last_value) * (static_cast<double>(remaining) * inverse_distance);
-            output[frame] = Sample{static_cast<float>(value)};
         }
     }
+
 };
 
 // The module is the editable semantic node. Its two leaves retain fixed schemas.

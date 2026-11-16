@@ -97,7 +97,7 @@ struct LearnedHrtfSourceIcosphere
     static constexpr auto outputs()
     {
         return std::array {
-            output<Sample>("out", OutputProduction::tick, {
+            output<Sample>("out", OutputProduction::sequential, {
                 .channel_layout = { .channel_type = ChannelTypeId::stereo },
             }),
         };
@@ -1558,7 +1558,7 @@ struct BaselineFir256
     static constexpr auto outputs()
     {
         return std::array {
-            output<Sample>("out", OutputProduction::tick, {
+            output<Sample>("out", OutputProduction::sequential, {
                 .channel_layout = { .channel_type = ChannelTypeId::stereo },
             }),
         };

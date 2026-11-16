@@ -11,120 +11,116 @@ The governing rule is:
 > If a statement depends on several independent properties, state several properties.
 > If no qualifier is needed, omit it.
 
-The port model has three independent authored axes:
+The port model has three independent authored properties:
 
-| Axis | Terms | Meaning |
+| Property | Alternatives | Meaning |
 | --- | --- | --- |
-| input access | **Sequential**, **Region**, **Coverage** | how an input consumes values |
-| output production | **Tick**, **Region**, **Coverage** | how an output's values are produced |
-| output retention | **Ephemeral**, **Persisted** | whether finalized/generated values carry a retention obligation |
+| input access | **Sequential**, **Region**, **Coverage** | how a consumer may address supplied data |
+| output production/shape | **Sequential**, **Region**, **Coverage** | the logical shape of data provided by an output |
+| output realization | **Computed**, **Buffered** | whether the source promises only executable computation or an independently addressable buffer-backed resource |
 
-None of these terms implies either of the other axes.
+A primitive's callback domain constrains its output shape: Tick permits only
+Sequential outputs; Tock permits only Region or Coverage outputs. Both use
+Computed or Buffered realization. Neither realization mode specifies whether
+or how much the background executor caches. The normative
+compatibility, demand and publication contract is [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md); earlier definitions
+are preserved in the [historical predecessor](./historical/output_ports_before_computed_buffered_2026-11-16.md).
 
 ## Input access
 
 ### Sequential input / sequential consumption
 
-A **Sequential** input consumes a bounded ordered window associated with ordinary
-block execution. Its configured realization may require finite history resolved through
-port constraints.
-
-Use **sequential consumption** when the sentence is about the consumer behavior,
-not the output that happens to feed it.
-
-Sequential consumption does not imply Tick production. A Tock output may feed a
-Sequential input when its data has been materialized before the consuming pass.
+A **Sequential** input consumes a bounded ordered stream during ordinary
+execution. Any upstream gaps are resolved by that input's configured neutral or
+manual fallback. Tock-produced sources are prepared in bounded windows before
+realtime consumption.
 
 ### Region input / finite-region access
 
-A **Region** input consumes one finite ordered region. The region's internal ordering
-is intrinsic; it does not expose a configurable Coverage-ordering constraint.
+A **Region** input consumes exactly one logical Region with its full range and
+identity. Region ordering is intrinsic (unlike configurable Coverage ordering).
+The input can require **windowed** (bounded prepared content) or
+**complete-buffer** (one fully prepared contiguous pointer) access. A Coverage
+output never directly satisfies a Region input, even if it currently holds one
+Region.
 
 ### Coverage input / coverage access
 
-A **Coverage** input may address arbitrary global positions inside its exact available
-coverage. Its configured realization may constrain the ordering of the Regions that
-form that coverage.
+A **Coverage** input sees an ordered collection of zero or more explicitly
+selected logical Regions, including overlapping/duplicate Regions. Its
+ordering may be constrained by `CoverageOrdering`; its
+`coverage()` is their positional `IndexCoverage` union. Its declared content
+access may be windowed or require complete buffers for selected Regions.
+Random Access inputs preserve absence; Sequential inputs alone resolve it.
 
-Use **random-access** as an adjective and **random access** as a noun phrase.
-Random access is the umbrella for Region and Coverage access; it does not imply
-background production or persisted retention.
+## Output production/shape
 
-## Output production
+### Sequential output / Sequential production
 
-### Tick output / Tick production
-
-A **Tick** output uses the ordinary Tick production contract represented by
-`TickOutputConfig` and the node's generated/imported `tick_block()` implementation.
-In ordinary project execution, Tick production participates in the same-Tick
-schedule.
-
-Tick is a production contract, not a thread name. An eligible Tick implementation
-may also be invoked during background replay.
-
-When the callback/API distinction matters, use **Tick** or `tick_block()` directly.
-When only the ordering behavior matters, describe the value as **sequentially
-produced**.
+A **Sequential** output has the authored `SequentialOutputConfig` contract,
+which replaces the former `TickOutputConfig` terminology. Its production is a
+stream of ordered values produced by Tick on the audio thread. Tock cannot
+declare a Sequential output: its Region or Coverage data may instead be prepared
+for a Sequential consumer. A live Tick/Sequential stream produces values at every executed position;
+recorded historical coverage is a separate stored-data fact.
 
 ### Region output / Region production
 
-A **Region** output publishes one finite ordered region through background evaluation.
-Its ordering is intrinsic rather than configurable.
+A **Region** output has exactly one logical Region; full Region metadata does
+not imply that its entire content is already materialized. A Region/buffered
+output can satisfy a complete-buffer consumer after preparing and pinning the
+whole requested Region.
 
 ### Coverage output / Coverage production
 
-A **Coverage** output publishes arbitrary covered Regions through demand-driven
-background evaluation. It may expose a `CoverageOrdering` guarantee.
+A **Coverage** output publishes zero or more logical Regions, preserving
+multiplicity/overlap. Coverage-to-Region connections are forbidden. A
+Coverage/buffered output does not become a single Region buffer.
 
-### Tock callback
+### Tick and Tock callbacks
 
-A **Tock** callback is the background callback that realizes Region or Coverage
-production. It is not itself an authored output-production alternative.
-
-Background production is not a synonym for random access or persistence. A Region or
-Coverage output may be ephemeral or persisted and may feed any compatible input form.
+**Tick** (`tick()`/`tick_block()`) names realtime sequential execution, including
+stateful `.detach()` feedback; **Tock** (`tock_coverage()`) names background
+position-addressed evaluation. Tick declares only Sequential outputs; Tock
+declares only Region or Coverage outputs. Both share Computed/Buffered
+realization. One concrete primitive has one primary callback domain; modules
+compose domains. A deterministic, eligible Tick computation
+may be contextually replayed off-thread, but that does not make a `.detach()`
+feedback cycle replayable.
 
 ### Scalar callback / batch callback
 
-A **scalar callback** operates on one configured concrete node instance. A **batch
-callback** operates on one or more compatible instances of the same concrete node
-implementation and resolved callback-facing realization. Each lane retains its own
-node/configuration, state, ports, and, for background work, Coverage.
-
-Batching is an execution optimization, not a different DSP semantic contract. A
-native batch callback must be lane-wise equivalent to the corresponding normalized
-scalar operation, and a batch of size one is always legal. GraphJit may therefore
-split or scalarize a batch candidate when dependency scheduling or the cost model
-prefers it.
-
-The planned callback/range API and trait normalization rules are specified in
+A **scalar callback** operates on one configured concrete node instance. A
+**batch callback** operates on one or more compatible instances of the same
+concrete node implementation and resolved callback-facing realization. Each
+lane retains its own node/configuration, state, ports, and background requests.
+Batching is an optimization, not a new DSP contract. See
 [Batched Node Callback Direction](./batched_node_callbacks_direction.md).
 
-## Output retention
+## Output realization
 
-### Ephemeral output
+### Computed output
 
-An **ephemeral** output has no authored retention obligation after the evaluation
-or materialized use that requires its value.
+A **computed** output supplies an executable calculation without requiring a
+buffer proportional to its logical covered extent. Bounded transaction-local
+buffers and executor-controlled caches are permitted. Complete logical Region
+pointer access is **not** guaranteed. A computed Tick output is not
+historically addressable unless its replay dependencies can be satisfied.
 
-Ephemeral does not mean stack-allocated, contiguous, unpaged, or recomputed for
-every consumer. Background evaluation may create a transaction-local materialization
-that several consumers share.
+### Buffered output
 
-### Persisted output
+A **buffered** output supplies an independently addressable buffer-backed data
+resource. Its extent may be populated partially and on demand; complete Region
+pointer access is possible only after that entire requested Region is prepared.
+Realized buffers are not necessarily permanently resident in RAM; cache lifetime
+belongs to the executor. Tick/Sequential/buffered writes form ordinary
+recording data, published coherently by the background actor.
 
-A **persisted** output has the runtime retention guarantee defined by
-`OutputRetention::persisted`: generated/finalized values remain retained while they
-remain in output coverage, subject to version replacement and reader lifetime.
-
-**Persisted does not mean serialized to disk.** Backing storage may be memory,
-file-backed storage, mmap, or another representation that preserves the retention
-contract.
-
-Use **persistent** separately for ordinary storage lifetime or placement, such as
-persistent `NodeStorage`, a persistent ring, or a persistent compiler service.
-Do not use **persistent** as a synonym for the authored `persisted` output-retention
-contract.
+The final authored enum is `OutputRealization::{computed, buffered}`. The
+existing source name `OutputRetention` and values `ephemeral`/`persisted` are
+migration inputs, not the intended contract. Buffer ownership, immutable
+versioning, authoritative recording data and cache eviction remain separate
+executor responsibilities.
 
 ## Port value type, size and pacing
 
@@ -404,12 +400,12 @@ dependencies that must be resolved to immutable addressable views before the rep
 invocation. The audio-thread Tick path likewise sees only already-prepared Random
 Access views and never runs Tock or request-driven materialization.
 
-### Persisted Tick boundary
+### Recorded Sequential/buffered boundary
 
-A **persisted Tick boundary** is finalized Tick-produced persisted data that can
-satisfy downstream random-access demand without replaying its live producer. It is a
-terminal stored boundary for the covered positions available in the selected
-version. Its positional writes derive zero or more maximal contiguous Regions from
+A **recorded Sequential/buffered boundary** is finalized Tick-produced
+buffer-backed data that can satisfy downstream historical Random Access demand
+without replaying its live producer. It is a terminal stored boundary for
+actually recorded positions available in the selected coherent data version. Its positional writes derive zero or more maximal contiguous Regions from
 `IndexCoverage`; overlapping and touching writes merge. It therefore has Coverage
 shape and cannot directly satisfy a Region input.
 
@@ -452,8 +448,10 @@ A **candidate** is a not-yet-published successor being completed under a target
 semantic/data version. **Published** data is the immutable version externally or
 sequentially readable as the current completed result.
 
-Incomplete persisted candidates are not exposed as partially valid published
-outputs.
+Published snapshots may describe known covered positions not yet
+materialized, but they never expose incomplete **required windows** as
+readable data. A candidate becomes published only with its promised requested
+windows valid for the coherent semantic/data version.
 
 ### Reader pin
 
@@ -504,7 +502,10 @@ successor candidate is incomplete or stale. Backing storage may be RAM,
 mmap/file-backed storage, immutable chunks, compression, or another retained-data
 backend without changing the sample-region/event-chunk semantics.
 
-Do not call an ephemeral intermediate persisted data.
+Do not confuse a cached computed intermediate with an authored buffered
+resource. Source types named `PersistedSampleRegion` and
+`PersistedEventChunk` remain implementation identifiers during migration;
+they do not impose authored cache-retention semantics.
 
 ### Transaction-local materialization
 
@@ -724,22 +725,24 @@ from the active transition realization, not from its pending steady successor.
 
 ### Live source
 
-Use **live source** only when the relevant property is that historical values are
-not inherently reproducible from retained data. An unreproducible ephemeral Tick
-source needs authored persistence or an explicit recording node before it can
-satisfy historical Random Access demand.
+Use **live source** only when historical values are not inherently
+reproducible from the selected recorded inputs. An unreproducible
+Tick/Sequential/computed source needs an explicit Sequential/buffered
+recording boundary before it can satisfy historical Random Access demand.
 
 Do not use **live** as a synonym for Tick, Sequential, or audio-thread execution.
 
 ## Style conventions
 
-- Prefer **Tick** and **Tock** when naming the production contracts in prose.
+- Prefer **Tick** and **Tock** for callback/execution domains and
+  **Sequential**, **Region**, **Coverage** for output production/shape.
   Preserve lowercase spelling in exact code identifiers such as `tick()`,
   `tick_block()`, and `tock_coverage()`, and in established shorthand where the
   surrounding document intentionally mirrors source/config notation.
 - Use **random access** as a noun and **random-access** as an adjective.
-- Use **persisted** for the authored output-retention contract and **persistent**
-  for unrelated storage/process lifetime.
+- Use **computed** and **buffered** for authored output realization, never as
+  an instruction to retain or evict cached results. `persisted` is a legacy
+  source identifier; **persistent** remains ordinary storage/process lifetime.
 - Use **data version** for the coherent immutable persisted-data root.
 - Prefer **global position/range** when discussing coordinate semantics; use
   **sample index** when the integer sample coordinate itself matters.

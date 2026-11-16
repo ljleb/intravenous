@@ -101,7 +101,7 @@ struct SampleSourcePortSubsetPlan {
     ChannelLayout source_layout{};
     ContinuousValueStorageGeometry geometry{};
     PlannedSourceProduction production = PlannedSourceProduction::tick;
-    OutputRetention retention = OutputRetention::ephemeral;
+    OutputRealization realization = OutputRealization::computed;
     std::vector<SampleOutputChannelId> channels{};
     // Indices in ConnectionAnalysisPlan::sample_connections. They are
     // compile-time incidence facts; configured_connection_indices remain
@@ -127,7 +127,7 @@ struct EventSourcePortSubsetPlan {
     EventOutputPortId port{};
     EventTypeId type = EventTypeId::empty;
     PlannedSourceProduction production = PlannedSourceProduction::tick;
-    OutputRetention retention = OutputRetention::ephemeral;
+    OutputRealization realization = OutputRealization::computed;
     double max_events_per_index = 0.0;
     std::vector<std::size_t> connection_indices{};
     std::vector<std::size_t> configured_connection_indices{};
@@ -185,7 +185,8 @@ struct BackgroundPortPlan {
     PortDirection direction = PortDirection::input;
     std::string name{};
     InputAccessKind input_access = InputAccessKind::sequential;
-    OutputProductionKind output_production = OutputProductionKind::tick;
+    InputContentAccess content_access = InputContentAccess::windowed;
+    OutputProductionKind output_production = OutputProductionKind::sequential;
 
     // Input roles are independent because a Sequential input can require
     // Tock data made available before Tick playback and also participate in a
@@ -222,8 +223,8 @@ struct BackgroundPortPlan {
     std::size_t output_history = 0;
     std::size_t output_latency = 0;
 
-    // Output-only. Input ports have no retention contract.
-    std::optional<OutputRetention> retention{};
+    // Output-only. Input ports have no realization contract.
+    std::optional<OutputRealization> realization{};
     std::optional<StableOutputPortId> stable_identity{};
     // A compiler-owned resolution output is identified by the authored public
     // input it resolves. It is not an authored output or a concrete child.

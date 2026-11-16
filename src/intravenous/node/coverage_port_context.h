@@ -49,6 +49,12 @@ struct RandomAccessContinuousInputPort {
     std::size_t region_count = 0;
     IndexCoverage const* coverage_value = nullptr;
     ContinuousValueStorageGeometry geometry{};
+    IndexCoverage const* prepared_coverage_value = nullptr;
+
+    [[nodiscard]] IndexCoverage const& prepared_coverage() const noexcept {
+        return background_port_details::bound_coverage(
+            prepared_coverage_value ? prepared_coverage_value : coverage_value);
+    }
 
     [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
@@ -94,6 +100,12 @@ struct RandomAccessEventInputPort {
     IndexCoverage const* coverage_value = nullptr;
     ForEachEvent for_each_event = nullptr;
     EventNeighbors (*find_neighbors)(void const*, std::size_t, GlobalIndex, EventNeighborMode) = nullptr;
+    IndexCoverage const* prepared_coverage_value = nullptr;
+
+    [[nodiscard]] IndexCoverage const& prepared_coverage() const noexcept {
+        return background_port_details::bound_coverage(
+            prepared_coverage_value ? prepared_coverage_value : coverage_value);
+    }
 
     [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
@@ -113,6 +125,8 @@ struct RandomAccessEventInputPort {
             "background event input Region is out of bounds");
         IV_ASSERT(region_ranges[region_index].contains(requested),
             "background event input read lies outside its Region");
+        IV_ASSERT(prepared_coverage().contains(requested),
+            "background event input read lies outside prepared windows");
         if (requested.empty()) return;
         IV_ASSERT(for_each_event != nullptr,
             "background event input Region has no readable storage");
@@ -343,7 +357,7 @@ public:
 
     [[nodiscard]] IndexCoverage const& required() const noexcept
     requires (Production == OutputProductionKind::coverage
-        || Production == OutputProductionKind::tick)
+        || Production == OutputProductionKind::sequential)
     {
         return requirement_.required();
     }
@@ -382,6 +396,8 @@ public:
     {
         IV_ASSERT(mode == EventNeighborMode::cyclic || range().contains(position),
             "bounded event neighbor lookup lies outside its logical Region");
+        IV_ASSERT(port_->prepared_coverage().contains(range()),
+            "event neighbor lookup requires its complete point Region prepared");
         IV_ASSERT(port_->find_neighbors != nullptr, "event input has no indexed lookup binding");
         return port_->find_neighbors(port_->data, index_, position, mode);
     }
@@ -556,7 +572,7 @@ public:
     // Replay availability is positional. It does not turn a Tick output into
     // an authored Region/Coverage output or assign clip membership to samples.
     void publish(IndexCoverage const& coverage) const
-    requires (Production == OutputProductionKind::tick)
+    requires (Production == OutputProductionKind::sequential)
     {
         change_.publish_coverage(coverage);
     }

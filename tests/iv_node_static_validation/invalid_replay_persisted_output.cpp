@@ -3,11 +3,11 @@
 #include <array>
 
 struct InvalidReplayPersistedSample {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "audio", iv::OutputProduction::tick, iv::OutputRetention::persisted)};
+            "audio", iv::OutputProduction::sequential, iv::OutputRealization::buffered)};
     }
     void tick(iv::TickSampleContext<InvalidReplayPersistedSample> const&) const {}
 };
@@ -18,7 +18,7 @@ struct InvalidReplayPersistedEvent {
     {
         return std::array{iv::event_output(
             "events", iv::EventTypeId::trigger,
-            iv::OutputProduction::tick, iv::OutputRetention::persisted)};
+            iv::OutputProduction::sequential, iv::OutputRealization::buffered)};
     }
     void tick(iv::TickSampleContext<InvalidReplayPersistedEvent> const&) const {}
 };

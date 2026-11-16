@@ -1,5 +1,12 @@
 # Outstanding Implementation Fronts
 
+> **2026-11-16 normative port/executor update:** [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md)
+> supersedes older wording about output retention, whole-Region materialization,
+> and Tick-only Sequential output declarations in this document. Source-status
+> observations using `TickOutputConfig`/`OutputRetention` still describe the
+> unmigrated implementation; they do not redefine the target contract. The
+> displaced design is preserved in the [historical predecessor](./historical/output_ports_before_computed_buffered_2026-11-16.md).
+
 _Status: coordination map for design work that is compatible with the current direction but has not yet fully landed in the implementation._
 
 > **Subsequent normative API decision (2026-11-12):** the intended authored
@@ -506,7 +513,15 @@ The preliminary correction is a sparse page-backed recording representation owne
 `PersistedDataStore`. It replaces the earlier segmented-public-Region proposal, which
 is retained in
 [historical documentation](./historical/front_3_segmented_recording_region_proposal_before_sparse_pages_2026-11-01.md).
-This is now the implemented recording representation.
+This is now the implemented recording representation. The 2026-11-16
+normative destination reuses/generalizes its page-backed, immutable-version
+mechanism as one background-managed buffered-storage facility for **both**
+Tick/Sequential/buffered recording and Tock/buffered output. That facility
+chooses sparse virtual mapping only within configurable per-view and aggregate
+reservation budgets; large logical Regions can use bounded windows where the
+consumer permits them. These source-state paragraphs describe the recording
+implementation that can seed the shared design, not a mandate for two storage
+engines. See [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md), §8.
 
 `IndexCoverage` remains the only semantic record of positions that contain valid
 recorded values. A separate sparse physical page directory maps page-aligned timeline
@@ -543,7 +558,17 @@ pages rather than by the complete recording. A second path-copied
 Virtual-view assembly visits those physical runs instead of looking up every page in a
 long canonical Region. An ordinary append therefore extends one run, while an
 overwrite splits only the run that contains each changed page. Reclaiming or compacting
-obsolete backing pages remains Front 16 work. Copying or walking the complete recording
+obsolete backing pages remains Front 16 work. The current
+`RecordingPageAllocator::allocate()` advances `next_file_offset_` without
+reusing offsets: repeated overwrites can continue growing `memfd` backing
+even when old snapshots retire. The shared Tick/Tock buffered-storage
+migration must add pin-safe page reclamation/reuse and independent limits
+for virtual bytes, process-wide VMA fragmentation, physical backing, and
+realtime-resident prepared windows, as specified in the normative
+[shared storage contract](./output_capabilities_and_background_demand.md),
+§8.3–§8.5. Map consecutive physical runs together rather than per page;
+measure snapshot multiplicity and fragmented mapping assembly before
+choosing implementation defaults. Copying or walking the complete recording
 on every captured block remains disallowed. The superseded page-walk classification is
 retained in
 [historical documentation](./historical/front_3_page_walk_before_physical_run_index_2026-11-01.md).
@@ -6876,8 +6901,11 @@ Candidate work includes:
   contiguous-input scratch so that block callbacks with continuous inputs can batch
   (Front 2 friction item 2);
 - alias/materialization cost models;
-- persisted-recording backing-page reclamation and measured compaction after old
-  `PersistedDataStore::Snapshot` pins release;
+- shared Tick/Tock buffered backing-page reclamation, safe offset reuse and
+  measured compaction after old `PersistedDataStore::Snapshot` (or successor
+  shared-storage snapshot) pins release; measure fragmented VMA count,
+  physical backing growth and prepared residency independently from the
+  virtual address reservation budget;
 - persistent/segmented publication metadata for recordings with very many disconnected
   canonical Regions, if profiling shows that rebuilding the small Region descriptor
   vector dominates changes to one Region;

@@ -1,5 +1,11 @@
 # Random-Access Port Data, Audio Value Types, And Input Contract Direction
 
+> **2026-11-16 design supersession:** The intended windowed vs complete-buffer
+> access and `computed`/`buffered` output realization contracts are defined by
+> [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md). Historical whole-Region materialization and
+> retention text is preserved in the [historical predecessor](./historical/output_ports_before_computed_buffered_2026-11-16.md). The
+> checked-in implementation still follows the older buffer-only Region API.
+
 _Status: normative port and storage direction. The active Front 3 source implements
 the continuous node-facing contract through `ContinuousRegion<Value>`,
 `WritableContinuousRegion<Value>`, `ContinuousCoverage<Value>`, and
@@ -35,116 +41,48 @@ This direction has four goals:
 
 ## 1. Random-access sample data is Region or Coverage
 
-Random-access sample data should no longer be exposed as a page store, a page
-iterator, or a single-sample random accessor.
+A **Region** is one logical range with identity, element type and channel
+layout. A **Coverage** is a list of zero or more Regions, including duplicates
+and overlaps; `IndexCoverage` is their positional union. Logical Region
+identity does **not** imply that the entire range is allocated or computed.
 
-The authored/runtime-facing sample representation is instead one of two forms:
+A `RegionInputConfig` consumes exactly one Region; a `CoverageInputConfig`
+consumes the selected Region list. Both support a constrained content-access
+capability:
 
-- **Region**: one logical range backed by one contiguous sample buffer;
-- **Coverage**: a collection of zero or more Regions, where every Region independently
-  owns/references one contiguous sample buffer.
+- **Windowed access** exposes full logical Region metadata and only the
+  explicitly prepared requested subranges. Each subrange may have a contiguous
+  span, but the complete logical Region does not promise one pointer.
+- **Complete-buffer access** exposes a contiguous pointer over every sample of
+  each required Region, with the preparation and pinning completed before
+  evaluation. This requires a compatible **buffered** output, or an explicit
+  bounded materialization node. No computed output implicitly satisfies it.
 
-A Region conceptually carries at least:
+A `RegionOutputConfig` publishes one logical Region; a
+`CoverageOutputConfig` publishes an ordered list. Forward propagation
+establishes logical Region structure and positional existence before value
+production. Reverse propagation selects required input positions and
+content windows. A small demand inside one huge Region may be computed
+without allocating or initializing the whole Region. The runtime may
+coalesce windows and reuse buffers when semantically sound, but never exposes
+cached unrelated content to the callback. A selected Region keeps its
+original full logical range and identity; a computed window is not a new
+logical Region. The node-facing `coverage()` convenience remains the union
+of selected **logical** Regions, not the smaller set of prepared windows.
 
-```text
-logical begin/range
-pointer to contiguous sample storage
-frame/sample count
-channel/layout information needed to interpret that storage
-```
+For a Coverage of events, each logical Region retains its independent event
+sequence, including empty Regions and equal-time event order. Overlapping
+Regions do not alias each other's values. Output event capacity and complete
+window semantics remain governed by the event port contract.
 
-The exact C++ view type remains an implementation/API detail, but the contiguity
-contract does not. A Region must be directly consumable by libraries such as FFT
-implementations that require one contiguous input buffer.
-
-Current mono/stereo and planar/interleaved layouts remain meaningful. Random-access
-materialization should preserve a producer's useful/native channel layout where
-possible rather than requiring an avoidable planar/interleaved conversion merely to
-cross the port API. Future channel counts must fit the same model.
-
-### Node callbacks receive contiguous views
-
-Within both `tick*()` and `tock*()` contexts:
-
-- a Region random-access sample input exposes one contiguous Region view;
-- a Coverage random-access sample input exposes the Regions in its Coverage, with a
-  pointer and size/range for each contiguous Region;
-- node code should not need to walk storage pages;
-- node code should not be forced through a single-sample random-access accessor when
-  the underlying data is already contiguous.
-
-The runtime/compiler may still use whatever ownership/indexing structures are useful
-internally, but those structures are below the authored random-access contract.
-
-### Coverage outputs receive pre-allocated Regions
-
-A Coverage continuous output exposes a fixed, pre-allocated list of writable Region
-views to its `tock_coverage()` callback. The output's forward propagation callback
-publishes the complete ordered list of logical Region ranges, including overlapping
-and duplicate ranges. The runtime derives the positional `IndexCoverage` union used
-for change and demand propagation from that list. The union does not replace the list.
-
-After forward and reverse propagation have completed, the runtime selects the Regions
-required by the transaction and allocates their descriptors and contiguous backing.
-This happens before generated background evaluation calls `tock_coverage()`. The
-callback fills the supplied buffers. It cannot append a Region, change a Region range,
-or allocate output backing. A Region continuous output uses the same representation
-with exactly one Region.
-
-Event Region and Coverage outputs use the same logical shape. Forward propagation
-publishes one range for a Region output and an ordered range list for a Coverage
-output. `tock_coverage()` receives one `WritableEventRegion` or an iterable
-`WritableEventCoverage`. Each event Region has independent event storage even when
-two ranges overlap or are identical. A Coverage input receives the matching iterable
-`EventCoverage`; a Region input receives exactly one `EventRegion`.
-
-For example, a node can preserve two anonymous event groups without encoding a group
-identifier into the event value:
-
-```cpp
-void propagate_forward_coverage(
-    PropagateForwardCoverageContext<MyNode>& ctx) const
-{
-    std::array const ranges{clip_a_range, clip_b_range};
-    ctx.output<"events">().publish(ranges);
-}
-
-void tock_coverage(TockCoverageContext<MyNode>& ctx) const
-{
-    auto output = ctx.output<"events">().regions();
-    output[0].write(first_clip_event);
-    output[1].write(second_clip_event);
-}
-```
-
-The two Regions may use the same `GlobalIndexRange`. Their event sequences still do
-not alias or merge in the Coverage callback. A Sequential consumer of that output
-receives one timeline-ordered stream. Events from all Regions remain present;
-equal-time events from one authored Coverage output retain Region order. Event fan-in
-retains the existing semantic source order before Region order.
-
-Each Region has an independent writable storage range. Two Regions whose logical
-ranges overlap must not alias the same value storage for their overlapping positions;
-the two values are separate contributions. The runtime may place several Regions in
-disjoint byte ranges of one larger allocation, but this physical allocation choice
-does not make their value storage shared.
-
-If any demand intersects a logical Region, the runtime retains that Region's complete
-range. It must not expose a clipped intersection as a new logical Region. This keeps
-the node-facing Region list independent of transaction request boundaries. If that
-complete range makes the positional replacement domain intersect another Region, the
-producer receives that second complete Region too. This continues until the
-replacement domain stops growing. A consuming callback still receives only the complete Regions selected
-by its own resolved input requirement; extra producer Regions cannot become
-visible merely because other work materialized them. For
-`tock_coverage()` and each `tock_coverage_batch()` lane, the bound
-`region()`/`regions()` contains the explicitly provided, readable Regions;
-`coverage()` is the union of those Regions, not the narrower reverse-required
-positional set. The final selection is independent of retained/cached data
-outside the requirements. A node whose Region ranges
-depend on input data must determine and retain those ranges during suspendable
-forward propagation, before value production. See
-[Cyclic Automation And Suspendable Coverage Propagation](./automation_and_suspendable_coverage_direction.md).
+`OutputRealization::computed` supplies procedural values for requested
+positions, potentially over the full global circle, with no proportionate
+memory requirement. `OutputRealization::buffered` supplies an independently
+addressable buffer-backed resource that can be prepared incrementally, and
+can fulfill a whole-Region contiguous pointer requirement after explicit
+complete preparation. These meanings are shared by Tick and Tock production.
+No realization mode chooses cache lifetime. For exact compatibility, see
+[Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md).
 
 ## 2. Coverage regions may overlap
 
@@ -321,32 +259,24 @@ bounded by the requested Sequential window rather than by the sparse Coverage hu
 
 ## 5. Region/Coverage compatibility is asymmetric
 
-Ignoring independent lifetime/recording requirements for the moment, the sample
-shape/access compatibility is:
+The logical Region/Coverage shape compatibility does not depend on current
+materialization or a temporary one-Region Coverage result:
 
-| Producer representation | Region input | Coverage input | Sequential input |
+| Output shape | Region input | Coverage input | Sequential input |
 | --- | --- | --- | --- |
-| Region | yes | yes, as one Region | yes |
-| Coverage | **no** | yes | yes, by bounded reduction |
-| Replayable Tick/ephemeral stream | effectively Region-shaped for one replay invocation | yes when lifetime/access requirements are satisfied | yes |
-| Tick/persisted recording | **no** | yes, as canonical `IndexCoverage` Regions | yes |
+| Region | yes, if content-access capability is satisfied | yes, as one Region | yes, with bounded preparation |
+| Coverage | **no** | yes, preserving all Regions | yes, with bounded reduction |
+| Sequential/buffered recording | **no** | yes, via published recorded Coverage | yes |
+| Sequential/computed | **no** | only through valid replay/addressable conversion | yes |
 
-A Region producer provides a stronger contiguity guarantee than a Coverage producer.
-A Coverage producer cannot directly satisfy an input that requires one contiguous
-Region. Doing so requires an explicit materialization/copy policy rather than an
-implicit hidden copy.
-
-A Tick/persisted recording is also Coverage-shaped. Its Tick writes are positional
-overwrites, not authored Regions. `IndexCoverage` merges overlapping or touching
-recorded ranges into maximal contiguous Regions and discards the original Tick block
-boundaries. The recording can therefore contain zero or more Regions and cannot
-satisfy a Region input, even when its current coverage happens to be contiguous.
-
-This compatibility is only one axis of connection validity. Existing temporal and
-lifetime constraints remain independent. In particular, a Sequential/Tick value may
-still require an explicit recording/persistence policy before it can satisfy arbitrary
-random-access lifetime requirements. The Region/Coverage distinction adds a
-contiguity requirement; it does not erase the existing access/lifetime requirement.
+For a Region input that requires a complete contiguous pointer, only an
+appropriate **buffered** Region output qualifies directly. A windowed input
+may use computed or buffered Region data, subject to replay/availability.
+An explicit materialization node is required for computed-to-buffered
+conversion or for constructing a Region from a Coverage. A recorded
+Sequential/buffered source is historical Coverage-shaped even when the
+published recorded range currently happens to be contiguous. Neither
+`persisted` naming nor incidental cache state changes this compatibility.
 
 ## 6. Continuous port values use a closed registered type system
 
@@ -962,37 +892,41 @@ outside the generated DSP module. Both the dynamically sized neutral initializer
 the block combiner remain executable behavior in the compiled node implementation.
 Their configured metadata alternative is therefore stateless.
 
-## 9. Persisted and ephemeral random-access sample data stop using pages
+## 9. Buffer realization is distinct from logical Region shape
 
-The target architecture should remove page-based sample storage for Tock-generated
-and other random-access sample data.
+The authored API must not expose a page store or demand that the whole logical
+Region be physically contiguous unless a node explicitly declares
+complete-buffer access. A windowed input can obtain contiguous **windows**;
+a buffered Region input can obtain one complete contiguous Region once
+prepared and pinned. The output's `computed`/`buffered` property selects its
+connection capability, **not** eviction policy or a fixed storage geometry.
 
-Persisted versus ephemeral continues to specify lifetime/retention, but neither
-contract implies fixed-width pages. The retained/materialized values are Region or
-Coverage data with contiguous storage per Region.
+The background executor selects a shared buffered-data storage backend for
+both realtime-recorded and Tock-produced `buffered` outputs. Eligible finite
+Regions may use sparse Linux virtual mappings: later page-aligned requests
+populate final buffer offsets without copying previously completed unchanged
+pages. The choice is constrained by configurable per-view and aggregate
+virtual-address reservation limits, a separate process-wide VMA/fragmentation
+budget, physical backing/reclamation budgets and prepared realtime residency.
+Physically consecutive page runs should be mapped in runs rather than one
+VMA per page; scattered replacements, pinned snapshots and other process
+mappings still consume kernel VMA headroom. Obsolete backing may be recycled
+only after all snapshot/read pins and authoritative-data obligations permit it;
+exceeding a mapping limit selects windowed/segmented storage where that
+satisfies the declared input access capability. A complete-buffer consumer
+must receive a genuinely contiguous, prepared and pinned Region or an explicit
+resource failure, never a window masquerading as a whole pointer. See
+[Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md), §8.
 
-Consequences include:
-
-- node-facing APIs no longer expose or depend on page width/page indices;
-- persisted storage preserves Region/Coverage data and its contiguous backing rather
-  than canonical fixed-width sample pages;
-- ephemeral Tock results use the same Region/Coverage shape contract with shorter
-  lifetime/ownership;
-- sparse logical gaps consume no neutral-filled backing merely because distant
-  Regions share one output coordinate space;
-- FFT/convolution and similar consumers can require Region input and pass its
-  contiguous storage directly to libraries that require it.
-
-The executor-owned `PersistedDataStore` provides the retained ownership, version, and
-publication boundary. It publishes one coherent immutable root. Authored Tock
-continuous outputs use independent contiguous `PersistedSampleRegion` records.
-Tick/persisted continuous recording uses interleaved sparse copy-on-write pages and
-maps each canonical `IndexCoverage` range into one virtually contiguous
-`PersistedSampleRegion`. A path-copied physical-run index makes virtual mapping
-proportional to the number of changed/coalesced backing runs rather than the number of
-retained pages. Event outputs use explicit-range `PersistedEventChunk` records.
-`PersistedDataStore::Snapshot` binds these records to
-`ContinuousRegionStorageView` at the runtime boundary.
+A Tock-produced full-circle `computed` Region requires no full-circle
+allocation; a Sequential consumer requires only prepared rolling windows.
+A `buffered` source can similarly remain partially uncomputed and discard
+recoverable cached data when unused. Sparse mappings, ring buffers, file
+backing, copy-on-write and recomputation are executor choices, not additional
+output flags or imposed Region geometry.
+The current `PersistedDataStore`, `PersistedSampleRegion`,
+`PersistedEventChunk` and page-index implementations remain source-state
+records to migrate, not a normative requirement for authored port shapes.
 
 ## 10. Region count is evaluation data, not realtime layout data
 

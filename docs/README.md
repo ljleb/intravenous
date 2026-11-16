@@ -31,6 +31,7 @@ The primary application-architecture entry points are:
 - [Runtime Performance Roadmap](./runtime_performance_roadmap.md)
 - [Batched Node Callback Direction](./batched_node_callbacks_direction.md)
 - [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md)
+- [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md) (normative 2026-11-16 supersession)
 - [Circular Global Timeline Indexing](./global_indexing.md)
 - [Circular Global Index Migration Status](./global_index_migration_status.md)
 - [Coverage, Random Access, And Background Evaluation](./coverage_and_background_evaluation.md)

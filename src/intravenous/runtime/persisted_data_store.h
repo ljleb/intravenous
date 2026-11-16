@@ -156,6 +156,14 @@ struct PersistedSampleRegion {
         *continuous_value_storage_geometry(
             continuous_value_type_id_v<Sample>, std::nullopt);
     PersistedContinuousStorage continuous_values{};
+    // Logical Region metadata survives partial preparation. Each immutable
+    // payload window is independently bounded and shared by later snapshots.
+    std::shared_ptr<std::vector<PersistedSampleRegion> const> windows{};
+    std::shared_ptr<std::vector<ContinuousRegionStorageView> const> window_views{};
+
+    void set_prepared_windows(std::vector<PersistedSampleRegion> prepared);
+    [[nodiscard]] IndexCoverage materialized_coverage() const;
+    [[nodiscard]] PersistedSampleRegion const* prepared_window(GlobalIndex) const noexcept;
 
     [[nodiscard]] std::byte* storage_data() noexcept;
     [[nodiscard]] std::byte const* storage_data() const noexcept;
@@ -174,6 +182,11 @@ struct PersistedEventChunk {
     GlobalIndexRange range{};
     EventTypeId type = EventTypeId::empty;
     std::vector<TimedEvent> events{};
+    std::optional<IndexCoverage> prepared_coverage{};
+
+    [[nodiscard]] IndexCoverage materialized_coverage() const {
+        return prepared_coverage ? *prepared_coverage : IndexCoverage{range};
+    }
 };
 
 namespace persisted_data_store_detail {
@@ -365,6 +378,15 @@ public:
         // False means dependencies must be invalidated even if values happen
         // to compare equal. These operations run only on cold/background paths.
         [[nodiscard]] bool shares_output_with(Snapshot const& other,
+            PersistedOutputHandle output) const noexcept;
+
+        [[nodiscard]] IndexCoverage const* find_event_logical_coverage(
+            PersistedOutputHandle output) const noexcept;
+
+        [[nodiscard]] std::shared_ptr<void const> sample_output_owner(
+            PersistedOutputHandle output) const;
+
+        [[nodiscard]] IndexCoverage const* find_sample_logical_coverage(
             PersistedOutputHandle output) const noexcept;
 
         [[nodiscard]] IndexCoverage const* find_sample_coverage(

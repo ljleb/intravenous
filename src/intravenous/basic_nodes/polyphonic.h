@@ -81,7 +81,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("frequency", OutputProduction::tick) };
+            return std::array { output<Sample>("frequency", OutputProduction::sequential) };
         }
 
         void declare(DeclarationContext<MidiPitch> const& ctx) const
@@ -178,7 +178,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("gate", OutputProduction::tick) };
+            return std::array { output<Sample>("gate", OutputProduction::sequential) };
         }
 
         void declare(DeclarationContext<MidiGate> const& ctx) const
@@ -298,9 +298,9 @@ namespace iv {
         static constexpr auto outputs()
         {
             return std::tuple {
-                output<Sample>("amplitude", OutputProduction::tick),
-                output<Sample>("frequency", OutputProduction::tick),
-                event_output("trigger", EventTypeId::trigger, OutputProduction::tick),
+                output<Sample>("amplitude", OutputProduction::sequential),
+                output<Sample>("frequency", OutputProduction::sequential),
+                event_output("trigger", EventTypeId::trigger, OutputProduction::sequential),
             };
         }
 

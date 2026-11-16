@@ -43,7 +43,7 @@ struct NamedStereoSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("main", iv::OutputProduction::tick, {
+        return std::array{iv::output<iv::Sample>("main", iv::OutputProduction::sequential, {
                 .channel_layout = {
                     .channel_type = iv::ChannelTypeId::stereo,
                     .sample_layout = iv::SampleStreamLayout::planar,
@@ -64,7 +64,7 @@ struct MonoPass {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::output<iv::Sample>("out", iv::OutputProduction::tick)};
+            iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<MonoPass> const& ctx) const

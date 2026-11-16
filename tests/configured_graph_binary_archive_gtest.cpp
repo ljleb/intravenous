@@ -20,7 +20,7 @@ struct ReplayableArchiveNode {
     static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("output", iv::OutputProduction::tick)};
+        return std::array{iv::output<iv::Sample>("output", iv::OutputProduction::sequential)};
     }
     void tick(iv::TickSampleContext<ReplayableArchiveNode> const&) const {}
 };
@@ -43,8 +43,8 @@ struct ConstrainedArchiveNode {
     {
         return std::tuple{
             iv::output<iv::Sample, iv::FractionalGlobalIndex>(
-                "output", iv::OutputProduction::tick),
-            iv::event_output("event_output", iv::EventTypeId::trigger, iv::OutputProduction::tick),
+                "output", iv::OutputProduction::sequential),
+            iv::event_output("event_output", iv::EventTypeId::trigger, iv::OutputProduction::sequential),
         };
     }
 
@@ -335,8 +335,8 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
     auto const realtime_output = iv::materialize_continuous_config(
         iv::erase_port_config(iv::output<iv::FFTBlock>(
             "realtime-output",
-            iv::OutputProduction::tick,
-            iv::OutputRetention::persisted)));
+            iv::OutputProduction::sequential,
+            iv::OutputRealization::buffered)));
     auto const tock_output = iv::materialize_continuous_config(
         iv::erase_port_config(iv::output<iv::Sample>(
             "background-output", iv::OutputProduction::coverage)));
@@ -354,14 +354,14 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
         .name = "realtime-event-output",
         .type = iv::EventTypeId::midi,
         .max_events_per_index = 0.24,
-        .production = iv::OutputProductionKind::tick,
-        .retention = iv::OutputRetention::ephemeral,
+        .production = iv::OutputProductionKind::sequential,
+        .realization = iv::OutputRealization::computed,
     };
     iv::EventOutputConfig const tock_event_output {
         .name = "background-event-output",
         .type = iv::EventTypeId::midi,
         .production = iv::OutputProductionKind::coverage,
-        .retention = iv::OutputRetention::persisted,
+        .realization = iv::OutputRealization::buffered,
     };
 
     iv::binary_wire_details::Writer writer;
@@ -416,23 +416,41 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
     EXPECT_EQ(
         iv::continuous_value_type_domain(decoded_realtime_output),
         iv::continuous_value_type_domain(realtime_output));
-    EXPECT_FALSE(iv::is_tock(decoded_realtime_output));
-    EXPECT_TRUE(iv::is_persisted(decoded_realtime_output));
-    EXPECT_TRUE(iv::is_tock(decoded_background_output));
-    EXPECT_FALSE(iv::is_tick(decoded_background_output));
+    EXPECT_FALSE(iv::is_random_access_output(decoded_realtime_output));
+    EXPECT_TRUE(iv::is_buffered(decoded_realtime_output));
+    EXPECT_TRUE(iv::is_random_access_output(decoded_background_output));
+    EXPECT_FALSE(iv::is_sequential_output(decoded_background_output));
     EXPECT_TRUE(std::holds_alternative<
         iv::CoverageContinuousOutputProperties>(
             decoded_background_output.production));
-    EXPECT_FALSE(iv::is_persisted(decoded_background_output));
+    EXPECT_FALSE(iv::is_buffered(decoded_background_output));
 
     EXPECT_EQ(decoded_realtime_event_input.type, sequential_event_input.type);
     EXPECT_TRUE(iv::is_random_access(decoded_background_event_input));
 
     EXPECT_EQ(decoded_realtime_event_output.type, tick_event_output.type);
     EXPECT_DOUBLE_EQ(decoded_realtime_event_output.max_events_per_index, 0.24);
-    EXPECT_FALSE(iv::is_persisted(decoded_realtime_event_output));
-    EXPECT_TRUE(iv::is_tock(decoded_background_event_output));
-    EXPECT_TRUE(iv::is_persisted(decoded_background_event_output));
+    EXPECT_FALSE(iv::is_buffered(decoded_realtime_event_output));
+    EXPECT_TRUE(iv::is_random_access_output(decoded_background_event_output));
+    EXPECT_TRUE(iv::is_buffered(decoded_background_event_output));
+}
+
+TEST(ConfiguredGraphBinaryArchive, RoundTripsRandomAccessContentCapabilities)
+{
+    for (auto const capability : {iv::InputContentAccess::windowed, iv::InputContentAccess::complete_buffer}) {
+        auto const sample = iv::materialize_continuous_config(iv::erase_port_config(
+            iv::input<iv::Sample>("in", iv::InputAccess::coverage, capability)));
+        auto const event = iv::materialize_event_config(iv::erase_port_config(
+            iv::event_input("events", iv::EventTypeId::trigger, iv::InputAccess::region, capability)));
+        iv::binary_wire_details::Writer writer;
+        iv::binary_wire_details::write_input(writer, sample);
+        iv::binary_wire_details::write_event_input(writer, event);
+        auto const bytes = std::move(writer).take();
+        iv::binary_wire_details::Reader reader{bytes};
+        EXPECT_EQ(iv::binary_wire_details::read_input(reader).content_access, capability);
+        EXPECT_EQ(iv::binary_wire_details::read_event_input(reader).content_access, capability);
+        reader.finish();
+    }
 }
 
 TEST(ConfiguredGraphBinaryArchive, RejectsRepeatedContinuousMetadataType)
@@ -551,12 +569,12 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsEveryOutputAccessRetentionMode)
     std::array const outputs {
         iv::materialize_continuous_config(iv::erase_port_config(
             iv::output<iv::Sample>(
-                "realtime-ephemeral", iv::OutputProduction::tick))),
+                "realtime-ephemeral", iv::OutputProduction::sequential))),
         iv::materialize_continuous_config(iv::erase_port_config(
             iv::output<iv::Sample>(
                 "realtime-persisted",
-                iv::OutputProduction::tick,
-                iv::OutputRetention::persisted))),
+                iv::OutputProduction::sequential,
+                iv::OutputRealization::buffered))),
         iv::materialize_continuous_config(iv::erase_port_config(
             iv::output<iv::Sample>(
                 "background-ephemeral", iv::OutputProduction::coverage))),
@@ -564,7 +582,7 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsEveryOutputAccessRetentionMode)
             iv::output<iv::Sample>(
                 "background-persisted",
                 iv::OutputProduction::coverage,
-                iv::OutputRetention::persisted))),
+                iv::OutputRealization::buffered))),
     };
     iv::binary_wire_details::Writer writer;
     for (auto const& output : outputs) {
@@ -577,7 +595,7 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsEveryOutputAccessRetentionMode)
         auto const output = iv::binary_wire_details::read_output(reader);
         EXPECT_EQ(output.name, expected.name);
         EXPECT_EQ(output.production, expected.production);
-        EXPECT_EQ(output.retention, expected.retention);
+        EXPECT_EQ(output.realization, expected.realization);
     }
     reader.finish();
 }

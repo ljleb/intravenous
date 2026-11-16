@@ -35,7 +35,7 @@ std::vector<OutputRefConfig> make_sample_output_configs(
         .config = {
             .name = std::string(ref.name),
             .channel_layout = ref.channel_layout,
-            .production = default_tick_output_properties(
+            .production = default_sequential_output_properties(
                 ContinuousValueTypeSet::audio_capable()),
         },
         .public_member = {
@@ -474,7 +474,7 @@ void GraphBuilderState::scope_outputs(
                           : ContinuousOutputConfig{
                               .channel_layout = {.channel_type = source.channel_type,
                                   .sample_layout = SampleStreamLayout::planar},
-                              .production = default_tick_output_properties(
+                              .production = default_sequential_output_properties(
                                   ContinuousValueTypeSet::audio_capable())};
     config.name = std::string(ref.name);
     set_continuous_channel_layout(config, {

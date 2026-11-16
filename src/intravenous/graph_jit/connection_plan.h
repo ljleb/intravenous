@@ -61,7 +61,7 @@ struct DependencyEdgePlan {
     NodeBundleHandle target_bundle = 0;
     PlannedConnectionData data = PlannedConnectionData::sample;
     PlannedSourceProduction source_production = PlannedSourceProduction::tick;
-    OutputRetention source_retention = OutputRetention::ephemeral;
+    OutputRealization source_realization = OutputRealization::computed;
     PlannedDestinationAccess destination_access = PlannedDestinationAccess::sequential;
     PlannedDeliveryMechanism delivery = PlannedDeliveryMechanism::tick_to_sequential;
     std::size_t configured_connection_index = 0;
@@ -116,7 +116,7 @@ struct SampleSourceChannelTimingPlan {
     std::optional<std::vector<std::byte>> detach_initial_value{};
     std::optional<std::size_t> detach_region{};
     PlannedSourceProduction production = PlannedSourceProduction::tick;
-    OutputRetention retention = OutputRetention::ephemeral;
+    OutputRealization realization = OutputRealization::computed;
     PlannedDestinationAccess destination_access = PlannedDestinationAccess::sequential;
     PlannedDeliveryMechanism delivery = PlannedDeliveryMechanism::tick_to_sequential;
     bool contextually_replayable = false;
@@ -233,7 +233,7 @@ struct EventSourcePlan {
     EventTypeId source_type = EventTypeId::empty;
     EventConversionPlan conversion{};
     PlannedSourceProduction production = PlannedSourceProduction::tick;
-    OutputRetention retention = OutputRetention::ephemeral;
+    OutputRealization realization = OutputRealization::computed;
     std::size_t history = 0;
     std::size_t latency = 0;
     double max_events_per_index = 0.0;

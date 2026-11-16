@@ -1,5 +1,12 @@
 # Graph JIT Direction
 
+> **2026-11-16 normative port/executor update:** [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md)
+> supersedes older wording about output retention, whole-Region materialization,
+> and Tick-only Sequential output declarations in this document. Source-status
+> observations using `TickOutputConfig`/`OutputRetention` still describe the
+> unmigrated implementation; they do not redefine the target contract. The
+> displaced design is preserved in the [historical predecessor](./historical/output_ports_before_computed_buffered_2026-11-16.md).
+
 _Status: current design direction for synchronous whole-project graph compilation._
 
 [Batched Node Callback Direction](./batched_node_callbacks_direction.md) defines the planned normalized scalar/batch node callback API and the scheduling rules GraphJit will use to exploit it.

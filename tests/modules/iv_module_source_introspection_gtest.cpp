@@ -170,7 +170,7 @@ namespace {
 
         static constexpr auto outputs()
         {
-            return std::array<iv::TickOutputConfig<iv::Sample>, 1>{};
+            return std::array<iv::SequentialOutputConfig<iv::Sample>, 1>{};
         }
 
         void tick(iv::TickSampleContext<AliasedStateNode> const& ctx) const
@@ -184,7 +184,7 @@ namespace {
     struct InheritedStateNode : StateCarrier {
         static constexpr auto outputs()
         {
-            return std::array<iv::TickOutputConfig<iv::Sample>, 1>{};
+            return std::array<iv::SequentialOutputConfig<iv::Sample>, 1>{};
         }
 
         void tick(iv::TickSampleContext<InheritedStateNode> const& ctx) const
@@ -200,7 +200,7 @@ namespace {
 
         static constexpr auto outputs()
         {
-            return std::array<iv::TickOutputConfig<iv::Sample>, 1>{};
+            return std::array<iv::SequentialOutputConfig<iv::Sample>, 1>{};
         }
 
         void initialize(iv::InitializationContext<ScalarStateNode> const& ctx) const
@@ -224,7 +224,7 @@ namespace {
 
         static constexpr auto outputs()
         {
-            return std::array<iv::TickOutputConfig<iv::Sample>, 1>{};
+            return std::array<iv::SequentialOutputConfig<iv::Sample>, 1>{};
         }
 
         void tick(iv::TickSampleContext<BackgroundStateNode> const& ctx) const
@@ -414,7 +414,7 @@ namespace {
         static constexpr auto outputs()
         {
             return std::array{
-                iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::tick)};
+                iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::sequential)};
         }
         void tick(iv::TickSampleContext<TriggerSource> const&) const {}
     };
@@ -681,7 +681,7 @@ namespace {
         static constexpr auto outputs()
         {
             return std::array{
-                iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::tick)};
+                iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::sequential)};
         }
         void tick(iv::TickSampleContext<TriggerSource> const&) const {}
     };
