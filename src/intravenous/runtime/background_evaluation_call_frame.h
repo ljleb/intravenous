@@ -28,6 +28,7 @@ struct BackgroundEvaluationCallFrameSelection {
     // outside binding_coverage is unavailable data and fails the replay. When
     // empty, every scheduled position must be selected.
     std::vector<IndexCoverage> binding_upstream_coverage{};
+    graph_jit::SequentialInputCombineFunction combine_sequential_input = nullptr;
     std::size_t sample_rate = 48000;
 };
 

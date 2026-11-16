@@ -1474,7 +1474,7 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
     static_assert(replay_declaration_is_valid_v<Node>,
         "intrinsically replayable nodes must author a Tick callback, "
         "have no State/TockState, provide propagation for Random Access inputs, "
-        "and declare only Tick outputs; resolved timing is validated by "
+        "and declare only ephemeral Tick outputs; resolved timing is validated by "
         "the whole-graph planner");
     sink.set_internal_latency(get_internal_latency(node));
     sink.set_replay_mode(tick_replay_mode_v<Node>);
@@ -1501,7 +1501,7 @@ NodeBuildRequest make_node_build_request(Node const& node)
     static_assert(replay_declaration_is_valid_v<Value>,
         "intrinsically replayable nodes must author a Tick callback, "
         "have no State/TockState, provide propagation for Random Access inputs, "
-        "and declare only Tick outputs; resolved timing is validated by "
+        "and declare only ephemeral Tick outputs; resolved timing is validated by "
         "the whole-graph planner");
     // Emit the build-local record in the LLVM module.  The builder consumes
     // it synchronously and retains only copied data and the NodeCodeKey.

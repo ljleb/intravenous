@@ -354,9 +354,21 @@ std::expected<void, std::string> inventory_nodes(
                 return;
             }
             auto stable_identity = stable_concrete_node_identity(graph, current);
+            std::optional<StableInputPortId> module_input;
+            if (view.resolved_module_input) {
+                auto const origin = *view.resolved_module_input;
+                auto owner = stable_concrete_node_identity(graph, origin.node_bundle_handle);
+                if (owner) module_input = StableInputPortId{
+                    .node = std::move(*owner), .kind = origin.port_kind,
+                    .port_name = origin.port_kind == PortKind::sample
+                        ? view.ports->sample_input(0).name : view.ports->event_input(0).name,
+                    .port_index = origin.port_index,
+                };
+            }
             plan.nodes.push_back(PlannedGraphNode{
                 .bundle = current,
                 .stable_identity = stable_identity,
+                .resolved_module_input = module_input,
                 .internal_latency_samples = view.internal_latency_samples,
                 .maximum_block_size = view.maximum_block_size,
                 .sample_input_count = view.ports->sample_input_count(),
@@ -368,12 +380,21 @@ std::expected<void, std::string> inventory_nodes(
                 .authored_forward_coverage = view.operations->runtime.has_propagate_forward_coverage,
                 .authored_reverse_coverage = view.operations->runtime.has_propagate_reverse_coverage,
             });
+            auto const first_state = plan.realtime_port_states.states.size();
             inventory_realtime_port_states(
                 *view.ports,
                 current,
                 realization,
-                stable_identity,
+                module_input ? std::optional(module_input->node) : stable_identity,
                 plan.realtime_port_states);
+            if (module_input) {
+                for (std::size_t state = first_state; state < plan.realtime_port_states.states.size(); ++state) {
+                    auto& requirement = plan.realtime_port_states.states[state];
+                    requirement.resolved_module_input = module_input;
+                    if (requirement.stable_identity)
+                        requirement.stable_identity->port_index = module_input->port_index;
+                }
+            }
         });
 
     if (!error.empty()) return std::unexpected(std::move(error));
@@ -2755,6 +2776,110 @@ std::expected<BackgroundEvaluationPlan, std::string> build_semantic_background_p
     return result;
 }
 
+// Prove whole-circle live coverage before constructing coverage dependencies.
+// Each clause is one independently contributing input projection. Every source
+// in that projection must be full; any satisfied clause proves the generated
+// input_union node's outputs full. A work list visits each dependency once.
+void prove_full_live_tick_coverage(ConfiguredGraph const& graph, ConnectionAnalysisPlan& plan)
+{
+    struct Clause { std::size_t target; std::size_t remaining; };
+    std::vector<Clause> clauses;
+    std::vector<std::vector<std::size_t>> waiting(plan.nodes.size());
+    std::vector<std::optional<std::size_t>> node_index(graph.node_bundles.size());
+    std::vector<std::size_t> ready;
+    for (std::size_t i = 0; i < plan.nodes.size(); ++i) {
+        auto& node = plan.nodes[i];
+        node_index[node.bundle] = i;
+        node.full_live_tick_coverage = node.tick_execution && !node.authored_forward_coverage
+            && node.replay_mode != TickReplayMode::input_union;
+        if (node.full_live_tick_coverage) ready.push_back(i);
+    }
+    auto target_index = [&](NodeBundleHandle bundle) -> std::optional<std::size_t> {
+        if (bundle >= node_index.size() || !node_index[bundle]) return {};
+        auto index = *node_index[bundle];
+        auto const& node = plan.nodes[index];
+        if (!node.tick_execution || node.authored_forward_coverage
+            || node.replay_mode != TickReplayMode::input_union) return {};
+        return index;
+    };
+    auto append = [&](std::size_t target, std::vector<std::size_t> sources) {
+        if (sources.empty()) return;
+        std::ranges::sort(sources);
+        sources.erase(std::unique(sources.begin(), sources.end()), sources.end());
+        auto const clause = clauses.size();
+        clauses.push_back({target, sources.size()});
+        for (auto source : sources) waiting[source].push_back(clause);
+    };
+    for (auto const& connection : plan.sample_connections) {
+        auto target = target_index(connection.target_port.node_bundle_handle);
+        if (!target || connection.destination_access != PlannedDestinationAccess::sequential) continue;
+        auto projection = [&](std::span<std::size_t const> indices) {
+            std::vector<std::size_t> sources;
+            for (auto index : indices) {
+                if (index >= connection.source_channel_timings.size()) return;
+                auto const& source = connection.source_channel_timings[index];
+                if (source.production != PlannedSourceProduction::tick
+                    || !uses_realtime_storage(source.delivery)
+                    || source.source.bundle >= node_index.size()
+                    || !node_index[source.source.bundle]) return;
+                sources.push_back(*node_index[source.source.bundle]);
+            }
+            append(*target, std::move(sources));
+        };
+        if (!connection.routed_contributions.empty()) {
+            for (auto const& contribution : connection.routed_contributions) {
+                if (!std::ranges::any_of(contribution.target_coefficients,
+                        [](float value) { return value != 0; })) continue;
+                std::vector<std::size_t> indices;
+                for (std::size_t i = 0; i < contribution.source_coefficients.size(); ++i)
+                    if (contribution.source_coefficients[i] != 0) indices.push_back(i);
+                projection(indices);
+            }
+        } else if (!connection.projection_contributions.empty()) {
+            for (auto const& contribution : connection.projection_contributions)
+                projection(contribution.source_channel_indices);
+        } else {
+            std::vector<std::size_t> indices(connection.source_channel_timings.size());
+            std::iota(indices.begin(), indices.end(), 0);
+            projection(indices);
+        }
+    }
+    for (auto const& connection : plan.event_connections) {
+        for (auto const& delivery : connection.deliveries) {
+            auto const& to = connection.target_plans[delivery.target_index];
+            auto target = target_index(to.target.bundle);
+            if (!target || to.access != PlannedDestinationAccess::sequential) continue;
+            auto const& source = connection.source_plans[delivery.source_index];
+            if (source.production == PlannedSourceProduction::tick
+                && uses_realtime_storage(delivery.mechanism)
+                && source.source.bundle < node_index.size()
+                && node_index[source.source.bundle])
+                append(*target, {*node_index[source.source.bundle]});
+        }
+    }
+    for (auto const& control : graph.manual_controls) {
+        if (control.participation != ManualControlParticipation::participate_with_connections
+            || control.override_connections || control.input.port_kind != PortKind::sample) continue;
+        auto target = target_index(control.input.node_bundle_handle);
+        if (!target || !std::ranges::any_of(plan.sample_connections,
+                [&](auto const& connection) { return connection.target_port == control.input; })) continue;
+        if (!plan.nodes[*target].full_live_tick_coverage) {
+            plan.nodes[*target].full_live_tick_coverage = true;
+            ready.push_back(*target);
+        }
+    }
+    for (std::size_t cursor = 0; cursor < ready.size(); ++cursor) {
+        for (auto index : waiting[ready[cursor]]) {
+            auto& clause = clauses[index];
+            if (--clause.remaining != 0) continue;
+            auto& target = plan.nodes[clause.target];
+            if (target.full_live_tick_coverage) continue;
+            target.full_live_tick_coverage = true;
+            ready.push_back(clause.target);
+        }
+    }
+}
+
 std::expected<void, std::string> populate_background_topology(
     ConfiguredGraph const& graph,
     ResolvedPortRealization const& realization,
@@ -2771,6 +2896,14 @@ std::expected<void, std::string> populate_background_topology(
         }
     }
 
+    // Forward coverage is needed by live Sequential connections as well as
+    // replay. A declaration can publish sparse coverage without any consumer
+    // requesting background replay of its Tick values.
+    auto tracks_tick_coverage = [](PlannedGraphNode const& node) {
+        return node.tick_execution && (node.authored_forward_coverage
+            || (node.replay_mode == TickReplayMode::input_union
+                && !node.full_live_tick_coverage));
+    };
     std::vector<bool> needs_background_node(graph.node_bundles.size(), false);
     auto require_bundle = [&](NodeBundleHandle bundle) {
         if (bundle < needs_background_node.size()
@@ -2781,7 +2914,7 @@ std::expected<void, std::string> populate_background_topology(
 
     for (auto const& node : connections.nodes) {
         auto const bundle = node.bundle;
-        bool relevant = node.contextually_replayable;
+        bool relevant = node.contextually_replayable || tracks_tick_coverage(node);
         for (std::size_t port = 0; port < node.sample_input_count; ++port) {
             relevant = relevant || is_random_access(
                 graph.node_bundles.resolve_sample_input(
@@ -2849,15 +2982,19 @@ std::expected<void, std::string> populate_background_topology(
             .semantic_node = semantic_node,
             .semantic_scc = plan.semantic_nodes[semantic_node].scc,
             .stable_identity = node.stable_identity,
+            .resolved_module_input = node.resolved_module_input,
             .authored_tock_execution = authored_tock,
             .replays_tick = node.contextually_replayable,
+            .full_live_tick_coverage = node.full_live_tick_coverage,
+            .tracks_live_tick_coverage = tracks_tick_coverage(node),
             .authored_forward_coverage = authored_tock
-                || (node.contextually_replayable && node.authored_forward_coverage),
+                || node.authored_forward_coverage,
             .authored_reverse_coverage = (authored_tock || node.contextually_replayable)
                 && node.authored_reverse_coverage,
-            .uses_replay_forward_coverage = node.contextually_replayable && !node.authored_forward_coverage,
+            .uses_replay_forward_coverage = (node.contextually_replayable
+                || tracks_tick_coverage(node)) && !node.authored_forward_coverage,
             .uses_replay_reverse_coverage = node.contextually_replayable && !node.authored_reverse_coverage,
-            .replay_mode = node.contextually_replayable ? node.replay_mode : TickReplayMode::disabled,
+            .replay_mode = node.replay_mode,
             .uses_imported_tick_block_for_replay = node.contextually_replayable,
             .replay_maximum_block_size = node.contextually_replayable
                 ? std::min(kernel_block_size, node.maximum_block_size)
@@ -2872,6 +3009,8 @@ std::expected<void, std::string> populate_background_topology(
         bool authored_tock_output = false;
         bool persisted_tick_output = false;
         bool replayed_tick_output = false;
+        bool coverage_input = false;
+        bool coverage_output = false;
     };
 
     struct PortKey {
@@ -2969,6 +3108,8 @@ std::expected<void, std::string> populate_background_topology(
         double max_events_per_index = 0.0;
         std::optional<std::size_t> max_event_count;
         Sample neutral{};
+        Sample fallback{};
+        std::optional<Sample> manual_contribution;
         std::size_t sequential_history = 0;
         std::size_t output_history = 0;
         std::size_t output_latency = 0;
@@ -2983,9 +3124,22 @@ std::expected<void, std::string> populate_background_topology(
                 continuous_geometry = *continuous_value_storage_geometry(
                     resolved.value_type, resolved.size);
                 absolute_pace_exponent = resolved.absolute_pace.exponent();
-                if (is_sequential(config)) {
-                    neutral = sequential_input_metadata<Sample>(
-                        sequential_input_properties(config)).neutral_value;
+                if (is_sequential(config)
+                    && resolved.value_type == ContinuousValueTypeId::sample) {
+                    auto const& metadata = sequential_input_metadata<Sample>(
+                        sequential_input_properties(config));
+                    neutral = metadata.neutral_value;
+                    fallback = neutral;
+                    auto const connected = std::ranges::any_of(connections.sample_connections,
+                        [&](auto const& connection) { return connection.target_port == port; });
+                    auto control = std::ranges::find(graph.manual_controls, port, &ConfiguredManualControl::input);
+                    if (connected && control != graph.manual_controls.end()
+                        && control->participation == ManualControlParticipation::participate_with_connections
+                        && !control->override_connections) manual_contribution = control->settled_value;
+                    if (!connected || (!manual_contribution && metadata.fallback == SequentialFallback::manual_control)) {
+                        fallback = metadata.default_value;
+                        if (control != graph.manual_controls.end()) fallback = control->settled_value;
+                    }
                 }
                 sequential_history =
                     realization.input(
@@ -3030,7 +3184,8 @@ std::expected<void, std::string> populate_background_topology(
 
         PortAccumulatorIndices indices;
         if (direction == PortDirection::input
-            && (roles.random_access_input || roles.replay_sequential_input)) {
+            && (roles.random_access_input || roles.replay_sequential_input
+                || roles.coverage_input)) {
             indices = allocate_input_accumulators(node_plan);
         } else if (direction == PortDirection::output) {
             indices = allocate_output_accumulators(node_plan);
@@ -3056,6 +3211,8 @@ std::expected<void, std::string> populate_background_topology(
                 .port_index = port.port_index,
             };
         }
+        if (direction == PortDirection::input && node_plan.resolved_module_input)
+            stable_input = node_plan.resolved_module_input;
         plan.ports.push_back(BackgroundPortPlan{
             .node = background_node,
             .configured_port = port,
@@ -3070,12 +3227,19 @@ std::expected<void, std::string> populate_background_topology(
             .authored_tock_output = roles.authored_tock_output,
             .persisted_tick_output = roles.persisted_tick_output,
             .replayed_tick_output = roles.replayed_tick_output,
+            .full_live_tick_coverage = direction == PortDirection::output
+                && configured_output_production == OutputProductionKind::tick
+                && node_plan.full_live_tick_coverage,
             .sample_neutral_value = neutral,
+            .sample_fallback_value = fallback,
+            .sample_manual_contribution = manual_contribution,
             .sequential_history = sequential_history,
             .output_history = output_history,
             .output_latency = output_latency,
             .retention = retention,
             .stable_identity = std::move(stable_output),
+            .resolved_module_input = direction == PortDirection::output
+                ? node_plan.resolved_module_input : std::nullopt,
             .stable_input_identity = std::move(stable_input),
             .sample_layout = sample_layout,
             .continuous_geometry = continuous_geometry,
@@ -3104,7 +3268,10 @@ std::expected<void, std::string> populate_background_topology(
             }
         } else {
             node_plan.outputs.push_back(port_index);
-            plan.requestable_outputs.push_back(port_index);
+            if (roles.authored_tock_output || roles.persisted_tick_output
+                || roles.replayed_tick_output) {
+                plan.requestable_outputs.push_back(port_index);
+            }
         }
         return port_index;
     };
@@ -3121,8 +3288,10 @@ std::expected<void, std::string> populate_background_topology(
                 .random_access_input = is_random_access(config),
                 .replay_sequential_input = node.contextually_replayable
                     && is_sequential(config),
+                .coverage_input = tracks_tick_coverage(node),
             };
-            if (!roles.random_access_input && !roles.replay_sequential_input) continue;
+            if (!roles.random_access_input && !roles.replay_sequential_input
+                && !roles.coverage_input) continue;
             auto port_index = ensure_port(
                 id, PortDirection::input, roles);
             if (!port_index) return std::unexpected(std::move(port_index.error()));
@@ -3134,8 +3303,10 @@ std::expected<void, std::string> populate_background_topology(
                 .random_access_input = is_random_access(config),
                 .replay_sequential_input = node.contextually_replayable
                     && is_sequential(config),
+                .coverage_input = tracks_tick_coverage(node),
             };
-            if (!roles.random_access_input && !roles.replay_sequential_input) continue;
+            if (!roles.random_access_input && !roles.replay_sequential_input
+                && !roles.coverage_input) continue;
             auto port_index = ensure_port(
                 id, PortDirection::input, roles);
             if (!port_index) return std::unexpected(std::move(port_index.error()));
@@ -3150,9 +3321,10 @@ std::expected<void, std::string> populate_background_topology(
                 .replayed_tick_output = is_tick(config)
                     && config.retention == OutputRetention::ephemeral
                     && node.contextually_replayable,
+                .coverage_output = is_tick(config) && tracks_tick_coverage(node),
             };
             if (!roles.authored_tock_output && !roles.persisted_tick_output
-                && !roles.replayed_tick_output) continue;
+                && !roles.replayed_tick_output && !roles.coverage_output) continue;
             auto port_index = ensure_port(
                 id, PortDirection::output, roles);
             if (!port_index) return std::unexpected(std::move(port_index.error()));
@@ -3167,14 +3339,19 @@ std::expected<void, std::string> populate_background_topology(
                 .replayed_tick_output = is_tick(config)
                     && config.retention == OutputRetention::ephemeral
                     && node.contextually_replayable,
+                .coverage_output = is_tick(config) && tracks_tick_coverage(node),
             };
             if (!roles.authored_tock_output && !roles.persisted_tick_output
-                && !roles.replayed_tick_output) continue;
+                && !roles.replayed_tick_output && !roles.coverage_output) continue;
             auto port_index = ensure_port(
                 id, PortDirection::output, roles);
             if (!port_index) return std::unexpected(std::move(port_index.error()));
         }
     }
+
+    plan.requires_live_tick_coverage = !plan.tick_sequential_inputs.empty()
+        || std::ranges::any_of(plan.nodes,
+            [](auto const& node) { return node.tracks_live_tick_coverage; });
 
     auto port_for = [&](NodeBundlePortId port,
                             PortDirection direction)
@@ -3236,6 +3413,10 @@ std::expected<void, std::string> populate_background_topology(
         auto const* node = planned_node_for_bundle(connections, bundle);
         return node && node->contextually_replayable;
     };
+    auto tracks_coverage_for_bundle = [&](NodeBundleHandle bundle) {
+        auto const* node = planned_node_for_bundle(connections, bundle);
+        return node && tracks_tick_coverage(*node);
+    };
     auto background_node_for_bundle = [&](NodeBundleHandle bundle)
         -> std::optional<BackgroundNodeIndex> {
         if (bundle >= plan.bundle_to_background_node.size()) return std::nullopt;
@@ -3250,7 +3431,8 @@ std::expected<void, std::string> populate_background_topology(
             [](SampleSourceChannelTimingPlan const& source) {
                 return !uses_realtime_storage(source.delivery);
             });
-        if (!has_background_delivery && !target_replay) continue;
+        if (!has_background_delivery && !target_replay
+            && !tracks_coverage_for_bundle(target_bundle)) continue;
 
         bool tick_sequential_target = std::ranges::any_of(
             connection.source_channel_timings,
@@ -3287,7 +3469,7 @@ std::expected<void, std::string> populate_background_topology(
             background.sample_deliveries.push_back(source.delivery);
             background.sample_read_latencies.push_back(source.read_latency);
             auto const background_source = !uses_realtime_storage(source.delivery)
-                || target_replay;
+                || target_replay || tracks_coverage_for_bundle(source.source.bundle);
             if (!background_source) {
                 background.sample_source_port_by_channel.push_back(std::nullopt);
                 continue;
@@ -3363,7 +3545,8 @@ std::expected<void, std::string> populate_background_topology(
             auto const& target = connection.target_plans[delivery.target_index];
             any_relevant = any_relevant
                 || !uses_realtime_storage(delivery.mechanism)
-                || node_is_contextually_replayable(target.target.bundle);
+                || node_is_contextually_replayable(target.target.bundle)
+                || tracks_coverage_for_bundle(target.target.bundle);
         }
         if (!any_relevant) continue;
 
@@ -3403,7 +3586,9 @@ std::expected<void, std::string> populate_background_topology(
 
             std::optional<BackgroundPortIndex> source_port;
             std::optional<BackgroundPortIndex> target_port;
-            if (relevant && is_internal_bundle(
+            auto const source_has_coverage = !uses_realtime_storage(delivery.mechanism)
+                || target_replay || tracks_coverage_for_bundle(source.source.bundle);
+            if (source_has_coverage && is_internal_bundle(
                     source.source.bundle, connections.boundary_bundle)) {
                 auto port = port_for(
                     source_configured_port, PortDirection::output);
@@ -3651,9 +3836,18 @@ std::expected<void, std::string> populate_background_topology(
         }
     }
     if (background_order.size() != plan.nodes.size()) {
-        return std::unexpected(
-            "GraphJit background coverage dependency graph is cyclic after semantic SCC validation");
+        // Coverage queries are suspension-driven. An authored F may not read
+        // a structural input at all, or a ready full contribution may resolve
+        // a union before other inputs are ready. Validate actual unresolved
+        // reads in the planning scheduler, not this whole-node approximation.
+        for (BackgroundNodeIndex node = 0; node < plan.nodes.size(); ++node) {
+            if (std::ranges::contains(background_order, node)) continue;
+            background_order.push_back(node);
+            plan.forward_ready_groups.push_back({node});
+        }
     }
+    plan.requires_live_tick_coverage = plan.requires_live_tick_coverage
+        || !plan.tick_sequential_inputs.empty();
     plan.reverse_ready_groups = plan.forward_ready_groups;
     std::ranges::reverse(plan.reverse_ready_groups);
 
@@ -6195,6 +6389,143 @@ std::expected<void, std::string> inventory_sequential_input_in_flight_values(
 
 } // namespace
 
+void configure_module_input_event_bounds(ConfiguredGraph& graph)
+{
+    // Resolve module aliases and tiled targets once. Conversions are required
+    // to be non-expanding by the normal event-route inventory.
+    std::map<NodeBundleHandle, std::vector<EventOutputPortId>> ingress;
+    for (NodeBundleHandle bundle = 0; bundle < graph.node_bundles.size(); ++bundle) {
+        auto const origin = graph.node_bundles.bundle(bundle).resolved_module_input();
+        if (origin && origin->port_kind == PortKind::event) ingress.try_emplace(bundle);
+    }
+    if (ingress.empty()) return;
+    auto routes = build_structural_event_routes(graph);
+    if (!routes) throw std::invalid_argument(routes.error());
+    for (auto const& route : *routes) {
+        for (auto target : route.connection.targets) {
+            auto found = ingress.find(target.bundle);
+            if (found == ingress.end()) continue;
+            for (auto const& source : route.sources) found->second.push_back(source.source.port);
+        }
+    }
+    struct Bound {
+        double rate = 0;
+        std::optional<std::size_t> total = 0;
+    };
+    std::map<NodeBundleHandle, Bound> complete;
+    std::vector<NodeBundleHandle> active;
+    auto derive = [&](auto&& self, NodeBundleHandle bundle) -> Bound {
+        if (auto found = complete.find(bundle); found != complete.end()) return found->second;
+        if (std::ranges::contains(active, bundle))
+            throw std::invalid_argument("Sequential module event inputs form a routing cycle without an authored event producer bound");
+        active.push_back(bundle);
+        Bound result;
+        for (auto source : ingress.at(bundle)) {
+            auto const config = graph.node_bundles.resolve_event_output(
+                {source.bundle, PortKind::event, source.port}).config;
+            auto const bound = ingress.contains(source.bundle)
+                ? self(self, source.bundle)
+                : Bound{config.max_events_per_index, config.max_event_count};
+            result.rate += bound.rate;
+            if (!is_valid_event_buffer_rate(bound.rate) || !is_valid_event_buffer_rate(result.rate))
+                throw std::invalid_argument("Sequential module event input aggregate rate is not representable");
+            if (result.total && bound.total) {
+                if (*bound.total > std::numeric_limits<std::size_t>::max() - *result.total)
+                    throw std::overflow_error("Sequential module event input aggregate event count overflows");
+                *result.total += *bound.total;
+            } else result.total.reset();
+        }
+        active.pop_back();
+        complete.emplace(bundle, result);
+        return result;
+    };
+    for (auto const& [bundle, sources] : ingress) {
+        (void)sources;
+        auto bound = derive(derive, bundle);
+        graph.node_bundles.bundle(bundle).set_input_resolution_event_bounds(bound.rate, bound.total);
+    }
+}
+
+std::expected<SequentialCoverageSource, std::string> sequential_source_coverage(
+    ConnectionAnalysisPlan const& plan,
+    SampleSourceChannelTimingPlan const& source)
+{
+    SequentialCoverageSource result{.read_latency = source.read_latency};
+    auto const* node = planned_node_for_bundle(plan, source.source.bundle);
+    if (!node) return std::unexpected("Sequential coverage lost its source node");
+    if (source.production == PlannedSourceProduction::tick
+        && node->full_live_tick_coverage) return result;
+    NodeBundlePortId const id{
+        source.source.bundle, PortKind::sample, source.source.port};
+    auto const port = std::ranges::find_if(plan.background.ports, [&](auto const& port) {
+        return port.direction == PortDirection::output && port.configured_port == id;
+    });
+    if (port == plan.background.ports.end() || !port->accumulators.output_change)
+        return std::unexpected("Sequential coverage lost its planned source output");
+    result.output_change = port->accumulators.output_change;
+    return result;
+}
+
+std::expected<std::vector<SequentialCoverageProjection>, std::string>
+sequential_connection_coverage(
+    ConnectionAnalysisPlan const& plan,
+    SampleConnectionPlan const& connection,
+    std::optional<bool> realtime_component)
+{
+    std::vector<SequentialCoverageProjection> result;
+    auto append = [&](std::span<std::size_t const> source_indices,
+                      std::vector<std::size_t> targets,
+                      std::size_t detach_delay) -> std::expected<void, std::string> {
+        if (realtime_component && !std::ranges::any_of(source_indices, [&](auto index) {
+                return index < connection.source_channel_timings.size()
+                    && uses_realtime_storage(connection.source_channel_timings[index].delivery) == *realtime_component;
+            })) return {};
+        SequentialCoverageProjection projection{.target_channels = std::move(targets)};
+        for (auto const index : source_indices) {
+            if (index >= connection.source_channel_timings.size())
+                return std::unexpected("Sequential coverage has an invalid source channel");
+            auto source = sequential_source_coverage(plan, connection.source_channel_timings[index]);
+            if (!source) return std::unexpected(std::move(source.error()));
+            if (detach_delay > std::numeric_limits<std::size_t>::max() - source->read_latency)
+                return std::unexpected("Sequential coverage delay overflows");
+            source->read_latency += detach_delay;
+            if (!std::ranges::contains(projection.sources, *source))
+                projection.sources.push_back(*source);
+        }
+        result.push_back(std::move(projection));
+        return {};
+    };
+    if (!connection.routed_contributions.empty()) {
+        for (auto const& contribution : connection.routed_contributions) {
+            std::vector<std::size_t> sources, targets;
+            for (std::size_t i = 0; i < contribution.source_coefficients.size(); ++i)
+                if (contribution.source_coefficients[i] != 0) sources.push_back(i);
+            for (std::size_t i = 0; i < contribution.target_coefficients.size(); ++i)
+                if (contribution.target_coefficients[i] != 0)
+                    targets.push_back(connection.target_channels[i].channel);
+            auto appended = append(sources, std::move(targets),
+                contribution.detach ? contribution.detach->loop_extra_latency : 0);
+            if (!appended) return std::unexpected(std::move(appended.error()));
+        }
+    } else if (!connection.projection_contributions.empty()) {
+        for (auto const& contribution : connection.projection_contributions) {
+            auto appended = append(contribution.source_channel_indices,
+                contribution.target_channels,
+                connection.detach ? connection.detach->loop_extra_latency : 0);
+            if (!appended) return std::unexpected(std::move(appended.error()));
+        }
+    } else {
+        std::vector<std::size_t> sources, targets;
+        for (std::size_t i = 0; i < connection.source_channel_timings.size(); ++i)
+            sources.push_back(i);
+        for (auto const target : connection.target_channels) targets.push_back(target.channel);
+        auto appended = append(sources, std::move(targets),
+            connection.detach ? connection.detach->loop_extra_latency : 0);
+        if (!appended) return std::unexpected(std::move(appended.error()));
+    }
+    return result;
+}
+
 std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_plan(
     ConfiguredGraph const& graph,
     ResolvedPortRealization const& port_realization,
@@ -6284,6 +6615,7 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
             graph, port_realization, plan, *routed_events); !events) {
         return std::unexpected(std::move(events.error()));
     }
+    prove_full_live_tick_coverage(graph, plan);
     if (auto replay = derive_contextual_replayability(graph, plan); !replay) {
         return std::unexpected(std::move(replay.error()));
     }
@@ -6409,6 +6741,18 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
         !tick_runtime) {
         return std::unexpected(std::move(tick_runtime.error()));
     }
+    for (auto& requirement : plan.realtime_port_states.states) {
+        auto const* node = planned_node_for_bundle(plan, requirement.configured_port.node_bundle_handle);
+        if (!node || !node->resolved_module_input) continue;
+        auto const& origin = *node->resolved_module_input;
+        requirement.resolved_module_input = origin;
+        requirement.stable_identity = StableRealtimePortStateId{
+            .node = origin.node, .direction = requirement.direction,
+            .kind = origin.kind, .port_name = origin.port_name,
+            .port_index = origin.port_index, .channel = requirement.channel,
+            .role = requirement.role,
+        };
+    }
     return plan;
 }
 
@@ -6418,9 +6762,14 @@ std::optional<std::string> raw_region_node_identity(
 {
     auto const node = std::ranges::find(
         connections.nodes, bundle, &PlannedGraphNode::bundle);
-    if (node == connections.nodes.end() || !node->stable_identity) {
-        return std::nullopt;
+    if (node == connections.nodes.end()) return std::nullopt;
+    if (node->resolved_module_input) {
+        auto const& origin = *node->resolved_module_input;
+        return "{module-input:" + migration_identity_fields(origin.node)
+            + ":kind=" + std::to_string(static_cast<unsigned>(origin.kind))
+            + ":port=" + std::to_string(origin.port_index) + '}';
     }
+    if (!node->stable_identity) return std::nullopt;
     return '{' + migration_identity_fields(*node->stable_identity) + '}';
 }
 

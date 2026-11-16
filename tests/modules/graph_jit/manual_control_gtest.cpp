@@ -435,8 +435,11 @@ TEST_F(GraphJitRuntimeFixture, ModuleManualControlPreservesConversionFanoutAndDe
     ASSERT_TRUE(dynamic.succeeded()) << (dynamic.diagnostics.empty() ? "" : dynamic.diagnostics.front().message);
     auto const& steady = *constant.compiled_graph;
     auto const& live = *dynamic.compiled_graph;
-    ASSERT_EQ(steady.manual_controls.size(), 2u);
-    ASSERT_EQ(live.manual_controls.size(), 2u);
+    // The module input is connected to the module's own feedback output, so
+    // both variants resolve it in one stage before conversion and fan-out.
+    // The knob is bound once, at that stage.
+    ASSERT_EQ(steady.manual_controls.size(), 1u);
+    ASSERT_EQ(live.manual_controls.size(), 1u);
     ASSERT_EQ(steady.node_layout.regions.size(), live.node_layout.regions.size());
     EXPECT_EQ(steady.node_layout.storage_size, live.node_layout.storage_size);
     for (std::size_t index = 0; index < steady.node_layout.regions.size(); ++index) {
@@ -485,21 +488,29 @@ TEST_F(GraphJitRuntimeFixture, UniformSettledModuleManualInputKeepsImmutableInpu
     auto compiled = compile_graph(configured_module_manual_fanout(*revision, false, false), 391);
     ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
     auto const& graph = *compiled.compiled_graph;
-    ASSERT_EQ(graph.manual_controls.size(), 2u);
     // This fixture variant is ordinary fanout without the feedback branch.
-    auto const target = graph.manual_controls[0].configured.input;
+    // The disconnected module input is resolved once, at its stage, which
+    // carries the knob. Both internal leaves read the stage's output.
+    ASSERT_EQ(graph.manual_controls.size(), 1u);
+    auto const stage_input = graph.manual_controls[0].configured.input;
     auto const& requirements = graph.realtime_port_state_requirements.states;
     auto const& realizations = graph.realtime_port_state_realizations.sample_states;
-    auto requirement = std::ranges::find_if(requirements, [&](auto const& entry) {
-        return entry.configured_port == target && entry.direction == iv::graph_jit::PortDirection::input;
-    });
-    ASSERT_NE(requirement, requirements.end());
-    auto const index_in_requirements = static_cast<std::size_t>(std::distance(requirements.begin(), requirement));
-    auto realization = std::ranges::find_if(realizations, [&](auto const& entry) {
-        return entry.requirement_index == index_in_requirements;
-    });
-    ASSERT_NE(realization, realizations.end());
-    EXPECT_EQ(realization->retained_access, iv::graph_jit::SampleRealtimePortStateAccess::immutable_constant);
+    // The settled constant reaches each leaf's history input as an immutable
+    // binding, as a settled knob on a disconnected leaf input does.
+    std::size_t leaf_inputs = 0;
+    for (std::size_t index_in_requirements = 0; index_in_requirements < requirements.size();
+         ++index_in_requirements) {
+        auto const& requirement = requirements[index_in_requirements];
+        if (requirement.direction != iv::graph_jit::PortDirection::input
+            || requirement.configured_port == stage_input) continue;
+        ++leaf_inputs;
+        auto realization = std::ranges::find_if(realizations, [&](auto const& entry) {
+            return entry.requirement_index == index_in_requirements;
+        });
+        ASSERT_NE(realization, realizations.end());
+        EXPECT_EQ(realization->retained_access, iv::graph_jit::SampleRealtimePortStateAccess::immutable_constant);
+    }
+    EXPECT_EQ(leaf_inputs, 2u);
     auto storage = graph.node_layout.create_storage(resources);
     storage.initialize();
     graph.root_operations.tick_block(storage.buffer().data(), &empty_tick_invocation, index(0), 4);

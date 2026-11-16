@@ -105,6 +105,7 @@ struct PackageImportGroup {
 
 struct PrimitiveCallbackPlan {
     NodeBundleHandle bundle = 0;
+    bool resolves_module_input = false;
     std::string tick_block{};
     std::string tick_block_batch{};
     std::string skip_block{};
@@ -120,6 +121,8 @@ struct PrimitiveCallbackPlan {
 };
 
 struct PackageImportPlan {
+    // Compiler-owned operations have no PackageRevision or package code.
+    std::vector<CallbackImportPlan> compiler_callbacks{};
     // One group per package code input that the project module imports from.
     std::vector<PackageImportGroup> packages{};
     // One entry per analyzed concrete primitive, naming the imported callback
@@ -139,6 +142,7 @@ struct NodeConfigurationRelocationPlan {
 };
 
 struct NodeConfigurationPlan {
+    std::optional<ContinuousInputConfig> module_input_config{};
     // Own the configured bytes so LLVM emission does not depend on native
     // configured-object addresses after host-side planning completes. Pointer
     // indices are zeroed here and reconstructed symbolically during LLVM
@@ -209,6 +213,13 @@ struct PrimitiveSampleInputBindingPlan {
     // view. Its declared entry in the reflected Sequential binding array has
     // no storage and is never read by node code.
     bool random_access = false;
+    std::vector<SequentialCoverageProjection> coverage_projections{};
+    std::vector<SequentialCoverageProjection> realtime_coverage_projections{};
+    std::vector<SequentialCoverageProjection> background_coverage_projections{};
+    bool resolves_coverage = false;
+    std::vector<std::byte> neutral_value{};
+    std::vector<std::byte> fallback_value{};
+    std::vector<PrimitiveSampleInputChannelBindingPlan> coverage_operand_channels{};
 };
 
 struct ManualControlPlan {
@@ -217,6 +228,9 @@ struct ManualControlPlan {
     std::size_t input_index = 0;
     bool participates = false;
     bool stages_timeline = false;
+    // Use this value only on known-absent positions, after ordinary input
+    // composition. It is not an additional fan-in contribution.
+    bool fallback_only = false;
     // Routed module-input values are added within the connection composition,
     // before a direct leaf manual control uses the leaf's combine operation.
     bool boundary_source = false;

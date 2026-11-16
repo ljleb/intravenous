@@ -1,6 +1,7 @@
 #include <intravenous/runtime/graph_jit.h>
 
 #include <intravenous/graph_jit/lowering.h>
+#include <intravenous/graph_jit/module_input_resolution.h>
 #include <intravenous/graph_jit/package_callback_abi.h>
 #include <intravenous/graph_jit/realtime_root.h>
 #include <intravenous/graph_jit/region_specialization.h>
@@ -1521,6 +1522,10 @@ class RegionSpecializationCompiler final : public graph_jit::RegionSpecializatio
         std::vector<PackageLink> packages;
         std::vector<std::string> tick_blocks;
         for (auto const& step : request.steps) {
+            if (step.resolves_module_input) {
+                tick_blocks.emplace_back(); // Emitted directly, no imported symbol.
+                continue;
+            }
             auto const& bitcode = package_bitcode(step.revision);
             auto const symbol = std::ranges::find(
                 bitcode.tick_blocks,
@@ -2211,8 +2216,35 @@ public:
             region_specializations_,
             timings,
             request.definitions->package_revisions);
+        auto resolved_graph = graph_jit::detail::resolve_module_inputs(*request.graph);
+        std::vector<ContinuousInputConfig> module_input_configs;
+        module_input_configs.reserve(resolved_graph.node_bundles.size() - request.graph->node_bundles.size());
+        for (NodeBundleHandle bundle = request.graph->node_bundles.size();
+             bundle < resolved_graph.node_bundles.size(); ++bundle) {
+            auto const& stage = resolved_graph.node_bundles.bundle(bundle);
+            auto const source = stage.resolved_module_input();
+            if (!source) continue;
+            auto const operations = graph_jit::detail::module_input_resolution_operations();
+            if (source->port_kind == PortKind::sample)
+                module_input_configs.push_back(stage.sample_input_descriptor(0).config);
+            implementations.push_back(graph_jit::NodeImplementation{
+                .node_bundle = bundle,
+                .resolved_module_input = source,
+                .module_input_config = source->port_kind == PortKind::sample
+                    ? &module_input_configs.back() : nullptr,
+                .replay_mode = TickReplayMode::full,
+                .pointwise_tick = true,
+                .declare_node = operations.declare_node,
+                .tick_block = imported.callback(operations.tick_block),
+                .tick_block_batch = imported.callback(operations.tick_block_batch),
+                .skip_block = imported.callback(operations.skip_block),
+                .skip_block_batch = imported.callback(operations.skip_block_batch),
+                .combine_sequential_input_values = imported.callback(operations.combine_sequential_input_values),
+                .native_operations = operations,
+            });
+        }
         graph_jit::LoweringInput lowering_input{
-            .graph = *request.graph,
+            .graph = resolved_graph,
             .specialization = specialization_,
             .realtime_storage_cost_model = realtime_storage_cost_model_,
             .packages = package_inputs,

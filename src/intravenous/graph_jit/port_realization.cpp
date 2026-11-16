@@ -695,6 +695,23 @@ class PortRealizationSolver {
                     }
                 }
             }
+            if (auto origin = bundle.resolved_module_input()) {
+                auto const owner = origin->node_bundle_handle;
+                if (owner >= bundles_.size())
+                    return std::unexpected("module-input resolution lost its public owner");
+                if (origin->port_kind == PortKind::sample) {
+                    auto result = equate_continuous_ports(bundles_[handle].inputs.at(0),
+                        bundles_[owner].inputs.at(origin->port_index), "module-input resolution geometry", true);
+                    if (!result) return result;
+                    result = equate_matching_contracts(bundles_[handle].inputs.at(0),
+                        bundles_[owner].inputs.at(origin->port_index), "module-input resolution contract", true);
+                    if (!result) return result;
+                } else {
+                    auto result = equate_matching_contracts(bundles_[handle].event_inputs.at(0),
+                        bundles_[owner].event_inputs.at(origin->port_index), "module event-input resolution", true);
+                    if (!result) return result;
+                }
+            }
             if (bundle.is_subgraph()) {
                 auto const boundary = bundle.subgraph_boundary_handle();
                 if (!boundary || *boundary >= bundles_.size()
@@ -814,6 +831,10 @@ class PortRealizationSolver {
                     auto result = rates.unite(handle, member, PortPace{}, "tiled node rate");
                     if (!result) return std::unexpected(std::move(result.error()));
                 }
+            }
+            if (auto origin = bundle.resolved_module_input()) {
+                auto result = rates.unite(handle, origin->node_bundle_handle, PortPace{}, "module-input resolution rate");
+                if (!result) return std::unexpected(std::move(result.error()));
             }
             if (bundle.is_subgraph()) {
                 auto result = rates.unite(

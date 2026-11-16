@@ -15,6 +15,7 @@
 
 #include <expected>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -42,6 +43,8 @@ struct PackageCode {
 
 struct NodeImplementation {
     std::size_t node_bundle = 0;
+    std::optional<NodeBundlePortId> resolved_module_input{};
+    ContinuousInputConfig const* module_input_config = nullptr;
     RegisteredNodeTypeIdentity identity{};
     NodeCodeKey code_key{};
     std::shared_ptr<PackageRevision const> revision{};

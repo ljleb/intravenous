@@ -1950,10 +1950,15 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 return std::unexpected(
                     "GraphJit routed sample detach exceeds its source representation");
             }
+            auto coverage = sequential_source_coverage(connections, timing);
+            if (!coverage) return std::unexpected(std::move(coverage.error()));
             return SampleCompositionInputPlan{
                 .source_representation = representation,
                 .source_channel = timing.source.channel,
                 .read_latency = timing.read_latency,
+                .coverage_sources = coverage->output_change
+                        ? std::vector<SequentialCoverageSource>{*coverage}
+                        : std::vector<SequentialCoverageSource>{},
             };
         };
 
@@ -2246,6 +2251,14 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 writer.feedback_alignment_write_latency = minimum_read_latency;
             }
 
+            std::vector<SequentialCoverageSource> final_coverage;
+            for (std::size_t source = 0; source < writer.sources.size(); ++source) {
+                if (writer.transform.coefficients[source] == 0.0f) continue;
+                for (auto coverage : writer.sources[source].coverage_sources) {
+                    coverage.read_latency += detach_latency;
+                    final_coverage.push_back(coverage);
+                }
+            }
             plan.feedback_timelines.push_back(SampleFeedbackTimelinePlan{
                 .connection_index = connection_index,
                 .storage_plan = feedback_storage,
@@ -2266,6 +2279,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     .source_representation = timeline_representation,
                     .source_channel = 0,
                     .read_latency = detach_latency,
+                    .coverage_sources = std::move(final_coverage),
                 },
                 .target_coefficients = routed.target_coefficients,
             });
@@ -2438,10 +2452,15 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     return std::unexpected(
                         "GraphJit channel-granular sample conversion exceeds its producer representation");
                 }
+                auto coverage = sequential_source_coverage(connections, timing);
+                if (!coverage) return std::unexpected(std::move(coverage.error()));
                 return SampleCompositionInputPlan{
                     .source_representation = source_representation,
                     .source_channel = timing.source.channel,
                     .read_latency = timing.read_latency,
+                    .coverage_sources = coverage->output_change
+                        ? std::vector<SequentialCoverageSource>{*coverage}
+                        : std::vector<SequentialCoverageSource>{},
                 };
             };
 
@@ -2481,7 +2500,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     }
                 }
 
-                if (can_alias_sample_conversion(
+                if (semantic.coverage_sources.empty() && can_alias_sample_conversion(
                         source_layout,
                         converted_layout,
                         semantic.transform.empty() ? nullptr : &semantic.transform)) {
@@ -2534,6 +2553,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     .source_layout = source_layout,
                     .converted_layout = converted_layout,
                     .transform = semantic.transform,
+                    .coverage_sources = semantic.coverage_sources,
                 };
                 contribution.sources.reserve(semantic.source_channel_indices.size());
                 for (auto const timing_index : semantic.source_channel_indices) {
@@ -2836,6 +2856,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 .source_layout = source_layout,
                 .converted_layout = converted_layout,
                 .transform = semantic.transform,
+                .coverage_sources = semantic.coverage_sources,
             };
             contribution.sources.reserve(semantic.source_channel_indices.size());
             contribution.target_channels.reserve(semantic.target_channels.size());
@@ -2876,10 +2897,15 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     return std::unexpected(
                         "GraphJit sample composition source channel is outside its producer representation");
                 }
+                auto coverage = sequential_source_coverage(connections, channel);
+                if (!coverage) return std::unexpected(std::move(coverage.error()));
                 contribution.sources.push_back(SampleCompositionInputPlan{
                     .source_representation = source_representation,
                     .source_channel = channel.source.channel,
                     .read_latency = channel.read_latency,
+                    .coverage_sources = coverage->output_change
+                        ? std::vector<SequentialCoverageSource>{*coverage}
+                        : std::vector<SequentialCoverageSource>{},
                 });
             }
 

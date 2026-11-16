@@ -230,7 +230,7 @@ bool region_specialization_request_is_complete(
         return false;
     }
     for (auto const& step : request.steps) {
-        if (!step.revision
+        if ((!step.revision && !step.resolves_module_input)
             || step.inputs.size() != step.input_channel_counts.size()
                 * sizeof(ReflectedContinuousInputPortBinding)
             || step.outputs.size() != step.output_channel_counts.size()
@@ -254,6 +254,22 @@ bool region_specialization_request_is_complete(
             || context.random_access_inputs.extent != 0
             || context.random_access_event_inputs.extent != 0) {
             return false;
+        }
+        if (step.resolves_module_input) {
+            if (step.revision || step.input_channel_counts.size() != 1
+                || step.output_channel_counts != step.input_channel_counts) return false;
+            auto const input = read_record<ReflectedContinuousInputPortBinding>(step.inputs, 0);
+            auto const output = read_record<ReflectedContinuousOutputPortBinding>(step.outputs, 0);
+            if (input.storage.geometry != output.storage.geometry
+                || input.storage.geometry.value_size_bytes == 0
+                || input.absolute_pace_exponent != 0 || output.absolute_pace_exponent != 0) return false;
+            for (auto const* storage : {&input.storage, &output.storage}) {
+                for (std::size_t channel = 0; channel < step.input_channel_counts[0]; ++channel) {
+                    auto const& binding = storage->channels[channel];
+                    if (!std::has_single_bit(binding.value_capacity)
+                        || binding.value_stride_bytes < storage->geometry.value_size_bytes) return false;
+                }
+            }
         }
         std::vector<bool> immutable_inputs(step.input_channel_counts.size());
         for (auto const& input : step.immutable_inputs) {
@@ -324,8 +340,9 @@ std::string make_region_specialization_key(
         key.text(step.revision
             ? step.revision->compiler_artifact.bitcode_path.string()
             : std::string{});
-        key.value(step.revision->node_code_retained_globals.size());
-        for (auto const& global : step.revision->node_code_retained_globals) {
+        key.value(step.resolves_module_input);
+        key.value(step.revision ? step.revision->node_code_retained_globals.size() : 0);
+        if (step.revision) for (auto const& global : step.revision->node_code_retained_globals) {
             key.value(reinterpret_cast<std::uintptr_t>(global.address));
             key.value(global.size);
             key.value(global.alignment);

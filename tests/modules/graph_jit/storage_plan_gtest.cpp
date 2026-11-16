@@ -42,10 +42,10 @@ void add_acyclic_test_regions(
     }
 }
 
-// Gives each listed bundle of a hand-built analysis a stable identity, as an
-// authored node has. Only then does its compiler-owned storage have a
-// migration identity.
-void add_identified_test_nodes(
+// These hand-built storage analyses describe ordinary, fully covered Tick
+// producers. Supply that coverage fact and the stable authored identity that
+// gives their compiler-owned storage a migration identity.
+void add_identified_tick_test_nodes(
     iv::graph_jit::detail::ConnectionAnalysisPlan& connections,
     std::initializer_list<iv::NodeBundleHandle> bundles)
 {
@@ -56,6 +56,7 @@ void add_identified_test_nodes(
                 .graph = "test",
                 .virtual_node = "node-" + std::to_string(bundle),
             },
+            .full_live_tick_coverage = true,
         });
     }
 }
@@ -873,7 +874,7 @@ TEST(GraphJitSampleStoragePlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     iv::NodeBundlePortId const source_port{1, iv::PortKind::sample, 0};
 
     ConnectionAnalysisPlan connections;
-    add_identified_test_nodes(connections, {1, 2});
+    add_identified_tick_test_nodes(connections, {1, 2});
     connections.schedule.bundle_execution_position.resize(3);
     connections.schedule.bundle_execution_position[1] = 0;
     connections.schedule.bundle_execution_position[2] = 1;
@@ -1036,7 +1037,7 @@ TEST(GraphJitSampleStoragePlan, ZeroInitializedFeedbackUsesProducerHomeAndCopies
     iv::NodeBundlePortId const source_port{1, iv::PortKind::sample, 0};
 
     ConnectionAnalysisPlan connections;
-    add_identified_test_nodes(connections, {1, 2, 3, 4});
+    add_identified_tick_test_nodes(connections, {1, 2, 3, 4});
     connections.schedule.bundle_execution_position.resize(5);
     connections.schedule.bundle_execution_position[1] = 0;
     connections.schedule.bundle_execution_position[2] = 1;
@@ -1207,7 +1208,7 @@ TEST(GraphJitSampleStoragePlan, DetachedCompositionUsesPersistentShiftedTimeline
     };
 
     ConnectionAnalysisPlan connections;
-    add_identified_test_nodes(connections, {1, 2, 3});
+    add_identified_tick_test_nodes(connections, {1, 2, 3});
     connections.schedule.bundle_execution_position.resize(4);
     connections.schedule.bundle_execution_position[1] = 0;
     connections.schedule.bundle_execution_position[2] = 1;
@@ -1343,6 +1344,7 @@ TEST(GraphJitSampleStoragePlan, DetachedCompositionUsesPersistentShiftedTimeline
         no_sample_representation);
     ASSERT_EQ(timeline.writer.composition_contributions.size(), 2u);
     auto const& left = timeline.writer.composition_contributions[0];
+    EXPECT_TRUE(left.coverage_sources.empty());
     EXPECT_EQ(left.source_layout.channel_type, iv::ChannelTypeId::mono);
     EXPECT_EQ(left.converted_layout.channel_type, iv::ChannelTypeId::mono);
     ASSERT_EQ(left.sources.size(), 1u);
@@ -1350,6 +1352,7 @@ TEST(GraphJitSampleStoragePlan, DetachedCompositionUsesPersistentShiftedTimeline
     EXPECT_EQ(left.sources[0].read_latency, 7u);
     EXPECT_EQ(left.target_channels, std::vector<std::size_t>{0u});
     auto const& right = timeline.writer.composition_contributions[1];
+    EXPECT_TRUE(right.coverage_sources.empty());
     EXPECT_EQ(right.source_layout.channel_type, iv::ChannelTypeId::mono);
     EXPECT_EQ(right.converted_layout.channel_type, iv::ChannelTypeId::mono);
     ASSERT_EQ(right.sources.size(), 1u);
@@ -1401,6 +1404,7 @@ TEST(GraphJitSampleStoragePlan, DetachedMixingAlignsUnequalSourceLatencies)
     };
 
     ConnectionAnalysisPlan connections;
+    add_identified_tick_test_nodes(connections, {1, 2, 3});
     connections.schedule.bundle_execution_position.resize(4);
     connections.schedule.bundle_execution_position[1] = 0;
     connections.schedule.bundle_execution_position[2] = 1;

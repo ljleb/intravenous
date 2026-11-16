@@ -171,6 +171,14 @@ keeps its authored callback, so `empty` segments have no coverage independently
 of its point Region. Existing boolean eligibility checks derive from
 `replay_mode != TickReplayMode::disabled`.
 
+Replayable Tick nodes cannot declare persisted outputs (owner decision,
+2026-11-15). Every output of an `input_union` or `full` node must be an
+**ephemeral Tick output**, for both continuous values and events. The static
+node declaration rejects a persisted output. An explicit recording node can
+retain the replayable node's output instead. This restriction applies only to
+its own outputs. A replayable Tick node can consume a persisted output from
+another node as a recorded dependency, using the selected retained-data view.
+
 For an `input_union` node with Sequential inputs A and B:
 
 | A | B | Tick computation | Output coverage |
@@ -212,6 +220,28 @@ contribution covers the position, and neither changes upstream coverage nor
 fabricates Regions. Live manual gestures and their explicit source override
 remain separate from this absence policy. Region/Coverage inputs have no
 manual-control interface.
+
+Public module inputs declare Sequential, Region or Coverage access (owner
+decision, 2026-11-15). Sequential is the default, as for leaf inputs. A module
+that forwards sparse Regions declares Region or Coverage access explicitly.
+These access declarations govern the public input's semantics rather than
+being discarded when the module is flattened. Region/Coverage public inputs
+preserve absence and do not expose manual controls.
+
+For a module's public Sequential input, resolution occurs before the module's
+internal routing, conversions and fan-out (owner decision, 2026-11-15).
+GraphJit retains an internal resolution stage for that input. It can share or
+inline the stage's work and select storage through its normal planning rules.
+Flattening module structure must not erase this resolution boundary or move
+its fallback to the final leaf inputs. The stage is not a visible project node
+or a new authored leaf-node interface.
+
+The resolved Sequential module input is a covered internal signal, including
+positions supplied by fallback (owner decision, 2026-11-15). An internal
+`input_union` Tick consumer therefore sees those positions as covered. This
+creates the module input's resolved signal without changing the original
+upstream output's coverage. Region/Coverage module inputs continue preserving
+absence.
 
 Automation is independent of destination controls: `empty` segments produce no
 coverage, `hold` segments produce constant values, and `bezier` segments
@@ -439,3 +469,35 @@ callbacks remain value-blind and one-shot. Implement the full dependency-ready
 feature across event declarations, trait/ABI bindings, scheduler, exact coverage,
 manual fallback, and automation rather than adding local compatibility
 workarounds that make those contracts appear implemented when they are not.
+
+### Full-coverage proof before feedback validation
+
+Accepted clarification, 2026-11-15: a Sequential/Tick SCC is not rejected just
+because it contains `input_union` nodes. The compiler first proves which live
+Tick outputs are fully covered and propagates that proof through generated
+union rules. One fully covered contribution reaching an input proves a
+union node's outputs full. The proof follows the actual port routes and
+channel composition. It does not infer an authored forward callback's result.
+
+Fully covered producers may be inside or outside the SCC. Even a component
+made entirely of `input_union` nodes can therefore have full coverage when an
+independent fully covered contribution reaches it. Reject only the recursive
+sparse-coverage dependencies that remain unresolved. Do not introduce delayed
+coverage history or a background fixed-point scheduler.
+
+This proof concerns live coverage. It does not make cyclic ephemeral value
+dependencies replayable; contextual background replay retains its separate
+acyclic-dependency requirement and selected persisted boundaries.
+
+### Playback preparation and missed background deadlines
+
+Owner decisions, 2026-11-15: prepare a successor's first playback window before
+activation while its predecessor continues playing. Adopt the graph and its
+matching immutable data/materialization selection at a whole-block boundary.
+Unchanged persisted output Regions and payload pages may be shared by both
+versions; changed dependencies invalidate only the affected prepared results.
+
+If an active graph later outruns background preparation, silence the affected
+playback block, report an underrun, and continue at the next ready block. Do
+not invoke the graph against unavailable covered data, wait on the audio
+thread, or substitute neutral/manual fallback for that unavailability.

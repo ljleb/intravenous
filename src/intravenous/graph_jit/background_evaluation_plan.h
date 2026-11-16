@@ -201,10 +201,15 @@ struct BackgroundPortPlan {
     bool authored_tock_output = false;
     bool persisted_tick_output = false;
     bool replayed_tick_output = false;
+    bool full_live_tick_coverage = false;
 
     // Sample-input neutral values are retained for uncovered-position playback at the
     // Tick invocation boundary. Event inputs use absence-of-events as neutral.
     Sample sample_neutral_value{};
+    // Reproducible Sequential fallback in this compiled semantic snapshot.
+    // Live knob interpolation uses the runtime control state instead.
+    Sample sample_fallback_value{};
+    std::optional<Sample> sample_manual_contribution{};
     // Authored Sequential-input history retained for callback-window playback.
     // Random Access inputs leave this at zero.
     std::size_t sequential_history = 0;
@@ -220,6 +225,9 @@ struct BackgroundPortPlan {
     // Output-only. Input ports have no retention contract.
     std::optional<OutputRetention> retention{};
     std::optional<StableOutputPortId> stable_identity{};
+    // A compiler-owned resolution output is identified by the authored public
+    // input it resolves. It is not an authored output or a concrete child.
+    std::optional<StableInputPortId> resolved_module_input{};
     // Input-only. This identifies the consumer-owned semantic input across
     // graph generations; the incoming connection set is deliberately not part
     // of the identity because rewiring is one of the changes being detected.
@@ -252,6 +260,7 @@ struct BackgroundNodePlan {
     SemanticNodeIndex semantic_node = 0;
     SemanticSccIndex semantic_scc = 0;
     std::optional<StableConcreteNodeId> stable_identity{};
+    std::optional<StableInputPortId> resolved_module_input{};
     // Local semantic equivalence is independent of upstream dependencies.
     // Primitive identity distinguishes concrete implementations within one
     // configured graph. Provider version changes on accepted code replacement.
@@ -268,6 +277,8 @@ struct BackgroundNodePlan {
     // boundary may have neither execution mode.
     bool authored_tock_execution = false;
     bool replays_tick = false;
+    bool full_live_tick_coverage = false;
+    bool tracks_live_tick_coverage = false;
     bool authored_forward_coverage = false;
     bool authored_reverse_coverage = false;
     bool uses_replay_forward_coverage = false;
@@ -308,6 +319,8 @@ struct EventDeliveryPlan {
     std::size_t semantic_source_index = 0;
     PlannedDeliveryMechanism mechanism =
         PlannedDeliveryMechanism::tick_to_sequential;
+
+    bool operator==(EventDeliveryPlan const&) const = default;
 };
 
 struct BackgroundConnectionPlan {
@@ -342,6 +355,8 @@ struct BackgroundConnectionPlan {
     EventConversionPlan event_conversion{};
     std::vector<EventDeliveryPlan> event_deliveries{};
     bool requires_conversion = false;
+
+    bool operator==(BackgroundConnectionPlan const&) const = default;
 };
 
 // These are immutable port-storage decisions. The
@@ -656,6 +671,9 @@ struct CoverageAccumulatorCounts {
 // Immutable topology and fixed-layout metadata retained by CompiledGraph. No
 // mutable coverage, data, validity, or transaction state belongs here.
 struct BackgroundEvaluationPlan {
+    // A root with sparse live inputs needs an exact selected coverage view
+    // before activation, independently of selected recorded-data coverage.
+    bool requires_live_tick_coverage = false;
     std::vector<SemanticNodePlan> semantic_nodes{};
     std::vector<SemanticSccPlan> semantic_sccs{};
     std::vector<SemanticSccIndex> semantic_condensation_order{};

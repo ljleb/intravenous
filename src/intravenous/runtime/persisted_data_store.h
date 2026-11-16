@@ -361,6 +361,12 @@ public:
                 });
         }
 
+        // Equality of immutable output ownership, not a comparison of bytes.
+        // False means dependencies must be invalidated even if values happen
+        // to compare equal. These operations run only on cold/background paths.
+        [[nodiscard]] bool shares_output_with(Snapshot const& other,
+            PersistedOutputHandle output) const noexcept;
+
         [[nodiscard]] IndexCoverage const* find_sample_coverage(
             PersistedOutputHandle output,
             ChannelLayout layout) const noexcept;
@@ -416,6 +422,11 @@ public:
 
         [[nodiscard]] PersistedDataVersion target_version() const noexcept;
         [[nodiscard]] Snapshot const& working_snapshot() const;
+
+        // Reuse one output's immutable Region/chunk/page roots from a prior
+        // selection belonging to the same store. Directory paths are copied;
+        // sample/event payloads and logical Region identity stay shared.
+        void reuse_output(Snapshot const& source, PersistedOutputHandle output);
 
         // Overwrite commits one positional Tick recording payload. Continuous
         // recording payloads are interleaved. A circular range is split at
@@ -503,6 +514,8 @@ private:
     std::uint32_t output_owner_token_ = 0;
     std::unique_ptr<Snapshot const> published_owner_{};
     std::atomic<Snapshot const*> published_{nullptr};
+    // Private preparations also need unique identities before publication.
+    std::atomic<std::uint64_t> last_candidate_revision_{0};
     std::vector<std::unique_ptr<Snapshot const>> retired_{};
     mutable std::mutex output_slots_mutex_{};
     std::vector<std::pair<PersistedOutputId, PersistedOutputHandle>>

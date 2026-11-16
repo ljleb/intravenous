@@ -108,6 +108,22 @@ public:
   constexpr EventOutputPortDescriptor event_output_descriptor(size_t) const;
 
   constexpr bool is_concrete() const;
+  // Present only in the compiler's private graph. The public input retains
+  // its authored identity; this concrete execution stage is not a project node.
+  constexpr std::optional<NodeBundlePortId> resolved_module_input() const {
+    return _resolved_module_input;
+  }
+  // Compiler-private resolution stages inherit their capacity from ingress.
+  constexpr void set_input_resolution_event_bounds(
+      double rate, std::optional<size_t> total_count) {
+    if (!_resolved_module_input || _resolved_module_input->port_kind != PortKind::event)
+      details::error("event bounds require a module-input resolution stage");
+    auto& ports = std::get<ConcreteNodeBundle>(*_payload).ports;
+    auto output = ports.event_output(0);
+    output.max_events_per_index = rate;
+    output.max_event_count = total_count;
+    ports.output_configs = {make_output_config(output)};
+  }
   constexpr bool is_tiled() const;
   constexpr bool is_boundary() const;
   constexpr bool is_subgraph() const;
@@ -172,6 +188,7 @@ private:
       : _payload(Payload{std::move(payload)}) {}
 
   std::optional<Payload> _payload{};
+  std::optional<NodeBundlePortId> _resolved_module_input{};
   std::vector<size_t> _virtual_node_handles{};
   NodeSourceAnnotations _source_annotations{};
 
@@ -239,6 +256,7 @@ struct ConfiguredNodeBundleRecord {
 // the duration of the for_each_configured_bundle callback, allowing freezing to
 // promote GraphBuilder storage directly without materializing an owning record.
 struct ConfiguredNodeBundleView {
+  std::optional<NodeBundlePortId> resolved_module_input{};
   ConfiguredNodeBundleKind kind = ConfiguredNodeBundleKind::boundary;
   NodePorts const* ports = nullptr;
   NodePortConstraints const* port_constraints = nullptr;
@@ -294,6 +312,12 @@ public:
   constexpr NodeBundleHandle append_scope_boundary();
 
   constexpr NodeBundleHandle append_concrete(ConcreteNode node);
+  constexpr NodeBundleHandle append_input_resolution(
+      ConcreteNode node, NodeBundlePortId public_input) {
+    auto const handle = append_concrete(std::move(node));
+    _bundles[handle]._resolved_module_input = public_input;
+    return handle;
+  }
   constexpr NodeBundleHandle append_tiled(
       std::span<NodeBundleHandle const>, ChannelLayout promoted_channel_layout);
   constexpr NodeBundleHandle append_subgraph(
@@ -1476,6 +1500,7 @@ constexpr void GraphBuilderNodeBundles::for_each_configured_bundle(
     Visitor&& visitor) const {
   for (auto const& bundle : _bundles) {
     ConfiguredNodeBundleView view{
+        .resolved_module_input = bundle._resolved_module_input,
         .virtual_node_handles = bundle._virtual_node_handles,
         .source_infos = bundle._source_annotations.infos,
     };

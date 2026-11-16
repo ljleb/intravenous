@@ -58,6 +58,10 @@ struct TickInvocationCall {
         random_access_event_inputs{};
     ReflectedSpan<TickSampleCaptureOperation const> sample_captures{};
     ReflectedSpan<TickEventCaptureOperation const> event_captures{};
+    // Exact semantic output coverage from the same pinned transaction as the
+    // input views above. Indices are compiler-owned output-change accumulator
+    // indices. Missing entries mean unknown coverage, never known absence.
+    ReflectedSpan<IndexCoverage const> output_coverages{};
 };
 
 static_assert(std::is_standard_layout_v<TickInvocationCall>);

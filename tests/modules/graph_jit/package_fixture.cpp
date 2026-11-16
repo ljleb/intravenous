@@ -5565,8 +5565,9 @@ struct ModuleBoundaryCoverageObserver {
 
 void multi_region_boundary_child_module(iv::GraphBuilder& graph)
 {
-    auto sample_input = graph.input<"samples", iv::Sample>();
-    auto event_input = graph.event_input<"events">(iv::EventTypeId::trigger);
+    auto sample_input = graph.input<"samples", iv::Sample>(iv::InputAccess::coverage);
+    auto event_input = graph.event_input<"events">(
+        iv::EventTypeId::trigger, iv::InputAccess::coverage);
     auto sample = graph.node<
         "iv.test.graph_jit.state_context.multi_region_coverage_consumer">();
     auto events = graph.node<
@@ -7456,6 +7457,75 @@ void replay_sequential_resolution_module(iv::GraphBuilder& graph) {
     graph.outputs();
 }
 IV_MODULE("iv.test.replay.sequential_resolution_module", replay_sequential_resolution_module);
+
+template<iv::TickReplayMode Mode>
+struct ReplayManualFallback {
+    static constexpr iv::TickReplayMode replay_mode = Mode;
+    // A nonzero neutral value must remain the combiner's identity, as the
+    // Sequential fan-in contract requires: combine(neutral, x) == x.
+    static constexpr iv::Sample shifted_add(iv::Sample left, iv::Sample right) noexcept {
+        return iv::Sample{left.value + right.value - 0.125f};
+    }
+    static constexpr auto inputs() {
+        return std::array{iv::input<iv::Sample>("gain", {
+            .default_value = 0.25f, .neutral_value = 0.125f,
+            .combine_values = &shifted_add,
+            .fallback = iv::SequentialFallback::manual_control})};
+    }
+    static constexpr auto outputs() {
+        return std::array{iv::output<iv::Sample>(Mode == iv::TickReplayMode::full
+            ? "manual-full" : "manual-union")};
+    }
+    void tick_block(iv::TickBlockContext<ReplayManualFallback> const& ctx) const {
+        auto input = ctx.template input<"gain">();
+        auto output = [&] {
+            if constexpr (Mode == iv::TickReplayMode::full) return ctx.template output<"manual-full">().block();
+            else return ctx.template output<"manual-union">().block();
+        }();
+        for (std::size_t frame = 0; frame < output.size(); ++frame)
+            output[frame] = iv::Sample{static_cast<float>(input.get_value(frame)) + 1.0f};
+    }
+};
+using ReplayManualFull = ReplayManualFallback<iv::TickReplayMode::full>;
+using ReplayManualUnion = ReplayManualFallback<iv::TickReplayMode::input_union>;
+IV_NODE("iv.test.replay.manual_full", ReplayManualFull);
+IV_NODE("iv.test.replay.manual_union", ReplayManualUnion);
+struct ReplayLiveProbe {
+    struct State { std::uint64_t calls = 0; std::array<float, 8> values{}; };
+    static constexpr auto inputs() { return std::array{iv::input<iv::Sample>("value")}; }
+    static constexpr auto outputs() { return std::tuple{}; }
+    void tick_block(iv::TickBlockContext<ReplayLiveProbe> const& ctx) const {
+        auto& state = ctx.state();
+        ++state.calls;
+        auto input = ctx.input<"value">();
+        for (std::size_t frame = 0; frame < std::min(state.values.size(), ctx.block_size); ++frame)
+            state.values[frame] = static_cast<float>(input.get_value(frame));
+    }
+};
+IV_NODE("iv.test.replay.live_probe", ReplayLiveProbe);
+void replay_module_manual_resolution(iv::GraphBuilder& graph) {
+    auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
+    auto direct = graph.node<"iv.test.replay.manual_full">();
+    direct(source);
+    auto module = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+        auto input = boundary.input<"boundary-gain", iv::Sample>(iv::InputAccess::sequential, {
+            .default_value = 0.5f, .fallback = iv::SequentialFallback::manual_control});
+        auto child = graph.node<"iv.test.replay.manual_union">();
+        child(input);
+        boundary.outputs(child);
+    }, "manual-resolution");
+    module(source);
+    auto direct_window = graph.node<"iv.test.replay.window">(std::int64_t{18}, std::uint64_t{8});
+    auto module_window = graph.node<"iv.test.replay.window">(std::int64_t{18}, std::uint64_t{8});
+    direct_window(direct);
+    module_window(module);
+    auto live_direct = graph.node<"iv.test.replay.live_probe">();
+    auto live_module = graph.node<"iv.test.replay.live_probe">();
+    live_direct(direct);
+    live_module(module);
+    graph.outputs();
+}
+IV_MODULE("iv.test.replay.module_manual_resolution", replay_module_manual_resolution);
 
 )cpp";
     static constexpr std::string_view internal_nodes = R"cpp(

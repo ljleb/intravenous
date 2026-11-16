@@ -481,7 +481,10 @@ struct BackgroundEvaluationCallFrame::ReplayFrameStorage {
     // Per Sequential input: upstream contribution coverage, or null when the
     // selection did not supply it, and the input's neutral fallback value.
     std::vector<IndexCoverage const*> sample_input_upstream{};
-    std::vector<Sample> sample_input_neutral{};
+    std::vector<Sample> sample_input_fallback{};
+    std::vector<std::optional<Sample>> sample_input_manual_contributions{};
+    std::vector<graph_jit::BackgroundPortIndex> sample_input_ports{};
+    graph_jit::SequentialInputCombineFunction combine_sequential_input = nullptr;
     std::vector<IndexCoverage const*> event_input_upstream{};
     std::vector<BindingAdapter*> event_output_adapters{};
 };
@@ -523,15 +526,35 @@ void BackgroundEvaluationCallFrame::prepare_replay(void* opaque)
                     }
                 }
             }
-            // The declared fallback. Only the neutral policy is implemented;
-            // manual-control fallback resolves here once it lands.
+            // Resolve only proven gaps, using the selected semantic snapshot's
+            // declared neutral or manual fallback. Missing selected data above
+            // remains an error even when a manual value is available.
             for (auto const gap : absent) {
                 for (GlobalIndex::extent_type offset = 0; offset < gap.extent; ++offset) {
                     auto const index = gap.begin.advanced_by(offset);
                     for (std::size_t channel = 0;
                          channel < channel_count(raw.layout); ++channel) {
-                        raw.at(index, channel) = replay.sample_input_neutral[input];
+                        raw.at(index, channel) = replay.sample_input_fallback[input];
                     }
+                }
+            }
+        }
+    }
+    for (std::size_t input = 0; input < replay.sample_input_storage.size(); ++input) {
+        auto const& manual = replay.sample_input_manual_contributions[input];
+        if (!manual) continue;
+        auto& raw = *replay.sample_input_storage[input];
+        for (auto const region : replay.regions) {
+            for (GlobalIndex::extent_type offset = 0; offset < region.extent; ++offset) {
+                auto const index = region.begin.advanced_by(offset);
+                for (std::size_t channel = 0; channel < channel_count(raw.layout); ++channel) {
+                    auto& target = raw.at(index, channel);
+                    if (replay.combine_sequential_input) {
+                        if (!replay.combine_sequential_input(replay.sample_input_ports[input],
+                                reinterpret_cast<std::byte*>(&target),
+                                reinterpret_cast<std::byte const*>(&*manual), sizeof(Sample)))
+                            throw std::runtime_error("Sequential replay rejected its manual contribution");
+                    } else target = target + *manual;
                 }
             }
         }
@@ -1368,7 +1391,10 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                         binding_slot < selection_.binding_upstream_coverage.size()
                             ? &selection_.binding_upstream_coverage[binding_slot]
                             : nullptr);
-                    storage.sample_input_neutral.push_back(port.sample_neutral_value);
+                    storage.sample_input_fallback.push_back(port.sample_fallback_value);
+                    storage.sample_input_manual_contributions.push_back(port.sample_manual_contribution);
+                    storage.sample_input_ports.push_back(binding.port);
+                    storage.combine_sequential_input = selection_.combine_sequential_input;
                     storage.sample_input_storage.push_back(std::move(raw));
                     ++sample_input;
                 } else {

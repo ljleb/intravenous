@@ -68,6 +68,9 @@ struct RealtimePortStateRequirement {
     std::size_t extent_samples = 0;
     std::size_t in_flight_samples = 0;
     std::optional<StableRealtimePortStateId> stable_identity{};
+    // Execution port 0 of an internal resolution stage is owned by this
+    // authored public input, whose semantic port index can differ from 0.
+    std::optional<StableInputPortId> resolved_module_input{};
 };
 
 struct RealtimePortStateRequirements {

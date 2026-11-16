@@ -571,9 +571,9 @@ try {
     throw;
 }
 PublicEventInputRef iv_builder_scope_event_input(
-    BuilderSession* value, BuilderScopeId scope, std::string_view name, EventTypeId type)
+    BuilderSession* value, BuilderScopeId scope, EventInputConfig config)
 try {
-    return session(value).scope_event_input(scope, name, type);
+    return session(value).scope_event_input(scope, std::move(config));
 } catch (...) {
     // An exception leaving a session operation fails the session.
     record_builder_failure(value, std::current_exception(), {});
@@ -730,7 +730,7 @@ try {
 }
 PublicEventInputRef GraphBuilder::event_input(EventTypeId type)
 try {
-    return details::iv_builder_scope_event_input(_session, _scope, {}, type);
+    return details::iv_builder_scope_event_input(_session, _scope, {.type = type});
 } catch (...) {
     // An exception leaving a session operation fails the session.
     details::record_builder_failure(_session, std::current_exception(), {});
@@ -747,9 +747,10 @@ try {
     throw;
 }
 PublicEventInputRef GraphBuilder::event_input_named(
-    std::string_view name, EventTypeId type)
+    std::string_view name, EventTypeId type, InputAccessKind access)
 try {
-    return details::iv_builder_scope_event_input(_session, _scope, name, type);
+    return details::iv_builder_scope_event_input(_session, _scope,
+        {.name = std::string(name), .type = type, .access = access});
 } catch (...) {
     // An exception leaving a session operation fails the session.
     details::record_builder_failure(_session, std::current_exception(), {});

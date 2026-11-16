@@ -1,5 +1,7 @@
 #pragma once
 
+#include <intravenous/graph/builder/input_declarations.h>
+
 #include <intravenous/graph/builder/output_refs.h>
 
 #include <cstdint>
@@ -73,12 +75,33 @@ public:
     requires(sizeof...(Types) != 0)
   PublicSampleInputRef input(
       typename ContinuousValueType<Types>::BoundaryInputOptions...);
+  template<details::ModuleInputAccess Access>
+  PublicSampleInputRef input(Access);
+  template<fixed_string Name, class ChannelType = mono, details::ModuleInputAccess Access>
+    requires requires { ChannelTypeTraits<ChannelType>::id; }
+  TypedPublicSampleInputRef<ChannelType> input(Access);
+  template<fixed_string Name, RegisteredContinuousValue... Types, details::ModuleInputAccess Access>
+    requires(sizeof...(Types) != 0)
+  PublicSampleInputRef input(Access);
+  template<fixed_string Name, RegisteredContinuousValue... Types, details::ModuleInputAccess Access>
+    requires(sizeof...(Types) != 0)
+  PublicSampleInputRef input(Access, details::module_input_options_t<Types, Access>...);
+  template<RegisteredContinuousValue... Types, details::ModuleInputAccess Access>
+    requires(sizeof...(Types) != 0)
+  PublicSampleInputRef input(Access);
+  template<RegisteredContinuousValue... Types, details::ModuleInputAccess Access>
+    requires(sizeof...(Types) != 0)
+  PublicSampleInputRef input(Access, details::module_input_options_t<Types, Access>...);
   PublicSampleInputRef input(Sample default_value,
       std::optional<Sample> min = std::nullopt,
       std::optional<Sample> max = std::nullopt);
   template<fixed_string Name>
   PublicEventInputRef event_input(EventTypeId type);
   PublicEventInputRef event_input(EventTypeId type);
+  template<fixed_string Name, details::ModuleInputAccess Access>
+  PublicEventInputRef event_input(EventTypeId, Access);
+  template<details::ModuleInputAccess Access>
+  PublicEventInputRef event_input(EventTypeId, Access);
 
   template<class... Refs> void outputs(Refs&&... refs);
   void outputs(std::initializer_list<NamedRef>);

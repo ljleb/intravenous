@@ -139,10 +139,6 @@ constexpr std::uint64_t imported_virtual_namespace =
 SamplePortRef GraphBuilderPublicPorts::add_continuous_input(
     GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
     ContinuousInputConfig config) {
-  if (!is_sequential(config)) {
-    details::error(
-        "graph and subgraph boundary inputs must use Sequential access");
-  }
   if (continuous_value_type_domain(config).empty()) {
     details::error(
         "graph and subgraph boundary inputs must declare a continuous value type");
@@ -156,9 +152,8 @@ SamplePortRef GraphBuilderPublicPorts::add_continuous_input(
 
 EventPortRef GraphBuilderPublicPorts::add_event_input(
     GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
-    std::string_view name, EventTypeId type) {
-  auto index = bundles.bundle(_boundary).append_boundary_event_input(
-      {.name = std::string(name), .type = type});
+    EventInputConfig config) {
+  auto index = bundles.bundle(_boundary).append_boundary_event_input(std::move(config));
   _event_input_source_infos.emplace_back();
   return builder.event_port_from_output(
       NodeBundlePortId{_boundary, PortKind::event, index});
@@ -441,11 +436,11 @@ PublicSampleInputRef GraphBuilderState::scope_input(
 }
 
 PublicEventInputRef GraphBuilderState::scope_event_input(
-    details::BuilderScopeId id, std::string_view name, EventTypeId type)
+    details::BuilderScopeId id, EventInputConfig config)
 {
   auto const index = frame_index(id);
   return PublicEventInputRef(_scopes[index].ports.add_event_input(
-      *this, _node_bundles, name, type));
+      *this, _node_bundles, std::move(config)));
 }
 
 void GraphBuilderState::scope_outputs(

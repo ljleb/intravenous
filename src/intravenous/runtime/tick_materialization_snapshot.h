@@ -211,6 +211,10 @@ class TickMaterializationSnapshot {
     PersistedDataVersion data_version_{};
     std::vector<TickMaterializedSampleInput> samples_{};
     std::vector<TickMaterializedEventInput> events_{};
+    // Semantic coverage selected with this snapshot's data version. Entries
+    // use BackgroundEvaluationPlan's output-change accumulator indices.
+    // An empty vector on an initial root means coverage is not yet known.
+    std::vector<IndexCoverage> output_coverages_{};
     std::unique_ptr<TickMaterializationSnapshot> retired_next_{};
 
     void validate() const;
@@ -247,6 +251,18 @@ public:
     [[nodiscard]] std::size_t event_count() const noexcept
     {
         return events_.size();
+    }
+
+    [[nodiscard]] std::span<IndexCoverage const> output_coverages() const noexcept
+    {
+        return output_coverages_;
+    }
+
+    // Transaction preparation only, before the snapshot is promoted. Replacing
+    // materialized Regions never changes these semantic coverage values.
+    void set_output_coverages(std::span<IndexCoverage const> coverage)
+    {
+        output_coverages_.assign(coverage.begin(), coverage.end());
     }
 
     [[nodiscard]] TickMaterializedSampleInput const* find_sample(

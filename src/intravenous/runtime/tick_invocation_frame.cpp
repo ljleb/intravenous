@@ -1677,6 +1677,9 @@ public:
             .random_access_event_inputs = event_views,
             .sample_captures = sample_captures,
             .event_captures = event_captures,
+            .output_coverages = materialization_matches
+                ? materialized.output_coverages()
+                : std::span<IndexCoverage const>{},
         };
     }
 };

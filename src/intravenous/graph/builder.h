@@ -10,6 +10,7 @@
 #include <intravenous/graph/builder/output_refs.h>
 #include <intravenous/graph/builder/session_ops.h>
 #include <intravenous/graph/builder/snapshot_error.h>
+#include <intravenous/graph/builder/input_declarations.h>
 #include <intravenous/graph/builder/subgraphs.hpp>
 #include <intravenous/graph/source_info.h>
 #include <intravenous/node/build_request.h>
@@ -94,7 +95,7 @@ void const* iv_builder_copy_immutable_data(
 PublicSampleInputRef iv_builder_scope_input(
     BuilderSession*, BuilderScopeId, ContinuousInputConfig);
 PublicEventInputRef iv_builder_scope_event_input(
-    BuilderSession*, BuilderScopeId, std::string_view, EventTypeId);
+    BuilderSession*, BuilderScopeId, EventInputConfig);
 void iv_builder_scope_outputs(
     BuilderSession*, BuilderScopeId, std::span<SampleOutputRequest const>);
 void iv_builder_scope_outputs(
@@ -123,52 +124,6 @@ bool iv_builder_connect_unary_sample(
 EventPortRef iv_builder_connect_unary_event(
     NodeRef const&, EventPortRef, std::string_view operation);
 
-template<RegisteredContinuousValue... Types>
-[[nodiscard]] ContinuousInputConfig make_boundary_input_config(
-    std::string_view name,
-    typename ContinuousValueType<Types>::BoundaryInputOptions... options)
-  requires(sizeof...(Types) != 0)
-{
-  auto authored = iv::input<Types...>(
-      std::string(name), InputAccess::sequential,
-      ContinuousValueType<Types>::boundary_input_sequential_options(
-          options)...);
-  return materialize_continuous_config(erase_port_config(authored));
-}
-
-template<RegisteredContinuousValue... Types>
-[[nodiscard]] ContinuousInputConfig make_boundary_input_config(
-    std::string_view name)
-  requires(sizeof...(Types) != 0)
-{
-  return make_boundary_input_config<Types...>(
-      name, typename ContinuousValueType<Types>::BoundaryInputOptions{}...);
-}
-
-[[nodiscard]] inline ContinuousInputConfig make_default_boundary_input_config(
-    std::string_view name, ChannelLayout channel_layout =
-        continuous_value_details::default_audio_channel_layout)
-{
-  using Options =
-      typename ContinuousValueType<DefaultContinuousValueType>::BoundaryInputOptions;
-  return make_boundary_input_config<DefaultContinuousValueType>(name, Options{
-      .channel_layout = channel_layout,
-  });
-}
-
-[[nodiscard]] inline ContinuousInputConfig make_sample_boundary_input_config(
-    std::string_view name, ChannelLayout channel_layout, Sample default_value,
-    std::optional<Sample> min, std::optional<Sample> max)
-{
-  return make_boundary_input_config<Sample>(name, {
-      .channel_layout = channel_layout,
-      .default_value = default_value,
-      .min = min.value_or(
-          -std::numeric_limits<Sample::storage>::infinity()),
-      .max = max.value_or(
-          std::numeric_limits<Sample::storage>::infinity()),
-  });
-}
 
 }
 
@@ -306,14 +261,58 @@ public:
     return input_named({}, details::make_boundary_input_config<Types...>(
         {}, std::move(options)...));
   }
+  template<details::ModuleInputAccess Access>
+  PublicSampleInputRef input(Access access) {
+    return input<Sample>(access);
+  }
+  template<fixed_string Name, class ChannelType = mono, details::ModuleInputAccess Access>
+    requires requires { ChannelTypeTraits<ChannelType>::id; }
+  TypedPublicSampleInputRef<ChannelType> input(Access access) {
+    return TypedPublicSampleInputRef<ChannelType>{input_named(Name.view(),
+        details::make_default_boundary_input_config(Name.view(), {
+            .channel_type = ChannelTypeTraits<ChannelType>::id,
+            .sample_layout = SampleStreamLayout::planar,
+        }, access))};
+  }
+  template<fixed_string Name, RegisteredContinuousValue... Types, details::ModuleInputAccess Access>
+    requires(sizeof...(Types) != 0)
+  PublicSampleInputRef input(Access access) {
+    return input_named(Name.view(),
+        details::make_boundary_input_config<Types...>(Name.view(), access));
+  }
+  template<fixed_string Name, RegisteredContinuousValue... Types, details::ModuleInputAccess Access>
+    requires(sizeof...(Types) != 0)
+  PublicSampleInputRef input(Access access, details::module_input_options_t<Types, Access>... options) {
+    return input_named(Name.view(), details::make_boundary_input_config<Types...>(
+        Name.view(), access, std::move(options)...));
+  }
+  template<RegisteredContinuousValue... Types, details::ModuleInputAccess Access>
+    requires(sizeof...(Types) != 0)
+  PublicSampleInputRef input(Access access) {
+    return input_named({}, details::make_boundary_input_config<Types...>({}, access));
+  }
+  template<RegisteredContinuousValue... Types, details::ModuleInputAccess Access>
+    requires(sizeof...(Types) != 0)
+  PublicSampleInputRef input(Access access, details::module_input_options_t<Types, Access>... options) {
+    return input_named({}, details::make_boundary_input_config<Types...>(
+        {}, access, std::move(options)...));
+  }
   PublicSampleInputRef input(Sample default_value,
       std::optional<Sample> min = std::nullopt,
       std::optional<Sample> max = std::nullopt);
   template<fixed_string Name>
   PublicEventInputRef event_input(EventTypeId type) {
-    return event_input_named(Name.view(), type);
+    return event_input_named(Name.view(), type, InputAccessKind::sequential);
   }
   PublicEventInputRef event_input(EventTypeId type);
+  template<fixed_string Name, details::ModuleInputAccess Access>
+  PublicEventInputRef event_input(EventTypeId type, Access) {
+    return event_input_named(Name.view(), type, details::module_input_access_kind<Access>());
+  }
+  template<details::ModuleInputAccess Access>
+  PublicEventInputRef event_input(EventTypeId type, Access) {
+    return event_input_named({}, type, details::module_input_access_kind<Access>());
+  }
 
   // A package definition ID is the only source-facing node-creation API.
   // Concrete node-type construction is deliberately private to lowering,
@@ -451,7 +450,7 @@ public:
 
   PublicSampleInputRef input_named(
       std::string_view, ContinuousInputConfig);
-  PublicEventInputRef event_input_named(std::string_view, EventTypeId);
+  PublicEventInputRef event_input_named(std::string_view, EventTypeId, InputAccessKind);
   void connect_sample_input(NodeBundlePortId, SamplePortRef);
   void connect_sample_input(NodeBundlePortId, std::span<SamplePortRef const>);
   void connect_event_input(NodeBundlePortId, EventPortRef);
@@ -895,6 +894,45 @@ inline PublicSampleInputRef SubgraphBuilder::input(
       _session, _scope, details::make_boundary_input_config<Types...>(
           {}, std::move(options)...));
 }
+template<details::ModuleInputAccess Access>
+inline PublicSampleInputRef SubgraphBuilder::input(Access access) {
+  return input<Sample>(access);
+}
+template<fixed_string Name, class ChannelType, details::ModuleInputAccess Access>
+  requires requires { ChannelTypeTraits<ChannelType>::id; }
+inline TypedPublicSampleInputRef<ChannelType> SubgraphBuilder::input(Access access) {
+  return TypedPublicSampleInputRef<ChannelType>{details::iv_builder_scope_input(
+      _session, _scope, details::make_default_boundary_input_config(Name.view(), {
+          .channel_type = ChannelTypeTraits<ChannelType>::id,
+          .sample_layout = SampleStreamLayout::planar,
+      }, access))};
+}
+template<fixed_string Name, RegisteredContinuousValue... Types, details::ModuleInputAccess Access>
+  requires(sizeof...(Types) != 0)
+inline PublicSampleInputRef SubgraphBuilder::input(Access access) {
+  return details::iv_builder_scope_input(_session, _scope,
+      details::make_boundary_input_config<Types...>(Name.view(), access));
+}
+template<fixed_string Name, RegisteredContinuousValue... Types, details::ModuleInputAccess Access>
+  requires(sizeof...(Types) != 0)
+inline PublicSampleInputRef SubgraphBuilder::input(
+    Access access, details::module_input_options_t<Types, Access>... options) {
+  return details::iv_builder_scope_input(_session, _scope,
+      details::make_boundary_input_config<Types...>(Name.view(), access, std::move(options)...));
+}
+template<RegisteredContinuousValue... Types, details::ModuleInputAccess Access>
+  requires(sizeof...(Types) != 0)
+inline PublicSampleInputRef SubgraphBuilder::input(Access access) {
+  return details::iv_builder_scope_input(_session, _scope,
+      details::make_boundary_input_config<Types...>({}, access));
+}
+template<RegisteredContinuousValue... Types, details::ModuleInputAccess Access>
+  requires(sizeof...(Types) != 0)
+inline PublicSampleInputRef SubgraphBuilder::input(
+    Access access, details::module_input_options_t<Types, Access>... options) {
+  return details::iv_builder_scope_input(_session, _scope,
+      details::make_boundary_input_config<Types...>({}, access, std::move(options)...));
+}
 inline PublicSampleInputRef SubgraphBuilder::input(
     Sample value, std::optional<Sample> min, std::optional<Sample> max) {
   return details::iv_builder_scope_input(_session, _scope,
@@ -905,10 +943,24 @@ inline PublicSampleInputRef SubgraphBuilder::input(
 }
 template<fixed_string Name>
 inline PublicEventInputRef SubgraphBuilder::event_input(EventTypeId type) {
-  return details::iv_builder_scope_event_input(_session, _scope, Name.view(), type);
+  return details::iv_builder_scope_event_input(_session, _scope,
+      {.name = std::string(Name.view()), .type = type});
 }
 inline PublicEventInputRef SubgraphBuilder::event_input(EventTypeId type) {
-  return details::iv_builder_scope_event_input(_session, _scope, {}, type);
+  return details::iv_builder_scope_event_input(_session, _scope, {.type = type});
+}
+template<fixed_string Name, details::ModuleInputAccess Access>
+inline PublicEventInputRef SubgraphBuilder::event_input(EventTypeId type, Access) {
+  return details::iv_builder_scope_event_input(_session, _scope, {
+      .name = std::string(Name.view()), .type = type,
+      .access = details::module_input_access_kind<Access>(),
+  });
+}
+template<details::ModuleInputAccess Access>
+inline PublicEventInputRef SubgraphBuilder::event_input(EventTypeId type, Access) {
+  return details::iv_builder_scope_event_input(_session, _scope, {
+      .type = type, .access = details::module_input_access_kind<Access>(),
+  });
 }
 template<class... Refs>
 inline void SubgraphBuilder::outputs(Refs&&... refs) {

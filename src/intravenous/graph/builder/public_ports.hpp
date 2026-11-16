@@ -41,7 +41,7 @@ public:
   SamplePortRef add_continuous_input(
       GraphBuilderState&, GraphBuilderNodeBundles&, ContinuousInputConfig);
   EventPortRef add_event_input(GraphBuilderState&, GraphBuilderNodeBundles&,
-      std::string_view, EventTypeId);
+      EventInputConfig);
   constexpr bool sample_outputs_defined() const;
   void define_sample_outputs(GraphBuilderState&, GraphBuilderNodeBundles&,
       GraphBuilderIdentity const&, std::span<OutputRefConfig const>);

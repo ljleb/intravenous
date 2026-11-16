@@ -1,5 +1,6 @@
 #include <intravenous/runtime/background_coverage_propagation.h>
 #include <intravenous/runtime/background_planning_scheduler.h>
+#include <intravenous/graph_jit/sequential_coverage.h>
 
 #include <algorithm>
 #include <map>
@@ -9,6 +10,7 @@
 #include <span>
 #include <stdexcept>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace iv {
@@ -130,6 +132,24 @@ bool shares_configuration_identity(
         && !left.owner_before(right) && !right.owner_before(left);
 }
 
+// Authored outputs and compiler-owned public-input resolution outputs occupy
+// separate identity domains. Never manufacture a concrete node/port index for
+// the latter just to make it fit StableOutputPortId.
+using BackgroundOutputIdentity = std::variant<graph_jit::StableOutputPortId, graph_jit::StableInputPortId>;
+std::optional<BackgroundOutputIdentity> background_output_identity(graph_jit::BackgroundPortPlan const& port)
+{
+    if (port.resolved_module_input) return BackgroundOutputIdentity{*port.resolved_module_input};
+    if (port.stable_identity) return BackgroundOutputIdentity{*port.stable_identity};
+    return std::nullopt;
+}
+using BackgroundNodeIdentity = std::variant<graph_jit::StableConcreteNodeId, graph_jit::StableInputPortId>;
+std::optional<BackgroundNodeIdentity> background_node_identity(graph_jit::BackgroundNodePlan const& node)
+{
+    if (node.resolved_module_input) return BackgroundNodeIdentity{*node.resolved_module_input};
+    if (node.stable_identity) return BackgroundNodeIdentity{*node.stable_identity};
+    return std::nullopt;
+}
+
 bool local_port_semantics_equal(
     graph_jit::BackgroundPortPlan const& current,
     graph_jit::BackgroundPortPlan const& previous)
@@ -144,13 +164,17 @@ bool local_port_semantics_equal(
         || current.authored_tock_output != previous.authored_tock_output
         || current.persisted_tick_output != previous.persisted_tick_output
         || current.replayed_tick_output != previous.replayed_tick_output
+        || current.full_live_tick_coverage != previous.full_live_tick_coverage
         || current.sample_neutral_value != previous.sample_neutral_value
+        || current.sample_fallback_value != previous.sample_fallback_value
+        || current.sample_manual_contribution != previous.sample_manual_contribution
         || current.sequential_history != previous.sequential_history
         || current.output_history != previous.output_history
         || current.output_latency != previous.output_latency
         || current.retention != previous.retention
         || current.sample_layout != previous.sample_layout
         || current.continuous_geometry != previous.continuous_geometry
+        || current.absolute_pace_exponent != previous.absolute_pace_exponent
         || current.ordering != previous.ordering
         || current.event_type != previous.event_type
         || current.max_events_per_index != previous.max_events_per_index
@@ -168,8 +192,8 @@ bool local_port_semantics_equal(
     return current.direction == graph_jit::PortDirection::input
         ? current.stable_input_identity == previous.stable_input_identity
             && current.stable_input_identity.has_value()
-        : current.stable_identity == previous.stable_identity
-            && current.stable_identity.has_value();
+        : background_output_identity(current) == background_output_identity(previous)
+            && background_output_identity(current).has_value();
 }
 
 bool node_ports_equal(
@@ -214,14 +238,16 @@ bool node_local_semantics_equal(
     bool local_semantic_environment_changed)
 {
     return !local_semantic_environment_changed
-        && current.implementation_identity == previous.implementation_identity
-        && current.provider_version != 0
-        && current.provider_version == previous.provider_version
-        && shares_configuration_identity(
-            current.configuration_identity,
-            previous.configuration_identity)
+        && ((current.resolved_module_input && current.resolved_module_input == previous.resolved_module_input)
+            || (!current.resolved_module_input && !previous.resolved_module_input
+                && current.implementation_identity == previous.implementation_identity
+                && current.provider_version != 0
+                && current.provider_version == previous.provider_version
+                && shares_configuration_identity(current.configuration_identity, previous.configuration_identity)))
         && current.authored_tock_execution == previous.authored_tock_execution
         && current.replays_tick == previous.replays_tick
+        && current.full_live_tick_coverage == previous.full_live_tick_coverage
+        && current.tracks_live_tick_coverage == previous.tracks_live_tick_coverage
         && current.authored_forward_coverage == previous.authored_forward_coverage
         && current.authored_reverse_coverage == previous.authored_reverse_coverage
         && current.uses_replay_forward_coverage
@@ -238,11 +264,15 @@ bool node_local_semantics_equal(
 IndexCoverage derive_input_coverage(
     graph_jit::BackgroundEvaluationPlan const& plan,
     std::span<IndexCoverage const> output_coverages,
-    graph_jit::BackgroundPortIndex input)
+    graph_jit::BackgroundPortIndex input,
+    bool live_tick = false,
+    std::vector<bool> const* ready_outputs = nullptr)
 {
     IndexCoverage result;
     auto const output_coverage = [&](graph_jit::BackgroundPortIndex output)
         -> IndexCoverage const& {
+        if (live_tick && plan.ports[output].full_live_tick_coverage)
+            return graph_jit::full_index_coverage();
         return output_coverages[
             *plan.ports[output].accumulators.output_change];
     };
@@ -253,29 +283,28 @@ IndexCoverage derive_input_coverage(
             && connection.sample_target_port == input
             && connection.sample_source_port_by_channel.size()
                 == connection.sample_read_latencies.size()) {
+            // Even an entirely unready projection is an exact route. Do not
+            // fall back to unioning its individually ready operands below:
+            // those operands must all exist for this projection to exist.
+            used_exact_routes = true;
             auto include_contribution = [&] (
                 std::span<std::size_t const> source_indices) {
-                IndexCoverage complete;
-                bool first_source = true;
+                std::vector<graph_jit::SequentialCoverageSource> sources;
+                sources.reserve(source_indices.size());
                 for (auto const source_index : source_indices) {
-                    if (source_index
-                            >= connection.sample_source_port_by_channel.size()
-                        || !connection.sample_source_port_by_channel[
-                            source_index]) {
+                    if (source_index >= connection.sample_source_port_by_channel.size())
                         continue;
-                    }
-                    auto const source = *connection
-                        .sample_source_port_by_channel[source_index];
-                    auto available = shifted_forward(
-                        output_coverage(source),
-                        connection.sample_read_latencies[source_index]);
-                    complete = first_source
-                        ? std::move(available)
-                        : complete & available;
-                    first_source = false;
-                    used_exact_routes = true;
+                    auto const source = connection.sample_source_port_by_channel[source_index];
+                    if (ready_outputs && source && !(*ready_outputs)[*source]
+                        && !(live_tick && plan.ports[*source].full_live_tick_coverage)) return;
+                    sources.push_back({
+                        .output_change = source && !(live_tick && plan.ports[*source].full_live_tick_coverage)
+                            ? plan.ports[*source].accumulators.output_change : std::nullopt,
+                        .read_latency = connection.sample_read_latencies[source_index],
+                    });
                 }
-                if (!first_source) result.include(complete);
+                result.include(graph_jit::projection_coverage(sources, output_coverages));
+                used_exact_routes = true;
             };
             if (connection.sample_projections.empty()) {
                 std::vector<std::size_t> source_indices(
@@ -288,23 +317,21 @@ IndexCoverage derive_input_coverage(
                 }
             }
         } else if (connection.kind == PortKind::event) {
-            IndexCoverage complete;
-            bool first_source = true;
             for (auto const& delivery : connection.event_deliveries) {
-                if (delivery.target_port != input || !delivery.source_port)
-                    continue;
-                auto const& available = output_coverage(*delivery.source_port);
-                complete = first_source
-                    ? available
-                    : complete & available;
-                first_source = false;
+                if (delivery.target_port != input) continue;
+                used_exact_routes = true;
+                if (ready_outputs && delivery.source_port && !(*ready_outputs)[*delivery.source_port]
+                    && !(live_tick && plan.ports[*delivery.source_port].full_live_tick_coverage)) continue;
+                if (delivery.source_port) result.include(output_coverage(*delivery.source_port));
+                else if (live_tick) result.include(graph_jit::full_index_coverage());
                 used_exact_routes = true;
             }
-            if (!first_source) result.include(complete);
         }
         if (!used_exact_routes) {
             for (auto const source : connection.source_coverage_ports) {
-                result.include(output_coverage(source));
+                if (!ready_outputs || (*ready_outputs)[source]
+                    || (live_tick && plan.ports[source].full_live_tick_coverage))
+                    result.include(output_coverage(source));
             }
         }
     }
@@ -483,7 +510,7 @@ std::vector<GlobalIndexRange> derive_input_regions(
 }
 
 struct StableSampleConnectionSource {
-    graph_jit::StableOutputPortId port{};
+    BackgroundOutputIdentity port{};
     std::size_t channel = 0;
     std::size_t read_latency = 0;
     graph_jit::PlannedDeliveryMechanism delivery =
@@ -493,7 +520,7 @@ struct StableSampleConnectionSource {
 };
 
 struct StableEventConnectionSource {
-    graph_jit::StableOutputPortId port{};
+    BackgroundOutputIdentity port{};
     EventTypeId source_type = EventTypeId::empty;
     EventConversionPlan conversion{};
     graph_jit::PlannedDeliveryMechanism delivery =
@@ -551,7 +578,7 @@ std::optional<StableInputConnectionDescription> describe_connection(
              index < connection.sample_source_channels.size(); ++index) {
             auto const source = connection.sample_source_port_by_channel[index];
             if (!source || *source >= plan.ports.size()
-                || !plan.ports[*source].stable_identity) {
+                || !background_output_identity(plan.ports[*source])) {
                 return std::nullopt;
             }
             auto const& configured_source = plan.ports[*source].configured_port;
@@ -562,7 +589,7 @@ std::optional<StableInputConnectionDescription> describe_connection(
                 return std::nullopt;
             }
             result.sample_sources.push_back({
-                .port = *plan.ports[*source].stable_identity,
+                .port = *background_output_identity(plan.ports[*source]),
                 .channel = connection.sample_source_channels[index].channel,
                 .read_latency = connection.sample_read_latencies[index],
                 .delivery = connection.sample_deliveries[index],
@@ -584,7 +611,7 @@ std::optional<StableInputConnectionDescription> describe_connection(
     for (auto const& delivery : connection.event_deliveries) {
         if (!delivery.target_port || *delivery.target_port != input) continue;
         if (!delivery.source_port || *delivery.source_port >= plan.ports.size()
-            || !plan.ports[*delivery.source_port].stable_identity) {
+            || !background_output_identity(plan.ports[*delivery.source_port])) {
             return std::nullopt;
         }
         auto const& configured_source =
@@ -594,7 +621,7 @@ std::optional<StableInputConnectionDescription> describe_connection(
             return std::nullopt;
         }
         result.event_sources.push_back({
-            .port = *plan.ports[*delivery.source_port].stable_identity,
+            .port = *background_output_identity(plan.ports[*delivery.source_port]),
             .source_type = delivery.source_type,
             .conversion = delivery.conversion,
             .delivery = delivery.mechanism,
@@ -773,18 +800,21 @@ bool BackgroundPropagationWorkspace::input_information_ready(
 {
     auto const& root = *planning_state_->root;
     auto const& planned = port(input);
+    if (root.live_tick_inputs_ && planned.input_access != InputAccessKind::sequential) return true;
     for (auto const connection_index : planned.incoming_connections) {
         auto const& connection = plan_->connections[connection_index];
         bool exact = false;
         if (connection.kind == PortKind::sample && connection.sample_target_port == input) {
             for (auto const source : connection.sample_source_port_by_channel) {
-                if (source && !root.output_ready_[*source]) return false;
+                if (source && !(root.live_tick_inputs_ && plan_->ports[*source].full_live_tick_coverage)
+                    && !root.output_ready_[*source]) return false;
             }
             exact = !connection.sample_source_port_by_channel.empty();
         } else if (connection.kind == PortKind::event) {
             for (auto const& delivery : connection.event_deliveries) {
                 if (delivery.target_port != input || !delivery.source_port) continue;
-                if (!root.output_ready_[*delivery.source_port]) return false;
+                if (!(root.live_tick_inputs_ && plan_->ports[*delivery.source_port].full_live_tick_coverage)
+                    && !root.output_ready_[*delivery.source_port]) return false;
                 exact = true;
             }
         }
@@ -889,6 +919,10 @@ void BackgroundPropagationWorkspace::before_metadata_read(void* opaque)
 void BackgroundPropagationWorkspace::mark_forward_pending(graph_jit::BackgroundNodeIndex node)
 {
     if (!planning_state_ || planning_state_->root != this) return;
+    auto const& planned = plan_->nodes[node];
+    if ((live_tick_inputs_ && (planned.authored_tock_execution || planned.full_live_tick_coverage))
+        || (!live_tick_inputs_ && planned.tracks_live_tick_coverage && !planned.replays_tick
+            && !planned.authored_tock_execution)) return;
     auto& operation = *planning_state_->group(this).forward[node];
     planning_state_->scheduler.schedule(operation);
     for (auto const output : plan_->nodes[node].outputs) {
@@ -911,10 +945,15 @@ PreparedCoveragePropagation BackgroundPropagationWorkspace::prepare_discovery(
     graph_jit::BackgroundPortIndex input, IndexCoverage const& requested)
 {
     BackgroundCoverageState snapshot;
-    snapshot.output_coverages_ = candidate_output_coverages_;
-    snapshot.output_region_ranges_ = candidate_output_region_ranges_;
+    snapshot.output_coverages_ = live_tick_inputs_ && selected_recording_
+        ? selected_recording_->output_coverages_ : candidate_output_coverages_;
+    snapshot.output_region_ranges_ = live_tick_inputs_ && selected_recording_
+        ? selected_recording_->output_region_ranges_ : candidate_output_region_ranges_;
     BackgroundPropagationWorkspace scope{*plan_, sample_rate_};
-    scope.planning_state_ = planning_state_;
+    // A live callback's Random Access discovery evaluates recorded dependencies,
+    // never the current Tick values used by its Sequential edges. Its recorded
+    // candidate is already complete, so it owns an independent discovery scope.
+    scope.planning_state_ = live_tick_inputs_ ? nullptr : planning_state_;
     CoveragePropagationRequest roots;
     roots.input_demands.push_back({.port = input, .required = requested});
     // Discovery completes only its explicit demand. Unrelated stale persisted
@@ -958,8 +997,10 @@ BackgroundPropagationWorkspace::port(graph_jit::BackgroundPortIndex index) const
     graph_jit::BackgroundPortIndex input) const
 {
     auto const& source = planning_state_ ? *planning_state_->root : *this;
-    return derive_input_coverage(
-        *plan_, source.candidate_output_coverages_, input);
+    auto const live = source.live_tick_inputs_ && port(input).input_access == InputAccessKind::sequential;
+    auto const selected = source.live_tick_inputs_ && !live && source.selected_recording_
+        ? source.selected_recording_->output_coverages() : std::span<IndexCoverage const>(source.candidate_output_coverages_);
+    return derive_input_coverage(*plan_, selected, input, live);
 }
 
 [[nodiscard]] std::vector<GlobalIndexRange>
@@ -967,14 +1008,22 @@ BackgroundPropagationWorkspace::input_regions(
     graph_jit::BackgroundPortIndex input) const
 {
     auto const& source = planning_state_ ? *planning_state_->root : *this;
-    return derive_input_regions(
-        *plan_, source.candidate_output_region_ranges_, input);
+    if (source.live_tick_inputs_ && port(input).input_access == InputAccessKind::sequential)
+        return coverage_regions(input_coverage(input));
+    auto const& regions = source.live_tick_inputs_ && source.selected_recording_
+        ? source.selected_recording_->output_region_ranges_ : source.candidate_output_region_ranges_;
+    return derive_input_regions(*plan_, regions, input);
 }
 
 void BackgroundPropagationWorkspace::activate_node(
     graph_jit::BackgroundNodeIndex node,
     graph_jit::BackgroundNodeActivity activity)
 {
+    auto const& planned = plan_->nodes[node];
+    if (activity == graph_jit::BackgroundNodeActivity::forward
+        && ((live_tick_inputs_ && (planned.authored_tock_execution || planned.full_live_tick_coverage))
+            || (!live_tick_inputs_ && planned.tracks_live_tick_coverage && !planned.replays_tick
+                && !planned.authored_tock_execution))) return;
     node_calls_[node].activity = node_calls_[node].activity | activity;
     if (!planning_state_) return;
     if (graph_jit::has_activity(activity, graph_jit::BackgroundNodeActivity::forward)) {
@@ -1377,8 +1426,37 @@ void publish_replay_outputs(ReflectedNodeForwardCoverageContext const& context,
 // position from the resolved inputs, but an output exists only where at least
 // one input has upstream coverage.
 void BackgroundPropagationWorkspace::replay_forward_coverage(
-    void*, ReflectedNodeForwardCoverageContext const& context)
+    void* opaque, ReflectedNodeForwardCoverageContext const& context)
 {
+    auto* workspace = static_cast<BackgroundPropagationWorkspace*>(opaque);
+    if (workspace && context.planning.owner) {
+        auto const* operation = static_cast<PlanningState::Operation*>(context.planning.owner);
+        auto const& node = workspace->plan_->nodes[operation->node];
+        if (std::ranges::any_of(node.inputs,
+                [&](auto input) { return workspace->port(input).sample_manual_contribution.has_value(); })) {
+            auto changed = replay_input_changes(context);
+            if (context.local_state_changed) changed = graph_jit::full_index_coverage();
+            publish_replay_outputs(context, graph_jit::full_index_coverage(), changed);
+            return;
+        }
+    }
+    if (workspace && workspace->live_tick_inputs_) {
+        auto const* operation = static_cast<PlanningState::Operation*>(context.planning.owner);
+        auto const& node = workspace->plan_->nodes[operation->node];
+        IndexCoverage known;
+        for (auto input : node.inputs) {
+            if (workspace->port(input).input_access != InputAccessKind::sequential) continue;
+            known.include(derive_input_coverage(*workspace->plan_, workspace->candidate_output_coverages_,
+                input, true, &workspace->output_ready_));
+        }
+        if (known == graph_jit::full_index_coverage()) {
+            // Known independent contributions already prove the union full.
+            // Other cyclic inputs need not be queried. Invalidation remains
+            // conservative without inferring a feedback fixed point.
+            publish_replay_outputs(context, known, known);
+            return;
+        }
+    }
     IndexCoverage coverage;
     for (auto const& input :
          static_cast<std::span<InputCoverageChange const>>(context.inputs)) {
@@ -1502,8 +1580,8 @@ void BackgroundPropagationWorkspace::initialize_calls()
             auto const& planned = port(port_index);
             auto const callback_input =
                 node.authored_tock_execution ? planned.random_access_input
-                : node.replays_tick          ? planned.replay_sequential_input || planned.random_access_input
-                                             : false;
+                : (node.replays_tick || node.tracks_live_tick_coverage)
+                    ? planned.accumulators.input_change.has_value() : false;
             if (!callback_input)
                 continue;
             auto const change_index = *planned.accumulators.input_change;
@@ -1528,8 +1606,8 @@ void BackgroundPropagationWorkspace::initialize_calls()
             auto const& planned = port(port_index);
             auto const callback_output =
                 node.authored_tock_execution ? planned.authored_tock_output
-                : node.replays_tick          ? planned.replayed_tick_output
-                                             : false;
+                : (node.replays_tick || node.tracks_live_tick_coverage)
+                    ? planned.accumulators.output_change.has_value() : false;
             if (!callback_output)
                 continue;
             auto const change_index = *planned.accumulators.output_change;
@@ -1549,6 +1627,7 @@ void BackgroundPropagationWorkspace::initialize_calls()
         }
 
         auto& frame = node_calls_[index];
+        frame.replay_context = this;
         frame.forward = ReflectedNodeForwardCoverageContext{
             .inputs = calls.sample_input_changes,
             .outputs = calls.sample_output_changes,
@@ -1602,7 +1681,7 @@ BackgroundCoverageState::prepare_migration_from(
 
     auto is_output = [](graph_jit::BackgroundPortPlan const& port) {
         return port.direction == graph_jit::PortDirection::output
-            && port.stable_identity
+            && background_output_identity(port)
             && port.accumulators.output_change;
     };
     auto compatible = [](graph_jit::BackgroundPortPlan const& current,
@@ -1622,15 +1701,15 @@ BackgroundCoverageState::prepare_migration_from(
     migration.current_plan = &current_plan;
     migration.previous_plan = &previous_plan;
 
-    std::map<graph_jit::StableOutputPortId, graph_jit::BackgroundPortIndex>
+    std::map<BackgroundOutputIdentity, graph_jit::BackgroundPortIndex>
         current_outputs;
-    std::map<graph_jit::StableOutputPortId, graph_jit::BackgroundPortIndex>
+    std::map<BackgroundOutputIdentity, graph_jit::BackgroundPortIndex>
         previous_outputs;
     for (graph_jit::BackgroundPortIndex index = 0;
          index < current_plan.ports.size(); ++index) {
         auto const& port = current_plan.ports[index];
         if (is_output(port)
-            && !current_outputs.emplace(*port.stable_identity, index).second) {
+            && !current_outputs.emplace(*background_output_identity(port), index).second) {
             throw std::invalid_argument(
                 "current background plan has duplicate stable output identity");
         }
@@ -1639,7 +1718,7 @@ BackgroundCoverageState::prepare_migration_from(
          index < previous_plan.ports.size(); ++index) {
         auto const& port = previous_plan.ports[index];
         if (is_output(port)
-            && !previous_outputs.emplace(*port.stable_identity, index).second) {
+            && !previous_outputs.emplace(*background_output_identity(port), index).second) {
             throw std::invalid_argument(
                 "previous background plan has duplicate stable output identity");
         }
@@ -1648,7 +1727,7 @@ BackgroundCoverageState::prepare_migration_from(
          current_index < current_plan.ports.size(); ++current_index) {
         auto const& current = current_plan.ports[current_index];
         if (!is_output(current)) continue;
-        auto const found = previous_outputs.find(*current.stable_identity);
+        auto const found = previous_outputs.find(*background_output_identity(current));
         if (found == previous_outputs.end()) continue;
         auto const& matched = previous_plan.ports[found->second];
         if (!compatible(current, matched)) continue;
@@ -1664,15 +1743,15 @@ BackgroundCoverageState::prepare_migration_from(
         });
     }
 
-    std::map<graph_jit::StableConcreteNodeId, graph_jit::BackgroundNodeIndex>
+    std::map<BackgroundNodeIdentity, graph_jit::BackgroundNodeIndex>
         current_nodes;
-    std::map<graph_jit::StableConcreteNodeId, graph_jit::BackgroundNodeIndex>
+    std::map<BackgroundNodeIdentity, graph_jit::BackgroundNodeIndex>
         previous_nodes;
     for (graph_jit::BackgroundNodeIndex index = 0;
          index < current_plan.nodes.size(); ++index) {
         auto const& node = current_plan.nodes[index];
-        if (node.stable_identity
-            && !current_nodes.emplace(*node.stable_identity, index).second) {
+        if (auto identity = background_node_identity(node); identity
+            && !current_nodes.emplace(*identity, index).second) {
             throw std::invalid_argument(
                 "current background plan has duplicate stable node identity");
         }
@@ -1680,8 +1759,8 @@ BackgroundCoverageState::prepare_migration_from(
     for (graph_jit::BackgroundNodeIndex index = 0;
          index < previous_plan.nodes.size(); ++index) {
         auto const& node = previous_plan.nodes[index];
-        if (node.stable_identity
-            && !previous_nodes.emplace(*node.stable_identity, index).second) {
+        if (auto identity = background_node_identity(node); identity
+            && !previous_nodes.emplace(*identity, index).second) {
             throw std::invalid_argument(
                 "previous background plan has duplicate stable node identity");
         }
@@ -1690,8 +1769,8 @@ BackgroundCoverageState::prepare_migration_from(
          current_index < current_plan.nodes.size(); ++current_index) {
         auto const& current = current_plan.nodes[current_index];
         graph_jit::BackgroundNodePlan const* matched = nullptr;
-        if (current.stable_identity) {
-            auto const found = previous_nodes.find(*current.stable_identity);
+        if (auto identity = background_node_identity(current)) {
+            auto const found = previous_nodes.find(*identity);
             if (found != previous_nodes.end()) {
                 matched = &previous_plan.nodes[found->second];
             }
@@ -1909,6 +1988,10 @@ BackgroundPropagationWorkspace::prepare(
                 "Background coverage request has the wrong port direction");
         }
     };
+    for (auto const node : request.forward_nodes) {
+        if (node >= node_calls_.size())
+            throw std::out_of_range("forward refresh node index is out of range");
+    }
     for (auto const node : request.locally_changed_nodes) {
         if (node >= node_calls_.size()) {
             throw std::out_of_range(
@@ -1949,13 +2032,22 @@ BackgroundPropagationWorkspace::prepare(
     } retire{*this};
     initialize_planning();
     reset(coverage);
+    for (auto const node : request.forward_nodes)
+        activate_node(node, graph_jit::BackgroundNodeActivity::forward);
     for (auto const node : request.locally_changed_nodes) {
         node_calls_[node].forward.local_state_changed = true;
         activate_node(node, graph_jit::BackgroundNodeActivity::forward);
     }
     for (auto const& root : request.output_changes) {
-        publish_output_coverage(root.port, root.coverage);
+        if (port(root.port).output_production == OutputProductionKind::tick)
+            publish_output_coverage(root.port, root.coverage);
+        else {
+            if (region_coverage(root.regions) != root.coverage)
+                throw std::invalid_argument("output root Regions differ from their coverage");
+            publish_output_regions(root.port, root.regions);
+        }
         publish_output_change(root.port, root.changed);
+        if (root.finalized) finalized_outputs_[root.port] = true;
     }
     for (auto const& root : request.input_changes) {
         set_input_change(root.port, root.regions, root.coverage, root.changed);
@@ -2121,11 +2213,10 @@ BackgroundPropagationWorkspace::prepare(
          index < plan_->ports.size(); ++index) {
         auto const& planned = plan_->ports[index];
         if (planned.direction == graph_jit::PortDirection::input) {
-            prepared.input_regions_by_port_[index] = derive_input_regions(
-                *plan_, candidate_output_region_ranges_, index,
-                &input_requirements_by_port_[index]);
-            prepared.input_coverages_by_port_[index] = derive_input_coverage(
-                *plan_, candidate_output_coverages_, index);
+            prepared.input_regions_by_port_[index] = live_tick_inputs_ ? input_regions(index)
+                : derive_input_regions(*plan_, candidate_output_region_ranges_, index,
+                    &input_requirements_by_port_[index]);
+            prepared.input_coverages_by_port_[index] = input_coverage(index);
             auto const& requested = input_selection_requests_by_port_[index];
             auto const regions = derive_input_regions(
                 *plan_, candidate_output_region_ranges_, index, &requested);
@@ -2158,6 +2249,61 @@ BackgroundPropagationWorkspace::prepare(
         prepared.node_activity_.push_back(activity);
     }
     return prepared;
+}
+
+PreparedCoveragePropagation BackgroundPropagationWorkspace::prepare_live_tick(
+    CompiledGraphBackgroundOperations const& operations,
+    BackgroundCoverageState const& coverage,
+    PreparedCoveragePropagation const& recording,
+    CoveragePropagationRequest const& changes,
+    bool initial,
+    BackgroundCoverageDiscovery discovery)
+{
+    live_tick_inputs_ = true;
+    selected_recording_ = &recording;
+    struct Restore {
+        BackgroundPropagationWorkspace& owner;
+        ~Restore() { owner.live_tick_inputs_ = false; owner.selected_recording_ = nullptr; }
+    } restore{*this};
+    CoveragePropagationRequest roots;
+    for (graph_jit::BackgroundNodeIndex node = 0; node < plan_->nodes.size(); ++node) {
+        auto const& planned = plan_->nodes[node];
+        if (!planned.tracks_live_tick_coverage || planned.full_live_tick_coverage) continue;
+        if (initial || std::ranges::contains(changes.forward_nodes, node)) roots.forward_nodes.push_back(node);
+        if (std::ranges::contains(changes.locally_changed_nodes, node)) roots.locally_changed_nodes.push_back(node);
+    }
+    for (auto const& change : changes.input_changes) {
+        if (!plan_->nodes[port(change.port).node].authored_tock_execution)
+            roots.input_changes.push_back(change);
+    }
+    // prepare() emits output_changes in logical-port order. Walk it once
+    // rather than searching the complete change list for every output.
+    auto changed = recording.result().output_changes.begin();
+    auto const changed_end = recording.result().output_changes.end();
+    for (graph_jit::BackgroundPortIndex index = 0; index < plan_->ports.size(); ++index) {
+        while (changed != changed_end && changed->port < index) ++changed;
+        auto const& planned = port(index);
+        if (planned.direction != graph_jit::PortDirection::output
+            || (!planned.authored_tock_output && !planned.full_live_tick_coverage)) continue;
+        OutputCoverageChangeRequest root{
+            .port = index,
+            .coverage = planned.full_live_tick_coverage ? graph_jit::full_index_coverage()
+                : recording.output_coverages_[output_index(index)],
+            .finalized = true,
+        };
+        auto const regions = recording.output_regions(index);
+        root.regions.assign(regions.begin(), regions.end());
+        if (changed != changed_end && changed->port == index)
+            root.changed = changed->changed;
+        roots.output_changes.push_back(std::move(root));
+    }
+    if (initial) {
+        BackgroundCoverageState baseline;
+        baseline.output_coverages_ = recording.output_coverages_;
+        baseline.output_region_ranges_ = recording.output_region_ranges_;
+        return prepare(operations, baseline, roots, {}, discovery);
+    }
+    return prepare(operations, coverage, roots, {}, discovery);
 }
 
 CoveragePropagationResult BackgroundPropagationWorkspace::commit(

@@ -1,5 +1,6 @@
 #include <intravenous/graph_jit/lowering_plan.h>
 #include <intravenous/graph_jit/activity_runtime.h>
+#include <intravenous/graph_jit/module_input_resolution_runtime.h>
 #include <intravenous/graph_jit/realtime_port_state_transition.h>
 #include <intravenous/graph_jit/sample_storage_plan.h>
 #include <intravenous/graph_jit/transient_arena_plan.h>
@@ -35,7 +36,8 @@ initialized_sequential_input_value(
     ContinuousValueStorageGeometry const& geometry,
     iv::details::SequentialInputInitialization initialization)
 {
-    if (!implementation || !implementation->host_initialize_sequential_input) {
+    if (!implementation || (!implementation->module_input_config
+        && !implementation->host_initialize_sequential_input)) {
         return std::unexpected(
             "GraphJit continuous input has no type-owned initializer");
     }
@@ -48,13 +50,13 @@ initialized_sequential_input_value(
             geometry.value_size_bytes,
             aligned,
             space)
-        || !implementation->host_initialize_sequential_input(
-            port,
-            geometry.value_type,
-            initialization,
-            static_cast<std::byte*>(aligned),
-            geometry.value_size_bytes,
-            geometry.elements_per_value)) {
+        || !(implementation->module_input_config
+            ? initialize_module_input_value(implementation->module_input_config,
+                geometry.value_type, initialization, static_cast<std::byte*>(aligned),
+                geometry.value_size_bytes, geometry.elements_per_value)
+            : implementation->host_initialize_sequential_input(port,
+                geometry.value_type, initialization, static_cast<std::byte*>(aligned),
+                geometry.value_size_bytes, geometry.elements_per_value))) {
         return std::unexpected(
             "GraphJit continuous input initializer rejected its resolved geometry");
     }
@@ -231,8 +233,9 @@ std::expected<GraphAnalysis, std::string> analyze_graph(
         }
         auto const has_tick = !implementation->tick_block.empty();
         auto const has_tock = !implementation->tock_coverage.empty();
-        if (!implementation->package || has_tick == has_tock
-            || !implementation->declare_node || !implementation->node_data) {
+        auto const intrinsic = implementation->resolved_module_input.has_value();
+        if ((!intrinsic && !implementation->package) || has_tick == has_tock
+            || !implementation->declare_node || (!intrinsic && !implementation->node_data)) {
             return std::unexpected(
                 "resolved primitive implementation is incomplete at the GraphJit lowering boundary");
         }
@@ -268,7 +271,7 @@ std::expected<GraphAnalysis, std::string> analyze_graph(
             return std::unexpected(
                 "resolved primitive has an inconsistent package callback family");
         }
-        if (primitive.node_size == 0) {
+        if (primitive.node_size == 0 && !intrinsic) {
             return std::unexpected("configured primitive has empty node configuration storage");
         }
 
@@ -326,7 +329,8 @@ std::expected<std::string, std::string> input_timeline_migration_identity(
         auto const& identity = *requirement.stable_identity;
         if (identity.direction != PortDirection::input
             || identity.kind != configured_port.port_kind
-            || identity.port_index != configured_port.port_index
+            || identity.port_index != (requirement.resolved_module_input
+                ? requirement.resolved_module_input->port_index : configured_port.port_index)
             || identity.role
                 != RealtimePortStateRole::sequential_input_history) {
             return std::unexpected(
@@ -431,7 +435,7 @@ std::expected<std::optional<std::size_t>, std::string> external_tick_sequential_
 // projection, so the resulting full-layout value can be combined with the
 // separately materialized background contribution at the callback boundary.
 std::expected<SampleConnectionPlan, std::string>
-realtime_sample_partition(SampleConnectionPlan const& connection)
+realtime_sample_partition(ConnectionAnalysisPlan const& plan, SampleConnectionPlan const& connection)
 {
     if (connection.detach || !connection.routed_contributions.empty()) {
         return std::unexpected(
@@ -455,6 +459,7 @@ realtime_sample_partition(SampleConnectionPlan const& connection)
     result.source_latency = 0;
     result.read_latency = 0;
 
+    std::vector<SequentialCoverageSource> projection_coverage;
     auto append_source = [&](std::size_t original_source,
                              std::span<std::size_t const> target_channels,
                              ChannelTypeId converted_type,
@@ -488,6 +493,7 @@ realtime_sample_partition(SampleConnectionPlan const& connection)
                     .coefficients = std::vector<float>(
                         coefficients.begin(), coefficients.end()),
                 },
+                .coverage_sources = projection_coverage,
             });
         return {};
     };
@@ -498,6 +504,17 @@ realtime_sample_partition(SampleConnectionPlan const& connection)
                                     std::span<std::size_t const> target_channels,
                                     SampleChannelTransformPlan const& transform)
         -> std::expected<void, std::string> {
+        projection_coverage.clear();
+        for (auto index : source_indices) {
+            if (index >= connection.source_channel_timings.size())
+                return std::unexpected("mixed sample projection lost a source timing");
+            auto coverage = sequential_source_coverage(plan, connection.source_channel_timings[index]);
+            if (!coverage) return std::unexpected(std::move(coverage.error()));
+            projection_coverage.push_back(*coverage);
+        }
+        if (std::ranges::none_of(projection_coverage,
+                [](auto const& source) { return source.output_change.has_value(); }))
+            projection_coverage.clear();
         auto const source_count = source_indices.size();
         auto const target_count = target_channels.size();
         if ((!transform.empty()
@@ -1521,7 +1538,12 @@ plan_sample_realtime_port_state_realizations(
                     source_port->node_bundle_handle,
                     &PlannedGraphNode::bundle)
                 : connections.nodes.end();
-            if (planned != connections.nodes.end() && planned->stable_identity) {
+            if (planned != connections.nodes.end() && planned->resolved_module_input) {
+                auto const& origin = *planned->resolved_module_input;
+                view.producer = StableOutputPortId{origin.node, origin.kind, origin.port_name, origin.port_index};
+                view.producer_channel = representation_channel;
+                view.producer_latency = 0;
+            } else if (planned != connections.nodes.end() && planned->stable_identity) {
                 auto const& bundle =
                     graph.node_bundles.bundle(source_port->node_bundle_handle);
                 if (bundle.is_concrete()) {
@@ -2165,7 +2187,10 @@ plan_event_realtime_port_state_realizations(
             };
             auto const planned = std::ranges::find(
                 connections.nodes, source.source.bundle, &PlannedGraphNode::bundle);
-            if (planned != connections.nodes.end() && planned->stable_identity) {
+            if (planned != connections.nodes.end() && planned->resolved_module_input) {
+                auto const& origin = *planned->resolved_module_input;
+                timing.producer = StableOutputPortId{origin.node, origin.kind, origin.port_name, origin.port_index};
+            } else if (planned != connections.nodes.end() && planned->stable_identity) {
                 auto const& bundle = graph.node_bundles.bundle(source.source.bundle);
                 if (bundle.is_concrete()) {
                     auto const outputs = bundle.concrete_ports().event_outputs();
@@ -2502,6 +2527,25 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
     for (std::size_t i = 0; i < analysis.primitives.size(); ++i) {
         auto const& primitive = analysis.primitives[i];
         auto const& implementation = *primitive.implementation;
+        if (implementation.resolved_module_input) {
+            auto add = [&](std::string const& symbol, CallbackImportAbi abi) {
+                if (symbol.empty()) return;
+                if (!std::ranges::any_of(plan.compiler_callbacks,
+                        [&](auto const& callback) { return callback.symbol == symbol; }))
+                    plan.compiler_callbacks.push_back({symbol, "module input resolution", abi});
+            };
+            add(implementation.tick_block, CallbackImportAbi::block);
+            add(implementation.tick_block_batch, CallbackImportAbi::batch);
+            add(implementation.combine_sequential_input_values, CallbackImportAbi::sequential_combine);
+            plan.primitive_callbacks.push_back({
+                .bundle = primitive.bundle.node_bundle,
+                .resolves_module_input = true,
+                .tick_block = implementation.tick_block,
+                .tick_block_batch = implementation.tick_block_batch,
+                .combine_sequential_input_values = implementation.combine_sequential_input_values,
+            });
+            continue;
+        }
         auto package_index = find_package_index(implementation.package);
         if (!package_index) return std::unexpected(std::move(package_index.error()));
         auto& package = package_group(*package_index);
@@ -2704,9 +2748,11 @@ std::expected<ConfigurationPlan, std::string> plan_node_configurations(
         auto const* first = static_cast<std::byte const*>(
             primitive.implementation->node_data);
         NodeConfigurationPlan node{
-            .bytes = std::vector<std::byte>(
-                first,
-                first + primitive.bundle.node_size),
+            .module_input_config = primitive.implementation->module_input_config
+                ? std::optional(*primitive.implementation->module_input_config) : std::nullopt,
+            .bytes = primitive.bundle.node_size
+                ? std::vector<std::byte>(first, first + primitive.bundle.node_size)
+                : std::vector<std::byte>{},
             .alignment = primitive.bundle.node_alignment,
             .tick_context_template = ReflectedNodeTickContext{
                 .sample_rate = input.specialization.sample_rate,
@@ -3278,6 +3324,26 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 return connection.target_port == target;
             });
     };
+    for (auto const& connection : connections.sample_connections) {
+        if (connection.destination_access != PlannedDestinationAccess::sequential) continue;
+        auto const primitive = primitive_index_for_bundle(connection.target_port.node_bundle_handle);
+        if (!primitive) continue;
+        auto& binding = plan.primitives[*primitive].inputs[connection.target_port.port_index];
+        auto projections = sequential_connection_coverage(connections, connection);
+        if (!projections) return std::unexpected(std::move(projections.error()));
+        binding.coverage_projections = std::move(*projections);
+        auto realtime = sequential_connection_coverage(connections, connection, true);
+        auto background = sequential_connection_coverage(connections, connection, false);
+        if (!realtime || !background)
+            return std::unexpected(realtime ? std::move(background.error()) : std::move(realtime.error()));
+        binding.realtime_coverage_projections = std::move(*realtime);
+        binding.background_coverage_projections = std::move(*background);
+        binding.resolves_coverage = std::ranges::any_of(binding.coverage_projections,
+            [](auto const& projection) {
+                return std::ranges::any_of(projection.sources,
+                    [](auto const& source) { return source.output_change.has_value(); });
+            });
+    }
     for (auto const& configured : input.graph.manual_controls) {
         if (input.graph.node_bundles.bundle(configured.input.node_bundle_handle).is_subgraph()) continue;
         auto const primitive = primitive_index_for_bundle(
@@ -3313,7 +3379,13 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 "GraphJit manual controls contain two values for one concrete input");
         }
         auto const connected = has_authored_connection(*primitive, port);
-        auto const participates = !connected
+        auto const fallback_only = connected
+            && sequential_input_metadata<Sample>(
+                sequential_input_properties(input_config)).fallback
+                    == SequentialFallback::manual_control
+            && !configured.override_connections
+            && configured.participation != ManualControlParticipation::participate_with_connections;
+        auto const participates = !connected || (fallback_only && binding.resolves_coverage)
             || configured.participation
                 == ManualControlParticipation::participate_with_connections;
         auto const control_index = plan.manual_controls.size();
@@ -3327,6 +3399,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                     || configured.dynamic
                     || realization.input(
                         configured.input.node_bundle_handle, port).history != 0),
+            .fallback_only = fallback_only,
         });
         plan.primitives[*primitive].inputs[port].manual_control = control_index;
     }
@@ -3692,6 +3765,45 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         if (!requested) return std::unexpected(std::move(requested.error()));
     }
 
+    // A Sequential input with sparse producers needs target-owned storage.
+    // Keep the original connection binding as an operand: writing a fallback
+    // into a shared producer alias would change its other consumers.
+    for (auto const& connection : connections.sample_connections) {
+        if (connection.destination_access != PlannedDestinationAccess::sequential) continue;
+        auto const primitive = primitive_index_for_bundle(connection.target_port.node_bundle_handle);
+        if (!primitive) continue;
+        auto& binding = plan.primitives[*primitive].inputs[connection.target_port.port_index];
+        if (!binding.resolves_coverage) continue;
+        // The timeline request records the binding's layout and history. A
+        // realtime-only connection otherwise receives them only after this
+        // planning step, so take them from the connection now.
+        binding.channel_layout = connection.target_layout;
+        binding.history = connection.target_history;
+        auto neutral = initialized_input_value(*primitive, connection.target_port.port_index,
+            iv::details::SequentialInputInitialization::neutral);
+        if (!neutral) return std::unexpected(std::move(neutral.error()));
+        binding.neutral_value = std::move(*neutral);
+        binding.fallback_value = binding.neutral_value;
+        if (binding.geometry.value_type == ContinuousValueTypeId::sample) {
+            auto config = input.graph.node_bundles.resolve_sample_input(connection.target_port).config;
+            auto const& metadata = sequential_input_metadata<Sample>(sequential_input_properties(config));
+            if (metadata.fallback == SequentialFallback::manual_control)
+                std::memcpy(binding.fallback_value.data(), &metadata.default_value, sizeof(Sample));
+            if (binding.manual_control) {
+                auto const& control = plan.manual_controls[*binding.manual_control];
+                // An explicit manual source is added after resolution. Do not
+                // also substitute it as the gap's fallback and count it twice.
+                if (control.participates && !control.fallback_only)
+                    binding.fallback_value = binding.neutral_value;
+            }
+        }
+        auto position = execution_position_for_bundle(connection.target_port.node_bundle_handle);
+        if (!position) return std::unexpected(std::move(position.error()));
+        auto requested = request_input_timeline(*primitive,
+            connection.target_port.port_index, *position);
+        if (!requested) return std::unexpected(std::move(requested.error()));
+    }
+
     auto storage_connections = connections;
     for (std::size_t connection_index = 0;
          connection_index < storage_connections.sample_connections.size();
@@ -3700,7 +3812,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             storage_connections.sample_connections[connection_index];
         if (has_realtime_delivery(connection)
             && !is_entirely_realtime_delivery(connection)) {
-            auto partitioned = realtime_sample_partition(connection);
+            auto partitioned = realtime_sample_partition(connections, connection);
             if (!partitioned) {
                 return std::unexpected(std::move(partitioned.error()));
             }
@@ -3741,6 +3853,69 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         for (auto const initial_value : initial_values) {
             if (!*initial_value) *initial_value = *neutral;
         }
+    }
+
+    // A module-input resolution stage with a disconnected input and a settled
+    // (or absent) knob outputs one constant. Its identity-mapped realtime
+    // consumers bind that constant immutably, as a disconnected leaf input
+    // with a settled knob does. The connection keeps its planned storage and
+    // the stage keeps running, so its shared output stays current for
+    // consumers that retain history. A dynamic variant aliases the same
+    // storage, so activation remains a code-only replacement.
+    std::vector<bool> settled_stage_connections(connections.sample_connections.size(), false);
+    for (auto const& target : validated_targets) {
+        auto const& connection = connections.sample_connections[target.connection_index];
+        if (connection.destination_access != PlannedDestinationAccess::sequential
+            || !is_entirely_realtime_delivery(connection)
+            || !connection.projection_contributions.empty()
+            || !connection.routed_contributions.empty()
+            || !connection.transform.empty()
+            || connection.detach
+            || connection.source_type != connection.target_type
+            || connection.source_channel_timings.empty()) continue;
+        auto const stage_bundle = connection.source_channel_timings.front().source.bundle;
+        bool one_stage_identity = true;
+        for (std::size_t channel = 0; channel < connection.source_channel_timings.size(); ++channel) {
+            auto const& timing = connection.source_channel_timings[channel];
+            one_stage_identity = one_stage_identity && timing.source.bundle == stage_bundle
+                && timing.source.channel == channel && !timing.detach;
+        }
+        if (!one_stage_identity) continue;
+        auto const stage = primitive_index_for_bundle(stage_bundle);
+        if (!stage || !analysis.primitives[*stage].implementation->resolved_module_input
+            || has_authored_connection(*stage, 0)) continue;
+        auto const& stage_input = plan.primitives[*stage].inputs[0];
+        if (stage_input.geometry != plan.primitives[target.target_primitive]
+                .inputs[target.target_port].geometry) continue;
+        auto value = initialized_input_value(*stage, 0,
+            iv::details::SequentialInputInitialization::disconnected);
+        if (!value) return std::unexpected(std::move(value.error()));
+        if (stage_input.manual_control) {
+            auto const& control = plan.manual_controls[*stage_input.manual_control];
+            if (control.configured.dynamic) continue;
+            if (control.participates) {
+                if (value->size() != sizeof(Sample)) continue;
+                std::memcpy(value->data(), &control.configured.settled_value, sizeof(Sample));
+            }
+        }
+        auto const position = execution_position_for_bundle(
+            analysis.primitives[target.target_primitive].bundle.node_bundle);
+        if (!position) return std::unexpected(std::move(position.error()));
+        auto const& config = input.graph.node_bundles.resolve_sample_input(connection.target_port).config;
+        disconnected_inputs.push_back(DisconnectedSampleInput{
+            .primitive = target.target_primitive,
+            .port = target.target_port,
+            .config = config,
+        });
+        constant_input_requests.push_back(SampleConstantInputRequest{
+            .channel_layout = config.channel_layout,
+            .geometry = stage_input.geometry,
+            .absolute_pace_exponent = plan.primitives[target.target_primitive]
+                .inputs[target.target_port].absolute_pace_exponent,
+            .default_value = std::move(*value),
+            .execution_position = *position,
+        });
+        settled_stage_connections[target.connection_index] = true;
     }
 
     auto storage = build_sample_storage_plan(
@@ -3804,6 +3979,8 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
     }
 
     for (auto const& target : validated_targets) {
+        // Bound below as an immutable constant, with the disconnected inputs.
+        if (settled_stage_connections[target.connection_index]) continue;
         if (target.connection_index
                 >= plan.storage.connection_representations.size()
             || target.connection_index
@@ -3989,7 +4166,19 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         } else if (binding.manual_control && !binding.invocation_supplied) {
             bool const boundary_only = plan.manual_controls[*binding.manual_control].boundary_source
                 && !has_authored_connection(timeline_input.primitive, timeline_input.port);
-            if (!boundary_only) binding.manual_operand_channels = std::move(binding.channels);
+            if (!boundary_only) {
+                binding.manual_operand_channels = std::move(binding.channels);
+                if (binding.resolves_coverage) {
+                    for (auto& operand : binding.manual_operand_channels)
+                        operand.frame_delay += binding.read_latency;
+                }
+            }
+        }
+        if (binding.resolves_coverage && !binding.invocation_supplied
+            && binding.manual_operand_channels.empty()) {
+            binding.coverage_operand_channels = std::move(binding.channels);
+            for (auto& operand : binding.coverage_operand_channels)
+                operand.frame_delay += binding.read_latency;
         }
         binding.channels.clear();
         binding.read_latency = 0;
@@ -4019,11 +4208,12 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                         return binding.channels.empty() && channels != 0;
                     }
                     // A slot-fed input without history reads the slot
-                    // directly; with history it reads its timeline.
+                    // directly. With history, or with sparse sources that
+                    // its timeline resolves, it reads that timeline.
                     if (binding.invocation_supplied) {
                         return channels != 0
                             && binding.realtime_operand_channels.empty()
-                            && (binding.history == 0
+                            && (binding.history == 0 && !binding.resolves_coverage
                                     ? binding.channels.empty()
                                     : bound);
                     }

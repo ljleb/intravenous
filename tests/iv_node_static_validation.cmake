@@ -79,3 +79,7 @@ expect_invalid(
 expect_invalid(
     invalid_replay_boolean.cpp
     "intrinsically_replayable was replaced by static constexpr TickReplayMode replay_mode")
+
+expect_invalid(
+    invalid_replay_persisted_output.cpp
+    "and declare only ephemeral Tick outputs")

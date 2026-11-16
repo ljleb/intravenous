@@ -1,8 +1,22 @@
 #include "test_support.h"
+#include <intravenous/graph_jit/sequential_coverage.h>
+
+#include <chrono>
+#include <thread>
 
 namespace iv::test::graph_jit_tests {
 
 namespace {
+
+iv::CompiledGraphBlockFunction observed_playback_root = nullptr;
+std::size_t observed_playback_calls = 0;
+void count_playback_root(iv::graph_jit::RealtimeRootPlan const* plan,
+    std::byte* storage, iv::graph_jit::TickInvocationCall const* invocation,
+    iv::GlobalIndex index, std::size_t count)
+{
+    ++observed_playback_calls;
+    observed_playback_root(plan, storage, invocation, index, count);
+}
 
 iv::IndexCoverage index_coverage(
     std::initializer_list<std::pair<std::int64_t, std::int64_t>> ranges)
@@ -551,6 +565,40 @@ TEST_F(GraphJitRuntimeFixture, GeneratedBackgroundRootsUseSuppliedBatchBindings)
     EXPECT_EQ(propagated.output_requirements[0].port, 0u);
     EXPECT_EQ(propagated.output_requirements[0].required, requested);
     workspace.discard(std::move(prepared));
+}
+
+TEST_F(GraphJitRuntimeFixture, PlaybackUnderrunSkipsTheGraphAndResumesForPreparedKnownGaps)
+{
+    auto compiled = compile(graph_jit_multi_region_module_id, 3003);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto graph = std::const_pointer_cast<iv::CompiledGraph>(compiled.compiled_graph);
+    ASSERT_FALSE(graph->background_evaluation_plan.tick_sequential_inputs.empty());
+    observed_playback_root = graph->root_operations.tick_block.function;
+    observed_playback_calls = 0;
+    graph->root_operations.tick_block.function = &count_playback_root;
+    iv::GraphExecutor executor{resources};
+    // The explicit reserve makes the outside-window case deterministic even
+    // while the actor runs. It includes real source Regions and known gaps.
+    executor.set_tick_materialization_demand(index_coverage({{10, 74}}));
+    ASSERT_EQ(executor.stage(graph), iv::GraphExecutorStageResult::accepted);
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    bool activated = false;
+    while (!(activated = executor.activate_pending(index(10)))
+        && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+    ASSERT_TRUE(activated);
+    executor.tick_block(index(10), 6);
+    EXPECT_EQ(observed_playback_calls, 1u);
+    EXPECT_EQ(executor.playback_underrun_blocks(), 0u);
+    executor.tick_block(index(1000), 6);
+    EXPECT_EQ(observed_playback_calls, 1u);
+    EXPECT_EQ(executor.playback_underrun_blocks(), 1u);
+    // [40,46) is genuinely uncovered but prepared. That is ordinary
+    // Sequential resolution, so it invokes the graph rather than underruns.
+    executor.tick_block(index(40), 6);
+    EXPECT_EQ(observed_playback_calls, 2u);
+    EXPECT_EQ(executor.playback_underrun_blocks(), 1u);
+    EXPECT_FALSE(executor.background_execution_failures().any());
 }
 
 TEST_F(GraphJitRuntimeFixture,
@@ -1705,6 +1753,120 @@ TEST_F(GraphJitRuntimeFixture, SuspendableForwardAndReverseCallbacksRetainTheirC
         *plan.nodes[found->node].tock_state_node));
     EXPECT_EQ(state.calls, 1u);
     EXPECT_FLOAT_EQ(state.first, 4.0f);
+}
+
+TEST_F(GraphJitRuntimeFixture, ReplayResolvesStoredManualFallbackBeforeModuleFanout)
+{
+    for (bool explicit_contribution : {false, true}) {
+        SCOPED_TRACE(explicit_contribution);
+        auto configured = std::make_shared<iv::ConfiguredGraph>(*configured_module_graph(
+            *revision, "iv.test.replay.module_manual_resolution"));
+        std::optional<iv::NodeBundleHandle> direct, module;
+        for (iv::NodeBundleHandle bundle = 0; bundle < configured->node_bundles.size(); ++bundle) {
+            auto const& candidate = configured->node_bundles.bundle(bundle);
+            if (candidate.is_concrete() && candidate.sample_output_count() == 1
+                && candidate.sample_output_config(0).name == "manual-full") direct = bundle;
+            if (candidate.is_subgraph() && candidate.sample_input_count() == 1
+                && configured->node_bundles.resolve_sample_input({bundle, iv::PortKind::sample, 0}).config.name == "boundary-gain")
+                module = bundle;
+        }
+        ASSERT_TRUE(direct);
+        ASSERT_TRUE(module);
+        configured->manual_controls.push_back({
+            .id = {.node = {.instance_id = "direct"}, .input_name = "gain"},
+            .input = {*direct, iv::PortKind::sample, 0}, .settled_value = 0.75f,
+            .participation = explicit_contribution
+                ? iv::ManualControlParticipation::participate_with_connections
+                : iv::ManualControlParticipation::disconnected_only,
+        });
+        configured->manual_controls.push_back({
+            .id = {.node = {.instance_id = "module"}, .input_name = "boundary-gain"},
+            .input = {*module, iv::PortKind::sample, 0}, .settled_value = 1.25f,
+        });
+        auto compiled = compile_graph(configured, 3004 + explicit_contribution);
+        ASSERT_TRUE(compiled.succeeded())
+            << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+        auto const& graph = *compiled.compiled_graph;
+        auto const& plan = graph.background_evaluation_plan;
+        iv::CoveragePropagationRequest roots;
+        for (std::size_t node = 0; node < plan.nodes.size(); ++node) roots.locally_changed_nodes.push_back(node);
+        std::vector<iv::graph_jit::BackgroundPortIndex> windows;
+        std::optional<iv::graph_jit::BackgroundPortIndex> child_output;
+        for (iv::graph_jit::BackgroundPortIndex port = 0; port < plan.ports.size(); ++port) {
+            if (plan.ports[port].direction != iv::graph_jit::PortDirection::output) continue;
+            if (plan.ports[port].name == "window") {
+                windows.push_back(port);
+                roots.output_demands.push_back({.port = port, .required = index_coverage({{18, 26}})});
+            }
+            if (plan.ports[port].name == "manual-union") child_output = port;
+        }
+        ASSERT_EQ(windows.size(), 2u);
+        ASSERT_TRUE(child_output);
+        iv::PersistedDataStore data;
+        iv::TickMaterializationStore materializations;
+        auto reader = data.register_reader();
+        auto tick_reader = data.register_reader();
+        auto materialization_reader = materializations.register_reader();
+        auto states = graph.tock_state_layout.create_storage(resources);
+        states.initialize();
+        iv::BackgroundCoverageState coverage{plan.accumulators.output_change_count};
+        iv::BackgroundPropagationWorkspace propagation{plan, graph.specialization.sample_rate};
+        for (auto port : plan.tick_sequential_inputs)
+            roots.input_demands.push_back({.port = port, .required = index_coverage({{18, 26}})});
+        iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data, materializations,
+            {.semantic_version = 1, .roots = std::move(roots)}};
+        auto result = transaction.execute();
+        ASSERT_TRUE(result) << result.error();
+        auto child_change = std::ranges::find(result->coverage.output_changes, *child_output,
+            &iv::PropagatedOutputChange::port);
+        ASSERT_NE(child_change, result->coverage.output_changes.end());
+        EXPECT_EQ(child_change->coverage, iv::graph_jit::full_index_coverage());
+        auto selected = reader.pin();
+        std::vector<std::vector<float>> actual;
+        for (auto port : windows) {
+            auto storage = std::ranges::find(plan.storage.ports, std::optional{port},
+                &iv::graph_jit::PortStoragePlan::output_port);
+            ASSERT_NE(storage, plan.storage.ports.end());
+            auto handle = data.resolve_output(iv::persisted_output_id(plan,
+                static_cast<iv::graph_jit::PortStorageIndex>(storage - plan.storage.ports.begin()), graph.project_generation));
+            auto region = selected->find_sample_region(handle, index(18));
+            ASSERT_NE(region, nullptr);
+            std::vector<float> values;
+            for (std::size_t offset = 0; offset < 8; ++offset)
+                values.push_back(static_cast<float>(region->at(index(18).advanced_by(offset), 0)));
+            actual.push_back(std::move(values));
+        }
+        std::vector<std::vector<float>> expected{
+            // The participating 0.75 combines with each covered value, and
+            // with the neutral value at gaps, through the input's combiner.
+            explicit_contribution ? std::vector<float>{1.75f, 1.75f, 5.625f, 6.625f, 7.625f, 8.625f, 1.75f, 1.75f}
+                : std::vector<float>{1.75f, 1.75f, 5, 6, 7, 8, 1.75f, 1.75f},
+            {2.25f, 2.25f, 5, 6, 7, 8, 2.25f, 2.25f},
+        };
+        std::ranges::sort(actual);
+        std::ranges::sort(expected);
+        EXPECT_EQ(actual, expected);
+
+        auto live_storage = graph.node_layout.create_storage(resources);
+        live_storage.initialize();
+        iv::TickInvocationWorkspace tick_workspace{plan, graph.project_generation, data,
+            graph.specialization.block_size, graph.root_operations.combine_sequential_input,
+            graph.root_operations.initialize_sequential_input};
+        iv::TickInvocationFrame frame{tick_reader, materialization_reader, tick_workspace, index(18), 8};
+        graph.root_operations.tick_block(live_storage.buffer().data(), &frame.call(), index(18), 8);
+        struct LiveProbeState { std::uint64_t calls; std::array<float, 8> values; };
+        std::vector<std::vector<float>> live;
+        for (std::size_t node = 0; node < graph.node_layout.nodes.size(); ++node) {
+            if (graph.node_layout.nodes[node].state_size != sizeof(LiveProbeState)) continue;
+            auto const* state = static_cast<LiveProbeState const*>(live_storage.state_ptr(node));
+            ASSERT_NE(state, nullptr);
+            EXPECT_EQ(state->calls, 1u);
+            live.emplace_back(state->values.begin(), state->values.end());
+        }
+        ASSERT_EQ(live.size(), 2u);
+        std::ranges::sort(live);
+        EXPECT_EQ(live, expected);
+    }
 }
 
 TEST_F(GraphJitRuntimeFixture, GeneratedReplayCoverageFollowsTheDeclaredTickReplayMode)

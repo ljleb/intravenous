@@ -88,17 +88,54 @@ public:
             graph.specialization.block_size)
     {}
 
+    // Publishes the windows as a background transaction would: each input's
+    // upstream outputs are covered exactly where its window is, and nowhere
+    // else. A Sequential input never treats unknown coverage as absence.
     void publish(
         std::vector<iv::TickMaterializedSampleInput> samples,
         std::vector<iv::TickMaterializedEventInput> events = {})
     {
-        (void)materializations_.promote(
-            std::make_unique<iv::TickMaterializationSnapshot>(
-                graph_.project_generation,
-                ++semantic_version_,
-                iv::PersistedDataVersion{},
-                std::move(samples),
-                std::move(events)));
+        auto const& plan = graph_.background_evaluation_plan;
+        std::vector<iv::IndexCoverage> output_coverages(
+            plan.accumulators.output_change_count);
+        auto include = [&](iv::graph_jit::BackgroundPortIndex output,
+                           iv::IndexCoverage const& available,
+                           std::size_t latency) {
+            auto const change = plan.ports.at(output).accumulators.output_change;
+            if (!change) return;
+            for (auto const region : available) {
+                output_coverages.at(*change).include(
+                    {region.begin.retreated_by(latency), region.extent});
+            }
+        };
+        for (auto const& sample : samples) {
+            for (auto const index : plan.ports.at(sample.port).incoming_connections) {
+                auto const& connection = plan.connections.at(index);
+                for (std::size_t source = 0;
+                     source < connection.sample_source_port_by_channel.size(); ++source) {
+                    if (!connection.sample_source_port_by_channel[source]) continue;
+                    include(*connection.sample_source_port_by_channel[source], sample.coverage,
+                        source < connection.sample_read_latencies.size()
+                            ? connection.sample_read_latencies[source] : 0);
+                }
+            }
+        }
+        for (auto const& event : events) {
+            for (auto const index : plan.ports.at(event.port).incoming_connections) {
+                for (auto const& delivery : plan.connections.at(index).event_deliveries) {
+                    if (delivery.target_port == event.port && delivery.source_port)
+                        include(*delivery.source_port, event.coverage, 0);
+                }
+            }
+        }
+        auto snapshot = std::make_unique<iv::TickMaterializationSnapshot>(
+            graph_.project_generation,
+            ++semantic_version_,
+            iv::PersistedDataVersion{},
+            std::move(samples),
+            std::move(events));
+        snapshot->set_output_coverages(output_coverages);
+        (void)materializations_.promote(std::move(snapshot));
     }
 
     template<class Storage>

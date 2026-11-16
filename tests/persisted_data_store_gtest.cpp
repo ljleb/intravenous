@@ -138,6 +138,56 @@ iv::PersistedEventChunk event_chunk(
     return result;
 }
 
+TEST(PersistedDataStore, ReusedOutputKeepsRegionStorageAndDoesNotRollBackAnotherOutput)
+{
+    using namespace iv;
+    PersistedDataStore store;
+    auto const samples = store.resolve_output(stable_output(PortKind::sample, "reused"));
+    auto const events = store.resolve_output(stable_output(PortKind::event, "unchanged-events"));
+    auto const recording = store.resolve_output(stable_output(PortKind::sample, "recording"));
+    auto seed = store.begin_candidate(1);
+    seed.overwrite(sample_region(samples, range(0, 4), 2.0f));
+    seed.overwrite(event_chunk(events, range(0, 4), {1, 3}));
+    seed.overwrite(sample_region(recording, range(0, 4), 5.0f));
+    ASSERT_EQ(store.publish(std::move(seed)), PersistedDataPublishResult::published);
+    auto reader = store.register_reader();
+    auto old = reader.pin();
+    auto const* region = old->find_sample_region(samples, index(1));
+    ASSERT_NE(region, nullptr);
+    auto const* data = region->storage_data();
+
+    auto edit = store.begin_candidate(2);
+    edit.overwrite(sample_region(samples, range(0, 4), 9.0f));
+    edit.overwrite(sample_region(recording, range(0, 4), 6.0f));
+    edit.erase_output(events);
+    ASSERT_EQ(store.publish(std::move(edit)), PersistedDataPublishResult::published);
+    auto reuse = store.begin_candidate(2);
+    EXPECT_FALSE(reuse.working_snapshot().shares_output_with(old.snapshot(), samples));
+    reuse.reuse_output(old.snapshot(), samples);
+    reuse.reuse_output(old.snapshot(), events);
+    EXPECT_TRUE(reuse.working_snapshot().shares_output_with(old.snapshot(), samples));
+    EXPECT_TRUE(reuse.working_snapshot().shares_output_with(old.snapshot(), events));
+    EXPECT_FALSE(reuse.working_snapshot().shares_output_with(old.snapshot(), recording));
+    auto const* retained = reuse.working_snapshot().find_sample_region(samples, index(1));
+    ASSERT_NE(retained, nullptr);
+    EXPECT_EQ(retained, region);
+    EXPECT_EQ(retained->storage_data(), data);
+    ASSERT_NE(reuse.working_snapshot().find_sample_region(recording, index(1)), nullptr);
+    EXPECT_EQ(reuse.working_snapshot().find_sample_region(recording, index(1))->at(index(1), 0), Sample{7.0f});
+    auto const* covered = reuse.working_snapshot().find_event_coverage(events, EventTypeId::trigger);
+    ASSERT_NE(covered, nullptr);
+    EXPECT_EQ(*covered, (IndexCoverage{range(0, 4)}));
+    ASSERT_EQ(store.publish(std::move(reuse)), PersistedDataPublishResult::published);
+    // The old root still observes its original recording while the successor
+    // keeps the more recent recording and shares the restored output pages.
+    EXPECT_EQ(old->find_sample_region(recording, index(1))->at(index(1), 0), Sample{6.0f});
+    PersistedDataStore foreign;
+    auto const foreign_output = foreign.resolve_output(stable_output(PortKind::sample, "foreign"));
+    auto wrong = foreign.begin_candidate(2);
+    EXPECT_THROW(wrong.reuse_output(old.snapshot(), samples), std::invalid_argument);
+    EXPECT_FALSE(old->shares_output_with(old.snapshot(), foreign_output));
+}
+
 TEST(TickMaterializationSnapshot,
      CarryForwardSharesOnlyRetainedRegionsNotReplacedByNewMaterialization)
 {
@@ -1527,6 +1577,29 @@ TEST(PersistedDataStore, RejectsInvalidPayloadsAndForeignHandles)
         std::invalid_argument);
 }
 
+TEST(PersistedDataStore, UnpublishedCandidatesHaveDistinctVersions)
+{
+    iv::PersistedDataStore store;
+    auto reader = store.register_reader();
+    auto current_reader = store.register_reader();
+    auto initial = reader.pin();
+    auto preview = store.begin_candidate(4);
+    auto discarded = store.begin_candidate(4);
+    auto published = store.begin_candidate(4);
+    auto const published_version = published.target_version();
+    EXPECT_NE(preview.target_version(), discarded.target_version());
+    EXPECT_NE(preview.target_version(), published_version);
+    EXPECT_NE(discarded.target_version(), published_version);
+    EXPECT_EQ(store.publish(std::move(published)),
+        iv::PersistedDataPublishResult::published);
+    auto current = current_reader.pin();
+    EXPECT_EQ(current->version(), published_version);
+    EXPECT_EQ(initial->version(), (iv::PersistedDataVersion{}));
+    auto next = store.begin_candidate(4);
+    EXPECT_GT(next.target_version().revision, published_version.revision);
+    EXPECT_NE(next.target_version(), preview.target_version());
+}
+
 TEST(PersistedDataStore, RejectsSecondCandidateFromTheSameBaseAsStale)
 {
     iv::PersistedDataStore store;
@@ -1773,6 +1846,92 @@ TEST(TickInvocationWorkspace,
     EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 0).value, 49.75f);
     EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 1).value, 59.75f);
     EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 2).value, -0.25f);
+}
+
+TEST(TickInvocationWorkspace, SemanticCoverageIsIndependentOfMaterializedRegions)
+{
+    auto plan = sequential_tick_sample_plan();
+    iv::PersistedDataStore data;
+    auto reader = data.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    auto snapshot = std::make_unique<iv::TickMaterializationSnapshot>(
+        1, 1, iv::PersistedDataVersion{},
+        std::vector<iv::TickMaterializedSampleInput>{
+            iv::make_tick_materialized_sample_input(
+                1, plan.ports[1].sample_layout, {0},
+                iv::IndexCoverage{range(4, 3)}, {40.0f, 50.0f, 60.0f})},
+        std::vector<iv::TickMaterializedEventInput>{});
+    std::array<iv::IndexCoverage, 2> exact{iv::IndexCoverage{range(4, 8)}, {}};
+    snapshot->set_output_coverages(exact);
+    EXPECT_FALSE(snapshot->find_sample(1)->coverage.contains(index(10)));
+    (void)materializations.promote(std::move(snapshot));
+    (void)materializations.reclaim_retired();
+
+    iv::TickInvocationWorkspace workspace{plan, 1, data, 4};
+    {
+        iv::TickInvocationFrame frame{
+            reader, materialization_reader, workspace, index(10), 1};
+        auto const coverage = static_cast<std::span<iv::IndexCoverage const>>(
+            frame.call().output_coverages);
+        ASSERT_EQ(coverage.size(), 2u);
+        EXPECT_EQ(coverage[0], exact[0]);
+        EXPECT_TRUE(coverage[0].contains(index(10)));
+        EXPECT_TRUE(coverage[1].empty());
+        // The selected data cannot supply this covered position. The coverage
+        // record must still report it as covered, rather than a fallback gap.
+        auto const inputs = static_cast<std::span<iv::ReflectedContinuousInputPortBinding const>>(
+            frame.call().sequential_sample_inputs);
+        ASSERT_EQ(inputs.size(), 1u);
+        EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 0).value, -0.25f);
+
+        auto replacement = std::make_unique<iv::TickMaterializationSnapshot>(
+            1, 1, iv::PersistedDataVersion{},
+            std::vector<iv::TickMaterializedSampleInput>{},
+            std::vector<iv::TickMaterializedEventInput>{});
+        std::array<iv::IndexCoverage, 2> changed{iv::IndexCoverage{range(20, 3)}, {}};
+        replacement->set_output_coverages(changed);
+        (void)materializations.promote(std::move(replacement));
+        EXPECT_EQ(materializations.reclaim_retired(), 0u);
+        EXPECT_EQ(coverage[0], exact[0]);
+    }
+    {
+        iv::TickInvocationFrame frame{
+            reader, materialization_reader, workspace, index(10), 1};
+        auto const coverage = static_cast<std::span<iv::IndexCoverage const>>(
+            frame.call().output_coverages);
+        ASSERT_EQ(coverage.size(), 2u);
+        EXPECT_EQ(coverage[0], iv::IndexCoverage{range(20, 3)});
+    }
+}
+
+TEST(TickInvocationWorkspace, UnknownOrMismatchedCoverageIsNotKnownEmpty)
+{
+    auto plan = sequential_tick_sample_plan();
+    iv::PersistedDataStore data;
+    auto reader = data.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    iv::TickInvocationWorkspace workspace{plan, 1, data, 4};
+    {
+        iv::TickInvocationFrame initial{
+            reader, materialization_reader, workspace, index(0), 1};
+        EXPECT_EQ(initial.call().output_coverages.size(), 0u);
+    }
+    auto check = [&](std::uint64_t generation, iv::PersistedDataVersion version) {
+        auto snapshot = std::make_unique<iv::TickMaterializationSnapshot>(
+            generation, version.semantic, version,
+            std::vector<iv::TickMaterializedSampleInput>{},
+            std::vector<iv::TickMaterializedEventInput>{});
+        std::array<iv::IndexCoverage, 1> known_empty{};
+        snapshot->set_output_coverages(known_empty);
+        (void)materializations.promote(std::move(snapshot));
+        iv::TickInvocationFrame frame{
+            reader, materialization_reader, workspace, index(0), 1};
+        EXPECT_EQ(frame.call().output_coverages.size(), 0u);
+    };
+    check(2, {});
+    check(1, {.semantic = 0, .revision = 1});
 }
 
 TEST(TickInvocationWorkspace,

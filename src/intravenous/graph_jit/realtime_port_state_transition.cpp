@@ -535,7 +535,8 @@ index_realizations(
         auto const& stable = *requirement.stable_identity;
         if (stable.direction != requirement.direction
             || stable.kind != requirement.configured_port.port_kind
-            || stable.port_index != requirement.configured_port.port_index
+            || stable.port_index != (requirement.resolved_module_input
+                ? requirement.resolved_module_input->port_index : requirement.configured_port.port_index)
             || stable.channel != requirement.channel
             || stable.role != requirement.role) {
             return std::unexpected(

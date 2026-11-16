@@ -158,6 +158,9 @@ struct RegionSpecializationOperation {
 };
 
 struct RegionSpecializationStepRequest {
+    // Compiler-owned Sequential public-input resolution: emit its copy in the
+    // region instead of requiring package bitcode or a native callback call.
+    bool resolves_module_input = false;
     std::shared_ptr<PackageRevision const> revision{};
     NodeCodeKey code_key{};
     std::uint64_t provider_version = 0;

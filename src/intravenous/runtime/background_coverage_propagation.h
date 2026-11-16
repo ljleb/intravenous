@@ -17,6 +17,10 @@ struct OutputCoverageChangeRequest {
     graph_jit::BackgroundPortIndex port = 0;
     IndexCoverage coverage{};
     IndexCoverage changed{};
+    std::vector<GlobalIndexRange> regions{};
+    // Exact outputs supplied by another selected domain are immutable for
+    // this forward traversal; no callback may replace their publication.
+    bool finalized = false;
 };
 
 struct OutputCoverageRequest {
@@ -38,6 +42,9 @@ struct InputCoverageRequest {
 
 struct CoveragePropagationRequest {
     std::vector<graph_jit::BackgroundNodeIndex> locally_changed_nodes{};
+    // Refresh forward metadata without claiming that node configuration or
+    // semantic local state changed.
+    std::vector<graph_jit::BackgroundNodeIndex> forward_nodes{};
     std::vector<InputCoverageChangeRequest> input_changes{};
     std::vector<OutputCoverageChangeRequest> output_changes{};
     std::vector<InputCoverageRequest> input_demands{};
@@ -219,6 +226,14 @@ public:
         return result_;
     }
 
+    // Exact semantic output coverage, indexed by output-change accumulator.
+    // These values belong to this prepared transaction, independently of how
+    // much of any output the transaction materializes.
+    [[nodiscard]] std::span<IndexCoverage const> output_coverages() const noexcept
+    {
+        return output_coverages_;
+    }
+
     [[nodiscard]] std::span<graph_jit::BackgroundNodeActivity const>
     node_activity() const noexcept
     {
@@ -338,6 +353,8 @@ class BackgroundPropagationWorkspace {
     std::vector<graph_jit::BackgroundNodeCall> node_calls_{};
     graph_jit::BackgroundEvaluationCall call_{};
     PlanningState* planning_state_ = nullptr;
+    bool live_tick_inputs_ = false;
+    PreparedCoveragePropagation const* selected_recording_ = nullptr;
     std::vector<MetadataRead> forward_reads_{};
     std::vector<MetadataRead> reverse_reads_{};
     std::vector<bool> output_ready_{};
@@ -431,10 +448,33 @@ public:
             CoveragePropagationRequest const& request,
             BackgroundCoverageDemandExpansion expansion = {},
             BackgroundCoverageDiscovery discovery = {});
+    // Same callbacks and routing algebra, with current Tick inputs instead of
+    // recording prefixes. Region/Coverage reads retain the recorded selection.
+    [[nodiscard]] PreparedCoveragePropagation prepare_live_tick(
+        CompiledGraphBackgroundOperations const& operations,
+        BackgroundCoverageState const& coverage,
+        PreparedCoveragePropagation const& recording,
+        CoveragePropagationRequest const& changes,
+        bool initial,
+        BackgroundCoverageDiscovery discovery = {});
+
     [[nodiscard]] CoveragePropagationResult
     commit(BackgroundCoverageState& coverage,
            PreparedCoveragePropagation&& prepared) noexcept;
     void discard(PreparedCoveragePropagation&& prepared) noexcept;
 };
 
+} // namespace iv
+
+namespace iv {
+// Generation-owned reusable state for the live Tick coverage selection. It is
+// committed with the recording transaction and read only through its snapshot.
+struct LiveTickCoverageState {
+    BackgroundCoverageState coverage;
+    BackgroundPropagationWorkspace propagation;
+    bool initialized = false;
+
+    LiveTickCoverageState(graph_jit::BackgroundEvaluationPlan const& plan, std::size_t rate)
+        : coverage(plan.accumulators.output_change_count), propagation(plan, rate) {}
+};
 } // namespace iv

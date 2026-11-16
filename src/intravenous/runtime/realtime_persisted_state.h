@@ -24,9 +24,12 @@ class RealtimePersistedState {
     PersistedDataStore::ReaderPin data_{};
     TickMaterializationStore::ReaderSlot materialization_slot_{};
     TickMaterializationStore::ReaderPin materialization_{};
-    std::unique_ptr<TickMaterializationSnapshot> owned_materialization_{};
+    std::shared_ptr<TickMaterializationSnapshot const> owned_materialization_{};
+    std::unique_ptr<TickMaterializationSnapshot> initial_materialization_{};
+    std::shared_ptr<PersistedDataStore::Snapshot const> owned_data_{};
     RealtimePersistedState* returned_next_ = nullptr;
     bool captured_ = false;
+    IndexCoverage prepared_playback_{};
 
     RealtimePersistedState(
         std::uint64_t generation,
@@ -59,10 +62,22 @@ public:
         std::uint64_t generation,
         PersistedDataStore& data);
 
+    [[nodiscard]] static std::unique_ptr<RealtimePersistedState> prepare_owned(
+        std::uint64_t generation,
+        std::shared_ptr<PersistedDataStore::Snapshot const> data,
+        std::shared_ptr<TickMaterializationSnapshot const> materialization);
+
     [[nodiscard]] bool capture_initial() noexcept;
 
     [[nodiscard]] std::expected<void, std::string>
     capture_current();
+
+    // Cold preparation sets the exact requested playback positions, including
+    // known gaps. Realtime checks this range without allocating.
+    void set_prepared_playback(IndexCoverage demand) { prepared_playback_ = std::move(demand); }
+    [[nodiscard]] bool prepares(GlobalIndexRange range) const noexcept {
+        return prepared_playback_.contains(range);
+    }
 
     [[nodiscard]] std::uint64_t generation() const noexcept
     {
@@ -72,16 +87,15 @@ public:
     [[nodiscard]] PersistedDataStore::Snapshot const& data() const noexcept
     {
         assert(captured_);
-        return data_.snapshot();
+        return owned_data_ ? *owned_data_ : data_.snapshot();
     }
 
     [[nodiscard]] TickMaterializationSnapshot const& materialization()
         const noexcept
     {
         assert(captured_);
-        return owned_materialization_
-            ? *owned_materialization_
-            : materialization_.snapshot();
+        return owned_materialization_ ? *owned_materialization_
+            : initial_materialization_ ? *initial_materialization_ : materialization_.snapshot();
     }
 };
 
@@ -118,6 +132,13 @@ public:
     // Realtime-pass-boundary operation. An incompatible pending root is
     // returned for background destruction and can never replace the active
     // view of a different execution generation.
+    // Transfer an already adopted initial selection to the executor's active
+    // mailbox. Only the realtime consumer calls this; no allocation occurs.
+    [[nodiscard]] std::unique_ptr<RealtimePersistedState> take_active() noexcept;
+    // Producer-side transfer after the consumer has acknowledged initial
+    // adoption. The initial mailbox then has no further realtime readers.
+    [[nodiscard]] std::unique_ptr<RealtimePersistedState> take_pending() noexcept;
+
     [[nodiscard]] RealtimePersistedState const* adopt(
         std::uint64_t generation) noexcept;
 

@@ -1443,6 +1443,19 @@ template<typename Node, typename State>
 }
 
 template<typename Node, typename State>
+[[nodiscard]] std::shared_ptr<State const> find_output_owner(
+    std::shared_ptr<Node const> root, std::uint8_t levels, std::uint32_t index)
+{
+    if (!output_directory_contains(levels, index)) return {};
+    while (root && levels != 0) {
+        auto const& children = std::get<typename Node::Children>(root->entries);
+        root = children[output_directory_digit(index, levels--)];
+    }
+    if (!root) return {};
+    return std::get<typename Node::Values>(root->entries)[index & output_directory_mask];
+}
+
+template<typename Node, typename State>
 [[nodiscard]] std::shared_ptr<Node const> put_output_node(
     std::shared_ptr<Node const> const& root,
     std::uint8_t level,
@@ -2138,6 +2151,45 @@ PersistedDataStore::Candidate::working_snapshot() const
 {
     if (!successor_) throw std::logic_error("persisted data candidate is empty");
     return *successor_;
+}
+
+bool PersistedDataStore::Snapshot::shares_output_with(
+    Snapshot const& other, PersistedOutputHandle output) const noexcept
+{
+    if (output_owner_token_ != other.output_owner_token_ || !output.valid()
+        || PersistedDataStore::output_owner_token(output) != output_owner_token_) return false;
+    auto const index = PersistedDataStore::output_directory_index(output);
+    if (output.kind() == PortKind::sample)
+        return find_output<SampleOutputNode, SampleOutputState>(sample_outputs_, sample_output_levels_, index)
+            == find_output<SampleOutputNode, SampleOutputState>(other.sample_outputs_, other.sample_output_levels_, index);
+    return find_output<EventOutputNode, EventOutputState>(event_outputs_, event_output_levels_, index)
+        == find_output<EventOutputNode, EventOutputState>(other.event_outputs_, other.event_output_levels_, index);
+}
+
+void PersistedDataStore::Candidate::reuse_output(Snapshot const& source, PersistedOutputHandle output)
+{
+    if (!successor_ || !store_->owns_output(output)
+        || source.output_owner_token_ != successor_->output_owner_token_)
+        throw std::invalid_argument("reused output does not belong to the candidate's data store");
+    if (successor_->shares_output_with(source, output)) return;
+    auto const index = PersistedDataStore::output_directory_index(output);
+    if (output.kind() == PortKind::sample) {
+        auto const* from = find_output<SampleOutputNode, SampleOutputState>(source.sample_outputs_, source.sample_output_levels_, index);
+        auto const* old = find_output<SampleOutputNode, SampleOutputState>(successor_->sample_outputs_, successor_->sample_output_levels_, index);
+        if (!from) { erase_output(output); return; }
+        successor_->sample_region_count_ = successor_->sample_region_count_ - (old ? old->region_count : 0) + from->region_count;
+        successor_->sample_outputs_ = put_output<SampleOutputNode, SampleOutputState>(
+            successor_->sample_outputs_, successor_->sample_output_levels_, index,
+            find_output_owner<SampleOutputNode, SampleOutputState>(source.sample_outputs_, source.sample_output_levels_, index));
+    } else {
+        auto const* from = find_output<EventOutputNode, EventOutputState>(source.event_outputs_, source.event_output_levels_, index);
+        auto const* old = find_output<EventOutputNode, EventOutputState>(successor_->event_outputs_, successor_->event_output_levels_, index);
+        if (!from) { erase_output(output); return; }
+        successor_->event_chunk_count_ = successor_->event_chunk_count_ - (old ? old->chunk_count : 0) + from->chunk_count;
+        successor_->event_outputs_ = put_output<EventOutputNode, EventOutputState>(
+            successor_->event_outputs_, successor_->event_output_levels_, index,
+            find_output_owner<EventOutputNode, EventOutputState>(source.event_outputs_, source.event_output_levels_, index));
+    }
 }
 
 void PersistedDataStore::Candidate::overwrite(PersistedSampleRegion record)
@@ -2936,14 +2988,19 @@ PersistedDataStore::Candidate PersistedDataStore::begin_candidate(
         throw std::invalid_argument(
             "persisted data candidate semantic version cannot move backwards");
     }
-    if (base->version_.revision == std::numeric_limits<std::uint64_t>::max()) {
-        throw std::overflow_error("persisted data revision is exhausted");
+    auto revision = last_candidate_revision_.load(std::memory_order_relaxed);
+    for (;;) {
+        if (revision == std::numeric_limits<std::uint64_t>::max()) {
+            throw std::overflow_error("persisted data revision is exhausted");
+        }
+        if (last_candidate_revision_.compare_exchange_weak(
+                revision, revision + 1, std::memory_order_relaxed)) break;
     }
 
     auto successor = std::make_unique<Snapshot>();
     successor->version_ = {
         .semantic = target_semantic_version,
-        .revision = base->version_.revision + 1,
+        .revision = revision + 1,
     };
     successor->output_owner_token_ = base->output_owner_token_;
     successor->sample_outputs_ = base->sample_outputs_;

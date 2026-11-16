@@ -1,4 +1,5 @@
 #include <intravenous/graph_jit/region_specialization_emit.h>
+#include <intravenous/graph/reflected_node_operations.h>
 
 #include <gtest/gtest.h>
 #include <llvm/IR/BasicBlock.h>
@@ -230,4 +231,51 @@ TEST(RegionSpecializationTarget, RetargetsDefinitionsAndPreservesExtraFeatures)
     EXPECT_EQ(
         declaration->getFnAttribute("target-cpu").getValueAsString(),
         "external-cpu");
+}
+
+TEST(RegionSpecializationSubstitution, EmitsModuleInputResolutionWithoutPackageCode)
+{
+    using namespace iv;
+    using namespace iv::graph_jit;
+    auto bytes = [](auto const& record) {
+        std::vector<std::byte> result(sizeof(record));
+        std::memcpy(result.data(), &record, sizeof(record));
+        return result;
+    };
+    ReflectedContinuousInputPortBinding input{};
+    ReflectedContinuousOutputPortBinding output{};
+    auto const geometry = *continuous_value_storage_geometry(continuous_value_type_id_v<Sample>, std::nullopt);
+    input.storage.geometry = output.storage.geometry = geometry;
+    input.storage.channels[0].value_capacity = 8;
+    input.storage.channels[0].value_stride_bytes = sizeof(Sample);
+    output.storage.channels[0].value_capacity = 4;
+    output.storage.channels[0].value_stride_bytes = sizeof(Sample);
+    input.read_latency = 2;
+    ReflectedNodeTickContext context{};
+    context.continuous_input_bindings = {nullptr, 1};
+    context.continuous_output_bindings = {nullptr, 1};
+    RegionSpecializationStepRequest step{
+        .resolves_module_input = true,
+        .input_channel_counts = {1}, .output_channel_counts = {1},
+        .inputs = bytes(input), .outputs = bytes(output), .context = bytes(context),
+        .begin_indices = {{.output = false, .binding = 0}, {.output = true, .binding = 0}},
+    };
+    RegionSpecializationRequest request{.quantum = 4, .steps = {std::move(step)}};
+    ASSERT_TRUE(region_specialization_request_is_complete(request));
+    EXPECT_FALSE(region_specialization_key(request).empty());
+    EXPECT_FALSE(region_specialization_structure_key(request).empty());
+    llvm::LLVMContext llvm_context;
+    llvm::Module module("module.input.resolution", llvm_context);
+    std::array<std::string, 1> symbols{};
+    auto emitted = emit_region_specialization(module, request, "resolved_input", symbols);
+    ASSERT_TRUE(emitted) << emitted.error();
+    std::string verification;
+    llvm::raw_string_ostream errors(verification);
+    EXPECT_FALSE(llvm::verifyModule(module, &errors)) << verification;
+    EXPECT_NE(module.getFunction("resolved_input"), nullptr);
+    for (auto const& function : module) {
+        EXPECT_TRUE(!function.isDeclaration() || function.isIntrinsic()) << function.getName().str();
+    }
+    request.steps[0].resolves_module_input = false;
+    EXPECT_FALSE(region_specialization_request_is_complete(request));
 }

@@ -116,6 +116,9 @@ class BackgroundEvaluationTransaction::Impl {
     PersistedDataStore::ReaderSlot reader_{};
     std::optional<PersistedDataStore::ReaderPin> pin_{};
     std::optional<PreparedCoveragePropagation> prepared_{};
+    std::unique_ptr<LiveTickCoverageState> owned_live_coverage_{};
+    LiveTickCoverageState* live_coverage_ = nullptr;
+    std::optional<PreparedCoveragePropagation> prepared_live_coverage_{};
     // The published Tick materialization of this generation, if any, and the
     // part of each demanded Tick Sequential input that it still represents.
     TickMaterializationSnapshot const* previous_materialization_ = nullptr;
@@ -128,9 +131,14 @@ class BackgroundEvaluationTransaction::Impl {
 
     void discard_prepared() noexcept
     {
-        if (!prepared_) return;
-        propagation_->discard(std::move(*prepared_));
-        prepared_.reset();
+        if (prepared_live_coverage_) {
+            live_coverage_->propagation.discard(std::move(*prepared_live_coverage_));
+            prepared_live_coverage_.reset();
+        }
+        if (prepared_) {
+            propagation_->discard(std::move(*prepared_));
+            prepared_.reset();
+        }
     }
 
     void release_reader() noexcept
@@ -705,6 +713,7 @@ class BackgroundEvaluationTransaction::Impl {
                     plan.runtime.bindings.size()),
             .binding_upstream_coverage =
                 std::vector<IndexCoverage>(plan.runtime.bindings.size()),
+            .combine_sequential_input = graph_->root_operations.combine_sequential_input,
             .sample_rate = graph_->specialization.sample_rate,
         };
         for (graph_jit::BackgroundPortIndex port = 0;
@@ -1210,6 +1219,7 @@ class BackgroundEvaluationTransaction::Impl {
             && graph_->background_evaluation_plan.ports.empty()
             && graph_->background_evaluation_plan.storage.ports.empty();
         auto const roots_are_empty = inputs_.roots.locally_changed_nodes.empty()
+            && inputs_.roots.forward_nodes.empty()
             && inputs_.roots.input_changes.empty()
             && inputs_.roots.output_changes.empty()
             && inputs_.roots.input_demands.empty()
@@ -1234,16 +1244,24 @@ class BackgroundEvaluationTransaction::Impl {
         auto decoded = decode_produced_records();
         if (!decoded) return std::unexpected(std::move(decoded.error()));
         std::optional<PersistedDataStore::Candidate> candidate;
-        if (!decoded->empty() || !inputs_.retired_outputs.empty()) {
+        if (!decoded->empty() || !inputs_.retired_outputs.empty() || inputs_.reusable_data) {
             candidate.emplace(data_->begin_candidate(semantic_version_));
             if (candidate->base_version() != base.version()) {
                 return BackgroundEvaluationResult{
                     .status = BackgroundEvaluationStatus::stale_base,
                 };
             }
-            for (auto const output : inputs_.retired_outputs) {
-                candidate->erase_output(output);
+            if (inputs_.reusable_data) {
+                auto const& plan = graph_->background_evaluation_plan;
+                for (graph_jit::PortStorageIndex storage = 0; storage < plan.storage.ports.size(); ++storage) {
+                    auto const& selected = plan.storage.ports[storage];
+                    if (selected.storage != graph_jit::PortStorageKind::persisted_data || !selected.output_port
+                        || !plan.ports[*selected.output_port].authored_tock_output) continue;
+                    candidate->reuse_output(*inputs_.reusable_data,
+                        data_->resolve_output(persisted_output_id(plan, storage, graph_->project_generation)));
+                }
             }
+            for (auto const output : inputs_.retired_outputs) candidate->erase_output(output);
             if (auto applied = apply_produced_records(
                     *decoded, candidate->working_snapshot(), *candidate);
                 !applied) {
@@ -1252,37 +1270,56 @@ class BackgroundEvaluationTransaction::Impl {
         }
         if (retirement_only) {
             auto const published = candidate->target_version();
-            if (data_->publish(std::move(*candidate))
-                == PersistedDataPublishResult::stale_base) {
-                return BackgroundEvaluationResult{
-                    .status = BackgroundEvaluationStatus::stale_base,
-                };
-            }
-            std::optional<std::uint64_t> promoted_tick_materialization;
-            if (materializations_) {
-                promoted_tick_materialization = materializations_->promote(
-                    std::make_unique<TickMaterializationSnapshot>(
-                        graph_->project_generation,
-                        semantic_version_,
-                        published,
-                        std::vector<TickMaterializedSampleInput>{},
-                        std::vector<TickMaterializedEventInput>{}));
-            }
-            return BackgroundEvaluationResult{
-                .status = BackgroundEvaluationStatus::committed,
-                .published_data = published,
-                .promoted_tick_materialization =
-                    promoted_tick_materialization,
-            };
+            if (data_->publish(std::move(*candidate)) == PersistedDataPublishResult::stale_base)
+                return BackgroundEvaluationResult{.status = BackgroundEvaluationStatus::stale_base};
+            std::optional<std::uint64_t> promoted;
+            if (materializations_) promoted = materializations_->promote(
+                std::make_unique<TickMaterializationSnapshot>(graph_->project_generation,
+                    semantic_version_, published, std::vector<TickMaterializedSampleInput>{},
+                    std::vector<TickMaterializedEventInput>{}));
+            return BackgroundEvaluationResult{.published_data = published,
+                .promoted_tick_materialization = promoted};
         }
-        working_data_ = candidate
-            ? &candidate->working_snapshot()
-            : &base;
-        if (materializations_) {
+        working_data_ = candidate ? &candidate->working_snapshot() : &base;
+        if (inputs_.reusable_materialization)
+            previous_materialization_ = inputs_.reusable_materialization;
+        if (materializations_ && !previous_materialization_) {
             auto const* published = materializations_->published_for_writer();
-            if (published
-                && published->generation() == graph_->project_generation) {
+            if (published && published->generation() == graph_->project_generation)
                 previous_materialization_ = published;
+        }
+        // Recording boundaries use the current canonical selection, even when
+        // unchanged Tock results are shared from a private successor preview.
+        // Once canonical evaluation is running for this generation, decoded
+        // queue records already provide its exact changed ranges. Re-scanning
+        // the whole recording here would invalidate unchanged materialization.
+        auto const& plan = graph_->background_evaluation_plan;
+        for (graph_jit::PortStorageIndex storage = 0; storage < plan.storage.ports.size(); ++storage) {
+            auto const& selected = plan.storage.ports[storage];
+            if (selected.storage != graph_jit::PortStorageKind::persisted_data || !selected.output_port) continue;
+            auto const port_index = *selected.output_port;
+            auto const& port = plan.ports[port_index];
+            if (!port.persisted_tick_output) continue;
+            if (!inputs_.reusable_data && previous_materialization_) continue;
+            auto const handle = data_->resolve_output(persisted_output_id(plan, storage, graph_->project_generation));
+            if (inputs_.reusable_data && inputs_.reusable_data->shares_output_with(base, handle)) continue;
+            auto lookup = [&](PersistedDataStore::Snapshot const& snapshot) {
+                return port.kind == PortKind::sample
+                    ? snapshot.find_sample_coverage(handle, port.sample_layout, port.continuous_geometry)
+                    : snapshot.find_event_coverage(handle, port.event_type);
+            };
+            auto const* current = lookup(base);
+            IndexCoverage changed = current ? *current : IndexCoverage{};
+            if (inputs_.reusable_data) {
+                if (auto old = lookup(*inputs_.reusable_data)) changed.include(*old);
+            }
+            auto existing = std::ranges::find(inputs_.roots.output_changes, port_index, &OutputCoverageChangeRequest::port);
+            if (existing == inputs_.roots.output_changes.end())
+                inputs_.roots.output_changes.push_back({.port = port_index,
+                    .coverage = current ? *current : IndexCoverage{}, .changed = std::move(changed)});
+            else {
+                // Decoded queue records already selected a newer working root.
+                existing->changed.include(changed);
             }
         }
         prepared_.emplace(
@@ -1343,6 +1380,18 @@ class BackgroundEvaluationTransaction::Impl {
             return std::unexpected(std::move(complete.error()));
         }
 
+        if (materializations_ && graph_->background_evaluation_plan.requires_live_tick_coverage) {
+            if (!live_coverage_) {
+                owned_live_coverage_ = std::make_unique<LiveTickCoverageState>(
+                    graph_->background_evaluation_plan, graph_->specialization.sample_rate);
+                live_coverage_ = owned_live_coverage_.get();
+            }
+            prepared_live_coverage_.emplace(live_coverage_->propagation.prepare_live_tick(
+                graph_->background_operations, live_coverage_->coverage, *prepared_, inputs_.roots,
+                !live_coverage_->initialized,
+                BackgroundCoverageDiscovery{.data = this, .materialize = &materialize_discovery}));
+        }
+
         std::unique_ptr<TickMaterializationSnapshot> tick_materialization;
         if (materializations_) {
             auto frozen = realization->make_tick_materialization_snapshot(
@@ -1353,6 +1402,8 @@ class BackgroundEvaluationTransaction::Impl {
                 return std::unexpected(std::move(frozen.error()));
             }
             tick_materialization = std::move(*frozen);
+            tick_materialization->set_output_coverages(prepared_live_coverage_
+                ? prepared_live_coverage_->output_coverages() : prepared_->output_coverages());
             if (previous_materialization_
                 && !materialization_retention_.empty()) {
                 auto const append_ranges = [](
@@ -1409,6 +1460,31 @@ class BackgroundEvaluationTransaction::Impl {
             }
         }
 
+        if (inputs_.prepare_only) {
+            if (candidate) {
+                if (auto staged = realization->stage_persisted_data(*candidate); !staged)
+                    return std::unexpected(std::move(staged.error()));
+            }
+            if (!data_->is_current(base)) {
+                discard_prepared();
+                return BackgroundEvaluationResult{.status = BackgroundEvaluationStatus::stale_base};
+            }
+            auto selected = std::make_unique<PersistedDataStore::Snapshot>(
+                candidate ? candidate->working_snapshot() : base);
+            auto result = propagation_->commit(*coverage_, std::move(*prepared_));
+            prepared_.reset();
+            if (prepared_live_coverage_) {
+                (void)live_coverage_->propagation.commit(live_coverage_->coverage,
+                    std::move(*prepared_live_coverage_));
+                prepared_live_coverage_.reset();
+                live_coverage_->initialized = true;
+            }
+            return BackgroundEvaluationResult{
+                .coverage = std::move(result),
+                .prepared_data = std::move(selected),
+                .prepared_materialization = std::move(tick_materialization),
+            };
+        }
         std::optional<PersistedDataVersion> published;
         if (candidate) {
             if (auto staged = realization->stage_persisted_data(*candidate);
@@ -1436,6 +1512,12 @@ class BackgroundEvaluationTransaction::Impl {
                 std::move(tick_materialization));
         }
 
+        if (prepared_live_coverage_) {
+            (void)live_coverage_->propagation.commit(live_coverage_->coverage,
+                std::move(*prepared_live_coverage_));
+            prepared_live_coverage_.reset();
+            live_coverage_->initialized = true;
+        }
         auto result = propagation_->commit(*coverage_, std::move(*prepared_));
         prepared_.reset();
         return BackgroundEvaluationResult{
@@ -1454,7 +1536,8 @@ public:
          TickMaterializationStore* materializations,
          BackgroundTransactionInputs inputs,
          std::span<BackgroundProducedInputRoute const> produced_routes = {},
-         std::span<PinnedBlockPrefix const> produced_prefixes = {})
+         std::span<PinnedBlockPrefix const> produced_prefixes = {},
+         LiveTickCoverageState* live_coverage = nullptr)
         : graph_(&graph)
         , tock_states_(&tock_states)
         , coverage_(&coverage)
@@ -1464,6 +1547,7 @@ public:
         , inputs_(std::move(inputs))
         , produced_routes_(produced_routes)
         , produced_prefixes_(produced_prefixes)
+        , live_coverage_(live_coverage)
     {}
 
     ~Impl()
@@ -1525,7 +1609,8 @@ BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
     TickMaterializationStore& materializations,
     BackgroundTransactionInputs inputs,
     std::span<BackgroundProducedInputRoute const> produced_routes,
-    std::span<PinnedBlockPrefix const> produced_prefixes)
+    std::span<PinnedBlockPrefix const> produced_prefixes,
+    LiveTickCoverageState* live_coverage)
     : impl_(std::make_unique<Impl>(
         graph,
         tock_states,
@@ -1535,7 +1620,8 @@ BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
         &materializations,
         std::move(inputs),
         produced_routes,
-        produced_prefixes))
+        produced_prefixes,
+        live_coverage))
 {}
 
 BackgroundEvaluationTransaction::~BackgroundEvaluationTransaction() = default;

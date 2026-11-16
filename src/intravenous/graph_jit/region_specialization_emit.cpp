@@ -502,7 +502,7 @@ emit_region_specialization(
             local.begin_bases.push_back(builder.CreateLoad(
                 i64, emit.at(begin_bases, begin_index++ * sizeof(std::uint64_t))));
         }
-        local.tick_block = module.getOrInsertFunction(
+        if (!step.resolves_module_input) local.tick_block = module.getOrInsertFunction(
             tick_blocks[index],
             package_callback_type(context, CallbackImportAbi::block));
         locals.push_back(std::move(local));
@@ -731,9 +731,52 @@ emit_region_specialization(
                  block_size});
             manual_controls_call->setDoesNotThrow();
         }
-        auto* call = builder.CreateCall(
-            local.tick_block, {local.node_data, local.context, slice, count});
-        call->setDoesNotThrow();
+        if (step.resolves_module_input) {
+            auto const input = read_bytes<ReflectedContinuousInputPortBinding>(step.inputs, 0);
+            auto const output = read_bytes<ReflectedContinuousOutputPortBinding>(step.outputs, 0);
+            auto* preheader = builder.GetInsertBlock();
+            auto* copy_loop = llvm::BasicBlock::Create(context, "module.input.copy", function);
+            auto* copy_body = llvm::BasicBlock::Create(context, "module.input.copy.body", function);
+            auto* copy_done = llvm::BasicBlock::Create(context, "module.input.copy.done", function);
+            builder.CreateBr(copy_loop);
+            builder.SetInsertPoint(copy_loop);
+            auto* value = builder.CreatePHI(i64, 2, "module.input.value");
+            value->addIncoming(llvm::ConstantInt::get(i64, 0), preheader);
+            builder.CreateCondBr(builder.CreateICmpULT(value, count), copy_body, copy_done);
+            builder.SetInsertPoint(copy_body);
+            auto* input_begin = builder.CreateLoad(i64, emit.at(local.inputs,
+                offsetof(ReflectedContinuousInputPortBinding, sequential_begin_index)));
+            auto* output_begin = builder.CreateLoad(i64, emit.at(local.outputs,
+                offsetof(ReflectedContinuousOutputPortBinding, sequential_begin_index)));
+            for (std::size_t channel = 0; channel < step.input_channel_counts[0]; ++channel) {
+                auto address = [&](llvm::Value* bindings, std::size_t storage_offset,
+                                   ContinuousChannelStorageBinding const& binding,
+                                   llvm::Value* begin, std::size_t latency) {
+                    auto* position = builder.CreateAnd(
+                        builder.CreateSub(builder.CreateAdd(begin, value),
+                            llvm::ConstantInt::get(i64, latency + binding.value_delay)),
+                        llvm::ConstantInt::get(i64, binding.value_capacity - 1));
+                    auto* pointer = emit.load_pointer(bindings, channel_field(storage_offset, channel,
+                        offsetof(ContinuousChannelStorageBinding, storage)));
+                    return builder.CreateGEP(llvm::Type::getInt8Ty(context), pointer,
+                        builder.CreateMul(position, llvm::ConstantInt::get(i64, binding.value_stride_bytes)));
+                };
+                auto* source = address(local.inputs, input_storage_offset,
+                    input.storage.channels[channel], input_begin, input.read_latency);
+                auto* destination = address(local.outputs, output_storage_offset,
+                    output.storage.channels[channel], output_begin, 0);
+                builder.CreateMemCpy(destination, llvm::Align(1), source, llvm::Align(1),
+                    input.storage.geometry.value_size_bytes);
+            }
+            auto* next_value = builder.CreateAdd(value, llvm::ConstantInt::get(i64, 1));
+            value->addIncoming(next_value, builder.GetInsertBlock());
+            builder.CreateBr(copy_loop);
+            builder.SetInsertPoint(copy_done);
+        } else {
+            auto* call = builder.CreateCall(
+                local.tick_block, {local.node_data, local.context, slice, count});
+            call->setDoesNotThrow();
+        }
         if (request.operations_per_slice) {
             emit_operations(
                 step.operations_after,

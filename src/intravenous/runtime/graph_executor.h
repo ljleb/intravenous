@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <memory>
 #include <mutex>
@@ -127,6 +128,9 @@ class GraphExecutor {
         TockStateStorage tock_states{};
         BackgroundCoverageState coverage{};
         BackgroundPropagationWorkspace propagation;
+        std::unique_ptr<LiveTickCoverageState> live_coverage{};
+        std::shared_ptr<PersistedDataStore::Snapshot const> prepared_data{};
+        std::shared_ptr<TickMaterializationSnapshot const> prepared_materialization{};
         std::vector<std::unique_ptr<PendingQueue>> pending_inputs{};
         std::vector<BackgroundProducedInputRoute> input_routes{};
         std::vector<PinnedBlockPrefix> input_selections{};
@@ -140,6 +144,7 @@ class GraphExecutor {
         // Sequential history is the node-owned record of earlier deliveries,
         // not a re-read of published data.
         IndexCoverage tick_materialization_demand{};
+        bool explicit_playback_demand = false;
         // Playback positions represented by the currently published
         // generation-compatible materialization snapshot. This can remain a
         // superset after the requested window shrinks; the next transaction
@@ -198,6 +203,9 @@ class GraphExecutor {
         RealtimeGeneration realtime;
         BackgroundGeneration background;
         std::unique_ptr<RealtimePersistedState> initial_persisted_state{};
+        RealtimePersistedStateMailbox prepared_initial_states{};
+        std::atomic<bool> initial_selection_adopted{false};
+        ExecutionGeneration* preparation_predecessor = nullptr;
         std::optional<NodeStorage::Migration> realtime_migration{};
         std::optional<BackgroundCoverageState::Migration>
             background_coverage_migration{};
@@ -255,6 +263,7 @@ class GraphExecutor {
         enum class CommandKind : std::uint8_t {
             reclaim_snapshots,
             prepare_background_migration,
+            queue_initial_playback,
             set_tick_materialization_demand,
         };
 
@@ -277,6 +286,8 @@ class GraphExecutor {
         // to this signal is destroyed first.
         AsyncWorkSignal work_signal_{};
         std::unique_ptr<ExecutionGeneration> generation_chain_{};
+        std::deque<ExecutionGeneration*> preparation_queue_{};
+        ExecutionGeneration* prepared_generation_ = nullptr;
         std::atomic<std::uint64_t> current_generation_{0};
         std::atomic<bool> has_generation_{false};
         std::mutex commands_mutex_{};
@@ -288,6 +299,7 @@ class GraphExecutor {
 
         [[nodiscard]] ExecutionGeneration& generation();
         [[nodiscard]] bool advance_generation();
+        [[nodiscard]] Result prepare_playback(ExecutionGeneration& target);
         [[nodiscard]] Result process_available_work();
         [[nodiscard]] Result process_available_work_safely() noexcept;
         void enqueue(Command& command);
@@ -296,6 +308,7 @@ class GraphExecutor {
     public:
         explicit BackgroundExecutor(GraphExecutor& owner);
         ~BackgroundExecutor();
+        void stop() noexcept;
 
         BackgroundExecutor(BackgroundExecutor const&) = delete;
         BackgroundExecutor& operator=(BackgroundExecutor const&) = delete;
@@ -307,6 +320,7 @@ class GraphExecutor {
         void prepare_background_migration(
             ExecutionGeneration& target,
             ExecutionGeneration& source);
+        void queue_initial_playback(ExecutionGeneration& target);
         void set_tick_materialization_demand(
             ExecutionGeneration& target,
             IndexCoverage demand);
@@ -335,6 +349,8 @@ class GraphExecutor {
     // Executor-lifetime sticky fault: a finalized Tick/persisted record could
     // not acquire its complete generation-local block chain.
     std::atomic<bool> production_reservation_failed_{false};
+    // One increment per skipped realtime block; no logging or waiting in Tick.
+    std::atomic<std::uint64_t> playback_underrun_blocks_{0};
     // Realtime may run ahead while background drains closed predecessor queues.
     ExecutionGeneration* realtime_active_ = nullptr;
     // Owns a successor accepted after the initial chain was installed and
@@ -355,6 +371,9 @@ class GraphExecutor {
     // Control-path playback demand copied into every staged generation before
     // it becomes visible to either executor actor.
     IndexCoverage tick_materialization_demand_{};
+    // Audio is the sole writer. The actor derives its bounded automatic
+    // lookahead from this coordinate; explicit control-path demand overrides it.
+    std::atomic<std::uint64_t> requested_playback_index_{0};
     // Generations and gestures own their live targets. The registry shares
     // those cells without retaining controls after their last owner is gone.
     // Locked only for lookup, never by realtime.
@@ -371,7 +390,8 @@ class GraphExecutor {
     [[nodiscard]] std::expected<BackgroundEvaluationResult, std::string>
     evaluate_generation(
         ExecutionGeneration& generation,
-        bool publish_realtime_state);
+        bool publish_realtime_state,
+        bool prepare_only = false);
     [[nodiscard]] GraphExecutorReclaimedSnapshots
     reclaim_retired_snapshots_on_background();
     void lock_accepted_chain() noexcept;
@@ -476,7 +496,13 @@ public:
     [[nodiscard]] BackgroundExecutionFailures
     background_execution_failures() const noexcept;
 
+    [[nodiscard]] std::uint64_t playback_underrun_blocks() const noexcept {
+        return playback_underrun_blocks_.load(std::memory_order_relaxed);
+    }
+
     // Executes only the realtime half of the already-active generation.
+    // If its selected background data does not prepare this block, leave the
+    // host's cleared output silent and count an underrun. No node is invoked.
     // Generation activation is deliberately never hidden in this audio-thread
     // entry point.
     void tick_block(GlobalIndex sample_index, std::size_t block_size);

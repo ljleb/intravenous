@@ -422,6 +422,68 @@ TEST(GraphModules, NodeChainingUsesDeclaredKindAndReturnsTheTargetNode)
     EXPECT_TRUE(has_connection(forwarder_handle, sink_handle));
 }
 
+TEST(GraphModules, PublicInputAccessSurvivesSubgraphsAndArchiveRoundTrips)
+{
+    GraphBuilder graph;
+    (void)graph.input<"sequential", Sample>(InputAccess::sequential, {
+        .default_value = Sample{0.25f}, .fallback = SequentialFallback::manual_control});
+    (void)graph.input<"region", stereo>(InputAccess::region);
+    (void)graph.input<"coverage", Sample>(InputAccess::coverage, {
+        .channel_layout = mono_planar_channel_layout});
+    (void)graph.input<Sample>();
+    (void)graph.event_input<"seq-events">(EventTypeId::trigger);
+    (void)graph.event_input<"region-events">(EventTypeId::trigger, InputAccess::region);
+    (void)graph.event_input(EventTypeId::trigger, InputAccess::coverage);
+    auto child = graph.subgraph([](SubgraphBuilder& boundary) {
+        (void)boundary.input<"sequential", Sample>(InputAccess::sequential, {
+            .default_value = Sample{0.5f}, .fallback = SequentialFallback::manual_control});
+        (void)boundary.input<"region", stereo>(InputAccess::region);
+        (void)boundary.input<FFTBlock>(InputAccess::coverage);
+        (void)boundary.input(InputAccess::region);
+        (void)boundary.event_input<"seq-events">(EventTypeId::trigger, InputAccess::sequential);
+        (void)boundary.event_input<"region-events">(EventTypeId::trigger, InputAccess::region);
+        (void)boundary.event_input(EventTypeId::trigger, InputAccess::coverage);
+        boundary.outputs();
+    });
+    auto const child_handle = child.node_bundle_handle();
+    graph.outputs();
+    auto configured = std::move(graph).finish();
+    auto check = [&](ConfiguredGraph const& built) {
+        auto const inputs = built.public_ports.sample_inputs(built.node_bundles);
+        ASSERT_EQ(inputs.size(), 4u);
+        EXPECT_EQ(input_access(inputs[0]), InputAccessKind::sequential);
+        EXPECT_EQ(input_access(inputs[1]), InputAccessKind::region);
+        EXPECT_EQ(input_access(inputs[2]), InputAccessKind::coverage);
+        EXPECT_EQ(input_access(inputs[3]), InputAccessKind::sequential);
+        EXPECT_EQ(inputs[1].channel_layout.channel_type, ChannelTypeId::stereo);
+        auto const metadata = sequential_input_metadata<Sample>(
+            sequential_input_properties(inputs[0]));
+        EXPECT_EQ(metadata.fallback, SequentialFallback::manual_control);
+        EXPECT_FLOAT_EQ(metadata.default_value.value, 0.25f);
+        auto const events = built.public_ports.event_inputs(built.node_bundles);
+        ASSERT_EQ(events.size(), 3u);
+        EXPECT_EQ(input_access(events[0]), InputAccessKind::sequential);
+        EXPECT_EQ(input_access(events[1]), InputAccessKind::region);
+        EXPECT_EQ(input_access(events[2]), InputAccessKind::coverage);
+        std::array access{InputAccessKind::sequential, InputAccessKind::region,
+            InputAccessKind::coverage, InputAccessKind::region};
+        for (std::size_t port = 0; port < access.size(); ++port) {
+            auto const config = built.node_bundles.resolve_sample_input(
+                {child_handle, PortKind::sample, port}).config;
+            EXPECT_EQ(input_access(config), access[port]);
+        }
+        for (std::size_t port = 0; port < 3; ++port) {
+            auto const config = built.node_bundles.resolve_event_input(
+                {child_handle, PortKind::event, port}).config;
+            EXPECT_EQ(input_access(config), access[port]);
+        }
+    };
+    check(configured);
+    auto archive = serialize_configured_graph(configured);
+    auto restored = deserialize_configured_graph(archive.bytes, {}, archive.node_configs);
+    check(restored);
+}
+
 TEST(GraphModules, MixedPublicOutputsPreserveKindOrderThroughSubgraphsAndArchives)
 {
     GraphBuilder g;

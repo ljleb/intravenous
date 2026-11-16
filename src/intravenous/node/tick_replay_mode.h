@@ -11,6 +11,8 @@ namespace iv {
 // sample at every position, from its resolved Sequential inputs; the output's
 // IndexCoverage decides which of those samples are output, in realtime and in
 // replay alike. An authored propagate_forward_coverage() takes precedence.
+// Replayable nodes declare only ephemeral Tick outputs. They may consume a
+// different node's persisted output through its selected recorded-data view.
 enum class TickReplayMode : std::uint8_t {
     // Not intrinsically replayable.
     disabled,

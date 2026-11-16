@@ -525,7 +525,8 @@ namespace iv {
                 }
                 if constexpr (has_outputs<Node>) {
                     if (any_port_config(Node::outputs(), [](auto const& config) {
-                        return !is_tick(config);
+                        return !is_tick(config)
+                            || config.retention != OutputRetention::ephemeral;
                     })) return false;
                 }
                 return true;

@@ -1,6 +1,7 @@
 #include <intravenous/graph_jit/lowering.h>
 #include <intravenous/graph_jit/lowering_plan.h>
 #include <intravenous/graph_jit/realtime_root.h>
+#include <intravenous/graph_jit/module_input_resolution_runtime.h>
 
 #include <llvm/ADT/StringRef.h>
 #include <llvm/IR/BasicBlock.h>
@@ -21,6 +22,7 @@
 #include <cstring>
 #include <expected>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -156,6 +158,12 @@ std::expected<void, std::string> emit_package_imports(
     llvm::Module& output_module)
 {
     auto& context = output_module.getContext();
+    for (auto const& callback : plan.compiler_callbacks) {
+        if (callback.symbol.empty() || output_module.getNamedValue(callback.symbol))
+            return std::unexpected("compiler operation import is empty or collides with a project symbol");
+        llvm::Function::Create(package_callback_type(context, callback.abi),
+            llvm::GlobalValue::ExternalLinkage, callback.symbol, output_module);
+    }
     for (auto const& package_plan : plan.packages) {
         if (package_plan.package_index >= input.packages.size()) {
             return std::unexpected("planned package code is not a GraphJit lowering input");
@@ -1233,6 +1241,52 @@ define_sequential_input_initializer(
             plan.imports.primitive_callbacks,
             bundle,
             &detail::PrimitiveCallbackPlan::bundle);
+        if (primitive != plan.imports.primitive_callbacks.end()
+            && primitive->resolves_module_input) {
+            auto const primitive_index = static_cast<std::size_t>(
+                primitive - plan.imports.primitive_callbacks.begin());
+            auto const& config = plan.configurations.nodes[primitive_index].module_input_config;
+            auto const& geometry = background_port.continuous_geometry;
+            if (!config || geometry.value_size_bytes == 0)
+                return std::unexpected("module input neutral initializer lost its declaration");
+            std::vector<std::byte> bytes(geometry.value_size_bytes + geometry.element_alignment - 1);
+            void* aligned = bytes.data();
+            auto space = bytes.size();
+            if (!std::align(geometry.element_alignment, geometry.value_size_bytes, aligned, space)
+                || !detail::initialize_module_input_value(&*config, geometry.value_type,
+                    iv::details::SequentialInputInitialization::neutral,
+                    static_cast<std::byte*>(aligned), geometry.value_size_bytes, geometry.elements_per_value))
+                return std::unexpected("module input neutral initializer rejected its geometry");
+            auto* value = immutable_bytes_global(module, static_cast<std::byte const*>(aligned),
+                geometry.value_size_bytes, geometry.element_alignment,
+                "__iv_module_input_neutral_" + std::to_string(port));
+            auto* selected = llvm::BasicBlock::Create(context,
+                "initialize.module.input." + std::to_string(port), function);
+            auto* loop = llvm::BasicBlock::Create(context, "initialize.module.input.values", function);
+            auto* done = llvm::BasicBlock::Create(context, "initialize.module.input.done", function);
+            select->addCase(constant(port), selected);
+            builder.SetInsertPoint(selected);
+            builder.CreateCondBr(builder.CreateICmpNE(
+                builder.CreateURem(byte_count, constant(geometry.value_size_bytes)), constant(0)),
+                rejected, done);
+            builder.SetInsertPoint(done);
+            builder.CreateCondBr(builder.CreateICmpEQ(byte_count, constant(0)),
+                [&] { auto* empty = llvm::BasicBlock::Create(context, "initialize.module.input.empty", function);
+                    llvm::IRBuilder<> finish(empty); finish.CreateRet(llvm::ConstantInt::getTrue(context)); return empty; }(), loop);
+            builder.SetInsertPoint(loop);
+            auto* offset = builder.CreatePHI(size_type, 2, "initialize.value.offset");
+            offset->addIncoming(constant(0), done);
+            builder.CreateMemCpy(builder.CreateInBoundsGEP(llvm::Type::getInt8Ty(context), destination, offset),
+                llvm::MaybeAlign(1), value, llvm::MaybeAlign(geometry.element_alignment),
+                constant(geometry.value_size_bytes));
+            auto* next = builder.CreateAdd(offset, constant(geometry.value_size_bytes));
+            offset->addIncoming(next, loop);
+            auto* complete = llvm::BasicBlock::Create(context, "initialize.module.input.complete", function);
+            builder.CreateCondBr(builder.CreateICmpULT(next, byte_count), loop, complete);
+            builder.SetInsertPoint(complete);
+            builder.CreateRet(llvm::ConstantInt::getTrue(context));
+            continue;
+        }
         if (primitive == plan.imports.primitive_callbacks.end()
             || primitive->initialize_sequential_input.empty()) {
             return std::unexpected(

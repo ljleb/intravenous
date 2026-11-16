@@ -474,3 +474,630 @@ From the owner's run of the staged tree (185 failures: 177 not run behind
   demand expansion then activated it for the same range, but the staged
   `require_output()` activated only when the requirement grew. It now also
   activates a producer whose reverse operation is not yet scheduled.
+
+### Review after `da2ceb5e`, 2026-11-15
+
+The owner's current `build-release/Testing/Temporary/LastTest-verbatim.log`
+records 1006 passing tests, with no failures, in 53.31 seconds. This result
+supersedes the failed-run checkpoint above. The reviewing agent did not run
+another build or test suite.
+
+A focused source review covered the replay-mode transport, coroutine lowering,
+replay addressing, and producer activation changes in `1961d3ab` and
+`da2ceb5e`. It found no concrete defect in those changes. This is evidence for
+continuing from them, not a claim that the automation migration is complete.
+
+The next coherent feature is coverage-aware Sequential resolution, across live
+Tick execution and background replay. Its scope includes:
+
+- Exact output coverage selected with the sample data's generation and version.
+  `TickMaterializedSampleInput::coverage` continues to describe materialized
+  Regions. It cannot establish whether an upstream value exists.
+- Connection routing and timing shared with `derive_input_coverage()`, including
+  the intersection of sources within a projection and the union of contributions.
+- Neutral or manual fallback only where the combined contributions are known
+  absent. Manual values use the existing control state and interpolation.
+- Module public inputs, live overrides, graph activation, and code replacement.
+  Covered data that are unavailable remain distinct from known absence.
+- Regressions for disjoint coverage, overlapping contributions, module routing,
+  changes between published versions, and agreement between live and replayed
+  values.
+
+`SequentialFallback` remains a declaration without execution support.
+`LinearCurve` still implements the previous cyclic linear behavior. The new
+`CurvePointEvent`, outgoing segment policies, interpolation, messages, and
+presentation follow Sequential resolution. Variant event ports remain a later
+feature.
+
+### Sequential resolution implementation in progress, 2026-11-15
+
+The active feature is coverage-aware Sequential resolution in live Tick and
+background replay. The normative contract remains section 4 of
+`automation_and_suspendable_coverage_direction.md`.
+
+The first implementation change carries the prepared transaction's exact output
+coverage in `TickMaterializationSnapshot`, indexed by output-change accumulator.
+`TickInvocationWorkspace` exposes it through `TickInvocationCall` only when the
+snapshot matches the generation and pinned data version. An initial snapshot
+without these entries means unknown coverage, not known absence. This transport
+is incomplete until connection resolution uses it.
+
+Source tracing found two prerequisites within the same feature:
+
+- `populate_background_topology()` currently enables Tick forward coverage only
+  for contextually replayable nodes. Live Sequential connections also need the
+  declared coverage, independently of background replay eligibility.
+- Code-only replacements retain the structural generation's background plan
+  and `TickInvocationWorkspace`. Coverage references and manual fallback state
+  must therefore remain valid across replacement, or the replacement must use
+  the existing structural transition path. Matching byte sizes alone cannot
+  establish that compatibility.
+
+Still pending: coverage planning for live connections, contribution masking,
+neutral/manual selection, module-boundary resolution, replay control-state
+selection, compatibility checks, and feature tests. No build or test was run.
+
+#### Replay declarations and persisted outputs
+
+The owner clarified on 2026-11-15 that replayable Tick nodes cannot declare
+persisted outputs. `replay_ports_are_valid()` now rejects either a continuous
+or event output whose retention is persisted. Both `IV_NODE` and internal
+node construction report the ephemeral-output requirement. A new static
+validation fixture covers `input_union` Sample and `full` event declarations.
+This does not claim completion of Sequential resolution. Builds and tests
+remain owner-run.
+
+The owner further confirmed that this is an output-declaration rule only.
+Incoming connections from another node's persisted output remain supported.
+They are recorded dependencies for replay, not a reason to reject the
+replayable consumer.
+
+#### Module-input resolution: representation friction
+
+Implementation observation, 2026-11-15. The current feature assumed that exact
+coverage could accompany the existing flattened channel routes. That is enough
+for a source projection, but not for resolving a public module input before its
+internal routing.
+
+`build_structural_sample_routes()` removes the module boundary while producing
+`ResolvedSampleChannel::contributions`. `ManualSampleRoutePlan` retains a
+control index, target, coefficient and delay. It does not retain the public
+input's combined signal or a stage that resolves its known gaps. Several public
+inputs and ordinary sources can subsequently merge at one concrete input.
+
+For a sparse source connected to a public Sequential module input, fallback
+belongs at that public input, before its internal conversion and fan-out. A
+fallback test on the final leaf input cannot reconstruct that distinction from
+the combined samples. Adding the manual value as another contribution also
+violates the accepted contract.
+
+Two implementation choices are under owner review:
+
+1. Retain Sequential module-input resolution as an internal planning stage.
+   Storage planning can share or inline its result and use existing timeline
+   migration. This requires changes to structural routing, execution planning,
+   and their storage/lowering interfaces.
+2. Preserve flattening and carry each boundary's coverage and fallback
+   expressions through every derived route. This avoids a separate stage but
+   makes conversion, fan-out and temporal routing responsible for evaluating
+   those expressions without losing their grouping.
+
+The recommendation is the first choice. Retaining the semantic stage does not
+require a visible project node or an unconditional extra buffer. Its physical
+representation remains a storage/code-generation decision. No such stage has
+yet been implemented, and the choice is pending.
+
+The current source is an unfinished feature, not a tested checkpoint. Besides
+the earlier transport changes, it now contains normalized coverage predicates,
+coverage references retained through sample composition/detach planning, and
+initial composition masking. Direct input resolution, manual fallback, module
+resolution, event filtering, coverage selection for live versus recorded input
+views, and code-replacement compatibility still need completion. The static
+persisted-output declaration check is separate and complete in source. The
+added tests cover that check and snapshot transport only. No build or test was
+run; `git diff --check` passes.
+
+#### Internal module-input resolution stage selected
+
+Owner decision, 2026-11-15: retain Sequential module-input resolution as an
+explicit internal planning stage. The alternative of carrying fallback
+expressions through flattened routes is no longer the selected direction.
+The friction report above remains a record of why the representation changes.
+
+The stage resolves the module's combined public input before internal channel
+conversion, fan-out and temporal routing. It is not a visible project node or
+a new authored leaf-node API. GraphJit can share or inline its work and choose
+its storage through the existing planning machinery. Implement this stage
+before finishing leaf fallback, so module controls do not become a separate
+fallback mechanism.
+
+#### Public module-input access declarations selected
+
+Owner decision, 2026-11-15: public module inputs explicitly declare Sequential,
+Region or Coverage access. Sequential remains the default, consistent with
+leaf input authoring. Region/Coverage pass-through definitions must declare
+their access rather than relying on flattening to discard an incidental
+Sequential label.
+
+This resolves a further source mismatch: `make_boundary_input_config()` always
+constructs a Sequential input, while `multi_region_boundary_child_module` uses
+that input to forward Regions to a Coverage consumer. Adding an unconditional
+Sequential resolution stage under the old API would destroy that sparse view.
+
+Add the public access declaration API and preserve it through configuration,
+then retain resolution stages only for declared Sequential module inputs.
+Region/Coverage module inputs preserve sparse Region semantics and expose no
+manual controls. This authoring/API prerequisite now precedes the internal
+resolution-stage lowering. No access declaration changes have been tested yet.
+
+#### Public input declaration API source checkpoint
+
+`GraphBuilder::input()` and `SubgraphBuilder::input()` now accept explicit
+access tokens for named, unnamed, typed continuous and channel-typed inputs.
+The options type follows the declared access. Existing concise declarations
+remain Sequential. Event declarations also accept access tokens, and the
+session transports the complete `EventInputConfig` instead of recreating a
+Sequential event input from its name and type.
+
+The `multi_region_boundary_child_module` fixture now declares Coverage access
+for its public sample and event inputs. A new light `GraphModules` regression
+checks public access, Sequential fallback metadata, nested subgraphs, channel
+layout, event access, and configured-graph archive round trips. The shared JIT
+fixture's five source fragments remain below their 60 KiB limits. No build or
+test was run.
+
+One semantic question is pending before stage lowering: when a Sequential
+module input supplies fallback, does its internal stage present a covered
+value to an `input_union` child, or preserve the original source absence while
+passing the resolved value? The first makes the module input a dense internal
+signal. The second preserves the child coverage of the equivalent leaf case
+but requires retaining resolved values separately from source-coverage
+provenance through internal routing. Neither outcome is yet implemented.
+
+#### Coverage after Sequential module-input resolution selected
+
+Owner decision, 2026-11-15: a Sequential module input's resolved signal is
+covered at fallback positions. An internal `input_union` consumer sees those
+positions as covered and can produce output there. The alternative of carrying
+original absence through the stage is not selected.
+
+The stage therefore produces a dense internal Tick signal. This does not
+change the original upstream output's coverage or synthesize Regions on that
+output. Region/Coverage public inputs still preserve sparse views. The
+compiler can lower a Sequential input stage as an internal producer with one
+input and one output, retain its public-input identity for controls and
+migration, and share or inline the stage's work.
+
+#### Internal resolution-stage implementation checkpoint (unfinished)
+
+Source work, 2026-11-15, following the covered-after-resolution decision:
+
+- `graph_jit/module_input_resolution.h::resolve_module_inputs()` now builds a
+  private compiler copy of the configured graph. It appends one concrete
+  execution stage per public Sequential input and redirects incoming routes,
+  internal boundary sources, and `ConfiguredManualControl::input` to that
+  stage. Authored handles and the project graph remain intact. Public Region
+  and Coverage inputs remain structural routes.
+- `NodeBundle::resolved_module_input()` identifies the public owner of a
+  compiler stage. `NodeImplementation` carries that origin explicitly. These
+  stages have actual compiler-owned native kernels and imports, no fabricated
+  package revision, registered definition, or compiler record.
+- Continuous stages copy resolved values at their solved pace; event stages
+  forward their resolved event windows. They declare `TickReplayMode::full`,
+  use ordinary storage and callback planning, and can enter the existing
+  generated replay path. Neutral initialization and combination use the
+  registered continuous value extensions.
+- `PlannedGraphNode::resolved_module_input` and
+  `RealtimePortStateRequirement::resolved_module_input` retain public-input
+  provenance for migration. The execution input is port 0; its public owner
+  can have a different semantic input index. Internal stages do not acquire
+  invented authored concrete-member indices.
+- Direct Sequential Sample planning now requests a private input timeline
+  where producer coverage can be absent. `stage_sequential_sample_resolution()`
+  copies ordinary values or supplies fallback, before applying live manual
+  interpolation. Connected inputs with provably full sources do not acquire
+  a fallback-only manual timeline. Ordinary dense DSP specialization remains
+  available; sparse resolution uses the existing specialization staging call.
+- Background replay now retains a selected Sample fallback value separately
+  from its neutral value. The selected fallback can be a configured manual
+  value; live interpolation still reads `ManualControlRuntimeState`.
+
+This is an incomplete source milestone, not a delivered feature. No build,
+tests, npm checks, or typecheck were run. `git diff --check` passes. Compilation
+has not been established, and this working tree is not ready for a suite run.
+
+Known remaining connections inside this same feature:
+
+1. Finish the coverage-cycle decision below before completing live forward
+   coverage scheduling. Keep Tick production and Coverage access terminology
+   distinct.
+2. Publish a coherent initial live coverage selection before a root that needs
+   it can execute. `RealtimePersistedState::capture_initial()` currently pins
+   an empty materialization, while the new root requires known coverage.
+   Unknown entries must not become fallback merely because background
+   preparation has not finished.
+3. Distinguish current Tick coverage from selected recorded coverage when a
+   replayable processor consumes a persisted producer. A live Sequential edge
+   reads freshly computed values; replay reads the selected recording. The
+   current shared output-coverage span does not yet settle the transitive case.
+4. Complete projection-level masking for mixed realtime/background inputs,
+   event contribution masking, typed fallback, and replay of participating
+   manual contributions. The new target resolution pass alone is insufficient
+   for a mixed input with a nonzero neutral value.
+5. Complete tiled module event-target expansion, audit all explicit sparse
+   module-input declarations, and verify compiler-stage migration and
+   code-replacement compatibility. The compiler-private graph must never be
+   frozen as an authored project graph.
+6. Write the end-to-end feature tests after these semantics and interfaces are
+   complete, then refactor shared paths and ask the owner to run verification.
+
+#### Feedback coverage friction: pending clarification
+
+Observed source constraint, 2026-11-15:
+`populate_background_topology()` adds `input_union` and authored forward
+coverage to the forward dependency graph. `BackgroundCoverageState` records
+coverage over global indices. A Tick/ephemeral output feeding its own
+Sequential input through `detach()` can therefore require coverage from prior
+Tick execution. The existing background DAG rejects the resulting recursive
+forward-coverage dependency. Adding coverage history to delayed signal storage
+would be a further representation and realtime-cost decision, not an automatic
+consequence of reusing the background planner.
+
+The owner clarified that Coverage ports cannot participate in feedback. The
+existing normative documents already prohibit Region/Coverage random-access
+inputs in their own semantic SCC. A follow-up clarification is pending because
+this concrete example contains only Sequential inputs and Tick outputs; its
+sparse output semantics come from `TickReplayMode::input_union`, not from an
+`InputAccess::coverage` or Coverage-production declaration. Do not silently
+extend the prohibition, ignore output coverage, or introduce a background
+fixed-point scheduler while this distinction is unsettled.
+
+#### Feedback coverage decision refined: prove fullness before validation
+
+Owner agreement, 2026-11-15, after discussing the distinction between
+Sequential access and upstream coverage: do not reject an SCC merely because
+it contains `input_union` declarations. First prove fully covered outputs from
+actual port routes and propagate that proof through generated union rules.
+Ordinary live Tick outputs with no authored coverage callback, generated
+`full` outputs, and Sequential module-input resolution stages provide fully
+covered signals. An independently fully covered external contribution can
+also prove all generated union outputs of an SCC full, even when every node
+in that SCC declares `input_union`.
+
+Sequential input resolution alone does not turn a leaf input's original
+upstream coverage into full coverage. Module-input resolution does so by the
+separate explicit owner decision above. Channel composition must deliver a
+fully covered contribution, and authored forward callbacks retain authority
+over their outputs; their behavior cannot be inferred from a union rule.
+
+Reject only the unresolved recursive sparse-coverage dependencies remaining
+after that proof. Do not add delayed coverage history or a background
+fixed-point scheduler. This refines the preceding pending-friction record;
+it does not ban ordinary fully covered Sequential/Tick feedback.
+
+Coverage proof and contextual value replay remain distinct. A full-coverage
+proof does not make a cycle of ephemeral value dependencies replayable.
+`derive_contextual_replayability()` must still reject those replay cycles
+unless a selected persisted boundary terminates the dependency traversal.
+
+#### Live selection and mixed-input source checkpoint (unfinished)
+
+Source work, 2026-11-15:
+
+- `prove_full_live_tick_coverage()` now uses a dependency work list over
+  normalized continuous projections and event contributions. Proven full
+  generated union nodes no longer enter live sparse-coverage tracking solely
+  because of their `input_union` declaration. Contextual value-replay checks
+  still run independently. The current proof starts from compiler-known Tick
+  production facts; it does not yet exploit a Tock callback that only proves
+  its output full during runtime forward propagation.
+- `BackgroundPortPlan` and `BackgroundNodePlan` retain the live-full proof.
+  `BackgroundPropagationWorkspace::prepare_live_tick()` now derives a separate
+  live selection from the recording transaction. Tock output Regions are fixed
+  to that selected transaction; full current Tick outputs are fixed to full
+  coverage. Sequential reads use live coverage, while Region/Coverage reads
+  keep the recorded selection. Both domains reuse the existing F callbacks,
+  scheduler and routing algebra.
+- `LiveTickCoverageState` owns reusable generation-local live propagation
+  state. `BackgroundEvaluationTransaction` prepares it before publication and
+  commits it with the recording candidate; `TickMaterializationSnapshot`
+  receives the live selection. No per-sample validity storage was added.
+- Partitioning a mixed continuous connection now preserves the complete
+  original projection's coverage prerequisites. Its realtime contribution
+  cannot remain present just because its background sources were split into
+  another delivery path. Sparse mixed inputs combine only contributions that
+  exist, rather than adding an absent contribution's neutral value.
+- Tiled module event targets are now expanded into their corresponding
+  internal input-resolution stages. This still needs source audit and tests.
+
+No builds or tests were run. `git diff --check` passes. The feature remains
+unfinished and the working tree is not ready for verification.
+
+#### Activation/publication friction: owner decision pending
+
+Observed source constraint, 2026-11-15:
+`GraphExecutor::activate_pending()` currently installs a generation's empty
+initial `RealtimePersistedState` before the background actor prepares its
+coverage and materialized input views. `TickInvocationWorkspace::bind()` can
+therefore expose neutral-filled storage when required covered data is not
+materialized. That must not be interpreted as absence or trigger manual
+fallback under the agreed Sequential contract.
+
+The current executor exposes `set_tick_materialization_demand(IndexCoverage)`
+but a direct search of current `src/`, `vscode/`, and `tests/` found no external
+callers. Automatic production playback-demand scheduling is not wired. The
+published Front 4 contract says its caller chooses the future extent; it does
+not supply the missing caller or an initial activation policy.
+
+The background migration currently commits after the realtime cutover closes
+and drains the predecessor's producer queues. Requiring a ready successor
+snapshot before activation therefore reaches this ownership and publication
+sequence, not only the fallback expression or a missing null check. Avoid
+silently reusing a stale snapshot, treating unavailable data as absence,
+publishing a future semantic data root into the active predecessor's domain,
+or waiting on the audio thread.
+
+The owner has been asked whether a new graph should keep the predecessor
+playing until its first playback window is prepared (recommended), or activate
+immediately and report playback underruns until preparation completes. Both
+choices must preserve the ordered accepted transition chain. Playback underrun
+remains separate from fallback on known absence. Do not encode a new
+activation/publication strategy before this decision is settled.
+
+#### Activation decision: prepare the successor before audio cutover
+
+Owner decision, 2026-11-15: retain the predecessor's live execution until the
+successor's first playback window and coherent coverage/data selection are
+ready. The first graph remains pending until that preparation succeeds. Audio
+activation adopts the prepared selection without allocation or waiting.
+Unavailable data never becomes an absent contribution or manual fallback.
+
+The accepted graph-transition chain stays ordered. Preparation and publication
+must respect the canonical persisted-data authority and the predecessor's
+still-running producer queues; an initial snapshot must not be labelled with a
+newer data version than the data against which it was prepared. This resolves
+the preceding activation-policy question. The handoff implementation remains
+unfinished.
+
+#### Private preparation and unchanged-output reuse checkpoint (unfinished)
+
+Source work, 2026-11-15, following the owner's prepare-before-activation and
+page-reuse decisions:
+
+- Successor preparation now returns privately owned persisted-data and
+  materialization snapshots. It does not publish the successor into the
+  predecessor's canonical data domain before audio cutover. The earlier draft
+  that published early and drained predecessor recordings separately was
+  discarded during ownership review.
+- `PersistedDataStore::Candidate::reuse_output()` shares an unchanged output's
+  immutable state, Region trees and payload storage. Transactions compare
+  selected recording output identities to invalidate changed dependencies.
+  They retain unchanged Tock results and prepared materialized Regions.
+- `RealtimePersistedState` can own the matched prepared snapshot roots.
+  `GraphExecutor::activate_pending()` waits for a prepared first window and
+  transfers its selection at a block boundary. Root reclamation remains on
+  the background worker. The accepted transition chain remains ordered.
+- Candidate revisions are allocated uniquely even for unpublished private
+  preparations. Two preparations from the same canonical base must not have
+  equal versions with different contents. Skipped revisions are intentional.
+- The background worker requests a default eight-block playback reserve unless
+  its caller selects an explicit extent. This is an implementation default,
+  not a proven scheduling budget. Ongoing playback underrun handling remains
+  incomplete; initial readiness must not be mistaken for that guarantee.
+- Added source regressions cover output-storage reuse without rolling back
+  unrelated recordings, unique unpublished snapshot versions, private
+  preparation without canonical publication, and predecessor playback while
+  successor preparation is blocked. None have been run yet.
+
+This remains one unfinished Sequential-resolution/background-publication
+feature. Event resolution bounds, internal-stage specialization, runtime
+coverage/discovery and migration checks, ongoing unavailable-data handling,
+and end-to-end tests still require work. No builds or tests were run; compiler
+success is not established. The next connection is to finish the prepared
+selection's availability checks before completing the planner/runtime audit.
+
+#### Prepared selection and module resolution checkpoint (unfinished)
+
+Source work, 2026-11-15:
+
+- The owner selected silence-and-report for an active graph that outruns
+  background preparation. `GraphExecutor::tick_block()` now checks the prepared
+  playback extent before invoking any node and counts skipped blocks. The
+  existing non-audio runtime monitor reports new underruns at a slow rate.
+  Known prepared gaps still reach ordinary Sequential fallback.
+- Internal event resolution output bounds now derive from normalized ingress
+  routes, including nested stages and fan-in. Resolution-only event routing
+  cycles have no authored finite producer bound and are rejected. Ordinary
+  cycles through authored event producers retain their existing sizing rules.
+- Eligible continuous module-input stages now emit their copy directly in a
+  region specialization. They no longer require package bitcode or force an
+  otherwise eligible region onto native callback interpretation.
+- Background migration identifies a resolution stage by its actual public
+  `StableInputPortId`. Authored output/node identities remain distinct; no
+  synthetic concrete child index is invented. Unchanged stages and downstream
+  delivery descriptions can therefore retain semantic coverage across bundle
+  index changes. Changed fallback values still invalidate affected results.
+- Code-only replacements retain the structural generation's background
+  workspace. They are now rejected when their background fallback or coverage
+  inventory differs; that case needs the existing ordered graph transition.
+  Consequently a newly settled control that changes background replay's
+  semantic values may require a transition even if storage extents match.
+  Avoid replacing that correctness check with stale background metadata.
+- Fixed a draft ready-frontier defect that could union individually ready
+  operands after an incomplete projection, and a draft double contribution
+  when manual fallback and explicit participation were both enabled.
+- Sparse event output filtering now examines only events appended by the
+  current callback. It preserves inherited history and in-flight events.
+- Added unrun regressions for nested event capacity, direct intrinsic LLVM
+  emission, public-input identity across bundle moves, background-sensitive
+  code replacement, playback underrun versus known gaps, and stored manual
+  fallback before module fan-out/replay.
+
+No builds or tests were run. `git diff --check` passes. This checkpoint records
+source progress, not a complete feature or successful compilation. Remaining
+work includes the end-to-end live coverage and replay tests, the coverage
+planning/discovery audit, and verification of the complete change before the
+later automation semantics/UI work resumes.
+
+#### Sequential-resolution source pass ready for owner verification
+
+Source checkpoint, 2026-11-15. The connections left open by the preceding
+checkpoints are now implemented in source. This is ready for a Release build
+and CTest pass; it is not a claim of successful compilation or passing tests.
+No builds, tests, npm checks, or typecheck were run by the agent.
+
+The final source audit checked live versus recorded discovery selection,
+private/canonical snapshot ownership, preparation/cutover ordering, module-stage
+identity and intrinsic specialization, event append/history filtering, and
+background-sensitive code replacement. No intentionally incomplete source path
+remains in this Sequential-resolution pass. The eight-block automatic reserve
+remains an unmeasured default; the accepted underrun policy handles a missed
+background deadline without fabricating input values.
+
+Regressions now additionally exercise:
+
+- the same configured manual values through live Tick and background replay,
+  with nonzero neutral values, explicit participation, and a public Sequential
+  module input resolved before its child;
+- a generated `input_union` feedback component that becomes full only after a
+  ready Tock source publishes full coverage;
+- rejection when the recursive coverage dependencies remain unresolved;
+- rejection of the false proof obtained by treating one ready operand of a
+  continuous projection as an independent contribution; and
+- reuse of public-input semantic identity after generation-local bundle indices
+  move, while a changed fallback still seeds reconciliation.
+
+`git diff --check` passes. All five package-source literal fragments remain
+below their existing 60 KiB bounds. The owner's `projects/simple_sine/` edits
+and Git index were left untouched.
+
+After verification and any resulting fixes, resume step 3's automation feature:
+`CurvePointEvent`, `empty`/`hold`/automatic Bézier segments, content-derived
+coverage, messages, and the matching presentation. Those behaviors are not
+implemented by this prerequisite and must not be marked complete because the
+Sequential-resolution tests pass.
+
+#### First owner verification: boundary guard and fixture corrections
+
+Owner run, 2026-11-15: 1023 discovered tests, seven executed failures and 179
+fixture-dependent tests not run. The shared package and public-input access
+regression both hit the retained Sequential-only guard in
+`GraphBuilderPublicPorts::add_continuous_input()`. Removed that guard to honor
+the accepted explicit public Sequential/Region/Coverage declarations.
+
+Three persistence regressions assumed contiguous published revision numbers.
+They now compare the actual committed snapshot identity and data, retaining
+checks that failed/incomplete work publishes nothing. Unpublished candidates
+still consume unique revisions. Two hand-built storage analyses now explicitly
+supply their ordinary Tick producers' full-coverage facts; unknown source
+coverage remains an error in the real planner. Fully covered composition
+sources no longer retain redundant runtime coverage predicates.
+
+These corrections are unverified source changes. No builds or tests were run
+by the agent; `git diff --check` passes. The shared fixture must build before
+the skipped GraphJit runtime regressions can supply verification evidence.
+
+#### Second owner verification: fixes and settled module-knob friction
+
+Owner run, 2026-11-15: 1023 tests, 12 failed. Source fixes, unverified (no build
+or test run by the agent):
+
+- Four compile failures, "sample port planning left an unresolved primitive
+  port": the final binding validation still required a slot-fed input without
+  history to read its slot directly. Coverage resolution now gives such an input
+  a private timeline whenever its source can be sparse, and the root already
+  stages it there. The validation accepts that timeline.
+- "Sample input timeline references an invalid buffer" (automation window): the
+  coverage-resolution loop requested a timeline before a realtime-only
+  connection's binding received its layout and history, so the request recorded
+  the default stereo layout. It now takes both from the connection first.
+- "Sample target channel has more than one source" (summed module boundaries):
+  `resolve_module_inputs()` rewrote each authored connection into a public input
+  so that it targeted the stage. Several connections into one public input then
+  reached target normalization as separate whole-port routes. Authored
+  connections now keep their public-input targets. Each stage instead reads the
+  boundary's internal side of its public input, so structural routing sums the
+  contributions with their conversions and detaches, as at any module boundary.
+  A disconnected public input leaves its stage input disconnected, and a
+  partially connected one connects only its connected channels.
+- Three playback aborts on unknown coverage: the `TickPlayback` test harness
+  published materialized windows without output coverage. It now publishes the
+  coverage those windows imply for each upstream output, as a transaction would.
+- Wrong live values with a nonzero neutral value
+  (`ReplayResolvesStoredManualFallbackBeforeModuleFanout`): the fixture declared
+  `neutral_value = 0.125` with additive combination. The authored contract
+  requires the neutral value to be the combiner's identity, and Sequential
+  fan-in reduces from it. Live slot playback did so (0.125 + 4); replay assigned
+  the single contribution (4). An agent change that made the slot assign its
+  first contribution broke the two `TickInvocationWorkspace` regressions that
+  document the neutral-seeded reduction, so it was reverted. The fixture now
+  pairs its nonzero neutral with `a + b - 0.125`, whose identity it is; the
+  expected explicit-participation values follow that combiner.
+
+Friction observed, awaiting an owner decision. Two module manual-control tests
+assert two control bindings, one per internal fan-out leaf. Under the
+accepted resolution stage, one binding at the stage is the correct count. The
+second test, `UniformSettledModuleManualInputKeepsImmutableInputBinding`, also
+protects a realtime-cost property. A settled knob on a disconnected module
+input used to bind each internal leaf's history input (history 4 in the
+fixture) to an immutable constant. Each leaf now reads the stage's output, which
+needs a ring and a per-block copy. Restoring the old cost needs the stage folded
+into a constant producer when its resolved value is a settled constant. The
+dynamic variant must run the stage, so the two variants' NodeStorage layouts
+would differ. That contradicts `ModuleManualControlPreservesConversionFanoutAndDetachAcrossCodeActivation`,
+which asserts equal layouts so that knob activation can be a code-only
+replacement.
+
+#### Settled module knobs: immutable consumer bindings, shared stage storage
+
+Owner decision, 2026-11-15, revised the same day. The agent first framed the
+friction above as a choice between per-block cost and layout compatibility.
+The owner chose folding the stage into a constant, which made grabbing a knob
+a storage-migrating transition. Asked whether a layout change was really
+needed, the agent rechecked the pre-stage path. It never paid that price: settled
+code bound an immutable constant to each leaf but declared the same input
+timeline as its dynamic replacement, and kept that shadow timeline current only
+when history is retained. The earlier framing was wrong on both counts, and the
+folding (skipping the stage) was reverted unbuilt.
+
+Selected design: keep the resolution stage in both variants. In the settled
+variant, a realtime consumer whose connection identity-maps the output of a stage
+with a disconnected input and a settled (or absent) knob binds the resulting
+constant immutably. The connection keeps its planned storage, and the stage keeps
+running. Its single output, which every consumer aliases when the knob is live,
+therefore stays current for consumers that retain history. The variants keep
+equal NodeStorage layouts, so grabbing the knob remains a code-only activation.
+The knob is resolved once per block at the stage instead of once per leaf.
+
+Source change, unverified: `plan_sample_ports()` in `lowering_plan.cpp` binds such consumers as
+constant inputs before storage planning and skips their connection bindings.
+`UniformSettledModuleManualInputKeepsImmutableInputBinding` now expects one
+knob binding, at the stage, and immutable retained access on both leaves'
+history inputs. `ModuleManualControlPreservesConversionFanoutAndDetachAcrossCodeActivation`
+expects one binding and keeps its layout-equality checks.
+
+Not yet implemented: skipping the stage's per-block copy when no consumer
+retains history. Composed or converted consumers (for example a tile with a
+constant zero) and detached consumers keep aliasing the stage output.
+
+
+#### Owner verification and unstaged-fix review
+
+The latest owner-run `build-release/Testing/Temporary/LastTest-verbatim.log`
+reports 1023 tests passed, zero failures, in 84.87 seconds. This verifies the
+source corrections recorded above, including the module-input routing and
+settled-consumer constant bindings. No build or test was run by the reviewing
+agent.
+
+Review scope: the unstaged corrections relative to the staged implementation,
+with targeted reads of structural sample routing, Sequential input binding and
+composition, and the affected test fixtures. The review found no additional
+correction needed in that scope. The Git index and the owner's project files
+were left untouched. This is not a claim that the full background-evaluation
+implementation has received an exhaustive audit.
+
+The prerequisite verification is now green. The next implementation remains
+step 3's automation feature: `CurvePointEvent`, content-derived sparse coverage,
+`empty`/`hold`/automatic Bézier segments, replacement messages, and the matching
+presentation. Skipping unnecessary resolution-stage copies remains a separate
+performance follow-up; it is not a prerequisite for that feature.

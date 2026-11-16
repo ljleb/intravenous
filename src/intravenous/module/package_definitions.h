@@ -634,7 +634,7 @@ RegisteredSignature const* node_constructor_signature()
     static_assert(::iv::details::replay_declaration_is_valid_v<Node>, \
         "IV_NODE intrinsically replayable nodes must author a Tick callback, " \
         "have no State/TockState, provide propagation for Random Access inputs, " \
-        "and declare only Tick outputs; resolved timing is validated by " \
+        "and declare only ephemeral Tick outputs; resolved timing is validated by " \
         "the whole-graph planner."); \
     static_assert(::iv::details::background_state_type_is_valid_v<Node>, \
         "IV_NODE Node::TockState must be a mutable, non-volatile, default-constructible object type."); \

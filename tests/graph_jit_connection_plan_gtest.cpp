@@ -1,6 +1,7 @@
 #include <intravenous/dsl.h>
 #include <intravenous/graph_jit/background_storage_plan.h>
 #include <intravenous/graph_jit/connection_plan.h>
+#include <intravenous/graph_jit/module_input_resolution.h>
 #include <intravenous/graph_jit/sample_storage_plan.h>
 
 #include <gtest/gtest.h>
@@ -697,6 +698,15 @@ struct ReplayablePass {
     }
 
     void tick(iv::TickSampleContext<ReplayablePass> const&) const {}
+};
+
+struct ReplayableUnionPair {
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
+    static constexpr auto inputs() {
+        return std::array{iv::input<iv::Sample>("signal"), iv::input<iv::Sample>("feedback")};
+    }
+    static constexpr auto outputs() { return std::array{iv::output<iv::Sample>("out")}; }
+    void tick(iv::TickSampleContext<ReplayableUnionPair> const&) const {}
 };
 
 struct PersistedTickPass {
@@ -4442,6 +4452,70 @@ TEST(GraphJitConnectionPlan, RejectsUnavailableBoundarySourceDuringTransitiveRep
     EXPECT_NE(plan.error().find("explicit recorder"), std::string::npos);
 }
 
+TEST(GraphJitConnectionPlan, FullTickProducerProvesUnionCoverageAcrossFeedback)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto full = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto follows = details::configure_concrete_node<ReplayablePass>(graph);
+    auto const full_bundle = full.node_bundle_handle();
+    auto const follows_bundle = follows.node_bundle_handle();
+    full(follows);
+    follows(static_cast<SamplePortRef>(full).detach(3));
+    graph.outputs();
+    auto configured = std::move(graph).finish();
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan) << plan.error();
+    for (auto bundle : {full_bundle, follows_bundle}) {
+        auto node = std::ranges::find(plan->nodes, bundle, &graph_jit::detail::PlannedGraphNode::bundle);
+        ASSERT_NE(node, plan->nodes.end());
+        EXPECT_TRUE(node->full_live_tick_coverage);
+        EXPECT_FALSE(node->contextually_replayable);
+    }
+    EXPECT_FALSE(plan->background.requires_live_tick_coverage);
+}
+
+TEST(GraphJitConnectionPlan, ExternalFullContributionProvesAnAllUnionFeedbackComponent)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<ReplayableSource>(graph);
+    auto first = details::configure_concrete_node<ReplayableUnionPair>(graph);
+    auto second = details::configure_concrete_node<ReplayablePass>(graph);
+    auto const first_bundle = first.node_bundle_handle();
+    auto const second_bundle = second.node_bundle_handle();
+    first(source, static_cast<SamplePortRef>(second).detach(3));
+    second(first);
+    graph.outputs();
+    auto configured = std::move(graph).finish();
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan) << plan.error();
+    for (auto bundle : {first_bundle, second_bundle}) {
+        auto node = std::ranges::find(plan->nodes, bundle, &graph_jit::detail::PlannedGraphNode::bundle);
+        ASSERT_NE(node, plan->nodes.end());
+        EXPECT_TRUE(node->full_live_tick_coverage);
+    }
+    EXPECT_FALSE(plan->background.requires_live_tick_coverage);
+}
+
+TEST(GraphJitConnectionPlan, AFullCoverageProofDoesNotMakeFeedbackValuesReplayable)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<ReplayableSource>(graph);
+    auto first = details::configure_concrete_node<ReplayableUnionPair>(graph);
+    auto second = details::configure_concrete_node<ReplayablePass>(graph);
+    auto reader = details::configure_concrete_node<BackgroundSink>(graph);
+    first(source, static_cast<SamplePortRef>(second).detach(3));
+    second(first);
+    reader(first);
+    graph.outputs();
+    auto configured = std::move(graph).finish();
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_FALSE(plan);
+    EXPECT_NE(plan.error().find("contextual replay dependency cycle"), std::string::npos);
+}
+
 TEST(GraphJitConnectionPlan, RejectsContextualReplayCycles)
 {
     using namespace iv;
@@ -4599,4 +4673,41 @@ TEST(GraphJitConnectionPlan, RejectsAcyclicDetachOfAModuleManualInput)
     auto overridden = build_connection_analysis_plan(configured, 64);
     ASSERT_FALSE(overridden);
     EXPECT_NE(overridden.error().find("breaks an acyclic dependency"), std::string::npos);
+}
+
+TEST(GraphJitConnectionPlan, SequentialModuleEventResolutionPreservesNestedFanInCapacity)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto first = details::configure_concrete_node<PlainEventPass>(graph);
+    auto second = details::configure_concrete_node<PlainEventPass>(graph);
+    auto outer = graph.subgraph([&](SubgraphBuilder& boundary) {
+        auto input = boundary.event_input<"events">(EventTypeId::trigger);
+        auto inner = graph.subgraph([&](SubgraphBuilder& child) {
+            auto nested_input = child.event_input<"events">(EventTypeId::trigger);
+            auto sink = details::configure_concrete_node<PlainEventPass>(graph);
+            sink.connect_event_input(0, nested_input);
+            child.outputs();
+        }, "inner");
+        inner.connect_event_input(0, input);
+        boundary.outputs();
+    }, "outer");
+    outer.connect_event_input(0, first.event_port());
+    outer.connect_event_input(0, second.event_port());
+    graph.outputs();
+    auto authored = std::move(graph).finish();
+    auto const original_size = authored.node_bundles.size();
+    auto resolved = graph_jit::detail::resolve_module_inputs(authored);
+    EXPECT_EQ(authored.node_bundles.size(), original_size);
+    std::size_t stages = 0;
+    for (NodeBundleHandle bundle = original_size; bundle < resolved.node_bundles.size(); ++bundle) {
+        auto const& stage = resolved.node_bundles.bundle(bundle);
+        ASSERT_TRUE(stage.resolved_module_input());
+        ASSERT_EQ(stage.resolved_module_input()->port_kind, PortKind::event);
+        auto const output = stage.event_output_config(0);
+        EXPECT_DOUBLE_EQ(output.max_events_per_index, 0.5);
+        EXPECT_FALSE(output.max_event_count);
+        ++stages;
+    }
+    EXPECT_EQ(stages, 2u);
 }

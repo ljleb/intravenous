@@ -776,6 +776,12 @@ Access inputs are permitted. Its tick computation must be deterministic and side
 under one immutable semantic/configuration version, declared inputs, and absolute
 sample position; no mutable external or live-only resource may affect its result.
 Validate instance-dependent properties such as internal latency after configuration.
+
+A replayable Tick node must declare only ephemeral Tick outputs, for both
+continuous values and events (owner clarification, 2026-11-15). It can consume
+another node's persisted output as a recorded dependency. The output-declaration
+restriction does not prohibit these incoming connections.
+
 Event replay, if enabled, must additionally preserve deterministic timestamp/order
 and declared capacity; do not silently infer event replay from the sample rule.
 

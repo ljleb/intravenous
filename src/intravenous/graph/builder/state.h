@@ -108,7 +108,7 @@ public:
 
   PublicSampleInputRef scope_input(details::BuilderScopeId, ContinuousInputConfig);
   PublicEventInputRef scope_event_input(
-      details::BuilderScopeId, std::string_view name, EventTypeId);
+      details::BuilderScopeId, EventInputConfig);
   void scope_outputs(details::BuilderScopeId, std::span<SampleOutputRequest const>);
   void scope_outputs(details::BuilderScopeId, std::span<OutputRequest const>);
   void scope_outputs(details::BuilderScopeId, std::span<NamedRef const>);

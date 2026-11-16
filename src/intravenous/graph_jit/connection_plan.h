@@ -6,6 +6,7 @@
 #include <intravenous/node/tick_replay_mode.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
 #include <intravenous/graph_jit/port_realization.h>
+#include <intravenous/graph_jit/sequential_coverage.h>
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
 
 #include <cstddef>
@@ -34,6 +35,9 @@ struct PlannedGraphNode {
     // member of an authored virtual node. Anonymous concrete nodes retain no
     // synthetic identity derived from their generation-local bundle handle.
     std::optional<StableConcreteNodeId> stable_identity{};
+    // A compiler-owned resolution stage belongs to this public module input,
+    // rather than to an invented concrete member of the authored virtual node.
+    std::optional<StableInputPortId> resolved_module_input{};
     std::size_t internal_latency_samples = 0;
     std::size_t maximum_block_size = 0;
     std::size_t sample_input_count = 0;
@@ -43,6 +47,9 @@ struct PlannedGraphNode {
     // Tock-only primitives participate in background dependency planning but
     // never acquire a position in the realtime execution schedule.
     bool tick_execution = true;
+    // Proven for current live Tick values, independently of a recording's
+    // selected coverage and independently of contextual value replayability.
+    bool full_live_tick_coverage = false;
     TickReplayMode replay_mode = TickReplayMode::disabled;
     bool contextually_replayable = false;
     bool authored_forward_coverage = false;
@@ -156,6 +163,9 @@ struct SampleProjectionContributionPlan {
     ChannelTypeId target_type = ChannelTypeId::mono;
     std::vector<std::size_t> target_channels{};
     SampleChannelTransformPlan transform{};
+    // A partitioned contribution still requires the complete original
+    // projection's sources, including sources delivered by the other path.
+    std::vector<SequentialCoverageSource> coverage_sources{};
 };
 
 // One scalar contribution in a route whose configured sample source channels
@@ -478,6 +488,21 @@ struct ConnectionAnalysisPlan {
     // reuse it instead of rediscovering either graph view.
     BackgroundEvaluationPlan background{};
 };
+
+// A live Sequential read uses current Tick coverage, including from a
+// persisted producer. A background read of that producer remains a read of its
+// selected recording. Full Tick declarations need no runtime coverage lookup.
+std::expected<SequentialCoverageSource, std::string> sequential_source_coverage(
+    ConnectionAnalysisPlan const& plan,
+    SampleSourceChannelTimingPlan const& source);
+
+// Preserve each semantic projection's intersection before unioning independent
+// contributions. These references survive conversion and storage aliasing.
+std::expected<std::vector<SequentialCoverageProjection>, std::string>
+sequential_connection_coverage(
+    ConnectionAnalysisPlan const& plan,
+    SampleConnectionPlan const& connection,
+    std::optional<bool> realtime_component = {});
 
 // Pure host-side topology/temporal/storage-requirement analysis. It does not
 // require LLVM or resolved package implementations and is intentionally usable

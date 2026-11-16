@@ -225,7 +225,20 @@ public:
     {
         if (thread_) return;
         thread_.emplace([this](std::stop_token stop) {
+            std::uint64_t reported_underruns = 0;
+            auto next_underrun_report = std::chrono::steady_clock::now();
             while (!stop.stop_requested()) {
+                auto const now = std::chrono::steady_clock::now();
+                if (now >= next_underrun_report) {
+                    auto const underruns = executor_->playback_underrun_blocks();
+                    if (underruns != reported_underruns) {
+                        std::cerr << "[intravenous audio] background playback underrun: "
+                            << underruns - reported_underruns
+                            << " blocks silenced (" << underruns << " total)\n";
+                        reported_underruns = underruns;
+                    }
+                    next_underrun_report = now + std::chrono::seconds(2);
+                }
                 auto const failure = current_failure();
                 if (failure != Failure::none) {
                     failure_.store(failure, std::memory_order_release);

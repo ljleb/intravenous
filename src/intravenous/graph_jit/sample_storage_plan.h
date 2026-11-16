@@ -162,6 +162,10 @@ struct SampleCompositionInputPlan {
     std::size_t source_representation = no_sample_representation;
     std::size_t source_channel = 0;
     std::size_t read_latency = 0;
+    // Logical coverage can outlive several copies, conversions and detach
+    // rings. Keep its original output references, rather than inferring it
+    // from the representation's currently available bytes.
+    std::vector<SequentialCoverageSource> coverage_sources{};
 };
 
 // One normalized semantic conversion -> projection contribution. sources are
@@ -173,6 +177,7 @@ struct SampleCompositionContributionPlan {
     ChannelLayout source_layout{};
     ChannelLayout converted_layout{};
     SampleChannelTransformPlan transform{};
+    std::vector<SequentialCoverageSource> coverage_sources{};
     std::vector<SampleCompositionInputPlan> sources{};
     std::vector<std::size_t> target_channels{};
 

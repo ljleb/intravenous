@@ -1,4 +1,5 @@
 #include <intravenous/runtime/background_coverage_propagation.h>
+#include <intravenous/graph_jit/sequential_coverage.h>
 #include "event_source_test_support.h"
 #include <intravenous/runtime/graph_executor.h>
 
@@ -7,12 +8,14 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -88,6 +91,7 @@ std::size_t replay_probe_evaluate_calls = 0;
 std::vector<iv::GlobalIndexRange> replay_probe_regions{};
 iv::PersistedDataStore* competing_persisted_store = nullptr;
 bool publish_competing_persisted_snapshot = false;
+std::optional<iv::PersistedDataVersion> competing_persisted_version{};
 std::vector<iv::GlobalIndexRange> propagated_region_shape{};
 std::array<std::vector<iv::GlobalIndexRange>, 2> sorted_source_region_shapes{};
 
@@ -263,6 +267,15 @@ void no_op_background_evaluate(
     iv::graph_jit::BackgroundEvaluationCall*)
 {}
 
+std::atomic<bool> initial_playback_started{false};
+std::atomic<bool> allow_initial_playback{false};
+void wait_for_initial_playback(iv::graph_jit::BackgroundEvaluationCall*)
+{
+    initial_playback_started.store(true, std::memory_order_release);
+    while (!allow_initial_playback.load(std::memory_order_acquire))
+        allow_initial_playback.wait(false, std::memory_order_acquire);
+}
+
 void propagate_region_shape(
     iv::graph_jit::BackgroundEvaluationCall* batch)
 {
@@ -396,11 +409,13 @@ void evaluate_persisted_probe(
         node.finalize_operations(node.operation_frame);
         if (publish_competing_persisted_snapshot) {
             auto candidate = competing_persisted_store->begin_candidate(99);
+            auto const version = candidate.target_version();
             if (competing_persisted_store->publish(std::move(candidate)) !=
                 iv::PersistedDataPublishResult::published) {
                 throw std::runtime_error(
                     "competing persisted background probe publish failed");
             }
+            competing_persisted_version = version;
             publish_competing_persisted_snapshot = false;
         }
     }
@@ -996,6 +1011,7 @@ protected:
         replay_probe_regions.clear();
         competing_persisted_store = nullptr;
         publish_competing_persisted_snapshot = false;
+        competing_persisted_version.reset();
     }
 };
 
@@ -1138,6 +1154,77 @@ TEST_F(GraphExecutorFixture, StagesActivatesAndDispatchesOnlyActiveGeneration)
     EXPECT_FALSE(executor.activate_pending(index(129)));
 }
 
+TEST_F(GraphExecutorFixture, PendingPreparationKeepsThePreviousGraphPlayingUntilItsSnapshotIsReady)
+{
+    initial_playback_started.store(false, std::memory_order_relaxed);
+    allow_initial_playback.store(false, std::memory_order_relaxed);
+    iv::GraphExecutor executor;
+    struct ReleaseOnExit {
+        ~ReleaseOnExit() {
+            allow_initial_playback.store(true, std::memory_order_release);
+            allow_initial_playback.notify_all();
+        }
+    } release;
+    auto first = compiled_graph(1, &observe_first);
+    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+    auto next = std::const_pointer_cast<iv::CompiledGraph>(
+        compiled_graph(2, &observe_second, iv::NodeLayoutBuilder(64).build(), &wait_for_initial_playback));
+    next->background_evaluation_plan.requires_live_tick_coverage = true;
+    ASSERT_EQ(stage_graph(executor, next), iv::GraphExecutorStageResult::accepted);
+    auto const started_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!initial_playback_started.load(std::memory_order_acquire)
+        && std::chrono::steady_clock::now() < started_deadline) std::this_thread::yield();
+    ASSERT_TRUE(initial_playback_started.load(std::memory_order_acquire));
+    EXPECT_FALSE(executor.activate_pending(index(64)));
+    EXPECT_EQ(executor.active_generation(), 1u);
+    executor.tick_block(index(64), 64);
+    EXPECT_EQ(first_tick.calls, 1u);
+    EXPECT_EQ(second_tick.calls, 0u);
+    allow_initial_playback.store(true, std::memory_order_release);
+    allow_initial_playback.notify_all();
+    auto const ready_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    bool activated = false;
+    while (!(activated = executor.activate_pending(index(128)))
+        && std::chrono::steady_clock::now() < ready_deadline) std::this_thread::yield();
+    ASSERT_TRUE(activated);
+    EXPECT_EQ(executor.active_generation(), 2u);
+    executor.tick_block(index(128), 64);
+    EXPECT_EQ(second_tick.calls, 1u);
+    EXPECT_EQ(first_tick.calls, 1u);
+}
+
+TEST_F(GraphExecutorFixture, PrivateBackgroundPreparationDoesNotPublishSuccessorData)
+{
+    auto graph = persisted_tock_graph();
+    auto states = initialize_tock_states(graph);
+    iv::PersistedDataStore data;
+    iv::TickMaterializationStore materializations;
+    iv::BackgroundCoverageState coverage(graph.background_evaluation_plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace propagation(graph.background_evaluation_plan, graph.specialization.sample_rate);
+    auto reader = data.register_reader();
+    auto old = reader.pin();
+    iv::BackgroundTransactionInputs inputs;
+    inputs.roots.locally_changed_nodes = {0};
+    inputs.roots.output_demands.push_back({.port = 0, .required = index_coverage({{0, 4}})});
+    inputs.prepare_only = true;
+    iv::BackgroundEvaluationTransaction preparation{graph, states, coverage, propagation,
+        data, materializations, std::move(inputs)};
+    auto prepared = preparation.execute();
+    ASSERT_TRUE(prepared) << prepared.error();
+    ASSERT_NE(prepared->prepared_data, nullptr);
+    ASSERT_NE(prepared->prepared_materialization, nullptr);
+    EXPECT_FALSE(prepared->published_data);
+    EXPECT_FALSE(prepared->promoted_tick_materialization);
+    EXPECT_TRUE(data.is_current(old.snapshot()));
+    EXPECT_EQ(old->sample_region_count(), 0u);
+    EXPECT_GT(prepared->prepared_data->sample_region_count(), 0u);
+    auto selected = iv::RealtimePersistedState::prepare_owned(graph.project_generation,
+        std::move(prepared->prepared_data), std::move(prepared->prepared_materialization));
+    EXPECT_EQ(selected->data().version(), selected->materialization().data_version());
+    EXPECT_EQ(selected->generation(), graph.project_generation);
+}
+
 TEST_F(GraphExecutorFixture,
        CompatibleRealtimeCodeKeepsNodeStorageAndAppliesTheLatestTarget)
 {
@@ -1208,6 +1295,17 @@ TEST_F(GraphExecutorFixture,
     EXPECT_EQ(
         executor.stage_realtime_code(std::move(stale)),
         iv::GraphExecutorStageResult::ignored_stale);
+}
+
+TEST_F(GraphExecutorFixture, CodeOnlyReplacementRejectsChangedBackgroundFallback)
+{
+    auto original = std::const_pointer_cast<iv::CompiledGraph>(compiled_graph(1, &observe_first));
+    auto replacement = std::const_pointer_cast<iv::CompiledGraph>(compiled_graph(1, &observe_second));
+    original->background_evaluation_plan.ports = {{.sample_fallback_value = 0.5f}};
+    replacement->background_evaluation_plan.ports = original->background_evaluation_plan.ports;
+    ASSERT_TRUE(iv::GraphExecutor::can_replace_realtime_code(*original, *replacement));
+    replacement->background_evaluation_plan.ports[0].sample_fallback_value = 0.75f;
+    EXPECT_FALSE(iv::GraphExecutor::can_replace_realtime_code(*original, *replacement));
 }
 
 TEST_F(GraphExecutorFixture, DynamicSuccessorUsesItsStoredTargetAfterStateMigration)
@@ -1843,7 +1941,11 @@ TEST_F(
     auto retry_result = retry.execute();
     ASSERT_TRUE(retry_result.has_value()) << retry_result.error();
     ASSERT_TRUE(retry_result->published_data.has_value());
-    EXPECT_EQ(retry_result->published_data->revision, 1u);
+    EXPECT_EQ(retry_result->published_data->semantic, 7u);
+    EXPECT_GT(retry_result->published_data->revision, 0u);
+    auto published = reader.pin();
+    EXPECT_EQ(published->version(), *retry_result->published_data);
+    EXPECT_EQ(published->sample_region_count(), 1u);
     EXPECT_EQ(persisted_probe_evaluate_calls, 2u);
 }
 
@@ -1890,7 +1992,11 @@ TEST_F(
     auto retry_result = retry.execute();
     ASSERT_TRUE(retry_result.has_value()) << retry_result.error();
     ASSERT_TRUE(retry_result->published_data.has_value());
-    EXPECT_EQ(retry_result->published_data->revision, 1u);
+    EXPECT_EQ(retry_result->published_data->semantic, 7u);
+    EXPECT_GT(retry_result->published_data->revision, 0u);
+    auto published = reader.pin();
+    EXPECT_EQ(published->version(), *retry_result->published_data);
+    EXPECT_EQ(published->sample_region_count(), 1u);
 }
 
 TEST_F(
@@ -2099,9 +2205,10 @@ TEST_F(
     EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
     {
         auto pin = reader.pin();
-        EXPECT_EQ(
-            pin->version(),
-            (iv::PersistedDataVersion{.semantic = 99, .revision = 1}));
+        ASSERT_TRUE(competing_persisted_version.has_value());
+        EXPECT_EQ(competing_persisted_version->semantic, 99u);
+        EXPECT_GT(competing_persisted_version->revision, 0u);
+        EXPECT_EQ(pin->version(), *competing_persisted_version);
         EXPECT_EQ(pin->sample_region_count(), 0u);
     }
 
@@ -2169,9 +2276,10 @@ TEST_F(
     EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
     {
         auto pin = reader.pin();
-        EXPECT_EQ(
-            pin->version(),
-            (iv::PersistedDataVersion{.semantic = 99, .revision = 1}));
+        ASSERT_TRUE(competing_persisted_version.has_value());
+        EXPECT_EQ(competing_persisted_version->semantic, 99u);
+        EXPECT_GT(competing_persisted_version->revision, 0u);
+        EXPECT_EQ(pin->version(), *competing_persisted_version);
         EXPECT_EQ(pin->sample_region_count(), 0u);
     }
 
@@ -2692,6 +2800,48 @@ TEST_F(
     ASSERT_EQ(roots.locally_changed_nodes.size(), 1u);
     EXPECT_EQ(roots.locally_changed_nodes.front(), 1u);
     EXPECT_TRUE(roots.input_changes.empty());
+}
+
+TEST_F(BackgroundCoveragePropagationFixture, ModuleInputResolutionKeepsItsSemanticIdentityAcrossBundleMoves)
+{
+    using namespace iv;
+    using namespace iv::graph_jit;
+    StableInputPortId origin{
+        .node = {.graph = "public-inputs", .virtual_node = "module"},
+        .kind = PortKind::sample, .port_name = "gain", .port_index = 3,
+    };
+    BackgroundEvaluationPlan previous_plan;
+    previous_plan.nodes = {{.bundle = 7, .resolved_module_input = origin,
+        .replays_tick = true, .full_live_tick_coverage = true,
+        .replay_mode = TickReplayMode::full, .inputs = {0}, .outputs = {1}}};
+    previous_plan.ports = {
+        {.node = 0, .configured_port = {7, PortKind::sample, 0},
+         .direction = PortDirection::input, .sample_fallback_value = 0.5f,
+         .stable_input_identity = origin,
+         .accumulators = {.input_change = 0, .input_requirement = 0}},
+        {.node = 0, .configured_port = {7, PortKind::sample, 0},
+         .direction = PortDirection::output, .full_live_tick_coverage = true,
+         .resolved_module_input = origin,
+         .accumulators = {.output_change = 0, .output_requirement = 0}},
+    };
+    previous_plan.accumulators = {.input_change_count = 1, .output_change_count = 1,
+        .output_requirement_count = 1, .input_requirement_count = 1};
+    auto current_plan = previous_plan;
+    current_plan.nodes[0].bundle = 12;
+    for (auto& port : current_plan.ports) port.configured_port.node_bundle_handle = 12;
+    BackgroundCoverageState previous(1), current(1);
+    auto unchanged = current.prepare_migration_from(previous, current_plan, previous_plan);
+    ASSERT_EQ(unchanged.outputs.size(), 1u);
+    unchanged.commit();
+    auto roots = unchanged.take_reconciliation_roots();
+    EXPECT_TRUE(roots.locally_changed_nodes.empty());
+    EXPECT_TRUE(roots.input_changes.empty());
+    current_plan.ports[0].sample_fallback_value = 0.75f;
+    BackgroundCoverageState changed(1);
+    auto updated = changed.prepare_migration_from(previous, current_plan, previous_plan);
+    updated.commit();
+    roots = updated.take_reconciliation_roots();
+    EXPECT_EQ(roots.locally_changed_nodes, (std::vector<BackgroundNodeIndex>{0}));
 }
 
 TEST_F(
@@ -3918,3 +4068,107 @@ TEST_F(GraphExecutorFixture, ForwardDiscoveryRunsOrdinaryTockInsideTheSelectedTr
 }
 
 } // namespace
+
+TEST_F(BackgroundCoveragePropagationFixture, LiveUnionFeedbackNeedsACompleteFullContribution)
+{
+    using namespace iv;
+    using namespace iv::graph_jit;
+    BackgroundEvaluationPlan plan;
+    plan.requires_live_tick_coverage = true;
+    plan.nodes = {
+        {.bundle = 0, .authored_tock_execution = true, .outputs = {0}},
+        {.bundle = 1, .tracks_live_tick_coverage = true, .uses_replay_forward_coverage = true,
+         .replay_mode = TickReplayMode::input_union, .inputs = {1}, .outputs = {2}},
+        {.bundle = 2, .tracks_live_tick_coverage = true, .uses_replay_forward_coverage = true,
+         .replay_mode = TickReplayMode::input_union, .inputs = {3}, .outputs = {4}},
+    };
+    plan.ports = {
+        {.node = 0, .configured_port = {0, PortKind::event, 0}, .kind = PortKind::event,
+         .direction = PortDirection::output, .output_production = OutputProductionKind::coverage,
+         .authored_tock_output = true, .outgoing_connections = {0},
+         .accumulators = {.output_change = 0, .output_requirement = 0}},
+        {.node = 1, .configured_port = {1, PortKind::event, 0}, .kind = PortKind::event,
+         .direction = PortDirection::input, .incoming_connections = {0, 1},
+         .accumulators = {.input_change = 0, .input_requirement = 0}},
+        {.node = 1, .configured_port = {1, PortKind::event, 0}, .kind = PortKind::event,
+         .direction = PortDirection::output, .outgoing_connections = {2},
+         .accumulators = {.output_change = 1, .output_requirement = 1}},
+        {.node = 2, .configured_port = {2, PortKind::event, 0}, .kind = PortKind::event,
+         .direction = PortDirection::input, .incoming_connections = {2},
+         .accumulators = {.input_change = 1, .input_requirement = 1}},
+        {.node = 2, .configured_port = {2, PortKind::event, 0}, .kind = PortKind::event,
+         .direction = PortDirection::output, .outgoing_connections = {1},
+         .accumulators = {.output_change = 2, .output_requirement = 2}},
+    };
+    auto connect = [&](BackgroundPortIndex source, BackgroundPortIndex target) {
+        auto const from = plan.ports[source].configured_port;
+        auto const to = plan.ports[target].configured_port;
+        plan.connections.push_back({.kind = PortKind::event,
+            .source_coverage_ports = {source}, .target_coverage_ports = {target},
+            .event_deliveries = {{.source = {from.node_bundle_handle, from.port_index},
+                .target = {to.node_bundle_handle, to.port_index}, .source_port = source, .target_port = target}}});
+    };
+    connect(0, 1);
+    connect(4, 1);
+    connect(2, 3);
+    plan.accumulators = {.input_change_count = 2, .output_change_count = 3,
+        .output_requirement_count = 3, .input_requirement_count = 2};
+    CompiledGraphBackgroundOperations operations{
+        .propagate_forward = +[](BackgroundEvaluationCall* call) {
+            for (auto& node : std::span<BackgroundNodeCall>(call->nodes)) {
+                if (has_activity(node.activity, BackgroundNodeActivity::forward) && node.replay_forward)
+                    node.replay_forward(node.replay_context, node.forward);
+            }
+        },
+        .propagate_reverse = &no_op_background_evaluate,
+        .evaluate = &no_op_background_evaluate,
+    };
+    for (bool full_seed : {true, false}) {
+        SCOPED_TRACE(full_seed);
+        BackgroundCoverageState recorded_state(3), live_state(3);
+        BackgroundPropagationWorkspace recorded(plan, 48000), live(plan, 48000);
+        CoveragePropagationRequest roots;
+        OutputCoverageChangeRequest seed{.port = 0,
+            .coverage = full_seed ? full_index_coverage() : IndexCoverage{}, .finalized = true};
+        for (auto region : seed.coverage) seed.regions.push_back(region);
+        roots.output_changes.push_back(std::move(seed));
+        auto selection = recorded.prepare(operations, recorded_state, roots);
+        if (full_seed) {
+            auto prepared = live.prepare_live_tick(operations, live_state, selection, {}, true);
+            ASSERT_EQ(prepared.output_coverages().size(), 3u);
+            EXPECT_EQ(prepared.output_coverages()[1], full_index_coverage());
+            EXPECT_EQ(prepared.output_coverages()[2], full_index_coverage());
+            live.discard(std::move(prepared));
+        } else {
+            EXPECT_THROW((void)live.prepare_live_tick(operations, live_state, selection, {}, true), std::runtime_error);
+        }
+        recorded.discard(std::move(selection));
+    }
+    // A continuous projection needs both operands. A ready full source beside
+    // an unresolved cyclic operand does not by itself make that projection
+    // full; it must not be mistaken for an independent union contribution.
+    for (auto& port : plan.ports) {
+        port.kind = PortKind::sample;
+        port.configured_port.port_kind = PortKind::sample;
+    }
+    plan.connections = {
+        {.kind = PortKind::sample, .source_coverage_ports = {0, 4}, .target_coverage_ports = {1},
+         .sample_source_port_by_channel = {0, 4}, .sample_read_latencies = {0, 0}, .sample_target_port = 1},
+        {.kind = PortKind::sample, .source_coverage_ports = {2}, .target_coverage_ports = {3},
+         .sample_source_port_by_channel = {2}, .sample_read_latencies = {0}, .sample_target_port = 3},
+    };
+    plan.ports[0].outgoing_connections = {0};
+    plan.ports[1].incoming_connections = {0};
+    plan.ports[2].outgoing_connections = {1};
+    plan.ports[3].incoming_connections = {1};
+    plan.ports[4].outgoing_connections = {0};
+    BackgroundCoverageState recorded_state(3), live_state(3);
+    BackgroundPropagationWorkspace recorded(plan, 48000), live(plan, 48000);
+    CoveragePropagationRequest roots;
+    OutputCoverageChangeRequest seed{.port = 0, .coverage = full_index_coverage(), .finalized = true};
+    for (auto region : seed.coverage) seed.regions.push_back(region);
+    roots.output_changes.push_back(std::move(seed));
+    auto selection = recorded.prepare(operations, recorded_state, roots);
+    EXPECT_THROW((void)live.prepare_live_tick(operations, live_state, selection, {}, true), std::runtime_error);
+    recorded.discard(std::move(selection));
+}

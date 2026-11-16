@@ -16,6 +16,15 @@
 
 namespace iv {
 
+// Generation-local destination metadata aligned with one independently pinned
+// realtime-producer queue. The block prefix remains owned by GraphExecutor and
+// is released only after the transaction reports a committed result.
+struct BackgroundProducedInputRoute {
+    PersistedOutputHandle output{};
+    graph_jit::BackgroundPortIndex port = 0;
+    PortKind kind = PortKind::sample;
+};
+
 // Transaction-local inputs selected by the background actor. Realtime-produced
 // queue records are separate complete inputs and add their own coverage roots.
 // A missing semantic version retains the pinned persisted snapshot's semantic
@@ -26,6 +35,12 @@ struct BackgroundTransactionInputs {
     // Generation-cutover reconciliation removes these destinations only after
     // every closed predecessor queue has committed its finite tail.
     std::span<PersistedOutputHandle const> retired_outputs{};
+    // Evaluate a pending generation privately. No canonical data root or
+    // materialization is published until its audio activation.
+    bool prepare_only = false;
+    PersistedDataStore::Snapshot const* reusable_data = nullptr;
+    TickMaterializationSnapshot const* reusable_materialization = nullptr;
+
 };
 
 enum class BackgroundEvaluationStatus : std::uint8_t {
@@ -41,15 +56,8 @@ struct BackgroundEvaluationResult {
     // Set when the executor-backed transaction promoted its complete
     // Tick-visible materialization selection, including an empty selection.
     std::optional<std::uint64_t> promoted_tick_materialization{};
-};
-
-// Generation-local destination metadata aligned with one independently pinned
-// realtime-producer queue. The block prefix remains owned by GraphExecutor and
-// is released only after the transaction reports a committed result.
-struct BackgroundProducedInputRoute {
-    PersistedOutputHandle output{};
-    graph_jit::BackgroundPortIndex port = 0;
-    PortKind kind = PortKind::sample;
+    std::unique_ptr<PersistedDataStore::Snapshot> prepared_data{};
+    std::unique_ptr<TickMaterializationSnapshot> prepared_materialization{};
 };
 
 // One complete background operation. The implementation owns its reader pin,
@@ -86,7 +94,8 @@ public:
                                     std::span<BackgroundProducedInputRoute const>
                                         produced_routes,
                                     std::span<PinnedBlockPrefix const>
-                                        produced_prefixes);
+                                        produced_prefixes,
+                                    LiveTickCoverageState* live_coverage = nullptr);
     ~BackgroundEvaluationTransaction();
 
     BackgroundEvaluationTransaction(BackgroundEvaluationTransaction const&) =

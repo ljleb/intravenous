@@ -42,19 +42,33 @@ RealtimePersistedState::prepare_initial(
 {
     auto state = std::unique_ptr<RealtimePersistedState>{
         new RealtimePersistedState{generation, data.register_reader()}};
-    state->owned_materialization_ =
-        std::make_unique<TickMaterializationSnapshot>();
+    state->initial_materialization_ = std::make_unique<TickMaterializationSnapshot>();
+    return state;
+}
+
+std::unique_ptr<RealtimePersistedState> RealtimePersistedState::prepare_owned(
+    std::uint64_t generation,
+    std::shared_ptr<PersistedDataStore::Snapshot const> data,
+    std::shared_ptr<TickMaterializationSnapshot const> materialization)
+{
+    if (!data || !materialization || materialization->generation() != generation
+        || materialization->data_version() != data->version())
+        throw std::invalid_argument("private playback preparation has mismatched roots");
+    auto state = std::unique_ptr<RealtimePersistedState>(new RealtimePersistedState{generation, {}});
+    state->owned_data_ = std::move(data);
+    state->owned_materialization_ = std::move(materialization);
+    state->captured_ = true;
     return state;
 }
 
 bool RealtimePersistedState::capture_initial() noexcept
 {
-    if (captured_ || !owned_materialization_) return false;
+    if (captured_ || !initial_materialization_) return false;
     data_ = data_slot_.pin();
     auto const version = data_.snapshot().version();
-    owned_materialization_->generation_ = generation_;
-    owned_materialization_->semantic_version_ = version.semantic;
-    owned_materialization_->data_version_ = version;
+    initial_materialization_->generation_ = generation_;
+    initial_materialization_->semantic_version_ = version.semantic;
+    initial_materialization_->data_version_ = version;
     captured_ = true;
     return true;
 }
@@ -145,6 +159,16 @@ void RealtimePersistedStateMailbox::return_for_reclamation(
         &state,
         std::memory_order_release,
         std::memory_order_relaxed));
+}
+
+std::unique_ptr<RealtimePersistedState> RealtimePersistedStateMailbox::take_active() noexcept
+{
+    return std::unique_ptr<RealtimePersistedState>(std::exchange(active_, nullptr));
+}
+
+std::unique_ptr<RealtimePersistedState> RealtimePersistedStateMailbox::take_pending() noexcept
+{
+    return std::unique_ptr<RealtimePersistedState>(pending_.exchange(nullptr, std::memory_order_acq_rel));
 }
 
 RealtimePersistedState const* RealtimePersistedStateMailbox::adopt(
