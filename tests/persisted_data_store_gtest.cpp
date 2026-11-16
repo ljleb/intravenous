@@ -246,11 +246,13 @@ TEST(TickMaterializationSnapshot,
             .port = 1,
             .retained = retained_coverage,
             .logical_regions = {range(0, 3), range(3, 2), range(5, 3)},
+            .input_access = iv::InputAccessKind::coverage,
         },
         iv::TickMaterializationRetention{
             .port = 2,
             .retained = retained_coverage,
             .logical_regions = {range(0, 3), range(3, 2), range(5, 3)},
+            .input_access = iv::InputAccessKind::coverage,
         },
     };
 
@@ -333,11 +335,13 @@ TEST(TickMaterializationSnapshot,
             .port = 1,
             .retained = iv::IndexCoverage{retained_middle},
             .logical_regions = {first, retained_middle, first},
+            .input_access = iv::InputAccessKind::coverage,
         },
         iv::TickMaterializationRetention{
             .port = 2,
             .retained = iv::IndexCoverage{retained_middle},
             .logical_regions = {first, retained_middle, first},
+            .input_access = iv::InputAccessKind::coverage,
         },
     };
 
@@ -402,6 +406,7 @@ TEST(TickMaterializationSnapshot,
         .port = 1,
         .retained = iv::IndexCoverage{range(0, 8)},
         .logical_regions = {range(0, 8)},
+        .input_access = iv::InputAccessKind::coverage,
     }};
 
     current.carry_forward(previous, realization);
@@ -433,7 +438,9 @@ TEST(TickMaterializationSnapshot, CarriesPreparedWindowsByLogicalRegionIdentityA
     iv::TickMaterializationSnapshot current{4, 2, {}, {std::move(replacement)}, {}};
     std::array retention{iv::TickMaterializationRetention{.port = 1,
         .retained = iv::IndexCoverage{range(1, 2), range(21, 2)},
-        .logical_regions = {range(20, 10), range(0, 10)}}};
+        .logical_regions = {range(20, 10), range(0, 10)},
+        .input_access = iv::InputAccessKind::coverage,
+    }};
     current.carry_forward(previous, retention);
     auto const* input = current.find_sample(1);
     ASSERT_NE(input, nullptr);
@@ -467,6 +474,7 @@ TEST(TickMaterializationSnapshot,
         .port = 1,
         .retained = iv::IndexCoverage{range(0, 8)},
         .logical_regions = {range(0, 8)},
+        .input_access = iv::InputAccessKind::coverage,
     }};
 
     current.carry_forward(previous, realization);
@@ -476,6 +484,68 @@ TEST(TickMaterializationSnapshot,
     ASSERT_EQ(sample->regions.size(), 1u);
     EXPECT_EQ(sample->regions.front().range, range(0, 8));
     EXPECT_FLOAT_EQ(sample->at(index(6), 0).value, 6.0f);
+}
+
+TEST(TickMaterializationSnapshot, SequentialWindowsRetainPartialSamplesAndEventsWithoutCopyingPayloads)
+{
+    auto samples = iv::make_tick_materialized_sample_input(1, iv::mono_planar_channel_layout,
+        {0}, std::vector{range(0, 8)}, {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f});
+    auto events = iv::make_tick_materialized_event_input(2, iv::EventTypeId::trigger,
+        iv::IndexCoverage{range(0, 8)},
+        {{.time = index(1), .value = iv::TriggerEvent{}}, {.time = index(3), .value = iv::TriggerEvent{}},
+         {.time = index(5), .value = iv::TriggerEvent{}}, {.time = index(6), .value = iv::TriggerEvent{}},
+         {.time = index(7), .value = iv::TriggerEvent{}}}, {1, 3, 5, 6, 7});
+    iv::TickMaterializationSnapshot previous{4, 1, {}, {std::move(samples)}, {std::move(events)}};
+    auto replacement = iv::make_tick_materialized_sample_input(1, iv::mono_planar_channel_layout,
+        {0}, std::vector{range(6, 4)}, {60.0f, 70.0f, 80.0f, 90.0f});
+    auto replacement_events = iv::make_tick_materialized_event_input(2, iv::EventTypeId::trigger,
+        iv::IndexCoverage{range(6, 4)},
+        {{.time = index(6), .value = iv::TriggerEvent{}}, {.time = index(9), .value = iv::TriggerEvent{}}}, {60, 90});
+    iv::TickMaterializationSnapshot current{4, 2, {}, {std::move(replacement)}, {std::move(replacement_events)}};
+    std::array retention{
+        iv::TickMaterializationRetention{.port = 1, .retained = iv::IndexCoverage{range(2, 6)},
+            .input_access = iv::InputAccessKind::sequential},
+        iv::TickMaterializationRetention{.port = 2, .retained = iv::IndexCoverage{range(2, 6)},
+            .input_access = iv::InputAccessKind::sequential}};
+    current.carry_forward(previous, retention);
+    auto const* actual = current.find_sample(1);
+    ASSERT_NE(actual, nullptr);
+    EXPECT_EQ(actual->coverage, iv::IndexCoverage{range(2, 8)});
+    std::array<float, 8> const expected{2, 3, 4, 5, 60, 70, 80, 90};
+    for (std::size_t i = 0; i < expected.size(); ++i)
+        EXPECT_FLOAT_EQ(actual->at(index(static_cast<std::int64_t>(i + 2)), 0).value, expected[i]);
+    ASSERT_EQ(actual->regions.size(), 2u);
+    EXPECT_EQ(actual->regions.front().values, previous.find_sample(1)->regions.front().values);
+    EXPECT_EQ(actual->regions.front().first_frame, 2u);
+    auto const* actual_events = current.find_event(2);
+    ASSERT_NE(actual_events, nullptr);
+    EXPECT_EQ(actual_events->coverage, iv::IndexCoverage{range(2, 8)});
+    std::vector<std::pair<std::int64_t, std::size_t>> observed;
+    actual_events->for_each_indexed(range(2, 8), &observed,
+        +[](void* data, iv::TimedEvent const& event, std::size_t source) {
+            static_cast<decltype(observed)*>(data)->emplace_back(event.time.signed_value(), source);
+        });
+    EXPECT_EQ(observed, (decltype(observed){{3, 3}, {5, 5}, {6, 60}, {9, 90}}));
+    ASSERT_EQ(actual_events->chunks.size(), 2u);
+    EXPECT_EQ(actual_events->chunks.front().events, previous.find_event(2)->chunks.front().events);
+}
+
+TEST(TickMaterializationSnapshot, SequentialEmptyEventWindowsRetainKnownCoverageAcrossPartialReplacement)
+{
+    auto events = iv::make_tick_materialized_event_input(2, iv::EventTypeId::trigger,
+        iv::IndexCoverage{range(0, 8)}, {}, {});
+    iv::TickMaterializationSnapshot previous{4, 1, {}, {}, {std::move(events)}};
+    auto replacement = iv::make_tick_materialized_event_input(2, iv::EventTypeId::trigger,
+        iv::IndexCoverage{range(4, 4)}, {}, {});
+    iv::TickMaterializationSnapshot current{4, 2, {}, {}, {std::move(replacement)}};
+    std::array retention{iv::TickMaterializationRetention{.port = 2,
+        .retained = iv::IndexCoverage{range(0, 6)}, .input_access = iv::InputAccessKind::sequential}};
+    current.carry_forward(previous, retention);
+    auto const* input = current.find_event(2);
+    ASSERT_NE(input, nullptr);
+    EXPECT_EQ(input->coverage, iv::IndexCoverage{range(0, 8)});
+    ASSERT_NE(input->merged_events, nullptr);
+    EXPECT_TRUE(input->merged_events->empty());
 }
 
 std::vector<std::byte> queued_bytes(iv::PinnedBlockPrefix const& prefix)

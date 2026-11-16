@@ -78,6 +78,16 @@ namespace iv {
         static constexpr size_t average_event_size_bytes() { return sizeof(Sample); }
     };
 
+    enum class CurveInterpolation : std::uint8_t { empty, hold, bezier };
+
+    // Editing identities belong to the point source, not the event stream.
+    struct CurvePointEvent {
+        Sample value{};
+        CurveInterpolation interpolation = CurveInterpolation::bezier;
+        float tension = 1;
+        static constexpr size_t average_event_size_bytes() { return sizeof(CurvePointEvent); }
+    };
+
     struct EmptyEvent {
         static constexpr size_t average_event_size_bytes()
         {
@@ -91,6 +101,7 @@ namespace iv {
         boundary,
         midi,
         sample,
+        curve_point,
         count,
     };
 
@@ -126,7 +137,7 @@ namespace iv {
         return realtime_port_window(block_index, block_size, latency, 0);
     }
 
-    using Event = std::variant<MidiEvent, TriggerEvent, BoundaryEvent, EmptyEvent, SampleEvent>;
+    using Event = std::variant<MidiEvent, TriggerEvent, BoundaryEvent, EmptyEvent, SampleEvent, CurvePointEvent>;
 
     struct TimedEvent {
         GlobalIndex time{};
@@ -421,6 +432,8 @@ namespace iv {
             return EmptyEvent::average_event_size_bytes();
         case EventTypeId::sample:
             return SampleEvent::average_event_size_bytes();
+        case EventTypeId::curve_point:
+            return CurvePointEvent::average_event_size_bytes();
         case EventTypeId::count:
             break;
         }

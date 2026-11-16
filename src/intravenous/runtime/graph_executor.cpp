@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <span>
@@ -985,8 +986,14 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
             if (!progress
                 || progress->status
                     != BackgroundEvaluationStatus::committed) {
-                progress_failed_.store(
-                    true, std::memory_order_release);
+                if (!progress_failed_.exchange(true, std::memory_order_acq_rel)) {
+                    if (!progress) {
+                        std::fprintf(stderr, "background graph execution failed: %s\n", progress.error().c_str());
+                    } else {
+                        std::fprintf(stderr, "background graph execution did not commit (status %u)\n",
+                            static_cast<unsigned>(progress->status));
+                    }
+                }
                 // A pre-commit failure keeps its exact selected queue prefixes.
                 // Wait for a later domain-work notification rather than spin.
             }

@@ -71,12 +71,12 @@ struct TickMaterializedSampleInput {
         *continuous_value_storage_geometry(
             continuous_value_type_id_v<Sample>, std::nullopt);
     std::vector<std::size_t> channels{};
-    // Logical producer order. Records may overlap or be exact duplicates;
-    // coverage is their positional union.
+    // Prepared positional windows. Region/Coverage windows identify their
+    // logical Region through logical_region_index; Sequential windows have no
+    // independent Region identity. coverage is their positional union.
     std::vector<TickMaterializedSampleRegion> regions{};
-    // Node-facing descriptors in the same logical order as regions. They
-    // point into the shared immutable owners above and preserve overlapping
-    // or duplicate logical Regions.
+    // Node-facing descriptors preserve explicit logical_regions when present;
+    // otherwise each descriptor describes one complete stored window.
     std::vector<ContinuousRegionStorageView> region_views{};
     IndexCoverage coverage{};
     std::vector<GlobalIndexRange> logical_regions{};
@@ -123,8 +123,9 @@ struct TickMaterializedEventInput {
         void*, TimedEvent const&, std::size_t);
     graph_jit::BackgroundPortIndex port = 0;
     EventTypeId type = EventTypeId::empty;
-    // Logical producer order. Chunks may overlap or have identical ranges;
-    // each chunk owns an independent event sequence.
+    // Region/Coverage chunks retain logical producer order and independent
+    // overlapping sequences. Sequential chunks are prepared positional windows
+    // and can retain subwindows through the shared immutable owners.
     std::vector<TickMaterializedEventChunk> chunks{};
     std::vector<GlobalIndexRange> region_ranges{};
     // Timeline-ordered view used by sequential consumers. Region/Coverage
@@ -201,10 +202,10 @@ make_tick_materialized_continuous_input(
 struct TickMaterializationRetention {
     graph_jit::BackgroundPortIndex port = 0;
     IndexCoverage retained{};
-    // Complete current materialized record order. carry_forward() uses this
-    // list to place produced and retained records without inferring where a
-    // replacement belongs from the previous snapshot alone.
+    // For Region/Coverage inputs, preserve the current logical record order.
+    // Sequential inputs retain positional windows and do not use this list.
     std::vector<GlobalIndexRange> logical_regions{};
+    InputAccessKind input_access = InputAccessKind::sequential;
 };
 
 // One immutable set of transaction-produced Tick-visible storage. It is not a

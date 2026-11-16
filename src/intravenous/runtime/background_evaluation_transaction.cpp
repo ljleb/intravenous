@@ -30,6 +30,8 @@ namespace {
         return std::holds_alternative<BoundaryEvent>(event);
     case EventTypeId::sample:
         return std::holds_alternative<SampleEvent>(event);
+    case EventTypeId::curve_point:
+        return std::holds_alternative<CurvePointEvent>(event);
     case EventTypeId::empty:
         return std::holds_alternative<EmptyEvent>(event);
     case EventTypeId::count:
@@ -655,10 +657,9 @@ class BackgroundEvaluationTransaction::Impl {
         } else if (auto const* event =
                        self.previous_materialization_->find_event(port)) {
             for (auto const& region : event->chunks) {
-                if (!(IndexCoverage{region.range} & required).empty()
-                    && (IndexCoverage{region.range} & changed).empty()) {
-                    retained.include(region.range);
-                }
+                auto const valid = region.prepared_coverage
+                    ? *region.prepared_coverage : IndexCoverage{region.range};
+                retained.include((valid & required) - changed);
             }
         }
         if (retained.empty()) return;
@@ -670,6 +671,7 @@ class BackgroundEvaluationTransaction::Impl {
             self.materialization_retention_.push_back({
                 .port = port,
                 .retained = std::move(retained),
+                .input_access = plan.ports[port].input_access,
             });
         } else {
             existing->retained.include(retained);
@@ -1381,55 +1383,6 @@ class BackgroundEvaluationTransaction::Impl {
                 ? prepared_live_coverage_->output_coverages() : prepared_->output_coverages());
             if (previous_materialization_
                 && !materialization_retention_.empty()) {
-                auto const append_ranges = [](
-                    std::vector<GlobalIndexRange>& target,
-                    auto const& regions) {
-                    for (auto const& region : regions) {
-                        target.push_back(region.range);
-                    }
-                };
-                for (auto& realization : materialization_retention_) {
-                    realization.logical_regions.clear();
-                    if (auto const* produced =
-                            tick_materialization->find_sample(realization.port)) {
-                        append_ranges(
-                            realization.logical_regions, produced->regions);
-                    } else if (auto const* produced =
-                                   tick_materialization->find_event(
-                                       realization.port)) {
-                        append_ranges(
-                            realization.logical_regions, produced->chunks);
-                    }
-                    if (auto const* previous =
-                            previous_materialization_->find_sample(
-                                realization.port)) {
-                        for (auto const& region : previous->regions) {
-                            if (realization.retained.contains(region.range)) {
-                                realization.logical_regions.push_back(
-                                    region.range);
-                            }
-                        }
-                    } else if (auto const* previous =
-                                   previous_materialization_->find_event(
-                                       realization.port)) {
-                        for (auto const& region : previous->chunks) {
-                            if (realization.retained.contains(region.range)) {
-                                realization.logical_regions.push_back(
-                                    region.range);
-                            }
-                        }
-                    }
-                    std::stable_sort(
-                        realization.logical_regions.begin(),
-                        realization.logical_regions.end(),
-                        [](GlobalIndexRange left, GlobalIndexRange right) {
-                            if (left.begin == right.begin) {
-                                return left.extent > right.extent;
-                            }
-                            return SignedGlobalIndexOrder{}(
-                                left.begin, right.begin);
-                        });
-                }
                 tick_materialization->carry_forward(
                     *previous_materialization_, materialization_retention_);
             }

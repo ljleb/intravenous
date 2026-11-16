@@ -24,7 +24,7 @@ std::string_view graph_jit_runtime_package_source()
 // This fixture has an independent package catalog. Register the automation
 // implementations here without loading the rest of the builtin package.
 IV_NODE("iv.builtin.automation.point_source", iv::automation::PointSource);
-IV_NODE("iv.builtin.automation.linear_curve", iv::automation::LinearCurve);
+IV_NODE("iv.builtin.automation.interpreter", iv::automation::Curve);
 IV_MODULE_CLASS("iv.builtin.automation.curve", iv::automation::AutomationCurve);
 
 #include <algorithm>
@@ -7345,7 +7345,8 @@ void automation_window_module(iv::GraphBuilder& graph) {
     // inside the two-sample replay window. The list is deliberately unsorted:
     // the curve sorts it before PointSource, which rejects unsorted points.
     auto curve = graph.node<"iv.builtin.automation.curve">(
-        std::vector<iv::automation::Point>{{3, 36000, 0}, {1, 0, 0}, {2, 4.0 / 88200, 1}});
+        std::vector<iv::automation::Point>{{3, 36000, 0, iv::CurveInterpolation::bezier, 0},
+            {1, 0, 0, iv::CurveInterpolation::bezier, 0}, {2, 4.0 / 88200, 1, iv::CurveInterpolation::bezier, 0}});
     auto window = graph.node<"iv.test.automation.window">();
     window(curve);
     auto live = graph.node<"iv.test.graph_jit.state_context.manual_control_slice_probe">();
@@ -7711,6 +7712,83 @@ void complete_tick_input_module(iv::GraphBuilder& graph) {
     graph.outputs();
 }
 IV_MODULE("iv.test.computed.complete_tick_input", complete_tick_input_module);
+
+struct CurvePointTransform {
+    static constexpr auto inputs() {
+        return std::array{iv::event_input("points", iv::EventTypeId::curve_point, iv::InputAccess::region)};
+    }
+    static constexpr auto outputs() {
+        return std::array{iv::event_output("transformed", iv::EventTypeId::curve_point,
+            iv::OutputProduction::region, iv::OutputRealization::buffered)};
+    }
+    void constrain_ports(iv::ConstrainPortsContext<CurvePointTransform>& ctx) const {
+        ctx.output<"transformed">().max_event_count() = 3;
+    }
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<CurvePointTransform>& ctx) const {
+        auto input = ctx.input<"points">();
+        auto ranges = input.regions();
+        ctx.output<"transformed">().publish(ranges.empty() ? iv::GlobalIndexRange{} : ranges.front());
+        ctx.output<"transformed">().change(input.changed());
+    }
+    void propagate_reverse_coverage(iv::PropagateReverseCoverageContext<CurvePointTransform>& ctx) const {
+        auto input = ctx.input<"points">();
+        for (auto range : input.coverage()) input.require(range);
+    }
+    void tock_coverage(iv::TockCoverageContext<CurvePointTransform>& ctx) const {
+        auto output = ctx.output<"transformed">().region();
+        ctx.input<"points">().region().for_each([&](iv::TimedEvent event) {
+            auto& point = std::get<iv::CurvePointEvent>(event.value);
+            point.value.value *= 2;
+            if (event.time == iv::GlobalIndex::from_signed(4)) point.interpolation = iv::CurveInterpolation::empty;
+            if (ctx.output<"transformed">().requested_coverage().contains(event.time)) output.write(event);
+        });
+    }
+};
+IV_NODE("iv.test.automation.transform", CurvePointTransform);
+void transformed_sparse_curve_module(iv::GraphBuilder& graph) {
+    using namespace iv;
+    auto points = graph.node<"iv.builtin.automation.point_source">(graph.immutable_array<iv::automation::Point>(
+        std::vector<iv::automation::Point>{{1, 0, 0, iv::CurveInterpolation::bezier, 0},
+            {2, 4.0 / 88200, 1, iv::CurveInterpolation::hold, 1},
+            {3, 12.0 / 88200, 0, iv::CurveInterpolation::empty, 1}}));
+    auto transformed = graph.node<"iv.test.automation.transform">();
+    transformed("points"_F = points);
+    auto curve = graph.node<"iv.builtin.automation.interpreter">();
+    curve("points"_F = transformed);
+    auto manual = graph.node<"iv.test.replay.manual_full">();
+    manual(curve);
+    auto window = graph.node<"iv.test.replay.window">(std::int64_t{0}, std::uint64_t{8});
+    window(manual);
+    graph.outputs();
+}
+IV_MODULE("iv.test.automation.transformed_sparse_curve", transformed_sparse_curve_module);
+void empty_sparse_curve_module(iv::GraphBuilder& graph) {
+    auto curve = graph.node<"iv.builtin.automation.curve">(std::vector<iv::automation::Point>{});
+    auto manual = graph.node<"iv.test.replay.manual_full">();
+    manual(curve);
+    auto window = graph.node<"iv.test.replay.window">(std::int64_t{0}, std::uint64_t{8});
+    window(manual);
+    graph.outputs();
+}
+IV_MODULE("iv.test.automation.empty_sparse_curve", empty_sparse_curve_module);
+
+void rolling_automation_module(iv::GraphBuilder& graph) {
+    auto curve = graph.node<"iv.builtin.automation.curve">(
+        std::vector<iv::automation::Point>{{1, 0, 1, iv::CurveInterpolation::bezier, 0},
+            {2, 1, 2, iv::CurveInterpolation::bezier, 0}});
+    auto module = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+        auto input = boundary.input<"frequency", iv::Sample>(iv::InputAccess::sequential, {
+            .default_value = .25f});
+        auto consumer = graph.node<"iv.test.replay.manual_full">();
+        consumer(input);
+        boundary.outputs(consumer);
+    }, "automation-boundary");
+    module(curve);
+    auto live = graph.node<"iv.test.replay.live_probe">();
+    live(module);
+    graph.outputs();
+}
+IV_MODULE("iv.test.automation.rolling", rolling_automation_module);
 
 )cpp";
     static_assert(part_1.size() < 60 * 1024);

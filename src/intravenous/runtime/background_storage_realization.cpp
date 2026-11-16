@@ -107,6 +107,8 @@ public:
         return std::holds_alternative<BoundaryEvent>(event);
     case EventTypeId::sample:
         return std::holds_alternative<SampleEvent>(event);
+    case EventTypeId::curve_point:
+        return std::holds_alternative<CurvePointEvent>(event);
     case EventTypeId::midi:
         return std::holds_alternative<MidiEvent>(event);
     case EventTypeId::count:

@@ -19,13 +19,13 @@ const protocol = (): NodeEventProtocol => ({ formatVersion: 0, definitions: [],
     receivers: [{ address: target, supportedEventTypes: [event.eventType] }] });
 
 test("typed automation events snapshot their payload and cannot be forged as a raw JSON event", () => {
-    const point = { id: 4, seconds: 2, value: .5 };
+    const point = { id: 4, seconds: 2, value: .5, interpolation: "bezier" as const, tension: 1 };
     const typed = AddPoint({ point });
     point.value = .9;
     const first = serializeNodeEvent(typed);
-    assert.deepEqual(first.payload, { point: { id: 4, seconds: 2, value: .5 } });
+    assert.deepEqual(first.payload, { point: { id: 4, seconds: 2, value: .5, interpolation: "bezier", tension: 1 } });
     (first.payload as { point: { value: number } }).point.value = 1;
-    assert.deepEqual(serializeNodeEvent(typed).payload, { point: { id: 4, seconds: 2, value: .5 } });
+    assert.deepEqual(serializeNodeEvent(typed).payload, { point: { id: 4, seconds: 2, value: .5, interpolation: "bezier", tension: 1 } });
     assert.throws(() => serializeNodeEvent({} as NodeEvent), /typed event/);
     // These calls must remain type errors even though the wire payload is JSON.
     const typeErrorsOnly = () => {
@@ -49,6 +49,20 @@ test("codecs reject invalid numeric values, missing fields, and fixed sequence l
     assert.throws(() => encodeNodeEventValue({ kind: "sequence", fixedElementCount: 2,
         element: { kind: "boolean" } }, [true]), /fixed sequence length/);
     assert.equal(encodeNodeEventValue({ kind: "enumeration", enumerators: [{ name: "linear", value: "0" }] }, "linear"), "linear");
+});
+
+test("compiler enum signedness survives binding generation and factories use enumerator names", () => {
+    for (const signed of [false, true]) {
+        const schema: NodeEventValueSchema = { kind: "enumeration", bitWidth: 8, signed,
+            enumerators: [{ name: "empty", value: "0" }, { name: "bezier", value: signed ? "-1" : "2" }] };
+        const id = { nominalId: "curve-policy", definitionFingerprint: "enum-schema" };
+        const factory = defineNodeEvent<"empty" | "bezier">(id, schema);
+        assert.equal(serializeNodeEvent(factory("bezier")).payload, "bezier");
+        assert.throws(() => encodeNodeEventValue(schema, "unknown"), /enumerator/);
+        const generated = generateNodeEventBindings({ formatVersion: 0, definitions: [],
+            eventTypes: [{ ...id, displayName: "Curve policy", payload: schema }] }, { CurvePolicy: id });
+        assert.ok(generated.includes(`"signed":${signed}`));
+    }
 });
 
 test("dispatch validates exact receiver support, independent of diagnostic names and empty path spelling", () => {

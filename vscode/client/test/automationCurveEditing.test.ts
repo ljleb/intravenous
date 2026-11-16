@@ -7,7 +7,8 @@ import { serializeNodeEvent, type NodeEvent } from "../src/nodeEvents";
 const target: NodeAddress = { instanceId: "curve" };
 const axes: CurveAxes = { left: 0, top: 0, width: 100, height: 100, begin: 0, end: 10, min: 0, max: 1 };
 const construction = { definitionId: "iv.builtin.automation.curve", arguments: [[
-    { id: 1, seconds: 1, value: .5 }, { id: 2, seconds: 5, value: 1 },
+    { id: 1, seconds: 1, value: .5, interpolation: "bezier", tension: 0 },
+    { id: 2, seconds: 5, value: 1, interpolation: "bezier", tension: 0 },
 ]] };
 function scope(revision = 1, value = construction): GraphScope {
     return { sessionRevision: revision, generation: revision, editable: true, connections: [], nodes: [{ address: target,
@@ -111,9 +112,10 @@ test("construction reads validate IDs and render narrow windows with neighboring
     const duplicate = structuredClone(construction);
     (duplicate.arguments[0] as unknown[]).push({ id: 1, seconds: 2, value: 0 });
     assert.equal(readAutomationCurve(duplicate), null);
-    const many = { cycleSeconds: Infinity, points: Array.from({ length: 10000 }, (_, id) => ({ id, seconds: id, value: id % 2 })) };
+    const many = { cycleSeconds: Infinity, points: Array.from({ length: 10000 }, (_, id) => ({ id, seconds: id, value: id % 2, interpolation: "bezier" as const, tension: 0 })) };
     assert.equal(automationWindow(many, 5000, 5001).points.length, 2);
-    const step = { cycleSeconds: Infinity, points: [{ id: 1, seconds: 1, value: 0 }, { id: 2, seconds: 1, value: 1 }] };
+    const step = { cycleSeconds: Infinity, points: [{ id: 1, seconds: 1, value: 0, interpolation: "bezier" as const, tension: 0 },
+        { id: 2, seconds: 1, value: 1, interpolation: "bezier" as const, tension: 0 }] };
     assert.equal(automationWindow(step, 2, 3).vertices[0].value, 1);
 });
 
@@ -149,17 +151,77 @@ test("the curve is cyclic: the last point interpolates toward the first across t
     assert.ok(Math.abs(automationWindow(data, middle, middle + 1).vertices[0].value - .75) < 1e-6);
     // Points may lie anywhere, including before zero; there is no duration.
     const signed = readAutomationCurve({ definitionId: "iv.builtin.automation.curve", arguments: [[
-        { id: 4, seconds: 2, value: 1 }, { id: 3, seconds: -2, value: 0 },
+        { id: 4, seconds: 2, value: 1, interpolation: "bezier", tension: 0 },
+        { id: 3, seconds: -2, value: 0, interpolation: "bezier", tension: 0 },
     ]] })!;
     assert.deepEqual(signed.points.map((point) => point.id), [3, 4]);
     assert.deepEqual(automationWindow(signed, -1, 0).vertices, [{ seconds: -1, value: .25 }, { seconds: 0, value: .5 }]);
     assert.equal(readAutomationCurve({ definitionId: "iv.builtin.automation.curve", arguments: [[], 10] }), null);
 });
 
-test("one point defines a constant curve and no points define zero", () => {
+test("one point defines a constant curve and no points define empty coverage", () => {
     const single = readAutomationCurve({ definitionId: "iv.builtin.automation.curve",
-        arguments: [[{ id: 1, seconds: 3, value: .25 }]] }, 48000)!;
+        arguments: [[{ id: 1, seconds: 3, value: .25, interpolation: "bezier", tension: 1 }]] }, 48000)!;
     assert.deepEqual(automationWindow(single, -10, 10).vertices.map((vertex) => vertex.value), [.25, .25, .25]);
+    const outside = automationWindow(single, 20, 30);
+    assert.deepEqual(outside.vertices, [{ seconds: 20, value: .25 }, { seconds: 30, value: .25 }]);
+    assert.equal(outside.points.length, 0);
+    assert.deepEqual(outside.paths.map(({ begin, end }) => [begin, end]),
+        [[{ seconds: 20, value: .25 }, { seconds: 30, value: .25 }]]);
     const empty = readAutomationCurve({ definitionId: "iv.builtin.automation.curve", arguments: [[]] })!;
-    assert.deepEqual(automationWindow(empty, 0, 1).vertices, [{ seconds: 0, value: 0 }, { seconds: 1, value: 0 }]);
+    assert.deepEqual(automationWindow(empty, 0, 1).vertices, []);
+    assert.deepEqual(automationWindow(empty, 0, 1).paths, []);
+});
+
+test("sparse segments render gaps, half-open holds and equal-position jumps", () => {
+    const curve = readAutomationCurve({ definitionId: "iv.builtin.automation.curve", arguments: [[
+        { id: 1, seconds: 0, value: 0, interpolation: "bezier", tension: 0 },
+        { id: 3, seconds: 4, value: 3, interpolation: "hold", tension: 1 },
+        { id: 2, seconds: 4, value: 1, interpolation: "empty", tension: 1 },
+        { id: 4, seconds: 6, value: 5, interpolation: "empty", tension: 1 },
+    ]] }, 48000)!;
+    assert.deepEqual(curve.points.map((point) => point.id), [1, 2, 3, 4]);
+    const paths = automationWindow(curve, -1, 8).paths;
+    assert.equal(paths.length, 2);
+    assert.deepEqual(paths[0].begin, { seconds: 0, value: 0 });
+    assert.deepEqual(paths[0].end, { seconds: 4, value: 1 });
+    assert.deepEqual(paths[1].begin, { seconds: 4, value: 3 });
+    assert.deepEqual(paths[1].end, { seconds: 6, value: 3 });
+    assert.deepEqual(automationWindow(curve, 6, 8).paths, []);
+});
+
+test("automatic cubic matches the backend on irregular intervals and tension zero stays exactly linear", () => {
+    const curve = readAutomationCurve({ definitionId: "iv.builtin.automation.curve", arguments: [[
+        { id: 1, seconds: 0, value: 0, interpolation: "bezier", tension: 1 },
+        { id: 2, seconds: 4, value: 1, interpolation: "bezier", tension: 1 },
+        { id: 3, seconds: 12, value: 2, interpolation: "empty", tension: 1 },
+    ]] }, 48000)!;
+    const automatic = automationWindow(curve, 2, 3);
+    assert.ok(Math.abs(automatic.vertices[0].value - .41346153846153844) < 1e-12);
+    assert.ok(automatic.paths[0].first >= 0 && automatic.paths[0].second <= 1);
+    const linear = { ...curve, points: curve.points.map((point) => ({ ...point, tension: 0 })) };
+    assert.equal(automationWindow(linear, 2, 3).vertices[0].value, .5);
+});
+
+test("one empty point remains empty and a hold segment can cross zero", () => {
+    const data = (points: unknown[]) => readAutomationCurve({ definitionId: "iv.builtin.automation.curve", arguments: [points] }, 48000)!;
+    assert.deepEqual(automationWindow(data([{ id: 1, seconds: 2, value: .25, interpolation: "empty", tension: 1 }]), 0, 4).paths, []);
+    const curve = data([{ id: 1, seconds: -2, value: .25, interpolation: "hold", tension: 1 },
+        { id: 2, seconds: 2, value: 1, interpolation: "empty", tension: 1 }]);
+    const paths = automationWindow(curve, -3, 3).paths;
+    assert.equal(paths.length, 1);
+    assert.deepEqual(paths[0].begin, { seconds: -2, value: .25 });
+    assert.deepEqual(paths[0].end, { seconds: 2, value: .25 });
+});
+
+test("segment edits use typed messages and preserve the accepted curve until its replacement arrives", async () => {
+    const h = harness();
+    await h.edits.segment(target, 1, "empty", .5);
+    assert.equal(h.edits.view(target)!.points[0].interpolation, "bezier");
+    assert.equal(h.direct.length, 1);
+    assert.deepEqual((h.direct[0] as { payload: unknown }).payload, { id: 1, interpolation: "empty", tension: .5 });
+    await h.edits.add(target, { seconds: 3, value: .25 });
+    const added = (h.direct[1] as { payload: { point: { interpolation: string; tension: number } } }).payload.point;
+    assert.equal(added.interpolation, "bezier");
+    assert.equal(added.tension, 1);
 });

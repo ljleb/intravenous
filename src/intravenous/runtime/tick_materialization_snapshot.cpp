@@ -34,6 +34,8 @@ namespace {
         return std::holds_alternative<BoundaryEvent>(event);
     case EventTypeId::sample:
         return std::holds_alternative<SampleEvent>(event);
+    case EventTypeId::curve_point:
+        return std::holds_alternative<CurvePointEvent>(event);
     case EventTypeId::midi:
         return std::holds_alternative<MidiEvent>(event);
     case EventTypeId::count:
@@ -800,9 +802,23 @@ void TickMaterializationSnapshot::carry_forward(
                     "carried Tick sample materialization changed its layout");
             }
 
-            // Inputs without separate logical metadata contain complete
-            // Region records. Preserve their order and duplicate occurrences.
-            if (source->logical_regions.empty() && target->logical_regions.empty()) {
+            if (retained.input_access == InputAccessKind::sequential) {
+                for (auto const& previous_region : source->regions) {
+                    for (auto const part : (IndexCoverage{previous_region.range} & retained.retained) - produced) {
+                        auto window = previous_region;
+                        window.first_frame += static_cast<std::size_t>(
+                            previous_region.range.begin.forward_distance_to(part.begin));
+                        window.range = part;
+                        target->regions.push_back(std::move(window));
+                    }
+                }
+                std::stable_sort(target->regions.begin(), target->regions.end(),
+                    [](auto const& left, auto const& right) {
+                        return SignedGlobalIndexOrder{}(left.range.begin, right.range.begin);
+                    });
+            } else if (source->logical_regions.empty() && target->logical_regions.empty()) {
+                // Complete Region records preserve producer order and duplicate
+                // occurrences even when payloads need no separate window list.
                 target->regions = merge_tick_materialization_regions(
                     std::span<GlobalIndexRange const>{retained.logical_regions},
                     std::move(target->regions),
@@ -864,12 +880,37 @@ void TickMaterializationSnapshot::carry_forward(
                     "carried Tick event materialization changed its type");
             }
 
-            target->chunks = merge_tick_materialization_regions(
-                std::span<GlobalIndexRange const>{retained.logical_regions},
-                std::move(target->chunks),
-                std::span<TickMaterializedEventChunk const>{source->chunks},
-                produced,
-                retained.retained);
+            if (retained.input_access == InputAccessKind::sequential) {
+                for (auto const& previous_chunk : source->chunks) {
+                    auto const valid = previous_chunk.prepared_coverage
+                        ? *previous_chunk.prepared_coverage : IndexCoverage{previous_chunk.range};
+                    for (auto const part : (valid & retained.retained) - produced) {
+                        auto chunk = previous_chunk;
+                        auto const events = std::span<TimedEvent const>{*previous_chunk.events}
+                            .subspan(previous_chunk.begin, previous_chunk.end - previous_chunk.begin);
+                        if (events.empty()) chunk.end = chunk.begin;
+                        else {
+                            auto const selected = sorted_event_range(events, previous_chunk.range, part);
+                            chunk.begin += static_cast<std::size_t>(selected.begin() - events.begin());
+                            chunk.end = chunk.begin + selected.size();
+                        }
+                        chunk.range = part;
+                        chunk.prepared_coverage = IndexCoverage{part};
+                        target->chunks.push_back(std::move(chunk));
+                    }
+                }
+                std::stable_sort(target->chunks.begin(), target->chunks.end(),
+                    [](auto const& left, auto const& right) {
+                        return SignedGlobalIndexOrder{}(left.range.begin, right.range.begin);
+                    });
+            } else {
+                target->chunks = merge_tick_materialization_regions(
+                    std::span<GlobalIndexRange const>{retained.logical_regions},
+                    std::move(target->chunks),
+                    std::span<TickMaterializedEventChunk const>{source->chunks},
+                    produced,
+                    retained.retained);
+            }
             target->region_ranges.clear();
             target->coverage = {};
             target->logical_coverage = {};

@@ -1,78 +1,70 @@
 # Automation points and curves
 
-The default builtin IV package provides a sparse Tock point source, a replayable
-Tick linear interpolator, and an editable automation-curve module. They require
-no additional package or native dependency. Their registered IDs are
-`iv.builtin.automation.point_source`, `iv.builtin.automation.linear_curve`, and
-`iv.builtin.automation.curve`.
+The builtin package provides `iv.builtin.automation.curve`, an editable module.
+Its leaves are `iv.builtin.automation.point_source` and
+`iv.builtin.automation.interpreter`. Both leaves execute as Tock nodes. The
+point source publishes buffered event data. The interpreter computes Sample
+Coverage data only for requested windows.
 
 ```cpp
 #include <intravenous/basic_nodes/automation.h>
 
 void build(iv::GraphBuilder& graph) {
+    using namespace iv;
     auto curve = graph.node<"iv.builtin.automation.curve">(
         std::vector<iv::automation::Point>{
-            {1, 0.0, 0.0f},
-            {2, 1.0, 1.0f},
-            {3, 5.0, 0.25f},
+            {1, 0.0, 0.0f, iv::CurveInterpolation::bezier, 1},
+            {2, 1.0, 1.0f, iv::CurveInterpolation::hold, 1},
+            {3, 5.0, 0.25f, iv::CurveInterpolation::empty, 1},
         });
-    graph.outputs(curve); // Sample output: linearly interpreted values.
-    graph.event_outputs(curve.event_port()); // Event output: original points.
+    graph.outputs("value"_P = curve, "points"_F = curve.event_port());
 }
 IV_MODULE("my.automation", build);
 ```
 
-Each point has an instance-local ID, a position in seconds, and a Sample value.
-IDs must be unique, and times and values must be finite. Times are signed
-coordinates on the cyclic global timeline; the list has no duration. The module
-sorts points by time and preserves their order when times are equal. The point
-source rejects a point whose rounded sample position lies outside the signed
-timeline view, `[-2^63, 2^63)` samples.
+Each point stores a unique ID, a position in seconds, a Sample value, an outgoing
+segment policy, and tension. Times are signed coordinates on the cyclic timeline.
+The source rounds seconds to sample indices and rejects indices outside
+`[-2^63, 2^63)`. Equal sample indices use ascending persistent point IDs.
 
-`AddPoint`, `RemovePoint`, and `MovePoint` are independent semantic event types
-in `iv::automation`. They replace the module's construction arguments through
-`ModuleMessageContext::replace()`. The backend's existing replacement history
-and project persistence retain the accepted point list.
+A point's outgoing segment continues toward the next point, including across
+the cyclic seam. `empty` produces no coverage. `hold` produces the point's value.
+`bezier` interpolates toward the next point's incoming value. Segments include
+their opening index and exclude their closing index. Zero points produce no
+coverage. One empty point also produces no coverage. One hold or Bézier point
+produces a full-circle constant.
 
-The two leaves can also be used separately. `iv.builtin.automation.point_source` takes
-an `ImmutableArray<Point>` created by `graph.immutable_array<Point>()`. Unlike the
-module, it does not sort: it rejects unsorted or non-finite points. Its events can
-pass through other event-processing nodes before reaching
-`iv.builtin.automation.linear_curve`.
+Coincident points define jumps. The first point supplies the incoming endpoint.
+The last point supplies the outgoing value and policy. Intermediate zero-length
+segments contain no sample positions.
 
-Time in Intravenous is cyclic: the global timeline has 2^64 sample positions
-and wraps. The curve interpolates linearly between successive points in cyclic
-order, including from the last point to the first across the wrap. One point
-therefore defines a constant curve; an empty point list produces zero.
-Equal-position events are retained; the last event there supplies the value at
-that position, and interpolation approaching it uses the first event there.
+Bézier tension ranges from 0 to 1. Tension 0 gives exact linear interpolation.
+Tension 1 gives spacing-aware, clamped automatic interpolation. New points use
+Bézier interpolation with tension 1. The interpreter uses weighted harmonic
+PCHIP derivatives. Derivatives flatten at extrema, jumps, and boundaries beside
+hold or empty segments. Intermediate tensions blend the linear and automatic
+curves. Values stay within the segment endpoint values.
 
-The source stores events rather than a sampled buffer. Its one finite Region
-covers every point and excludes the largest cyclic gap between neighboring
-points. That Region is storage only: the curve publishes coverage for the whole
-cycle, searches for the neighboring points of each requested position, and
-samples only the requested positions.
+`CurvePointEvent` carries the value, policy and tension. Editing IDs remain in
+the source's construction data. The finite Region that stores these events does
+not limit the curve's active intervals. The interpreter discovers its actual
+input events before publishing coverage, so event transformations affect both
+coverage and values. No conversions to unrelated event types are implicit. An empty point source
+publishes a one-sample Region containing zero events. This keeps its empty group
+explicit without adding curve coverage.
 
-The Vue client includes a specialized presentation for a direct
-`iv.builtin.automation.curve` instance. After rebuilding the application and
-restarting its server, choose that definition in Add Node. The editor fills in
-`{}`, an empty point list, as the construction arguments of a new curve. A
-populated illustrative configuration source is:
+Sequential destinations resolve uncovered positions with their declared neutral
+or manual fallback. Region and Coverage destinations retain the gaps. Pending
+background data never count as a gap.
 
-```cpp
-{{.id = 1, .seconds = 0, .value = 0},
- {.id = 2, .seconds = 1, .value = 1},
- {.id = 3, .seconds = 5, .value = 0.25}}
-```
+The Vue presentation creates an empty point list for a new curve. Double-click
+empty space to add a point. Drag a point to move it. Double-click a point to edit
+its outgoing segment and tension. Right-click a point to remove it. Point drags
+send coalesced `MovePoint` messages and form one undo operation per gesture.
+`AddPoint`, `RemovePoint`, `MovePoint`, and `SetSegment` replace the module's
+construction arguments. Project persistence and history retain their accepted
+values. The editor displays those construction values, including real gaps and
+the same automatic interpolation convention as the interpreter.
 
-The only argument is the point list. This is C++ configuration-expression syntax,
-not JSON. Double-click the curve to add a
-point, drag a point to move it, and right-click a point to remove it. A drag sends
-coalesced semantic messages and makes one undo entry. Accepted construction values
-restore the editor after reload or undo; they are not output observations.
-The owner verified the editor's automated tests before builtin promotion. The
-packaging and ID change and the cyclic semantics await a rebuild and verification.
-The previous optional-package guide and IDs are preserved in
-[historical documentation](../../../../docs/historical/automation_before_builtin_promotion_2026-11-14.md);
-the duration-bounded guide is preserved in
-[historical documentation](../../../../docs/historical/automation_before_cyclic_semantics_2026-11-14.md).
+The former guide is preserved in
+[historical documentation](../../../../docs/historical/automation_builtin_before_sparse_segments_2026-11-15.md).

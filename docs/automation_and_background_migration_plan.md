@@ -1329,3 +1329,155 @@ The buffered-publication test now distinguishes a logical coverage change from
 a request for new contents. It tests metadata-only invalidation followed by a
 bounded refill. The snapshot test also checks that undemanded inputs stay absent
 and that sample and event contents obey the selected input windows.
+
+
+#### Owner-verified computed-output checkpoint
+
+The owner reports that all tests pass after the repairs above. The owner also
+reports that the application functions in initial use. These results supersede
+the untested status of the repair passes above. The agent did not independently
+run the build or tests.
+
+The minimum computed-output execution path now has a passing baseline. The next
+feature is automation end to end: `CurvePointEvent`, sparse `empty` segments,
+`hold` segments, automatic Bézier interpolation, stable equal-position ordering,
+replacement messages, serialization, and the Vue presentation. General buffered
+storage optimization remains after this automation feature.
+
+
+#### Active feature: sparse automatic automation
+
+Start from the owner-verified computed-output baseline above. Implement the
+complete automation feature in this order:
+
+1. Add `CurvePointEvent` and its event type through runtime validation and
+   transport. Preserve `SampleEvent` for its existing scalar-event meaning.
+2. Replace the linear interpreter with a Tock/computed curve interpreter. Use
+   point-input discovery for exact segment coverage and bounded output windows.
+   Use spacing-aware clamped tangents, break tangents at jumps and beside
+   hold/empty segments, and blend exact linear interpolation at tension 0 with
+   the automatic cubic at tension 1.
+3. Extend construction values, replacement messages, client bindings and the
+   Vue editor together. Preserve point IDs, gesture history and accepted reads.
+   Display actual gaps and the same interpolation convention as the backend.
+4. Add tests for sparse coverage, cyclic boundaries, equal-index jumps,
+   interpolation, upstream transformations, fallback and editing. Refactor after
+   these paths connect. The owner runs compilation and tests.
+
+The richer automation feature is in progress. The passing baseline does not yet
+include these changes. General buffered-storage optimization remains later.
+
+
+#### Sparse automation source pass and current verification
+
+The source pass now connects `CurvePointEvent`, Tock point discovery, exact
+empty/hold/Bézier coverage, and bounded interpolation. The interpreter uses
+weighted harmonic PCHIP tangents and breaks tangents at extrema, jumps, and
+boundaries beside hold/empty segments. Tension 0 remains exactly linear.
+
+`PointSource` orders equal sample indices by persistent point ID. An empty
+source publishes a valid one-sample event Region containing zero events.
+`Curve` derives empty coverage from those contents. The source's storage Region
+never defines the interpreter's active intervals.
+
+The editable module retains `iv.builtin.automation.curve`. Its interpreter leaf
+is now `iv.builtin.automation.interpreter`, replacing the misleading linear-only
+name. Point construction, `AddPoint`, `MovePoint`, `RemovePoint`, `SetSegment`,
+client bindings, and the Vue presentation carry segment policy and tension.
+The editor draws separate paths across gaps and uses the backend's interpolation
+convention. Point gestures retain the existing accepted-read and history path.
+The old builtin guide is preserved under `docs/historical/`.
+
+Regression additions cover clamped interpolation, exact linear tension,
+equal-position jumps, empty point groups, transformed upstream events,
+Sequential manual fallback, and frontend segment editing. Fixture literal sizes
+and `git diff --check` pass. A syntax-only compiler-plugin invocation produced
+neutral event metadata for refreshing the client bindings. No full build or test
+suite was run by the agent for this feature.
+
+The owner reported a client TypeScript error because compiler enum schemas
+include `signed`, which `NodeEventValueSchema` omitted. The field and a signed/
+unsigned enum-binding regression are now present. This fix awaits the owner's
+next npm test run.
+
+The owner also reported a server restart when connecting automation to an
+oscillator frequency input. The exit log reports SIGTERM. No server core dump
+for this incident is visible through `coredumpctl`; the extension sends SIGTERM
+on RPC connection loss, so the exit signal alone does not identify the initial
+failure. The preceding connection-loss log is requested. Diagnosing this restart
+and completing owner verification remain part of this automation feature.
+
+
+#### Automation connection restart: captured cause and repair
+
+An isolated project under `build-release/automation-socket-repro` reproduced the
+owner's connection failure with the existing server binary. The automation-to-
+frequency request succeeded, then the server exited with code 1 after reporting
+background execution failure. GDB captured the underlying exception:
+`Tick materialization retention clips a logical Region`. The extension's
+SIGTERM followed the RPC socket closure and obscured that original exit.
+
+The missing distinction was in `TickMaterializationRetention`. Its previous
+record contained a port, retained positions and a logical Region list, but no
+input access kind. `carry_forward()` applied a complete-Region rule to partial
+Sequential playback windows. The repair carries `BackgroundPortPlan::input_access`
+into the retention request. Sequential samples and events retain bounded
+subwindows through shared immutable owners. Region/Coverage retention keeps its
+logical order and identity rules. The coordinator no longer constructs a
+logical Region list for Sequential retention. This adds no sample copy or work
+to the realtime callback.
+
+New regressions cover partial sample/event retention, preserved known-empty
+event coverage, and automatic rolling playback through a module input. The
+background executor also logs its first underlying failure before publishing
+the sticky failure flag, so a controlled shutdown does not hide the cause.
+
+The original binary reproduced the defect. These source repairs are not yet
+built or tested. The owner must rebuild and run the suites before this automation
+feature has a new verified baseline. The TypeScript enum-schema fix also awaits
+that verification. No Git staging or project edits were performed by the agent.
+
+
+#### Final source review, 2026-11-16
+
+The owner ran 204 frontend tests. TypeScript compilation succeeded and 203 tests
+passed. The remaining failure exposed a viewport-edge error in
+`automationWindow()`: the single-point constant case limited its logical
+coverage to the viewport. It now keeps full-circle coverage while clipping only
+the drawn path. The regression also checks a viewport with no visible control
+point and samples both of its edges.
+
+The owner also found a C++ test compilation error: `find_port` belonged to a
+lambda in another test. The transformed-curve test now defines its lookup in the
+correct scope. The message regression also checks that moving a point preserves
+its segment policy and tension.
+
+The planned source changes for sparse automatic automation are in place. The
+backend and frontend suites, typecheck, and app verification remain pending after
+these repairs. No additional design decision is currently blocking this pass.
+Do not close the automation stage until the owner verifies the updated source.
+The next architectural work remains the separately planned buffered-storage
+work, after the automation baseline is verified.
+
+
+#### Shared fixture repair and isolated connection verification
+
+The next owner run reported 187 unsuccessful tests out of 1,040. The log contains
+three actual failures and 184 tests skipped because their shared package fixture
+failed. The fixture used a nonexistent `GraphBuilder::module()` call and an
+undeducible `SequentialInputConfig`. It now uses the existing `graph.subgraph()`
+path, `SubgraphBuilder`, and `input<"frequency", Sample>()` with explicit Sequential
+access. The two independent failures were stale assertions: the builtin module
+now has four message handlers, and the zero-point source has a valid empty event
+group rather than an empty Region range.
+
+The complete shared fixture, extracted in its authored concatenation order, now
+passes a syntax-only compiler check. Fixture literal sizes remain below 60 KiB.
+The owner run also passed both new Sequential partial-retention regressions.
+
+The existing rebuilt server was checked with the isolated automation-to-frequency
+reproduction. The mutation was accepted, the graph advanced to generation 2,
+and five subsequent scope requests succeeded while the server remained alive.
+The earlier background-retention shutdown did not recur in this bounded check.
+This does not establish a successful full-suite baseline. Rebuilding the corrected
+test fixtures and rerunning the C++ and frontend checks remain the next step.

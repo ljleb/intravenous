@@ -2448,12 +2448,12 @@ TEST(BackgroundDspPorts, CompilerRecordAnchorsAllBackgroundOperations)
 } // namespace
 
 // The curve is a Tock producer with an authored dependency mapping.
-static_assert(iv::details::replay_declaration_is_valid_v<iv::automation::LinearCurve>);
-static_assert(iv::details::background_dsp_node_declaration_is_valid_v<iv::automation::LinearCurve>);
+static_assert(iv::details::replay_declaration_is_valid_v<iv::automation::Curve>);
+static_assert(iv::details::background_dsp_node_declaration_is_valid_v<iv::automation::Curve>);
 
 TEST(NodeBuildRequest, ComputedCurveRetainsItsTockAndCoverageCallbacks)
 {
-    iv::automation::LinearCurve curve;
+    iv::automation::Curve curve;
     auto const request = iv::details::make_node_build_request(curve);
     ASSERT_NE(request.compiler_record, nullptr);
     auto const& operations = request.compiler_record->operations;
@@ -2469,24 +2469,24 @@ TEST(NodeBuildRequest, ComputedCurveRetainsItsTockAndCoverageCallbacks)
     EXPECT_TRUE(description.operations.runtime.has_propagate_reverse_coverage);
 }
 
-TEST(NodeBuildRequest, EmptyPointSourcePublishesNoEventsOrRegion)
+TEST(NodeBuildRequest, EmptyPointSourceHasAnEmptyEventGroupWithZeroCapacity)
 {
     iv::automation::PointSource source{{}};
+    EXPECT_EQ(source.range(48000), range(0, 1));
     auto const request = iv::details::make_node_build_request(source);
     auto storage = iv::details::copy_node_config_bytes(request.config,
         request.config_size, request.config_alignment);
     auto description = iv::details::materialize_node_description(request, std::move(storage));
     ASSERT_EQ(description.event_outputs().size(), 1u);
     EXPECT_EQ(description.event_outputs()[0].max_event_count, 0u);
-    EXPECT_TRUE(source.range(88200).empty());
+
 }
 
 namespace {
-// Computes one demanded LinearCurve window. The point input has one logical Region, clip,
-// whose events are sorted relative to clip.begin; an empty clip models an
-// input with no accepted point materialization.
-std::array<float, 8> compute_linear_curve(
-    std::vector<iv::TimedEvent> const& events, iv::GlobalIndexRange clip, iv::GlobalIndex begin)
+// Computes one demanded curve window. The point input has one logical Region, clip,
+// whose events are sorted relative to clip.begin.
+std::array<float, 8> compute_curve(
+    std::vector<iv::TimedEvent> const& events, iv::GlobalIndexRange clip, iv::GlobalIndex begin, std::size_t frames = 8)
 {
     struct Points {
         std::vector<iv::TimedEvent> const* events;
@@ -2494,7 +2494,7 @@ std::array<float, 8> compute_linear_curve(
     } const points{&events, clip.begin};
     auto const coverage = clip.empty() ? iv::IndexCoverage{} : iv::IndexCoverage{clip};
     std::array<iv::Sample, 8> samples{};
-    iv::GlobalIndexRange const window{begin, samples.size()};
+    iv::GlobalIndexRange const window{begin, frames};
     iv::IndexCoverage const requested{window};
     iv::ContinuousRegionStorageView descriptor{
         .storage = reinterpret_cast<std::byte*>(samples.data()), .range = window,
@@ -2515,8 +2515,8 @@ std::array<float, 8> compute_linear_curve(
             return iv::sorted_event_neighbors(*selected.events, selected.origin, position, mode);
         },
     }};
-    iv::automation::LinearCurve curve;
-    auto const operations = iv::details::node_compiler_operations<iv::automation::LinearCurve>();
+    iv::automation::Curve curve;
+    auto const operations = iv::details::node_compiler_operations<iv::automation::Curve>();
     operations.tock_coverage(&curve, iv::ReflectedNodeTockCoverageContext{
         .outputs = outputs, .event_inputs = inputs,
     });
@@ -2529,19 +2529,17 @@ std::array<float, 8> compute_linear_curve(
 TEST(NodeBuildRequest, CurveInterpolatesNeighborsAndHoldsTheLastPointTowardTheDistantFirst)
 {
     std::vector<iv::TimedEvent> const events{
-        {.time = index(0), .value = iv::SampleEvent{iv::Sample{0}}},
-        {.time = index(2), .value = iv::SampleEvent{iv::Sample{2}}},
-        {.time = index(2), .value = iv::SampleEvent{iv::Sample{3}}},
-        {.time = index(4), .value = iv::SampleEvent{iv::Sample{5}}},
+        {.time = index(0), .value = iv::CurvePointEvent{iv::Sample{0}, iv::CurveInterpolation::bezier, 0}},
+        {.time = index(2), .value = iv::CurvePointEvent{iv::Sample{2}, iv::CurveInterpolation::bezier, 0}},
+        {.time = index(2), .value = iv::CurvePointEvent{iv::Sample{3}, iv::CurveInterpolation::bezier, 0}},
+        {.time = index(4), .value = iv::CurvePointEvent{iv::Sample{5}, iv::CurveInterpolation::bezier, 0}},
     };
     // After the last point the curve heads back to the first point across
     // the rest of the cycle, so nearby samples stay at the last value.
     std::array<float, 8> const expected{0, 1, 3, 4, 5, 5, 5, 5};
-    auto const values = compute_linear_curve(events, range(0, 5), index(0));
+    auto const values = compute_curve(events, range(0, 5), index(0));
     for (std::size_t i = 0; i < values.size(); ++i) EXPECT_FLOAT_EQ(values[i], expected[i]) << i;
 
-    // At startup no accepted point materialization may be available yet.
-    for (auto value : compute_linear_curve(events, {}, index(0))) EXPECT_FLOAT_EQ(value, 0);
 }
 
 TEST(NodeBuildRequest, CurveInterpolatesTheLastPointWithTheFirstAcrossTheWrap)
@@ -2550,20 +2548,75 @@ TEST(NodeBuildRequest, CurveInterpolatesTheLastPointWithTheFirstAcrossTheWrap)
     // Region begins at 0 and the four-sample gap closes the cycle.
     auto const last = iv::GlobalIndex::from_bits(0).retreated_by(4);
     std::vector<iv::TimedEvent> const events{
-        {.time = index(0), .value = iv::SampleEvent{iv::Sample{0}}},
-        {.time = last, .value = iv::SampleEvent{iv::Sample{4}}},
+        {.time = index(0), .value = iv::CurvePointEvent{iv::Sample{0}, iv::CurveInterpolation::bezier, 0}},
+        {.time = last, .value = iv::CurvePointEvent{iv::Sample{4}, iv::CurveInterpolation::bezier, 0}},
     };
     // After index 0 the curve rises toward 4 across almost the whole cycle,
     // so those samples are only approximately 0.
     std::array<float, 8> const expected{4, 3, 2, 1, 0, 0, 0, 0};
-    auto const values = compute_linear_curve(events,
+    auto const values = compute_curve(events,
         iv::GlobalIndexRange::from_begin_and_end(index(0), last.advanced_by(1)), last);
     for (std::size_t i = 0; i < values.size(); ++i) EXPECT_NEAR(values[i], expected[i], 1e-6f) << i;
 
     // One point is constant over the whole cycle.
-    std::vector<iv::TimedEvent> const single{{.time = index(7), .value = iv::SampleEvent{iv::Sample{.25f}}}};
-    for (auto value : compute_linear_curve(single, {index(7), 1}, index(0))) EXPECT_FLOAT_EQ(value, .25f);
+    std::vector<iv::TimedEvent> const single{{.time = index(7), .value = iv::CurvePointEvent{iv::Sample{.25f}, iv::CurveInterpolation::bezier, 0}}};
+    for (auto value : compute_curve(single, {index(7), 1}, index(0))) EXPECT_FLOAT_EQ(value, .25f);
 }
+
+TEST(NodeBuildRequest, CurveCoveragePreservesEmptySegmentsAndEqualTimeOutgoingPolicy)
+{
+    using iv::CurveInterpolation;
+    auto point = [](std::int64_t time, float value, CurveInterpolation mode) {
+        return iv::TimedEvent{.time = index(time), .value = iv::CurvePointEvent{iv::Sample{value}, mode, 1}};
+    };
+    using Curve = iv::automation::Curve;
+    constexpr auto half = std::uint64_t{1} << 63;
+    iv::IndexCoverage const full{{iv::GlobalIndex::from_bits(0), half}, {iv::GlobalIndex::from_bits(half), half}};
+    EXPECT_TRUE(Curve::point_coverage({}).empty());
+    std::vector points{point(7, .25f, CurveInterpolation::empty)};
+    EXPECT_TRUE(Curve::point_coverage(points).empty());
+    points[0].value = iv::CurvePointEvent{iv::Sample{.25f}, CurveInterpolation::hold, 1};
+    EXPECT_EQ(Curve::point_coverage(points), full);
+    points = {point(0, 0, CurveInterpolation::bezier), point(4, 1, CurveInterpolation::empty),
+        point(4, 3, CurveInterpolation::hold), point(6, 5, CurveInterpolation::empty)};
+    EXPECT_EQ(Curve::point_coverage(points), iv::IndexCoverage{range(0, 6)});
+    auto values = compute_curve(points, range(0, 7), index(0), 6);
+    EXPECT_FLOAT_EQ(values[4], 3);
+    EXPECT_FLOAT_EQ(values[5], 3);
+    // A zero-duration intermediate policy cannot add or remove positions.
+    points[2].value = iv::CurvePointEvent{iv::Sample{3}, CurveInterpolation::empty, 1};
+    EXPECT_EQ(Curve::point_coverage(points), iv::IndexCoverage{range(0, 4)});
+    points = {point(9, 1, CurveInterpolation::hold), point(9, 2, CurveInterpolation::empty)};
+    EXPECT_TRUE(Curve::point_coverage(points).empty());
+    points.back().value = iv::CurvePointEvent{iv::Sample{2}, CurveInterpolation::bezier, 1};
+    EXPECT_EQ(Curve::point_coverage(points), full);
+    auto constant = compute_curve(points, range(9, 10), index(20));
+    for (auto value : constant) EXPECT_FLOAT_EQ(value, 2);
+}
+
+TEST(NodeBuildRequest, AutomaticCurveUsesIrregularSpacingAndClampedTangents)
+{
+    std::vector<iv::TimedEvent> points{
+        {.time = index(0), .value = iv::CurvePointEvent{iv::Sample{0}, iv::CurveInterpolation::bezier, 1}},
+        {.time = index(4), .value = iv::CurvePointEvent{iv::Sample{1}, iv::CurveInterpolation::bezier, 1}},
+        {.time = index(12), .value = iv::CurvePointEvent{iv::Sample{2}, iv::CurveInterpolation::empty, 1}},
+    };
+    auto automatic = compute_curve(points, range(0, 13), index(0));
+    // Shared with the frontend's numerical regression. The weighted harmonic
+    // derivative at index 4 is 36/208, rather than an equal-spacing estimate.
+    EXPECT_NEAR(automatic[2], .41346153846153844, 1e-6);
+    EXPECT_FLOAT_EQ(automatic[4], 1);
+    for (std::size_t i = 1; i < automatic.size(); ++i) {
+        EXPECT_GE(automatic[i], automatic[i - 1]);
+        EXPECT_LE(automatic[i], 2);
+    }
+    for (auto& point : points) std::get<iv::CurvePointEvent>(point.value).tension = 0;
+    auto linear = compute_curve(points, range(0, 13), index(0));
+    EXPECT_FLOAT_EQ(linear[2], .5f);
+    EXPECT_FLOAT_EQ(linear[6], 1.25f);
+    EXPECT_THROW(iv::EventConversionRegistry::plan(iv::EventTypeId::curve_point, iv::EventTypeId::sample), std::logic_error);
+}
+
 
 struct ReplayWithoutRandomAccessPropagation {
     static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;

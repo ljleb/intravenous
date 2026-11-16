@@ -1,88 +1,20 @@
 import { addressKey, type GraphScope, type GraphScopeNode, type NodeAddress, type Point as ScreenPoint } from "./graphScope";
-import { AddPoint, MovePoint, RemovePoint } from "./generated/automationEvents";
+import { AddPoint, MovePoint, RemovePoint, SetSegment } from "./generated/automationEvents";
 import type { NodeEvent } from "./nodeEvents";
 import type { NodeEventGesture } from "./nodeEventMessaging";
 
-export type AutomationPoint = { id: number; seconds: number; value: number };
-// Time is cyclic: past its last point the curve continues toward its first one,
-// across the global timeline's wrap. cycleSeconds is that cycle, 2^64 samples at
-// the accepted graph's sample rate, or Infinity before a graph has compiled.
-export type AutomationCurve = { points: AutomationPoint[]; cycleSeconds: number };
+import { automationCycleSeconds, type AutomationCurve, type AutomationPoint, type AutomationPointPosition, type CurveInterpolation } from "./automationCurveGeometry";
+export { automationCurveBounds, automationCycleSeconds, automationWindow } from "./automationCurveGeometry";
+export type { AutomationCurve, AutomationPoint, CurveInterpolation } from "./automationCurveGeometry";
 export type CurveAxes = { left: number; top: number; width: number; height: number;
     begin: number; end: number; min: number; max: number };
 type Transport = { send(target: NodeAddress, event: NodeEvent): Promise<void>; gesture(target: NodeAddress): NodeEventGesture };
 type Timers = { set(callback: () => void): unknown; clear(handle: unknown): void };
-type Drag = { key: string; target: NodeAddress; pointerId: number; axes: CurveAxes; desired: AutomationPoint;
+type Drag = { key: string; target: NodeAddress; pointerId: number; axes: CurveAxes; desired: AutomationPointPosition;
     offset: { seconds: number; value: number };
     lastPosition?: ScreenPoint;
-    sent: AutomationPoint | null; gesture: NodeEventGesture; timer?: unknown; pending?: Promise<void>;
+    sent: AutomationPointPosition | null; gesture: NodeEventGesture; timer?: unknown; pending?: Promise<void>;
     finishing?: Promise<void> };
-
-const indexes = new WeakMap<AutomationCurve, { order: Map<number, number>; min: number; max: number }>();
-export function automationCurveBounds(curve: AutomationCurve) {
-    let index = indexes.get(curve);
-    if (!index) {
-        index = { order: new Map(), min: 0, max: 1 };
-        curve.points.forEach((point, position) => {
-            index!.order.set(point.id, position);
-            index!.min = Math.min(index!.min, point.value); index!.max = Math.max(index!.max, point.value);
-        });
-        indexes.set(curve, index);
-    }
-    return index;
-}
-
-// Interpolates between two successive points on the cycle. A zero span is the
-// full cycle, so one point, or several at one time, define a constant curve.
-// Like the backend, it measures from the nearer endpoint to keep precision
-// beside the wrap; with an unbounded cycle the wrap segment is level.
-function cyclicValue(before: AutomationPoint, after: AutomationPoint, seconds: number, cycle: number): number {
-    const forward = (from: number, to: number) => to >= from ? to - from : to - from + cycle;
-    const distance = forward(before.seconds, after.seconds) || cycle;
-    const elapsed = forward(before.seconds, seconds);
-    const remaining = forward(seconds, after.seconds);
-    return elapsed <= remaining
-        ? before.value + (after.value - before.value) * (elapsed / distance)
-        : after.value + (before.value - after.value) * (remaining / distance);
-}
-
-export function automationWindow(curve: AutomationCurve, begin: number, end: number, drafts: readonly AutomationPoint[] = []) {
-    const boundary = (seconds: number, after: boolean) => {
-        let first = 0, last = curve.points.length;
-        while (first < last) {
-            const middle = first + Math.floor((last - first) / 2);
-            if (curve.points[middle].seconds < seconds || (after && curve.points[middle].seconds === seconds)) first = middle + 1;
-            else last = middle;
-        }
-        return first;
-    };
-    // A moved point can remove a neighbor from its old position. Include one
-    // extra neighbor per pending draft, without traversing the full curve.
-    const neighbors = drafts.length + 1;
-    const ids = new Set(drafts.map((point) => point.id));
-    const order = automationCurveBounds(curve).order;
-    const effective = (slice: AutomationPoint[]) => slice.filter((point) => !ids.has(point.id)).concat(drafts)
-        .sort((a, b) => a.seconds - b.seconds || order.get(a.id)! - order.get(b.id)!);
-    const points = effective(curve.points.slice(Math.max(0, boundary(begin, false) - neighbors), boundary(end, true) + neighbors));
-    // The wrap segment joins the curve's last point to its first.
-    const first = effective(curve.points.slice(0, neighbors))[0];
-    const last = effective(curve.points.slice(-neighbors)).at(-1);
-    const sample = (seconds: number) => {
-        if (!first || !last) return 0;
-        let index = 0;
-        while (index < points.length && points[index].seconds <= seconds) ++index;
-        const inside = index > 0 && index < points.length;
-        return cyclicValue(inside ? points[index - 1] : last, inside ? points[index] : first, seconds, curve.cycleSeconds);
-    };
-    const visible = points.filter((point) => point.seconds >= begin && point.seconds <= end);
-    const vertices = [{ seconds: begin, value: sample(begin) },
-        ...visible.map(({ seconds, value }) => ({ seconds, value })), { seconds: end, value: sample(end) }];
-    return { points: visible, vertices };
-}
-
-export function automationCycleSeconds(sampleRate: number | null | undefined): number {
-    return sampleRate && sampleRate > 0 ? 2 ** 64 / sampleRate : Infinity;
-}
 
 export function readAutomationCurve(value: GraphScopeNode["construction"], sampleRate?: number | null): AutomationCurve | null {
     if (value?.definitionId !== "iv.builtin.automation.curve" || value.arguments.length !== 1) return null;
@@ -93,11 +25,18 @@ export function readAutomationCurve(value: GraphScopeNode["construction"], sampl
     for (const point of points) {
         if (!point || !Number.isInteger(point.id) || point.id < 0 || point.id >= 2 ** 32 || ids.has(point.id)
             || typeof point.seconds !== "number" || !Number.isFinite(point.seconds)
-            || typeof point.value !== "number" || !Number.isFinite(point.value) || !Number.isFinite(Math.fround(point.value))) return null;
-        ids.add(point.id); result.push({ id: point.id, seconds: point.seconds, value: point.value });
+            || typeof point.value !== "number" || !Number.isFinite(point.value) || !Number.isFinite(Math.fround(point.value))
+            || !["empty", "hold", "bezier"].includes(point.interpolation)
+            || typeof point.tension !== "number" || !Number.isFinite(point.tension) || point.tension < 0 || point.tension > 1) return null;
+        const frames = point.seconds * (sampleRate ?? 0);
+        if (!Number.isFinite(frames)) return null;
+        const seconds = sampleRate && sampleRate > 0
+            ? Math.sign(frames) * Math.floor(Math.abs(frames) + .5) / sampleRate : point.seconds;
+        ids.add(point.id); result.push({ id: point.id, seconds, value: point.value,
+            interpolation: point.interpolation, tension: point.tension });
     }
-    // Stable, like the module's constructor: equal times keep their list order.
-    result.sort((a, b) => a.seconds - b.seconds);
+    // The point source breaks equal-position ties using persistent identity.
+    result.sort((a, b) => a.seconds - b.seconds || a.id - b.id);
     return { points: result, cycleSeconds: automationCycleSeconds(sampleRate) };
 }
 
@@ -111,7 +50,7 @@ export function curvePointAt(axes: CurveAxes, position: ScreenPoint): { seconds:
 export class AutomationCurveEditing {
     private readonly curves = new Map<string, AutomationCurve>();
     private readonly errors = new Map<string, string>();
-    private readonly ending = new Map<string, Map<number, { point: AutomationPoint; revision: number; axes: CurveAxes }>>();
+    private readonly ending = new Map<string, Map<number, { point: AutomationPointPosition; revision: number; axes: CurveAxes }>>();
     private readRevision = 0;
     private active: Drag | null = null;
     constructor(private readonly transport: Transport, private readonly changed: () => void,
@@ -143,9 +82,9 @@ export class AutomationCurveEditing {
     view(target: NodeAddress): AutomationCurve | null {
         return this.curves.get(addressKey(target)) ?? null;
     }
-    drafts(target: NodeAddress): AutomationPoint[] {
+    drafts(target: NodeAddress): AutomationPointPosition[] {
         const key = addressKey(target);
-        const points = new Map<number, AutomationPoint>();
+        const points = new Map<number, AutomationPointPosition>();
         for (const entry of this.ending.get(key)?.values() ?? []) points.set(entry.point.id, entry.point);
         if (this.active?.key === key) points.set(this.active.desired.id, this.active.desired);
         return [...points.values()];
@@ -166,10 +105,10 @@ export class AutomationCurveEditing {
         const initial = this.ending.get(key)?.get(id)?.point ?? point;
         const cursor = position ? curvePointAt(axes, position) : initial;
         this.errors.delete(key);
-        this.active = { key, target: structuredClone(target), pointerId, axes: { ...axes }, desired: { ...initial },
+        this.active = { key, target: structuredClone(target), pointerId, axes: { ...axes }, desired: { id: initial.id, seconds: initial.seconds, value: initial.value },
             offset: { seconds: initial.seconds - cursor.seconds, value: initial.value - cursor.value },
             lastPosition: position ? { ...position } : undefined,
-            sent: { ...initial }, gesture: this.transport.gesture(target) };
+            sent: { id: initial.id, seconds: initial.seconds, value: initial.value }, gesture: this.transport.gesture(target) };
         this.changed(); return true;
     }
     move(pointerId: number, position: ScreenPoint): void {
@@ -247,7 +186,10 @@ export class AutomationCurveEditing {
         let id = curve.points.reduce((max, point) => Math.max(max, point.id), -1) + 1;
         id %= 2 ** 32;
         while (ids.has(id)) id = (id + 1) % 2 ** 32;
-        await this.send(target, AddPoint({ point: { id, ...position } }));
+        await this.send(target, AddPoint({ point: { id, ...position, interpolation: "bezier", tension: 1 } }));
+    }
+    async segment(target: NodeAddress, id: number, interpolation: CurveInterpolation, tension: number): Promise<void> {
+        await this.send(target, SetSegment({ id, interpolation, tension }));
     }
     async remove(target: NodeAddress, id: number): Promise<void> { await this.send(target, RemovePoint({ id })); }
     private async send(target: NodeAddress, event: NodeEvent): Promise<void> {

@@ -8,6 +8,7 @@ export type NodeEventValueSchema = {
         | "string" | "convertedScalar" | "enumeration" | "aggregate" | "sequence" | "nodeAddress";
     reason?: string;
     bitWidth?: number;
+    signed?: boolean;
     fields?: Array<{ name: string; value: NodeEventValueSchema }>;
     enumerators?: Array<{ name: string; value: string }>;
     element?: NodeEventValueSchema;

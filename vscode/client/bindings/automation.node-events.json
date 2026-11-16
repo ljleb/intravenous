@@ -1,8 +1,30 @@
 {
-  "formatVersion": 0,
+  "definitions": [
+    {
+      "definitionId": "iv.builtin.automation.curve",
+      "supportedEventTypes": [
+        {
+          "definitionFingerprint": "eff0151109a66bd3",
+          "nominalId": "c:$@N@iv@N@automation@S@AddPoint"
+        },
+        {
+          "definitionFingerprint": "d2c84e01a665e0d0",
+          "nominalId": "c:$@N@iv@N@automation@S@MovePoint"
+        },
+        {
+          "definitionFingerprint": "c1b7cfa2c11beeb0",
+          "nominalId": "c:$@N@iv@N@automation@S@RemovePoint"
+        },
+        {
+          "definitionFingerprint": "e8fdd3f15690b14c",
+          "nominalId": "c:$@N@iv@N@automation@S@SetSegment"
+        }
+      ]
+    }
+  ],
   "eventTypes": [
     {
-      "definitionFingerprint": "eaa7c7d29c7c5d9d",
+      "definitionFingerprint": "eff0151109a66bd3",
       "displayName": "iv::automation::AddPoint",
       "nominalId": "c:$@N@iv@N@automation@S@AddPoint",
       "payload": {
@@ -27,6 +49,35 @@
                 },
                 {
                   "name": "value",
+                  "value": {
+                    "bitWidth": 32,
+                    "kind": "floatingPoint"
+                  }
+                },
+                {
+                  "name": "interpolation",
+                  "value": {
+                    "bitWidth": 8,
+                    "enumerators": [
+                      {
+                        "name": "empty",
+                        "value": "0"
+                      },
+                      {
+                        "name": "hold",
+                        "value": "1"
+                      },
+                      {
+                        "name": "bezier",
+                        "value": "2"
+                      }
+                    ],
+                    "kind": "enumeration",
+                    "signed": false
+                  }
+                },
+                {
+                  "name": "tension",
                   "value": {
                     "bitWidth": 32,
                     "kind": "floatingPoint"
@@ -87,25 +138,53 @@
         ],
         "kind": "aggregate"
       }
+    },
+    {
+      "definitionFingerprint": "e8fdd3f15690b14c",
+      "displayName": "iv::automation::SetSegment",
+      "nominalId": "c:$@N@iv@N@automation@S@SetSegment",
+      "payload": {
+        "fields": [
+          {
+            "name": "id",
+            "value": {
+              "bitWidth": 32,
+              "kind": "unsignedInteger"
+            }
+          },
+          {
+            "name": "interpolation",
+            "value": {
+              "bitWidth": 8,
+              "enumerators": [
+                {
+                  "name": "empty",
+                  "value": "0"
+                },
+                {
+                  "name": "hold",
+                  "value": "1"
+                },
+                {
+                  "name": "bezier",
+                  "value": "2"
+                }
+              ],
+              "kind": "enumeration",
+              "signed": false
+            }
+          },
+          {
+            "name": "tension",
+            "value": {
+              "bitWidth": 32,
+              "kind": "floatingPoint"
+            }
+          }
+        ],
+        "kind": "aggregate"
+      }
     }
   ],
-  "definitions": [
-    {
-      "definitionId": "iv.builtin.automation.curve",
-      "supportedEventTypes": [
-        {
-          "definitionFingerprint": "eaa7c7d29c7c5d9d",
-          "nominalId": "c:$@N@iv@N@automation@S@AddPoint"
-        },
-        {
-          "definitionFingerprint": "d2c84e01a665e0d0",
-          "nominalId": "c:$@N@iv@N@automation@S@MovePoint"
-        },
-        {
-          "definitionFingerprint": "c1b7cfa2c11beeb0",
-          "nominalId": "c:$@N@iv@N@automation@S@RemovePoint"
-        }
-      ]
-    }
-  ]
+  "formatVersion": 0
 }

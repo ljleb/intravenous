@@ -20,7 +20,7 @@ IV_NODE("iv.builtin.constant", iv::Constant);
 IV_NODE("iv.builtin.debug_probe", ::DebugProbe);
 
 IV_NODE("iv.builtin.automation.point_source", iv::automation::PointSource);
-IV_NODE("iv.builtin.automation.linear_curve", iv::automation::LinearCurve);
+IV_NODE("iv.builtin.automation.interpreter", iv::automation::Curve);
 IV_MODULE_CLASS("iv.builtin.automation.curve", iv::automation::AutomationCurve);
 
 IV_NODE("iv.builtin.invert", iv::Invert);

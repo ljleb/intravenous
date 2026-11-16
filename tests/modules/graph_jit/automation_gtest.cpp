@@ -1,5 +1,8 @@
 #include "test_support.h"
 
+#include <chrono>
+#include <thread>
+
 namespace iv::test::graph_jit_tests {
 
 TEST_F(GraphJitRuntimeFixture, SparseTockPointsComputeOnlyTheRequestedCurveWindow)
@@ -69,6 +72,95 @@ TEST_F(GraphJitRuntimeFixture, SparseTockPointsComputeOnlyTheRequestedCurveWindo
     EXPECT_FLOAT_EQ(static_cast<float>(region->at(index(3), 0)), .75f);
 }
 
+TEST_F(GraphJitRuntimeFixture, TransformedCurvePointsDetermineCoverageBeforeSequentialManualFallback)
+{
+    for (bool empty : {false, true}) {
+        SCOPED_TRACE(empty);
+        auto compiled = compile(empty ? "iv.test.automation.empty_sparse_curve"
+            : "iv.test.automation.transformed_sparse_curve", 711 + empty);
+        ASSERT_TRUE(compiled.succeeded())
+            << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+        auto const& graph = *compiled.compiled_graph;
+        auto const& plan = graph.background_evaluation_plan;
+        auto find_port = [&](std::string_view name, iv::PortKind kind,
+                             iv::graph_jit::PortDirection direction) {
+            return std::ranges::find_if(plan.ports, [&](auto const& port) {
+                return port.name == name && port.kind == kind && port.direction == direction;
+            });
+        };
+        auto curve = find_port("value", iv::PortKind::sample, iv::graph_jit::PortDirection::output);
+        auto window = find_port("window", iv::PortKind::sample, iv::graph_jit::PortDirection::output);
+        ASSERT_NE(curve, plan.ports.end());
+        ASSERT_NE(window, plan.ports.end());
+        auto const curve_port = static_cast<iv::graph_jit::BackgroundPortIndex>(curve - plan.ports.begin());
+        auto const window_port = static_cast<iv::graph_jit::BackgroundPortIndex>(window - plan.ports.begin());
+        auto storage = std::ranges::find(plan.storage.ports, std::optional{window_port}, &iv::graph_jit::PortStoragePlan::output_port);
+        ASSERT_NE(storage, plan.storage.ports.end());
+        iv::PersistedDataStore data;
+        auto reader = data.register_reader();
+        auto states = graph.tock_state_layout.create_storage(resources);
+        states.initialize();
+        iv::BackgroundCoverageState coverage(plan.accumulators.output_change_count);
+        iv::BackgroundPropagationWorkspace propagation(plan, graph.specialization.sample_rate);
+        iv::CoveragePropagationRequest roots;
+        for (std::size_t node = 0; node < plan.nodes.size(); ++node) roots.locally_changed_nodes.push_back(node);
+        roots.output_demands.push_back({.port = window_port, .required = iv::IndexCoverage{range(0, 8)}});
+        iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data,
+            {.semantic_version = 1, .roots = std::move(roots)}};
+        auto result = transaction.execute();
+        ASSERT_TRUE(result.has_value()) << result.error();
+        auto changed = std::ranges::find(result->coverage.output_changes, curve_port, &iv::PropagatedOutputChange::port);
+        // The transformer empties the point at index 4. Construction arguments of
+        // the original source would incorrectly predict a hold through index 12.
+        if (empty) {
+            EXPECT_TRUE(changed == result->coverage.output_changes.end() || changed->coverage.empty());
+        } else {
+            ASSERT_NE(changed, result->coverage.output_changes.end());
+            EXPECT_EQ(changed->coverage, iv::IndexCoverage{range(0, 4)});
+        }
+        auto const handle = data.resolve_output(iv::persisted_output_id(plan,
+            static_cast<iv::graph_jit::PortStorageIndex>(storage - plan.storage.ports.begin()), graph.project_generation));
+        auto pinned = reader.pin();
+        auto const* values = pinned->find_sample_region(handle, index(0));
+        ASSERT_NE(values, nullptr);
+        // The replayable Tick adds 1. Its independently stored manual value .25
+        // supplies the gap, rather than becoming another fan-in contribution.
+        std::array<float, 8> const expected{1, 1.5f, 2, 2.5f, 1.25f, 1.25f, 1.25f, 1.25f};
+        for (std::size_t i = 0; i < expected.size(); ++i)
+            EXPECT_FLOAT_EQ(values->at(index(static_cast<std::int64_t>(i)), 0).value, empty ? 1.25f : expected[i]) << i;
+    }
+}
+
+TEST_F(GraphJitRuntimeFixture, AutomationFeedsAModuleInputAcrossRollingPlaybackWindows)
+{
+    auto compiled = compile("iv.test.automation.rolling", 713);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    ASSERT_FALSE(graph.background_evaluation_plan.tick_sequential_inputs.empty());
+    iv::GraphExecutor executor{resources};
+    ASSERT_EQ(executor.stage(compiled.compiled_graph), iv::GraphExecutorStageResult::accepted);
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    bool activated = false;
+    while (!(activated = executor.activate_pending(index(0)))
+        && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+    ASSERT_TRUE(activated);
+    auto const block = graph.specialization.block_size;
+    // Use the executor's automatic reserve. Moving past it forces partial
+    // retention and refills, unlike a fixed explicit preparation window.
+    for (std::size_t step = 0; step < 32; ++step) {
+        for (;;) {
+            auto const before = executor.playback_underrun_blocks();
+            executor.tick_block(index(static_cast<std::int64_t>(step * block)), block);
+            ASSERT_FALSE(executor.background_execution_failures().any()) << step;
+            if (executor.playback_underrun_blocks() == before) break;
+            ASSERT_LT(std::chrono::steady_clock::now(), deadline) << step;
+            std::this_thread::yield();
+        }
+    }
+    EXPECT_FALSE(executor.background_execution_failures().any());
+}
+
 TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPointLists)
 {
     using Session = std::unique_ptr<iv::details::BuilderSession,
@@ -94,7 +186,7 @@ TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPoi
         (void)iv::details::take_built_graph(session.get());
     }
     session.reset();
-    ASSERT_EQ(handlers.size(), 3u);
+    ASSERT_EQ(handlers.size(), 4u);
     struct Capture {
         std::string definition;
         std::string arguments;
@@ -121,7 +213,7 @@ TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPoi
         EXPECT_EQ(capture.definition, "iv.builtin.automation.curve");
         return nlohmann::ordered_json::parse(capture.arguments);
     };
-    auto added = invoke("AddPoint", {{"point", {{"id", 4}, {"seconds", 1.0}, {"value", .25}}}});
+    auto added = invoke("AddPoint", {{"point", {{"id", 4}, {"seconds", 1.0}, {"value", .25}, {"interpolation", "hold"}, {"tension", 1.0}}}});
     ASSERT_TRUE(added.is_array());
     // The point list is the only construction argument.
     ASSERT_EQ(added.size(), 1u);
@@ -130,6 +222,11 @@ TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPoi
     EXPECT_EQ(added[0][0]["id"], 1);
     EXPECT_EQ(added[0][2]["id"], 3);
     EXPECT_EQ(added[0][3]["id"], 4);
+    EXPECT_EQ(added[0][3]["interpolation"], "hold");
+    auto edited = invoke("SetSegment", {{"id", 2}, {"interpolation", "empty"}, {"tension", .5}});
+    EXPECT_EQ(edited[0][1]["interpolation"], "empty");
+    EXPECT_EQ(edited[0][1]["tension"], .5);
+    EXPECT_THROW(invoke("SetSegment", {{"id", 2}, {"interpolation", "bezier"}, {"tension", 2.0}}), std::invalid_argument);
     auto removed = invoke("RemovePoint", {{"id", 2}});
     ASSERT_TRUE(removed.is_array());
     ASSERT_EQ(removed.size(), 1u);
@@ -142,6 +239,8 @@ TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPoi
     EXPECT_EQ(moved[0][1]["id"], 2);
     EXPECT_EQ(moved[0][1]["seconds"], 1.0);
     EXPECT_EQ(moved[0][1]["value"], .75);
+    EXPECT_EQ(moved[0][1]["interpolation"], "bezier");
+    EXPECT_EQ(moved[0][1]["tension"], 0);
     EXPECT_THROW(invoke("RemovePoint", {{"id", 99}}), std::invalid_argument);
 }
 
