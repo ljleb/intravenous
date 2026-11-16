@@ -185,3 +185,23 @@ test("meter display choices persist as frontend preferences without project muta
         restored.dispose();
     });
 });
+
+
+test("configured generation changes clear measurements and reject delayed older executable frames", () => {
+    const values = new ObservationValues();
+    const update = (generation: string): ObservationUpdate => ({
+        activationId: "1", generation, revision: "1", index: "0", blockSize: 64,
+        scopes: [{ scopeId: "viewport", values: [{ id: "peak", available: true, value: { peak: .5 } }] }],
+    });
+    values.acceptGeneration(4);
+    assert.equal(values.receive(update("4"), "viewport"), true);
+    assert.equal(values.values.get("peak")?.available, true);
+    assert.equal(values.acceptGeneration(5), true);
+    assert.equal(values.values.size, 0);
+    assert.equal(values.receive(update("4"), "viewport"), false);
+    assert.equal(values.receive(update("5"), "viewport"), true);
+    assert.equal(values.acceptGeneration(5), false);
+    assert.equal(values.values.get("peak")?.available, true);
+    values.acceptGeneration(null);
+    assert.equal(values.receive(update("5"), "viewport"), false);
+});

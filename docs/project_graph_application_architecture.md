@@ -148,8 +148,9 @@ invokes it exactly once after `NodeInstances` and retains the resulting applied-
 and diagnostic batch on the immutable root generation.
 
 The `GraphJit` application/compiler shell has now landed as the next sibling
-stage. `ProjectGraph` synchronously offers each completed root generation through
-a singleton request/response event and retains either the resulting immutable
+stage. After configuration commits, `ProjectGraph`'s serialized worker offers
+each current executable target through a singleton request/response event and
+retains either the resulting immutable
 `CompiledGraph` or structured compile diagnostics. `GraphJit` already owns exact
 package-LLVM provenance resolution, retained-global relocation resolution, O3,
 and per-generation ORC lifetime. The isolated `ConfiguredGraph` + resolved node
@@ -196,10 +197,11 @@ Its root-build procedure is always batched:
    considered, optionally carrying a connection mutation/replay batch, passing
    the same root builder and complete embedding map;
 4. finish the root builder into one `ConfiguredGraph`;
-5. invoke `GraphJit` exactly once to synchronously compile that graph into one
-   immutable `CompiledGraph`; after the first executable revision, the request names
-   the last executable revision accepted by `GraphExecutor` as its predecessor;
-6. submit that immutable generation once to `GraphExecutor`; `GraphExecutor` constructs one
+5. commit and publish the configured graph, then queue its immutable inputs on
+   the serialized compiler worker; obsolete queued work can be replaced;
+6. in the worker's separate cause, invoke GraphJit and prepare one executor
+   successor. The request names the latest accepted executable as predecessor.
+   Recheck the target before publishing the prepared generation to `GraphExecutor`; `GraphExecutor` constructs one
    complete `ExecutionGeneration` off-thread containing both actor realizations,
    generation-specific routes/endpoints, pre-sized background descriptors, migration
    metadata, producer-reserve requirements and allocation-free cutover linkage;
@@ -560,12 +562,15 @@ JIT currently used to execute definition/configuration callbacks. The two JITs
 run at different compiler stages and have different lifetime keys even though
 they may share low-level LLVM helper code.
 
-Compilation is intentionally synchronous inside the `ProjectGraph` root-build
-transaction. The compiler is expected to perform graph-specific scheduling,
-connection, temporal, storage, and background-evaluation topology analysis before
-generating LLVM so the final LLVM program is already small/specialized enough
-for a fast final optimization/codegen pass. Do not introduce an asynchronous
-graph-JIT generation boundary merely to hide avoidable compiler work.
+Configuration commits synchronously before executable compilation. A single
+serialized `ProjectGraph` worker invokes GraphJit on pinned immutable inputs,
+then prepares executor resources outside the edit lock and rechecks the target
+before publication. The previous executable continues until an accepted
+successor reaches its legal cutover. Stale unstaged work cannot activate, and
+compilation failure does not roll back configuration. This owner-selected
+boundary makes configured interfaces independently available; it does not excuse
+avoidable compiler work. The former synchronous-publication rationale is
+preserved in [the historical architecture snapshot](historical/project_graph_application_architecture_before_async_configured_publication_2026-11-16.md).
 
 The executable project itself masquerades as an ordinary zero-input/zero-output
 root node. Its generated declaration operation populates one `NodeLayoutBuilder`;
@@ -881,7 +886,7 @@ this replaces per-instance failure isolation; see "Construction failure stops th
 configuration pass" in
 [scoped_graph_builder_and_subgraph_closure_direction.md](./scoped_graph_builder_and_subgraph_closure_direction.md)._
 
-If synchronous `GraphJit` compilation fails, `ProjectGraph` retains the desired
+If worker-owned `GraphJit` compilation fails, `ProjectGraph` retains the desired
 revision and diagnostics and sends no partial successor to either executor. The
 previous active realtime executable generation and previous valid background/persisted
 state may continue. Desired project revision, active realtime executable revision,
@@ -1004,7 +1009,7 @@ Vue host collects/reconciles its scoped interests
     -> otherwise no graph compilation (only query/scheduling changes if needed)
 ```
 
-This follows the synchronous configured-graph compilation contract when a
+This follows the serialized configured-graph compilation contract when a
 compile is required. It does **not** compile once per pan/zoom event: overscan,
 hysteresis, scope batching, and aggregate-interest equality are tested first.
 A representation-only capture-plan swap may be cheaper than a new root plan,

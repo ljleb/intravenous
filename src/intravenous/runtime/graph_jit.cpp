@@ -2411,6 +2411,7 @@ public:
             result.compiled_graph = std::make_shared<CompiledGraph>(CompiledGraph{
                 .observations = request.observations,
                 .project_generation = request.project_generation,
+                .configured_generation = request.configured_generation,
                 .definitions_generation = request.definitions->generation,
                 .specialization = specialization_,
                 .configured_graph = request.graph,

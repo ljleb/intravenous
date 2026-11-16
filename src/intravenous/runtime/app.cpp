@@ -21,6 +21,7 @@
 #include <intravenous/runtime/package_watcher_package_definitions_bridge.h>
 #include <intravenous/runtime/package_watcher_package_jit_bridge.h>
 #include <intravenous/runtime/package_watcher_node_instances_bridge.h>
+#include <intravenous/runtime/package_watcher_project_graph_bridge.h>
 #include <intravenous/runtime/package_watcher_service.h>
 #include <intravenous/runtime/package_watcher_service_bridge.h>
 #include <intravenous/runtime/project_autosave.h>
@@ -310,7 +311,7 @@ int run_server_mode(int argc, char** argv)
     // retains another app module.
     NodeInstances node_instances;
     NodeDefinitions node_definitions;
-    ProjectGraph project_graph;
+    ProjectGraph project_graph(startup.execution.sample_rate);
     Observations observations;
     GraphConnections graph_connections;
     GraphJit graph_jit(GraphJitConfig{
@@ -363,7 +364,8 @@ int run_server_mode(int argc, char** argv)
         startup.package_roots);
 
     std::function<void()> shutdown = [&] {
-        package_watcher_service.request_shutdown();
+        package_watcher_service.stop();
+    project_graph.stop_compilation();
         project_autosave_service.request_shutdown();
         system_audio_devices.request_shutdown();
         server.request_shutdown();
@@ -403,6 +405,7 @@ int run_server_mode(int argc, char** argv)
         package_watcher_package_definitions_bridge::bind(package_watcher, package_definitions);
     auto packages_definitions_scope =
         package_definitions_node_definitions_bridge::bind(package_definitions, node_definitions);
+    auto watcher_graph_scope = package_watcher_project_graph_bridge::bind(package_watcher, project_graph);
     auto watcher_instances_scope =
         package_watcher_node_instances_bridge::bind(package_watcher, node_instances);
     auto instances_introspection_scope =
@@ -448,6 +451,12 @@ int run_server_mode(int argc, char** argv)
         graph_executor,
         observations,
         shutdown);
+
+    struct CompilationShutdown {
+        PackageWatcherService& packages;
+        ProjectGraph& project;
+        ~CompilationShutdown() { packages.stop(); project.stop_compilation(); }
+    } compilation_shutdown{package_watcher_service, project_graph};
 
     startup_log("loading project persistence");
     // No client is attached during replay, so its messages go to the log.

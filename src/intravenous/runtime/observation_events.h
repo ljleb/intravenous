@@ -29,7 +29,8 @@ struct ObservationGraphRequest {
     std::vector<NodeAddress> describe_nodes{};
     std::shared_ptr<nlohmann::ordered_json const> capabilities{};
     std::string error{};
-    std::uint64_t compilation_us = 0;
+    std::optional<std::uint64_t> configured_generation{};
+    std::uint64_t scheduling_us = 0;
     bool handled = false;
 };
 

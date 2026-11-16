@@ -158,6 +158,7 @@ TEST_F(GraphJitRuntimeFixture, ModuleOutputMeterUsesItsResolvedSampleTypeAndPubl
             .member = "main"}, .operation = "level"}}}};
     in_event_source([&] { project.handle_observation_request(subscribe); });
     ASSERT_TRUE(subscribe.error.empty()) << subscribe.error;
+    ASSERT_TRUE(project.wait_for_compilation());
     ASSERT_TRUE(project.current_generation());
     ASSERT_TRUE(project.current_generation()->compiled_graph);
     ASSERT_EQ(project.current_generation()->compiled_graph->observations.probes.size(), 1u);

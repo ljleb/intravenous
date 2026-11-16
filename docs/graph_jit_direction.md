@@ -7,7 +7,7 @@
 > unmigrated implementation; they do not redefine the target contract. The
 > displaced design is preserved in the [historical predecessor](./historical/output_ports_before_computed_buffered_2026-11-16.md).
 
-_Status: current design direction for synchronous whole-project graph compilation._
+_Status: current design direction for whole-project graph compilation and serialized executable realization._
 
 [Batched Node Callback Direction](./batched_node_callbacks_direction.md) defines the planned normalized scalar/batch node callback API and the scheduling rules GraphJit will use to exploit it.
 
@@ -1439,33 +1439,38 @@ pass, materializes `NodeStorage` migration, or retains active/pending generation
 A `CompiledGraph` therefore pins its code/resource lifetime rather than exposing
 naked function pointers whose lifetime is implicit.
 
-## Synchronous compilation is the intended contract
+## Configuration commits before serialized executable compilation
 
-Whole-project graph compilation is intentionally synchronous inside one
-`ProjectGraph` rebuild transaction.
+The owner revised this contract on 2026-11-16 to separate authoritative
+configuration from executable readiness. The superseded synchronous-publication
+contract and rationale are preserved in
+[the historical snapshot](historical/graph_jit_direction_before_async_configured_publication_2026-11-16.md).
 
-The target is for it to be fast enough that introducing an asynchronous compiler
-pipeline would add more consistency/lifetime machinery than value. The compiler
-should do graph-specific work before LLVM so the final LLVM module is already
-close to the desired native program.
+`ProjectGraph` constructs and commits a valid immutable `ConfiguredGraph`
+synchronously. Its ports, connections, construction values and presentation
+metadata are authoritative immediately; they do not wait for LLVM or audio
+activation. A failed configuration does not commit a valid successor and retains
+its diagnostics. Compilation failure does not roll back committed configuration:
+the previous executable continues while the new configuration reports failure.
 
-Conceptually:
+One serialized `ProjectGraph` compiler worker handles whole-project compilation
+and manual-control specialization. Each request pins the exact configured graph,
+provider definitions and executable observation/control requirements. Pending
+obsolete requests are replaced. LLVM compilation and executor storage/migration
+preparation run without holding the project edit mutex. The worker revalidates
+the current target before publishing a prepared executor generation; stale
+completed work is discarded off the audio thread. Already accepted executor
+chain links retain the existing ordered cutover and migration protocol.
 
-```cpp
-GraphJitCompileResult GraphJit::compile(GraphJitCompileRequest const& request);
-```
+`GraphJit::compile()` itself remains a synchronous compiler operation returning
+one immutable `CompiledGraph`; the worker invokes it in its own propagation
+cause after configuration publication. This does not weaken the requirement to
+measure and remove unnecessary compiler work.
 
-and the caller immediately continues with the returned result in the same
-propagation cause.
-
-If whole-project compilation later becomes unexpectedly expensive, treat that
-as a compiler-performance problem to measure first. Do not pre-commit the
-architecture to asynchronous compilation merely to hide avoidable compiler
-work.
-
-Package discovery/build/reload may still be asynchronous because that is a
-different source-build domain. The synchronous rule here applies specifically
-to the final configured project graph -> native graph generation step.
+Configured generation, prepared executable generation and actual audio
+activation are distinct states. Runtime-dependent controls and observations
+must preserve their generation identity. In particular, data from an older
+executable cannot be presented as a measurement of a newly configured port.
 
 ### Planned observation-aware incremental realization
 
@@ -1477,7 +1482,7 @@ and the integration point is described under
 [Planned observation-only replanning](#planned-observation-only-replanning).
 
 `Observations` reconciles clients' desired interests before requesting any
-compiler work. `ProjectGraph` coordinates the necessary synchronous compilation,
+compiler work. `ProjectGraph` schedules the necessary serialized compilation after configuration publication,
 `GraphJit` changes only the affected executable capture/production work, and
 `GraphExecutor` performs its ordinary ordered activation. Where no executable
 requirements changed, no GraphJit compilation is needed. A non-invasive capture

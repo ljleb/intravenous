@@ -187,6 +187,9 @@ struct CompiledGraphBackgroundOperations {
 struct CompiledGraph {
     CompiledObservationPlan observations{};
     std::uint64_t project_generation = 0;
+    // ProjectGraph's authoritative configuration, distinct from executable
+    // targets created solely for observations or control storage.
+    std::optional<std::uint64_t> configured_generation{};
     std::uint64_t definitions_generation = 0;
     GraphJitKernelSpecialization specialization{};
     std::shared_ptr<ConfiguredGraph const> configured_graph{};
@@ -212,6 +215,7 @@ struct GraphJitCompileRequest {
     std::shared_ptr<ConfiguredGraph const> graph{};
     std::shared_ptr<NodeDefinitionsSnapshot const> definitions{};
     CompiledObservationPlan observations{};
+    std::optional<std::uint64_t> configured_generation{};
 };
 
 // A transition specialization augments an already compiled steady successor.

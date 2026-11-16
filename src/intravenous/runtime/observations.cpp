@@ -57,7 +57,7 @@ bool Observations::reconcile_locked()
     if (desired.probes.size() > maximum_live_observation_probes)
         throw std::invalid_argument("combined live observation limit exceeded");
     if (desired.probes == accepted_.probes) {
-        if (!compilation_failed_) { last_compilation_us_ = 0; return false; }
+        if (!compilation_failed_) { last_scheduling_us_ = 0; return false; }
         desired.revision = accepted_.revision;
     }
     ObservationGraphRequest request{.requirements = desired};
@@ -66,7 +66,7 @@ bool Observations::reconcile_locked()
     // A failed compilation leaves the previous executor plan valid. Desired
     // requirements are retained for the next structural rebuild or retry.
     accepted_ = std::move(desired);
-    last_compilation_us_ = request.compilation_us;
+    last_scheduling_us_ = request.scheduling_us;
     compilation_failed_ = !request.error.empty();
     if (!request.error.empty()) throw std::runtime_error(request.error);
     return true;
@@ -122,7 +122,7 @@ void Observations::handle_protocol(ObservationProtocolRequest& request)
         }
         request.result = std::make_shared<Json const>(Json{
             {"revision", std::to_string(accepted_.revision)}, {"leaseMs", 30000},
-            {"compilationUs", last_compilation_us_}});
+            {"schedulingUs", last_scheduling_us_}});
     } catch (std::exception const& error) { request.error = error.what(); }
 }
 
@@ -159,6 +159,10 @@ void Observations::collect(Clock::time_point now)
             latest_ = std::move(collection.frame);
         }
         if (!latest_ || latest_->requirements_revision != accepted_.revision) return;
+        ObservationGraphRequest target;
+        IV_INVOKE_LINKER_EVENT(iv_observations_project_graph_event, target);
+        bool const current_generation = !target.handled || (target.configured_generation
+            && *target.configured_generation == latest_->configured_generation);
         std::map<std::string, Json> batches;
         for (auto const& scope : scopes_) {
             Json values = Json::array();
@@ -169,7 +173,7 @@ void Observations::collect(Clock::time_point now)
                 auto const end = begin + static_cast<std::ptrdiff_t>(latest_->count);
                 auto value = std::find_if(begin, end, [&](auto const& item) { return item.request_id == requirement->id; });
                 if (value == end) continue;
-                Json entry{{"id", interest.id}, {"available", value->status == ObservationValueStatus::available
+                Json entry{{"id", interest.id}, {"available", current_generation && value->status == ObservationValueStatus::available
                     && value->value.captured}};
                 if (entry["available"].get<bool>()) entry["value"] = project_value(*value);
                 values.push_back(std::move(entry));
@@ -186,7 +190,8 @@ void Observations::collect(Clock::time_point now)
             deliveries.push_back({client,
             std::make_shared<Json const>(Json{
                 {"activationId", std::to_string(latest_->activation_id)},
-                {"generation", std::to_string(latest_->project_generation)},
+                {"generation", std::to_string(latest_->configured_generation)},
+                {"executionGeneration", std::to_string(latest_->project_generation)},
                 {"revision", std::to_string(latest_->requirements_revision)},
                 {"index", std::to_string(latest_->sample_index.signed_value())},
                 {"blockSize", latest_->block_size},

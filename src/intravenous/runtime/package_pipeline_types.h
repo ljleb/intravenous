@@ -43,6 +43,8 @@ struct PackageRevision {
     std::filesystem::path package_root{};
     PackageProvenance provenance = PackageProvenance::project_local;
     std::uint64_t revision = 0;
+    std::string package_namespace{};
+    std::vector<std::string> package_dependencies{};
     // Exact finalized package LLVM and native link dependencies for this
     // accepted package generation.
     PackageCompilerArtifact compiler_artifact{};

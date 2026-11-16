@@ -224,7 +224,7 @@ TEST_F(NodeInstancesTest, PackageRegistryListsQueuedPackagesBeforeTheirFirstBuil
     std::filesystem::create_directories(source_root);
     iv::test_support::write_text(
         source_root / "iv_package.json",
-        "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
+        "{\"schema\":2,\"entry\":\"module.cpp\",\"namespace\":\"iv.test\",\"dependencies\":[\"iv.builtin\"]}\n");
     iv::test_support::write_text(
         source_root / "module.cpp",
         "#include <intravenous/dsl.h>\n\n"
@@ -457,5 +457,10 @@ TEST_F(NodeInstancesTest, ReplaceAllDoesNotInventARootForAnUnresolvedDefinition)
     ASSERT_EQ(declarations.size(), 1u);
     EXPECT_EQ(declarations.front().instance_id, "instance:unresolved");
     EXPECT_FALSE(declarations.front().package_root.has_value());
-    EXPECT_FALSE(witness.required_diff.has_value());
+    // Namespace selection needs the unresolved ID even without a path hint.
+    // The requirement must not invent a machine-local package root.
+    ASSERT_TRUE(witness.required_diff.has_value());
+    ASSERT_EQ(witness.required_diff->created.size(), 1u);
+    EXPECT_EQ(witness.required_diff->created[0].definition_id, "iv.test.unresolved");
+    EXPECT_TRUE(witness.required_diff->created[0].package_root.empty());
 }

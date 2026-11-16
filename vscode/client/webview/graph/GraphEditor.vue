@@ -491,6 +491,8 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     }
     if (event.data?.type !== "graphState") return;
     state.value = event.data.state;
+    observations.configuredGeneration(state.value.scope?.execution?.phase === "configurationFailed"
+        ? null : state.value.scope?.generation ?? null);
     if (state.value.sessionStatus === "running") observations.refresh();
     else observations.disconnect();
     const entry = manualGestures.numericEntry();

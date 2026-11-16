@@ -72,6 +72,24 @@ channel readings within that full-width area, with aligned graduations and
 legible levels. Do not sacrifice input/output controls or force an artificial
 lane width to achieve the fill; the meter adapts to the available space.
 
+### Future signal-distribution and spectral views (deferred)
+
+A `Sample` output may later be presented with a **time-local amplitude-density
+view**: signed sample value on a default `-1` to `+1` horizontal axis and an
+exponentially fading, optionally Gaussian-smoothed density distribution. Its
+purpose is to reveal the recent distribution and concentration of sample
+values, not to act as another clipping meter. Using roughly one exclusive
+histogram bin per displayed horizontal pixel is a reasonable starting point;
+expose optional resolution/quality controls only when useful, separately from
+kernel bandwidth and decay time. Keep different channels identifiable.
+
+A second, later **time-frequency** view may show an STFT spectrogram or a
+wavelet-based representation with meaningful axes and transform settings.
+These are independent observation presentations, **not** alternate `level`/
+`value` grading modes, and they must not delay current meter, header, or
+curve-editor work. Their data/operation requirements are specified in
+[Vue Output Observation](./vue_output_observation_direction.md#deferred-sample-amplitude-density-and-time-frequency-views-owner-intent-2026-11-16).
+
 ## 2. Input knobs and ports as one visual input
 
 An eligible Sequential input's manual knob and port are two parts of **one

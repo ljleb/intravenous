@@ -525,6 +525,9 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
     return jsonrpc_result(request_id, Json{
         {"generation", result->generation ? Json(*result->generation) : Json(nullptr)},
         {"sampleRate", result->sample_rate ? Json(*result->sample_rate) : Json(nullptr)},
+        {"execution", {{"phase", result->execution_phase}, {"message", result->execution_message},
+            {"preparedGeneration", result->prepared_generation ? Json(*result->prepared_generation) : Json(nullptr)},
+            {"activeGeneration", result->active_generation ? Json(*result->active_generation) : Json(nullptr)}}},
         {"editable", result->editable},
         {"nodes", std::move(nodes)},
         {"connections", std::move(connections)},

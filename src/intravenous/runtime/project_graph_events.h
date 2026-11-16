@@ -11,6 +11,10 @@
 #include <intravenous/runtime/package_definitions.h>
 
 namespace iv {
+using ProjectGraphExecutionReadEvent = void (*)(GraphExecutorExecutionReadRequest&);
+IV_DECLARE_LINKER_EVENT(ProjectGraphExecutionReadEvent, iv_runtime_project_graph_execution_read_event);
+using ProjectGraphExecutionPublishedEvent = void (*)(ProjectGraphPublication const&);
+IV_DECLARE_LINKER_EVENT(ProjectGraphExecutionPublishedEvent, iv_runtime_project_graph_execution_published_event);
 using ProjectGraphAudioSelectionRequestedEvent = void (*)(AudioDeviceSelectionTransactionRequest&);
 using ProjectGraphToolchainRequestedEvent = void (*)(ProjectToolchainTransactionRequest&);
 IV_DECLARE_LINKER_EVENT(ProjectGraphAudioSelectionRequestedEvent, iv_runtime_project_graph_audio_selection_requested_event);

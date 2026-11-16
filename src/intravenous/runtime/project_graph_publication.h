@@ -3,6 +3,7 @@
 #include <intravenous/runtime/iv_module_instance_types.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -20,6 +21,8 @@ struct ProjectGraphPublication {
     // connections, or the generation their ports come from. Editors re-read
     // their scopes (graph.getScope).
     bool graph_changed = false;
+    std::optional<std::uint64_t> execution_generation{};
+    std::optional<bool> execution_pending{};
     // Configuration can produce valid interfaces while GraphJit fails. Carry
     // that failure back to the cause's publication instead of hiding it in
     // ProjectGraphGeneration or reporting only a successful package build.
@@ -28,7 +31,7 @@ struct ProjectGraphPublication {
     [[nodiscard]] bool empty() const noexcept
     {
         return !instances.has_value() && !virtual_nodes.has_value() && !graph_changed
-            && !execution_failure.has_value();
+            && !execution_failure.has_value() && !execution_pending.has_value();
     }
 };
 } // namespace iv

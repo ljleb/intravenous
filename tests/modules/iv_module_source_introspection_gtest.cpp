@@ -56,6 +56,8 @@ struct InitializedIvModuleSourceIntrospectionApp {
     iv::node_instances_iv_module_source_introspection_bridge::scope
         iv_module_instances_iv_module_source_introspection_scope;
 
+    ~InitializedIvModuleSourceIntrospectionApp() { project_graph.stop_compilation(); }
+
     InitializedIvModuleSourceIntrospectionApp(
         std::filesystem::path workspace_root,
         std::filesystem::path discovery_start,

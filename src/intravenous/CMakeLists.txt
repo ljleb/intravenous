@@ -420,6 +420,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/package_definitions_node_definitions_bridge.cpp
     runtime/package_watcher_package_definitions_bridge.cpp
     runtime/package_watcher_package_jit_bridge.cpp
+    runtime/package_watcher_project_graph_bridge.cpp
     runtime/package_watcher_node_instances_bridge.cpp
     runtime/package_watcher_service_bridge.cpp
     runtime/node_instances.cpp

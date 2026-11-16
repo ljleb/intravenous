@@ -64,6 +64,7 @@ struct RawObservationValue {
 struct LiveObservationFrame {
     std::uint64_t activation_id = 0;
     std::uint64_t project_generation = 0;
+    std::uint64_t configured_generation = 0;
     std::uint64_t requirements_revision = 0;
     GlobalIndex sample_index{};
     std::size_t block_size = 0;
@@ -96,6 +97,7 @@ public:
         auto& frame = frames_[writer_];
         frame.activation_id = activation;
         frame.project_generation = generation;
+        frame.configured_generation = generation;
         frame.requirements_revision = plan.revision;
         frame.sample_index = index;
         frame.block_size = block_size;

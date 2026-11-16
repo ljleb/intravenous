@@ -11,6 +11,7 @@
 #include <intravenous/runtime/project_node_instance_types.h>
 #include <intravenous/runtime/project_node_replacement_types.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -21,6 +22,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -106,6 +108,34 @@ struct ConfiguredNodeInstance {
     std::function<NodeConstructionArguments()> read_construction_arguments{};
 };
 
+inline bool configured_definition_closure_matches(
+    ConfiguredNodeInstance const& configured,
+    NodeDefinitionsSnapshot const& snapshot)
+{
+    // Snapshot generation is publication order, not semantic identity. A
+    // cached configured graph remains exact only while every definition it
+    // actually captured, including nested module dependencies, retains its
+    // version in the newly published snapshot.
+    std::vector<ConfiguredNodeInstance const*> pending{&configured};
+    std::unordered_set<ConfiguredNodeInstance const*> visited;
+    while (!pending.empty()) {
+        auto const* current = pending.back();
+        pending.pop_back();
+        if (!visited.insert(current).second) continue;
+        auto const definition = snapshot.by_id.find(current->definition_id);
+        if (definition == snapshot.by_id.end()
+            || definition->second.version != current->definition_version) {
+            return false;
+        }
+        for (auto const& dependency : current->dependencies) {
+            if (!dependency) return false;
+            pending.push_back(dependency.get());
+        }
+    }
+    return true;
+}
+
+
 struct NodeInstancePlacement {
     std::shared_ptr<ConfiguredNodeInstance const> configured{};
     // The invocation's result in the root graph.
@@ -127,7 +157,9 @@ struct NodeInstanceDiagnostic {
 // that can refer to registered value/event types. No executable graph is retained.
 struct NodeInstanceFailureInterfaces {
     std::shared_ptr<NodeDefinitionsSnapshot const> definitions{};
-    std::vector<std::shared_ptr<ConfiguredNodeInstance const>> configuration_lifetimes{};
+    // Successful instances of this failed desired revision retain their own
+    // configured graphs for structural capability discovery, never execution.
+    std::unordered_map<std::string, std::shared_ptr<ConfiguredNodeInstance const>> configured_instances{};
     std::unordered_map<std::string, NodeInstanceInterface> interfaces{};
     std::vector<NodeInstanceDiagnostic> diagnostics{};
 };

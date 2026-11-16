@@ -19,6 +19,8 @@ struct IvPackageInfo {
     std::string package_id = {};
     std::filesystem::path package_root = {};
     PackageProvenance provenance = PackageProvenance::project_local;
+    std::string package_namespace{};
+    std::vector<std::string> package_dependencies{};
     std::vector<std::string> module_ids = {};
     std::vector<std::string> node_type_ids = {};
     PackageBuildState build_state = PackageBuildState::queued;

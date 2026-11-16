@@ -183,7 +183,14 @@ general Front 16 optimization effort.
 - Field-specific serialization overrides and arbitrary node-authored observation
   callbacks.
 - Third-party Vue component distribution and hot reload.
-- Advanced spectrum/event visualization catalogs.
+- Advanced event visualization catalogs and two explicitly requested future
+  `Sample` views: (1) a **time-local, exponentially decaying amplitude-density**
+  display with fine, optionally Gaussian-smoothed amplitude bins (about one
+  bin per displayed horizontal pixel is a reasonable first target; UI quality
+  selection may follow), then (2) **time-frequency content over time** via an
+  STFT spectrogram or wavelet transform. These are different observations, not
+  additional `level`/`value` meter scales. Their intended contracts live in
+  [Vue Output Observation](./vue_output_observation_direction.md#deferred-sample-amplitude-density-and-time-frequency-views-owner-intent-2026-11-16).
 - Multiresolution observation caches and speculative scheduling optimizations beyond
   what acceptable responsiveness needs.
 
@@ -287,6 +294,15 @@ verified against the manual-control GraphJit variant activation protocol, not
 just against a Vue input value change. Exact knob expansion geometry and
 open/close pointer hit-testing must be exercised together with cable endpoint
 placement. The color-code assignment remains exploratory.
+
+**Future visualization sequencing (owner request, 2026-11-16):** after the
+current meter/editor priorities and their necessary observation infrastructure
+are working, implement the time-local `Sample` amplitude-density view as a
+contained new registered observation/presentation feature. It does not require
+an STFT or wavelets. Keep the time-frequency view later, ideally after bounded
+window/waveform observation is established. Neither view is a prerequisite for
+lane layout, automation, graph-authored snapping, or output gain. Their
+aggregation must stay bounded and outside the realtime audio callback.
 
 The earlier source checkpoints below preserve their dates and observed behavior.
 In particular, the prior double-click-add/right-click-delete automation
@@ -3054,3 +3070,203 @@ deadline skipping, equal capture identities across mode changes, peak hold and
 accelerating fall, momentum reset, frame-rate-independent motion and silence.
 Owner verification of builds, tests, visual timing and CPU cost remains pending.
 The agent has not run builds, tests or profiling.
+
+
+### Accepted remaining-work order after meter verification, 2026-11-16
+
+The owner reports all tests pass for the shared meter readings and smooth peak
+motion, and accepts the following order after reviewing the backend-first
+suggestions. Earlier dated priority lists remain as historical checkpoints.
+
+1. Make configured node presentation structure available before audio-graph
+   activation: identities, ports, connections and control descriptions come
+   from configured graph data once the required package definitions are ready.
+   Runtime observation availability remains separate. This is the active feature.
+2. Implement Stage 5's bounded Tock observation query with a simple waveform.
+   Exercise huge logical Regions, repeated navigation, revision consistency,
+   cancellation and playback preparation priority. Repair concrete background
+   execution gaps revealed by this use case; bounded computed-window allocation
+   and rolling playback already have implementation and regression coverage.
+3. Unify recording and Tock/buffered storage, including page reuse, snapshot
+   lifetime, reclamation and resource limits. This is a separate complete
+   feature, not an assumed prerequisite for computed-output observation.
+4. Implement output gain and graph-authored snapping as separate complete
+   features with their existing semantic requirements.
+
+The requested amplitude-density and time-frequency views remain deferred.
+Further presentation refinement remains recorded; this order prioritizes the
+backend dependencies without discarding those requirements. Builds, test runs
+and profiling remain owner-run.
+
+
+### Package selection clarification during metadata work, 2026-11-16
+
+The owner selects logical namespace ownership by **longest matching dotted
+prefix**: separate packages may claim nested namespaces; duplicate exact
+namespace claims are invalid. Logical namespaces remain distinct from source
+paths, discovery provenance and build-cache identity. Static manifest package
+dependencies determine the closure needed before configuring desired nodes.
+
+The owner then revises the offline-catalog choice: build the current project
+graph's package dependency closure first, and compile unrelated discovered
+packages in a separate later pass. That later pass preserves discovery of all
+public nodes through actual compiler-generated definitions, without requiring
+a separately distributed offline catalog. It must not delay publication of the
+current graph's configured structure or trigger GraphJit recompilation merely
+because an unrelated definition became available. Package work remains outside
+the audio callback.
+
+Implementation is in progress; this records the chosen contract, not a claim
+that namespace manifests or the two-pass selection are implemented.
+
+
+### Configured-metadata publication friction, 2026-11-16
+
+Source inspection during the active feature finds that
+`ProjectGraph::rebuild_locked()` constructs `ProjectGraphGeneration::graph`
+before invoking GraphJit, but installs `current_generation_` only after
+compilation/staging. `handle_socket_rpc_get_graph_scope()` reads configured
+interfaces while holding the same `ProjectGraph::mutex_`; therefore it cannot
+expose a newly configured structure while that synchronous build holds the
+lock. `ProjectGraphPublication` also returns through the completed rebuild
+transaction. Merely removing an audio-activation check does not fix this.
+
+The owner is being asked to choose between a separately identified pending
+presentation snapshot while keeping synchronous edits, and committing
+configuration before serialized DSP compilation. The latter would change the
+synchronous compilation/publication contract in `startup_realization_order.md`.
+No such architectural change has been made pending that decision.
+
+
+### Accepted configured/executable publication boundary, 2026-11-16
+
+The owner chooses to commit a valid immutable `ConfiguredGraph` synchronously
+and publish its authoritative interfaces before DSP compilation. A serialized
+ProjectGraph worker compiles pinned configuration/definition snapshots without
+holding the project edit mutex. Obsolete queued requests are replaced; obsolete
+completed requests cannot stage. Compiler failure leaves configuration committed
+with a diagnostic and keeps the previous executable running. Executor preparation
+is separate from the short guarded publication of an accepted chain link.
+Already accepted links preserve the executor's ordered transition/migration chain.
+
+Configuration and executable readiness are independent milestones. Observation
+frames and live controls must name the realization they belong to; an older
+executable's values must not be shown as measurements of newer configured ports.
+Whole-project requests and manual-control requests use one serialized compiler
+worker. The package-closure-first/discovery-later selection remains part of the
+active metadata work, with longest-prefix namespace ownership. No offline catalog
+is required. Superseded synchronous-publication documents are preserved in
+`docs/historical/*_before_async_configured_publication_2026-11-16.md`.
+
+
+### Configured metadata and serialized DSP source checkpoint, 2026-11-16
+
+`ProjectGraph` now commits immutable configured structure before queuing DSP
+work. One worker serializes whole-project and control compilations, pins the
+exact inputs, coalesces obsolete queued work, and rejects obsolete completed
+work before executor publication. Configuration failures retain diagnostics and
+no valid successor; compilation failure retains the committed configuration and
+previous audio. Storage-changing manual overrides use this same queue.
+
+`GraphExecutor::prepare()` owns complete storage/migration resources off the
+project edit lock. A move-only preparation handle publishes once or discards
+off-thread; publication preserves the ordered accepted-generation chain. Initial
+playback preparation is handed to the background worker without waiting under
+the project lock. Application/benchmark shutdown joins package and compiler
+workers before tearing down bridge bindings.
+
+Configured-generation identity is distinct from executable target identity.
+Observation-only replanning and control storage preparation can create a new
+executable without inventing a new structural revision. `graph.getScope` exposes
+execution phase/message and prepared/active configured-generation IDs. Ports and
+control descriptions are configured data; measurements remain unavailable until
+the correct executable supplies them. Observation delivery checks configuration
+identity, and the frontend clears/rejects old frames when configuration changes.
+`observations.reconcile` reports `schedulingUs`; the former synchronous
+`compilationUs` field would misrepresent the new asynchronous work.
+
+Manifests declare logical namespaces and exact package dependencies. Discovery
+uses longest dotted-prefix ownership, validates duplicate claims, selects the
+required dependency closure before catalog-only work, and rejects exports owned
+by another discovered package. A missing dependency fails once and can recover
+after discovery changes; it never causes a compile-everything fallback. Later
+catalog publications retain unchanged configured/executable generations.
+
+New regression sources cover blocked compilation with concurrent edits, stale
+result rejection, discarded preparation handles, old observation frames,
+namespace priority/ownership, missing-dependency recovery and duplicate claims.
+The edit benchmark separately records configuration commit (`configured_ms`)
+and end-to-end executable preparation (`wall_ms`), so asynchronous return cannot
+artificially improve the original latency result.
+
+Owner verification is pending. No builds, tests, typechecks or profiling were
+run by the agent. Rebuild both server/tests and client, run the backend and client
+suites, then inspect startup/graph edits with audio running. Later Stage 5 bounded
+Tock observation is still the next complete feature after this checkpoint.
+
+The package worker also receives completion for discarded compiler requests, so
+a newer configuration failure cannot leave catalog discovery waiting forever
+on an obsolete executable. Namespace metadata is included in package catalog
+records for classifying unresolved nodes before providers load.
+
+
+### Owner verification and eight-failure follow-up, 2026-11-16
+
+The owner rebuilt and ran 1,078 tests: 1,070 passed and eight failed. The agent
+did not run builds/tests. Follow-up source changes:
+
+- Retain rootless required-definition IDs for static namespace selection; the
+  unresolved-instance test now verifies that the emitted path hint stays empty.
+- Wait explicitly for compilation when a bridge test asserts executable status;
+  a no-op control test compares configuration identity/graph rather than the
+  enclosing snapshot pointer, which can change on worker status publication.
+- Restore the `prepared` control status for storage-changing compilation before
+  staging; this preserves the release/settlement progress contract.
+- Mark both packages required in the atomic mixed-result fixture. Exercise
+  defensive duplicate-ID handling directly at PackageDefinitions, since the
+  production watcher must reject invalid ownership before that layer.
+- Keep logical test package requirements rootless rather than retaining a second
+  declaration keyed by a filesystem root in the first-build recovery helper.
+- Explicitly discard the async test's intentionally unused created-node ID to
+  remove the `nodiscard` warning.
+
+The owner should rerun builds and tests to verify these corrections.
+
+
+### Owner verification: asynchronous snapshot test corrections, 2026-11-16
+
+The next owner run passes 1,073 of 1,078 tests. Four failures compare enclosing
+`ProjectGraphGeneration` shared pointers while the compiler can publish a newer
+execution-status snapshot of the same configuration. Tests for failed edits and
+replacement previews now assert configured identity, executable-target identity,
+configured graph and pinned definitions. The remaining equivalent assertions
+were corrected together to avoid the same timing-dependent failure on a later
+run. The catalog-only publication regression retains exact snapshot equality
+after waiting for compilation, because that case deliberately publishes nothing.
+The observation-revision test now waits for queued compiler work before inspecting
+the request's captured requirements. No production behavior is changed by this
+follow-up; owner-run verification remains pending.
+
+### Startup follow-up: builtin import and failed-root meter structure (2026-11-16)
+
+The owner's startup run exposed a missing implicit package dependency: module
+input defaults construct builtin constants even when package source has no
+literal builtin-node lookup. `iv.builtin` is now included automatically in
+package selection and accepted by registered-definition dependency validation.
+Other cross-package constructions still require declared dependencies.
+
+`NodeInstanceFailureInterfaces` now keys its retained successful configuration
+owners by instance ID. Observation capability discovery uses those current desired
+closed graphs when another instance or a root connection prevents the root from
+configuring. It can advertise meter structure with no executable or committed
+root generation; readings remain unavailable. It never borrows old executable
+ports for an invalid desired instance. NodeRef-dependent results without a closed
+graph still expose their existing port metadata but do not gain observation
+capability discovery through this path.
+
+Dotted connections indicate saved desired connections that have not been applied
+to a successfully configured root. A public definition ID equal to its package
+namespace is valid, along with dotted descendants subject to longest-prefix
+ownership. Regression tests cover automatic builtin closure selection, registered
+builtin construction, and desired healthy meter capabilities during a failed root
+configuration. Owner-run build and tests are pending; the agent has not run them.

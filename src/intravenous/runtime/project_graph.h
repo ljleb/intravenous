@@ -75,8 +75,9 @@ class SocketRpcAudioDevicesResultBuilder;
 class ProjectAudioDevicesBuilder;
 struct ProjectSetAudioDevicesRequest;
 
-// Wall-clock microseconds of the rebuild that produced a generation, from the
-// rebuild's start to GraphExecutor accepting (or refusing) the compiled graph.
+// Configuration work and worker compilation/preparation time in microseconds.
+// total_us sums that work; a caller measuring end-to-end readiness also counts
+// time spent queued behind an earlier compiler request.
 struct ProjectGraphRebuildTimings {
     std::uint64_t node_instances_us = 0;
     std::uint64_t graph_connections_us = 0;
@@ -87,17 +88,23 @@ struct ProjectGraphRebuildTimings {
     std::uint64_t total_us = 0;
 };
 
-// One immutable root-configuration generation produced by ProjectGraph. GraphJit
-// will consume this object (plus its pinned definition provenance) in the next
-// execution-side checkpoint.
+// One immutable publication of configured structure and its executable status.
+// The same configured_generation can acquire newer worker-result publications;
+// existing readers keep the snapshot they obtained.
 struct ProjectGraphGeneration {
+    // generation identifies the requested executable target; probe/control
+    // realization can change it without changing configured interfaces.
     std::uint64_t generation = 0;
+    std::uint64_t configured_generation = 0;
     std::uint64_t definitions_generation = 0;
     std::shared_ptr<NodeDefinitionsSnapshot const> definitions{};
     std::shared_ptr<ConfiguredGraph const> graph{};
     std::unordered_map<std::string, NodeInstancePlacement> placements{};
     std::vector<std::string> applied_connection_ids{};
     std::vector<GraphConnectionDiagnostic> connection_diagnostics{};
+    // Structural interfaces are committed even while execution is queued.
+    std::string execution_phase = "queued";
+    std::string execution_message{};
     bool graph_jit_attempted = false;
     std::shared_ptr<CompiledGraph const> compiled_graph{};
     std::vector<GraphJitDiagnostic> graph_jit_diagnostics{};
@@ -194,6 +201,20 @@ class ProjectGraph {
         std::shared_ptr<ManualControlLiveTarget> target{};
         Sample value{};
     };
+    struct ControlCompileTrace;
+    bool restore_live_targets_ = false;
+    struct GraphCompileRequest {
+        std::uint64_t request_id = 0;
+        std::shared_ptr<ProjectGraphGeneration const> generation{};
+        std::shared_ptr<ConfiguredGraph const> graph{};
+        CompiledObservationPlan observations{};
+        std::shared_ptr<ControlCompileTrace> trace{};
+    };
+    std::optional<GraphCompileRequest> pending_graph_compile_{};
+    std::uint64_t latest_graph_compile_request_ = 0;
+    bool compile_inflight_ = false;
+    void schedule_graph_compile_locked(std::shared_ptr<ControlCompileTrace> trace = {});
+    void compile_graph(GraphCompileRequest request, std::stop_token stop);
     struct ControlCompileTrace {
         ProjectControlCompileStatus status{};
         std::chrono::steady_clock::time_point requested_at{};
@@ -201,6 +222,7 @@ class ProjectGraph {
     struct ControlCompileRequest {
         std::uint64_t request_id = 0;
         std::uint64_t project_generation = 0;
+        std::uint64_t configured_generation = 0;
         std::shared_ptr<ConfiguredGraph const> graph{};
         std::shared_ptr<NodeDefinitionsSnapshot const> definitions{};
         std::vector<ManualControlId> dynamic_inputs{};
@@ -250,6 +272,7 @@ class ProjectGraph {
         std::function<void()> const& authorize_audio = {});
 
     mutable std::mutex mutex_;
+    std::size_t sample_rate_ = 48000;
     ObservationRequirements observation_requirements_{};
     std::shared_ptr<NodeDefinitionsSnapshot const> definitions_snapshot_{};
     std::shared_ptr<ProjectGraphGeneration const> current_generation_{};
@@ -279,7 +302,8 @@ class ProjectGraph {
     std::uint64_t next_control_compile_request_ = 1;
     std::uint64_t latest_control_compile_request_ = 0;
     std::uint64_t next_generation_ = 1;
-    std::jthread control_compile_worker_{};
+    std::uint64_t next_configured_generation_ = 1;
+    std::jthread compile_worker_{};
 
     // `package_definitions` is the module-definition change of the
     // definitions publication this build follows, if any.
@@ -312,7 +336,7 @@ class ProjectGraph {
     void schedule_control_compile_locked(
         std::vector<ManualControlId> dynamic_inputs,
         bool activate_on_ready);
-    void control_compile_worker(std::stop_token stop);
+    void compile_worker(std::stop_token stop);
     void queue_control_compile_status_locked(std::shared_ptr<ControlCompileTrace> const& trace,
         std::string phase, std::string message = {}, std::uint64_t stage_us = 0);
     void cancel_pending_control_compile_locked();
@@ -345,8 +369,10 @@ class ProjectGraph {
     void prune_live_interactions_locked();
 
 public:
-    ProjectGraph();
+    explicit ProjectGraph(std::size_t sample_rate = 48000);
     ~ProjectGraph();
+    void stop_compilation();
+    [[nodiscard]] bool wait_for_compilation(std::chrono::milliseconds timeout = std::chrono::seconds(30));
     ProjectGraph(ProjectGraph const&) = delete;
     ProjectGraph& operator=(ProjectGraph const&) = delete;
 

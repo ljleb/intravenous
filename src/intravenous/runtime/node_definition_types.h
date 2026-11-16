@@ -26,6 +26,10 @@ struct IvPackageDeclaration {
     std::filesystem::path package_root{};
     PackageProvenance provenance = PackageProvenance::project_local;
     std::optional<std::filesystem::path> artifact_root{};
+    // Portable ownership and explicit package dependencies, read without
+    // compiling. package_id continues to identify the local build/watch root.
+    std::string package_namespace{};
+    std::vector<std::string> package_dependencies{};
 
     friend bool operator==(
         IvPackageDeclaration const&,

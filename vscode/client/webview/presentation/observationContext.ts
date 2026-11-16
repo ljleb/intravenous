@@ -78,6 +78,9 @@ export class PresentationObservations {
         this.visible = visible;
         this.schedule();
     }
+    configuredGeneration(generation: number | null): void {
+        if (this.values.acceptGeneration(generation)) ++this.version.value;
+    }
     refresh(): void { this.schedule(); }
     private schedule(): void {
         ++this.epoch;

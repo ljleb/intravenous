@@ -23,6 +23,9 @@ discover_iv_package_declarations(
 
 class PackageWatcher {
     mutable std::mutex mutex_;
+    std::unordered_map<std::string, std::filesystem::path> required_definitions_;
+    std::optional<std::uint64_t> waiting_for_execution_{};
+    std::uint64_t completed_execution_generation_ = 0;
     std::unordered_map<std::string, IvPackageDeclaration>
         retained_package_declarations_by_id_;
     std::unordered_map<std::string, IvPackageDeclaration>
@@ -43,6 +46,7 @@ class PackageWatcher {
         PackageRefreshTransaction transaction{};
         PackageJitBatchRequest jit_request{};
         std::unordered_map<std::string, IvPackageDeclaration> next_published{};
+        std::vector<PackageJitFailure> preflight_failures{};
     };
     std::optional<PreparedRefresh> prepared_refresh_;
 
@@ -59,6 +63,7 @@ public:
     PackageWatcher();
     ~PackageWatcher() = default;
 
+    void handle_execution_publication(ProjectGraphPublication const& publication);
     void handle_required_definitions_changed(
         IvModuleRequiredDefinitionsChanged const& diff);
     void synchronize_discovered_packages(

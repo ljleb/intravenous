@@ -169,6 +169,8 @@ PackageJitBatchResult PackageJit::build(
                 std::scoped_lock lock(mutex_);
                 revision.revision = ++next_revision_by_package_id_[declaration.package_id];
             }
+            revision.package_namespace = declaration.package_namespace;
+            revision.package_dependencies = declaration.package_dependencies;
             revision.module_definitions.reserve(loaded_package.definitions.size());
             for (auto& loaded_definition : loaded_package.definitions) {
                 revision.module_definitions.push_back(PackageModuleDefinition{

@@ -11,6 +11,7 @@ void publish_definitions_snapshot(
     iv::NodeDefinitionsSnapshotChanged change)
 {
     in_event_source([&] { return project_graph.handle_node_definitions_snapshot_changed(change); });
+    EXPECT_TRUE(project_graph.wait_for_compilation());
 }
 
 iv::ReflectedContinuousPortStorageBinding sample_storage_binding(

@@ -1,3 +1,4 @@
+#include <nlohmann/json.hpp>
 #include "../module_test_utils.h"
 #include "../event_source_test_support.h"
 
@@ -51,11 +52,21 @@ iv::IvPackageDeclaration package_declaration(
     iv::PackageProvenance provenance = iv::PackageProvenance::project_local,
     std::optional<std::filesystem::path> artifact_root = std::nullopt)
 {
+    auto package_namespace = std::string("iv.test");
+    std::vector<std::string> dependencies;
+    auto const manifest = package_root / "iv_package.json";
+    if (std::filesystem::exists(manifest)) {
+        auto json = nlohmann::json::parse(iv::test_support::read_text(manifest));
+        package_namespace = json.at("namespace").get<std::string>();
+        dependencies = json.value("dependencies", std::vector<std::string>{});
+    }
     return iv::IvPackageDeclaration{
         .package_id = std::move(package_id),
         .package_root = std::filesystem::weakly_canonical(package_root),
         .provenance = provenance,
         .artifact_root = std::move(artifact_root),
+        .package_namespace = std::move(package_namespace),
+        .package_dependencies = std::move(dependencies),
     };
 }
 
@@ -90,6 +101,21 @@ struct PipelineHarness {
         , refresh_witness_scope(watcher, refresh_witness)
     {}
 
+    void discover(std::vector<iv::IvPackageDeclaration> declarations)
+    {
+        bool const needs_builtin = std::ranges::any_of(declarations, [](auto const& declaration) {
+            return std::ranges::contains(declaration.package_dependencies, std::string("iv.builtin"));
+        });
+        if (needs_builtin && std::ranges::none_of(declarations, [](auto const& declaration) {
+            return declaration.package_namespace == "iv.builtin";
+        })) declarations.push_back(default_package_declaration());
+        iv::IvModuleRequiredDefinitionsChanged required;
+        for (auto const& declaration : declarations) required.created.push_back({
+            .definition_id = declaration.package_namespace + ".fixture"});
+        in_event_source([&] { watcher.handle_required_definitions_changed(required); });
+        watcher.synchronize_discovered_packages(std::move(declarations));
+    }
+
     iv::PackageWatcherRefreshRequest refresh_request()
     {
         iv::PackageWatcherRefreshRequest request;
@@ -111,7 +137,7 @@ TEST(PackagePipeline, DirtyDeclarationsBuildAndPublishDefinitions)
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     PipelineHarness pipeline(startup_config.initialize(), workspace);
 
-    pipeline.watcher.synchronize_discovered_packages({
+    pipeline.discover({
         default_package_declaration(),
         package_declaration("iv.test.local_cmake", workspace),
     });
@@ -147,7 +173,7 @@ TEST(PackagePipeline, FailedBuildKeepsAcceptedRevisionAndReportsFailure)
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     PipelineHarness pipeline(startup_config.initialize(), workspace);
-    pipeline.watcher.synchronize_discovered_packages({
+    pipeline.discover({
         default_package_declaration(),
         package_declaration("iv.test.local_cmake", workspace),
     });
@@ -192,7 +218,7 @@ TEST(PackagePipeline, SuccessfulRefreshReportsItsBuildOnceWithElapsedTime)
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     PipelineHarness pipeline(startup_config.initialize(), workspace);
 
-    pipeline.watcher.synchronize_discovered_packages({
+    pipeline.discover({
         default_package_declaration(),
         package_declaration("iv.test.local_cmake", workspace),
     });
@@ -223,7 +249,7 @@ TEST(PackagePipeline, CompiledModuleDefinitionPublishesConfiguredGraph)
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     PipelineHarness pipeline(startup_config.initialize(), workspace);
 
-    pipeline.watcher.synchronize_discovered_packages({
+    pipeline.discover({
         package_declaration("iv.test.reload_sample_period", workspace),
     });
     ASSERT_TRUE(pipeline.refresh());
@@ -245,7 +271,7 @@ TEST(PackagePipeline, RefreshDoesNothingWithoutSourceOrDependencyChanges)
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     PipelineHarness pipeline(startup_config.initialize(), workspace);
-    pipeline.watcher.synchronize_discovered_packages({
+    pipeline.discover({
         package_declaration("iv.test.local_cmake", workspace),
     });
     ASSERT_TRUE(pipeline.refresh());
@@ -263,7 +289,7 @@ TEST(PackagePipeline, FailedFirstBuildRemainsWatchedAndCanRecoverAfterSourceEdit
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     PipelineHarness pipeline(startup_config.initialize(), workspace);
-    pipeline.watcher.synchronize_discovered_packages({
+    pipeline.discover({
         package_declaration("iv.test.recover", workspace),
     });
     ASSERT_TRUE(pipeline.refresh());
@@ -274,7 +300,7 @@ TEST(PackagePipeline, FailedFirstBuildRemainsWatchedAndCanRecoverAfterSourceEdit
 
     iv::test_support::write_text(
         workspace / "iv_package.json",
-        "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
+        "{\"schema\":2,\"entry\":\"module.cpp\",\"namespace\":\"iv.test\",\"dependencies\":[]}\n");
     iv::test_support::write_text(
         workspace / "module.cpp",
         "#include <intravenous/dsl.h>\n\n"
@@ -302,7 +328,7 @@ TEST(PackagePipeline, NodeInstancesUsesJitOwnedTypedArgumentOperationsFromPublis
     iv::test_support::write_text(workspace / "iv_project.jsonl", "");
     iv::test_support::write_text(
         workspace / "iv_package.json",
-        "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
+        "{\"schema\":2,\"entry\":\"module.cpp\",\"namespace\":\"iv.test\",\"dependencies\":[]}\n");
     iv::test_support::write_text(
         workspace / "module.cpp",
         R"cpp(#include <intravenous/dsl.h>
@@ -318,7 +344,7 @@ IV_MODULE("iv.test.node_instances_jit_config", node_instances_jit_config);
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});
     PipelineHarness pipeline(startup_config.initialize(), workspace);
-    pipeline.watcher.synchronize_discovered_packages({
+    pipeline.discover({
         package_declaration("iv.test.node_instances_jit_package", workspace),
     });
     ASSERT_TRUE(pipeline.refresh());

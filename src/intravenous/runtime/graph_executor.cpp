@@ -51,6 +51,7 @@ bool compatible_realtime_code(
         [](NodeLayout::Region const& region) { return !region.transition_only; }));
     if (replacement.cutover
         || replacement.project_generation != structural.project_generation
+        || replacement.configured_generation != structural.configured_generation
         || replacement.definitions_generation
             != structural.definitions_generation
         || replacement.specialization.sample_rate
@@ -830,11 +831,11 @@ void GraphExecutor::BackgroundExecutor::activate_initial_generation(
 
 void GraphExecutor::BackgroundExecutor::queue_initial_playback(ExecutionGeneration& target)
 {
-    Command command{.kind = CommandKind::queue_initial_playback, .migration_target = &target};
-    enqueue(command);
-    std::unique_lock lock{command.mutex};
-    command.completed.wait(lock, [&] { return command.done; });
-    if (command.exception) std::rethrow_exception(command.exception);
+    auto* head = initial_playback_requests_.load(std::memory_order_relaxed);
+    do { target.initial_playback_next = head; }
+    while (!initial_playback_requests_.compare_exchange_weak(head, &target,
+        std::memory_order_release, std::memory_order_relaxed));
+    work_signal_.notify_work();
 }
 
 void GraphExecutor::BackgroundExecutor::enqueue(Command& command)
@@ -943,6 +944,21 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
     std::uint64_t observed_work_revision = 0;
     auto observed_wake_revision = work_signal_.wake_revision();
     for (;;) {
+        auto* requests = initial_playback_requests_.exchange(nullptr, std::memory_order_acquire);
+        ExecutionGeneration* ordered = nullptr;
+        while (requests) {
+            auto* next = requests->initial_playback_next;
+            requests->initial_playback_next = ordered;
+            ordered = requests;
+            requests = next;
+        }
+        while (ordered) {
+            auto* next = ordered->initial_playback_next;
+            ordered->initial_playback_next = nullptr;
+            preparation_queue_.push_back(ordered);
+            ordered = next;
+        }
+
         Command* command = nullptr;
         {
             std::lock_guard lock{commands_mutex_};
@@ -1013,16 +1029,6 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
             }();
             std::lock_guard lock{command->mutex};
             command->reclaimed.emplace(reclaimed);
-            command->done = true;
-        } else if (command->kind == CommandKind::queue_initial_playback) {
-            std::exception_ptr failure;
-            try {
-                if (!command->migration_target) throw std::invalid_argument("missing playback preparation target");
-                preparation_queue_.push_back(command->migration_target);
-                work_signal_.notify_work();
-            } catch (...) { failure = std::current_exception(); }
-            std::lock_guard lock{command->mutex};
-            command->exception = failure;
             command->done = true;
         } else if (command->kind
                    == CommandKind::prepare_background_migration) {
@@ -1137,24 +1143,35 @@ void GraphExecutor::unlock_accepted_chain() noexcept
     accepted_chain_guard_.clear(std::memory_order_release);
 }
 
-GraphExecutorStageResult GraphExecutor::stage(
+GraphExecutorPreparedGeneration GraphExecutor::prepare(
     std::shared_ptr<CompiledGraph const> compiled_graph)
 {
     struct Unlock {
         GraphExecutor* executor;
         ~Unlock() { executor->unlock_accepted_chain(); }
     };
-    lock_accepted_chain();
-    Unlock unlock{this};
+    struct PreparedSubmission {
+        std::unique_lock<std::mutex> submission;
+        std::unique_ptr<ExecutionGeneration> generation{};
+    };
+    auto submission = std::make_shared<PreparedSubmission>(
+        PreparedSubmission{std::unique_lock(generation_submission_mutex_)});
+    IndexCoverage playback_demand;
+    ExecutionGeneration* predecessor = nullptr;
+    {
+        lock_accepted_chain();
+        Unlock unlock{this};
+        playback_demand = tick_materialization_demand_;
+        predecessor = pending_tail_ ? pending_tail_ : realtime_active_;
+    }
     if (!compiled_graph) {
         throw std::invalid_argument("GraphExecutor cannot stage an empty compiled graph");
     }
-    auto* predecessor = pending_tail_ ? pending_tail_ : realtime_active_;
     auto const newest_generation = predecessor
         ? predecessor->graph->project_generation : std::uint64_t{0};
     if (predecessor
         && compiled_graph->project_generation <= newest_generation) {
-        return GraphExecutorStageResult::ignored_stale;
+        return {};
     }
     if (compiled_graph->cutover && compiled_graph->cutover->from_empty_graph) {
         if (predecessor) {
@@ -1192,11 +1209,10 @@ GraphExecutorStageResult GraphExecutor::stage(
     prepared->active_realtime_code_owner = prepare_realtime_code(prepared->graph);
     prepared->realtime_code.store(
         prepared->active_realtime_code_owner.get(), std::memory_order_relaxed);
-    prepared->background.tick_materialization_demand =
-        tick_materialization_demand_;
-    prepared->background.explicit_playback_demand = !tick_materialization_demand_.empty();
+    prepared->background.tick_materialization_demand = playback_demand;
+    prepared->background.explicit_playback_demand = !playback_demand.empty();
     prepared->background.tick_materialization_required =
-        !tick_materialization_demand_.empty()
+        !playback_demand.empty()
         && !prepared->graph->background_evaluation_plan
                 .tick_sequential_inputs.empty();
     prepared->preparation_predecessor = predecessor;
@@ -1209,21 +1225,40 @@ GraphExecutorStageResult GraphExecutor::stage(
         background_executor_.prepare_background_migration(
             *prepared, *predecessor);
     }
-    auto* accepted = prepared.get();
-    if (!predecessor) {
-        background_executor_.install_initial_generation(std::move(prepared));
-        pending_head_ = accepted;
-    } else if (pending_tail_) {
-        pending_tail_->attach_successor(std::move(prepared));
-    } else {
-        pending_owner_ = std::move(prepared);
-        pending_head_ = pending_owner_.get();
-    }
-    pending_tail_ = accepted;
-    accepted_tail_graph_ = accepted->graph;
-    if (requires_prepared_playback(*accepted->graph))
-        background_executor_.queue_initial_playback(*accepted);
-    return GraphExecutorStageResult::accepted;
+    submission->generation = std::move(prepared);
+    return GraphExecutorPreparedGeneration{[this, submission = std::move(submission), predecessor]() {
+        auto& prepared = submission->generation;
+        lock_accepted_chain();
+        Unlock unlock{this};
+        // Another structural submission cannot pass the retained submission lock.
+        // Audio may have activated the same tail while it was being prepared.
+        if (prepared->background.tick_materialization_demand != tick_materialization_demand_)
+            prepared->background.tick_materialization_demand = tick_materialization_demand_;
+        prepared->background.explicit_playback_demand = !tick_materialization_demand_.empty();
+        prepared->background.tick_materialization_required = !tick_materialization_demand_.empty()
+            && !prepared->graph->background_evaluation_plan.tick_sequential_inputs.empty();
+        auto* accepted = prepared.get();
+        if (!predecessor) {
+            background_executor_.install_initial_generation(std::move(prepared));
+            pending_head_ = accepted;
+        } else if (pending_tail_) {
+            pending_tail_->attach_successor(std::move(prepared));
+        } else {
+            pending_owner_ = std::move(prepared);
+            pending_head_ = pending_owner_.get();
+        }
+        pending_tail_ = accepted;
+        accepted_tail_graph_ = accepted->graph;
+        if (requires_prepared_playback(*accepted->graph))
+            background_executor_.queue_initial_playback(*accepted);
+        return GraphExecutorStageResult::accepted;
+    }};
+}
+
+GraphExecutorStageResult GraphExecutor::stage(
+    std::shared_ptr<CompiledGraph const> compiled_graph)
+{
+    return std::move(prepare(std::move(compiled_graph))).publish();
 }
 
 bool GraphExecutor::can_replace_realtime_code(
@@ -1387,15 +1422,7 @@ bool GraphExecutor::set_manual_control_target_in_accepted_chain(
 ProjectGraphGraphExecutorResult GraphExecutor::handle_project_graph_transaction(
     std::shared_ptr<CompiledGraph const> const& compiled_graph)
 {
-    auto const result = stage(compiled_graph);
-    if (result != GraphExecutorStageResult::accepted) {
-        throw std::logic_error(
-            "ProjectGraph submitted a stale GraphExecutor generation");
-    }
-    return {
-        .attempted = true,
-        .accepted = true,
-    };
+    return {.attempted = true, .prepared = prepare(compiled_graph)};
 }
 
 void GraphExecutor::handle_project_graph_controls(
@@ -1499,6 +1526,8 @@ bool GraphExecutor::activate_pending(GlobalIndex sample_index)
         if (!initial) return false;
         auto* first = pending_head_;
         realtime_active_ = first;
+        published_active_generation_.store(first->graph->configured_generation.value_or(first->graph->project_generation), std::memory_order_relaxed);
+        published_has_active_generation_.store(true, std::memory_order_release);
         realtime_persisted_state_.activate_generation(std::move(initial));
         first->initial_selection_adopted.store(true, std::memory_order_release);
         background_executor_.activate_initial_generation(
@@ -1537,6 +1566,8 @@ bool GraphExecutor::activate_pending(GlobalIndex sample_index)
     }
     previous.publish_attached_successor();
     realtime_active_ = next;
+    published_active_generation_.store(next->graph->configured_generation.value_or(next->graph->project_generation), std::memory_order_relaxed);
+    published_has_active_generation_.store(true, std::memory_order_release);
     pending_head_ = next->successor_owner.get();
     if (!pending_head_) pending_tail_ = nullptr;
     background_executor_.notify_generation_cutover();
@@ -1964,8 +1995,11 @@ void GraphExecutor::tick_block(GlobalIndex sample_index, std::size_t block_size)
         }
         // Code can be prepared in a different order from activation while a
         // successor waits for background data. Stamp the actual realtime order.
-        return &observations_.begin(realtime_code->graph->observations,
+        auto& frame = observations_.begin(realtime_code->graph->observations,
             observation_activation_, generation.graph->project_generation, sample_index, block_size);
+        frame.configured_generation = realtime_code->graph->configured_generation
+            .value_or(generation.graph->project_generation);
+        return &frame;
     };
     auto const* persisted = realtime_persisted_state_.adopt(
         generation.graph->project_generation);

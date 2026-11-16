@@ -138,11 +138,13 @@ namespace iv::test::observation_tests {
 using Json = nlohmann::ordered_json;
 struct ProtocolCaller {};
 struct Graph {
+    std::optional<std::uint64_t> generation = 0;
     ObservationRequirements accepted{};
     std::size_t compilations = 0;
     void apply(ObservationGraphRequest& request)
     {
         request.handled = true;
+        request.configured_generation = generation;
         if (request.requirements) { accepted = *request.requirements; ++compilations; }
         request.capabilities = std::make_shared<Json const>(Json::array());
     }
@@ -339,3 +341,28 @@ TEST_F(ObservationService, RoutesRequireReadPermissionAndBindTheConnectionIdenti
     EXPECT_THROW((void)in_event_source([&] { return routes.dispatch(request, {}); }), std::logic_error);
 }
 } // namespace iv::test::observation_tests
+
+
+namespace iv::test::observation_tests {
+TEST_F(ObservationService, OlderExecutableFramesInvalidateWhenTheConfiguredGenerationChanges)
+{
+    ASSERT_TRUE(reconcile("a", "lane", {interest()}).error.empty());
+    executor.publish(graph.accepted, 1);
+    collect();
+    ASSERT_EQ(delivery.batches.size(), 1u);
+    EXPECT_EQ((*delivery.batches.back().payload)["scopes"][0]["values"][0]["available"], true);
+    delivery.batches.clear();
+    graph.generation = 5;
+    executor.publish(graph.accepted, 1);
+    collect();
+    ASSERT_EQ(delivery.batches.size(), 1u);
+    EXPECT_EQ((*delivery.batches.back().payload)["scopes"][0]["values"][0]["available"], false);
+    delivery.batches.clear();
+    executor.publish(graph.accepted, 2);
+    executor.frame->project_generation = 9;
+    executor.frame->configured_generation = 5;
+    collect();
+    ASSERT_EQ(delivery.batches.size(), 1u);
+    EXPECT_EQ((*delivery.batches.back().payload)["scopes"][0]["values"][0]["available"], true);
+}
+}

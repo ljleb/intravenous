@@ -1,9 +1,11 @@
+#include <nlohmann/json.hpp>
 #include "../module_test_utils.h"
 #include "../event_source_test_support.h"
 
 #include <intravenous/bridge.h>
 #include <intravenous/linux_file_descriptor.h>
 #include <intravenous/runtime/node_instances.h>
+#include <intravenous/module/package_manifest.h>
 #include <intravenous/runtime/package_discovery_watcher.h>
 #include <intravenous/runtime/package_pipeline_events.h>
 #include <intravenous/runtime/package_watcher.h>
@@ -74,9 +76,11 @@ struct FakePackageJit {
 
 struct FakePackageDefinitions {
     std::vector<iv::PackageRefreshTransaction> transactions{};
+    std::function<void(iv::PackageRefreshTransaction&)> respond{};
 
     void handle_package_refresh(iv::PackageRefreshTransaction& transaction)
     {
+        if (respond) respond(transaction);
         transactions.push_back(transaction);
     }
 };
@@ -187,10 +191,15 @@ iv::IvPackageDeclaration declaration(
     std::filesystem::path package_root,
     iv::PackageProvenance provenance = iv::PackageProvenance::project_local)
 {
+    auto package_namespace = package_id;
+    auto const manifest = package_root / "iv_package.json";
+    if (std::filesystem::exists(manifest))
+        package_namespace = nlohmann::json::parse(iv::test_support::read_text(manifest)).at("namespace").get<std::string>();
     return iv::IvPackageDeclaration{
-        .package_id = std::move(package_id),
+        .package_id = package_id,
         .package_root = std::filesystem::weakly_canonical(package_root),
         .provenance = provenance,
+        .package_namespace = std::move(package_namespace),
     };
 }
 
@@ -204,6 +213,8 @@ iv::PackageRevision revision_for(
         .package_root = declaration.package_root,
         .provenance = declaration.provenance,
         .revision = revision,
+        .package_namespace = declaration.package_namespace,
+        .package_dependencies = declaration.package_dependencies,
         .dependencies = std::move(dependencies),
     };
 }
@@ -269,7 +280,7 @@ TEST(PackageDiscoveryWatcher, AddsCoverageForNewNestedDirectories)
 
     iv::test_support::write_text(
         nested / "iv_package.json",
-        R"({"schema":2,"entry":"module.cpp"})");
+        R"({"schema":2,"entry":"module.cpp","namespace":"iv.test.watched"})");
     ASSERT_TRUE(wait_until_readable(watcher.native_handle()));
     events = watcher.consume_events();
     EXPECT_TRUE(events.declarations_may_have_changed);
@@ -307,7 +318,7 @@ TEST(PackageDiscoveryWatcher, ExistingSourceWritesDoNotRequestDiscoveryRescan)
     auto const source = root / "module.cpp";
     auto const manifest = root / "iv_package.json";
     iv::test_support::write_text(source, "int value = 1;\n");
-    iv::test_support::write_text(manifest, R"({"schema":2,"entry":"module.cpp"})");
+    iv::test_support::write_text(manifest, R"({"schema":2,"entry":"module.cpp","namespace":"iv.test.watched"})");
 
     iv::PackageDiscoveryWatcher watcher({root});
 
@@ -317,7 +328,7 @@ TEST(PackageDiscoveryWatcher, ExistingSourceWritesDoNotRequestDiscoveryRescan)
     EXPECT_FALSE(events.coverage_may_have_changed);
     EXPECT_FALSE(events.declarations_may_have_changed);
 
-    iv::test_support::write_text(manifest, R"({"schema":2,"entry":"module.cpp"})");
+    iv::test_support::write_text(manifest, R"({"schema":2,"entry":"module.cpp","namespace":"iv.test.watched"})");
     ASSERT_TRUE(wait_until_readable(watcher.native_handle()));
     events = watcher.consume_events();
     EXPECT_FALSE(events.coverage_may_have_changed);
@@ -370,7 +381,7 @@ TEST(PackageDiscoveryWatcher, QueueOverflowForcesConservativeReconciliationAndRe
     auto const manifest = package_root / "iv_package.json";
     iv::test_support::write_text(
         manifest,
-        R"({"schema":2,"entry":"module.cpp"})");
+        R"({"schema":2,"entry":"module.cpp","namespace":"iv.test.watched"})");
     iv::test_support::write_text(
         package_root / "module.cpp",
         "// discovered after overflow\n");
@@ -392,7 +403,7 @@ TEST(PackageDiscoveryWatcher, QueueOverflowForcesConservativeReconciliationAndRe
     // creation events were dropped, not merely reconstruct this one snapshot.
     iv::test_support::write_text(
         manifest,
-        R"({"schema":2,"entry":"module.cpp"})");
+        R"({"schema":2,"entry":"module.cpp","namespace":"iv.test.watched"})");
     ASSERT_TRUE(wait_until_readable(watcher.native_handle()));
     events = watcher.consume_events();
     EXPECT_TRUE(events.declarations_may_have_changed);
@@ -428,7 +439,7 @@ TEST(PackageDiscoveryWatcher, RepeatedRootMoveAndRecreationDoesNotLoseCoverage)
         auto const manifest = package_root / "iv_package.json";
         iv::test_support::write_text(
             manifest,
-            R"({"schema":2,"entry":"module.cpp"})");
+            R"({"schema":2,"entry":"module.cpp","namespace":"iv.test.watched"})");
         iv::test_support::write_text(package_root / "module.cpp", "// recreated package\n");
 
         ASSERT_TRUE(wait_until_readable(watcher.native_handle()));
@@ -451,7 +462,7 @@ TEST(PackageDiscoveryWatcher, RepeatedRootMoveAndRecreationDoesNotLoseCoverage)
         }
         iv::test_support::write_text(
             manifest,
-            R"({"schema":2,"entry":"module.cpp"})");
+            R"({"schema":2,"entry":"module.cpp","namespace":"iv.test.watched"})");
         ASSERT_TRUE(wait_until_readable(watcher.native_handle()));
         events = watcher.consume_events();
         EXPECT_TRUE(events.declarations_may_have_changed);
@@ -471,7 +482,7 @@ TEST(PackageWatcherService, LogicalWorkAfterStartupIsNotStrandedWithoutFilesyste
     std::filesystem::create_directories(initial_package);
     iv::test_support::write_text(
         initial_package / "iv_package.json",
-        R"({"schema":2,"entry":"module.cpp"})");
+        R"({"schema":2,"entry":"module.cpp","namespace":"iv.test.watched"})");
     iv::test_support::write_text(initial_package / "module.cpp", "// initial\n");
 
     // This package is intentionally outside every discovery root and is fully
@@ -521,7 +532,7 @@ TEST(PackageWatcherService, RetainsPackageBuildFailureForNonFrontendCallers)
     std::filesystem::create_directories(package_root);
     iv::test_support::write_text(
         package_root / "iv_package.json",
-        R"({"schema":2,"entry":"module.cpp"})");
+        R"({"schema":2,"entry":"module.cpp","namespace":"iv.test.watched"})");
     iv::test_support::write_text(package_root / "module.cpp", "// failing\n");
 
     iv::PackageWatcher watcher;
@@ -574,10 +585,13 @@ TEST(PackageWatcher, CoalescesMultipleDirtyPackagesIntoOneJitCallAndOneTransacti
         }
     };
 
-    harness.watcher.synchronize_discovered_packages({
-        declaration("iv.test.batch.first", first),
-        declaration("iv.test.batch.second", second),
-    });
+    auto first_package = declaration("iv.test.batch.first", first);
+    first_package.package_namespace = "iv.test.batch.first";
+    auto second_package = declaration("iv.test.batch.second", second);
+    second_package.package_namespace = "iv.test.batch.second";
+    in_event_source([&] { harness.watcher.handle_required_definitions_changed({.created = {
+        {.definition_id = "iv.test.batch.first.node"}, {.definition_id = "iv.test.batch.second.node"}}}); });
+    harness.watcher.synchronize_discovered_packages({first_package, second_package});
 
     ASSERT_TRUE(harness.refresh());
     ASSERT_EQ(harness.jit.calls.size(), 1u);
@@ -907,7 +921,7 @@ TEST(PackageWatcher, DiscoveryIgnoresMalformedPackagesAndDeduplicatesOverlapping
     std::filesystem::create_directories(absolute_entry);
     std::filesystem::create_directories(ignored_build);
 
-    iv::test_support::write_text(good / "iv_package.json", R"({"schema":2,"entry":"module.cpp"})");
+    iv::test_support::write_text(good / "iv_package.json", R"({"schema":2,"entry":"module.cpp","namespace":"iv.test.watched"})");
     iv::test_support::write_text(good / "module.cpp", "// valid\n");
     iv::test_support::write_text(malformed / "iv_package.json", "{not json");
     iv::test_support::write_text(malformed / "module.cpp", "// ignored\n");
@@ -919,7 +933,7 @@ TEST(PackageWatcher, DiscoveryIgnoresMalformedPackagesAndDeduplicatesOverlapping
         R"({"schema":2,"entry":"/tmp/not-allowed.cpp"})");
     iv::test_support::write_text(
         ignored_build / "iv_package.json",
-        R"({"schema":2,"entry":"module.cpp"})");
+        R"({"schema":2,"entry":"module.cpp","namespace":"iv.test.watched"})");
     iv::test_support::write_text(ignored_build / "module.cpp", "// ignored\n");
 
     auto const discovered = iv::discover_iv_package_declarations(root, {
@@ -948,7 +962,7 @@ TEST(PackageWatcher, OverlappingDiscoveryRootsUseHighestPriorityOwnershipOnce)
     std::filesystem::create_directories(package);
     iv::test_support::write_text(
         package / "iv_package.json",
-        R"({"schema":2,"entry":"module.cpp"})");
+        R"({"schema":2,"entry":"module.cpp","namespace":"iv.test.watched"})");
     iv::test_support::write_text(package / "module.cpp", "// valid\n");
 
     auto const discovered = iv::discover_iv_package_declarations(project, {
@@ -980,7 +994,7 @@ TEST(PackageWatcher, EqualPriorityOverlapsRejectConflictingArtifactOwners)
     std::filesystem::create_directories(package);
     iv::test_support::write_text(
         package / "iv_package.json",
-        R"({"schema":2,"entry":"module.cpp"})");
+        R"({"schema":2,"entry":"module.cpp","namespace":"iv.test.watched"})");
     iv::test_support::write_text(package / "module.cpp", "// valid\n");
 
     EXPECT_THROW(
@@ -1044,7 +1058,7 @@ TEST(PackageWatcher, IgnoredBuildMetadataDoesNotCreateSpuriousRefresh)
 {
     auto const root = iv::test_support::fresh_module_fixture_workspace(
         "package_watcher_ignored_build_metadata");
-    iv::test_support::write_text(root / "iv_package.json", R"({"schema":2,"entry":"module.cpp"})");
+    iv::test_support::write_text(root / "iv_package.json", R"({"schema":2,"entry":"module.cpp","namespace":"iv.test.watched"})");
     iv::test_support::write_text(root / "module.cpp", "// package source\n");
 
     WatcherHarness harness;
@@ -1065,4 +1079,162 @@ TEST(PackageWatcher, IgnoredBuildMetadataDoesNotCreateSpuriousRefresh)
     EXPECT_FALSE(harness.watcher.has_pending_refresh());
     EXPECT_FALSE(harness.refresh());
     EXPECT_EQ(harness.jit.calls.size(), 1u);
+}
+
+
+TEST(PackageWatcher, RequiredNamespaceClosureBuildsBeforeCatalogAndWaitsForExecutablePreparation)
+{
+    auto const root = iv::test_support::fresh_module_fixture_workspace("namespace_priority");
+    auto parent = declaration("00-parent", root / "parent");
+    parent.package_namespace = "iv.demo";
+    auto child = declaration("child", root / "child");
+    child.package_namespace = "iv.demo.fx";
+    child.package_dependencies = {"iv.math"};
+    auto math = declaration("math", root / "math");
+    math.package_namespace = "iv.math";
+    auto unrelated = declaration("99-unrelated", root / "unrelated");
+    unrelated.package_namespace = "iv.extra";
+    WatcherHarness harness;
+    harness.jit.respond = [](iv::PackageJitBatchRequest& request) {
+        for (auto const& declaration : request.declarations) request.result.revisions.push_back(revision_for(declaration));
+    };
+    harness.definitions.respond = [](iv::PackageRefreshTransaction& transaction) {
+        if (std::ranges::any_of(transaction.successful_revisions, [](auto const& revision) { return revision.package_id == "child"; })) {
+            transaction.project_publication.execution_generation = 10;
+            transaction.project_publication.execution_pending = true;
+        }
+    };
+    in_event_source([&] { harness.watcher.handle_required_definitions_changed({.created = {{.definition_id = "iv.demo.fx.voice"}}}); });
+    harness.watcher.synchronize_discovered_packages({parent, child, math, unrelated});
+    ASSERT_TRUE(harness.refresh());
+    ASSERT_EQ(harness.jit.calls.size(), 1u);
+    EXPECT_EQ(package_ids(harness.jit.calls[0].declarations), (std::vector<std::string>{"child", "math"}));
+    EXPECT_TRUE(harness.watcher.has_pending_refresh());
+    EXPECT_FALSE(harness.watcher.prepare_refresh());
+    in_event_source([&] { harness.watcher.handle_execution_publication({.graph_changed = true,
+        .execution_generation = 10, .execution_pending = false}); });
+    ASSERT_TRUE(harness.refresh());
+    ASSERT_EQ(harness.jit.calls.size(), 2u);
+    EXPECT_EQ(package_ids(harness.jit.calls[1].declarations), (std::vector<std::string>{"00-parent"}));
+    ASSERT_TRUE(harness.refresh());
+    EXPECT_EQ(package_ids(harness.jit.calls[2].declarations), (std::vector<std::string>{"99-unrelated"}));
+    EXPECT_FALSE(harness.watcher.has_pending_refresh());
+    EXPECT_FALSE(iv::package_namespace_owns("iv.demo.fx", "iv.demo.fx_extra.node"));
+}
+
+TEST(PackageWatcher, RequiredPackageAutomaticallyIncludesBuiltinWithoutAnAuthoredDependency)
+{
+    auto const root = iv::test_support::fresh_module_fixture_workspace("implicit_builtin_dependency");
+    auto builtin = declaration("builtin", root / "builtin");
+    builtin.package_namespace = "iv.builtin";
+    auto consumer = declaration("consumer", root / "consumer");
+    consumer.package_namespace = "iv.consumer";
+    auto unrelated = declaration("unrelated", root / "unrelated");
+    unrelated.package_namespace = "iv.extra";
+    for (auto const& package : {builtin, consumer, unrelated}) {
+        std::filesystem::create_directories(package.package_root);
+        iv::test_support::write_text(package.package_root / "module.cpp", "// initial source\n");
+    }
+    WatcherHarness harness;
+    harness.jit.respond = [](iv::PackageJitBatchRequest& request) {
+        for (auto const& declaration : request.declarations)
+            request.result.revisions.push_back(revision_for(declaration));
+    };
+    // An exact namespace ID is also a valid public node ID.
+    in_event_source([&] { harness.watcher.handle_required_definitions_changed({
+        .created = {{.definition_id = "iv.consumer"}}}); });
+    harness.watcher.synchronize_discovered_packages({consumer, unrelated, builtin});
+    ASSERT_TRUE(harness.refresh());
+    ASSERT_EQ(harness.jit.calls.size(), 1u);
+    auto const& required = harness.jit.calls.front().declarations;
+    ASSERT_EQ(required.size(), 2u);
+    EXPECT_EQ(required[0].package_id, "builtin");
+    EXPECT_EQ(required[1].package_id, "consumer");
+    EXPECT_TRUE(required[0].package_dependencies.empty());
+    EXPECT_TRUE(required[1].package_dependencies.empty());
+    ASSERT_TRUE(harness.refresh());
+    ASSERT_EQ(harness.jit.calls.size(), 2u);
+    EXPECT_EQ(package_ids(harness.jit.calls.back().declarations),
+        (std::vector<std::string>{"unrelated"}));
+    EXPECT_FALSE(harness.watcher.has_pending_refresh());
+
+    iv::test_support::write_text(builtin.package_root / "module.cpp", "// changed builtin source\n");
+    iv::test::advance_write_time(builtin.package_root / "module.cpp");
+    harness.watcher.poll_dependency_changes();
+    ASSERT_TRUE(harness.refresh());
+    ASSERT_EQ(harness.jit.calls.size(), 3u);
+    EXPECT_EQ(package_ids(harness.jit.calls.back().declarations),
+        (std::vector<std::string>{"builtin", "consumer"}));
+    ASSERT_TRUE(harness.refresh());
+    EXPECT_EQ(package_ids(harness.jit.calls.back().declarations),
+        (std::vector<std::string>{"unrelated"}));
+    EXPECT_FALSE(harness.watcher.has_pending_refresh());
+}
+
+TEST(PackageWatcher, MissingDeclaredDependencyFailsOnceAndRecoversWhenDiscovered)
+{
+    auto const root = iv::test_support::fresh_module_fixture_workspace("namespace_recovery");
+    auto consumer = declaration("consumer", root / "consumer");
+    consumer.package_namespace = "iv.consumer";
+    consumer.package_dependencies = {"iv.provider"};
+    WatcherHarness harness;
+    harness.jit.respond = [](iv::PackageJitBatchRequest& request) {
+        for (auto const& declaration : request.declarations) request.result.revisions.push_back(revision_for(declaration));
+    };
+    in_event_source([&] { harness.watcher.handle_required_definitions_changed({.created = {{.definition_id = "iv.consumer.node"}}}); });
+    harness.watcher.synchronize_discovered_packages({consumer});
+    ASSERT_TRUE(harness.refresh());
+    EXPECT_TRUE(harness.jit.calls.empty());
+    ASSERT_EQ(harness.definitions.transactions.back().failed_builds.size(), 1u);
+    EXPECT_NE(harness.definitions.transactions.back().failed_builds[0].message.find("iv.provider"), std::string::npos);
+    EXPECT_FALSE(harness.watcher.has_pending_refresh());
+    EXPECT_FALSE(harness.refresh());
+    auto provider = declaration("provider", root / "provider");
+    provider.package_namespace = "iv.provider";
+    harness.watcher.synchronize_discovered_packages({consumer, provider});
+    ASSERT_TRUE(harness.refresh());
+    ASSERT_EQ(harness.jit.calls.size(), 1u);
+    EXPECT_EQ(package_ids(harness.jit.calls.back().declarations), (std::vector<std::string>{"consumer", "provider"}));
+    EXPECT_TRUE(harness.definitions.transactions.back().failed_builds.empty());
+}
+
+TEST(PackageWatcher, DuplicateNamespaceClaimsDoNotReplaceThePreviousDiscoverySnapshot)
+{
+    auto const root = iv::test_support::fresh_module_fixture_workspace("duplicate_namespace");
+    auto first = declaration("first", root / "first");
+    first.package_namespace = "iv.same";
+    auto second = declaration("second", root / "second");
+    second.package_namespace = "iv.same";
+    WatcherHarness harness;
+    harness.watcher.synchronize_discovered_packages({first});
+    ASSERT_TRUE(harness.refresh());
+    EXPECT_THROW(harness.watcher.synchronize_discovered_packages({first, second}), std::runtime_error);
+    EXPECT_FALSE(harness.watcher.has_pending_refresh());
+    harness.watcher.synchronize_discovered_packages({first});
+    EXPECT_FALSE(harness.watcher.has_pending_refresh());
+}
+
+TEST(PackageWatcher, ParentCannotPublishDefinitionsReservedByAnUnloadedNestedPackage)
+{
+    auto const root = iv::test_support::fresh_module_fixture_workspace("namespace_exports");
+    auto parent = declaration("parent", root / "parent");
+    parent.package_namespace = "iv.family";
+    auto child = declaration("child", root / "child");
+    child.package_namespace = "iv.family.child";
+    WatcherHarness harness;
+    harness.jit.respond = [](iv::PackageJitBatchRequest& request) {
+        for (auto const& declaration : request.declarations) {
+            auto revision = revision_for(declaration);
+            if (declaration.package_id == "parent") revision.module_definitions.push_back({
+                .package_id = declaration.package_id, .definition_id = "iv.family.child.foreign"});
+            request.result.revisions.push_back(std::move(revision));
+        }
+    };
+    in_event_source([&] { harness.watcher.handle_required_definitions_changed({.created = {{.definition_id = "iv.family.node"}}}); });
+    harness.watcher.synchronize_discovered_packages({parent, child});
+    ASSERT_TRUE(harness.refresh());
+    EXPECT_EQ(package_ids(harness.jit.calls.back().declarations), (std::vector<std::string>{"parent"}));
+    EXPECT_TRUE(harness.definitions.transactions.back().successful_revisions.empty());
+    ASSERT_EQ(harness.definitions.transactions.back().failed_builds.size(), 1u);
+    EXPECT_NE(harness.definitions.transactions.back().failed_builds[0].message.find("iv.family.child.foreign"), std::string::npos);
 }

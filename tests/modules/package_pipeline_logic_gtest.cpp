@@ -3,6 +3,7 @@
 
 #include <intravenous/bridge.h>
 #include <intravenous/runtime/node_definitions.h>
+#include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/package_definitions.h>
 #include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
 #include <intravenous/runtime/package_pipeline_events.h>
@@ -57,6 +58,14 @@ struct PipelineLogicHarness {
         , packages_definitions_scope(packages, definitions)
     {}
 
+    // Exercise the publication layer's defensive duplicate-ID handling with
+    // deliberately invalid revisions. Production PackageWatcher now rejects
+    // these exports before publication using manifest namespace ownership.
+    void publish_unchecked(iv::PackageRefreshTransaction transaction)
+    {
+        in_event_source([&] { packages.handle_package_refresh(transaction); });
+    }
+
     bool refresh()
     {
         iv::PackageWatcherRefreshRequest request;
@@ -71,9 +80,10 @@ iv::IvPackageDeclaration declaration(
     iv::PackageProvenance provenance = iv::PackageProvenance::project_local)
 {
     return iv::IvPackageDeclaration{
-        .package_id = std::move(package_id),
+        .package_id = package_id,
         .package_root = std::filesystem::weakly_canonical(package_root),
         .provenance = provenance,
+        .package_namespace = std::move(package_id),
     };
 }
 
@@ -99,6 +109,8 @@ iv::PackageRevision revision_with_module(
         .package_root = declaration.package_root,
         .provenance = declaration.provenance,
         .revision = revision,
+        .package_namespace = declaration.package_namespace,
+        .package_dependencies = declaration.package_dependencies,
         .module_definitions = {
             module_definition(declaration, std::move(definition_id)),
         },
@@ -122,14 +134,8 @@ TEST(PackagePipelineLogic, MixedSuccessAndFailurePublishesOnlyAcceptedRevisionAt
     auto const bad_root = project / "bad";
     std::filesystem::create_directories(good_root);
     std::filesystem::create_directories(bad_root);
-    auto const good = iv::IvPackageDeclaration{
-        .package_id = "iv.test.good",
-        .package_root = std::filesystem::weakly_canonical(good_root),
-    };
-    auto const bad = iv::IvPackageDeclaration{
-        .package_id = "iv.test.bad",
-        .package_root = std::filesystem::weakly_canonical(bad_root),
-    };
+    auto const good = declaration("iv.test.good", good_root);
+    auto const bad = declaration("iv.test.bad", bad_root);
 
     PipelineLogicHarness pipeline(project);
     pipeline.jit.respond = [&](iv::PackageJitBatchRequest& request) {
@@ -143,10 +149,9 @@ TEST(PackagePipelineLogic, MixedSuccessAndFailurePublishesOnlyAcceptedRevisionAt
         });
     };
 
-    pipeline.watcher.synchronize_discovered_packages({
-        declaration(good.package_id, good.package_root),
-        declaration(bad.package_id, bad.package_root),
-    });
+    in_event_source([&] { pipeline.watcher.handle_required_definitions_changed({.created = {
+        {.definition_id = "iv.test.good.module"}, {.definition_id = "iv.test.bad.module"}}}); });
+    pipeline.watcher.synchronize_discovered_packages({good, bad});
     ASSERT_TRUE(pipeline.refresh());
 
     ASSERT_EQ(pipeline.jit.calls, 1u);
@@ -188,22 +193,8 @@ TEST(PackagePipelineLogic, NamespaceCollisionAcceptsPackagesButPreservesPrevious
     };
 
     PipelineLogicHarness pipeline(project);
-    pipeline.jit.respond = [&](iv::PackageJitBatchRequest& request) {
-        for (auto const& built : request.declarations) {
-            if (built.package_id == first.package_id) {
-                request.result.revisions.push_back(
-                    revision_with_module(first, "iv.test.shared"));
-            } else if (built.package_id == second.package_id) {
-                request.result.revisions.push_back(
-                    revision_with_module(second, "iv.test.shared"));
-            }
-        }
-    };
-
-    pipeline.watcher.synchronize_discovered_packages({
-        declaration(first.package_id, first.package_root),
-    });
-    ASSERT_TRUE(pipeline.refresh());
+    pipeline.publish_unchecked({.declarations = {.created = {first}},
+        .successful_revisions = {revision_with_module(first, "iv.test.shared")}});
     auto const namespace_before_collision = pipeline.definitions.snapshot();
     ASSERT_TRUE(namespace_before_collision->by_id.contains("iv.test.shared"));
     EXPECT_EQ(
@@ -211,11 +202,8 @@ TEST(PackagePipelineLogic, NamespaceCollisionAcceptsPackagesButPreservesPrevious
             namespace_before_collision->by_id.at("iv.test.shared").definition).package_id,
         first.package_id);
 
-    pipeline.watcher.synchronize_discovered_packages({
-        declaration(first.package_id, first.package_root),
-        declaration(second.package_id, second.package_root),
-    });
-    ASSERT_TRUE(pipeline.refresh());
+    pipeline.publish_unchecked({.declarations = {.created = {second}},
+        .successful_revisions = {revision_with_module(second, "iv.test.shared")}});
 
     auto const accepted = pipeline.packages.snapshot();
     ASSERT_EQ(accepted->by_package_id.size(), 2u);
@@ -252,33 +240,17 @@ TEST(PackagePipelineLogic, RemovingCollidingPackageClearsDiagnosticsWithoutRepub
     };
 
     PipelineLogicHarness pipeline(project);
-    pipeline.jit.respond = [&](iv::PackageJitBatchRequest& request) {
-        for (auto const& built : request.declarations) {
-            auto const& source = built.package_id == first.package_id ? first : second;
-            request.result.revisions.push_back(
-                revision_with_module(source, "iv.test.shared"));
-        }
-    };
-
-    pipeline.watcher.synchronize_discovered_packages({
-        declaration(first.package_id, first.package_root),
-    });
-    ASSERT_TRUE(pipeline.refresh());
+    pipeline.publish_unchecked({.declarations = {.created = {first}},
+        .successful_revisions = {revision_with_module(first, "iv.test.shared")}});
     auto const namespace_after_first = pipeline.definitions.snapshot();
 
-    pipeline.watcher.synchronize_discovered_packages({
-        declaration(first.package_id, first.package_root),
-        declaration(second.package_id, second.package_root),
-    });
-    ASSERT_TRUE(pipeline.refresh());
+    pipeline.publish_unchecked({.declarations = {.created = {second}},
+        .successful_revisions = {revision_with_module(second, "iv.test.shared")}});
     ASSERT_EQ(pipeline.definitions.snapshot(), namespace_after_first);
     ASSERT_FALSE(find_package(pipeline.packages.list_packages(), first.package_id)
         ->publication_message.empty());
 
-    pipeline.watcher.synchronize_discovered_packages({
-        declaration(first.package_id, first.package_root),
-    });
-    ASSERT_TRUE(pipeline.refresh());
+    pipeline.publish_unchecked({.declarations = {.deleted_package_ids = {second.package_id}}});
 
     EXPECT_EQ(pipeline.definitions.snapshot(), namespace_after_first);
     auto const packages = pipeline.packages.list_packages();

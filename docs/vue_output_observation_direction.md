@@ -121,6 +121,61 @@ Capturing an ephemeral runtime value and projecting an immutable persisted range
 are different implementations of a type-registered operation; a persisted query
 must not be turned into a fake realtime probe merely to use the same interface.
 
+### Deferred `Sample` amplitude-density and time-frequency views (owner intent, 2026-11-16)
+
+These are **future output-observation capabilities**, not Stage 4 meter
+completion criteria, new node port kinds, or an instruction to implement them
+now. They belong to the type-registered `Sample` operation/presentation model.
+Do not fold them into the existing `level`/`value` meter scale switch: those
+modes show peak/RMS magnitudes, whereas the following views examine different
+properties of the source signal.
+
+**Time-local amplitude density.** Offer a live distribution of *signed* `Sample`
+values over an amplitude axis running from `-1` to `+1` by default, with
+density/intensity on the other axis. Every observed sample contributes to a
+recent-history distribution; older contributions fade with a configurable
+exponential decay time. Closely spaced sample values should reinforce one
+another smoothly. A narrow Gaussian kernel density estimate is an appropriate
+semantic model; an efficiently implemented, fractionally deposited histogram
+with optional kernel smoothing is equally acceptable. This is primarily a way
+to see where a signal spends its recent time, including stable value clusters
+and changing distributions; it is **not primarily a clipping detector**, level
+meter, waveform, or frequency analyzer. It intentionally discards sample order.
+
+A fine, **exclusive amplitude bin per rendered horizontal pixel** is a sensible
+initial display-resolution target and is not inherently excessive at ordinary
+viewport widths. The eventual UI may expose a quality/bin-resolution setting;
+resolution and Gaussian bandwidth are distinct controls and must not be
+conflated. The observation result and aggregation work must remain bounded as
+the view resizes or several clients subscribe. Do not issue one full Gaussian
+rasterization over every display pixel *per sample on the audio thread*; capture
+and reduce through the established bounded realtime handoff and background or
+client-owned presentation work as appropriate. Decay must have a stated time
+basis independent of callback/block size and display refresh rate. Preserve
+resolved channel identities rather than silently folding stereo channels,
+and account for samples outside the displayed `-1` to `+1` range instead of
+silently folding their mass into the endpoints. Missing coverage, unavailable
+data, and unobserved time are not zero-valued samples. Normalization and pause/
+discontinuity behavior should be made explicit with the complete feature.
+
+**Time-frequency content.** Separately, allow a future `Sample` observation
+presentation showing frequency content *over time*, initially through a
+short-time Fourier transform (STFT) or, when justified, a wavelet transform.
+The result should preserve the meaning of its time/frequency bins, channel
+identity, window/hop or wavelet scale, magnitude/power and any logarithmic
+frequency or dB grading. Time/frequency resolution and analysis latency are
+real tradeoffs, not merely a canvas-rendering choice. This visualization is
+distinct from amplitude density: it retains temporal spectral structure rather
+than counting where scalar samples fall on the amplitude axis.
+
+Both views should operate on truthful, bounded observation data using the
+existing `Observations`, `GraphJit`/`GraphExecutor`, and background-query
+ownership. A live Tick source and a random-access Tock/recorded source may
+require different capture/query implementations; neither justifies doing a
+large transform or growing a long-lived histogram in the audio callback.
+They follow completion of the core observation and editor priorities in
+[Vue Client Implementation Stages](./vue_client_implementation_stages.md).
+
 ## 3. Output production/retention determines the data path
 
 | Resolved output | Observation source and execution |

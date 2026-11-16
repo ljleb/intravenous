@@ -1,6 +1,8 @@
 #include <intravenous/runtime/project_graph_events.h>
 
 namespace iv {
+IV_DEFINE_LINKER_EVENT(ProjectGraphExecutionReadEvent, iv_runtime_project_graph_execution_read_event)
+IV_DEFINE_LINKER_EVENT(ProjectGraphExecutionPublishedEvent, iv_runtime_project_graph_execution_published_event)
 namespace {
 GraphJitCompileResult ignore_graph_jit_request(ProjectGraphGraphJitRequest const&)
 {

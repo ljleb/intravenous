@@ -18,7 +18,7 @@ class Observations {
     std::mutex mutex_;
     std::vector<Scope> scopes_;
     ObservationRequirements accepted_{};
-    std::uint64_t last_compilation_us_ = 0;
+    std::uint64_t last_scheduling_us_ = 0;
     bool requirements_dirty_ = false;
     bool compilation_failed_ = false;
     std::uint64_t next_id_ = 1;

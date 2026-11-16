@@ -257,6 +257,7 @@ iv::ProjectConnection sample_connection(
 struct BenchmarkPackage {
     std::string directory{};
     std::string module_source{};
+    std::string package_namespace{};
 };
 
 // One benchmark project: the graph, the constant whose value the configure edit
@@ -419,6 +420,7 @@ ShapeProject feedback_project(int loops)
         .packages = {{
             .directory = "feedback_voice",
             .module_source = feedback_voice_source,
+            .package_namespace = std::string(feedback_voice_id),
         }},
     };
 }
@@ -614,6 +616,7 @@ ShapeProject storage_project(int voices)
         .packages = {{
             .directory = "storage_voice",
             .module_source = storage_voice_source,
+            .package_namespace = std::string(storage_voice_id),
         }},
     };
 }
@@ -645,6 +648,7 @@ struct TickCost {
 struct EditRecord {
     std::string kind{};
     double wall_ms = 0;
+    double configured_ms = 0;
     // Realtime cost of the new generation over the settle window, and the
     // block period it must fit in.
     TickCost tick{};
@@ -792,7 +796,7 @@ void print_record(EditRecord const& record, int iteration)
 {
     std::cout << std::fixed << std::setprecision(2)
               << "edit=" << record.kind << " iteration=" << iteration
-              << " wall_ms=" << record.wall_ms;
+              << " wall_ms=" << record.wall_ms << " configured_ms=" << record.configured_ms;
     if (!record.published) {
         std::cout << " published=no\n";
         return;
@@ -818,7 +822,7 @@ void write_tsv_header(std::ostream& output)
 {
     output
         << "schema\tshape\tgraph_size\tblock_size\titeration\tedit"
-           "\tpublished\taccepted\tbundles\twall_ms\tconfigure_ms"
+           "\tpublished\taccepted\tbundles\twall_ms\tconfigured_ms\tconfigure_ms"
            "\tgraph_jit_ms\tstage_ms\ttick_mean_us\ttick_p50_us"
            "\ttick_p95_us\ttick_p99_us\ttick_max_us\ttick_blocks"
            "\tblock_period_us\tstack_budget_bytes\tcopied_byte_weight"
@@ -877,6 +881,7 @@ void write_tsv_record(
                << '\t' << record.accepted
                << '\t' << record.bundles
                << '\t' << record.wall_ms
+               << '\t' << record.configured_ms
                << '\t' << ms(configure_us)
                << '\t' << ms(record.rebuild.graph_jit_us)
                << '\t' << ms(record.rebuild.executor_stage_us)
@@ -1116,6 +1121,12 @@ int main(int argc, char** argv)
         auto watcher_instances_scope =
             iv::package_watcher_node_instances_bridge::bind(package_watcher, node_instances);
 
+        struct CompilationShutdown {
+            iv::PackageWatcherService& packages;
+            iv::ProjectGraph& graph;
+            ~CompilationShutdown() { packages.stop(); graph.stop_compilation(); }
+        } compilation_shutdown{package_watcher_service, project_graph};
+
         auto project = shape_project(options.shape, options.size);
         // Discovery runs when the service starts, so shape packages are written first.
         for (auto const& package : project.packages) {
@@ -1123,7 +1134,8 @@ int main(int argc, char** argv)
             std::filesystem::create_directories(root);
             write_text_if_changed(
                 root / "iv_package.json",
-                "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
+                "{\"schema\":2,\"entry\":\"module.cpp\",\"namespace\":\""
+                    + package.package_namespace + "\",\"dependencies\":[\"iv.builtin\"]}\n");
             write_text_if_changed(root / "module.cpp", package.module_source);
         }
         std::cout << "building the packages (not timed)...\n" << std::flush;
@@ -1139,13 +1151,17 @@ int main(int argc, char** argv)
             auto const before = project_graph.current_generation();
             auto const begin = Clock::now();
             apply();
+            auto const configured_at = Clock::now();
+            if (!project_graph.wait_for_compilation(std::chrono::minutes(5)))
+                throw std::runtime_error("timed out waiting for the edited graph executable");
             auto const end = Clock::now();
             auto const after = project_graph.current_generation();
             EditRecord record{
                 .kind = std::move(kind),
                 .wall_ms = std::chrono::duration<double, std::milli>(end - begin).count(),
+                .configured_ms = std::chrono::duration<double, std::milli>(configured_at - begin).count(),
             };
-            if (after && after != before) {
+            if (after && (!before || after->configured_generation != before->configured_generation)) {
                 record.published = true;
                 record.accepted = after->graph_executor_accepted;
                 record.bundles = after->graph ? after->graph->node_bundles.size() : 0;
@@ -1222,7 +1238,8 @@ int main(int argc, char** argv)
                           << cost.dropped_blocks
                           << " blocks, which exceed the recording ring\n";
             }
-            package_watcher_service.request_shutdown();
+            package_watcher_service.stop();
+            project_graph.stop_compilation();
             return 0;
         }
         for (int iteration = 0; iteration < options.iterations; ++iteration) {
@@ -1276,7 +1293,8 @@ int main(int argc, char** argv)
         print_summary(records,
             "shape " + options.shape + ", size " + std::to_string(options.size) + ", "
                 + std::to_string(project.graph.instances.size()) + " instances");
-        package_watcher_service.request_shutdown();
+        package_watcher_service.stop();
+        project_graph.stop_compilation();
         return 0;
     } catch (std::exception const& error) {
         std::cerr << "iv_edit_latency_benchmark: " << error.what() << '\n';

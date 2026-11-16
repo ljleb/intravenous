@@ -78,7 +78,7 @@ struct InitializedIvModuleSourceIntrospectionOwner {
     {
     }
 
-    ~InitializedIvModuleSourceIntrospectionOwner() = default;
+    ~InitializedIvModuleSourceIntrospectionOwner() { project_graph.stop_compilation(); }
 
     void initialize()
     {

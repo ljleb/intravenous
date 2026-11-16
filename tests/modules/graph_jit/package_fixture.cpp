@@ -7826,7 +7826,7 @@ std::filesystem::path ensure_graph_jit_runtime_workspace()
     }
     write_graph_jit_fixture_file_if_changed(
         workspace / "iv_package.json",
-        "{\n  \"schema\": 2,\n  \"entry\": \"module.cpp\"\n}\n");
+        "{\n  \"schema\": 2,\n  \"entry\": \"module.cpp\",\n  \"namespace\": \"iv.test\",\n  \"dependencies\": [\"iv.builtin\"]\n}\n");
     write_graph_jit_fixture_file_if_changed(
         workspace / "module.cpp",
         graph_jit_runtime_package_source());

@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <deque>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -31,9 +32,35 @@ enum class GraphExecutorStageResult : std::uint8_t {
     ignored_stale,
 };
 
+// Cold preparation owns all generation resources until the caller either
+// publishes it once or discards it. Publication only appends the prepared link;
+// it does not construct storage or migration data. A real executor's handle
+// must be published/discarded on its preparing control thread, before that
+// executor is destroyed.
+class GraphExecutorPreparedGeneration {
+    std::function<GraphExecutorStageResult()> publish_{};
+public:
+    GraphExecutorPreparedGeneration() = default;
+    explicit GraphExecutorPreparedGeneration(std::function<GraphExecutorStageResult()> publish)
+        : publish_(std::move(publish)) {}
+    GraphExecutorPreparedGeneration(GraphExecutorPreparedGeneration&&) = default;
+    GraphExecutorPreparedGeneration& operator=(GraphExecutorPreparedGeneration&&) = default;
+    GraphExecutorPreparedGeneration(GraphExecutorPreparedGeneration const&) = delete;
+    GraphExecutorPreparedGeneration& operator=(GraphExecutorPreparedGeneration const&) = delete;
+    explicit operator bool() const noexcept { return static_cast<bool>(publish_); }
+    GraphExecutorStageResult publish() && {
+        auto publish = std::exchange(publish_, {});
+        return publish ? publish() : GraphExecutorStageResult::ignored_stale;
+    }
+};
+
+struct GraphExecutorExecutionReadRequest {
+    std::optional<std::uint64_t> active_generation{};
+};
+
 struct ProjectGraphGraphExecutorResult {
     bool attempted = false;
-    bool accepted = false;
+    GraphExecutorPreparedGeneration prepared{};
 };
 
 struct ProjectGraphManualControlTarget {
@@ -229,6 +256,8 @@ class GraphExecutor {
         bool background_initialized = false;
         std::unique_ptr<ExecutionGeneration> successor_owner{};
         std::atomic<ExecutionGeneration*> published_successor{nullptr};
+        // Intrusive cold-to-background request, published once after acceptance.
+        ExecutionGeneration* initial_playback_next = nullptr;
 
         ExecutionGeneration(
             std::shared_ptr<CompiledGraph const> graph,
@@ -264,7 +293,6 @@ class GraphExecutor {
         enum class CommandKind : std::uint8_t {
             reclaim_snapshots,
             prepare_background_migration,
-            queue_initial_playback,
             set_tick_materialization_demand,
         };
 
@@ -288,6 +316,7 @@ class GraphExecutor {
         AsyncWorkSignal work_signal_{};
         std::unique_ptr<ExecutionGeneration> generation_chain_{};
         std::deque<ExecutionGeneration*> preparation_queue_{};
+        std::atomic<ExecutionGeneration*> initial_playback_requests_{nullptr};
         ExecutionGeneration* prepared_generation_ = nullptr;
         std::atomic<std::uint64_t> current_generation_{0};
         std::atomic<bool> has_generation_{false};
@@ -374,6 +403,12 @@ class GraphExecutor {
     // realtime only tries once and defers activation when submission owns the
     // guard. No audio callback blocks on cold generation construction.
     std::atomic_flag accepted_chain_guard_ = ATOMIC_FLAG_INIT;
+    std::atomic<std::uint64_t> published_active_generation_{0};
+    std::atomic<bool> published_has_active_generation_{false};
+    // Held by cold preparation through publication/discard. Realtime and live
+    // target updates never take it. It pins the accepted tail while preparing
+    // migration data without holding the audio activation guard.
+    std::mutex generation_submission_mutex_{};
     // Control-path playback demand copied into every staged generation before
     // it becomes visible to either executor actor.
     IndexCoverage tick_materialization_demand_{};
@@ -427,6 +462,8 @@ public:
     // Builds one complete execution generation and appends it after the
     // accepted chain tail. A compiled cutover must name that exact tail. Once
     // accepted, the generation cannot be replaced by a later submission.
+    GraphExecutorPreparedGeneration prepare(
+        std::shared_ptr<CompiledGraph const> compiled_graph);
     GraphExecutorStageResult stage(
         std::shared_ptr<CompiledGraph const> compiled_graph);
 
@@ -452,6 +489,11 @@ public:
 
     ProjectGraphGraphExecutorResult handle_project_graph_transaction(
         std::shared_ptr<CompiledGraph const> const& compiled_graph);
+
+    void handle_execution_read(GraphExecutorExecutionReadRequest& request) const {
+        if (published_has_active_generation_.load(std::memory_order_acquire))
+            request.active_generation = published_active_generation_.load(std::memory_order_relaxed);
+    }
 
     void handle_project_graph_controls(
         ProjectGraphGraphExecutorControlsRequest& request);

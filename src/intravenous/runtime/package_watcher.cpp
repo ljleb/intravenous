@@ -47,7 +47,8 @@ std::filesystem::file_time_type package_source_stamp(std::filesystem::path const
          it.increment(error)) {
         auto const& entry = *it;
         if (entry.is_directory()) {
-            if (is_module_dependency_ignored_directory(entry.path())) {
+            if (is_module_dependency_ignored_directory(entry.path())
+                || std::filesystem::exists(entry.path() / IV_PACKAGE_MANIFEST_FILE)) {
                 it.disable_recursion_pending();
             }
             continue;
@@ -95,7 +96,19 @@ PackageWatcherRefreshPlan refresh_plan(PackageJitBatchRequest const& jit_request
 
 struct PackageManifest {
     std::filesystem::path entry;
+    std::string package_namespace;
+    std::vector<std::string> dependencies;
 };
+
+bool valid_namespace(std::string_view name)
+{
+    return !name.empty() && name.front() != '.' && name.back() != '.'
+        && name.find("..") == std::string_view::npos
+        && std::ranges::all_of(name, [](unsigned char c) {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
+        });
+}
 
 std::optional<PackageManifest> read_manifest(std::filesystem::path const& path)
 {
@@ -106,10 +119,52 @@ std::optional<PackageManifest> read_manifest(std::filesystem::path const& path)
         if (json.value("schema", 0) != 2 || !json.contains("entry")) return std::nullopt;
         auto entry = std::filesystem::path(json.at("entry").get<std::string>());
         if (entry.empty() || entry.is_absolute()) return std::nullopt;
-        return PackageManifest{std::move(entry)};
+        auto name = json.at("namespace").get<std::string>();
+        auto dependencies = json.value("dependencies", std::vector<std::string>{});
+        if (!valid_namespace(name) || std::ranges::any_of(dependencies,
+            [&](auto const& dependency) { return !valid_namespace(dependency); })) return std::nullopt;
+        std::ranges::sort(dependencies);
+        if (std::ranges::adjacent_find(dependencies) != dependencies.end()) return std::nullopt;
+        return PackageManifest{std::move(entry), std::move(name), std::move(dependencies)};
     } catch (nlohmann::json::exception const&) {
         return std::nullopt;
     }
+}
+
+std::unordered_map<std::string, IvPackageDeclaration> merge_declarations(
+    std::unordered_map<std::string, IvPackageDeclaration> const& retained,
+    std::unordered_map<std::string, IvPackageDeclaration> const& discovered,
+    std::unordered_map<std::string, std::filesystem::path> const& required)
+{
+    auto merged = discovered;
+    std::unordered_map<std::string, IvPackageDeclaration const*> owners;
+    for (auto const& [_, declaration] : discovered)
+        if (!declaration.package_namespace.empty()) owners.emplace(declaration.package_namespace, &declaration);
+    auto owner_of = [&](std::string id) -> IvPackageDeclaration const* {
+        for (;;) {
+            if (auto found = owners.find(id); found != owners.end()) return found->second;
+            auto const dot = id.rfind('.');
+            if (dot == std::string::npos) return nullptr;
+            id.resize(dot);
+        }
+    };
+    for (auto const& [id, declaration] : retained) {
+        if (auto found = discovered.find(id); found != discovered.end()) {
+            if (found->second.package_root != declaration.package_root)
+                throw std::runtime_error("IV package declaration sources disagree about package ID '" + id + "'");
+            continue;
+        }
+        // A saved machine-local root is a hint, not a second owner competing
+        // with the project's resolved manifest catalog.
+        bool replaced = !declaration.package_namespace.empty() && owners.contains(declaration.package_namespace);
+        for (auto const& [definition, hint] : required) {
+            if (replaced || hint.empty() || normalize_path(hint) != declaration.package_root) continue;
+            if (auto const* owner = owner_of(definition); owner && owner->package_root != declaration.package_root)
+                replaced = true;
+        }
+        if (!replaced) merged.emplace(id, declaration);
+    }
+    return merged;
 }
 
 int provenance_priority(PackageProvenance provenance) noexcept
@@ -171,6 +226,8 @@ discover_iv_package_declarations(
                 .artifact_root = search_root.artifact_root
                     ? std::optional(normalize_path(*search_root.artifact_root))
                     : std::nullopt,
+                .package_namespace = manifest->package_namespace,
+                .package_dependencies = manifest->dependencies,
             };
             auto const existing = by_id.find(package_id);
             if (existing == by_id.end()
@@ -208,22 +265,20 @@ PackageWatcher::PackageWatcher()
 std::unordered_map<std::string, IvPackageDeclaration>
 PackageWatcher::merge_declaration_sources_locked() const
 {
-    auto merged = retained_package_declarations_by_id_;
-    for (auto const& [package_id, declaration] : discovered_package_declarations_by_id_) {
-        auto const [position, inserted] = merged.emplace(package_id, declaration);
-        if (!inserted && position->second.package_root != declaration.package_root) {
-            throw std::runtime_error(
-                "IV package declaration sources disagree about package ID '"
-                + package_id + "'");
-        }
-        if (!inserted) position->second = declaration;
-    }
-    return merged;
+    return merge_declarations(retained_package_declarations_by_id_,
+        discovered_package_declarations_by_id_, required_definitions_);
 }
 
 void PackageWatcher::install_effective_declarations_locked(
     std::unordered_map<std::string, IvPackageDeclaration> next)
 {
+    std::unordered_map<std::string, std::string> owners;
+    for (auto const& [id, declaration] : next) {
+        if (declaration.package_namespace.empty()) continue;
+        auto [owner, inserted] = owners.emplace(declaration.package_namespace, id);
+        if (!inserted) throw std::runtime_error("duplicate IV package namespace '"
+            + declaration.package_namespace + "' claimed by '" + owner->second + "' and '" + id + "'");
+    }
     for (auto const& [package_id, declaration] : next) {
         auto const current = package_declarations_by_id_.find(package_id);
         if (current == package_declarations_by_id_.end()
@@ -266,6 +321,8 @@ void PackageWatcher::handle_required_definitions_changed(
     {
         std::scoped_lock lock(mutex_);
         auto retain = [&](IvModuleRequiredDefinition const& required) {
+            required_definitions_.insert_or_assign(required.definition_id, required.package_root);
+            if (required.package_root.empty()) return;
             auto package_root = normalize_path(required.package_root);
             auto package_id = package_root.generic_string();
             auto declaration = IvPackageDeclaration{
@@ -284,12 +341,17 @@ void PackageWatcher::handle_required_definitions_changed(
                        && retained->second.package_root == package_root) {
                 declaration = retained->second;
             }
+            if (auto manifest = read_manifest(package_root / IV_PACKAGE_MANIFEST_FILE)) {
+                declaration.package_namespace = manifest->package_namespace;
+                declaration.package_dependencies = manifest->dependencies;
+            }
             retained_package_declarations_by_id_.insert_or_assign(
                 package_id,
                 std::move(declaration));
         };
         for (auto const& required : diff.created) retain(required);
         for (auto const& required : diff.updated) retain(required);
+        for (auto const& id : diff.deleted_definition_ids) required_definitions_.erase(id);
         install_effective_declarations_locked(merge_declaration_sources_locked());
     }
 
@@ -310,6 +372,12 @@ void PackageWatcher::synchronize_discovered_packages(
             throw std::runtime_error("discovered IV package has an empty package ID");
         }
         declaration.package_root = normalize_path(declaration.package_root);
+        if (auto manifest = read_manifest(declaration.package_root / IV_PACKAGE_MANIFEST_FILE)) {
+            if (!declaration.package_namespace.empty() && declaration.package_namespace != manifest->package_namespace)
+                throw std::runtime_error("package declaration namespace disagrees with manifest: " + declaration.package_root.string());
+            declaration.package_namespace = manifest->package_namespace;
+            declaration.package_dependencies = manifest->dependencies;
+        }
         if (declaration.artifact_root) {
             declaration.artifact_root = normalize_path(*declaration.artifact_root);
         }
@@ -327,25 +395,15 @@ void PackageWatcher::synchronize_discovered_packages(
     }
 
     std::scoped_lock lock(mutex_);
-    for (auto& [package_id, retained] : retained_package_declarations_by_id_) {
-        auto const discovered = next_discovered.find(package_id);
-        if (discovered != next_discovered.end()
-            && discovered->second.package_root == retained.package_root) {
-            retained = discovered->second;
-        }
+    auto next_retained = retained_package_declarations_by_id_;
+    for (auto& [package_id, retained] : next_retained) {
+        if (auto discovered = next_discovered.find(package_id); discovered != next_discovered.end()
+            && discovered->second.package_root == retained.package_root) retained = discovered->second;
     }
-    auto merged = retained_package_declarations_by_id_;
-    for (auto const& [package_id, declaration] : next_discovered) {
-        auto const [position, inserted] = merged.emplace(package_id, declaration);
-        if (!inserted && position->second.package_root != declaration.package_root) {
-            throw std::runtime_error(
-                "IV package declaration sources disagree about package ID '"
-                + package_id + "'");
-        }
-        if (!inserted) position->second = declaration;
-    }
-    discovered_package_declarations_by_id_ = std::move(next_discovered);
+    auto merged = merge_declarations(next_retained, next_discovered, required_definitions_);
     install_effective_declarations_locked(std::move(merged));
+    retained_package_declarations_by_id_ = std::move(next_retained);
+    discovered_package_declarations_by_id_ = std::move(next_discovered);
 }
 
 void PackageWatcher::poll_dependency_changes()
@@ -417,11 +475,100 @@ std::optional<PackageWatcher::PreparedRefresh> PackageWatcher::prepare_refresh_l
         }
     }
 
-    jit_request.declarations.reserve(dirty_package_ids_.size());
-    for (auto const& package_id : dirty_package_ids_) {
+    std::unordered_map<std::string, std::string> owners;
+    for (auto const& [id, declaration] : package_declarations_by_id_)
+        if (!declaration.package_namespace.empty()) owners.emplace(declaration.package_namespace, id);
+    auto owner_of = [&](std::string id) -> std::optional<std::string> {
+        for (;;) {
+            if (auto found = owners.find(id); found != owners.end()) return found->second;
+            auto const dot = id.rfind('.');
+            if (dot == std::string::npos) return std::nullopt;
+            id.resize(dot);
+        }
+    };
+    // Propagate source/manifest dirtiness through declared consumers, including
+    // packages not yet compiled and therefore without compiler-produced deps.
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (auto const& [id, declaration] : package_declarations_by_id_) {
+            if (auto builtin = owners.find("iv.builtin"); builtin != owners.end()
+                && is_implicit_package_dependency(declaration.package_namespace, builtin->first)
+                && dirty_package_ids_.contains(builtin->second))
+                changed |= dirty_package_ids_.insert(id).second;
+            for (auto const& dependency : declaration.package_dependencies)
+                if (auto found = owners.find(dependency); found != owners.end()
+                    && dirty_package_ids_.contains(found->second))
+                    changed |= dirty_package_ids_.insert(id).second;
+        }
+    }
+    std::unordered_set<std::string> priority;
+    std::unordered_set<std::string> selected;
+    std::unordered_set<std::string> visiting;
+    std::vector<std::string> ordered;
+    auto collect = [&](auto&& self, std::string const& id) -> void {
+        if (selected.contains(id)) return;
+        // Logical package dependencies may form a cycle; the complete closure
+        // is built before one coherent definition publication.
+        if (!visiting.insert(id).second) return;
+        auto const& declaration = package_declarations_by_id_.at(id);
+        if (auto builtin = owners.find("iv.builtin"); builtin != owners.end()
+            && is_implicit_package_dependency(declaration.package_namespace, builtin->first))
+            self(self, builtin->second);
+        for (auto const& dependency : declaration.package_dependencies) {
+            auto found = owners.find(dependency);
+            if (found == owners.end()) throw std::runtime_error("package '"
+                + declaration.package_namespace + "' requires missing package namespace '" + dependency + "'");
+            self(self, found->second);
+        }
+        visiting.erase(id);
+        selected.insert(id);
+        ordered.push_back(id);
+    };
+    std::vector<std::string> roots;
+    for (auto const& [definition, hint] : required_definitions_) {
+        if (auto owner = owner_of(definition)) roots.push_back(*owner);
+        else if (!hint.empty()) {
+            auto const id = normalize_path(hint).generic_string();
+            if (package_declarations_by_id_.contains(id)) roots.push_back(id);
+        }
+    }
+    std::ranges::sort(roots);
+    roots.erase(std::ranges::unique(roots).begin(), roots.end());
+    auto collect_root = [&](std::string const& id) {
+        try { collect(collect, id); }
+        catch (std::exception const& error) {
+            auto failed = std::exchange(visiting, {});
+            failed.insert(id);
+            for (auto const& failed_id : failed) {
+                if (!dirty_package_ids_.erase(failed_id)) continue;
+                auto const& declaration = package_declarations_by_id_.at(failed_id);
+                prepared.preflight_failures.push_back({.package_id = failed_id,
+                    .package_root = declaration.package_root, .provenance = declaration.provenance,
+                    .message = error.what()});
+            }
+        }
+    };
+    for (auto const& root : roots) collect_root(root);
+    priority = selected;
+    bool const priority_work = std::ranges::any_of(priority,
+        [&](auto const& id) { return dirty_package_ids_.contains(id); });
+    if (!priority_work && !waiting_for_execution_) {
+        // Select one unrelated root and its dependency closure. A newly
+        // required package is reconsidered before the next catalog root.
+        std::vector<std::string> remaining;
+        for (auto const& id : dirty_package_ids_) if (!selected.contains(id)) remaining.push_back(id);
+        std::ranges::sort(remaining);
+        if (!remaining.empty()) collect_root(remaining.front());
+    }
+    jit_request.declarations.reserve(ordered.size());
+    std::vector<std::string> consumed;
+    for (auto const& package_id : ordered) {
+        if (!dirty_package_ids_.contains(package_id)) continue;
         if (auto const declaration = package_declarations_by_id_.find(package_id);
             declaration != package_declarations_by_id_.end()) {
             jit_request.declarations.push_back(declaration->second);
+            consumed.push_back(package_id);
             // Baseline immediately before the build. If the source changes
             // while PackageJit is running, the next watcher poll observes it.
             source_dependencies_by_package_id_.insert_or_assign(
@@ -434,13 +581,13 @@ std::optional<PackageWatcher::PreparedRefresh> PackageWatcher::prepare_refresh_l
             }
         }
     }
-    dirty_package_ids_.clear();
+    for (auto const& id : consumed) dirty_package_ids_.erase(id);
 
     auto const has_declaration_changes = !transaction.declarations.created.empty()
         || !transaction.declarations.updated.empty()
         || !transaction.declarations.deleted_package_ids.empty();
     if (!has_declaration_changes && jit_request.declarations.empty()
-        && jit_request.removed_package_roots.empty()) {
+        && jit_request.removed_package_roots.empty() && prepared.preflight_failures.empty()) {
         return std::nullopt;
     }
     return prepared;
@@ -479,6 +626,34 @@ bool PackageWatcher::refresh_pending_packages(
             iv_runtime_package_jit_batch_requested_event,
             jit_request);
     }
+    jit_request.result.failed.insert(jit_request.result.failed.end(),
+        prepared->preflight_failures.begin(), prepared->preflight_failures.end());
+    // Every public definition must belong to this package in the complete
+    // discovered namespace table, including more-specific unloaded owners.
+    std::erase_if(jit_request.result.revisions, [&](PackageRevision const& revision) {
+        auto belongs = [&](std::string_view definition) {
+            IvPackageDeclaration const* owner = nullptr;
+            for (auto const& [_, declaration] : prepared->next_published)
+                if (!declaration.package_namespace.empty()
+                    && package_namespace_owns(declaration.package_namespace, definition)
+                    && (!owner || declaration.package_namespace.size() > owner->package_namespace.size())) owner = &declaration;
+            return owner && owner->package_id == revision.package_id;
+        };
+        std::vector<std::string_view> public_ids;
+        for (auto const& definition : revision.provider_definitions)
+            public_ids.emplace_back(definition.id, definition.id_size);
+        for (auto const& definition : revision.module_definitions) public_ids.push_back(definition.definition_id);
+        for (auto const& definition : revision.leaf_definitions) public_ids.push_back(definition.definition_id);
+        for (auto const id : public_ids) {
+            if (belongs(id)) continue;
+            jit_request.result.failed.push_back({.package_id = revision.package_id,
+                .package_root = revision.package_root, .provenance = revision.provenance,
+                .message = "public definition '" + std::string(id) + "' is outside package namespace ownership '"
+                    + revision.package_namespace + "'"});
+            return true;
+        }
+        return false;
+    });
     auto const built = refresh_plan(jit_request);
     auto const build_duration = format_rebuild_duration(
         std::chrono::steady_clock::now() - rebuild_started_at);
@@ -499,6 +674,21 @@ bool PackageWatcher::refresh_pending_packages(
     request.failed_builds = transaction.failed_builds;
     IV_INVOKE_LINKER_EVENT(iv_runtime_package_refresh_event, transaction);
 
+    {
+        std::scoped_lock lock(mutex_);
+        auto const& project = transaction.project_publication;
+        if (project.execution_pending && project.execution_generation) {
+            if (*project.execution_pending) {
+                if (*project.execution_generation > completed_execution_generation_
+                    && (!waiting_for_execution_ || *project.execution_generation > *waiting_for_execution_))
+                    waiting_for_execution_ = project.execution_generation;
+            } else {
+                completed_execution_generation_ = std::max(completed_execution_generation_, *project.execution_generation);
+                if (waiting_for_execution_ && *waiting_for_execution_ <= completed_execution_generation_)
+                    waiting_for_execution_.reset();
+            }
+        }
+    }
     {
         std::scoped_lock lock(mutex_);
         published_declarations_by_id_ = std::move(prepared->next_published);
@@ -528,6 +718,24 @@ bool PackageWatcher::refresh_pending_packages(
     }
     IV_INVOKE_LINKER_EVENT(iv_runtime_package_refresh_published_event, publication);
     return true;
+}
+
+void PackageWatcher::handle_execution_publication(ProjectGraphPublication const& publication)
+{
+    if (!publication.execution_pending || !publication.execution_generation) return;
+    {
+        std::scoped_lock lock(mutex_);
+        if (*publication.execution_pending) {
+            if (*publication.execution_generation > completed_execution_generation_
+                && (!waiting_for_execution_ || *publication.execution_generation > *waiting_for_execution_))
+                waiting_for_execution_ = publication.execution_generation;
+        } else {
+            completed_execution_generation_ = std::max(completed_execution_generation_, *publication.execution_generation);
+            if (waiting_for_execution_ && *waiting_for_execution_ <= completed_execution_generation_)
+                waiting_for_execution_.reset();
+        }
+    }
+    IV_INVOKE_LINKER_EVENT(iv_runtime_package_watcher_work_available_event, PackageWatcherWorkAvailable{});
 }
 
 void PackageWatcher::handle_refresh_requested(PackageWatcherRefreshRequest& request)

@@ -189,6 +189,8 @@ void PackageDefinitions::handle_package_refresh(
                 declaration.package_id,
                 declaration.package_root,
                 declaration.provenance);
+            package.package_namespace = declaration.package_namespace;
+            package.package_dependencies = declaration.package_dependencies;
             package.build_state = PackageBuildState::queued;
             package.build_message.clear();
         }
@@ -197,6 +199,8 @@ void PackageDefinitions::handle_package_refresh(
                 declaration.package_id,
                 declaration.package_root,
                 declaration.provenance);
+            package.package_namespace = declaration.package_namespace;
+            package.package_dependencies = declaration.package_dependencies;
             package.build_state = PackageBuildState::queued;
             package.build_message.clear();
         }
@@ -213,6 +217,8 @@ void PackageDefinitions::handle_package_refresh(
                 revision.package_id,
                 revision.package_root,
                 revision.provenance);
+            package.package_namespace = revision.package_namespace;
+            package.package_dependencies = revision.package_dependencies;
             package.build_state = PackageBuildState::built;
             package.build_message.clear();
             accepted_changed = true;
@@ -283,7 +289,8 @@ IvPackageInfo PackageDefinitions::create_project_package(std::string const& name
 
     auto const id = module_identifier(name);
     try {
-        nlohmann::json manifest{{"schema", 2}, {"entry", "module.cpp"}};
+        nlohmann::json manifest{{"schema", 2}, {"entry", "module.cpp"}, {"namespace", id},
+            {"dependencies", nlohmann::json::array()}};
         std::ofstream manifest_out(
             root / std::string(IV_PACKAGE_MANIFEST_FILE),
             std::ios::binary | std::ios::noreplace);
@@ -306,6 +313,7 @@ IvPackageInfo PackageDefinitions::create_project_package(std::string const& name
         .package_id = normalized_root.generic_string(),
         .package_root = normalized_root,
         .provenance = PackageProvenance::project_local,
+        .package_namespace = id,
     };
 }
 } // namespace iv

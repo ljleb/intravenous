@@ -397,7 +397,7 @@ namespace iv::test {
     {
         write_text(
             workspace / "iv_package.json",
-            "{\n  \"schema\": 2,\n  \"entry\": \"module.cpp\"\n}\n");
+            "{\n  \"schema\": 2,\n  \"entry\": \"module.cpp\",\n  \"namespace\": \"iv.test\",\n  \"dependencies\": []\n}\n");
     }
 
     inline std::string registered_inline_module_source(

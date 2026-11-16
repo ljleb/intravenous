@@ -4,6 +4,7 @@
 #include <intravenous/graph/builder/host.hpp>
 #include <intravenous/module/builder_session.h>
 #include <intravenous/module/package_definitions.h>
+#include <intravenous/module/package_manifest.h>
 #include <intravenous/node/message.h>
 #include <intravenous/runtime/iv_module_instances_events.h>
 #include <intravenous/runtime/iv_module_source_introspection_events.h>
@@ -70,33 +71,6 @@ NodeDefinitionProvider const& definition_provider(NodeDefinitionEntry const& def
             return concrete.provider;
         },
         definition.definition);
-}
-
-bool configured_definition_closure_matches(
-    ConfiguredNodeInstance const& configured,
-    NodeDefinitionsSnapshot const& snapshot)
-{
-    // Snapshot generation is publication order, not semantic identity. A
-    // cached configured graph remains exact only while every definition it
-    // actually captured, including nested module dependencies, retains its
-    // version in the newly published snapshot.
-    std::vector<ConfiguredNodeInstance const*> pending{&configured};
-    std::unordered_set<ConfiguredNodeInstance const*> visited;
-    while (!pending.empty()) {
-        auto const* current = pending.back();
-        pending.pop_back();
-        if (!visited.insert(current).second) continue;
-        auto const definition = snapshot.by_id.find(current->definition_id);
-        if (definition == snapshot.by_id.end()
-            || definition->second.version != current->definition_version) {
-            return false;
-        }
-        for (auto const& dependency : current->dependencies) {
-            if (!dependency) return false;
-            pending.push_back(dependency.get());
-        }
-    }
-    return true;
 }
 
 IvModuleInstance make_instance(
@@ -412,14 +386,14 @@ NodeInstances::rebuild_required_definitions_locked()
                 package_root = definition_package_root(definition->second);
             }
         }
-        if (package_root.empty()) return;
         auto [found, inserted] = next.emplace(
             definition_id,
             IvModuleRequiredDefinition{
                 .definition_id = definition_id,
                 .package_root = package_root,
             });
-        if (!inserted && found->second.package_root != package_root) {
+        if (!inserted && found->second.package_root.empty()) found->second.package_root = package_root;
+        if (!inserted && !package_root.empty() && found->second.package_root != package_root) {
             throw std::invalid_argument(
                 "node definition has conflicting package roots: "
                 + definition_id);
@@ -691,6 +665,29 @@ NodeInstances::RealizedInvocation NodeInstances::configure_cached(
             + "' is unavailable in this definitions snapshot");
     }
     auto const& definition = definition_it->second;
+    // Project-supplied NodeRef arguments are configured outside the package
+    // callback stack. Explicit project replacements are also project-owned;
+    // ordinary nested g.node(id) calls must declare the package they use.
+    bool const project_replacement = std::ranges::any_of(context.replacements,
+        [&](auto const& value) { return value.address == address && value.definition_id == definition_id; });
+    if (!context.stack.empty() && !project_replacement) {
+        auto const parent = context.snapshot->by_id.find(context.stack.back());
+        auto package_of = [&](NodeDefinitionEntry const& entry) -> PackageRevision const* {
+            auto const id = std::visit([](auto const& value) { return value.package_id; }, entry.definition);
+            for (auto const& revision : context.snapshot->package_revisions)
+                if (revision && revision->package_id == id) return revision.get();
+            return nullptr;
+        };
+        auto const* target = package_of(definition);
+        auto const* owner = parent != context.snapshot->by_id.end() ? package_of(parent->second) : nullptr;
+        if (owner && target && owner->package_id != target->package_id
+            && !owner->package_namespace.empty() && !target->package_namespace.empty()
+            && !is_implicit_package_dependency(owner->package_namespace, target->package_namespace)
+            && !std::ranges::contains(owner->package_dependencies, target->package_namespace))
+            throw std::runtime_error("package '" + owner->package_namespace
+                + "' has undeclared package dependency '" + target->package_namespace
+                + "' while constructing '" + std::string(definition_id) + "'");
+    }
     auto const& provider = definition_provider(definition);
     if (!provider.signature) {
         throw std::logic_error(
@@ -1416,7 +1413,7 @@ NodeInstances::prepare_failure_interfaces(
             for (auto const& [id, placement] : result.placements) {
                 output->interfaces.emplace(id,
                     read_node_instance_interface(bundles, placement.root));
-                output->configuration_lifetimes.push_back(placement.configured);
+                output->configured_instances.emplace(id, placement.configured);
             }
             break;
         }
@@ -1665,14 +1662,15 @@ void NodeInstances::apply_project_graph_transaction(
                         .configuration_source = declaration.configuration_source,
                     });
 
-                    if (!package_root.empty()) {
+                    {
                         auto [required_it, inserted] = required.emplace(
                             declaration.definition_id,
                             IvModuleRequiredDefinition{
                                 .definition_id = declaration.definition_id,
                                 .package_root = package_root,
                             });
-                        if (!inserted
+                        if (!inserted && required_it->second.package_root.empty()) required_it->second.package_root = package_root;
+                        if (!inserted && !package_root.empty()
                             && required_it->second.package_root != package_root) {
                             throw std::invalid_argument(
                                 "project node definition has conflicting package roots: "
@@ -1715,17 +1713,17 @@ void NodeInstances::apply_project_graph_transaction(
                         replacement.package_root = normalize_path(
                             *replacement.package_root);
                     }
-                    if (replacement.package_root
-                        && !replacement.package_root->empty()) {
+                    {
+                        auto const replacement_root = replacement.package_root.value_or(std::filesystem::path{});
                         auto [required_it, inserted] = required.emplace(
                             replacement.definition_id,
                             IvModuleRequiredDefinition{
                                 .definition_id = replacement.definition_id,
-                                .package_root = *replacement.package_root,
+                                .package_root = replacement_root,
                             });
-                        if (!inserted
-                            && required_it->second.package_root
-                                != *replacement.package_root) {
+                        if (!inserted && required_it->second.package_root.empty()) required_it->second.package_root = replacement_root;
+                        if (!inserted && !replacement_root.empty()
+                            && required_it->second.package_root != replacement_root) {
                             throw std::invalid_argument(
                                 "node replacement definition has conflicting package roots: "
                                 + replacement.definition_id);

@@ -73,8 +73,7 @@ PackageWatcherService::PackageWatcherService(
 
 PackageWatcherService::~PackageWatcherService()
 {
-    request_shutdown();
-    worker_.reset();
+    stop();
 }
 
 void PackageWatcherService::report_discovery_error(std::string message)
@@ -138,9 +137,9 @@ bool PackageWatcherService::synchronize_discovered_packages()
     }
 }
 
-void PackageWatcherService::process_pending_refresh()
+void PackageWatcherService::process_pending_refresh(std::stop_token stop)
 {
-    for (;;) {
+    while (!stop.stop_requested()) {
         watcher_->poll_dependency_changes();
         if (!watcher_->has_pending_refresh()) return;
         auto const plan = watcher_->prepare_refresh();
@@ -168,7 +167,7 @@ void PackageWatcherService::start()
     worker_.emplace([this](std::stop_token stop_token) {
         try {
             (void)synchronize_discovered_packages();
-            process_pending_refresh();
+            process_pending_refresh(stop_token);
 
             while (!stop_token.stop_requested()) {
                 std::array<pollfd, 4> descriptors{{
@@ -222,7 +221,7 @@ void PackageWatcherService::start()
                     work_signal_.consume();
                 }
 
-                process_pending_refresh();
+                process_pending_refresh(stop_token);
             }
         } catch (std::exception const& error) {
             report_service_error(error.what());
@@ -235,6 +234,12 @@ void PackageWatcherService::request_shutdown()
     if (!worker_.has_value()) return;
     worker_->request_stop();
     shutdown_signal_.signal();
+}
+
+void PackageWatcherService::stop()
+{
+    request_shutdown();
+    worker_.reset();
 }
 
 std::optional<std::string> PackageWatcherService::failure_message() const

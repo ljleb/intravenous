@@ -44,13 +44,13 @@ be compiled first, and it does not require audio execution to be active.
    `PackageWatcher -> {PackageJit, PackageDefinitions -> NodeDefinitions -> ProjectGraph}`,
    with `PackageJit` invoked first and its complete result returned to
    `PackageWatcher` before `PackageDefinitions` is entered.
-10. `ProjectGraph` orchestrates reconstruction using the desired instances owned
-    by `NodeInstances` and desired connections owned by `GraphConnections` against
-    the new immutable definitions snapshot, synchronously compiles the resulting
-    root graph through `GraphJit`, and stages the compiled successor once in
-    `GraphExecutor`. `GraphExecutor` constructs one complete `ExecutionGeneration`
-    off-thread and publishes no pending successor pointer until every internal actor
-    resource required by that generation is ready.
+10. `ProjectGraph` reconstructs using the desired instances owned by
+    `NodeInstances` and desired connections owned by `GraphConnections` against
+    one immutable definitions snapshot. It commits and publishes valid configured
+    structure immediately, then queues executable compilation on its serialized
+    worker. The worker pins configuration/provenance, discards unstaged obsolete
+    work, and prepares the successor outside the project edit lock before guarded
+    publication to `GraphExecutor`.
 
 ## Valid initialized state before package realization
 
@@ -100,14 +100,22 @@ can only become input to a later root-build transaction.
 
 ## Graph compilation and execution activation
 
-Whole-project `GraphJit` compilation is synchronous inside the `ProjectGraph`
-rebuild transaction. It uses exactly the configured graph/provider generation
-produced by that transaction and returns one immutable `CompiledGraph` before
-`ProjectGraph` invokes `GraphExecutor` once. `GraphExecutor` then constructs one
-complete `ExecutionGeneration`: both internal actor realizations, generation-specific
-routes/endpoints, producer-reserve requirements, pre-sized background selection
-descriptors, stable-identity migration metadata, and allocation-free successor linkage
-are ready before its pointer can become pending.
+Whole-project compilation runs on one serialized `ProjectGraph` worker after
+configuration commits. `GraphJit::compile()` is synchronous within that worker
+cause and consumes pinned immutable configuration/provenance. The compiler and
+executor preparation do not hold the project edit lock. The current target is
+checked again before a prepared successor becomes an accepted chain link.
+Compiler failure retains the new authoritative configuration and the previous
+executable. Observation/control runtime identity must distinguish those states.
+The previous contract is preserved in
+[the historical startup snapshot](historical/startup_realization_order_before_async_configured_publication_2026-11-16.md).
+
+`GraphExecutor` prepares one complete `ExecutionGeneration`: both internal
+actor realizations, generation-specific routes/endpoints, producer reserves,
+background selection descriptors and migration metadata. Its move-only
+preparation handle either publishes the complete generation once or discards it
+off-thread. Publication is short and follows the existing ordered chain;
+resources are ready before the generation can become pending.
 
 Staging does not mutate an active realtime pass or a workload already selected by the
 background worker. At a later legal realtime pass boundary, the internal realtime actor

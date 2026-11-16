@@ -157,6 +157,11 @@ built-in definition `iv.builtin.<id>`. Scalar sugar depends on it: `osc * 0.1`
 creates `g.node<"constant">`. (Restated 2026-11-12, after `NodeInstances`'
 resolution was found to skip the built-in names.)
 
+The executable's builtin package is also an implicit package dependency of
+all other packages. Its default import therefore remains usable without an
+`iv.builtin` entry in each manifest. Static package selection includes it before
+configuration; see [Package Pipeline](package_pipeline_architecture.md#logical-package-namespaces-and-static-selection).
+
 **Planned (requested by the repository owner on 2026-11-12, not scheduled):**
 authored code can import a namespace into a `GraphBuilder` from a chosen
 point, either by changing that builder or by opening a scope in which
@@ -168,16 +173,15 @@ design.
 
 ### Future package identity, publication, and type construction (2026-11-15 clarification)
 
-The existing exact-ID lookup and implicit `iv.builtin.<id>` fallback above are
-**implemented behavior**. The planned import mechanism should **extend** that
-behavior, treating `iv.builtin` as the default import instead of replacing it
-with an unrelated special resolver. A future stable logical package identifier
-may supply the namespace prefix for canonical public definition IDs, and the
-owning package's namespace may be imported automatically in its builders.
-Import collisions and precedence remain subject to the previously recorded
-namespace-import design; no manifest syntax or exact resolution rule is
-selected here. Package identity for namespacing must not be confused with
-filesystem provenance or build-artifact identity.
+The existing exact-ID lookup and implicit `iv.builtin.<id>` fallback above
+remain the authoring lookup behavior. The owner selected static manifest
+namespaces, longest matching dotted-prefix ownership and declared package
+closure selection on 2026-11-16; see
+[Package Pipeline](package_pipeline_architecture.md#logical-package-namespaces-and-static-selection).
+Those package-selection rules do not introduce namespace imports or replace
+builder lookup with an unrelated resolver. Package namespace is distinct from
+filesystem provenance and artifact identity. The earlier unresolved wording is
+preserved in [the namespace history](historical/package_namespace_proposal_before_static_selection_2026-11-16.md).
 
 **Proposed API simplification, not implemented:** allow `g.node<Type>(...)`
 for package-internal concrete leaves without an `IV_NODE` declaration. Reserve

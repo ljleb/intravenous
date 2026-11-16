@@ -1573,12 +1573,14 @@ TEST_F(GraphExecutorFixture, ProjectGraphSubmissionMustAdvanceTheAcceptedTail)
     iv::GraphExecutor executor;
     auto first = compiled_graph(1, &observe_first);
 
-    auto const accepted = in_event_source([&] { return executor.handle_project_graph_transaction(first); });
+    auto accepted = in_event_source([&] { return executor.handle_project_graph_transaction(first); });
     EXPECT_TRUE(accepted.attempted);
-    EXPECT_TRUE(accepted.accepted);
-    EXPECT_THROW(
-        in_event_source([&] { return executor.handle_project_graph_transaction(first); }),
-        std::logic_error);
+    ASSERT_TRUE(accepted.prepared);
+    EXPECT_FALSE(executor.pending_generation());
+    EXPECT_EQ(std::move(accepted.prepared).publish(), iv::GraphExecutorStageResult::accepted);
+    auto stale = in_event_source([&] { return executor.handle_project_graph_transaction(first); });
+    EXPECT_TRUE(stale.attempted);
+    EXPECT_FALSE(stale.prepared);
     EXPECT_EQ(executor.pending_generation(), 1u);
 }
 
@@ -4370,4 +4372,27 @@ TEST_F(GraphExecutorFixture, ObservationStampsFollowActivationRatherThanCodePrep
     EXPECT_EQ(frame->count, 0u);
     executor.tick_block(index(48), 16);
     EXPECT_EQ(executor.collect_observations(), nullptr); // No idle probe work.
+}
+
+
+TEST_F(GraphExecutorFixture, PreparedGenerationCanBeDiscardedWithoutPublishingAChainLink)
+{
+    iv::GraphExecutor executor;
+    auto first = compiled_graph(1, &observe_first);
+    {
+        auto discarded = executor.prepare(first);
+        ASSERT_TRUE(discarded);
+        EXPECT_FALSE(executor.pending_generation());
+        EXPECT_FALSE(executor.active_generation());
+        EXPECT_FALSE(executor.accepted_graph());
+    }
+    auto prepared = executor.prepare(first);
+    ASSERT_TRUE(prepared);
+    EXPECT_EQ(std::move(prepared).publish(), iv::GraphExecutorStageResult::accepted);
+    EXPECT_EQ(executor.pending_generation(), 1u);
+    EXPECT_TRUE(executor.activate_pending(index(0)));
+    iv::GraphExecutorExecutionReadRequest read;
+    executor.handle_execution_read(read);
+    EXPECT_EQ(read.active_generation, 1u);
+    EXPECT_EQ(std::move(prepared).publish(), iv::GraphExecutorStageResult::ignored_stale);
 }

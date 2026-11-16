@@ -41,7 +41,7 @@ class PackageWatcherService {
     [[nodiscard]] bool synchronize_discovered_packages();
     void report_discovery_error(std::string message);
     void report_service_error(std::string message);
-    void process_pending_refresh();
+    void process_pending_refresh(std::stop_token stop);
 
 public:
     PackageWatcherService(
@@ -55,6 +55,7 @@ public:
 
     void start();
     void request_shutdown();
+    void stop();
     [[nodiscard]] std::optional<std::string> failure_message() const;
     void handle_work_available(PackageWatcherWorkAvailable const&) noexcept;
 };

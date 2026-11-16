@@ -53,6 +53,7 @@ export type GraphScopeConnection = {
 export type GraphScope = {
     sessionRevision?: number;
     sampleRate?: number | null;
+    execution?: { phase: string; message: string; preparedGeneration: number | null; activeGeneration: number | null };
     generation: number | null;
     editable: boolean;
     nodes: GraphScopeNode[];

@@ -1,1 +1,6 @@
-{"schema":2,"entry":"module.cpp"}
+{
+  "schema": 2,
+  "entry": "module.cpp",
+  "namespace": "iv.project.brown_duda",
+  "dependencies": []
+}

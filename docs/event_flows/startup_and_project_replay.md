@@ -29,8 +29,9 @@ flowchart TD
     PG -->|"1. replace/update desired instance batch; populate root builder ⇄ instance changes"| NI
     PG -->|"2. replayed instance declarations ⇄ virtual-node replacements"| IMSI
     PG -->|"3. replace/update desired connection batch; apply against complete embeddings"| GC
-    PG -->|"4. current complete/partial ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
-    PG -->|"5. stage one compiled execution generation"| GE
+    PG -->|"4. commit configured interfaces; queue immutable inputs"| WORK["ProjectGraph serialized compiler worker (separate cause)"]
+    WORK -->|"compile current target"| GJ
+    WORK -->|"prepare; recheck target; publish once"| GE
 ```
 
 Replay runs before any client attaches, so `ProjectPersistence` does not publish
@@ -109,3 +110,8 @@ is likewise synchronous inside the later `ProjectGraph` transaction. For every s
 not publishable as pending until both internal actor realizations and every route,
 reserve, work-descriptor, migration, and cutover resource are ready. Staging does not
 itself activate the successor.
+
+
+The 2026-11-16 owner-selected boundary commits configured metadata before
+worker-owned executable compilation. The former same-cause compile/stage flow
+is preserved in [the historical snapshot](../historical/event_flows_startup_and_project_replay_before_async_configured_publication_2026-11-16.md).

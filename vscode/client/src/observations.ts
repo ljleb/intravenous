@@ -32,9 +32,18 @@ export function observationSourceKey(source: ObservationSource): string {
 export class ObservationValues {
     private activation = 0n;
     private revision = 0n;
+    private generation: string | null | undefined;
     readonly values = new Map<string, ObservationDisplayValue>();
+    acceptGeneration(generation: number | null): boolean {
+        const next = generation === null ? null : String(generation);
+        if (next === this.generation) return false;
+        this.generation = next;
+        this.values.clear();
+        return true;
+    }
     acceptRevision(revision: string): void { this.revision = BigInt(revision) > this.revision ? BigInt(revision) : this.revision; }
     receive(update: ObservationUpdate, scopeId: string): boolean {
+        if (this.generation !== undefined && update.generation !== this.generation) return false;
         const activation = BigInt(update.activationId);
         if (activation < this.activation || BigInt(update.revision) < this.revision) return false;
         const scope = update.scopes.find((scope) => scope.scopeId === scopeId);
@@ -43,5 +52,5 @@ export class ObservationValues {
         for (const item of scope.values) this.values.set(item.id, { activationId: update.activationId, available: item.available, value: item.value });
         return true;
     }
-    clear(): void { this.activation = 0n; this.revision = 0n; this.values.clear(); }
+    clear(): void { this.activation = 0n; this.revision = 0n; this.generation = undefined; this.values.clear(); }
 }

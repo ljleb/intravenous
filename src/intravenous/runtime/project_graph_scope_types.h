@@ -60,10 +60,15 @@ struct ProjectGraphScopeConnection {
 // the connections among them, read under ProjectGraph's lock so that they
 // describe one revision.
 struct ProjectGraphScope {
-    // The current successful ProjectGraph generation, which can differ from
-    // the desired configuration whose interfaces are displayed.
+    // The successful configured-generation identity. Executable-only probe
+    // and control variants do not change it. A failed desired configuration
+    // can still supply diagnostic interfaces without committing a successor.
     std::optional<std::uint64_t> generation{};
     std::optional<std::size_t> sample_rate{};
+    std::string execution_phase = "unconfigured";
+    std::string execution_message{};
+    std::optional<std::uint64_t> prepared_generation{};
+    std::optional<std::uint64_t> active_generation{};
     bool editable = true;
     std::vector<ProjectGraphScopeNode> nodes{};
     std::vector<ProjectGraphScopeConnection> connections{};

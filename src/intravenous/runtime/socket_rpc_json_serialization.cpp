@@ -143,6 +143,8 @@ SocketRpcJson iv_package_json(IvPackageInfo const &package)
         {"packageId", package.package_id},
         {"packageRoot", package.package_root.generic_string()},
         {"provenance", package_provenance_json(package.provenance)},
+        {"packageNamespace", package.package_namespace},
+        {"packageDependencies", package.package_dependencies},
         {"moduleIds", package.module_ids},
         {"nodeTypeIds", package.node_type_ids},
         {"buildState", package_build_state_json(package.build_state)},

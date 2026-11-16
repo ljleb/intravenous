@@ -74,16 +74,65 @@ one package to be discovered or compiled twice. Definition-ID
 collisions across distinct packages remain an explicit namespace/publication
 matter, not an implicit source-directory precedence rule.
 
-### Proposed logical package namespaces (2026-11-15; not implemented)
+### Logical package namespaces and static selection
 
-Future packages may have stable logical identifiers usable as prefixes for
-public `IV_NODE`/`IV_MODULE` definitions. These are distinct from the already
-implemented discovery provenance (`built_in`, `common`, `project_local`) and
-build artifact/cache identity. This proposal should extend GraphBuilder's
-existing `iv.builtin` lookup and planned namespace imports, not silently
-replace them. Neither an `iv_package.json` field spelling nor collision/
-import precedence was finalized in the discussion. See
-[Node Definitions And Instances](./node_definitions_and_instances_direction.md#future-package-identity-publication-and-type-construction-2026-11-15-clarification).
+Each discovered `iv_package.json` declares a logical `namespace`, its source
+`entry`, and a `dependencies` array of exact logical package namespaces:
+
+```json
+{"schema":2,"namespace":"my.synth","entry":"module.cpp",
+ "dependencies":["iv.filters","iv.math"]}
+```
+
+Logical namespace identity is separate from filesystem provenance, the local
+`IvPackageDeclaration::package_id`/root, and build-cache identity. Saved local
+paths are hints, not an ownership rule that overrides a resolved namespace.
+Different installations can therefore resolve the same public definition ID at
+different source paths using their own compatible package toolchain.
+
+Nested namespaces are allowed. A public ID belongs to the **longest matching
+registered dotted prefix**. Exact namespace claims have one owner; duplicate
+claims are errors. `iv.filters` does not match `iv.filters_extra`. A parent
+package cannot export an ID reserved by a more-specific discovered package,
+even if that nested package has not yet compiled. Validate actual public IDs
+before accepting a built revision. The former proposal is preserved in
+[the historical namespace note](historical/package_namespace_proposal_before_static_selection_2026-11-16.md).
+
+`PackageWatcher` resolves desired instance/replacement IDs against this manifest
+catalog and computes the package-dependency closure without executing package
+code. The executable's `iv.builtin` package is automatically imported by every
+other package and included in its closure. Manifests need not repeat it in
+`dependencies`; an explicit entry is harmless and does not build it twice.
+This includes implicit constructions such as the builtin constants backing
+module-input defaults. Changes to the builtin package dirty its consumers just
+as changes to an explicitly declared dependency do.
+
+It builds the dirty required closure first and publishes its accepted definitions
+in one transaction. Other dependencies must be declared using exact package
+namespaces; a missing dependency is a package failure, never a request to compile
+the entire catalog. Authored registered-definition lookups into another package
+require that declared dependency, with `iv.builtin` as the automatic exception.
+Source/header/library build dependencies remain the compiler/loader's existing
+separate watch inputs. The earlier blanket declaration requirement is preserved
+[in the dependency history](historical/package_dependencies_before_implicit_builtin_2026-11-16.md).
+
+After required definitions configure the graph, committed ports and control
+metadata are available independently of DSP compilation. Unrelated package
+compilation waits until the current executable target has finished preparation
+or reported failure, then proceeds in separate dependency-closure batches on
+the existing package worker. Recheck required work before each later catalog
+root; an in-progress package build is not preempted. Catalog-only publication
+must not reconstruct or recompile an unchanged configured provider closure.
+It still updates definition discovery and source metadata for future nodes.
+This preserves discovery of all public nodes without requiring an offline
+catalog artifact or synchronously building all packages before the graph works.
+
+A declaration/source change dirties affected declared consumers as well as the
+package itself. Namespace/dependency manifest edits are discovery changes.
+Unknown definitions retain desired identity/configuration and failure/pending
+information rather than being deleted. Reproducible version selection remains
+separate from namespace ownership: this change does not introduce a lockfile,
+a remote registry, or a package version solver.
 
 ### Built-ins belong to the executable, not the opened project
 

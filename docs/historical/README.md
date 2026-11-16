@@ -293,3 +293,21 @@ These documents are retained because they record deleted architectures, supersed
 - [Replay coverage before TickReplayMode](replay_coverage_before_tick_replay_mode_2026-11-15.md) preserves the boolean replay opt-in, the same-day full-coverage reading of generated replay propagation, and the pending per-output proposal that `TickReplayMode` replaced.
 
 - [Port grouping and project grid before anchored nested inputs and ruler-connected snapping (2026-11-16)](./vue_nested_port_clip_scale_and_ruler_input_before_2026-11-16.md).
+
+
+## Before configured-graph publication and serialized compilation (2026-11-16)
+
+Preserved before the owner separated configuration commitment from DSP readiness:
+
+- [GraphJit direction](graph_jit_direction_before_async_configured_publication_2026-11-16.md)
+- [Project graph architecture](project_graph_application_architecture_before_async_configured_publication_2026-11-16.md)
+- [Startup realization order](startup_realization_order_before_async_configured_publication_2026-11-16.md)
+- [Startup event flow](event_flows_startup_and_project_replay_before_async_configured_publication_2026-11-16.md)
+
+- [Package namespace proposal before static selection (2026-11-16)](package_namespace_proposal_before_static_selection_2026-11-16.md)
+  preserves the earlier unresolved namespace proposal replaced by longest-prefix
+  ownership and required-closure-first compilation.
+
+- [Package dependencies before implicit builtin import (2026-11-16)](package_dependencies_before_implicit_builtin_2026-11-16.md)
+  preserves the blanket explicit-dependency wording before the owner clarified
+  that every other package automatically imports `iv.builtin`.
