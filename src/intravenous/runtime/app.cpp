@@ -1,4 +1,6 @@
 #include <intravenous/runtime/app.h>
+#include <intravenous/runtime/observations.h>
+#include <intravenous/runtime/observation_bridges.h>
 
 #include <intravenous/compat.h>
 #include <intravenous/devices/miniaudio_device.h>
@@ -182,6 +184,7 @@ class RuntimeExecutionService {
 
     SystemAudioDevices* devices_ = nullptr;
     GraphExecutor* executor_ = nullptr;
+    Observations* observations_ = nullptr;
     std::function<void()> request_shutdown_{};
     std::atomic<Failure> failure_ = Failure::none;
     std::optional<std::jthread> thread_{};
@@ -212,9 +215,11 @@ public:
     RuntimeExecutionService(
         SystemAudioDevices& devices,
         GraphExecutor& executor,
+        Observations& observations,
         std::function<void()> request_shutdown)
         : devices_(&devices)
         , executor_(&executor)
+        , observations_(&observations)
         , request_shutdown_(std::move(request_shutdown))
     {
     }
@@ -228,6 +233,7 @@ public:
             std::uint64_t reported_underruns = 0;
             auto next_underrun_report = std::chrono::steady_clock::now();
             while (!stop.stop_requested()) {
+                observations_->collect();
                 auto const now = std::chrono::steady_clock::now();
                 if (now >= next_underrun_report) {
                     auto const underruns = executor_->playback_underrun_blocks();
@@ -305,6 +311,7 @@ int run_server_mode(int argc, char** argv)
     NodeInstances node_instances;
     NodeDefinitions node_definitions;
     ProjectGraph project_graph;
+    Observations observations;
     GraphConnections graph_connections;
     GraphJit graph_jit(GraphJitConfig{
         .sample_rate = startup.execution.sample_rate,
@@ -363,12 +370,12 @@ int run_server_mode(int argc, char** argv)
     };
     ScopedShutdownCallback shutdown_callback_scope(shutdown);
     install_shutdown_handlers(request_shutdown);
-    RuntimeExecutionService runtime_execution_service(
-        system_audio_devices,
-        graph_executor,
-        shutdown);
 
     // Runtime bridges.
+    auto observation_graph_scope = observations_project_graph_bridge::bind(observations, project_graph);
+    auto observation_executor_scope = observations_graph_executor_bridge::bind(observations, graph_executor);
+    auto observation_delivery_scope = observations_socket_rpc_bridge::bind(observations, server);
+    auto socket_observation_scope = socket_rpc_observations_bridge::bind(server, observations);
     auto definitions_project_graph_scope =
         node_definitions_project_graph_bridge::bind(node_definitions, project_graph);
     auto project_graph_instances_scope =
@@ -433,6 +440,14 @@ int run_server_mode(int argc, char** argv)
         socket_rpc_project_persistence_bridge::bind(server, project_persistence);
     auto rpc_autosave_scope =
         socket_rpc_project_autosave_bridge::bind(server, project_autosave);
+
+    // Stop collection before its bridge bindings are destroyed, including
+    // when startup exits through an exception.
+    RuntimeExecutionService runtime_execution_service(
+        system_audio_devices,
+        graph_executor,
+        observations,
+        shutdown);
 
     startup_log("loading project persistence");
     // No client is attached during replay, so its messages go to the log.

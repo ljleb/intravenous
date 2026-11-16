@@ -17,6 +17,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <cstring>
 #include <exception>
 #include <iterator>
@@ -235,6 +236,8 @@ enum class RootOperationKind : std::uint8_t {
     sample_composition,
     sample_feedback_write,
     sample_carry_commit,
+    observation_output,
+    observation_state,
 };
 
 // One storage operation. index selects the operation's plan entry; for a
@@ -285,6 +288,7 @@ struct RootRegion {
 // when more than one remains. The group's steps are independent, so this
 // order computes what one batch of all of them computes.
 struct RootAcyclicGroup {
+    bool has_step_operations = false;
     std::vector<std::size_t> specialized_regions{};
     std::vector<std::size_t> interpreted_steps{};
 };
@@ -397,6 +401,10 @@ struct RealtimeRootPlan {
     std::size_t maximum_specialization_sample_representations = 0;
     std::size_t maximum_specialization_workspace_size = 0;
     RootFrameLayout frame{};
+    std::vector<std::optional<std::size_t>> observation_slots{};
+    std::vector<std::vector<std::size_t>> observation_channels{};
+    struct StateProbe { std::size_t slot = 0; std::size_t storage_offset = 0; };
+    std::vector<StateProbe> state_probes{};
     bool has_tick_slots = false;
     // Some primitive has a TTL activity plan, so the root keeps
     // representation epochs for the activity summaries.
@@ -1282,6 +1290,56 @@ void append_event_feedback(
     }
 }
 
+struct ObservationCaptureTimer {
+    LiveObservationFrame& frame;
+    std::chrono::steady_clock::time_point started{};
+    explicit ObservationCaptureTimer(LiveObservationFrame& frame) : frame(frame)
+    { if (frame.measure_capture) started = std::chrono::steady_clock::now(); }
+    ~ObservationCaptureTimer()
+    {
+        if (frame.measure_capture) frame.capture_ns += static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - started).count());
+    }
+};
+
+void capture_observation_output(RootFrame& frame, std::size_t primitive,
+    GlobalIndex index, std::size_t block_size) noexcept
+{
+    if (!frame.invocation || !frame.invocation->observations) return;
+    ObservationCaptureTimer timer{*frame.invocation->observations};
+    auto const slot = *frame.plan.observation_slots[primitive];
+    auto& observation = frame.invocation->observations->values[slot];
+    if (!observation.operation || !observation.operation->capture_block) return;
+    auto const& node = frame.plan.primitives[primitive];
+    auto const& binding = *reinterpret_cast<ReflectedContinuousInputPortBinding const*>(
+        frame.scratch + node.sample_inputs_offset);
+    std::array<ObservationChannelView, maximum_supported_channel_count> channels{};
+    auto const& selected = frame.plan.observation_channels[primitive];
+    auto const count = selected.empty() ? channel_count(binding.storage.channel_layout) : selected.size();
+    for (std::size_t channel = 0; channel < count; ++channel) {
+        auto const& source = binding.storage.channels[selected.empty() ? channel : selected[channel]];
+        channels[channel] = {source.storage, source.value_capacity,
+            source.value_stride_bytes, source.value_delay};
+    }
+    auto const projection = project_lattice(index, block_size, binding.absolute_pace_exponent);
+    observation.operation->capture_block(observation.value, {
+        .channels = std::span{channels}.first(count),
+        .sequential_begin_index = binding.sequential_begin_index - binding.read_latency,
+        .value_count = projection.value_count,
+    });
+}
+
+void capture_observation_state(RootFrame& frame, std::size_t probe) noexcept
+{
+    if (!frame.invocation || !frame.invocation->observations) return;
+    ObservationCaptureTimer timer{*frame.invocation->observations};
+    auto const& selected = frame.plan.state_probes[probe];
+    auto& value = frame.invocation->observations->values[selected.slot];
+    if (value.operation && value.operation->capture_state)
+        value.operation->capture_state(value.value, frame.storage_base + selected.storage_offset);
+}
+
 void mark_sample_representation(RootFrame& frame, std::size_t representation) noexcept
 {
     if (frame.plan.tracks_activity) {
@@ -1307,6 +1365,12 @@ void run_operations(
     auto const& storage = plan.sample_ports.storage;
     for (auto const operation : operations) {
         switch (operation.kind) {
+        case RootOperationKind::observation_output:
+            capture_observation_output(frame, operation.index, index, block_size);
+            break;
+        case RootOperationKind::observation_state:
+            capture_observation_state(frame, operation.index);
+            break;
         case RootOperationKind::event_sequence_reset:
             store_raw<std::size_t>(
                 frame.event_representations[operation.index],
@@ -3553,6 +3617,13 @@ private:
                 implementation != implementations.end()) {
                 primitive.callbacks = implementation->second->native_operations;
                 implementations_[index] = implementation->second;
+                if (plan_.observation_slots.empty()) {
+                    plan_.observation_slots.resize(plan_.primitives.size());
+                    plan_.observation_channels.resize(plan_.primitives.size());
+                }
+                plan_.observation_slots[index] = implementation->second->observation_slot;
+                if (implementation->second->observation_slot && input_.observations)
+                    plan_.observation_channels[index] = input_.observations->probes[*implementation->second->observation_slot].channels;
             }
 
             std::size_t compact_output = 0;
@@ -4372,6 +4443,22 @@ private:
                     || !primitive.tick->event_capture_outputs.empty());
             auto& before = root_step.before;
             auto& after = root_step.after;
+            if (!plan_.observation_slots.empty() && plan_.observation_slots[step.configuration_index]) {
+                after.push_back({RootOperationKind::observation_output, step.configuration_index});
+            }
+            if (input_.observations) {
+                for (std::size_t slot = 0; slot < input_.observations->probes.size(); ++slot) {
+                    auto const& probe = input_.observations->probes[slot];
+                    if (!probe.available || probe.kind != ObservationSourceKind::state_field
+                        || probe.bundle != lowering_.imports.primitive_callbacks[step.configuration_index].bundle) continue;
+                    if (!state.has_state || probe.state_field_offset > state.state_size
+                        || probe.state_field_size > state.state_size - probe.state_field_offset)
+                        return invalid("observation field is outside Tick State storage");
+                    auto const capture = plan_.state_probes.size();
+                    plan_.state_probes.push_back({slot, state.state_offset + probe.state_field_offset});
+                    after.push_back({RootOperationKind::observation_state, capture});
+                }
+            }
             // The order of PrimitiveExecutionStep: event operations, then the
             // sample operations of each phase.
             if (auto valid = append_event_operations(step.event_operations_before, before);
@@ -4462,6 +4549,8 @@ private:
                 }
                 plan_.acyclic_groups[group_index].interpreted_steps =
                     group.primitive_steps;
+                plan_.acyclic_groups[group_index].has_step_operations = std::ranges::any_of(
+                    group.primitive_steps, [&](auto const step) { return !plan_.steps[step].after.empty(); });
                 continue;
             }
             if (group.cyclic_regions.front() >= execution.regions.size()) {
@@ -5415,7 +5504,7 @@ void execute_realtime_root(
             }
             auto const& steps = acyclic.interpreted_steps;
             if (steps.size() > 1) {
-                run_step_batch(frame, steps, sample_index, block_size, false);
+                run_step_batch(frame, steps, sample_index, block_size, acyclic.has_step_operations);
                 continue;
             }
             for (auto const step : steps) {

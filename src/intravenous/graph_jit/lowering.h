@@ -1,4 +1,5 @@
 #pragma once
+#include <intravenous/runtime/observation_types.h>
 
 #include <intravenous/graph_jit/package_callback_abi.h>
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
@@ -44,6 +45,7 @@ struct PackageCode {
 struct NodeImplementation {
     std::size_t node_bundle = 0;
     std::optional<NodeBundlePortId> resolved_module_input{};
+    std::optional<std::size_t> observation_slot{};
     ContinuousInputConfig const* module_input_config = nullptr;
     RegisteredNodeTypeIdentity identity{};
     NodeCodeKey code_key{};
@@ -139,6 +141,7 @@ struct LoweringInput {
     // Compiles or reuses the steady root's region specializations. Without
     // it every cyclic region runs through the interpreter.
     RegionSpecializationProvider* region_specializations = nullptr;
+    CompiledObservationPlan const* observations = nullptr;
 };
 
 // Names of the generated project-module operations. The realtime root is not

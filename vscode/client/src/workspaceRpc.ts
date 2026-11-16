@@ -1,3 +1,4 @@
+import type { ObservationInterest, ObservationCapability } from "./observations";
 import type { ManualControlId } from "./manualControls";
 import { JsonRpcSocketClient } from "./rpcClient";
 import { VirtualNode, SourceSpan } from "./graphModel";
@@ -54,6 +55,20 @@ export class WorkspaceRpc {
 
     snapshot(): Promise<Record<string, unknown> & { sessionRevision?: number }> {
         return this.client.request("session.snapshot", {});
+    }
+
+    describeObservations(nodes: NodeAddress[]): Promise<{ capabilities: ObservationCapability[] }> {
+        return this.client.request("observations.describe", {
+            nodes: nodes.map((node) => ({ ...node, path: node.path ?? [] })),
+        });
+    }
+    reconcileObservations(scopeId: string, interests: ObservationInterest[]): Promise<{ revision: string; leaseMs: number }> {
+        return this.client.request("observations.reconcile", {
+            scopeId,
+            interests: interests.map((interest) => ({ ...interest, source: { ...interest.source,
+                node: { ...interest.source.node, path: interest.source.node.path ?? [] },
+            } })),
+        });
     }
 
     getGraphScope(): Promise<GraphScope> {

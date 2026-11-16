@@ -191,6 +191,7 @@ class GraphExecutor {
         // Code and its dynamic target list are prepared and published together.
         // The audio thread never scans the structural graph's idle controls.
         struct RealtimeCode {
+            std::uint64_t publication_id = 0;
             std::shared_ptr<CompiledGraph const> graph{};
             std::vector<LiveTargetBinding> live_targets{};
         };
@@ -332,6 +333,11 @@ class GraphExecutor {
         [[nodiscard]] GraphExecutorReclaimedSnapshots reclaim_snapshots();
     };
 
+    LiveObservationHandoff observations_{};
+    bool measure_observation_capture_ = false;
+    std::uint64_t next_observation_publication_ = 1; // Control owner only.
+    std::uint64_t last_observation_publication_ = 0; // Realtime owner only.
+    std::uint64_t observation_activation_ = 0; // Actual activation order.
     ResourceContext resources_{};
     RealtimeProducerCapacityConfig producer_capacity_{};
     // Executor-level and deliberately outside either execution generation.
@@ -506,6 +512,15 @@ public:
     // Generation activation is deliberately never hidden in this audio-thread
     // entry point.
     void tick_block(GlobalIndex sample_index, std::size_t block_size);
+    // One control-path collector; the borrowed frame lasts until next collect.
+    void handle_observation_collect(ObservationCollectRequest& request)
+    {
+        request.handled = true;
+        if (auto const* frame = observations_.collect()) request.frame = *frame;
+    }
+    [[nodiscard]] LiveObservationFrame const* collect_observations() noexcept
+    { return observations_.collect(); }
+
 };
 
 } // namespace iv

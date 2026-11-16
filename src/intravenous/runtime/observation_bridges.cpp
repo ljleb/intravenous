@@ -1,0 +1,26 @@
+#include <intravenous/runtime/observation_bridges.h>
+#include <intravenous/runtime/observation_events.h>
+#include <intravenous/runtime/observations.h>
+#include <intravenous/runtime/project_graph.h>
+#include <intravenous/runtime/graph_executor.h>
+#include <intravenous/runtime/socket_rpc_server.h>
+namespace iv {
+IV_DEFINE_LINKER_EVENT(SocketRpcObservationEvent, iv_socket_rpc_observation_event)
+IV_DEFINE_LINKER_EVENT(ObservationsProjectGraphEvent, iv_observations_project_graph_event)
+IV_DEFINE_LINKER_EVENT(ObservationsGraphExecutorEvent, iv_observations_graph_executor_event)
+IV_DEFINE_LINKER_EVENT(ObservationsSocketRpcEvent, iv_observations_socket_rpc_event)
+IV_DEFINE_BRIDGE(observations_project_graph_bridge)
+IV_SUBSCRIBE_LINKER_EVENT(observations_project_graph_bridge, iv_observations_project_graph_event,
+    &ProjectGraph::handle_observation_request)
+IV_DEFINE_BRIDGE(observations_graph_executor_bridge)
+IV_SUBSCRIBE_LINKER_EVENT(observations_graph_executor_bridge, iv_observations_graph_executor_event,
+    &GraphExecutor::handle_observation_collect)
+IV_DEFINE_BRIDGE(observations_socket_rpc_bridge)
+IV_SUBSCRIBE_LINKER_EVENT(observations_socket_rpc_bridge, iv_observations_socket_rpc_event,
+    &SocketRpcServer::send_observations)
+IV_DEFINE_BRIDGE(socket_rpc_observations_bridge)
+IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_observations_bridge, iv_socket_rpc_observation_event,
+    &Observations::handle_protocol)
+IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_observations_bridge, iv_socket_rpc_client_disconnected_event,
+    &Observations::handle_disconnect)
+}

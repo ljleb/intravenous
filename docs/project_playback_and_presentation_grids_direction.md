@@ -26,7 +26,12 @@ as required by Global Indexing. A floating-point seconds value is a display
 conversion, not a replacement for the exact index.
 
 No built-in tempo map is required for this contract. The interpretation and
-display of beats remain a separate presentation question.
+display of beats remain a separate presentation question. Automation clips
+show their own ruler with seconds and integer project sample positions by
+default; their authored point times are sample-aligned during editing, not
+free-form fractional seconds. Reuse the enclosing timeline transform and show
+the sample grid when zoom makes those divisions readable. See the
+[automation clip ruler contract](./vue_presentation_refinement_direction.md#automation-clip-ruler-and-sample-accurate-editing).
 
 **Later macro integration (not an implementation change):** when graph macros
 are implemented, they should be able to read and command the session playhead,
@@ -124,41 +129,53 @@ through JSON-RPC. Exact route names and update frequency follow the complete
 client feature. These controls do not depend on implementing every output
 observation operation first.
 
-## Proposed grids from node outputs
+## Project ruler input for graph-authored snapping (accepted 2026-11-16)
 
-On 2026-11-13 the owner proposed selecting a node output as the project's
-presentation grid. A grid supplies visible reference positions and optional
-snap targets. This proposal does not introduce extra graph ports on the root
-node or make the selected output a DSP connection to the presentation.
+The **fixed-height header of the top project time ruler** exposes an **event
+input**. A graph connection to this header configures the time marks used for
+presentation snapping, particularly automation control-point editing. Its
+header need not be resizable. This replaces the earlier proposal to select
+one output through a menu with no graph connection; that proposal is retained
+[historically](./historical/vue_nested_port_clip_scale_and_ruler_input_before_2026-11-16.md#previous-output-selector-project-grid).
 
-For example, a node can produce events at beat positions. The user selects
-that output as a grid source. The presentation draws marks at the event
-timestamps and can snap an edited element to those positions. Irregular
-grooves, changing subdivisions, and nonmusical markers use the same idea.
-The client does not need to infer a BPM from the spacing.
+A **Coverage input** is the preferred design because it can accept multiple
+compatible incoming event contributions. The ruler provides a dropdown to
+choose the particular **cover/contribution** whose timestamps are snap marks.
+The selected cover is an explicit project-level setting, keyed to stable
+connection/cover identity, not the order of a transient materialized Region
+list. The compiler and UI must retain enough provenance to distinguish covers
+after input fan-in. A Coverage output never becomes a Region input merely
+because its current payload contains one cover; existing connection shape
+rules remain intact. The input may be implemented through a dedicated
+project-owned node if that best fits normal graph ownership. Such a node must
+not create a second independent snapping-data model.
 
-Any node can provide the source if an observation operation can project its
-output into meaningful timeline positions. The source need not be a builtin
-beat generator. Arbitrary output values do not automatically define positions:
-the selected operation must distinguish event timestamps from coordinates
-stored inside payloads or continuous values.
+Every registered event type has a meaningful **timestamp-only projection to
+`TriggerEvent`**: preserve each occurrence's global sample position and drop
+the payload. This is a specific event-to-trigger conversion, **not** a claim
+that arbitrary event payload types can all convert to each other. The input
+may use this projection to accept event streams of different payload types;
+if the execution/conversion planner cannot yet preserve this contract, that
+is a dependency to implement, not permission to treat event values as times.
+The grid need not require a regular beat spacing or a built-in tempo map.
 
-Selection identifies the semantic node, output port, observation operation,
-and its parameters. It follows the existing output-observation contract,
-including stable source identity, generation changes, and bounded queries.
-It does not retain a pointer into a current compiled graph.
+Use bounded viewport-relevant graph/observation queries and coherent versions
+to populate the ruler and point-snap candidates. An unrecorded live stream
+cannot promise unavailable past or future events; absence of available marks
+must be presented truthfully. The always-on nearest-project-sample grid is
+the fallback and minimum granularity of authored point positions. Snapping to
+one selected event cover is an explicit edit; moving the connected stream or
+switching covers never silently changes already stored points. The exact
+bypass modifier, snap radius, and transition when a cover disappears remain
+implementation decisions. The corresponding curve-editor requirements are in
+[Vue Presentation Refinement](./vue_presentation_refinement_direction.md#5-automation-editing-and-graph-authored-snapping).
 
-Selecting a grid does not change authored output retention or graph values.
-Observation can require capture or evaluation work through the normal
-`Observations` and GraphJit coordination. The viewport requests only the
-positions it needs. A live ephemeral output does not promise past or future
-marks that its observation operation cannot produce.
+### Automation point placement
 
-Snapping is an explicit editing action. Later grid updates do not move
-previously placed elements automatically. A missing or unavailable source
-does not silently become an invented periodic grid.
-
-The context-menu phrase "use as project grid" is illustrative. Grid labels,
-multiple grid sources, scope overrides, and behavior during a changing snap
-gesture remain open. The general feature follows the first concrete output
-observation and editing requirements. It does not block the initial playhead.
+Every point drag and creation operation quantizes to integer project samples
+**while the pointer moves**, not only on release. When a connected ruler cover
+is selected and its marks are available, the additional snap rule selects
+among those sample indices. Without one, it uses nearest-sample positions.
+The curve's vertical bounds and `nano`/`mini`/`editable` rendering levels are
+specified in
+[Explicit value bounds and lane zoom categories](./vue_presentation_refinement_direction.md#explicit-value-bounds-and-lane-zoom-categories).

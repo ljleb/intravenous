@@ -526,6 +526,21 @@ void apply_event_connection(
 }
 } // namespace
 
+std::vector<SampleOutputChannelId> resolve_project_sample_output(
+    ConfiguredGraph const& graph,
+    std::unordered_map<std::string, NodeInstancePlacement> const& placements,
+    NodeAddress const& address, std::string const& port,
+    std::optional<std::size_t> channel)
+{
+    std::vector<SampleOutputChannelId> result;
+    ProjectPortMatcher matcher{.name = port, .channel = channel};
+    for (auto const& cursor : resolve_node_address(graph, placements, address)) {
+        for (auto const& output : sample_outputs_for_cursor(graph, cursor, matcher))
+            for (auto const source : output.channels) append_unique(result, source);
+    }
+    return result;
+}
+
 void validate_project_connection(ProjectConnection const& connection)
 {
     validate_connection_impl(connection);

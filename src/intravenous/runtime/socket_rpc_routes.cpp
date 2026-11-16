@@ -370,6 +370,16 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
             }
             return builder.build(id);
         });
+    auto observation_route = [](auto const& request, int id, Context const& context) {
+        ObservationProtocolRequest bound = request;
+        bound.client_id = context.client_id;
+        IV_INVOKE_LINKER_EVENT(iv_socket_rpc_observation_event, bound);
+        if (!bound.handled || !bound.error.empty()) return jsonrpc_error(id, -32602,
+            bound.error.empty() ? "observation service is unavailable" : bound.error);
+        return jsonrpc_result(id, bound.result ? *bound.result : Json::object());
+    };
+    impl_->add<DescribeObservationsRequest>("observations.describe", "project.read", false, false, observation_route);
+    impl_->add<ReconcileObservationsRequest>("observations.reconcile", "project.read", false, false, observation_route);
     impl_->add<GetNodeEventProtocolRequest>(
         "nodeMessages.getProtocol", "project.read", false, false,
         [](auto const& request, int id, Context const&) {

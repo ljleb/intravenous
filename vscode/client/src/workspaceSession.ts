@@ -1,3 +1,4 @@
+import type { ObservationInterest, ObservationUpdate } from "./observations";
 import { ManualControlInteractions } from "./manualControls";
 import { ControlCompilationProgress, type ControlCompileStatus } from "./controlCompilation";
 import type { NodeAddress } from "./graphScope";
@@ -98,6 +99,8 @@ type GraphNodesUpdatedNotification = {
 };
 
 export class WorkspaceSession {
+    private readonly observationChanges = new vscode.EventEmitter<ObservationUpdate>();
+    readonly onDidChangeObservations = this.observationChanges.event;
     private readonly graphChanges = new vscode.EventEmitter<void>();
     readonly onDidChangeGraph = this.graphChanges.event;
     graphSessionStatus: LiveGraphSessionStatus = "starting";
@@ -115,6 +118,15 @@ export class WorkspaceSession {
         if (this.graphSessionStatus !== "running" || !this.rpc) return Promise.reject(new Error("The Intravenous server is unavailable"));
         await this.rpc.nodeEventGesture(target, id, begin);
         return this.lastSessionRevision;
+    }
+
+    async describeObservations(nodes: NodeAddress[]) {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        return this.rpc.describeObservations(nodes);
+    }
+    async reconcileObservations(scopeId: string, interests: ObservationInterest[]) {
+        if (!this.rpc || this.graphSessionStatus !== "running") throw new Error("The Intravenous server is unavailable");
+        return this.rpc.reconcileObservations(scopeId, interests);
     }
 
     async readGraphScope() {
@@ -303,6 +315,7 @@ export class WorkspaceSession {
                 this.controlCompilationTimer = setTimeout(() => this.controlCompilationStatus.hide(), 3000);
             }
         });
+        this.notifications.subscribe<ObservationUpdate>("observations.updated", (update) => this.observationChanges.fire(update));
         this.notifications.subscribe("graph.changed", () => this.graphChanges.fire());
         // A committed revision without a graph publication, such as a settled
         // manual value or an audio selection.
@@ -1409,6 +1422,7 @@ export class WorkspaceSession {
         this.controlCompilationStatus.dispose();
         this.manualChanges.dispose();
         this.graphChanges.dispose();
+        this.observationChanges.dispose();
         this.shuttingDown = true;
         this.rebuildStatusBar.dispose();
         this.clangdDatabaseWatcher.dispose();

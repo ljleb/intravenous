@@ -471,6 +471,41 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
             .value = parse_manual_control_value(params),
         });
     }
+    if (method == "observations.describe" || method == "observations.reconcile") {
+        ObservationProtocolRequest request;
+        request.kind = method == "observations.describe" ? ObservationProtocolRequest::Kind::describe
+            : ObservationProtocolRequest::Kind::reconcile;
+        if (request.kind == ObservationProtocolRequest::Kind::describe) {
+            auto const& nodes = params.at("nodes");
+            if (!nodes.is_array() || nodes.size() > 64) throw std::invalid_argument("invalid observation nodes");
+            for (auto const& node : nodes)
+                request.nodes.push_back(parse_node_address_json(node, ProjectConnectionJsonNames::socket_rpc));
+        } else {
+            request.scope_id = parse_string_param(params, "scopeId");
+            auto const& interests = params.at("interests");
+            if (!interests.is_array() || interests.size() > 64) throw std::invalid_argument("invalid observation interests");
+            for (auto const& item : interests) {
+                auto const& source = item.at("source");
+                auto const kind = source.at("kind").get<std::string>();
+                if (kind != "output" && kind != "stateField") throw std::invalid_argument("invalid observation source kind");
+                ObservationInterest interest{
+                    .id = parse_string_param(item, "id"),
+                    .source = {.node = parse_node_address_json(source.at("node"), ProjectConnectionJsonNames::socket_rpc),
+                        .kind = kind == "output" ? ObservationSourceKind::output : ObservationSourceKind::state_field,
+                        .member = parse_string_param(source, "member")},
+                    .operation = parse_string_param(item, "operation"),
+                };
+                if (source.contains("channel")) {
+                    if (!source["channel"].is_number_unsigned()) throw std::invalid_argument("observation channel must be unsigned");
+                    interest.source.channel = source["channel"].get<std::size_t>();
+                }
+                request.interests.push_back(std::move(interest));
+            }
+        }
+        if (request.kind == ObservationProtocolRequest::Kind::describe)
+            return parsed(DescribeObservationsRequest{std::move(request)});
+        return parsed(ReconcileObservationsRequest{std::move(request)});
+    }
     if (method == "nodeMessages.getProtocol") {
         return parsed(GetNodeEventProtocolRequest{});
     }

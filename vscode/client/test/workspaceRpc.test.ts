@@ -157,3 +157,20 @@ test("node gesture requests supply root paths and preserve explicit selector pat
         assert.deepEqual(target, original);
     }
 });
+
+
+test("observation reads normalize root node addresses without adding a mutation revision", async () => {
+    const requests: unknown[] = [];
+    const client = { request: async (method, params) => { requests.push({ method, params }); } } as unknown as JsonRpcSocketClient;
+    const rpc = new WorkspaceRpc(client, () => 23);
+    const node = { instanceId: "oscillator" };
+    await rpc.describeObservations([node]);
+    await rpc.reconcileObservations("viewport", [{ id: "level", source: { node, kind: "output", member: "out" }, operation: "level" }]);
+    assert.deepEqual(requests, [
+        { method: "observations.describe", params: { nodes: [{ instanceId: "oscillator", path: [] }] } },
+        { method: "observations.reconcile", params: { scopeId: "viewport", interests: [
+            { id: "level", source: { node: { instanceId: "oscillator", path: [] }, kind: "output", member: "out" }, operation: "level" },
+        ] } },
+    ]);
+    assert.deepEqual(node, { instanceId: "oscillator" });
+});

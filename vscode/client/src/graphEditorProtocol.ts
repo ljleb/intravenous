@@ -1,3 +1,4 @@
+import type { ObservationHostRequest, ObservationResponse, ObservationUpdate } from "./observations";
 import type { ManualControlAction, ManualControlInteractionState, ManualControlLiveValue } from "./manualControls";
 import type { ManualControlHint } from "./manualControlGesture";
 import type { GraphLayout, GraphScope } from "./graphScope";
@@ -14,11 +15,15 @@ export type GraphEditorState = {
 };
 export type GraphEditorAction = "addNode" | "editNode" | "deleteNode" | "openNodeSource" | "createPackage" | "deleteConnection" | "undo" | "redo";
 export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorState }
+    | ObservationResponse
+    | { type: "observationVisibility"; visible: boolean }
+    | { type: "observationUpdate"; update: ObservationUpdate }
     | NodeEventResponse
     | { type: "manualControlState"; interactions: ManualControlInteractionState[]; live: ManualControlLiveValue[] }
     | { type: "graphWindowFocus"; focused: boolean }
     | { type: "graphAction"; action: "addNode" | "editNode" | "createPackage"; instanceId?: string };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
+    | ObservationHostRequest
     | NodeEventHostRequest
     | { type: "graphInteractionHint"; hint: ManualControlHint | null }
     | { type: "manualControlAction"; action: ManualControlAction }

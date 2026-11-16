@@ -15,6 +15,7 @@ export class GraphEditorProvider implements vscode.Disposable {
         "intravenous.manualControlHints", vscode.StatusBarAlignment.Left, 10);
     private readonly controlOwners = new Map<vscode.WebviewPanel, string>();
     private readonly controlsChanged: vscode.Disposable;
+    private readonly observationsChanged: vscode.Disposable;
     private readonly ready = new Set<vscode.WebviewPanel>();
     private lastActivePanel: vscode.WebviewPanel | null = null;
     private readonly pendingActions = new Map<vscode.WebviewPanel, GraphEditorAction[]>();
@@ -41,6 +42,14 @@ export class GraphEditorProvider implements vscode.Disposable {
         this.changed = session.onDidChangeGraph(() => { void this.refresh(); });
         this.controlsChanged = session.onDidChangeManualControls(() => {
             for (const panel of this.ready) this.postControls(panel);
+        });
+        this.observationsChanged = session.onDidChangeObservations((update) => {
+            for (const panel of this.ready) {
+                const owner = this.controlOwners.get(panel);
+                const scopes = update.scopes.filter((scope) => scope.scopeId === owner)
+                    .map((scope) => ({ ...scope, scopeId: "viewport" }));
+                if (scopes.length) void panel.webview.postMessage({ type: "observationUpdate", update: { ...update, scopes } });
+            }
         });
         this.windowFocusChanged = vscode.window.onDidChangeWindowState(({ focused }) => {
             if (!focused) this.interactionHints.clear();
@@ -138,6 +147,11 @@ export class GraphEditorProvider implements vscode.Disposable {
         this.controlOwners.set(panel, crypto.randomUUID());
         if (panel.active) this.lastActivePanel = panel;
         const viewState = panel.onDidChangeViewState(() => {
+            void panel.webview.postMessage({ type: "observationVisibility", visible: panel.visible });
+            if (!panel.visible) {
+                const owner = this.controlOwners.get(panel);
+                if (owner) void this.session.reconcileObservations(owner, []).catch(() => {});
+            }
             if (panel.active) this.lastActivePanel = panel;
             else this.interactionHints.delete(panel);
             this.updateInteractionStatus();
@@ -145,7 +159,18 @@ export class GraphEditorProvider implements vscode.Disposable {
         const root = vscode.Uri.joinPath(this.extensionUri, "dist", "webview");
         panel.webview.options = { enableScripts: true, localResourceRoots: [root] };
         const messages = panel.webview.onDidReceiveMessage(async (message: GraphEditorWebviewMessage) => {
-            if (isNodeEventRequest(message) || isNodeEventGestureRequest(message)) {
+            if (message?.type === "observationDescribe" || message?.type === "observationReconcile") {
+                const owner = this.controlOwners.get(panel);
+                if (!owner) return;
+                try {
+                    const result = message.type === "observationDescribe"
+                        ? await this.session.describeObservations(message.nodes)
+                        : await this.session.reconcileObservations(owner, panel.visible ? message.interests : []);
+                    if (this.panels.has(panel)) void panel.webview.postMessage({ type: "observationResponse", requestId: message.requestId, result });
+                } catch (error) {
+                    if (this.panels.has(panel)) void panel.webview.postMessage({ type: "observationResponse", requestId: message.requestId, error: String(error) });
+                }
+            } else if (isNodeEventRequest(message) || isNodeEventGestureRequest(message)) {
                 const owner = this.controlOwners.get(panel);
                 if (!owner) return;
                 const response = message.type === "sendNodeEvent"
@@ -164,6 +189,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                     if (owner) { this.session.manualControls.releaseOwner(owner); this.session.nodeEvents.releaseOwner(owner); }
                 }
                 this.ready.add(panel);
+                void panel.webview.postMessage({ type: "observationVisibility", visible: panel.visible });
                 this.postControls(panel);
                 void panel.webview.postMessage({ type: "graphWindowFocus", focused: vscode.window.state.focused });
                 this.post(panel);
@@ -239,7 +265,10 @@ export class GraphEditorProvider implements vscode.Disposable {
         });
         panel.onDidDispose(() => {
             const owner = this.controlOwners.get(panel);
-            if (owner) { this.session.manualControls.releaseOwner(owner); this.session.nodeEvents.releaseOwner(owner); }
+            if (owner) {
+                this.session.manualControls.releaseOwner(owner); this.session.nodeEvents.releaseOwner(owner);
+                void this.session.reconcileObservations(owner, []).catch(() => {});
+            }
             this.controlOwners.delete(panel);
             this.interactionHints.delete(panel);
             messages.dispose(); viewState.dispose(); this.panels.delete(panel); this.ready.delete(panel);
@@ -307,6 +336,7 @@ export class GraphEditorProvider implements vscode.Disposable {
         this.disposed = true;
         this.changed.dispose();
         this.controlsChanged.dispose();
+        this.observationsChanged.dispose();
         this.windowFocusChanged.dispose();
         for (const panel of this.panels) panel.dispose();
         this.panels.clear();

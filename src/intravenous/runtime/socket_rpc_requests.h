@@ -1,4 +1,5 @@
 #pragma once
+#include <intravenous/runtime/observation_events.h>
 #include <intravenous/runtime/node_message_gesture.h>
 
 #include <intravenous/runtime/project_edit.h>
@@ -129,6 +130,8 @@ struct ServerShutdownRequest {};
 struct UnsupportedSocketRpcRequest { std::string method{}; };
 
 using SocketRpcRequestPayload = std::variant<
+    DescribeObservationsRequest,
+    ReconcileObservationsRequest,
     GraphQueryBySpansRequest,
     GraphQueryActiveRegionsRequest,
     GetVirtualNodeRequest,

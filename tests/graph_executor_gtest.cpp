@@ -4335,3 +4335,39 @@ TEST_F(BackgroundCoveragePropagationFixture, LiveSequentialFeedbackCoverageDoesN
         }
     }
 }
+
+TEST_F(GraphExecutorFixture, ObservationStampsFollowActivationRatherThanCodePreparationOrder)
+{
+    iv::GraphExecutor executor;
+    auto first = compiled_graph(1, &observe_first);
+    auto second = compiled_graph(2, &observe_first);
+    auto third = compiled_graph(3, &observe_first);
+    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+    executor.tick_block(index(0), 16);
+    auto const* frame = executor.collect_observations();
+    ASSERT_NE(frame, nullptr);
+    auto const first_activation = frame->activation_id;
+    ASSERT_EQ(stage_graph(executor, second), iv::GraphExecutorStageResult::accepted);
+    ASSERT_EQ(stage_graph(executor, third), iv::GraphExecutorStageResult::accepted);
+    // This replacement is prepared after generation 3, but executes first.
+    auto replacement = std::make_shared<iv::CompiledGraph>(*second);
+    replacement->root_operations.tick_block = {.function = &observe_second};
+    ASSERT_EQ(executor.stage_realtime_code(replacement), iv::GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(16)));
+    executor.tick_block(index(16), 16);
+    frame = executor.collect_observations();
+    ASSERT_NE(frame, nullptr);
+    EXPECT_EQ(frame->project_generation, 2u);
+    auto const second_activation = frame->activation_id;
+    EXPECT_GT(second_activation, first_activation);
+    ASSERT_TRUE(executor.activate_pending(index(32)));
+    executor.tick_block(index(32), 16);
+    frame = executor.collect_observations();
+    ASSERT_NE(frame, nullptr);
+    EXPECT_EQ(frame->project_generation, 3u);
+    EXPECT_GT(frame->activation_id, second_activation);
+    EXPECT_EQ(frame->count, 0u);
+    executor.tick_block(index(48), 16);
+    EXPECT_EQ(executor.collect_observations(), nullptr); // No idle probe work.
+}

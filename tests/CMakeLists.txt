@@ -143,6 +143,7 @@ add_test(
 set_tests_properties(intravenous_iv_node_static_validation PROPERTIES LABELS "light")
 
 add_iv_gtest(intravenous_module_test_utils_tests module_test_utils_gtest.cpp)
+add_iv_gtest(intravenous_observations_tests observations_gtest.cpp)
 add_iv_gtest(
     intravenous_module_watcher_tests
     module_watcher_gtest.cpp
@@ -210,6 +211,7 @@ set(iv_graph_jit_test_sources
     modules/graph_jit/event_feedback_gtest.cpp
     modules/graph_jit/event_runtime_gtest.cpp
     modules/graph_jit/events_gtest.cpp
+    modules/graph_jit/observations_gtest.cpp
     modules/graph_jit/manual_control_gtest.cpp
     modules/graph_jit/playback_gtest.cpp
     modules/graph_jit/runtime_gtest.cpp

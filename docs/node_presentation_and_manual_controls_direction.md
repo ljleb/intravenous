@@ -125,7 +125,11 @@ navigation. Samples and seconds display the same position. The playback
 contract and the separate proposal for grids from node outputs are in
 [Project Playback And Presentation Grids](./project_playback_and_presentation_grids_direction.md).
 Neither requires every lane to display a timeline or every project to define
-a tempo map.
+a tempo map. An **automation curve clip** is a deliberate timeline-bearing
+presentation: it shows a clip-local ruler in seconds and project sample
+positions, with per-sample grid subdivisions when sufficiently zoomed, all
+aligned to the enclosing time axis. See
+[Automation clip ruler and point editing](./vue_presentation_refinement_direction.md#automation-clip-ruler-and-sample-accurate-editing).
 
 Lane names should be readable. Do not display UUIDs as ordinary lane text.
 Keep full semantic identity and diagnostic information available through a
@@ -137,7 +141,11 @@ of failure.
 The default lane is one node presentation, not the old per-port panel nested
 inside another lane system. Port controls belong in a compact port area or its
 temporary expansion. This does not merge port identities or require a single
-output visualization for the node.
+output visualization for the node. The newer
+[Vue lane and meter refinement](./vue_presentation_refinement_direction.md)
+requires channel-correct stereo meters, distinct dBFS level and linear value
+modes, an integrated input knob/port arrangement, and an output gain control
+on types for which scalar gain has meaning.
 
 ### Proposed port area and temporary expansion
 
@@ -152,20 +160,22 @@ are extension actions available through the Command Palette or user shortcuts.
 Do not add a permanent toolbar or lane edit button for those actions. The
 previously requested copy-debug button remains separate from these actions.
 
-The owner settled the grouping rule on 2026-11-13. Input and output controls
-always occupy separate locations. For each side, one port has a direct handle;
-more than one port uses a grouped slot. A side with no ports has no handle.
-Hovering the grouped slot immediately exposes all ports on that side in a
-temporary panel over the display area. This does not require Shift, increase
-lane height, or depend on how many icons could fit beside one another.
-
-The first port circle occupies the grouped icon's position, using the same
-first-item alignment as a connection chooser. The list has no decorative
-header or connection summaries beneath its ports. It contains only the port
-rows. Near the bottom of the viewport, the remaining rows grow upward while
-the first port remains at the opening control. Port details remain available
-in tooltips. The preceding layout is retained in
-[Vue Port Lists Before First-Item Alignment](./historical/vue_port_lists_before_first_item_alignment_2026-11-13.md).
+The 2026-11-16 follow-up supersedes the standalone stacked-slot arrangement
+for **folded inputs**. After placing as many complete input controls as fit,
+**the last visible input itself is the expansion anchor**, retaining its knob,
+port circle and name. Hover/focus extends the lane header with the remaining
+input rows aligned to the same knob/port/name columns; opening or closing it
+must **never move any already-visible knob or the anchor's port endpoint**.
+Do not duplicate the anchor knob inside the continuation. The extension must
+keep the header appearance and anchor position, not behave like a floating
+panel that is relocated in order to fit the viewport. Use bounded clipping or
+scrolling for excess rows without changing the lane's permanent height.
+Inputs and outputs still retain separate connection identities, drag targets,
+direction-specific hover and candidate rules; the same stable-geometry
+principle applies to grouped outputs where appropriate. See the complete
+[anchored expansion contract](./vue_presentation_refinement_direction.md#folded-inputs-extend-the-existing-lane-header).
+The prior grouped-slot and first-item-placement wording is preserved
+[historically](./historical/vue_nested_port_clip_scale_and_ruler_input_before_2026-11-16.md#previous-folded-port-slot-geometry).
 
 `NodePorts` renders these temporary lists as `.port-panel` elements. In UI
 discussion, a **popover** means a temporary panel above the existing display:
@@ -210,9 +220,14 @@ The earlier fit-based proposal is retained in
 
 ### Lane selection and connection display
 
-The owner requested this display on 2026-11-13. Selecting a lane displays its
-incoming and outgoing connections. Hovering another lane's grouped port slot
-does not transfer selection to that lane.
+The original 2026-11-13 selection-only display is superseded by
+[Vue Lane, Meter, Port-Control, Cable, And Automation Interaction Direction](./vue_presentation_refinement_direction.md#4-connection-cable-legibility-and-future-subgraphs).
+Selecting lanes emphasizes their connections, but unrelated connections retain
+legible context instead of disappearing outright. Cable transparency/layering
+must protect lane-name readability; the precise visual tuning remains open.
+Hovering another lane's grouped port slot still does not transfer selection.
+The replaced requirement is preserved in
+[historical documentation](./historical/vue_lane_controls_and_cables_before_refinement_2026-11-16.md).
 
 If a connected port is hidden inside a grouped slot, draw that wire endpoint
 at the slot. Connections with the same visible endpoints share one drawn wire.
@@ -618,10 +633,15 @@ Fitting must account for the complete row height, including its knob. Knobs
 and wire handles keep separate drag targets. In narrow lane labels, keep those
 targets reachable even when names or numeric readouts need to be hidden.
 
-Place the control between its port circle and displayed name. Keep the knob
-and wire handle as separate pointer targets. Show the logical value prominently;
-when finite minimum and maximum bounds exist, also show the normalized 0–1
-value with less emphasis.
+The 2026-11-16 [unified input-control direction](./vue_presentation_refinement_direction.md#2-input-knobs-and-ports-as-one-visual-input)
+supersedes the old separate-looking circle/knob/value row: show the knob left
+of its port circle, with the input name to the right, as one compact visual
+input. Keep the knob and wire handle as distinct pointer targets. Do not show
+numeric values permanently inline; retain the status-bar feedback and explore
+a temporary detailed value popover above the knob on hover or drag. Bound
+indicators and the usable knob orientation arc must treat each finite minimum
+and maximum independently. The replaced wording is preserved in
+[historical documentation](./historical/vue_lane_controls_and_cables_before_refinement_2026-11-16.md).
 
 _Accepted visual feedback, 2026-11-14:_ distinguish idle, hovered, and dragged
 knobs with subtle stroke and fill changes in the knob's own color. Avoid a blue
@@ -664,10 +684,36 @@ Hover + R with double-click on 2026-11-14. The
 is retained for provenance.
 
 A compact VS Code status item reports the hovered knob's shortcuts and the
-active drag's value and sensitivity; its tooltip holds fuller help. Clear it
-when the relevant context or focus is lost. Hover never steals keyboard focus
-from another editor. Gesture and numeric-entry ownership belongs to the webview
+active drag's value and sensitivity; fuller help is available deliberately
+rather than as automatic per-control hover balloons. Clear the status item
+when the relevant context or focus is lost. The
+[status-first presentation policy](./vue_presentation_refinement_direction.md#6-contextual-information-status-bar-before-tooltips)
+also applies to point and port details without removing accessible names or
+keyboard descriptions. Hover never steals keyboard focus from another editor.
+Gesture and numeric-entry ownership belongs to the webview
 root, so remounting a port widget does not silently end its interaction.
+
+### Clipboard copy/paste is a full value gesture (accepted 2026-11-16)
+
+Hover/focus on a knob makes plain `c` copy its **actual numeric value as
+round-trippable text to the system clipboard**; plain `v` pastes compatible
+numeric text from the system clipboard (including text copied in other apps).
+The active text editor retains normal typing shortcuts. Validate value type
+and independently optional numeric limits; do not paste orientation fractions,
+silently clamp invalid values, or keep a webview-private copy buffer. Clipboard
+access may be brokered by the extension host when necessary.
+
+On paste, activate the matching **pre-built live manual-control GraphJit
+variant** prepared by hover, then publish the pasted target through the same
+live gesture path as grabbing, moving and releasing the knob **while still
+hovered**. Finish one undoable gesture and request the next constant-specialized
+variant for the new settled value, retaining the live version until normal
+hover-exit activation. Do not let a stale constant-specialized graph pretend
+to use the pasted value. If live code is pending, keep the desired value and
+report pending until safely activated. `c` alone is read-only and must not
+trigger compilation or create undo history. The full ordering, status and
+control constraints are in
+[Knob clipboard transfer](./vue_presentation_refinement_direction.md#hover-keyboard-clipboard-transfer-for-knob-values).
 
 ### Manual-control history is grouped by completed interaction (planned)
 
@@ -705,7 +751,12 @@ when the gesture ends. The live value is the latest value of an open gesture. Th
 effective manual value is the value used by the active executable graph. These values
 can differ while a gesture is open or a replacement graph compiles.
 
-Hover requests compilation of dynamic-input code. Hover does not activate that code.
+Hover requests compilation of dynamic-input code. Hover does not activate that code
+**by itself**. Pasting a numeric value while hovered is an explicit gesture
+that requests activation of the matching prepared dynamic variant **before**
+using the pasted live target; after committing, it requests the next
+constant-specialized variant just as a mouse release does. See
+[clipboard interaction](./vue_presentation_refinement_direction.md#hover-keyboard-clipboard-transfer-for-knob-values).
 If scrubbing starts first, the gesture's live value changes while the active graph keeps
 using its existing constant. No generic execution path applies the new value to code
 that does not support a dynamic input.

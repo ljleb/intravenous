@@ -3,6 +3,7 @@
 #include <intravenous/channel_layout.h>
 #include <intravenous/global_index.h>
 #include <intravenous/sample.h>
+#include <intravenous/observation.h>
 
 #include <algorithm>
 #include <array>
@@ -155,6 +156,8 @@ enum class SequentialFallback : std::uint8_t { neutral, manual_control };
 // realization code. Storage elements must remain trivial: generated execution
 // may copy, clear, persist and relocate them without invoking C++ object code.
 struct SampleContinuousValueExtension {
+    static constexpr std::span<ObservationOperation const> observation_operations()
+    { return observation_details::sample_operations; }
     using value_type = Sample;
     using storage_element = Sample;
     using const_reference = Sample;
@@ -987,6 +990,7 @@ struct ContinuousValueTypeInfo {
         std::size_t destination_elements,
         void const* source,
         std::size_t source_elements) noexcept = nullptr;
+    std::span<ObservationOperation const> observation_operations{};
 };
 
 namespace continuous_value_details {
@@ -1039,6 +1043,14 @@ consteval auto shape_migration_operation() noexcept
     }
 }
 
+template<class Extension>
+consteval std::span<ObservationOperation const> observation_operations()
+{
+    if constexpr (requires { Extension::observation_operations(); })
+        return Extension::observation_operations();
+    else return {};
+}
+
 } // namespace continuous_value_details
 
 inline constexpr auto continuous_value_type_registry = std::array {
@@ -1061,6 +1073,8 @@ inline constexpr auto continuous_value_type_registry = std::array {
         .migrate_value_shape =                                           \
             continuous_value_details::shape_migration_operation<         \
                 extension>(),                                            \
+        .observation_operations =                                       \
+            continuous_value_details::observation_operations<extension>(),\
     },
     IV_CONTINUOUS_VALUE_TYPES(IV_CONTINUOUS_VALUE_TYPE_INFO)
 #undef IV_CONTINUOUS_VALUE_TYPE_INFO

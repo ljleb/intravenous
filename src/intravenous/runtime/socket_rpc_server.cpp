@@ -1299,4 +1299,23 @@ void SocketRpcServer::handle_package_refresh_published(
     if (publication.package_catalog_changed) send_iv_package_definitions_updated();
     send_project_graph_publication(publication.project);
 }
+void SocketRpcServer::send_observations(std::span<ObservationDelivery const> deliveries)
+{
+    for (auto const& delivery : deliveries) {
+        if (!delivery.payload) continue;
+        std::vector<std::shared_ptr<Impl::Client>> targets;
+        {
+            std::scoped_lock lock(impl_->clients_mutex);
+            for (auto const& [key, client] : impl_->clients) {
+                std::scoped_lock client_lock(client->mutex);
+                if (client->authenticated && impl_->connected_client_id(key) == delivery.client_id && !client->closing)
+                    targets.push_back(client);
+            }
+        }
+        auto frame = jsonrpc_notification("observations.updated", *delivery.payload);
+        for (auto const& client : targets)
+            impl_->enqueue_live_frame(client, "observations", frame);
+    }
+}
+
 } // namespace iv

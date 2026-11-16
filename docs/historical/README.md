@@ -49,6 +49,14 @@ These documents are retained because they record deleted architectures, supersed
 
 ## Superseded lane-era feature designs
 
+- [Port Tooltips Before Status-First Presentation (2026-11-16)](./vue_port_tooltips_before_status_first_2026-11-16.md)
+  preserves the earlier routine port and knob tooltip wording superseded by the
+  [status-first interaction policy](../vue_presentation_refinement_direction.md#6-contextual-information-status-bar-before-tooltips).
+
+- [Vue Lane Controls And Cables Before The 2026-11-16 Refinement](./vue_lane_controls_and_cables_before_refinement_2026-11-16.md)
+  preserves the selection-only cable visibility and inline knob-value placement
+  requirements replaced by the current [Vue lane refinement](../vue_presentation_refinement_direction.md).
+
 - [Lane Knobs Before Default Inline Display (2026-11-14)](./inline_lane_knobs_before_default_display_2026-11-14.md)
 - [Knob Reset Before Double-Click (2026-11-14)](./knob_reset_before_double_click_2026-11-14.md)
 - [Audio Device Lanes Direction](./audio_device_lanes_direction.md)
@@ -277,3 +285,5 @@ These documents are retained because they record deleted architectures, supersed
   before the owner restricted fallback to Sequential inputs.
 
 - [Replay coverage before TickReplayMode](replay_coverage_before_tick_replay_mode_2026-11-15.md) preserves the boolean replay opt-in, the same-day full-coverage reading of generated replay propagation, and the pending per-output proposal that `TickReplayMode` replaced.
+
+- [Port grouping and project grid before anchored nested inputs and ruler-connected snapping (2026-11-16)](./vue_nested_port_clip_scale_and_ruler_input_before_2026-11-16.md).

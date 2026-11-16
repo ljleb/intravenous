@@ -1,4 +1,5 @@
 #pragma once
+#include <intravenous/runtime/observation_events.h>
 
 #include <intravenous/runtime/project_edit.h>
 #include <intravenous/runtime/node_message_gesture.h>
@@ -205,6 +206,7 @@ class ProjectGraph {
         std::vector<ManualControlId> dynamic_inputs{};
         bool activate_on_ready = false;
         std::shared_ptr<ControlCompileTrace> trace{};
+        CompiledObservationPlan observations{};
         // A prepared candidate being promoted to staging; skip recompiling it.
         std::shared_ptr<CompiledGraph const> prepared_graph{};
     };
@@ -221,6 +223,7 @@ class ProjectGraph {
         bool activate_on_ready = false;
         std::shared_ptr<ControlCompileTrace> trace{};
         std::shared_ptr<ConfiguredGraph const> graph{};
+        CompiledObservationPlan observations{};
     };
 
     std::vector<ProjectEditEffect> edit_history_{};
@@ -247,6 +250,7 @@ class ProjectGraph {
         std::function<void()> const& authorize_audio = {});
 
     mutable std::mutex mutex_;
+    ObservationRequirements observation_requirements_{};
     std::shared_ptr<NodeDefinitionsSnapshot const> definitions_snapshot_{};
     std::shared_ptr<ProjectGraphGeneration const> current_generation_{};
     std::shared_ptr<ProjectGraphConfigurationFailure const> configuration_failure_{};
@@ -346,6 +350,7 @@ public:
     ProjectGraph(ProjectGraph const&) = delete;
     ProjectGraph& operator=(ProjectGraph const&) = delete;
 
+    void handle_observation_request(ObservationGraphRequest& request);
     [[nodiscard]] std::shared_ptr<ProjectGraphGeneration const> current_generation() const;
     // The failure of the latest configuration pass, or null when it succeeded.
     [[nodiscard]] std::shared_ptr<ProjectGraphConfigurationFailure const>

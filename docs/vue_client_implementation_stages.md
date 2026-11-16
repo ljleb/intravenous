@@ -203,6 +203,98 @@ the whole Vue client to be finished.
 
 ## Current stage
 
+### Owner UI refinement and revised remaining-work order (2026-11-16)
+
+This note updates priority **after** the Stage 4 live-output observation
+checkpoint and the reported 1,062-test verification, with further owner UI
+requirements recorded later on 2026-11-16 for folding, clipboard/paste,
+automation bounds/zoom, ruler-connected event snapping, and palette exploration.
+It is a plan for future
+work, **not** an implementation result or an instruction to begin all requested
+features immediately. The normative requirements are in
+[Vue Lane, Meter, Port-Control, Cable, And Automation Interaction Direction](./vue_presentation_refinement_direction.md),
+[Project Playback And Presentation Grids](./project_playback_and_presentation_grids_direction.md),
+and [Vue Output Observation](./vue_output_observation_direction.md).
+
+1. **Finish and verify Stage 4's real live-observation path first.** Resolve
+   the outstanding module-output capability/structured-clone verification and
+   make channel identity correct end to end. A stereo `Sample` output must get
+   two green, ruler-graded meters with readable dBFS level scaling. Provide a
+   separate linear, unscaled `value` presentation mode (`0.5` halfway on a
+   0–1 scale). The output meter must expand across **the full remaining lane
+   width**, with distinct stereo channels and legible shared grading rather
+   than a tiny fixed-width widget. Retain Stage 4's safe probe activation,
+   coalescing and realtime cost requirements; verify actual client behavior before declaring this done.
+2. **Complete coherent lane headers, controls and clipboard editing.** Treat
+   each input knob and port as one control (knob left, port right, label right).
+   If folding is required, the **last directly visible input keeps its knob**
+   and becomes the expansion anchor; hovering it extends the header with
+   hidden inputs in the **same knob/port columns**, without moving visible
+   knobs or relocating the panel to an unrelated screen position. No permanent
+   inline numeric readouts. Show independent min/max indicators with a stable
+   knob arc. Provide `c`/`v` on hovered knobs through the OS text clipboard:
+   **copy raw numeric values**, paste through the actual live-knob gesture,
+   activate the prepared dynamic GraphJit variant, apply the value when active,
+   commit one undoable edit, and precompute the next constant-specialized
+   variant as if the pointer were released while still hovering. Preserve
+   pending-activation honesty, text-input priority, and invalid-value
+   reporting. Investigate transparent contextual cables and status-bar-first
+   information without sacrificing labels, port dragging or accessibility.
+3. **Complete automation's sample-accurate clip editor and value scale.**
+   Draw the seconds/sample ruler **inside the clip**, aligned with the primary
+   time axis, and quantize every live point-drag draft to project samples.
+   Support independently optional min/max value bounds: two bounds give a
+   linear vertical axis; one or neither gives a stable curved axis as on
+   knobs; point edits never auto-fit the axis. Honor existing lane `nano`
+   (covered time intervals only), `mini` (read-only curve), and `editable`
+   (points, tension, menus, full editing) vertical zoom levels without adding
+   clip-local zoom. Retain small filled points, generous hit targets,
+   Shift+click deletion, right-click segment menus/creation and status-first
+   information. These are independent of the later graph-event snap input.
+4. **Add the top-ruler header's event snap input.** After basic sample-
+   aligned editing, expose a **non-resizable header input** connected to graph
+   event streams. Prefer a Coverage input with multiple incoming contributions
+   and a dropdown selecting the specific cover to use for snapping. Define
+   timestamp-only projection from every event payload type to `TriggerEvent`
+   without inventing conversions between unrelated event payloads. Preserve
+   selected-cover identity, bounded graph queries, unavailability reporting,
+   editing history, and project sample-grid fallback. This is a whole
+   graph/connection-planning, observation, ruler, and automation feature.
+5. **Implement output gain end to end as a separate control/GraphJit feature.**
+   Add unbounded default-`1` gain knobs for gain-capable output ports; specialize
+   unity to **zero gain-related generated instructions** and implement non-unity
+   execution, snapshots, history and transition semantics together. Test
+   compiler output and runtime results. This must not be an always-on multiply.
+6. **Explore port palette variants, then defer larger organization work.**
+   Prototype equal-RGB-distance yellow/orange input and blue/purple output
+   pairings, without prematurely assigning the variants to event/continuous
+   versus computed/buffered roles. Keep palette exploration independent of
+   graph connection semantics until its meaning is selected. Investigate
+   cable opacity during the near-term readability
+   work, but project-authored subgraphs and their collapsed external cable
+   merging form a larger graph/presentation feature. Stage 5 Tock window
+   observation, bounded live waveform improvements, playback controls,
+   input-value observation, and shared buffered-page storage retain their
+   existing prerequisites; do not build them as incidental workarounds for
+   this UI checkpoint. Re-evaluate their relative order after the active
+   Stage 4 and lane improvements are verified.
+
+The ruler-header Coverage input and universal event-timestamp projection are
+new connection/execution dependencies; they do not replace the already
+available sample-grid quantization or require completing full Stage 5
+waveform observation before basic automation editing. Clipboard paste must be
+verified against the manual-control GraphJit variant activation protocol, not
+just against a Vue input value change. Exact knob expansion geometry and
+open/close pointer hit-testing must be exercised together with cable endpoint
+placement. The color-code assignment remains exploratory.
+
+The earlier source checkpoints below preserve their dates and observed behavior.
+In particular, the prior double-click-add/right-click-delete automation
+interaction is **superseded intent**, although it may still be what source
+implements until the editor is updated. No C++/Vue tests were run for this
+documentation-only reprioritization.
+
+
 2026-11-15 update: the accepted
 [automation and suspendable-propagation direction](automation_and_suspendable_coverage_direction.md)
 supersedes the cyclic linear automation checkpoint below. The implementation
@@ -2672,3 +2764,179 @@ the stable hierarchy, reset behavior, fixture names, and escaped-name identity.
 The full CMake reconfigure, build, and test run are still needed to verify the
 updated test infrastructure in the complete project. The temporary exit-cleanup
 implementation and cleanup command were removed from source.
+
+
+### Stage 4 start and verified prerequisite, 2026-11-16
+
+The owner reports that all tests pass after the State lifecycle migration and
+stable-workspace correction. The supporting cleanup is verified. Stage 4 is now
+active: live Tick observation, with a numeric State field and a Sample output
+level meter as the first complete feature.
+
+Implementation order within that feature:
+
+1. Trace the existing realization, control-code replacement, transport, and Vue
+   presentation paths. Resolve source/type capabilities and bounded capture at
+   the producer boundary without changing authored graph semantics.
+2. Carry one accepted observation requirement snapshot through every structural
+   and control-code compilation. Publish capture bindings with actual executor
+   activation identity, including empty plans and source invalidation.
+3. Add the Observations application module, scope reconciliation and lease
+   cleanup, shared capture, bounded collection, and disposable per-client batches.
+4. Connect host-owned Vue interests to generic output meters and one supported
+   Tick State field. Keep subscription lifetime independent of component remounts.
+5. Test edits, control-code races, activation, source removal, disconnects, and
+   slow clients. Measure compilation and realtime capture overhead. Only then
+   extend the working live pipeline with bounded waveform observation.
+
+These are implementation steps of one end-to-end feature, not standalone module
+deliverables. The output-observation contract remains authoritative. Playhead/
+play-pause and background window observation remain separate outstanding work.
+
+
+### Stage 4 live observation source checkpoint, 2026-11-16
+
+The first live path now connects the Vue default lane, `Observations`,
+`ProjectGraph`, GraphJit, `GraphExecutor`, and disposable socket notifications.
+It supports `Sample` output `level` and reflected Tick State `float`/`double`
+field `latest`. Source capabilities include operation result schemas; unsupported
+field types and Tock State are not exposed. The default lane shows output meters
+and the first supported State field. Specialized presentations can retain their
+own lane contents.
+
+`level` reduces the latest captured audio block, including its primitive slices
+and selected physical channels. It reports sample peak, RMS, finite sample count,
+and nonfinite count. It does not promise peak hold, true peak, or statistics over
+blocks skipped by disposable delivery. State capture runs after the owning
+primitive's callback. No mutable DSP storage is read by the control thread.
+
+The compiler adds read-only observation inputs through normal connection and
+storage planning. These inputs extend source-buffer lifetimes where needed.
+Authored graph records are unchanged. Structural and knob-code compilations carry
+the accepted requirement revision; obsolete control compilations cannot stage a
+plan that drops newer probes. Executor frames carry the actual activation order,
+including empty plans and unavailable playback blocks.
+
+The graph webview owns one viewport scope. Visible presentations contribute to a
+batched desired set, with a 200 ms grace period. Identical interests share capture
+across clients. Scopes renew every 10 seconds, expire after 30 seconds, and are
+released on disconnect or panel closure. The initial limits are 64 scopes, 64
+interests per scope, and 256 distinct executable probes. A single control-path
+collector uses the existing runtime service; no observation thread is added.
+Updates are capped at 20 Hz and replace a queued batch for that client. They do
+not enter the reliable project-revision journal.
+
+For timing, `observations.reconcile` reports `compilationUs` for observation-plan
+changes. Start the server with `IV_OBSERVATION_TIMING=1` to include `captureNs`
+in `observations.updated`; clock calls around captures are disabled otherwise.
+These measurements cover capture work, not all DSP or the extra source-buffer
+lifetime. Compare the existing edit/audio benchmarks with the viewport closed
+and open before drawing a conclusion about total overhead.
+
+Verification is in progress. The next extension within Stage 4 remains bounded
+live waveform observation. Stage 5 background-window queries and the playhead
+contract remain outstanding.
+
+
+Owner verification update, 2026-11-16: 1,060 of 1,062 tests passed. The two
+failures exposed mistakes in the new observation tests: an RPC address omitted
+its required empty path, and the source-removal test compiled a steady successor
+without its predecessor cutover. Those fixtures are corrected; verification of
+the corrections is pending. The RPC test also now expects the route registry's
+exception when a method name disagrees with its parsed payload type.
+
+Builds, test execution, profiling, and other slow commands remain owner-run.
+The agent changes source and reads the resulting logs.
+
+
+### Owner-requested connection cleanup on deletion, 2026-11-16
+
+Pending implementation: when the user deletes a node, remove its incident
+connection state, including connections to its children. Do not leave dangling
+endpoints in the UI for the user to clean up. Preserve unrelated connections.
+Apply the cleanup within the same undoable project edit, so undo restores the
+node and its affected connections together.
+
+This supersedes the earlier requirement to retain dangling matchers after
+explicit user deletion. It does not request removing connections merely because
+a definition fails to load or an endpoint is temporarily unavailable. Before
+implementing the change, update the conflicting deletion passages in
+`project_undo_redo_and_backups_direction.md`, preserving them under
+`docs/historical/` as required by the development workflow. No deletion behavior
+is changed by this note.
+
+Owner verification update: all 1,062 backend tests pass after the observation
+fixture corrections. The main graph's missing meters exposed a frontend gap:
+reactive Vue addresses were passed directly to `postMessage`. Observation
+requests now copy plain JSON data before that boundary, and RPC wrappers ensure
+root addresses carry `path: []`. The client regression now uses reactive nested
+addresses and a structured-clone boundary. Owner verification of this client
+correction is pending.
+
+
+### Missing module meters and deferred startup ordering, 2026-11-16
+
+The owner confirms that the missing visualization is in the main graph window.
+The default lane's meter component is present, but capability discovery rejected
+module output declarations whose allowed value-type set contained more than one
+type. `GraphBuilder::outputs()` deliberately uses the audio-capable type set;
+that set is a declaration domain, not the port's resolved runtime type. A Sample
+output such as the one exposed by `iv.project.saw` was therefore omitted.
+
+The lookup now uses `ResolvedPortRealization` for those declarations. Discovery
+reuses the configured generation's compiled type metadata when present. If it is
+not present, the existing constraint solver can determine types without LLVM code
+generation or a live audio node. Observation requirements use the same rule.
+An output resolved to another value type is not forced to Sample by a meter.
+Added regressions cover module capability discovery without an audio compilation
+and module-address discovery through capture in a real compiled graph. Owner
+verification is pending; no builds, tests, or profiling were run for this fix.
+
+The owner explicitly defers the broader startup-order cleanup until the main
+meter works. Record that follow-up as: after the necessary packages are built,
+construct presentation structure from available declarations and configuration
+metadata. Inputs, outputs, and visualization layout must not require live DSP
+instances or the first successful audio-graph compilation. Pending live data
+should affect the displayed value/availability, not whether those UI structures
+exist. This pass does not claim to complete that broader lifecycle change.
+
+
+### Observation fixture correction and refinement review, 2026-11-16
+
+The owner reports 1,063 of 1,064 tests passing. The remaining module-meter test
+failed before observation discovery: `make_graph_jit_snapshot()` published only
+leaf definitions, so ProjectGraph could not create its requested module. The
+shared fixture now publishes the revision's module definitions as well, retaining
+their providers, configuration graph, metadata, and module lifetimes. The test
+asserts the module is present before creating it. Owner verification is pending;
+the agent has not run a build or test.
+
+Reviewed the three owner-applied documentation patches dated 2026-11-16:
+`intravenous_vue_ui_refinement_docs`,
+`intravenous_vue_automation_ruler_snap_meter_followup_docs`, and
+`intravenous_vue_nested_ports_clipboard_snap_and_curve_docs`. Their combined
+remaining-work order is recorded near the start of this document under
+[Owner UI refinement](#owner-ui-refinement-and-revised-remaining-work-order-2026-11-16).
+That order takes precedence over older checkpoint statements about immediately
+adding live waveform observation.
+
+The current meter implementation still aggregates selected channels into one
+`level` result, uses a short blue linear-amplitude indicator, and has no signed
+sample `value` operation. These are implementation gaps against the new channel-
+correct green dBFS/linear-value contract, not accepted compromises. Complete and
+verify the default lane's visible meter path before expanding controls or ruler
+snapping. The owner's broader startup metadata-order correction follows the
+missing-meter repair, as already recorded.
+
+The automation sample-index requirement also reaches beyond drawing a grid:
+`automation::Point` and `MovePoint` currently transport floating-point seconds.
+The accepted exact integer sample identity must therefore be preserved through
+typed messages, saved construction data, generated bindings and live drafts.
+The later ruler Coverage input additionally needs contribution identity and the
+specific event-to-trigger timestamp projection. Neither requirement calls for
+a new replayable Tock mode or an implicit project BPM system.
+
+Explicit user-deletion connection cleanup remains pending alongside the earlier
+owner request. Palette semantics, ruler ownership and snap interaction details
+remain decisions for their respective features; do not silently choose them
+while implementing the current meter fix.

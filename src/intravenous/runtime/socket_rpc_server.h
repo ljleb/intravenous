@@ -136,6 +136,7 @@ namespace iv {
         std::unique_ptr<Impl> impl_;
 
     public:
+        void send_observations(std::span<ObservationDelivery const> deliveries);
         explicit SocketRpcServer(
             std::filesystem::path workspace_root,
             int initial_rpc_fd = -1);

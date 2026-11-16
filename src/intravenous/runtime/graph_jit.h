@@ -1,4 +1,5 @@
 #pragma once
+#include <intravenous/runtime/observation_types.h>
 
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph/realtime_port_planning.h>
@@ -184,6 +185,7 @@ struct CompiledGraphBackgroundOperations {
 // Generated background code remains pinned by code_lifetime; each realtime root
 // operation owns its RealtimeRootPlan.
 struct CompiledGraph {
+    CompiledObservationPlan observations{};
     std::uint64_t project_generation = 0;
     std::uint64_t definitions_generation = 0;
     GraphJitKernelSpecialization specialization{};
@@ -209,6 +211,7 @@ struct GraphJitCompileRequest {
     std::uint64_t project_generation = 0;
     std::shared_ptr<ConfiguredGraph const> graph{};
     std::shared_ptr<NodeDefinitionsSnapshot const> definitions{};
+    CompiledObservationPlan observations{};
 };
 
 // A transition specialization augments an already compiled steady successor.

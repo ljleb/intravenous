@@ -81,6 +81,28 @@ representative sparse samples or a range envelope when that distinction affects
 accuracy. Event-density reductions must not silently masquerade as complete
 lossless event histories.
 
+### Multichannel sample observation and meter display (owner refinement, 2026-11-16)
+
+A `Sample` output's `level` result preserves the resolved physical channel
+layout. A stereo producer yields distinct left/right channel measurements,
+not a single mixed-down lane meter. The operation's result shape and any
+channel selection must let Vue render the same independent channels that the
+source actually produces. A missing or unavailable observation is not a
+zero-level channel. Preserve the meaning of sample-peak/RMS reductions;
+`level` is not a true-peak operation.
+
+The [Vue meter direction](./vue_presentation_refinement_direction.md#1-channel-correct-meters-and-two-display-modes)
+requires a green dBFS-graded **level** mode and a separate untransformed,
+linear **value** mode; visual scaling belongs in Vue, not the DSP values.
+If `value` needs a latest-sample operation rather than a block reduction,
+request the appropriate registered operation explicitly. Reuse ruler-grade
+visual presentation with square corners rather than inventing another
+unrelated meter tick system. The meter presentation occupies the **full
+remaining horizontal width** of its lane after necessary controls and labels;
+independent stereo channels share that full-width display without collapsing
+into a single measurement. These are new requirements, not a claim that the
+existing Stage 4 client renders them.
+
 For reflected Tick `State`, start with a fixed, explicit set of supported
 field types in a **global type codec/capture registry**. Discoverability from
 `NodeStateStructure`/`NodeStateFieldStructure` does not imply observability:

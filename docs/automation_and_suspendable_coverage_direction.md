@@ -82,6 +82,37 @@ implementation decisions; an illustrative smoothstep or Hermite formula is
 not itself the normative formula. `empty` segments do not imply continuity
 of tangents through the gap.
 
+### Vue point editing and source-driven snapping (owner refinement, 2026-11-16)
+
+The backend segment and tension definitions above are unchanged. The Vue editor
+must eventually expose tension via a handle near each point; its interaction
+semantics, right-click outgoing segment menu, right-click empty-space addition,
+left-click manipulation, and **Shift+click point deletion** are defined in
+[Vue Lane And Automation Interaction Direction](./vue_presentation_refinement_direction.md#5-automation-editing-and-graph-authored-snapping).
+That document makes snapping automation points to a **cover chosen from the
+top-ruler header's connected event Coverage input** an explicit intended
+feature. All event payload types can project their occurrence times to
+`TriggerEvent`; the specific cover is chosen through the ruler dropdown.
+The existing
+editor's double-click-add/right-click-delete behavior is an earlier source
+checkpoint, not the destination. This is UI intent and does not add DSP
+interpolation work to the audio thread. A clip-local seconds/sample ruler,
+nearest-project-sample quantization during **every drag update**, and small
+filled point markers with larger invisible hit areas are further UI
+requirements; see the same document's
+[clip ruler](./vue_presentation_refinement_direction.md#automation-clip-ruler-and-sample-accurate-editing)
+and [point marker](./vue_presentation_refinement_direction.md#small-filled-control-point-markers)
+sections. The graph-selected snap grid is additional to mandatory sample
+alignment, not its replacement.
+
+The curve presentation additionally has independently optional value bounds:
+with two bounds use a linear value axis; with one or none use the same kind
+of curved value mapping as an unbounded knob. Editing points never rescales
+that axis automatically. In lane `nano` zoom show only exact covered/empty
+time intervals; in `mini` show the curve read-only; expose point/tension
+editing only at `editable` zoom. See
+[Vue Presentation Refinement](./vue_presentation_refinement_direction.md#explicit-value-bounds-and-lane-zoom-categories).
+
 ## 3. Event types and explicitly meaningful conversions
 
 The general `Event`/`EventTypeId` system may contain application-specific
@@ -96,19 +127,29 @@ filtering must document that property; it is not equivalent to a lossless
 C++ subtype conversion. Never invent missing payload meaning merely to make
 all event types connected. Absent conversion paths are normal.
 
-Potential `CurvePointEvent` projections are:
+**Accepted event-grid requirement (2026-11-16):** every event type has a
+specific timestamp-only conversion to `TriggerEvent`. Event envelopes already
+carry an occurrence position; the conversion keeps that sample index and
+ignores the event's payload. The rule gives any event stream a way to supply
+ruler/snap timestamps, **not** a universal conversion between event payload
+types or a way to invent missing events. The earlier optional-curve-trigger
+wording is preserved
+[historically](./historical/vue_nested_port_clip_scale_and_ruler_input_before_2026-11-16.md#previous-optional-curve-to-trigger-conversion-wording).
+
+The relevant `CurvePointEvent` projections are:
 
 - `SampleEvent`: the timestamp and stored value, discarding segment policy;
-- `TriggerEvent`: a point occurrence, discarding value and segment policy;
+- `TriggerEvent` (**now required for all event types**): a point occurrence,
+  retaining only its timestamp and discarding value and segment policy;
 - `BoundaryEvent`: the outgoing active/inactive state at that timestamp
   (`hold`/`bezier` versus `empty`), discarding value and tension. This may
   include repeated begin/end states at consecutive points. Computing a
   *minimal* active-region boundary sequence requires sequence-aware
   coalescing; a per-event conversion must not claim to do that by itself.
 
-These are meaningful candidates, not mandatory conversion edges until their
-semantics and consumers are established. No curve-to-MIDI or MIDI-to-curve
-conversion is implied.
+The `SampleEvent` and `BoundaryEvent` projections above remain candidates;
+`TriggerEvent` is the accepted universal timestamp projection for every
+event type. No curve-to-MIDI or MIDI-to-curve conversion is implied.
 
 Event port schemas should be extensible to accept multiple event types, with
 `std::variant`-style consumption without mandatory conversion to one type.

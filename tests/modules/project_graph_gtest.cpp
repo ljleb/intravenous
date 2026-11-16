@@ -1007,6 +1007,7 @@ struct ManualControlCompileRecord {
     std::vector<iv::ManualControlId> dynamic_inputs{};
     bool has_predecessor = false;
     std::vector<iv::ConfiguredManualControl> controls{};
+    std::uint64_t observation_revision = 0;
 };
 
 struct ManualControlTargetRecord {
@@ -1055,6 +1056,7 @@ public:
                 .has_predecessor = static_cast<bool>(request.predecessor),
                 .controls = request.successor.graph ? request.successor.graph->manual_controls
                     : std::vector<iv::ConfiguredManualControl>{},
+                .observation_revision = request.successor.observations.revision,
             });
             needs_storage = dynamic_controls_need_storage_ && !inputs.empty();
             auto const block = std::exchange(block_next_compilation_, false);
@@ -1073,6 +1075,7 @@ public:
         auto compiled = std::make_shared<iv::CompiledGraph>();
         compiled->project_generation = request.successor.project_generation;
         compiled->configured_graph = request.successor.graph;
+        compiled->observations = request.successor.observations;
         compiled->node_layout.storage_size = needs_storage ? 8 : 0;
         compiled->node_layout.steady_storage_size = compiled->node_layout.storage_size;
         compiled->root_operations.tick_block.function = +[](
@@ -1104,6 +1107,7 @@ public:
             structural_stages_.push_back({
                 .project_generation = graph->project_generation,
                 .dynamic_inputs = dynamic_inputs(graph->configured_graph->manual_controls),
+                .observation_revision = graph->observations.revision,
             });
         }
         changed_.notify_all();
@@ -1147,6 +1151,7 @@ public:
                 .project_generation = graph ? graph->project_generation : 0,
                 .dynamic_inputs = std::move(inputs),
                 .controls = graph->configured_graph->manual_controls,
+                .observation_revision = graph->observations.revision,
             });
         }
         changed_.notify_all();
@@ -3875,4 +3880,60 @@ TEST_F(ProjectGraphFixture, BeginningAnotherGestureDoesNotCloseHistoryButItsFirs
         iv::OwnedNodeMessage(ReplaceWithValue{.value = 99}), first); }), std::exception);
     iv::ProjectAckBuilder undo;
     EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(undo); }), std::runtime_error);
+}
+
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, ObservationRevisionSurvivesStructuralAndControlCompilation)
+{
+    auto const controls = realize_controls(1);
+    iv::ObservationGraphRequest observations{.requirements = iv::ObservationRequirements{.revision = 42,
+        .probes = {{.id = 1, .source = {.node = {.instance_id = "removed"}, .member = "out"}, .operation = "level"}}}};
+    in_event_source([&] { project_graph.handle_observation_request(observations); });
+    ASSERT_TRUE(observations.error.empty()) << observations.error;
+    EXPECT_EQ(probe.compilations().back().observation_revision, 42u);
+    hover("ui", controls[0]);
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "observed"};
+    begin(gesture, controls[0], .25f);
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    EXPECT_EQ(probe.stages().back().observation_revision, 42u);
+    end(gesture, .5f);
+    hover("ui", std::nullopt);
+    ASSERT_TRUE(probe.wait_for_stages(2));
+    EXPECT_EQ(probe.stages().back().observation_revision, 42u);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, NewObservationPlanSupersedesAnInflightHoverVariant)
+{
+    auto const controls = realize_controls(1);
+    probe.block_next_compilation();
+    hover("ui", controls[0]);
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    iv::ObservationGraphRequest observations{.requirements = iv::ObservationRequirements{.revision = 43}};
+    in_event_source([&] { project_graph.handle_observation_request(observations); });
+    ASSERT_TRUE(observations.error.empty()) << observations.error;
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_control_status("superseded"));
+    EXPECT_TRUE(probe.stages().empty());
+    EXPECT_EQ(probe.compilations().back().observation_revision, 43u);
+}
+
+
+TEST_F(ProjectGraphFixture, ObservationCapabilitiesResolveModuleOutputTypesWithoutAnAudioCompilation)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "observed-module", .definition_id = definition_id,
+    }, create); });
+    ASSERT_EQ(create.build(), "observed-module");
+    ASSERT_TRUE(project_graph.current_generation());
+    ASSERT_FALSE(project_graph.current_generation()->compiled_graph);
+    iv::ObservationGraphRequest describe{.describe_nodes = {{.instance_id = "observed-module"}}};
+    in_event_source([&] { project_graph.handle_observation_request(describe); });
+    ASSERT_TRUE(describe.error.empty()) << describe.error;
+    ASSERT_TRUE(describe.capabilities);
+    EXPECT_TRUE(std::ranges::any_of(*describe.capabilities, [](auto const& capability) {
+        return capability["kind"] == "output" && capability["member"] == "main"
+            && capability["operations"] == nlohmann::ordered_json::array({"level"});
+    })) << describe.capabilities->dump();
 }

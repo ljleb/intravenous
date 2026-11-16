@@ -1,4 +1,5 @@
 #pragma once
+#include <intravenous/runtime/observation_types.h>
 
 #include <intravenous/graph/reflected_node_operations.h>
 
@@ -62,6 +63,7 @@ struct TickInvocationCall {
     // input views above. Indices are compiler-owned output-change accumulator
     // indices. Missing entries mean unknown coverage, never known absence.
     ReflectedSpan<IndexCoverage const> output_coverages{};
+    LiveObservationFrame* observations = nullptr;
 };
 
 static_assert(std::is_standard_layout_v<TickInvocationCall>);

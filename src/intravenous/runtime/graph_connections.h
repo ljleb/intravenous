@@ -128,4 +128,11 @@ public:
     void handle_project_persistence_collect_state(
         ProjectPersistenceBuilder& builder) const;
 };
+// Shared semantic-output lookup used by wiring and read-only observation.
+[[nodiscard]] std::vector<SampleOutputChannelId> resolve_project_sample_output(
+    ConfiguredGraph const& graph,
+    std::unordered_map<std::string, NodeInstancePlacement> const& placements,
+    NodeAddress const& address, std::string const& port,
+    std::optional<std::size_t> channel = std::nullopt);
+
 } // namespace iv

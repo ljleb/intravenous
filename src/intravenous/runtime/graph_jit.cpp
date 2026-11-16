@@ -2,6 +2,7 @@
 
 #include <intravenous/graph_jit/lowering.h>
 #include <intravenous/graph_jit/module_input_resolution.h>
+#include <intravenous/graph_jit/observation_runtime.h>
 #include <intravenous/graph_jit/package_callback_abi.h>
 #include <intravenous/graph_jit/realtime_root.h>
 #include <intravenous/graph_jit/region_specialization.h>
@@ -2243,6 +2244,49 @@ public:
                 .native_operations = operations,
             });
         }
+        if (request.observations.probes.size() > maximum_live_observation_probes)
+            throw std::invalid_argument("too many executable observation probes");
+        for (std::size_t slot = 0; slot < request.observations.probes.size(); ++slot) {
+            auto const& probe = request.observations.probes[slot];
+            if (!probe.available || probe.kind != ObservationSourceKind::output) continue;
+            auto const source = resolved_graph.node_bundles.resolve_sample_output(
+                {probe.bundle, PortKind::sample, probe.port}).config;
+            if (std::ranges::any_of(probe.channels, [&](auto channel) {
+                    return channel >= channel_count(source.channel_layout);
+                })) throw std::invalid_argument("observation channel is outside its output");
+            ContinuousInputConfig input{
+                .name = "observed", .channel_layout = source.channel_layout,
+                .access = SequentialContinuousInputProperties{},
+            };
+            auto const operations = graph_jit::detail::observation_sink_operations();
+            ConcreteNode sink{
+                .ports = {.input_configs = {make_input_config(input)}},
+            };
+            sink.operations.runtime.declare_node = operations.declare_node;
+            sink.operations.runtime.tick_block = operations.tick_block;
+            sink.operations.runtime.skip_block = operations.skip_block;
+            auto const bundle = resolved_graph.node_bundles.append_concrete(std::move(sink));
+            ConfiguredSampleConnection connection{
+                .source_type = source.channel_layout.channel_type,
+                .target_type = source.channel_layout.channel_type,
+                .target_channels = resolved_graph.node_bundles.sample_input_channels({bundle, PortKind::sample, 0}),
+            };
+            for (auto channel : resolved_graph.node_bundles.sample_output_channels({probe.bundle, PortKind::sample, probe.port}))
+                connection.source_channels.push_back({.channel = channel});
+            resolved_graph.connections.record_configured_sample_connection(std::move(connection));
+            implementations.push_back(graph_jit::NodeImplementation{
+                .node_bundle = bundle,
+                .observation_slot = slot,
+                .declare_node = operations.declare_node,
+                .tick_block = imported.callback(operations.tick_block),
+                .tick_block_batch = imported.callback(operations.tick_block_batch),
+                .skip_block = imported.callback(operations.skip_block),
+                .skip_block_batch = imported.callback(operations.skip_block_batch),
+                .combine_sequential_input_values = imported.callback(operations.combine_sequential_input_values),
+                .native_operations = operations,
+                .host_initialize_sequential_input = &graph_jit::detail::initialize_observation_input,
+            });
+        }
         graph_jit::LoweringInput lowering_input{
             .graph = resolved_graph,
             .specialization = specialization_,
@@ -2253,6 +2297,7 @@ public:
             .transition = transition_input ? &*transition_input : nullptr,
             .region_specializations =
                 specialize_regions_ ? &region_specializations : nullptr,
+            .observations = &request.observations,
         };
         auto lowering = graph_jit::lower_configured_graph_to_llvm(lowering_input, *output);
         if (!lowering) {
@@ -2362,6 +2407,7 @@ public:
                 });
             }
             result.compiled_graph = std::make_shared<CompiledGraph>(CompiledGraph{
+                .observations = request.observations,
                 .project_generation = request.project_generation,
                 .definitions_generation = request.definitions->generation,
                 .specialization = specialization_,

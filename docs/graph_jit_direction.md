@@ -2057,6 +2057,22 @@ Temporary code overlap exists only for safe activation and reclamation. Front 14
 not keep a cache of old control specializations. Front 16 can add reuse only after
 measurements show a benefit.
 
+### Output gain specialization (owner requirement, 2026-11-16)
+
+A gain-capable output has a project-controlled scalar gain, default exactly
+`1`, with no authored minimum or maximum. At a settled value of `1`, GraphJit
+must emit the same gain-free executable operation path as if the control did
+not exist: **no multiply, per-sample gain read, gain-specific branch, or
+wrapper**. A non-unity value or active gesture permits only the necessary
+specialized/dynamic gain work. Preserve existing control compilation,
+GraphExecutor activation, and coherent versions across realtime and background
+consumers. Do not introduce gain operations for output types without a defined
+scalar gain meaning. See
+[Output Gain Controls](./vue_presentation_refinement_direction.md#3-output-gain-controls-and-graphjit-specialization).
+This is intended behavior, not a current implementation claim; eventual
+verification should inspect emitted code as well as audio values at unity,
+non-unity, and during gesture transitions.
+
 ## Lowering boundary
 
 The lowering result should carry immutable metadata sufficient for runtime work

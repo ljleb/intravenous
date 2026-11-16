@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { PresentationObservations, provideObservations } from "../presentation/observationContext";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import type { GraphEditorHostMessage, GraphEditorState } from "../../src/graphEditorProtocol";
 import { addressKey, readLayout, type Point } from "../../src/graphScope";
@@ -29,6 +30,8 @@ type HoveredPortGroup = { nodeKey: string; direction: "input" | "output" };
 type PreviewAnchor = PortWireAnchor & { direction: "input" | "output" };
 
 const state = shallowRef<GraphEditorState>({ sessionStatus: "starting", scope: null, layout: readLayout(null), definitions: [], error: "" });
+const observations = new PresentationObservations((request) => webviewApi.postMessage(request));
+provideObservations(observations);
 const layout = ref(readLayout(null));
 const manualVersion = ref(0);
 let lastManualHint = "";
@@ -456,6 +459,14 @@ function createPackage() {
     creatingPackage.value = false;
 }
 function receive(event: MessageEvent<GraphEditorHostMessage>) {
+    if (event.data?.type === "observationVisibility") {
+        observations.setVisible(event.data.visible);
+        return;
+    }
+    if (event.data?.type === "observationResponse" || event.data?.type === "observationUpdate") {
+        observations.receive(event.data);
+        return;
+    }
     if (event.data?.type === "manualControlState") {
         manualGestures.receive(event.data.interactions, event.data.live);
         if (!manualGestures.pointerControl()) manualPointer.cancel();
@@ -475,6 +486,8 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     }
     if (event.data?.type !== "graphState") return;
     state.value = event.data.state;
+    if (state.value.sessionStatus === "running") observations.refresh();
+    else observations.disconnect();
     const entry = manualGestures.numericEntry();
     const entryControl = entry && resolveManualControl(state.value.scope, entry.control);
     if (entry && (!entryControl?.available || !entryControl.enabled)) manualGestures.cancelEntry();
@@ -518,6 +531,7 @@ onMounted(() => {
     webviewApi.postMessage({ type: "graphReady" });
 });
 onBeforeUnmount(() => {
+    observations.dispose();
     disposed = true;
     blurManual();
     for (const type of pointerLockExitTypes) window.removeEventListener(type, guardPointerLockExit, true);

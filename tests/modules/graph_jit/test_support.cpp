@@ -55,6 +55,24 @@ std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_graph_jit_snapshot(
     auto snapshot = std::make_shared<iv::NodeDefinitionsSnapshot>();
     snapshot->generation = generation;
     snapshot->package_revisions.push_back(revision);
+    for (auto const& module : revision->module_definitions) {
+        snapshot->by_id.emplace(module.definition_id, iv::NodeDefinitionEntry{
+            .definition_id = module.definition_id,
+            .kind = iv::NodeDefinitionKind::module,
+            .version = generation,
+            .definition = iv::ModuleNodeDefinition{
+                .definition_id = module.definition_id,
+                .package_id = revision->package_id,
+                .package_root = revision->package_root,
+                .module_id = module.module_id,
+                .provider = module.provider,
+                .introspection = module.introspection,
+                .dependencies = module.dependencies,
+                .module_refs = module.module_refs,
+                .configured_graph = module.configured_graph,
+            },
+        });
+    }
     for (auto const& leaf : revision->leaf_definitions) {
         snapshot->by_id.emplace(leaf.definition_id, iv::NodeDefinitionEntry{
             .definition_id = leaf.definition_id,

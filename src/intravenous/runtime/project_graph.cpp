@@ -1,4 +1,5 @@
 #include <intravenous/runtime/project_graph.h>
+#include <intravenous/runtime/observation_resolution.h>
 #include <intravenous/runtime/graph_executor.h>
 
 #include <intravenous/compat.h>
@@ -293,6 +294,7 @@ void ProjectGraph::schedule_control_compile_locked(
         return request.request_id == latest_control_compile_request_
             && request.project_generation == current_generation_->generation
             && std::ranges::equal(request.dynamic_inputs, dynamic_inputs)
+            && request.observations.revision == observation_requirements_.revision
             && request.graph && control_configuration_matches_locked(*request.graph, dynamic_inputs);
     };
     if (pending_control_compile_
@@ -308,6 +310,7 @@ void ProjectGraph::schedule_control_compile_locked(
         return;
     }
     if (ready_control_code_ && ready_control_code_->project_generation == current_generation_->generation
+        && ready_control_code_->graph->observations.revision == observation_requirements_.revision
         && ready_control_code_->graph->configured_graph
         && control_configuration_matches_locked(*ready_control_code_->graph->configured_graph, dynamic_inputs)) {
         cancel_pending_control_compile_locked();
@@ -323,6 +326,7 @@ void ProjectGraph::schedule_control_compile_locked(
             .dynamic_inputs = std::move(dynamic_inputs),
             .activate_on_ready = true,
             .trace = ready.trace,
+            .observations = ready.graph->observations,
             .prepared_graph = ready.graph,
         };
         queue_control_compile_status_locked(ready.trace, "queued", "prepared code awaiting staging");
@@ -363,6 +367,8 @@ void ProjectGraph::schedule_control_compile_locked(
         .dynamic_inputs = std::move(dynamic_inputs),
         .activate_on_ready = activate_on_ready,
         .trace = std::move(trace),
+        .observations = resolve_observation_requirements(*current_generation_->graph,
+            current_generation_->placements, observation_requirements_),
     };
     queue_control_compile_status_locked(pending_control_compile_->trace, "queued");
     control_compile_changed_.notify_all();
@@ -372,6 +378,7 @@ bool ProjectGraph::control_code_matches_locked(std::span<ManualControlId const> 
 {
     if (!current_generation_ || !current_generation_->graph || !staged_control_graph_
         || staged_control_graph_->project_generation != current_generation_->generation
+        || staged_control_graph_->observations.revision != observation_requirements_.revision
         || !staged_control_graph_->configured_graph) return false;
     return control_configuration_matches_locked(*staged_control_graph_->configured_graph, inputs);
 }
@@ -415,6 +422,7 @@ bool ProjectGraph::update_graph_executor_controls_locked(
         });
     }
     bool const stage_code = !reuse_code && code_inputs && ready_control_code_
+        && ready_control_code_->graph->observations.revision == observation_requirements_.revision
         && ready_control_code_->project_generation
             == current_generation_->generation
         && std::ranges::equal(ready_control_code_->dynamic_inputs, *code_inputs)
@@ -561,6 +569,7 @@ void ProjectGraph::control_compile_worker(std::stop_token stop)
                     .activate_on_ready = request->activate_on_ready,
                     .trace = request->trace,
                     .graph = request->graph,
+                    .observations = request->observations,
                 };
                 if (!request->prepared_graph) queue_control_compile_status_locked(request->trace, "compiling");
             }
@@ -584,6 +593,7 @@ void ProjectGraph::control_compile_worker(std::stop_token stop)
                         .project_generation = request->project_generation,
                         .graph = request->graph,
                         .definitions = request->definitions,
+                        .observations = request->observations,
                     },
                 });
 
@@ -597,7 +607,8 @@ void ProjectGraph::control_compile_worker(std::stop_token stop)
             }
             if (stop.stop_requested()) return;
             if (request->request_id != latest_control_compile_request_ || !current_generation_
-                || request->project_generation != current_generation_->generation) {
+                || request->project_generation != current_generation_->generation
+                || request->observations.revision != observation_requirements_.revision) {
                 queue_control_compile_status_locked(request->trace, "superseded");
                 continue;
             }
@@ -683,6 +694,8 @@ void ProjectGraph::compile_control_storage_change(std::uint64_t request_id,
                     .project_generation = generation_id,
                     .graph = graph,
                     .definitions = current_generation_->definitions,
+                    .observations = resolve_observation_requirements(*graph,
+                        current_generation_->placements, observation_requirements_),
                 },
                 .predecessor = accepted_execution_graph_,
             });
@@ -1193,6 +1206,8 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
                     .project_generation = generation->generation,
                     .graph = generation->graph,
                     .definitions = generation->definitions,
+                    .observations = resolve_observation_requirements(*generation->graph,
+                        generation->placements, observation_requirements_),
                 },
                 .predecessor = accepted_execution_graph_,
                 .initial_generation = !accepted_execution_graph_,
@@ -3079,6 +3094,106 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
         builder.succeed(std::move(scope));
     } catch (std::exception const& error) {
         builder.fail(error.what());
+    }
+}
+} // namespace iv
+
+namespace iv {
+void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
+{
+    request.handled = true;
+    try {
+        std::scoped_lock lock(mutex_);
+        if (request.requirements) {
+            if (request.requirements->probes.size() > maximum_live_observation_probes)
+                throw std::invalid_argument("too many executable observation probes");
+            observation_requirements_ = *request.requirements;
+            ready_control_code_.reset();
+            cancel_pending_control_compile_locked();
+            latest_control_compile_request_ = next_control_compile_request_++;
+            if (current_generation_) {
+                auto const begin = std::chrono::steady_clock::now();
+                auto rebuilt = rebuild_locked(std::monostate{}, std::monostate{});
+                request.compilation_us = static_cast<std::uint64_t>(std::chrono::duration_cast<
+                    std::chrono::microseconds>(std::chrono::steady_clock::now() - begin).count());
+                if (!rebuilt.generation || !rebuilt.generation->graph_executor_accepted)
+                    request.error = "observation graph could not be staged; previous audio graph remains active";
+            }
+        }
+        using Json = nlohmann::ordered_json;
+        auto describe_result = [](ObservationOperation const& operation) {
+            Json fields = Json::array();
+            for (auto const& field : operation.result_fields) {
+                auto const type = field.kind == ObservationNumberKind::float32 ? "float32"
+                    : field.kind == ObservationNumberKind::float64 ? "float64" : "uint64String";
+                fields.push_back({{"name", field.name}, {"type", type}});
+            }
+            return Json{{"operation", operation.id}, {"fields", std::move(fields)}};
+        };
+        Json capabilities = Json::array();
+        if (current_generation_) {
+            auto const& graph = *current_generation_->graph;
+            // Reuse the current graph's solved types for all requested sources.
+            // If code has not been compiled, constraint solving alone suffices.
+            std::optional<graph_jit::ResolvedPortRealization> inferred_ports;
+            auto const* port_realization = current_generation_->compiled_graph
+                ? &current_generation_->compiled_graph->port_realization : nullptr;
+            if (!port_realization || port_realization->bundle_count() < graph.node_bundles.size()) {
+                port_realization = nullptr;
+                auto resolved = graph_jit::resolve_port_realization(graph);
+                if (resolved) {
+                    inferred_ports.emplace(std::move(*resolved));
+                    port_realization = &*inferred_ports;
+                }
+            }
+            for (std::size_t node_index = 0; node_index < request.describe_nodes.size(); ++node_index) {
+                auto const& address = request.describe_nodes[node_index];
+                auto matches = resolve_node_address(graph, current_generation_->placements, address);
+                std::vector<std::string> outputs;
+                for (auto const& match : matches) {
+                    if (match.kind == ProjectNodePathMatch::Kind::virtual_node) {
+                        for (auto const& mapping : graph.virtual_nodes.record(match.virtual_node).sample_outputs)
+                            outputs.push_back(mapping.name);
+                    } else {
+                        auto const& bundle = graph.node_bundles.bundle(match.bundle);
+                        for (std::size_t port = 0; port < bundle.sample_output_count(); ++port)
+                            outputs.push_back(graph.node_bundles.resolve_sample_output({match.bundle, PortKind::sample, port}).config.name);
+                    }
+                }
+                std::ranges::sort(outputs);
+                outputs.erase(std::unique(outputs.begin(), outputs.end()), outputs.end());
+                for (auto const& name : outputs) {
+                    ObservationRequirements requirements{.probes = {{.source = {
+                        .node = address, .kind = ObservationSourceKind::output, .member = name}, .operation = "level"}}};
+                    auto plan = resolve_observation_requirements(graph, current_generation_->placements, requirements,
+                        port_realization);
+                    if (!plan.probes.front().available) continue;
+                    capabilities.push_back({{"nodeIndex", node_index}, {"kind", "output"},
+                        {"member", name}, {"operations", {"level"}},
+                        {"resultSchemas", {describe_result(*plan.probes.front().operation)}}});
+                }
+                auto bundles = concrete_node_address_matches(graph, matches);
+                if (bundles.size() != 1) continue;
+                std::size_t index = 0;
+                graph.node_bundles.for_each_configured_bundle([&](ConfiguredNodeBundleView const& bundle) {
+                    if (index++ != bundles.front() || !bundle.operations
+                        || !bundle.operations->runtime.tick_block || !bundle.operations->runtime.state_structures
+                        || !bundle.operations->runtime.state_structures->state) return;
+                    for (auto const& field : bundle.operations->runtime.state_structures->state->fields) {
+                        if (field.bit_width || field.bit_offset % 8) continue;
+                        for (auto const& codec : state_observation_codecs) {
+                            if (field.type_name == codec.field_type_id && field.size_bits == codec.size_bits)
+                                capabilities.push_back({{"nodeIndex", node_index}, {"kind", "stateField"},
+                                    {"member", field.name}, {"operations", {codec.operation->id}},
+                                    {"resultSchemas", {describe_result(*codec.operation)}}});
+                        }
+                    }
+                });
+            }
+        }
+        request.capabilities = std::make_shared<nlohmann::ordered_json const>(std::move(capabilities));
+    } catch (std::exception const& error) {
+        request.error = error.what();
     }
 }
 } // namespace iv

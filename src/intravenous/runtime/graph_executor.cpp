@@ -1089,6 +1089,7 @@ GraphExecutor::GraphExecutor(
     , producer_capacity_(producer_capacity)
     , background_executor_(*this)
 {
+    measure_observation_capture_ = diagnostic_flag_enabled("IV_OBSERVATION_TIMING");
     if (producer_capacity_.low_watermark_callbacks == 0
         || producer_capacity_.high_watermark_callbacks
             <= producer_capacity_.low_watermark_callbacks) {
@@ -1322,6 +1323,7 @@ GraphExecutor::prepare_realtime_code(std::shared_ptr<CompiledGraph const> graph)
 {
     static_assert(std::atomic<ExecutionGeneration::RealtimeCode*>::is_always_lock_free);
     auto prepared = std::make_unique<ExecutionGeneration::RealtimeCode>();
+    prepared->publication_id = next_observation_publication_++;
     prepared->graph = std::move(graph);
     auto const& bindings = prepared->graph->manual_controls;
     prepared->live_targets.reserve(std::ranges::count_if(bindings,
@@ -1952,6 +1954,19 @@ void GraphExecutor::tick_block(GlobalIndex sample_index, std::size_t block_size)
         throw std::invalid_argument(
             "GraphExecutor tick block size is outside the compiled specialization");
     }
+    auto* const realtime_code = generation.realtime_code.load(std::memory_order_acquire);
+    auto begin_observation_frame = [&]() -> LiveObservationFrame* {
+        auto const changed = last_observation_publication_ != realtime_code->publication_id;
+        if (!changed && realtime_code->graph->observations.probes.empty()) return nullptr;
+        if (changed) {
+            last_observation_publication_ = realtime_code->publication_id;
+            ++observation_activation_;
+        }
+        // Code can be prepared in a different order from activation while a
+        // successor waits for background data. Stamp the actual realtime order.
+        return &observations_.begin(realtime_code->graph->observations,
+            observation_activation_, generation.graph->project_generation, sample_index, block_size);
+    };
     auto const* persisted = realtime_persisted_state_.adopt(
         generation.graph->project_generation);
     if (!persisted) {
@@ -1961,13 +1976,15 @@ void GraphExecutor::tick_block(GlobalIndex sample_index, std::size_t block_size)
     if (!generation.graph->background_evaluation_plan.tick_sequential_inputs.empty()
         && !persisted->prepares({sample_index, block_size})) {
         playback_underrun_blocks_.fetch_add(1, std::memory_order_relaxed);
+        // Activation and unavailability must reach observers even when no
+        // DSP callback can run for this playback window.
+        if (begin_observation_frame()) observations_.publish();
         return;
     }
     generation.update_realtime_phase();
     // An open gesture's latest value reaches the root's per-call latch here,
     // independently of the control path's generation chain and locks.
     auto* const storage_base = generation.realtime.storage.buffer().data();
-    auto* const realtime_code = generation.realtime_code.load(std::memory_order_acquire);
     for (auto& live : realtime_code->live_targets) {
         auto const completion = live.target->completion_sequence.load(std::memory_order_acquire);
         if (live.target->open_gestures.load(std::memory_order_acquire) == 0
@@ -1994,11 +2011,15 @@ void GraphExecutor::tick_block(GlobalIndex sample_index, std::size_t block_size)
         throw std::logic_error(
             "GraphExecutor active realtime realization has no root operation");
     }
+    auto call = invocation.call();
+    call.observations = begin_observation_frame();
+    if (call.observations) call.observations->measure_capture = measure_observation_capture_;
     tick(
         generation.realtime.storage.buffer().data(),
-        &invocation.call(),
+        &call,
         sample_index,
         block_size);
+    if (call.observations) observations_.publish();
     generation.update_realtime_phase(block_size);
 }
 

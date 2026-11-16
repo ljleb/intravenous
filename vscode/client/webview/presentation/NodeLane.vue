@@ -5,6 +5,7 @@ import { computed } from "vue";
 import { nodeDisplayName, portDescription } from "./nodeSummary";
 import type { NodeDisplayMode } from "./displayMode";
 import NodePorts from "./NodePorts.vue";
+import LiveOutputMeters from "./LiveOutputMeters.vue";
 
 defineProps<{ mode?: NodeDisplayMode }>();
 
@@ -35,7 +36,7 @@ const outputSummary = computed(() => outputs.value.map((port) => `${port.name}: 
                 <span :title="outputSummary" :aria-label="`${outputs.length} outputs`">{{ outputs.length }} →</span>
             </div>
         </header>
-        <div class="lane-content"><slot /></div>
+        <div class="lane-content"><slot><LiveOutputMeters /></slot></div>
     </div>
 </template>
 

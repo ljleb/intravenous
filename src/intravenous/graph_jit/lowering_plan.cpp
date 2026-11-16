@@ -233,7 +233,8 @@ std::expected<GraphAnalysis, std::string> analyze_graph(
         }
         auto const has_tick = !implementation->tick_block.empty();
         auto const has_tock = !implementation->tock_coverage.empty();
-        auto const intrinsic = implementation->resolved_module_input.has_value();
+        auto const intrinsic = implementation->resolved_module_input.has_value()
+            || implementation->observation_slot.has_value();
         if ((!intrinsic && !implementation->package) || has_tick == has_tock
             || !implementation->declare_node || (!intrinsic && !implementation->node_data)) {
             return std::unexpected(
@@ -2527,7 +2528,7 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
     for (std::size_t i = 0; i < analysis.primitives.size(); ++i) {
         auto const& primitive = analysis.primitives[i];
         auto const& implementation = *primitive.implementation;
-        if (implementation.resolved_module_input) {
+        if (implementation.resolved_module_input || implementation.observation_slot) {
             auto add = [&](std::string const& symbol, CallbackImportAbi abi) {
                 if (symbol.empty()) return;
                 if (!std::ranges::any_of(plan.compiler_callbacks,
@@ -2539,7 +2540,7 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
             add(implementation.combine_sequential_input_values, CallbackImportAbi::sequential_combine);
             plan.primitive_callbacks.push_back({
                 .bundle = primitive.bundle.node_bundle,
-                .resolves_module_input = true,
+                .resolves_module_input = implementation.resolved_module_input.has_value(),
                 .tick_block = implementation.tick_block,
                 .tick_block_batch = implementation.tick_block_batch,
                 .combine_sequential_input_values = implementation.combine_sequential_input_values,
