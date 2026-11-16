@@ -220,17 +220,16 @@ namespace {
     };
 
     struct BackgroundStateNode {
-        using TockState = BackgroundStatePayload;
+        using State = BackgroundStatePayload;
 
         static constexpr auto outputs()
         {
-            return std::array<iv::SequentialOutputConfig<iv::Sample>, 1>{};
+            return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage)};
         }
 
-        void tick(iv::TickSampleContext<BackgroundStateNode> const& ctx) const
-        {
-            ctx.template output<0>().push(0.0f);
-        }
+        void propagate_forward_coverage(iv::PropagateForwardCoverageContext<BackgroundStateNode>& ctx) const
+        { ctx.output<"out">().publish(std::span<iv::GlobalIndexRange const>{}); }
+        void tock_coverage(iv::TockCoverageContext<BackgroundStateNode>&) const {}
     };
 
     void aliased_state_module(iv::GraphBuilder& g)

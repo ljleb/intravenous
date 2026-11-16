@@ -1133,7 +1133,7 @@ TEST(IndexCoverage, RepresentsTheWholeDomainWithoutAFullDomainRangeSentinel)
 }
 
 struct BackgroundSource {
-    struct TockState {
+    struct State {
         int calls = 0;
         std::size_t sample_rate = 0;
     };
@@ -1145,8 +1145,8 @@ struct BackgroundSource {
 
     void tock_coverage(iv::TockCoverageContext<BackgroundSource>& ctx) const
     {
-        ++ctx.tock_state().calls;
-        ctx.tock_state().sample_rate = ctx.sample_rate;
+        ++ctx.state().calls;
+        ctx.state().sample_rate = ctx.sample_rate;
     }
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<BackgroundSource>& ctx) const
@@ -1588,16 +1588,27 @@ struct MixedAccessIndexNode {
 };
 
 template<class Context>
-concept ExposesBackgroundState = requires(Context const& context) {
+concept ExposesLegacyTockState = requires(Context const& context) {
     context.tock_state();
 };
 
+template<class Context>
+concept ExposesRealtimeStorage = requires(Context const& ctx) { ctx.storage(); };
+template<class Context>
+concept ExposesMaxBlockSize = requires(Context const& ctx) { ctx.max_block_size(); };
+static_assert(!ExposesRealtimeStorage<iv::InitializationContext<BackgroundSource>>);
+static_assert(!ExposesMaxBlockSize<iv::InitializationContext<BackgroundSource>>);
+static_assert(std::is_void_v<iv::NodeRealtimeState<BackgroundSource>::Type>);
+static_assert(iv::details::node_state_size<BackgroundSource>() == 0);
+struct LegacyStateNode { struct TockState {}; };
+static_assert(!iv::details::background_state_type_is_valid_v<LegacyStateNode>);
+
 static_assert(std::same_as<iv::NodeBackgroundState<BackgroundSource>::Type,
-    BackgroundSource::TockState>);
+    BackgroundSource::State>);
 static_assert(iv::details::node_background_state_size<BackgroundSource>()
-    == sizeof(BackgroundSource::TockState));
+    == sizeof(BackgroundSource::State));
 static_assert(iv::details::node_background_state_alignment<BackgroundSource>()
-    == alignof(BackgroundSource::TockState));
+    == alignof(BackgroundSource::State));
 static_assert(std::same_as<
     decltype(iv::TickBlockContext<BackgroundSource>::index),
     iv::FractionalGlobalIndex>);
@@ -1648,12 +1659,13 @@ static_assert(iv::is_buffered(
     iv::port_config_at<0>(PersistedRealtimeNode::outputs())));
 static_assert(iv::is_buffered(
     iv::port_config_at<1>(PersistedRealtimeNode::outputs())));
-static_assert(!ExposesBackgroundState<iv::TickBlockContext<BackgroundSource>>);
-static_assert(!ExposesBackgroundState<
+static_assert(!ExposesLegacyTockState<iv::TickBlockContext<BackgroundSource>>);
+static_assert(!ExposesLegacyTockState<
     iv::PropagateForwardCoverageContext<BackgroundSource>>);
-static_assert(!ExposesBackgroundState<
+static_assert(!ExposesLegacyTockState<
     iv::PropagateReverseCoverageContext<BackgroundSource>>);
-static_assert(ExposesBackgroundState<iv::TockCoverageContext<BackgroundSource>>);
+static_assert(!ExposesLegacyTockState<iv::TockCoverageContext<BackgroundSource>>);
+static_assert(requires(iv::TockCoverageContext<BackgroundSource> const& ctx) { ctx.state(); });
 static_assert(iv::details::node_compiler_operations<BackgroundSource>()
     .tock_coverage != nullptr);
 static_assert(iv::details::node_compiler_operations<BackgroundSource>()
@@ -2414,10 +2426,10 @@ TEST(BackgroundDspPorts, DefaultReversePropagationRequiresWholeInputCoverage)
 
 TEST(BackgroundDspPorts, TockOnlyNodeHasNoRealtimeCallback)
 {
-    alignas(BackgroundSource::TockState)
-        std::array<std::byte, sizeof(BackgroundSource::TockState)> storage {};
+    alignas(BackgroundSource::State)
+        std::array<std::byte, sizeof(BackgroundSource::State)> storage {};
     auto* state = std::construct_at(
-        reinterpret_cast<BackgroundSource::TockState*>(storage.data()));
+        reinterpret_cast<BackgroundSource::State*>(storage.data()));
     BackgroundSource node;
     auto const operations = iv::details::node_compiler_operations<BackgroundSource>();
 

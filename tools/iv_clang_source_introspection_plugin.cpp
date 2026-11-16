@@ -1259,7 +1259,7 @@ std::optional<QualType> node_nested_type(
 {
     if (!node || !visited.insert(node).second) return std::nullopt;
     if (auto type = direct_node_nested_type(context, node, name)) return type;
-    // `typename Node::State` / `typename Node::TockState` use normal
+    // `typename Node::State` uses normal
     // base-class lookup too. Follow that lookup so inherited aliases and
     // nested records are keyed by the derived node that actually uses them.
     for (auto const& base : node->bases()) {
@@ -1297,23 +1297,16 @@ public:
         auto const node_type_name = type_string(context_, node_type);
         // The canonical declaration of every specialization is the primary
         // class template. Deduplicate by concrete spelling so each NodeCodeKey
-        // receives exactly one pair of State/TockState records.
+        // receives exactly one authored State record.
         if (!seen_node_types_.insert(node_type_name).second) return;
 
         auto const node_type_usr = declaration_usr(context_, node);
         record_state(
             node, node_type, node_type_name, node_type_usr,
             "State", states_);
-        record_state(
-            node, node_type, node_type_name, node_type_usr,
-            "TockState", background_states_);
     }
 
     llvm::json::Array take_states() { return std::move(states_); }
-    llvm::json::Array take_background_states()
-    {
-        return std::move(background_states_);
-    }
 
 private:
     void record_state(
@@ -1378,7 +1371,6 @@ private:
 
     ASTContext& context_;
     llvm::json::Array states_;
-    llvm::json::Array background_states_;
     std::set<std::string> seen_node_types_;
 };
 
@@ -2491,7 +2483,6 @@ void write_state_metadata(
     stream << llvm::formatv(
         "{0:2}", llvm::json::Value(llvm::json::Object{
             {"states", state_collector.take_states()},
-            {"background_states", state_collector.take_background_states()},
             {"config_pointers", std::move(node_config_collector).take_fields()},
             {"configuration_types", std::move(configuration_types)},
             {"node_message_handlers", std::move(node_message_handlers)},

@@ -1434,7 +1434,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             || tock_record.state_alignment
                 != implementation.background_state_alignment) {
             return std::unexpected(
-                "declared primitive State/TockState layout disagrees with finalized compiler metadata");
+                "declared primitive State layout disagrees with finalized compiler metadata");
         }
         if (node_record.state_size != 0 && node_record.state_offset < 0) {
             return std::unexpected(

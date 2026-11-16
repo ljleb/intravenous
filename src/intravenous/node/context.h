@@ -35,6 +35,8 @@ namespace iv {
     };
 
     struct TockStateLifecycleCallbacks {
+        void (*move_fn)(void const*, size_t, size_t,
+            TockStateStorage&, TockStateStorage const&) noexcept = nullptr;
         void (*initialize_fn)(void const*, size_t, TockStateStorage&) noexcept = nullptr;
         void (*release_fn)(void const*, size_t, TockStateStorage&) noexcept = nullptr;
         void (*default_construct_background_state_fn)(void*) = nullptr;
@@ -179,12 +181,6 @@ namespace iv {
     template<typename Node>
     struct MoveContext;
 
-    template<typename Node>
-    struct TockInitializationContext;
-
-    template<typename Node>
-    struct TockReleaseContext;
-
     namespace details {
         template <typename Node>
         concept has_declare = requires(Node node, DeclarationContext<Node> ctx)
@@ -210,20 +206,6 @@ namespace iv {
             node.move(ctx);
         };
 
-        template <typename Node>
-        concept has_tock_initialize = requires(
-            Node node, TockInitializationContext<Node> ctx)
-        {
-            node.initialize(ctx);
-        };
-
-        template <typename Node>
-        concept has_tock_release = requires(
-            Node node, TockReleaseContext<Node> ctx)
-        {
-            node.release(ctx);
-        };
-
         template<typename Node>
         NodeLifecycleCallbacks make_lifecycle_callbacks();
 
@@ -239,24 +221,27 @@ namespace iv {
         template<typename Node>
         NodeLayoutNodeRegistration make_node_registration(Node const& node)
         {
+            static_assert(background_state_type_is_valid_v<Node>,
+                "Author one State type, not TockState; Tock State must be a mutable, "
+                "non-volatile, default-constructible object type");
             NodeLayoutNodeRegistration registration;
             if constexpr (!std::is_empty_v<Node>) {
                 registration.node = std::addressof(node);
             }
             registration.node_type = node_layout_type_token<Node>();
             registration.node_type_name = typeid(Node).name();
-            registration.has_state = !std::is_void_v<typename NodeState<Node>::Type>;
-            if constexpr (!std::is_void_v<typename NodeState<Node>::Type>) {
-                using State = typename NodeState<Node>::Type;
+            registration.has_state = !std::is_void_v<typename NodeRealtimeState<Node>::Type>;
+            if constexpr (!std::is_void_v<typename NodeRealtimeState<Node>::Type>) {
+                using State = typename NodeRealtimeState<Node>::Type;
                 registration.state_size = sizeof(State);
                 registration.state_alignment = alignof(State);
             }
             registration.has_background_state =
                 !std::is_void_v<typename NodeBackgroundState<Node>::Type>;
             if constexpr (!std::is_void_v<typename NodeBackgroundState<Node>::Type>) {
-                using TockState = typename NodeBackgroundState<Node>::Type;
-                registration.background_state_size = sizeof(TockState);
-                registration.background_state_alignment = alignof(TockState);
+                using BackgroundState = typename NodeBackgroundState<Node>::Type;
+                registration.background_state_size = sizeof(BackgroundState);
+                registration.background_state_alignment = alignof(BackgroundState);
             }
             registration.lifecycle = make_lifecycle_callbacks<Node>();
             registration.tock_lifecycle = make_tock_lifecycle_callbacks<Node>();
@@ -267,21 +252,24 @@ namespace iv {
         NodeLayoutNodeRegistration make_reflected_node_registration()
         {
             using Node = std::remove_cvref_t<decltype(NodeValue)>;
+            static_assert(background_state_type_is_valid_v<Node>,
+                "Author one State type, not TockState; Tock State must be a mutable, "
+                "non-volatile, default-constructible object type");
             NodeLayoutNodeRegistration registration;
             registration.node_type = node_layout_type_token<Node>();
             registration.node_type_name = typeid(Node).name();
-            registration.has_state = !std::is_void_v<typename NodeState<Node>::Type>;
-            if constexpr (!std::is_void_v<typename NodeState<Node>::Type>) {
-                using State = typename NodeState<Node>::Type;
+            registration.has_state = !std::is_void_v<typename NodeRealtimeState<Node>::Type>;
+            if constexpr (!std::is_void_v<typename NodeRealtimeState<Node>::Type>) {
+                using State = typename NodeRealtimeState<Node>::Type;
                 registration.state_size = sizeof(State);
                 registration.state_alignment = alignof(State);
             }
             registration.has_background_state =
                 !std::is_void_v<typename NodeBackgroundState<Node>::Type>;
             if constexpr (!std::is_void_v<typename NodeBackgroundState<Node>::Type>) {
-                using TockState = typename NodeBackgroundState<Node>::Type;
-                registration.background_state_size = sizeof(TockState);
-                registration.background_state_alignment = alignof(TockState);
+                using BackgroundState = typename NodeBackgroundState<Node>::Type;
+                registration.background_state_size = sizeof(BackgroundState);
+                registration.background_state_alignment = alignof(BackgroundState);
             }
             registration.lifecycle = make_reflected_lifecycle_callbacks<NodeValue>();
             registration.tock_lifecycle =
@@ -324,8 +312,8 @@ namespace iv {
         template<typename>
         friend struct DeclarationContext;
 
-        using State = typename NodeState<Node>::Type;
-        using TockState = typename NodeBackgroundState<Node>::Type;
+        using State = typename NodeRealtimeState<Node>::Type;
+        using BackgroundState = typename NodeBackgroundState<Node>::Type;
 
     private:
         struct FieldLocation {
@@ -430,12 +418,12 @@ namespace iv {
                     builder, _node_index, sizeof(State), alignof(State));
                 _state_marker = reinterpret_cast<State const*>(uintptr_t { 0x10000 });
             }
-            if constexpr (!std::is_void_v<TockState>) {
+            if constexpr (!std::is_void_v<BackgroundState>) {
                 details::allocate_node_background_state(
                     builder,
                     _node_index,
-                    sizeof(TockState),
-                    alignof(TockState));
+                    sizeof(BackgroundState),
+                    alignof(BackgroundState));
             }
         }
 
@@ -457,12 +445,12 @@ namespace iv {
                     builder, _node_index, sizeof(State), alignof(State));
                 _state_marker = reinterpret_cast<State const*>(uintptr_t { 0x10000 });
             }
-            if constexpr (!std::is_void_v<TockState>) {
+            if constexpr (!std::is_void_v<BackgroundState>) {
                 details::allocate_node_background_state(
                     builder,
                     _node_index,
-                    sizeof(TockState),
-                    alignof(TockState));
+                    sizeof(BackgroundState),
+                    alignof(BackgroundState));
             }
         }
 
@@ -696,6 +684,7 @@ namespace iv {
         }
 
         size_t max_block_size() const
+            requires (!details::has_tock_family_v<Node>)
         {
             return details::node_layout_max_block_size(*_builder);
         }
@@ -735,13 +724,20 @@ namespace iv {
             NodeStorage& storage,
             void* state,
             ResourceContext const& resources_)
+            requires (!details::has_tock_family_v<Node>)
             : _storage(&storage)
             , _state(state)
             , resources(resources_)
         {}
 
+        explicit InitializationContext(void* state, ResourceContext const& resources_)
+            requires (details::has_tock_family_v<Node>)
+            : _state(state), resources(resources_)
+        {}
+
         template<typename Node2>
         InitializationContext(InitializationContext<Node2> const& ctx)
+            requires (details::has_tock_family_v<Node> == details::has_tock_family_v<Node2>)
             : _storage(ctx._storage)
             , _state(ctx._state)
             , resources(ctx.resources)
@@ -754,16 +750,19 @@ namespace iv {
         }
 
         NodeStorage& storage() const
+            requires (!details::has_tock_family_v<Node>)
         {
             return *_storage;
         }
 
         size_t max_block_size() const
+            requires (!details::has_tock_family_v<Node>)
         {
             return details::node_storage_max_block_size(*_storage);
         }
 
         size_t default_silence_ttl_samples() const
+            requires (!details::has_tock_family_v<Node>)
         {
             return details::node_storage_default_silence_ttl_samples(*_storage);
         }
@@ -771,6 +770,7 @@ namespace iv {
         template<typename A>
         std::span<A const> resolve_exported_array_storage(
             std::string const& id) const
+            requires (!details::has_tock_family_v<Node>)
         {
             auto const storage = details::resolve_exported_array_storage(
                 *_storage, id, details::node_layout_type_token<A>());
@@ -796,13 +796,20 @@ namespace iv {
             NodeStorage& storage,
             void* state,
             ResourceContext const& resources_)
+            requires (!details::has_tock_family_v<Node>)
             : _storage(&storage)
             , _state(state)
             , resources(resources_)
         {}
 
+        explicit ReleaseContext(void* state, ResourceContext const& resources_)
+            requires (details::has_tock_family_v<Node>)
+            : _state(state), resources(resources_)
+        {}
+
         template<typename Node2>
         ReleaseContext(ReleaseContext<Node2> const& ctx)
+            requires (details::has_tock_family_v<Node> == details::has_tock_family_v<Node2>)
             : _storage(ctx._storage)
             , _state(ctx._state)
             , resources(ctx.resources)
@@ -838,6 +845,7 @@ namespace iv {
             NodeStorage const& previous_storage,
             void* previous_state,
             ResourceContext const& resources_)
+            requires (!details::has_tock_family_v<Node>)
             : _storage(&storage)
             , _state(state)
             , _previous_storage(&previous_storage)
@@ -845,8 +853,14 @@ namespace iv {
             , resources(resources_)
         {}
 
+        explicit MoveContext(void* state, void* previous_state, ResourceContext const& resources_)
+            requires (details::has_tock_family_v<Node>)
+            : _state(state), _previous_state(previous_state), resources(resources_)
+        {}
+
         template<typename Node2>
         MoveContext(MoveContext<Node2> const& ctx)
+            requires (details::has_tock_family_v<Node> == details::has_tock_family_v<Node2>)
             : _storage(ctx._storage)
             , _state(ctx._state)
             , _previous_storage(ctx._previous_storage)
@@ -868,74 +882,12 @@ namespace iv {
 
     };
 
-    template<typename Node>
-    struct TockInitializationContext {
-        template<typename>
-        friend struct TockInitializationContext;
-
-        using TockState = typename NodeBackgroundState<Node>::Type;
-
-    private:
-        void* _state = nullptr;
-
-    public:
-        ResourceContext const& resources;
-
-        explicit TockInitializationContext(
-            void* state,
-            ResourceContext const& resources_)
-            : _state(state), resources(resources_)
-        {}
-
-        template<typename Node2>
-        TockInitializationContext(
-            TockInitializationContext<Node2> const& ctx)
-            : _state(ctx._state), resources(ctx.resources)
-        {}
-
-        std::add_lvalue_reference_t<TockState> tock_state() const
-        requires(!std::is_void_v<TockState>)
-        {
-            return *static_cast<TockState*>(_state);
-        }
-    };
-
-    template<typename Node>
-    struct TockReleaseContext {
-        template<typename>
-        friend struct TockReleaseContext;
-
-        using TockState = typename NodeBackgroundState<Node>::Type;
-
-    private:
-        void* _state = nullptr;
-
-    public:
-        ResourceContext const& resources;
-
-        explicit TockReleaseContext(
-            void* state,
-            ResourceContext const& resources_)
-            : _state(state), resources(resources_)
-        {}
-
-        template<typename Node2>
-        TockReleaseContext(TockReleaseContext<Node2> const& ctx)
-            : _state(ctx._state), resources(ctx.resources)
-        {}
-
-        std::add_lvalue_reference_t<TockState> tock_state() const
-        requires(!std::is_void_v<TockState>)
-        {
-            return *static_cast<TockState*>(_state);
-        }
-    };
-
     namespace details {
         // A node that authors no move() is moved implicitly when its State
         // can be moved. A node without State has no implicit move.
         template<typename Node>
-        inline constexpr bool has_implicit_move = !has_move<Node>
+        inline constexpr bool has_implicit_move = !has_tock_family_v<Node>
+            && !has_move<Node>
             && !std::is_void_v<typename NodeState<Node>::Type>
             && std::is_move_constructible_v<typename NodeState<Node>::Type>;
 
@@ -966,289 +918,340 @@ namespace iv {
         template<typename Node>
         NodeLifecycleCallbacks make_lifecycle_callbacks()
         {
-            NodeLifecycleCallbacks callbacks;
+            if constexpr (details::has_tock_family_v<Node>) {
+                return {};
+            } else {
+                NodeLifecycleCallbacks callbacks;
 
-            if constexpr (!std::is_void_v<typename NodeState<Node>::Type>) {
-                using State = typename NodeState<Node>::Type;
-                static_assert(
-                    std::is_default_constructible_v<State>,
-                    "Node::State must be default constructible");
-                callbacks.default_construct_state_fn = [](void* ptr) {
-                    new (ptr) State();
-                };
-                callbacks.destroy_state_fn = [](void* ptr) {
-                    std::destroy_at(static_cast<State*>(ptr));
-                };
-            }
+                if constexpr (!std::is_void_v<typename NodeState<Node>::Type>) {
+                    using State = typename NodeState<Node>::Type;
+                    static_assert(
+                        std::is_default_constructible_v<State>,
+                        "Node::State must be default constructible");
+                    callbacks.default_construct_state_fn = [](void* ptr) {
+                        new (ptr) State();
+                    };
+                    callbacks.destroy_state_fn = [](void* ptr) {
+                        std::destroy_at(static_cast<State*>(ptr));
+                    };
+                }
 
-            if constexpr (has_move<Node>) {
-                callbacks.move_fn = [](
-                    void const* node_ptr,
-                    size_t node_index,
-                    size_t previous_node_index,
-                    NodeStorage& storage,
-                    NodeStorage const& previous_storage) noexcept {
-                    invoke_node_lifecycle<Node>("move", node_index, [&] {
-                        void* state = node_storage_state_ptr(storage, node_index);
-                        void* previous_state = node_storage_state_ptr(
-                            previous_storage, previous_node_index);
-                        if constexpr (std::is_empty_v<Node>) {
-                            (void)node_ptr;
-                            Node node {};
-                            node.move(MoveContext<Node>(
-                                storage,
-                                state,
-                                previous_storage,
-                                previous_state,
-                                node_storage_resources(storage)));
-                        } else {
-                            auto const& node = *static_cast<Node const*>(node_ptr);
-                            node.move(MoveContext<Node>(
-                                storage,
-                                state,
-                                previous_storage,
-                                previous_state,
-                                node_storage_resources(storage)));
-                        }
-                    });
-                };
-            } else if constexpr (has_implicit_move<Node>) {
-                callbacks.move_fn = &move_state_implicitly<Node>;
-            }
+                if constexpr (has_move<Node>) {
+                    callbacks.move_fn = [](
+                        void const* node_ptr,
+                        size_t node_index,
+                        size_t previous_node_index,
+                        NodeStorage& storage,
+                        NodeStorage const& previous_storage) noexcept {
+                        invoke_node_lifecycle<Node>("move", node_index, [&] {
+                            void* state = node_storage_state_ptr(storage, node_index);
+                            void* previous_state = node_storage_state_ptr(
+                                previous_storage, previous_node_index);
+                            if constexpr (std::is_empty_v<Node>) {
+                                (void)node_ptr;
+                                Node node {};
+                                node.move(MoveContext<Node>(
+                                    storage,
+                                    state,
+                                    previous_storage,
+                                    previous_state,
+                                    node_storage_resources(storage)));
+                            } else {
+                                auto const& node = *static_cast<Node const*>(node_ptr);
+                                node.move(MoveContext<Node>(
+                                    storage,
+                                    state,
+                                    previous_storage,
+                                    previous_state,
+                                    node_storage_resources(storage)));
+                            }
+                        });
+                    };
+                } else if constexpr (has_implicit_move<Node>) {
+                    callbacks.move_fn = &move_state_implicitly<Node>;
+                }
 
-            if constexpr (has_initialize<Node>) {
-                callbacks.initialize_fn = [](
-                    void const* node_ptr,
-                    size_t node_index,
-                    NodeStorage& storage) noexcept {
-                    invoke_node_lifecycle<Node>("initialize", node_index, [&] {
-                        void* state = node_storage_state_ptr(storage, node_index);
-                        if constexpr (std::is_empty_v<Node>) {
-                            (void)node_ptr;
-                            Node node {};
-                            node.initialize(InitializationContext<Node>(
-                                storage,
-                                state,
-                                node_storage_resources(storage)));
-                        } else {
-                            static_cast<Node const*>(node_ptr)->initialize(
-                                InitializationContext<Node>(
+                if constexpr (has_initialize<Node>) {
+                    callbacks.initialize_fn = [](
+                        void const* node_ptr,
+                        size_t node_index,
+                        NodeStorage& storage) noexcept {
+                        invoke_node_lifecycle<Node>("initialize", node_index, [&] {
+                            void* state = node_storage_state_ptr(storage, node_index);
+                            if constexpr (std::is_empty_v<Node>) {
+                                (void)node_ptr;
+                                Node node {};
+                                node.initialize(InitializationContext<Node>(
                                     storage,
                                     state,
                                     node_storage_resources(storage)));
-                        }
-                    });
-                };
-            }
+                            } else {
+                                static_cast<Node const*>(node_ptr)->initialize(
+                                    InitializationContext<Node>(
+                                        storage,
+                                        state,
+                                        node_storage_resources(storage)));
+                            }
+                        });
+                    };
+                }
 
-            if constexpr (has_release<Node>) {
-                callbacks.release_fn = [](
-                    void const* node_ptr,
-                    size_t node_index,
-                    NodeStorage& storage) noexcept {
-                    invoke_node_lifecycle<Node>("release", node_index, [&] {
-                        void* state = node_storage_state_ptr(storage, node_index);
-                        if constexpr (std::is_empty_v<Node>) {
-                            (void)node_ptr;
-                            Node node {};
-                            node.release(ReleaseContext<Node>(
-                                storage,
-                                state,
-                                node_storage_resources(storage)));
-                        } else {
-                            static_cast<Node const*>(node_ptr)->release(
-                                ReleaseContext<Node>(
+                if constexpr (has_release<Node>) {
+                    callbacks.release_fn = [](
+                        void const* node_ptr,
+                        size_t node_index,
+                        NodeStorage& storage) noexcept {
+                        invoke_node_lifecycle<Node>("release", node_index, [&] {
+                            void* state = node_storage_state_ptr(storage, node_index);
+                            if constexpr (std::is_empty_v<Node>) {
+                                (void)node_ptr;
+                                Node node {};
+                                node.release(ReleaseContext<Node>(
                                     storage,
                                     state,
                                     node_storage_resources(storage)));
-                        }
-                    });
-                };
-            }
+                            } else {
+                                static_cast<Node const*>(node_ptr)->release(
+                                    ReleaseContext<Node>(
+                                        storage,
+                                        state,
+                                        node_storage_resources(storage)));
+                            }
+                        });
+                    };
+                }
 
-            return callbacks;
+                return callbacks;
+            }
         }
 
         template<typename Node>
         TockStateLifecycleCallbacks make_tock_lifecycle_callbacks()
         {
-            TockStateLifecycleCallbacks callbacks;
-            if constexpr (!std::is_void_v<typename NodeBackgroundState<Node>::Type>) {
-                using TockState = typename NodeBackgroundState<Node>::Type;
-                static_assert(
-                    std::is_default_constructible_v<TockState>,
-                    "Node::TockState must be default constructible");
-                callbacks.default_construct_background_state_fn = [](void* ptr) {
-                    new (ptr) TockState();
-                };
-                callbacks.destroy_background_state_fn = [](void* ptr) {
-                    std::destroy_at(static_cast<TockState*>(ptr));
-                };
+            if constexpr (!details::has_tock_family_v<Node>) {
+                return {};
+            } else {
+                TockStateLifecycleCallbacks callbacks;
+                if constexpr (!std::is_void_v<typename NodeBackgroundState<Node>::Type>) {
+                    using BackgroundState = typename NodeBackgroundState<Node>::Type;
+                    static_assert(
+                        std::is_default_constructible_v<BackgroundState>,
+                        "Tock Node::State must be default constructible");
+                    callbacks.default_construct_background_state_fn = [](void* ptr) {
+                        new (ptr) BackgroundState();
+                    };
+                    callbacks.destroy_background_state_fn = [](void* ptr) {
+                        std::destroy_at(static_cast<BackgroundState*>(ptr));
+                    };
+                }
+                if constexpr (has_initialize<Node>) {
+                    callbacks.initialize_fn = [](
+                        void const* node_ptr,
+                        size_t node_index,
+                        TockStateStorage& storage) noexcept {
+                        invoke_node_lifecycle<Node>("initialize background State", node_index, [&] {
+                            InitializationContext<Node> context(
+                                tock_state_storage_state_ptr(storage, node_index),
+                                tock_state_storage_resources(storage));
+                            if constexpr (std::is_empty_v<Node>) {
+                                (void)node_ptr;
+                                Node node {};
+                                node.initialize(context);
+                            } else {
+                                static_cast<Node const*>(node_ptr)->initialize(context);
+                            }
+                        });
+                    };
+                }
+                if constexpr (has_release<Node>) {
+                    callbacks.release_fn = [](
+                        void const* node_ptr,
+                        size_t node_index,
+                        TockStateStorage& storage) noexcept {
+                        invoke_node_lifecycle<Node>("release background State", node_index, [&] {
+                            ReleaseContext<Node> context(
+                                tock_state_storage_state_ptr(storage, node_index),
+                                tock_state_storage_resources(storage));
+                            if constexpr (std::is_empty_v<Node>) {
+                                (void)node_ptr;
+                                Node node {};
+                                node.release(context);
+                            } else {
+                                static_cast<Node const*>(node_ptr)->release(context);
+                            }
+                        });
+                    };
+                }
+                if constexpr (has_move<Node>) {
+                    callbacks.move_fn = [](
+                        void const* node_ptr, size_t node_index,
+                        size_t previous_node_index, TockStateStorage& storage,
+                        TockStateStorage const& previous) noexcept {
+                        (void)node_ptr;
+                        invoke_node_lifecycle<Node>("move background State", node_index, [&] {
+                            MoveContext<Node> context(
+                                tock_state_storage_state_ptr(storage, node_index),
+                                tock_state_storage_state_ptr(previous, previous_node_index),
+                                tock_state_storage_resources(storage));
+                            if constexpr (std::is_empty_v<Node>) {
+                                Node node{};
+                                node.move(context);
+                            } else {
+                                static_cast<Node const*>(node_ptr)->move(context);
+                            }
+                        });
+                    };
+                }
+                return callbacks;
             }
-            if constexpr (has_tock_initialize<Node>) {
-                callbacks.initialize_fn = [](
-                    void const* node_ptr,
-                    size_t node_index,
-                    TockStateStorage& storage) noexcept {
-                    invoke_node_lifecycle<Node>("initialize TockState", node_index, [&] {
-                        TockInitializationContext<Node> context(
-                            tock_state_storage_state_ptr(storage, node_index),
-                            tock_state_storage_resources(storage));
-                        if constexpr (std::is_empty_v<Node>) {
-                            (void)node_ptr;
-                            Node node {};
-                            node.initialize(context);
-                        } else {
-                            static_cast<Node const*>(node_ptr)->initialize(context);
-                        }
-                    });
-                };
-            }
-            if constexpr (has_tock_release<Node>) {
-                callbacks.release_fn = [](
-                    void const* node_ptr,
-                    size_t node_index,
-                    TockStateStorage& storage) noexcept {
-                    invoke_node_lifecycle<Node>("release TockState", node_index, [&] {
-                        TockReleaseContext<Node> context(
-                            tock_state_storage_state_ptr(storage, node_index),
-                            tock_state_storage_resources(storage));
-                        if constexpr (std::is_empty_v<Node>) {
-                            (void)node_ptr;
-                            Node node {};
-                            node.release(context);
-                        } else {
-                            static_cast<Node const*>(node_ptr)->release(context);
-                        }
-                    });
-                };
-            }
-            return callbacks;
         }
 
         template<auto NodeValue>
         NodeLifecycleCallbacks make_reflected_lifecycle_callbacks()
         {
             using Node = std::remove_cvref_t<decltype(NodeValue)>;
-            NodeLifecycleCallbacks callbacks;
+            if constexpr (details::has_tock_family_v<Node>) {
+                return {};
+            } else {
+                NodeLifecycleCallbacks callbacks;
 
-            if constexpr (!std::is_void_v<typename NodeState<Node>::Type>) {
-                using State = typename NodeState<Node>::Type;
-                static_assert(
-                    std::is_default_constructible_v<State>,
-                    "Node::State must be default constructible");
-                callbacks.default_construct_state_fn = [](void* ptr) {
-                    new (ptr) State();
-                };
-                callbacks.destroy_state_fn = [](void* ptr) {
-                    std::destroy_at(static_cast<State*>(ptr));
-                };
+                if constexpr (!std::is_void_v<typename NodeState<Node>::Type>) {
+                    using State = typename NodeState<Node>::Type;
+                    static_assert(
+                        std::is_default_constructible_v<State>,
+                        "Node::State must be default constructible");
+                    callbacks.default_construct_state_fn = [](void* ptr) {
+                        new (ptr) State();
+                    };
+                    callbacks.destroy_state_fn = [](void* ptr) {
+                        std::destroy_at(static_cast<State*>(ptr));
+                    };
+                }
+
+                if constexpr (requires(MoveContext<Node> ctx) {
+                    NodeValue.move(ctx);
+                }) {
+                    callbacks.move_fn = [](
+                        void const*,
+                        size_t node_index,
+                        size_t previous_node_index,
+                        NodeStorage& storage,
+                        NodeStorage const& previous_storage) noexcept {
+                        invoke_node_lifecycle<Node>("move", node_index, [&] {
+                            NodeValue.move(MoveContext<Node>(
+                                storage,
+                                node_storage_state_ptr(storage, node_index),
+                                previous_storage,
+                                node_storage_state_ptr(
+                                    previous_storage, previous_node_index),
+                                node_storage_resources(storage)));
+                        });
+                    };
+                } else if constexpr (has_implicit_move<Node>) {
+                    callbacks.move_fn = &move_state_implicitly<Node>;
+                }
+
+                if constexpr (requires(InitializationContext<Node> ctx) {
+                    NodeValue.initialize(ctx);
+                }) {
+                    callbacks.initialize_fn = [](
+                        void const*,
+                        size_t node_index,
+                        NodeStorage& storage) noexcept {
+                        invoke_node_lifecycle<Node>("initialize", node_index, [&] {
+                            NodeValue.initialize(InitializationContext<Node>(
+                                storage,
+                                node_storage_state_ptr(storage, node_index),
+                                node_storage_resources(storage)));
+                        });
+                    };
+                }
+
+                if constexpr (requires(ReleaseContext<Node> ctx) {
+                    NodeValue.release(ctx);
+                }) {
+                    callbacks.release_fn = [](
+                        void const*,
+                        size_t node_index,
+                        NodeStorage& storage) noexcept {
+                        invoke_node_lifecycle<Node>("release", node_index, [&] {
+                            NodeValue.release(ReleaseContext<Node>(
+                                storage,
+                                node_storage_state_ptr(storage, node_index),
+                                node_storage_resources(storage)));
+                        });
+                    };
+                }
+
+                return callbacks;
             }
-
-            if constexpr (requires(MoveContext<Node> ctx) {
-                NodeValue.move(ctx);
-            }) {
-                callbacks.move_fn = [](
-                    void const*,
-                    size_t node_index,
-                    size_t previous_node_index,
-                    NodeStorage& storage,
-                    NodeStorage const& previous_storage) noexcept {
-                    invoke_node_lifecycle<Node>("move", node_index, [&] {
-                        NodeValue.move(MoveContext<Node>(
-                            storage,
-                            node_storage_state_ptr(storage, node_index),
-                            previous_storage,
-                            node_storage_state_ptr(
-                                previous_storage, previous_node_index),
-                            node_storage_resources(storage)));
-                    });
-                };
-            } else if constexpr (has_implicit_move<Node>) {
-                callbacks.move_fn = &move_state_implicitly<Node>;
-            }
-
-            if constexpr (requires(InitializationContext<Node> ctx) {
-                NodeValue.initialize(ctx);
-            }) {
-                callbacks.initialize_fn = [](
-                    void const*,
-                    size_t node_index,
-                    NodeStorage& storage) noexcept {
-                    invoke_node_lifecycle<Node>("initialize", node_index, [&] {
-                        NodeValue.initialize(InitializationContext<Node>(
-                            storage,
-                            node_storage_state_ptr(storage, node_index),
-                            node_storage_resources(storage)));
-                    });
-                };
-            }
-
-            if constexpr (requires(ReleaseContext<Node> ctx) {
-                NodeValue.release(ctx);
-            }) {
-                callbacks.release_fn = [](
-                    void const*,
-                    size_t node_index,
-                    NodeStorage& storage) noexcept {
-                    invoke_node_lifecycle<Node>("release", node_index, [&] {
-                        NodeValue.release(ReleaseContext<Node>(
-                            storage,
-                            node_storage_state_ptr(storage, node_index),
-                            node_storage_resources(storage)));
-                    });
-                };
-            }
-
-            return callbacks;
         }
 
         template<auto NodeValue>
         TockStateLifecycleCallbacks make_reflected_tock_lifecycle_callbacks()
         {
             using Node = std::remove_cvref_t<decltype(NodeValue)>;
-            TockStateLifecycleCallbacks callbacks;
-            if constexpr (!std::is_void_v<typename NodeBackgroundState<Node>::Type>) {
-                using TockState = typename NodeBackgroundState<Node>::Type;
-                static_assert(
-                    std::is_default_constructible_v<TockState>,
-                    "Node::TockState must be default constructible");
-                callbacks.default_construct_background_state_fn = [](void* ptr) {
-                    new (ptr) TockState();
-                };
-                callbacks.destroy_background_state_fn = [](void* ptr) {
-                    std::destroy_at(static_cast<TockState*>(ptr));
-                };
+            if constexpr (!details::has_tock_family_v<Node>) {
+                return {};
+            } else {
+                TockStateLifecycleCallbacks callbacks;
+                if constexpr (!std::is_void_v<typename NodeBackgroundState<Node>::Type>) {
+                    using BackgroundState = typename NodeBackgroundState<Node>::Type;
+                    static_assert(
+                        std::is_default_constructible_v<BackgroundState>,
+                        "Tock Node::State must be default constructible");
+                    callbacks.default_construct_background_state_fn = [](void* ptr) {
+                        new (ptr) BackgroundState();
+                    };
+                    callbacks.destroy_background_state_fn = [](void* ptr) {
+                        std::destroy_at(static_cast<BackgroundState*>(ptr));
+                    };
+                }
+                if constexpr (requires(InitializationContext<Node> ctx) {
+                    NodeValue.initialize(ctx);
+                }) {
+                    callbacks.initialize_fn = [](
+                        void const*,
+                        size_t node_index,
+                        TockStateStorage& storage) noexcept {
+                        invoke_node_lifecycle<Node>("initialize background State", node_index, [&] {
+                            NodeValue.initialize(InitializationContext<Node>(
+                                tock_state_storage_state_ptr(storage, node_index),
+                                tock_state_storage_resources(storage)));
+                        });
+                    };
+                }
+                if constexpr (requires(ReleaseContext<Node> ctx) {
+                    NodeValue.release(ctx);
+                }) {
+                    callbacks.release_fn = [](
+                        void const*,
+                        size_t node_index,
+                        TockStateStorage& storage) noexcept {
+                        invoke_node_lifecycle<Node>("release background State", node_index, [&] {
+                            NodeValue.release(ReleaseContext<Node>(
+                                tock_state_storage_state_ptr(storage, node_index),
+                                tock_state_storage_resources(storage)));
+                        });
+                    };
+                }
+                if constexpr (has_move<Node>) {
+                    callbacks.move_fn = [](
+                        void const* node_ptr, size_t node_index,
+                        size_t previous_node_index, TockStateStorage& storage,
+                        TockStateStorage const& previous) noexcept {
+                        (void)node_ptr;
+                        invoke_node_lifecycle<Node>("move background State", node_index, [&] {
+                            MoveContext<Node> context(
+                                tock_state_storage_state_ptr(storage, node_index),
+                                tock_state_storage_state_ptr(previous, previous_node_index),
+                                tock_state_storage_resources(storage));
+                            NodeValue.move(context);
+                        });
+                    };
+                }
+                return callbacks;
             }
-            if constexpr (requires(TockInitializationContext<Node> ctx) {
-                NodeValue.initialize(ctx);
-            }) {
-                callbacks.initialize_fn = [](
-                    void const*,
-                    size_t node_index,
-                    TockStateStorage& storage) noexcept {
-                    invoke_node_lifecycle<Node>("initialize TockState", node_index, [&] {
-                        NodeValue.initialize(TockInitializationContext<Node>(
-                            tock_state_storage_state_ptr(storage, node_index),
-                            tock_state_storage_resources(storage)));
-                    });
-                };
-            }
-            if constexpr (requires(TockReleaseContext<Node> ctx) {
-                NodeValue.release(ctx);
-            }) {
-                callbacks.release_fn = [](
-                    void const*,
-                    size_t node_index,
-                    TockStateStorage& storage) noexcept {
-                    invoke_node_lifecycle<Node>("release TockState", node_index, [&] {
-                        NodeValue.release(TockReleaseContext<Node>(
-                            tock_state_storage_state_ptr(storage, node_index),
-                            tock_state_storage_resources(storage)));
-                    });
-                };
-            }
-            return callbacks;
         }
     }
 }

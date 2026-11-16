@@ -78,43 +78,6 @@ namespace iv {
         using Type = typename Node::State;
     };
 
-    // TockState is optional non-semantic acceleration state visible only to
-    // tock_coverage(). It is deliberately separate from sequential Node::State
-    // and from authoritative background-output storage.
-    template<typename Node>
-    struct NodeBackgroundState {
-        using Type = void;
-    };
-
-    namespace details {
-        template<typename Node>
-        concept has_BackgroundState = requires {
-            typename Node::TockState;
-        };
-    }
-
-    template<typename Node>
-    requires(details::has_BackgroundState<Node>)
-    struct NodeBackgroundState<Node> {
-        using Type = typename Node::TockState;
-    };
-
-    namespace details {
-        template<typename Node>
-        inline constexpr bool background_state_type_is_valid_v = [] {
-            using TockState = typename NodeBackgroundState<Node>::Type;
-            if constexpr (std::is_void_v<TockState>) {
-                return true;
-            } else {
-                return std::is_object_v<TockState>
-                    && !std::is_const_v<TockState>
-                    && !std::is_volatile_v<TockState>
-                    && std::is_default_constructible_v<TockState>
-                    && std::is_destructible_v<TockState>;
-            }
-        }();
-    }
-
     template<typename A>
     struct NoCopy : public A
     {
@@ -496,6 +459,21 @@ namespace iv {
             has_tock_family_v<Node> || (has_tick_family_v<Node> && intrinsically_replayable_v<Node>);
 
         template<typename Node>
+        inline constexpr bool background_state_type_is_valid_v = [] {
+            using State = typename NodeState<Node>::Type;
+            if constexpr (requires { typename Node::TockState; }) {
+                return false;
+            } else if constexpr (!has_tock_family_v<Node> || std::is_void_v<State>) {
+                return true;
+            } else {
+                return std::is_object_v<State> && !std::is_const_v<State>
+                    && !std::is_volatile_v<State>
+                    && std::is_default_constructible_v<State>
+                    && std::is_destructible_v<State>;
+            }
+        }();
+
+        template<typename Node>
         inline constexpr bool background_dsp_node_declaration_is_valid_v =
             background_state_type_is_valid_v<Node>
             && has_constexpr_port_configs<Node>
@@ -545,7 +523,6 @@ namespace iv {
             || (has_constexpr_port_configs<Node>
                 && has_tick_family_v<Node>
                 && !has_State<Node>
-                && !has_BackgroundState<Node>
                 && replay_ports_are_valid<Node>());
 
         template <typename Node>
@@ -669,5 +646,20 @@ namespace iv {
                     || get_num_event_inputs(node) > 0);
         }
     }
+
+    // Declaration-only helpers retain their owning realtime declaration layout.
+    // A concrete Tock primitive instead stores its one authored State in the
+    // background sidecar. This does not classify helpers as executable nodes.
+    template<typename Node>
+    struct NodeRealtimeState {
+        using Type = std::conditional_t<details::has_tock_family_v<Node>,
+            void, typename NodeState<Node>::Type>;
+    };
+
+    template<typename Node>
+    struct NodeBackgroundState {
+        using Type = std::conditional_t<details::has_tock_family_v<Node>,
+            typename NodeState<Node>::Type, void>;
+    };
 
 }

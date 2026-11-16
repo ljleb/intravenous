@@ -114,8 +114,8 @@ struct NodeCompilerRecord {
     // received from Clang before publishing it to the graph compiler.
     std::size_t state_size = 0;
     std::size_t state_alignment = 1;
-    // TockState is non-semantic acceleration state available only to
-    // tock_coverage(). It is allocated independently from sequential State.
+    // Tock Node::State is non-semantic background acceleration. Its compiler
+    // ABI is separate from the mutually exclusive Tick State ABI.
     std::size_t background_state_size = 0;
     std::size_t background_state_alignment = 1;
     // Authored and statically validated; the project planner must separately

@@ -157,7 +157,16 @@ all move-constructible Tock caches unconditionally. The executor must respect ol
 and successor ownership, construct/destroy each state exactly once, and run release
 on the appropriate owner. Fresh initialization and reset remain correctness-preserving.
 
-The **current implementation** still uses separate `TockState`,
+Implementation update, 2026-11-16: source now uses one authored `State` and the
+common lifecycle contexts. An authored Tock `move()` is selected by stable node
+identity and compatible state metadata after predecessor work has drained.
+Successors prepared while a predecessor is active initialize fresh. Nodes without
+an authored Tock `move()` also initialize fresh; no implicit Tock move is selected
+in this implementation. Internal `TockStateLayout`/`TockStateStorage` records
+continue to express separate background ownership. Full owner verification is
+pending; see the [stage checkpoint](vue_client_implementation_stages.md#state-lifecycle-source-checkpoint-2026-11-16).
+
+The **previous implementation checkpoint (before 2026-11-16)** uses separate `TockState`,
 `TockInitializationContext`/`TockReleaseContext`, and `TockStateStorage` records,
 with fresh initialization and no Tock move callback. Those are migration targets,
 not alternate intended authored APIs.

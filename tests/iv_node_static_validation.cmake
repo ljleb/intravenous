@@ -70,7 +70,8 @@ expect_invalid(
 
 expect_invalid(
     invalid_tock_state.cpp
-    "Node::TockState must be a mutable, non-volatile, default-constructible object type")
+    "IV_NODE authors one State type"
+    "Tock State must be mutable, non-volatile and default constructible.")
 
 expect_invalid(
     invalid_replayable_node.cpp

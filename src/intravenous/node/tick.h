@@ -108,7 +108,7 @@ namespace iv {
             return 1.0 / static_cast<double>(sample_rate);
         }
 
-        using State = typename NodeState<Node>::Type;
+        using State = typename NodeRealtimeState<Node>::Type;
 
         std::add_lvalue_reference_t<State> state() const
         requires(!std::is_void_v<State>);
@@ -840,7 +840,7 @@ namespace iv {
             }
 
             [[nodiscard]] decltype(auto) state() const
-            requires (!std::is_void_v<typename NodeState<Node>::Type>)
+            requires (!std::is_void_v<typename NodeRealtimeState<Node>::Type>)
             {
                 return context().state();
             }

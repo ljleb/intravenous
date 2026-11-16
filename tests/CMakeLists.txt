@@ -8,6 +8,15 @@ FetchContent_Declare(
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(googletest)
+
+# One shared main resets each case's stable workspace before execution. Keep
+# this separate from the host runtime so ABI-only tests use the same layout.
+add_library(intravenous_test_main STATIC gtest_main.cpp)
+target_compile_features(intravenous_test_main PUBLIC cxx_std_23)
+target_compile_definitions(intravenous_test_main PUBLIC
+    IV_CONFIGURED_BINARY_DIR="${CMAKE_BINARY_DIR}"
+    IV_TEST_USES_GTEST=1)
+target_link_libraries(intravenous_test_main PUBLIC GTest::gtest)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(gtest PRIVATE -Wno-character-conversion)
 endif()
@@ -58,7 +67,7 @@ function(add_iv_gtest target source)
     endif()
 
     target_link_libraries(${target} PRIVATE
-        GTest::gtest_main
+        intravenous_test_main
     )
     if(NOT IVGT_NO_HOST_RUNTIME_OBJECTS)
         iv_add_host_runtime_objects(${target})

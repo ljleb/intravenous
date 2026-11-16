@@ -43,15 +43,6 @@ struct StatefulProbe {
         std::uint64_t observed_background_extent = 0;
     };
 
-    struct alignas(128) TockState {
-        std::uint64_t tick_calls = 0;
-        std::uint64_t skip_calls = 0;
-        std::uint64_t last_index = 0;
-        std::uint64_t last_block_size = 0;
-        std::uint64_t observed_state_extent = 0;
-        std::uint64_t observed_background_extent = 0;
-    };
-
     static constexpr auto inputs()
     {
         return std::tuple{};
@@ -114,7 +105,7 @@ struct StateOnlyProbe {
 };
 
 struct BackgroundOnlyProbe {
-    struct TockState {
+    struct State {
         std::uint64_t calls = 0;
         std::uint64_t observed_state_extent = 0;
         std::uint64_t observed_background_extent = 0;
@@ -127,14 +118,16 @@ struct BackgroundOnlyProbe {
 
     static constexpr auto outputs()
     {
-        return std::tuple{};
+        return std::tuple{iv::output<iv::Sample>("out", iv::OutputProduction::coverage)};
     }
 
-    void tick_block(iv::TickBlockContext<BackgroundOnlyProbe> const&) const {}
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<BackgroundOnlyProbe>& ctx) const
+    { ctx.output<"out">().publish(std::span<iv::GlobalIndexRange const>{}); }
+    void tock_coverage(iv::TockCoverageContext<BackgroundOnlyProbe>&) const {}
 };
 
 struct BackgroundExecutionProbe {
-    struct TockState {
+    struct State {
         std::uint64_t calls = 0;
         std::uint64_t sample_rate = 0;
     };
@@ -167,7 +160,7 @@ struct BackgroundExecutionProbe {
     void tock_coverage(
         iv::TockCoverageContext<BackgroundExecutionProbe>& context) const
     {
-        auto& state = context.tock_state();
+        auto& state = context.state();
         ++state.calls;
         state.sample_rate = context.sample_rate;
         auto output = context.template output<"out">().regions();
@@ -3571,7 +3564,7 @@ struct NativeBatchReplaySource {
 struct NativeBatchBackgroundProbe {
     std::uint64_t id = 0;
 
-    struct TockState {
+    struct State {
         std::uint64_t tock_batch_calls = 0;
         std::uint64_t last_lane_count = 0;
         std::uint64_t configured_id = 0;
@@ -3613,7 +3606,7 @@ struct NativeBatchBackgroundProbe {
         iv::TockCoverageBatchContext<NativeBatchBackgroundProbe>& context)
     {
         for (auto lane : context) {
-            auto& state = lane.tock_state();
+            auto& state = lane.state();
             ++state.tock_batch_calls;
             state.last_lane_count = context.size();
             state.configured_id = lane.node().id;
@@ -3637,7 +3630,7 @@ struct NativeBatchBackgroundProbe {
 struct NativeBatchTockProbe {
     std::uint64_t id = 0;
 
-    struct TockState {
+    struct State {
         std::uint64_t tock_batch_calls = 0;
         std::uint64_t last_lane_count = 0;
         std::uint64_t configured_id = 0;
@@ -3674,7 +3667,7 @@ struct NativeBatchTockProbe {
         iv::TockCoverageBatchContext<NativeBatchTockProbe>& context)
     {
         for (auto lane : context) {
-            auto& state = lane.tock_state();
+            auto& state = lane.state();
             ++state.tock_batch_calls;
             state.last_lane_count = context.size();
             state.configured_id = lane.node().id;
@@ -3942,10 +3935,6 @@ void event_activity_module(iv::GraphBuilder& graph)
 struct DeclarationLayoutLeaf {
     struct State {
         std::uint64_t marker = 17;
-    };
-
-    struct TockState {
-        std::uint64_t marker = 23;
     };
 };
 
@@ -4364,7 +4353,7 @@ struct MultiRegionCoverageSource {
 };
 
 struct MultiRegionCoverageConsumer {
-    struct alignas(64) TockState {
+    struct alignas(64) State {
         std::uint64_t calls = 0;
         std::uint64_t region_count = 0;
         std::uint64_t first_begin = 0;
@@ -4410,7 +4399,7 @@ struct MultiRegionCoverageConsumer {
         IV_ASSERT(input.size() == 2,
             "multi-Region consumer lost its explicitly requested inspection inputs");
 
-        auto& state = ctx.tock_state();
+        auto& state = ctx.state();
         ++state.calls;
         state.region_count = input.size();
         state.first_begin = input[0].range().begin.bits();
@@ -4513,7 +4502,7 @@ struct MultiRegionEventCoverageSource {
 };
 
 struct MultiRegionEventCoverageConsumer {
-    struct alignas(64) TockState {
+    struct alignas(64) State {
         std::uint64_t calls = 0;
         std::uint64_t region_count = 0;
         std::uint64_t first_event_count = 0;
@@ -4566,7 +4555,7 @@ struct MultiRegionEventCoverageConsumer {
         IV_ASSERT(input.size() == 2,
             "multi-Region event consumer lost its explicitly requested inspection inputs");
 
-        auto& state = ctx.tock_state();
+        auto& state = ctx.state();
         ++state.calls;
         state.region_count = input.size();
         for (std::size_t region = 0; region < input.size(); ++region) {
@@ -4665,7 +4654,7 @@ struct SingleRegionSampleSource {
 };
 
 struct SingleRegionSampleConsumer {
-    struct alignas(64) TockState {
+    struct alignas(64) State {
         std::uint64_t calls = 0;
         std::uint64_t begin = 0;
         std::uint64_t extent = 0;
@@ -4711,7 +4700,7 @@ struct SingleRegionSampleConsumer {
         auto output = ctx.output<"single-region-sample-consumer-output">().region();
         IV_ASSERT(input.range() == output.range(),
             "single sample Region input and output ranges differ");
-        auto& state = ctx.tock_state();
+        auto& state = ctx.state();
         ++state.calls;
         state.begin = input.range().begin.bits();
         state.extent = input.range().extent;
@@ -4769,7 +4758,7 @@ struct SingleRegionEventSource {
 };
 
 struct SingleRegionEventConsumer {
-    struct alignas(64) TockState {
+    struct alignas(64) State {
         std::uint64_t calls = 0;
         std::uint64_t begin = 0;
         std::uint64_t extent = 0;
@@ -4820,7 +4809,7 @@ struct SingleRegionEventConsumer {
         auto output = ctx.output<"single-region-event-consumer-output">().region();
         IV_ASSERT(input.range() == output.range(),
             "single event Region input and output ranges differ");
-        auto& state = ctx.tock_state();
+        auto& state = ctx.state();
         ++state.calls;
         state.begin = input.range().begin.bits();
         state.extent = input.range().extent;
@@ -5442,7 +5431,7 @@ struct PlaybackEventHistoryPeer {
 };
 
 struct ModuleBoundaryCoverageObserver {
-    struct alignas(64) TockState {
+    struct alignas(64) State {
         std::uint64_t calls = 0;
         std::uint64_t sample_region_count = 0;
         std::uint64_t event_region_count = 0;
@@ -5517,7 +5506,7 @@ struct ModuleBoundaryCoverageObserver {
         IV_ASSERT(events.size() == 2 && event_outputs.size() == 2,
             "module boundary did not preserve two event Regions");
 
-        auto& state = ctx.tock_state();
+        auto& state = ctx.state();
         ++state.calls;
         state.sample_region_count = samples.size();
         state.event_region_count = events.size();
@@ -5598,7 +5587,7 @@ struct PersistedStereoRecordingSource {
 };
 
 struct PersistedRecordingCoverageConsumer {
-    struct alignas(64) TockState {
+    struct alignas(64) State {
         std::uint64_t calls = 0;
         std::uint64_t sample_region_count = 0;
         std::uint64_t sample_layout = 0;
@@ -5682,7 +5671,7 @@ struct PersistedRecordingCoverageConsumer {
         IV_ASSERT(event_inputs.size() == event_outputs.size(),
             "recorded event input and output Region counts differ");
 
-        auto& state = ctx.tock_state();
+        auto& state = ctx.state();
         ++state.calls;
         state.sample_region_count = sample_inputs.size();
         state.event_region_count = event_inputs.size();
@@ -7518,7 +7507,7 @@ IV_MODULE("iv.test.replay.module_manual_resolution", replay_module_manual_resolu
 )cpp";
     static constexpr std::string_view internal_nodes = R"cpp(
 struct SuspendableCoverageProbe {
-    struct TockState { std::uint64_t calls = 0; float first = 0; };
+    struct State { std::uint64_t calls = 0; float first = 0; };
     static constexpr auto inputs() {
         return std::array{iv::input<iv::Sample>("in", iv::InputAccess::region)};
     }
@@ -7546,8 +7535,8 @@ struct SuspendableCoverageProbe {
     void tock_coverage(iv::TockCoverageContext<SuspendableCoverageProbe>& ctx) const {
         auto input = ctx.input<"in">().region();
         auto output = ctx.output<"suspendable-output">().region();
-        ++ctx.tock_state().calls;
-        ctx.tock_state().first = input.value(0).value;
+        ++ctx.state().calls;
+        ctx.state().first = input.value(0).value;
         for (auto window : output.prepared_windows())
             for (std::size_t frame = 0; frame < window.frame_count(); ++frame)
                 window.value(frame) = input.value(static_cast<std::size_t>(
@@ -7614,7 +7603,7 @@ void summed_module_boundaries(iv::GraphBuilder& graph) {
 IV_MODULE("iv.test.graph_jit.summed_module_boundaries", summed_module_boundaries);
 
 struct HugeComputedRegionSource {
-    struct TockState { std::uint64_t values_written = 0; std::uint64_t logical_extent = 0; };
+    struct State { std::uint64_t values_written = 0; std::uint64_t logical_extent = 0; };
     static constexpr auto outputs() {
         return std::array{iv::output<iv::Sample>("huge", iv::OutputProduction::region)};
     }
@@ -7625,12 +7614,12 @@ struct HugeComputedRegionSource {
     }
     void tock_coverage(iv::TockCoverageContext<HugeComputedRegionSource>& ctx) const {
         auto region = ctx.output<"huge">().region();
-        ctx.tock_state().logical_extent = region.range().extent;
+        ctx.state().logical_extent = region.range().extent;
         for (auto window : region.prepared_windows()) {
             for (std::size_t frame = 0; frame < window.frame_count(); ++frame) {
                 auto position = window.range().begin.advanced_by(frame);
                 window.at(position) = iv::Sample{static_cast<float>(position.bits() & 1023)};
-                ++ctx.tock_state().values_written;
+                ++ctx.state().values_written;
             }
         }
     }

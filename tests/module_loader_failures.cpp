@@ -1,7 +1,8 @@
 #include "module_test_utils.h"
 
-int main()
+int main(int, char** argv)
 {
+    iv::test::set_test_executable_name(argv[0]);
     iv::test::install_crash_handlers();
 
     auto const fixtures = iv::test::test_modules_root();

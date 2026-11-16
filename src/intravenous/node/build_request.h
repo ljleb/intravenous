@@ -1375,7 +1375,7 @@ constexpr NodeCompilerOperations node_compiler_operations()
 template<class Node>
 consteval std::size_t node_state_size()
 {
-    using State = typename NodeState<Node>::Type;
+    using State = typename NodeRealtimeState<Node>::Type;
     if constexpr (std::is_void_v<State>) {
         return 0;
     } else {
@@ -1386,7 +1386,7 @@ consteval std::size_t node_state_size()
 template<class Node>
 consteval std::size_t node_state_alignment()
 {
-    using State = typename NodeState<Node>::Type;
+    using State = typename NodeRealtimeState<Node>::Type;
     if constexpr (std::is_void_v<State>) {
         return 1;
     } else {
@@ -1397,22 +1397,22 @@ consteval std::size_t node_state_alignment()
 template<class Node>
 consteval std::size_t node_background_state_size()
 {
-    using TockState = typename NodeBackgroundState<Node>::Type;
-    if constexpr (std::is_void_v<TockState>) {
+    using BackgroundState = typename NodeBackgroundState<Node>::Type;
+    if constexpr (std::is_void_v<BackgroundState>) {
         return 0;
     } else {
-        return sizeof(TockState);
+        return sizeof(BackgroundState);
     }
 }
 
 template<class Node>
 consteval std::size_t node_background_state_alignment()
 {
-    using TockState = typename NodeBackgroundState<Node>::Type;
-    if constexpr (std::is_void_v<TockState>) {
+    using BackgroundState = typename NodeBackgroundState<Node>::Type;
+    if constexpr (std::is_void_v<BackgroundState>) {
         return 1;
     } else {
-        return alignof(TockState);
+        return alignof(BackgroundState);
     }
 }
 
@@ -1473,7 +1473,7 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
     }
     static_assert(replay_declaration_is_valid_v<Node>,
         "intrinsically replayable nodes must author a Tick callback, "
-        "have no State/TockState, provide propagation for Random Access inputs, "
+        "have no State, provide propagation for Random Access inputs, "
         "and declare only computed Sequential outputs; resolved timing is validated by "
         "the whole-graph planner");
     sink.set_internal_latency(get_internal_latency(node));
@@ -1492,6 +1492,9 @@ template<class Node>
 NodeBuildRequest make_node_build_request(Node const& node)
 {
     using Value = std::remove_cvref_t<Node>;
+    static_assert(background_state_type_is_valid_v<Value>,
+        "Author one State type, not TockState; Tock State must be a mutable, "
+        "non-volatile, default-constructible object type");
     static_assert(has_constexpr_port_configs<Value>,
         "concrete node ports must be declared by static constexpr inputs() and outputs()");
     static_assert(primary_callback_declaration_is_valid_v<Value>,
@@ -1500,7 +1503,7 @@ NodeBuildRequest make_node_build_request(Node const& node)
         "nodes may declare only Tock outputs");
     static_assert(replay_declaration_is_valid_v<Value>,
         "intrinsically replayable nodes must author a Tick callback, "
-        "have no State/TockState, provide propagation for Random Access inputs, "
+        "have no State, provide propagation for Random Access inputs, "
         "and declare only computed Sequential outputs; resolved timing is validated by "
         "the whole-graph planner");
     // Emit the build-local record in the LLVM module.  The builder consumes

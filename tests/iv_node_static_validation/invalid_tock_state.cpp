@@ -3,7 +3,7 @@
 #include <array>
 
 struct InvalidConstBackgroundState {
-    using TockState = int const;
+    using State = int const;
 
     static constexpr auto outputs()
     {

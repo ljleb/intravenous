@@ -1,6 +1,17 @@
 {
   "cmake.useVsDeveloperEnvironment": "always",
   "cmake.generator": "Ninja",
+  "files.watcherExclude": {
+    "**/build/**": true,
+    "**/build-release/**": true,
+    "**/debug-release/**": true,
+    "**/.direnv/**": true,
+    "**/.intravenous-tooling/**": true,
+    "**/node_modules/**": true,
+    "**/vscode/client/dist/**": true,
+    "**/vscode/client/dist-test/**": true,
+    "**/vscode/client/dist-tools/**": true
+  },
   "clangd.arguments": [
     "--compile-commands-dir=${workspaceFolder}/build",
     "--query-driver=/nix/store/*/bin/clang,/nix/store/*/bin/clang++,C:/Program Files/Microsoft Visual Studio/*/*/VC/Tools/MSVC/**/bin/Hostx64/x64/cl.exe",

@@ -338,7 +338,7 @@ TEST_F(GraphJitRuntimeFixture, StateAndBackgroundStateContexts)
         stateful.compiled_graph->node_layout,
         stateful.compiled_graph->tock_state_layout,
         sizeof(StatefulProbeStateMirror),
-        sizeof(StatefulProbeBackgroundStateMirror));
+        0u);
     ASSERT_EQ(stateful.compiled_graph->node_layout.nodes.size(), 1u);
 
     auto stateful_storage = stateful.compiled_graph->node_layout.create_storage(resources);
@@ -347,23 +347,19 @@ TEST_F(GraphJitRuntimeFixture, StateAndBackgroundStateContexts)
         stateful.compiled_graph->tock_state_layout.create_storage(resources);
     stateful_tock_states.initialize();
     auto* state = static_cast<StatefulProbeStateMirror*>(stateful_storage.state_ptr(0));
-    auto* background = static_cast<StatefulProbeBackgroundStateMirror*>(
+    auto* background = static_cast<void*>(
         stateful_tock_states.state_ptr(0));
     ASSERT_NE(state, nullptr);
-    ASSERT_NE(background, nullptr);
+    EXPECT_EQ(background, nullptr);
     auto const& stateful_node = stateful.compiled_graph->node_layout.nodes.front();
     auto const& stateful_tock_node =
         stateful.compiled_graph->tock_state_layout.nodes.front();
     EXPECT_EQ(stateful_node.state_alignment, alignof(StatefulProbeStateMirror));
     EXPECT_EQ(
         stateful_tock_node.state_alignment,
-        alignof(StatefulProbeBackgroundStateMirror));
+        1u);
     EXPECT_EQ(
         reinterpret_cast<std::uintptr_t>(state) % alignof(StatefulProbeStateMirror),
-        0u);
-    EXPECT_EQ(
-        reinterpret_cast<std::uintptr_t>(background)
-            % alignof(StatefulProbeBackgroundStateMirror),
         0u);
     EXPECT_EQ(
         static_cast<std::byte*>(static_cast<void*>(state)),
@@ -379,12 +375,6 @@ TEST_F(GraphJitRuntimeFixture, StateAndBackgroundStateContexts)
     EXPECT_EQ(state->sample_rate, 88200u);
     EXPECT_EQ(state->observed_state_extent, sizeof(StatefulProbeStateMirror));
     EXPECT_EQ(state->observed_background_extent, 0u);
-    EXPECT_EQ(background->tick_calls, 0u);
-    EXPECT_EQ(background->skip_calls, 0u);
-    EXPECT_EQ(background->last_index, 0u);
-    EXPECT_EQ(background->last_block_size, 0u);
-    EXPECT_EQ(background->observed_state_extent, 0u);
-    EXPECT_EQ(background->observed_background_extent, 0u);
 
     stateful.compiled_graph->root_operations.tick_block(
         stateful_storage.buffer().data(), &empty_tick_invocation, index(73), 64);
@@ -392,10 +382,6 @@ TEST_F(GraphJitRuntimeFixture, StateAndBackgroundStateContexts)
     EXPECT_EQ(state->skip_calls, 0u);
     EXPECT_EQ(state->last_index, 73u);
     EXPECT_EQ(state->last_block_size, 64u);
-    EXPECT_EQ(background->tick_calls, 0u);
-    EXPECT_EQ(background->skip_calls, 0u);
-    EXPECT_EQ(background->last_index, 0u);
-    EXPECT_EQ(background->last_block_size, 0u);
 
     auto state_only = compile(graph_jit_state_only_module_id, 101);
     ASSERT_TRUE(state_only.succeeded())

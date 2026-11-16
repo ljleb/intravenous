@@ -109,9 +109,6 @@ struct DeclarationLayoutLeafStateMirror {
     std::uint64_t marker = 0;
 };
 
-struct DeclarationLayoutLeafTockStateMirror {
-    std::uint64_t marker = 0;
-};
 
 struct DeclarationLayoutProducerStateMirror {
     std::span<std::uint64_t> values;
@@ -499,16 +496,8 @@ TEST_F(
     EXPECT_EQ(first_leaf->marker, 17u);
     EXPECT_EQ(second_leaf->marker, 17u);
 
-    auto const* first_tock_leaf =
-        static_cast<DeclarationLayoutLeafTockStateMirror const*>(
-            tock_states.state_ptr(1));
-    auto const* second_tock_leaf =
-        static_cast<DeclarationLayoutLeafTockStateMirror const*>(
-            tock_states.state_ptr(2));
-    ASSERT_NE(first_tock_leaf, nullptr);
-    ASSERT_NE(second_tock_leaf, nullptr);
-    EXPECT_EQ(first_tock_leaf->marker, 23u);
-    EXPECT_EQ(second_tock_leaf->marker, 23u);
+    EXPECT_EQ(tock_states.state_ptr(1), nullptr);
+    EXPECT_EQ(tock_states.state_ptr(2), nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
         storage.buffer().data(), &empty_tick_invocation, index(7), 16);
@@ -703,7 +692,7 @@ TEST_F(GraphJitRuntimeFixture, MultipleNodesAndBlockSlicing)
         sizeof(StatefulProbeStateMirror));
     EXPECT_EQ(
         multiple.compiled_graph->tock_state_layout.nodes[0].state_size,
-        sizeof(StatefulProbeBackgroundStateMirror));
+        0u);
     EXPECT_EQ(
         multiple.compiled_graph->node_layout.nodes[1].state_size,
         sizeof(ConfiguredProbeStateMirror));
@@ -1234,10 +1223,10 @@ TEST_F(GraphJitRuntimeFixture, CompiledGraphsRetainPackageAndOrcOwnership)
         stateful_survivor->tock_state_layout.create_storage(resources);
     stateful_tock_states.initialize();
     auto* state = static_cast<StatefulProbeStateMirror*>(stateful_storage.state_ptr(0));
-    auto* background = static_cast<StatefulProbeBackgroundStateMirror*>(
+    auto* background = static_cast<void*>(
         stateful_tock_states.state_ptr(0));
     ASSERT_NE(state, nullptr);
-    ASSERT_NE(background, nullptr);
+    EXPECT_EQ(background, nullptr);
     stateful_survivor->root_operations.tick_block(
         stateful_storage.buffer().data(), &empty_tick_invocation, index(17), 32);
     stateful_survivor->root_operations.tick_block(
@@ -1268,10 +1257,6 @@ TEST_F(GraphJitRuntimeFixture, CompiledGraphsRetainPackageAndOrcOwnership)
     EXPECT_EQ(state->skip_calls, 0u);
     EXPECT_EQ(state->last_index, 137u);
     EXPECT_EQ(state->last_block_size, 32u);
-    EXPECT_EQ(background->tick_calls, 0u);
-    EXPECT_EQ(background->skip_calls, 0u);
-    EXPECT_EQ(background->last_index, 0u);
-    EXPECT_EQ(background->last_block_size, 0u);
 
     auto pointer_survivor_storage =
         pointer_survivor->node_layout.create_storage(resources);

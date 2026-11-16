@@ -1,5 +1,7 @@
 #pragma once
 
+#include "test_workspace.h"
+
 #include <intravenous/devices/audio_device.h>
 #include "fake_audio_device.h"
 #include <intravenous/module/loader.h>
@@ -19,7 +21,6 @@
 #include <iterator>
 #include <iostream>
 #include <regex>
-#include <source_location>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -132,50 +133,6 @@ namespace iv::test {
         return load_package_definitions(loader, project_package_request(package_path));
     }
 
-    inline std::string test_process_namespace()
-    {
-        static std::string cached = [] {
-            auto sanitize = [](std::string text) {
-                if (text.empty()) text = "unknown_test";
-                for (char& c : text) {
-                    bool good =
-                        (c >= 'a' && c <= 'z') ||
-                        (c >= 'A' && c <= 'Z') ||
-                        (c >= '0' && c <= '9');
-                    if (!good) c = '_';
-                }
-                return text;
-            };
-
-            std::filesystem::path executable = "unknown_test";
-#if defined(_WIN32)
-            std::string buffer(MAX_PATH, '\0');
-            auto length = GetModuleFileNameA(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-            if (length > 0) {
-                buffer.resize(length);
-                executable = buffer;
-            }
-            auto pid = static_cast<unsigned long>(GetCurrentProcessId());
-#else
-            std::error_code ec;
-            executable = std::filesystem::read_symlink("/proc/self/exe", ec);
-            auto pid = static_cast<unsigned long>(::getpid());
-#endif
-            auto name = executable.stem().string();
-            if (name.empty()) name = "unknown_test";
-
-            std::ostringstream out;
-            out << sanitize(std::move(name)) << "_" << pid;
-            return out.str();
-        }();
-        return cached;
-    }
-
-    inline std::filesystem::path runtime_modules_root()
-    {
-        return configured_build_root() / "test_runtime_modules" / test_process_namespace();
-    }
-
     inline std::filesystem::path runtime_module_cache_root()
     {
         return configured_build_root() / "test_module_locks";
@@ -214,23 +171,10 @@ namespace iv::test {
         return sanitized;
     }
 
-    inline std::string test_location_id(
-        std::string_view base_name,
-        std::source_location location = std::source_location::current())
-    {
-        std::filesystem::path file = location.file_name();
-        std::ostringstream out;
-        out << sanitize_test_token(base_name)
-            << "_" << sanitize_test_token(file.stem().string())
-            << "_L" << location.line();
-        return out.str();
-    }
-
     inline std::filesystem::path fresh_module_fixture_workspace(
-        std::string_view base_name,
-        std::source_location location = std::source_location::current())
+        std::string_view base_name)
     {
-        auto const workspace = runtime_modules_root() / test_location_id(base_name, location);
+        auto const workspace = runtime_modules_root() / test_workspace_component(base_name);
         std::filesystem::remove_all(workspace);
         std::filesystem::create_directories(workspace);
         return workspace;
@@ -377,10 +321,9 @@ namespace iv::test {
 
     inline std::filesystem::path mutable_module_fixture_workspace(
         std::string_view test_name,
-        std::string const& fixture_name,
-        std::source_location location = std::source_location::current())
+        std::string const& fixture_name)
     {
-        auto const workspace = fresh_module_fixture_workspace(test_name, location);
+        auto const workspace = fresh_module_fixture_workspace(test_name);
         copy_directory(test_modules_root() / fixture_name, workspace);
         return workspace;
     }
@@ -469,10 +412,9 @@ namespace iv::test {
 
     inline std::filesystem::path make_inline_module_workspace(
         std::string_view test_name,
-        std::string const& module_text,
-        std::source_location location = std::source_location::current())
+        std::string const& module_text)
     {
-        auto const workspace = fresh_module_fixture_workspace(test_name, location);
+        auto const workspace = fresh_module_fixture_workspace(test_name);
         std::filesystem::create_directories(workspace);
         write_text(workspace / "iv_project.jsonl", "");
         auto const [id, main] = inline_module_metadata(module_text);
@@ -704,9 +646,8 @@ namespace iv::test_support {
     using iv::test::write_text;
 
     inline std::filesystem::path make_workspace(
-        std::string_view name,
-        std::source_location location = std::source_location::current())
+        std::string_view name)
     {
-        return iv::test::fresh_module_fixture_workspace(name, location);
+        return iv::test::fresh_module_fixture_workspace(name);
     }
 }

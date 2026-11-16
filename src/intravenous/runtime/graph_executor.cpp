@@ -704,16 +704,19 @@ void GraphExecutor::ExecutionGeneration::update_realtime_phase(
     }
 }
 
-void GraphExecutor::ExecutionGeneration::commit_background_migration()
+void GraphExecutor::ExecutionGeneration::commit_background_migration(
+    ExecutionGeneration const* drained_predecessor)
 {
     if (background_initialized) return; // The successor may already own its prepared selection.
     if (!background_coverage_migration) {
         throw std::logic_error(
             "GraphExecutor background generation migration is not prepared");
     }
-    // TockState is non-semantic acceleration state. Each generation starts
-    // fresh on the background worker instead of migrating it across code.
-    background.tock_states.initialize();
+    // Private successor preparation must not consume an active predecessor's
+    // cache. Only advance_generation(), after draining predecessor work, can
+    // offer it to an authored move. Other preparation starts fresh.
+    background.tock_states.initialize(drained_predecessor
+        ? &drained_predecessor->background.tock_states : nullptr);
     background_coverage_migration->commit();
     background.reconciliation_roots =
         background_coverage_migration->take_reconciliation_roots();
@@ -1704,7 +1707,7 @@ bool GraphExecutor::BackgroundExecutor::advance_generation()
         throw std::logic_error(
             "GraphExecutor could not retire drained producer queues");
     }
-    if (!successor->background_initialized) successor->commit_background_migration();
+    if (!successor->background_initialized) successor->commit_background_migration(&previous);
     else {
         // Its private metadata/result pages remain reusable. Recording-root
         // identity comparisons in the transaction invalidate the finite tail

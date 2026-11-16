@@ -527,7 +527,6 @@ struct NodeMessageHandlerMetadata {
 
 struct CompilerMetadata {
     std::vector<StateMetadata> states;
-    std::vector<StateMetadata> background_states;
     std::vector<ConfigPointerMetadata> config_pointers;
     std::vector<ConfigurationTypeMetadata> configuration_types;
     std::vector<NodeMessageHandlerMetadata> node_message_handlers;
@@ -708,10 +707,6 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
         auto* states = object->getArray("states");
         if (!states) {
             fail("metadata has no state array in '" + entry.path().string() + "'");
-        }
-        auto* background_states = object->getArray("background_states");
-        if (!background_states) {
-            fail("metadata has no background-state array in '" + entry.path().string() + "'");
         }
         auto* config_pointers = object->getArray("config_pointers");
         if (!config_pointers) {
@@ -988,8 +983,6 @@ CompilerMetadata load_metadata(std::filesystem::path const& directory)
             }
         };
         append_state_metadata(*states, result.states, "state");
-        append_state_metadata(
-            *background_states, result.background_states, "background-state");
         for (auto const& field_value : *config_pointers) {
             auto* field = field_value.getAsObject();
             if (!field) fail("config-pointer metadata entry is not an object in '" + entry.path().string() + "'");
@@ -1102,7 +1095,7 @@ void reject_node_runtime_mutable_globals(std::span<IrNodeRecord const> records)
                 "node type '" + record.type_name
                 + "' runtime/compiler operations reference mutable package global '"
                 + global->getName().str()
-                + "'; persistent mutable runtime data must be Node::State or Node::TockState");
+                + "'; persistent mutable runtime data must be Node::State");
         }
     }
 }
@@ -1316,8 +1309,12 @@ std::vector<std::pair<iv::NodeCodeKey, iv::NodeStateStructure>> bind_state_metad
     bool background_state)
 {
     std::vector<std::pair<iv::NodeCodeKey, iv::NodeStateStructure>> result;
-    auto const label = background_state ? "Node::TockState" : "Node::State";
+    auto const label = background_state ? "Tock Node::State" : "Tick Node::State";
     for (auto const& record : records) {
+        if (record.state_size != 0 && record.background_state_size != 0) {
+            fail("one Node::State cannot occupy both realtime and background storage: '"
+                + record.type_name + "'");
+        }
         auto const state = std::find_if(metadata.begin(), metadata.end(), [&](auto const& item) {
             return item.key == record.key;
         });
@@ -1328,7 +1325,8 @@ std::vector<std::pair<iv::NodeCodeKey, iv::NodeStateStructure>> bind_state_metad
             ? record.background_state_alignment
             : record.state_alignment;
         if (state_size == 0) {
-            if (state != metadata.end()) {
+            if (state != metadata.end()
+                && record.state_size == 0 && record.background_state_size == 0) {
                 fail(std::string(label) + " metadata names a node without "
                      + label + ": '" + record.type_name + "'");
             }
@@ -2956,7 +2954,7 @@ int finalize(Options options)
     auto state_structures = bind_state_metadata(
         node_records, metadata.states, false);
     auto background_state_structures = bind_state_metadata(
-        node_records, metadata.background_states, true);
+        node_records, metadata.states, true);
     require_node_config_metadata(node_records, metadata);
     auto definitions = package_definition_globals(package);
     validate_package_definitions(definitions, metadata);

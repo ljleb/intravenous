@@ -1640,7 +1640,13 @@ metadata remains distinct even if the implementation renames its old
 `TockStateLayout`/`TockStateStorage` records. These are runtime ownership details,
 not separate authored state types.
 
-The checked-in source still uses `TockState`, `TockInitializationContext`,
+The 2026-11-16 source pass implements the unified authored API and optional
+background-owned Tock migration. Runtime sidecar record names remain distinct.
+Private preparation initializes fresh state; a drained ordered cutover can invoke
+an authored move. Full build and owner verification remain pending in the
+[stage checkpoint](vue_client_implementation_stages.md#state-lifecycle-source-checkpoint-2026-11-16).
+
+The source before that pass uses `TockState`, `TockInitializationContext`,
 `TockReleaseContext`, and fresh-only `TockStateStorage::initialize()`; a Tock
 `move()` path is not implemented yet. Those names and the current behavior are an
 implementation checkpoint, not the intended lifecycle contract. See the

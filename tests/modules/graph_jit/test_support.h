@@ -203,14 +203,6 @@ struct alignas(64) StatefulProbeStateMirror {
     std::uint64_t observed_background_extent = 0;
 };
 
-struct alignas(128) StatefulProbeBackgroundStateMirror {
-    std::uint64_t tick_calls = 0;
-    std::uint64_t skip_calls = 0;
-    std::uint64_t last_index = 0;
-    std::uint64_t last_block_size = 0;
-    std::uint64_t observed_state_extent = 0;
-    std::uint64_t observed_background_extent = 0;
-};
 
 struct NativeBatchFeedbackProbeStateMirror {
     std::uint64_t tick_batch_calls = 0;

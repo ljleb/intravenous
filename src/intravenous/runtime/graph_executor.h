@@ -124,7 +124,7 @@ class GraphExecutor {
     struct BackgroundGeneration {
         // Background-only state is a separate sidecar. Pending generations may
         // allocate it on the control path, but only the background worker
-        // constructs, initializes, releases, and destroys authored TockState.
+        // constructs, initializes, releases, and destroys Tock Node::State.
         TockStateStorage tock_states{};
         BackgroundCoverageState coverage{};
         BackgroundPropagationWorkspace propagation;
@@ -245,7 +245,7 @@ class GraphExecutor {
             ExecutionGeneration& previous,
             PersistedDataStore& data);
         void commit_realtime_migration(GlobalIndex sample_index) noexcept;
-        void commit_background_migration();
+        void commit_background_migration(ExecutionGeneration const* drained_predecessor = nullptr);
         void update_realtime_phase(
             std::size_t event_samples_advanced = 0) noexcept;
         void attach_successor(

@@ -4,6 +4,7 @@
 #include <intravenous/runtime/graph_executor.h>
 
 #include <intravenous/node/layout.h>
+#include <intravenous/node/lifecycle.h>
 
 #include <gtest/gtest.h>
 
@@ -982,6 +983,52 @@ iv::NodeLayout manual_control_layout(std::size_t& offset)
     return layout;
 }
 
+struct BackgroundLifecycleProbe {
+    static inline std::thread::id control_thread{};
+    static inline std::atomic<int> initialized{0}, moved{0}, released{0}, live{0};
+    static inline std::atomic<bool> wrong_thread{false};
+    static void check_owner()
+    { if (std::this_thread::get_id() == control_thread) wrong_thread.store(true); }
+    struct State {
+        std::unique_ptr<int> cache;
+        State() { check_owner(); ++live; }
+        ~State() { check_owner(); --live; }
+    };
+    static constexpr auto outputs()
+    { return std::tuple{iv::output<iv::Sample>("out", iv::OutputProduction::coverage)}; }
+    void tock_coverage(iv::TockCoverageContext<BackgroundLifecycleProbe>&) const {}
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<BackgroundLifecycleProbe>&) const {}
+    void initialize(iv::InitializationContext<BackgroundLifecycleProbe> const& ctx) const
+    {
+        check_owner();
+        ctx.state().cache = std::make_unique<int>(17);
+        ++initialized;
+    }
+    void move(iv::MoveContext<BackgroundLifecycleProbe> const& ctx) const
+    {
+        check_owner();
+        ctx.state().cache = std::move(ctx.previous_state().cache);
+        EXPECT_NE(ctx.state().cache, nullptr);
+        if (ctx.state().cache) {
+            EXPECT_EQ(*ctx.state().cache, 17);
+        }
+        ++moved;
+    }
+    void release(iv::ReleaseContext<BackgroundLifecycleProbe> const&) const
+    { check_owner(); ++released; }
+};
+
+std::shared_ptr<iv::CompiledGraph> background_lifecycle_graph(std::uint64_t generation)
+{
+    auto graph = std::const_pointer_cast<iv::CompiledGraph>(compiled_graph(generation, &observe_first));
+    iv::NodeLayoutBuilder builder(64);
+    iv::do_declare(BackgroundLifecycleProbe{}, builder, {});
+    builder.set_node_migration_identity(0, "background-lifecycle-probe");
+    graph->tock_state_layout = builder.build_tock_state_layout();
+    graph->node_layout = std::move(builder).build();
+    return graph;
+}
+
 class GraphExecutorFixture : public testing::Test {
 protected:
     iv::ResourceContext resources_{};
@@ -1752,6 +1799,68 @@ TEST_F(GraphExecutorFixture, GenerationCutoverWakesTheBackgroundActor)
     }
     EXPECT_EQ(executor.background_generation(), 2u);
     EXPECT_FALSE(executor.background_execution_failures().any());
+}
+
+TEST_F(GraphExecutorFixture, BackgroundStateMovesOnlyAfterOrderedCutoverOnTheBackgroundOwner)
+{
+    using Probe = BackgroundLifecycleProbe;
+    Probe::control_thread = std::this_thread::get_id();
+    Probe::initialized = Probe::moved = Probe::released = Probe::live = 0;
+    Probe::wrong_thread = false;
+    auto wait_for = [](auto&& ready) {
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!ready() && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+        return ready();
+    };
+    {
+        iv::GraphExecutor executor;
+        ASSERT_EQ(stage_graph(executor, background_lifecycle_graph(1)), iv::GraphExecutorStageResult::accepted);
+        ASSERT_TRUE(executor.activate_pending(index(0)));
+        ASSERT_TRUE(wait_for([&] { return executor.background_generation() == 1u && Probe::initialized == 1; }));
+        ASSERT_EQ(stage_graph(executor, background_lifecycle_graph(2)), iv::GraphExecutorStageResult::accepted);
+        EXPECT_EQ(Probe::moved, 0);
+        ASSERT_TRUE(executor.activate_pending(index(64)));
+        ASSERT_TRUE(wait_for([&] { return executor.background_generation() == 2u; }));
+        EXPECT_EQ(Probe::initialized, 1);
+        EXPECT_EQ(Probe::moved, 1);
+        EXPECT_FALSE(Probe::wrong_thread);
+    }
+    EXPECT_EQ(Probe::live, 0);
+    EXPECT_EQ(Probe::released, 2);
+    EXPECT_FALSE(Probe::wrong_thread);
+}
+
+TEST_F(GraphExecutorFixture, PrivateSuccessorPreparationStartsBackgroundStateFresh)
+{
+    using Probe = BackgroundLifecycleProbe;
+    Probe::control_thread = std::this_thread::get_id();
+    Probe::initialized = Probe::moved = Probe::released = Probe::live = 0;
+    Probe::wrong_thread = false;
+    initial_playback_started = false;
+    allow_initial_playback = true;
+    {
+        iv::GraphExecutor executor;
+        ASSERT_EQ(stage_graph(executor, background_lifecycle_graph(1)), iv::GraphExecutorStageResult::accepted);
+        ASSERT_TRUE(executor.activate_pending(index(0)));
+        auto next = background_lifecycle_graph(2);
+        next->background_evaluation_plan.requires_live_tick_coverage = true;
+        next->background_operations = {
+            .propagate_forward = &no_op_background_evaluate,
+            .propagate_reverse = &no_op_background_evaluate,
+            .evaluate = &wait_for_initial_playback,
+        };
+        ASSERT_EQ(stage_graph(executor, next), iv::GraphExecutorStageResult::accepted);
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        bool activated = false;
+        while (!(activated = executor.activate_pending(index(64)))
+            && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+        ASSERT_TRUE(activated);
+        EXPECT_EQ(Probe::initialized, 2);
+        EXPECT_EQ(Probe::moved, 0);
+    }
+    EXPECT_EQ(Probe::live, 0);
+    EXPECT_EQ(Probe::released, 2);
+    EXPECT_FALSE(Probe::wrong_thread);
 }
 
 TEST_F(GraphExecutorFixture, RejectsInvalidGraphsAndBlockSizes)

@@ -1481,3 +1481,14 @@ and five subsequent scope requests succeeded while the server remained alive.
 The earlier background-retention shutdown did not recur in this bounded check.
 This does not establish a successful full-suite baseline. Rebuilding the corrected
 test fixtures and rerunning the C++ and frontend checks remain the next step.
+
+
+#### Owner verification, 2026-11-16
+
+The owner reports that the latest corrections work and that the automation output
+connects successfully in the application. This supersedes the pending verification
+notes above. The agent has not independently rerun the suites. Playback controls
+are still absent, so this is not verification of playhead or play/pause behavior.
+The next client-stage dependency is the `Node::State` lifecycle cleanup recorded
+in [Vue Client Implementation Stages](vue_client_implementation_stages.md).
+Shared versioned buffered pages remain later architectural work.

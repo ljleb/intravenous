@@ -105,6 +105,11 @@ lifecycle contexts (`InitializationContext<Node>`, `MoveContext<Node>`,
 ownership guarantees. Source on 2026-11-12 still contains `TockState`,
 `TockInitializationContext`, and the related machinery.
 
+Source update, 2026-11-16: the unified API, compiler metadata, background migration,
+and updated fixtures are implemented. Full owner verification is pending; see the
+[state lifecycle source checkpoint](#state-lifecycle-source-checkpoint-2026-11-16).
+The earlier source-status sentence above describes the 2026-11-12 baseline.
+
 This self-contained C++ API migration does not block stages 1–3; the initial graph
 editor does not need it. It must be complete **before** stage 4, so that reflected
 state observation is developed against the intended node API.
@@ -2573,3 +2578,97 @@ its tests, so it awaits owner rebuild and verification.
   unsorted point list in the JIT window fixture, one-argument message payloads,
   and the frontend cyclic model. No JIT runtime regression yet exercises
   `PersistedDataStore` cyclic lookups on a positional recording.
+
+
+### Automation verification and next dependency, 2026-11-16
+
+The owner reports that the latest fixes pass and that connecting the automation
+output works in the application. This is owner verification; the agent has not
+independently rerun the suites. The earlier pending checkpoints remain above as
+history.
+
+The next stage dependency is the agreed `Node::State` cleanup: one authored state
+type and lifecycle vocabulary, with Tick state in `NodeStorage` and Tock state
+in background-owned storage. Complete safe background generation migration and
+its tests before Stage 4 observation. Keep the existing background layout records
+as ownership details; they do not imply a second authored state type.
+
+The playhead and play/pause feature remains unimplemented. Its contract is in
+[Project Playback And Presentation Grids](project_playback_and_presentation_grids_direction.md).
+The owner reports this limits playback testing; it must remain visible in the
+remaining work rather than treating the working automation connection as playback
+verification. General buffered-page storage remains a separate later feature.
+
+
+### State lifecycle source checkpoint, 2026-11-16
+
+The supporting cleanup is implemented in source:
+
+- `Node::State` is the only authored state name. The primary callback family
+  selects realtime or background storage. Legacy `TockState` declarations are
+  rejected, with no compatibility alias.
+- `InitializationContext<Node>`, `MoveContext<Node>`, and `ReleaseContext<Node>`
+  use `state()` in both domains. Tock move also exposes `previous_state()`.
+  Realtime storage facilities are unavailable in Tock initialization contexts.
+  Tock coverage callbacks and batch lanes use `state()`.
+- Compiler metadata records the single authored State. Finalization binds it to
+  its domain-specific ABI. Internal background layout and storage records remain
+  separate, and Tock state adds no realtime allocation.
+- Background generation cutover offers a drained predecessor to an authored
+  move by stable identity and compatible type/layout. An incompatible or
+  anonymous node, a node without move, or a privately prepared successor starts
+  fresh. Predecessor resources and package code stay owned until release.
+- Regressions cover reflected aliases, generated scalar/batch access, storage
+  separation, compatible migration across reload, incompatible/fresh fallback,
+  and background-thread construction, migration, release, and destruction.
+
+Targeted syntax checks passed for the changed implementation, the compiler
+plugin and finalizer, the affected test translation units, and the complete
+shared package source. The initial tool checks needed explicit LLVM/Clang header
+paths because these Nix environment paths are absent from compile_commands.json.
+The `IV_NODE` static authoring-validation suite also passed. No full build or
+runtime test suite was run by the agent. The normal release build and CTest run
+remain required before this cleanup is verified.
+
+Stage 4 live Tick observation follows this cleanup. Playhead/play/pause remains
+a separate unimplemented feature under its accepted contract; it does not depend
+on completing all observation operations. The unbounded-knob magnitude design
+also remains undecided, as recorded above.
+
+
+#### Owner build and watcher-resource failure, 2026-11-16
+
+The owner rebuilt successfully and ran 1,042 tests. The 11 failures all report
+`inotify_add_watch(...): No space left on device`; the new State lifecycle
+regressions passed. A serial rerun reproduces the same 11 setup failures. A
+separate one-watch check on `/tmp` also fails with `ENOSPC`, outside the test
+watchers.
+
+The current user limit is 524,288 watches. Two Codium processes each expose
+approximately 261,000 watch entries, and `build-release/` contains 272,683
+directories. The workspace settings now exclude generated build and client output
+directories from editor watching. Application dependency/discovery watchers are
+unchanged. Reload the editor workspace to apply the exclusions if necessary,
+then rerun the failed tests. Full verification remains pending those results.
+
+
+#### Stable test workspaces and resource recovery, 2026-11-16
+
+The owner rejected process-ID-based test workspaces and requested a build-tree
+layout based on test structure. Mutable fixtures now use executable/suite/test/
+fixture paths. A shared GoogleTest main resets the current case's directory before
+execution; fixture paths no longer contain source-line numbers. The latest files
+remain available after the run. Shared CTest package fixtures retain their
+existing cache and locking behavior. See [Test Workspaces](../tests/README.md).
+
+The agent removed 28,029 abandoned PID-named workspaces, conservatively keeping
+14 names whose process IDs were in use. The one-watch check now succeeds, and
+all 11 previously failing tests pass against the existing binaries. This confirms
+the watcher setup failures came from exhausted file-watch capacity.
+
+The new shared main and path scheme passed a compiled repeated-run and parallel-
+case check. Test-support syntax checks pass, and four regressions were added for
+the stable hierarchy, reset behavior, fixture names, and escaped-name identity.
+The full CMake reconfigure, build, and test run are still needed to verify the
+updated test infrastructure in the complete project. The temporary exit-cleanup
+implementation and cleanup command were removed from source.

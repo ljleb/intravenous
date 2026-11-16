@@ -154,7 +154,7 @@ namespace iv {
             structures.tock_state,
             tock_state.state_size,
             tock_state.state_alignment,
-            "TockState");
+            "background State");
         tock_state.state_structure = structures.tock_state;
     }
 
@@ -164,7 +164,12 @@ namespace iv {
         if (node_index >= _nodes.size()) {
             throw std::out_of_range("node migration identity index out of range");
         }
-        _nodes[node_index].migration_identity = std::move(identity);
+        _nodes[node_index].migration_identity = identity;
+        auto& background = _tock_states[node_index];
+        if (background.state_size != 0 || background.lifecycle.move_fn
+            || background.lifecycle.initialize_fn || background.lifecycle.release_fn) {
+            background.migration_identity = std::move(identity);
+        }
     }
 
     size_t NodeLayoutBuilder::align_up(size_t value, size_t alignment)
@@ -735,7 +740,7 @@ namespace iv {
         {
             IV_ASSERT(
                 storage.resources,
-                "TockState storage resources must be present");
+                "background State storage resources must be present");
             return *storage.resources;
         }
     }
@@ -1586,12 +1591,25 @@ namespace iv {
         return storage.get() + node.state_offset;
     }
 
-    void TockStateStorage::initialize()
+    void TockStateStorage::initialize(TockStateStorage const* previous)
     {
         if (!layout || !resources) return;
         if (!constructed_nodes.empty() || !initialized_nodes.empty()) {
             throw std::logic_error(
-                "TockState storage is already initialized");
+                "background State storage is already initialized");
+        }
+        std::unordered_map<std::string_view, size_t> previous_by_identity;
+        if (previous && previous->layout) {
+            for (auto node_index : previous->initialized_nodes) {
+                auto const& identity = previous->layout->nodes[node_index].migration_identity;
+                if (!identity.empty() && !previous_by_identity.emplace(identity, node_index).second)
+                    throw std::logic_error("duplicate background node migration identity: " + identity);
+            }
+        }
+        std::unordered_set<std::string_view> identities;
+        for (auto const& node : layout->nodes) {
+            if (!node.migration_identity.empty() && !identities.insert(node.migration_identity).second)
+                throw std::logic_error("duplicate background node migration identity: " + node.migration_identity);
         }
         constructed_nodes.reserve(layout->nodes.size());
         initialized_nodes.reserve(layout->nodes.size());
@@ -1613,7 +1631,28 @@ namespace iv {
         for (size_t node_index = 0;
              node_index < layout->nodes.size(); ++node_index) {
             auto const& node = layout->nodes[node_index];
-            if (node.lifecycle.initialize_fn) {
+            auto const found = previous_by_identity.find(node.migration_identity);
+            bool moved = false;
+            if (node.lifecycle.move_fn && found != previous_by_identity.end()) {
+                auto const previous_index = found->second;
+                auto const& prior = previous->layout->nodes[previous_index];
+                auto const same_definition = node.state_size == 0
+                    ? !node.state_structure && !prior.state_structure
+                    : node.state_structure && prior.state_structure
+                        && node.state_structure->type_identity.valid()
+                        && prior.state_structure->type_identity.valid()
+                        && *node.state_structure == *prior.state_structure;
+                auto const same_type = node.node_type == prior.node_type
+                    || (node.node_type_name && prior.node_type_name
+                        && std::strcmp(node.node_type_name, prior.node_type_name) == 0
+                        && same_definition);
+                if (same_type && node.state_size == prior.state_size
+                    && node.state_alignment == prior.state_alignment) {
+                    node.lifecycle.move_fn(node.node, node_index, previous_index, *this, *previous);
+                    moved = true;
+                }
+            }
+            if (!moved && node.lifecycle.initialize_fn) {
                 node.lifecycle.initialize_fn(node.node, node_index, *this);
             }
             initialized_nodes.push_back(node_index);

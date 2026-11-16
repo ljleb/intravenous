@@ -39,7 +39,7 @@ namespace background_port_details {
         void* const aligned = std::align(
             alignof(State), sizeof(State), pointer, space);
         IV_ASSERT(aligned != nullptr,
-            "background state storage does not contain the node TockState");
+            "background state storage does not contain the Tock node State");
         return *static_cast<State*>(aligned);
     }
 }
@@ -809,7 +809,7 @@ struct TockCoverageContext {
     std::span<std::byte> background_state_storage {};
     std::size_t sample_rate = 48000;
 
-    using TockState = typename NodeBackgroundState<Node>::Type;
+    using BackgroundState = typename NodeBackgroundState<Node>::Type;
 
     template<fixed_string Name>
     [[nodiscard]] auto input() const
@@ -890,10 +890,10 @@ struct TockCoverageContext {
         }
     }
 
-    [[nodiscard]] std::add_lvalue_reference_t<TockState> tock_state() const
-    requires (!std::is_void_v<TockState>)
+    [[nodiscard]] std::add_lvalue_reference_t<BackgroundState> state() const
+    requires (!std::is_void_v<BackgroundState>)
     {
-        return background_port_details::state_from<TockState>(background_state_storage);
+        return background_port_details::state_from<BackgroundState>(background_state_storage);
     }
 };
 
@@ -1206,10 +1206,10 @@ public:
         return context().template output<Name>();
     }
 
-    [[nodiscard]] decltype(auto) tock_state() const
-    requires requires(Context& context) { context.tock_state(); }
+    [[nodiscard]] decltype(auto) state() const
+    requires requires(Context& context) { context.state(); }
     {
-        return context().tock_state();
+        return context().state();
     }
 };
 

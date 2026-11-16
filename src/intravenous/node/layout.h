@@ -126,6 +126,7 @@ namespace iv {
 
     struct TockStateLayout {
         struct NodeRecord {
+            std::string migration_identity{};
             void const* node = nullptr;
             void const* node_type = nullptr;
             char const* node_type_name = nullptr;
@@ -357,7 +358,9 @@ namespace iv {
         ~TockStateStorage();
 
         void* state_ptr(size_t node_index) const;
-        void initialize();
+        // The caller must have finished all predecessor background evaluation.
+        // An authored move is optional; absent or incompatible state starts fresh.
+        void initialize(TockStateStorage const* previous = nullptr);
         void release() noexcept;
         void destroy_constructed_states() noexcept;
     };
