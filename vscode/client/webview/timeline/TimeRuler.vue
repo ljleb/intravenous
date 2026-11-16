@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { timelineTicks, type TimelineWindow } from "./geometry";
+import RulerGraduations from "./RulerGraduations.vue";
 
 // A presentation can use a time ruler without being a graph or a lane.
 // It makes no assumption about the node's number or kinds of output ports.
@@ -21,13 +22,10 @@ onBeforeUnmount(() => observer?.disconnect());
 
 <template>
     <div ref="root" class="time-ruler" aria-label="Time in seconds">
-        <div v-for="tick in ticks" :key="tick.seconds" class="time-tick" :style="{ left: `${tick.x}px` }">
-            {{ tick.label }}
-        </div>
+        <RulerGraduations :ticks="ticks" />
     </div>
 </template>
 
 <style scoped>
 .time-ruler { position: relative; min-width: 0; overflow: hidden; }
-.time-tick { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--vscode-panel-border); padding: 8px 5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 </style>

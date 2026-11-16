@@ -1,0 +1,113 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import type { MeterMode, ObservationDisplayValue } from "../../src/observations";
+import { levelDomain, meterPosition, meterReading, valueDomain } from "../../src/meterPresentation";
+import { MeterBallistics } from "../../src/meterBallistics";
+import { numericTicks } from "../timeline/geometry";
+import RulerGraduations from "../timeline/RulerGraduations.vue";
+import { useObservations } from "./observationContext";
+
+const props = defineProps<{ mode: MeterMode; label: string; result?: ObservationDisplayValue; active?: boolean }>();
+const observations = useObservations();
+const root = ref<HTMLElement | null>(null), width = ref(0), height = ref(0);
+const hovered = ref(false), focused = ref(false);
+const owner = Symbol("meter status");
+const domain = computed(() => props.mode === "level" ? levelDomain : valueDomain);
+const motion = new MeterBallistics();
+const displayed = shallowRef({ peak: 0, rms: 0 });
+const measured = computed(() => meterReading(props.mode, props.result));
+const reading = computed(() => !measured.value.available ? measured.value : meterReading(props.mode, {
+    ...props.result!, value: { ...props.result?.value, peak: displayed.value.peak, rms: displayed.value.rms },
+}));
+let animation = 0;
+let available = false;
+let activation: string | undefined;
+function stopAnimation(): void { cancelAnimationFrame(animation); animation = 0; }
+function animate(now: number): void {
+    animation = 0;
+    if (!props.active || !available) return;
+    displayed.value = motion.advance(now);
+    if (motion.moving) animation = requestAnimationFrame(animate);
+}
+watch([() => props.result, () => props.active], () => {
+    stopAnimation();
+    const raw = meterReading("value", props.result);
+    if (!raw.available) { available = false; displayed.value = { peak: 0, rms: 0 }; return; }
+    const peak = props.result!.value!.peak as number, rms = props.result!.value!.rms as number;
+    const now = performance.now();
+    const reset = !available || !props.active || activation !== props.result?.activationId;
+    displayed.value = reset ? motion.reset(peak, rms, now) : motion.update(peak, rms, now);
+    available = true;
+    activation = props.result?.activationId;
+    if (props.active && motion.moving) animation = requestAnimationFrame(animate);
+}, { immediate: true });
+const ticks = computed(() => {
+    const { min, max } = domain.value;
+    const ticks = numericTicks(min, max, width.value,
+        (value) => props.mode === "level" ? `${value > 0 ? "+" : ""}${value}` : String(value), 60);
+    // Explicit scale endpoints and unity must remain visible across widths.
+    for (const value of [min, max, ...(props.mode === "level" ? [0] : [])]) {
+        const x = meterPosition(value, min, max) * width.value;
+        if (!ticks.some((tick) => Math.abs(tick.x - x) < 1)) ticks.push({ value, x,
+            label: `${value > 0 && props.mode === "level" ? "+" : ""}${value}` });
+    }
+    return ticks.sort((a, b) => a.x - b.x).map((tick, index, all) => ({ ...tick,
+        // Preserve grid lines while omitting crowded labels next to boundaries.
+        label: index !== 0 && index !== all.length - 1
+            && (tick.x < 30 || width.value - tick.x < 30) ? "" : tick.label }));
+});
+const ariaValue = computed(() => reading.value.available
+    ? Math.max(domain.value.min, Math.min(domain.value.max, reading.value.displayValue!)) : undefined);
+const rangeText = computed(() => props.mode === "value" ? String(reading.value.displayValue)
+    : reading.value.displayValue === -Infinity ? "−∞"
+        : `${reading.value.displayValue?.toFixed(1)} dBFS`);
+watch([hovered, focused, () => props.label, measured], () => {
+    observations?.hint(owner, hovered.value || focused.value ? {
+        text: `${props.label} · ${measured.value.text}`,
+        tooltip: props.mode === "level" ? "Sample peak and RMS; dBFS scale. The held peak marker falls with increasing speed and resets its momentum on a new peak."
+            : "The same sample peak and RMS; linear magnitude scale from 0 to 1. The held peak marker uses the same motion as level mode.",
+    } : null);
+}, { immediate: true });
+let resize: ResizeObserver | undefined;
+onMounted(() => {
+    resize = new ResizeObserver(([entry]) => {
+        width.value = entry?.contentRect.width ?? 0;
+        height.value = entry?.contentRect.height ?? 0;
+    });
+    if (root.value) resize.observe(root.value);
+});
+onBeforeUnmount(() => { stopAnimation(); resize?.disconnect(); observations?.hint(owner, null); });
+</script>
+
+<template>
+    <div ref="root" class="sample-meter" :class="{ unavailable: !reading.available, 'over-reference': reading.overReference, short: height < 23 }"
+        :data-mode="mode" :data-below="reading.available && reading.below" :data-above="reading.available && reading.above"
+        role="meter" tabindex="0" :aria-label="label" :aria-valuemin="domain.min" :aria-valuemax="domain.max"
+        :aria-valuenow="ariaValue" :aria-valuetext="reading.text"
+        @pointerenter="hovered = true" @pointerleave="hovered = false" @focus="focused = true" @blur="focused = false">
+        <template v-if="reading.available">
+            <span class="rms-fill" :style="{ width: `${reading.rmsPosition * 100}%` }" />
+            <span class="reading-mark" :style="{ left: `${reading.position * 100}%` }" />
+        </template>
+        <RulerGraduations :ticks="ticks" compact />
+        <span v-if="!reading.available" class="unavailable-mark" aria-hidden="true">—</span>
+        <span v-else-if="reading.below || reading.above || reading.overReference" class="range-value"
+            :class="{ 'at-start': reading.below }" aria-hidden="true">
+            {{ reading.below ? '‹ ' : '' }}{{ rangeText }}{{ reading.above ? ' ›' : '' }}
+        </span>
+    </div>
+</template>
+
+<style scoped>
+.sample-meter { flex: 1; position: relative; min-width: 40px; min-height: 9px; height: 100%; overflow: hidden; border: 1px solid color-mix(in srgb, var(--vscode-foreground) 18%, transparent); box-sizing: border-box; background: color-mix(in srgb, var(--vscode-foreground) 5%, transparent); }
+.rms-fill { position: absolute; bottom: 0; left: 0; height: 35%; min-height: 2px; background: #3ab963; }
+.reading-mark { position: absolute; bottom: 0; width: 2px; height: 45%; min-height: 3px; transform: translateX(-1px); background: #9ceaac; }
+.over-reference .reading-mark, [data-above="true"] .reading-mark, [data-below="true"] .reading-mark { background: #f0b45c; }
+.range-value { position: absolute; bottom: 0; right: 3px; font-size: 10px; line-height: 12px; font-variant-numeric: tabular-nums; color: var(--vscode-editor-foreground); background: var(--vscode-editor-background); }
+.range-value.at-start { right: auto; left: 3px; }
+.unavailable { background: repeating-linear-gradient(135deg, transparent, transparent 7px, color-mix(in srgb, var(--vscode-foreground) 4%, transparent) 7px, color-mix(in srgb, var(--vscode-foreground) 4%, transparent) 8px); }
+.unavailable-mark { position: absolute; right: 5px; bottom: 1px; opacity: .6; }
+.short :deep(.ruler-tick span) { display: none; }
+.short .range-value { font-size: 9px; line-height: 9px; }
+.sample-meter:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+</style>

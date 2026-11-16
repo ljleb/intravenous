@@ -1,4 +1,5 @@
 #include "test_support.h"
+#include <intravenous/runtime/observation_resolution.h>
 #include <intravenous/runtime/socket_rpc_response_builders.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <nlohmann/json.hpp>
@@ -172,5 +173,66 @@ TEST_F(GraphJitRuntimeFixture, ModuleOutputMeterUsesItsResolvedSampleTypeAndPubl
     EXPECT_EQ(frame->requirements_revision, 13u);
     EXPECT_EQ(frame->values[0].value.load<observation_details::SampleLevelState>().samples, 64u);
     EXPECT_DOUBLE_EQ(frame->values[0].value.load<observation_details::SampleLevelState>().peak, .25);
+}
+
+TEST_F(GraphJitRuntimeFixture, StereoObservationKeepsIndependentLevelAndSignedValueResults)
+{
+    auto graph = configured_module_graph(*revision, "iv.test.graph_jit.state_context.stereo_conversion_module");
+    auto const bundles = concrete_bundles(*graph);
+    ASSERT_FALSE(bundles.empty());
+    auto const operations = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations;
+    auto const level = std::ranges::find(operations, "level", &ObservationOperation::id);
+    auto const value = std::ranges::find(operations, "value", &ObservationOperation::id);
+    ASSERT_NE(level, operations.end());
+    ASSERT_NE(value, operations.end());
+    auto compiled = jit->compile(GraphJitCompileRequest{
+        .project_generation = 705, .graph = graph, .definitions = definitions,
+        .observations = {.revision = 14, .probes = {
+            {.id = 1, .operation = &*level, .bundle = bundles.front(), .port = 0, .channels = {0}, .available = true},
+            {.id = 2, .operation = &*level, .bundle = bundles.front(), .port = 0, .channels = {1}, .available = true},
+            {.id = 3, .operation = &*value, .bundle = bundles.front(), .port = 0, .channels = {0}, .available = true},
+            {.id = 4, .operation = &*value, .bundle = bundles.front(), .port = 0, .channels = {1}, .available = true},
+        }},
+    });
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    GraphExecutor executor(resources);
+    ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(-35)));
+    executor.tick_block(index(-35), 32);
+    auto const* frame = executor.collect_observations();
+    ASSERT_NE(frame, nullptr);
+    ASSERT_EQ(frame->count, 4u);
+    auto const left = frame->values[0].value.load<observation_details::SampleLevelState>();
+    auto const right = frame->values[1].value.load<observation_details::SampleLevelState>();
+    EXPECT_EQ(left.samples, 32u);
+    EXPECT_EQ(right.samples, 32u);
+    EXPECT_DOUBLE_EQ(left.peak, 35);
+    EXPECT_DOUBLE_EQ(right.peak, 996);
+    EXPECT_FLOAT_EQ(frame->values[2].value.load<float>(), -4);
+    EXPECT_FLOAT_EQ(frame->values[3].value.load<float>(), 996);
+    EXPECT_FALSE(executor.background_execution_failures().any());
+}
+
+TEST_F(GraphJitRuntimeFixture, StereoObservationResolvesExplicitChannelSelectorsWithoutImplicitDownmix)
+{
+    auto graph = configured_module_graph(*revision, "iv.test.graph_jit.state_context.stereo_conversion_module");
+    auto const bundles = concrete_bundles(*graph);
+    ASSERT_FALSE(bundles.empty());
+    std::unordered_map<std::string, NodeInstancePlacement> placements{
+        {"stereo", {.root = bundles.front()}},
+    };
+    ObservationRequirements requests{.revision = 15, .probes = {
+        {.id = 1, .source = {.node = {.instance_id = "stereo"}, .member = "out"}, .operation = "level"},
+        {.id = 2, .source = {.node = {.instance_id = "stereo"}, .member = "out", .channel = 0}, .operation = "level"},
+        {.id = 3, .source = {.node = {.instance_id = "stereo"}, .member = "out", .channel = 1}, .operation = "value"},
+    }};
+    auto resolved = resolve_observation_requirements(*graph, placements, requests);
+    ASSERT_EQ(resolved.probes.size(), 3u);
+    EXPECT_FALSE(resolved.probes[0].available);
+    EXPECT_TRUE(resolved.probes[1].available);
+    EXPECT_EQ(resolved.probes[1].channels, std::vector<std::size_t>{0});
+    ASSERT_TRUE(resolved.probes[2].available);
+    EXPECT_EQ(resolved.probes[2].channels, std::vector<std::size_t>{1});
+    EXPECT_EQ(resolved.probes[2].operation->id, "value");
 }
 } // namespace iv::test::graph_jit_tests

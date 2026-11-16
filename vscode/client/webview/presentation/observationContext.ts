@@ -2,10 +2,11 @@ import { inject, provide, ref, type InjectionKey } from "vue";
 import type { NodeAddress } from "../../src/graphScope";
 import { addressKey } from "../../src/graphScope";
 import { ObservationValues, observationSourceKey, type ObservationCapability, type ObservationHostRequest,
-    type ObservationInterest, type ObservationResponse, type ObservationSource, type ObservationUpdate } from "../../src/observations";
+    type ObservationInterest, type ObservationResponse, type ObservationSource, type ObservationUpdate, type MeterMode, type ObservationHint } from "../../src/observations";
 
 type NodeInterest = { node: NodeAddress; visible: boolean };
-type Capability = ObservationCapability & { source: ObservationSource; id: string };
+export type PresentedObservation = ObservationCapability & { source: ObservationSource; id: string; operation: string; channelName?: string };
+type Capability = PresentedObservation;
 export class PresentationObservations {
     readonly version = ref(0);
     readonly capabilities = ref<Capability[]>([]);
@@ -21,9 +22,15 @@ export class PresentationObservations {
     private nextSourceId = 0;
     private epoch = 0;
     private disposed = false;
+    private modes = new Map<string, MeterMode>();
+    private hints = new Map<symbol, ObservationHint>();
     private desired: ObservationInterest[] = [];
     private queue = Promise.resolve();
-    constructor(private readonly send: (request: ObservationHostRequest) => void) {
+    constructor(private readonly send: (request: ObservationHostRequest) => void,
+        private readonly publishHint: (hint: ObservationHint | null) => void = () => {},
+        private readonly preferences?: { initial?: Record<string, MeterMode>; save(modes: Record<string, MeterMode>): void }) {
+        for (const [key, mode] of Object.entries(preferences?.initial ?? {}).slice(0, 4096))
+            if (mode === "level" || mode === "value") this.modes.set(key, mode);
         this.heartbeat = setInterval(() => { if (this.desired.length) void this.reconcile(this.desired); }, 10000);
     }
     private request(value: Omit<Extract<ObservationHostRequest, { type: "observationDescribe" }>, "requestId">
@@ -98,23 +105,63 @@ export class PresentationObservations {
                 // node prove the first two registry-backed operations.
                 if (capability.kind === "stateField" && stateNodes.has(capability.nodeIndex)) continue;
                 if (capability.kind === "stateField") stateNodes.add(capability.nodeIndex);
-                const source = { node, kind: capability.kind, member: capability.member };
-                const sourceKey = observationSourceKey(source);
-                let id = this.sourceIds.get(sourceKey);
-                if (!id) { id = `probe:${++this.nextSourceId}`; this.sourceIds.set(sourceKey, id); }
-                capabilities.push({ ...capability, source, id });
+                if (capability.operations.length === 0) continue;
+                const channels = capability.kind === "output" ? capability.channels ?? [] : [undefined];
+                // Keep every channel of an advertised port together at the
+                // viewport budget boundary; never show half a stereo pair.
+                if (channels.length > 64 - capabilities.length) continue;
+                for (const channel of channels) {
+                    const source: ObservationSource = { node, kind: capability.kind, member: capability.member,
+                        ...(channel ? { channel: channel.index } : {}) };
+                    const operation = capability.kind === "output" ? "level" : capability.operations[0];
+                    if (!capability.operations.includes(operation)) continue;
+                    const id = this.id(source, operation);
+                    capabilities.push({ ...capability, source, id, operation, channelName: channel?.name });
+                    if (capabilities.length === 64) break;
+                }
                 if (capabilities.length === 64) break;
             }
-            const activeIds = new Set(capabilities.map((entry) => entry.id));
-            for (const id of this.values.values.keys()) if (!activeIds.has(id)) this.values.values.delete(id);
-            // Retain a small recent identity cache across presentation remounts.
-            if (this.sourceIds.size > 4096) for (const [key, id] of this.sourceIds)
-                if (!activeIds.has(id)) this.sourceIds.delete(key);
-            this.capabilities.value = capabilities;
-            this.desired = capabilities.map((capability) => ({ id: capability.id, source: capability.source,
-                operation: capability.operations[0] }));
+            this.install(capabilities);
             await this.reconcile(this.desired);
         } catch (error) { if (!this.disposed) this.error.value = String(error); }
+    }
+    private id(source: ObservationSource, operation: string): string {
+        const key = `${observationSourceKey(source)}:${operation}`;
+        let id = this.sourceIds.get(key);
+        if (!id) { id = `probe:${++this.nextSourceId}`; this.sourceIds.set(key, id); }
+        return id;
+    }
+    mode(node: NodeAddress, member: string): MeterMode {
+        return this.modes.get(observationSourceKey({ node, kind: "output", member })) ?? "level";
+    }
+    setMode(node: NodeAddress, member: string, mode: MeterMode): void {
+        const key = observationSourceKey({ node, kind: "output", member });
+        this.modes.set(key, mode);
+        // Both scales display the same level operation. A visual scale switch
+        // keeps readings, probe identity and the active executable unchanged.
+        this.preferences?.save(Object.fromEntries(this.modes));
+        ++this.version.value;
+    }
+    hint(owner: symbol, value: ObservationHint | null): void {
+        this.hints.delete(owner);
+        if (value) this.hints.set(owner, value);
+        this.publishHint([...this.hints.values()].at(-1) ?? null);
+    }
+    private install(capabilities: Capability[]): void {
+        const activeIds = new Set(capabilities.map((entry) => entry.id));
+        for (const id of this.values.values.keys()) if (!activeIds.has(id)) this.values.values.delete(id);
+        // Retain a small recent identity cache across presentation remounts.
+        if (this.sourceIds.size > 4096) for (const [key, id] of this.sourceIds)
+            if (!activeIds.has(id)) this.sourceIds.delete(key);
+        if (this.modes.size > 4096) {
+            const active = new Set(capabilities.filter((entry) => entry.kind === "output")
+                .map((entry) => observationSourceKey({ ...entry.source, channel: undefined })));
+            for (const key of this.modes.keys()) if (!active.has(key)) this.modes.delete(key);
+        }
+        this.capabilities.value = capabilities;
+        this.desired = capabilities.map((capability) => ({ id: capability.id, source: capability.source,
+            operation: capability.operation }));
+        ++this.version.value;
     }
     private reconcile(interests: ObservationInterest[]): Promise<void> {
         this.queue = this.queue.catch(() => {}).then(async () => {
@@ -132,6 +179,8 @@ export class PresentationObservations {
         this.capabilities.value = [];
         ++this.version.value;
         this.desired = [];
+        this.hints.clear();
+        this.publishHint(null);
         for (const request of this.pending.values()) {
             clearTimeout(request.timer);
             request.reject(new Error("Observation session disconnected"));

@@ -30,7 +30,12 @@ type HoveredPortGroup = { nodeKey: string; direction: "input" | "output" };
 type PreviewAnchor = PortWireAnchor & { direction: "input" | "output" };
 
 const state = shallowRef<GraphEditorState>({ sessionStatus: "starting", scope: null, layout: readLayout(null), definitions: [], error: "" });
-const observations = new PresentationObservations((request) => webviewApi.postMessage(request));
+let observationHint: import("../../src/observations").ObservationHint | null = null;
+const observations = new PresentationObservations((request) => webviewApi.postMessage(request), (hint) => {
+    observationHint = hint;
+    publishManualHint();
+}, { initial: webviewApi.getState()?.meterModes,
+    save: (meterModes) => webviewApi.setState({ ...webviewApi.getState(), meterModes }) });
 provideObservations(observations);
 const layout = ref(readLayout(null));
 const manualVersion = ref(0);
@@ -72,7 +77,7 @@ provideManualControls({ gestures: manualGestures, version: manualVersion, startK
     manualPointer.start(event.pointerId, origin, event.pointerType === "mouse");
 } });
 function publishManualHint() {
-    const hint = document.hasFocus() ? manualGestures.hint() : null;
+    const hint = document.hasFocus() ? manualGestures.hint() ?? observationHint : null;
     if (hint && manualLockError && manualGestures.pointerControl()) hint.tooltip += ` Pointer lock unavailable: ${manualLockError}`;
     const encoded = JSON.stringify(hint);
     if (encoded === lastManualHint) return;

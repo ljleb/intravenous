@@ -11,6 +11,7 @@ import type {
 export type WebviewLocalState = {
     viewChoice?: string;
     surface?: "graphEditor";
+    meterModes?: Record<string, import("../src/observations").MeterMode>;
 };
 
 const vscode = acquireVsCodeApi<WebviewLocalState>();

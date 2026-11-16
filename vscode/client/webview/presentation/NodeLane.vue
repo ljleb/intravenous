@@ -36,7 +36,7 @@ const outputSummary = computed(() => outputs.value.map((port) => `${port.name}: 
                 <span :title="outputSummary" :aria-label="`${outputs.length} outputs`">{{ outputs.length }} →</span>
             </div>
         </header>
-        <div class="lane-content"><slot><LiveOutputMeters /></slot></div>
+        <div class="lane-content"><slot><LiveOutputMeters :mode="mode" /></slot></div>
     </div>
 </template>
 

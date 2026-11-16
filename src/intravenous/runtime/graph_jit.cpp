@@ -2251,6 +2251,8 @@ public:
             if (!probe.available || probe.kind != ObservationSourceKind::output) continue;
             auto const source = resolved_graph.node_bundles.resolve_sample_output(
                 {probe.bundle, PortKind::sample, probe.port}).config;
+            if (probe.channels.size() > 1 || (probe.channels.empty() && channel_count(source.channel_layout) != 1))
+                throw std::invalid_argument("sample observation requires one explicit physical channel");
             if (std::ranges::any_of(probe.channels, [&](auto channel) {
                     return channel >= channel_count(source.channel_layout);
                 })) throw std::invalid_argument("observation channel is outside its output");

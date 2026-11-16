@@ -2940,3 +2940,117 @@ Explicit user-deletion connection cleanup remains pending alongside the earlier
 owner request. Palette semantics, ruler ownership and snap interaction details
 remain decisions for their respective features; do not silently choose them
 while implementing the current meter fix.
+
+
+### Channel-correct meter implementation started, 2026-11-16
+
+The owner reports all tests pass after the definition-fixture correction and
+accepts the revised order. The next complete feature is default-lane meters:
+explicit per-channel interests and capability names, separate registered signed
+sample-value capture, shared ruler grading, full-width green dBFS meters and
+linear value mode. Mode changes must replace observation interests without
+changing the authored graph; unavailable values remain distinct from silence.
+Meter context goes to the existing status item. Tests and source review follow
+the final feature shape; builds, test execution and profiling remain owner-run.
+Startup metadata ordering and the later control/automation features are not
+part of this meter implementation.
+
+
+### Channel-correct meter source checkpoint, 2026-11-16
+
+The default `NodeLane` presentation now groups each Sample output's advertised
+channels and renders one `SampleMeter` per channel. `observations.describe`
+returns channel indices/names and the registered operation schemas. Each live
+interest selects a channel explicitly; an unselected multichannel source is not
+silently reduced to mono. Shared captures still require matching source,
+channel and operation. Viewport probe budgeting keeps a stereo pair together.
+
+The existing Sample `level` operation captures peak, RMS inputs and finite/
+nonfinite counts independently per selected channel. The new registered `value`
+operation captures the final signed sample of the current block, including
+primitive slices, with no logarithmic or magnitude transform. Nonfinite scalar
+values serialize as null and are unavailable to the value display.
+
+Level rendering uses a green RMS fill and sample-peak marker, with a default
+−60 to +6 dBFS domain. Zero is shown below the floor; levels above unity remain
+visibly above the 0 dBFS reference. Value mode uses a linear 0–1 domain, retains
+signed values, and explicitly labels values below/above that display range.
+Meters fill the flexible lane remainder, have square corners, and use the same
+`RulerGraduations` component and numeric grading geometry as `TimeRuler`.
+Short lanes keep separate channel bars and suppress labels that cannot fit.
+Unavailable results have a distinct empty-pattern display, not a measured zero.
+
+The small output mode control switches `level`/`value` by reconciling observation
+interests. Operation identity participates in each frontend probe ID, so an old
+peak result cannot appear as a signed value while replacement code is pending.
+The choice survives component remounts and is saved in webview-local state;
+it is not a project mutation or undo entry. Meter hover/focus context uses the
+existing VS Code status item; meters no longer use native title tooltips.
+
+Added source regressions cover wrapped/interleaved per-channel reduction,
+signed final samples across slices and ring wrap, stereo capture through the
+executor, channel capability names and schemas, channel/operation sharing across
+clients, frontend mode replacement, complete-pair budgets, persisted frontend
+choices, availability, dBFS/linear scaling, and shared ruler geometry.
+
+No builds, test execution, profiling or interactive visual verification were
+performed by the agent. The owner should rebuild the server/tests and reinstall
+the client, then run CTest and the client typecheck/tests. Visual checks should
+include a stereo output with unequal channel levels, a negative value-mode
+signal, silence versus unavailable data, meter mode changes while audio runs,
+and lane zoom down to the smallest height. Runtime cost still needs owner-run
+measurement against the existing observation timing/benchmark paths. The
+broader startup metadata-order correction remains pending after this meter
+feature is verified; Stage 4 is not declared fully complete here.
+
+
+Owner verification update, 2026-11-16: 1,068 of 1,069 backend tests passed.
+The stereo capability fixture changed only `ModuleNodeDefinition::provider`,
+while the package's `provider_definitions` still invoked the mono callback.
+`NodeInstances` configures through that package record. The fixture helper now
+accepts a construction callback and installs it in both records; the regression
+also checks that the configured output is stereo before checking capability
+names and schemas. Verification of this fixture correction remains owner-run.
+
+
+### Shared meter readings and smooth peak motion, 2026-11-16
+
+The owner reports that the meter works, then requests faster refresh and the
+same peak/RMS display in both modes. This supersedes the earlier source
+checkpoint where value mode used the final signed sample. The removed design
+wording is preserved under `docs/historical/`, with links from both normative
+meter documents.
+
+Current timing before this change: DSP capture occurs every block; collection
+has a 50 ms gate checked by a runtime loop sleeping 20 ms. That quantizes idle
+collection to roughly 60 ms (about 16–17 fresh readings/s), before processing and
+transport delays. The socket writer additionally caps disposable frames at
+33 ms. Unchanged values may be suppressed. The reported perceived rate is not
+a measurement of DSP execution frequency.
+
+The collector now targets approximately 30 readings/s with a deadline that
+retains its phase across the existing runtime poll, skipping missed intervals
+without catch-up bursts. The socket's existing coalescing and reliable-message
+priority remain. This adds control-path collection/serialization opportunities;
+it does not increase DSP capture frequency or add a worker thread.
+
+Both meter scales now keep the same per-channel `level` subscription and peak/
+RMS data. Switching scale issues no RPC and no compilation request, retains the
+readings, and preserves frontend display preferences. The separate raw signed
+`value` capture operation remains available for explicit diagnostic requests;
+the default meter no longer uses it.
+
+`MeterBallistics` runs only on the client, in linear amplitude before either
+scale mapping. Initial tuning: 120 ms peak hold; downward acceleration relative
+to the held peak, with upward snaps resetting velocity; RMS attack/release time
+constants of 15/100 ms. Motion advances by elapsed time, not frame count, and
+runs through `requestAnimationFrame` only while visible and unsettled. Source
+activation changes and unavailable data reset old motion. Ballistics describe
+received block measurements; they do not recover transient peaks from audio
+blocks omitted by replaceable telemetry.
+
+Added regressions cover collection cadence under the 20 ms runtime poll, missed-
+deadline skipping, equal capture identities across mode changes, peak hold and
+accelerating fall, momentum reset, frame-rate-independent motion and silence.
+Owner verification of builds, tests, visual timing and CPU cost remains pending.
+The agent has not run builds, tests or profiling.

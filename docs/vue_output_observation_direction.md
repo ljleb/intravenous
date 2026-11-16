@@ -92,12 +92,15 @@ zero-level channel. Preserve the meaning of sample-peak/RMS reductions;
 `level` is not a true-peak operation.
 
 The [Vue meter direction](./vue_presentation_refinement_direction.md#1-channel-correct-meters-and-two-display-modes)
-requires a green dBFS-graded **level** mode and a separate untransformed,
-linear **value** mode; visual scaling belongs in Vue, not the DSP values.
-If `value` needs a latest-sample operation rather than a block reduction,
-request the appropriate registered operation explicitly. Reuse ruler-grade
-visual presentation with square corners rather than inventing another
-unrelated meter tick system. The meter presentation occupies the **full
+requires green dBFS-graded **level** and linear-magnitude **value** modes.
+Both render the same per-channel peak/RMS measurements; only their visual
+scale changes. The peak marker's hold, accelerating fall and momentum reset
+are client presentation state, not extra audio-thread capture work. The
+previous latest-signed-sample proposal is retained
+[historically](./historical/vue_meter_value_before_shared_peak_display_2026-11-16.md).
+An explicitly requested raw sample-value operation may still exist independently;
+it is not the source for these two meter scales. Reuse ruler-grade visual
+presentation with square corners rather than inventing another tick system. The meter presentation occupies the **full
 remaining horizontal width** of its lane after necessary controls and labels;
 independent stereo channels share that full-width display without collapsing
 into a single measurement. These are new requirements, not a claim that the

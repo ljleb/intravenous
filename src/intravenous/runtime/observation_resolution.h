@@ -40,12 +40,9 @@ inline CompiledObservationPlan resolve_observation_requirements(
         if (probe.kind == ObservationSourceKind::output) {
             auto channels = resolve_project_sample_output(graph, placements,
                 requirement.source.node, requirement.source.member, requirement.source.channel);
-            // The first operation addresses one output; do not silently meter
-            // one member of an aggregate whose channels have different owners.
-            if (!channels.empty() && std::ranges::all_of(channels, [&](auto const& channel) {
-                    return channel.bundle == channels.front().bundle
-                        && channel.port == channels.front().port;
-                })) {
+            // Each result names one physical channel. Multichannel callers
+            // use the explicit selectors advertised by capability discovery.
+            if (channels.size() == 1) {
                 auto const source = channels.front();
                 auto const output = graph.node_bundles.resolve_sample_output(
                     {source.bundle, PortKind::sample, source.port}).config;

@@ -24,6 +24,7 @@
 #include <bit>
 #include <functional>
 #include <iterator>
+#include <map>
 #include <ranges>
 #include <span>
 #include <stdexcept>
@@ -3149,28 +3150,48 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
             for (std::size_t node_index = 0; node_index < request.describe_nodes.size(); ++node_index) {
                 auto const& address = request.describe_nodes[node_index];
                 auto matches = resolve_node_address(graph, current_generation_->placements, address);
-                std::vector<std::string> outputs;
+                std::map<std::string, ChannelTypeId> outputs;
                 for (auto const& match : matches) {
                     if (match.kind == ProjectNodePathMatch::Kind::virtual_node) {
                         for (auto const& mapping : graph.virtual_nodes.record(match.virtual_node).sample_outputs)
-                            outputs.push_back(mapping.name);
+                            outputs.emplace(mapping.name, mapping.channel_layout.channel_type);
                     } else {
                         auto const& bundle = graph.node_bundles.bundle(match.bundle);
-                        for (std::size_t port = 0; port < bundle.sample_output_count(); ++port)
-                            outputs.push_back(graph.node_bundles.resolve_sample_output({match.bundle, PortKind::sample, port}).config.name);
+                        for (std::size_t port = 0; port < bundle.sample_output_count(); ++port) {
+                            auto const config = graph.node_bundles.resolve_sample_output({match.bundle, PortKind::sample, port}).config;
+                            outputs.emplace(config.name, config.channel_layout.channel_type);
+                        }
                     }
                 }
-                std::ranges::sort(outputs);
-                outputs.erase(std::unique(outputs.begin(), outputs.end()), outputs.end());
-                for (auto const& name : outputs) {
-                    ObservationRequirements requirements{.probes = {{.source = {
-                        .node = address, .kind = ObservationSourceKind::output, .member = name}, .operation = "level"}}};
-                    auto plan = resolve_observation_requirements(graph, current_generation_->placements, requirements,
-                        port_realization);
-                    if (!plan.probes.front().available) continue;
+                for (auto const& [name, channel_type] : outputs) {
+                    auto const sources = resolve_project_sample_output(graph, current_generation_->placements,
+                        address, name, std::nullopt);
+                    Json channels = Json::array();
+                    for (std::size_t channel = 0; channel < sources.size(); ++channel) {
+                        ObservationRequirements requirements{.probes = {{.source = {
+                            .node = address, .kind = ObservationSourceKind::output, .member = name,
+                            .channel = channel}, .operation = "level"}}};
+                        auto plan = resolve_observation_requirements(graph, current_generation_->placements, requirements,
+                            port_realization);
+                        if (!plan.probes.front().available) continue;
+                        auto const source = sources[channel];
+                        auto const output = graph.node_bundles.resolve_sample_output(
+                            {source.bundle, PortKind::sample, source.port}).config;
+                        auto const& physical_layout = channel_type_info(output.channel_layout.channel_type);
+                        auto const& public_layout = channel_type_info(channel_type);
+                        auto const label = sources.size() == public_layout.channel_count
+                            ? public_layout.channel_names[channel] : physical_layout.channel_names[source.channel];
+                        channels.push_back({{"index", channel}, {"name", label}});
+                    }
+                    if (channels.empty()) continue;
+                    Json operations = Json::array(), schemas = Json::array();
+                    for (auto const& operation : continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations) {
+                        operations.push_back(operation.id);
+                        schemas.push_back(describe_result(operation));
+                    }
                     capabilities.push_back({{"nodeIndex", node_index}, {"kind", "output"},
-                        {"member", name}, {"operations", {"level"}},
-                        {"resultSchemas", {describe_result(*plan.probes.front().operation)}}});
+                        {"member", name}, {"channels", std::move(channels)}, {"operations", std::move(operations)},
+                        {"resultSchemas", std::move(schemas)}});
                 }
                 auto bundles = concrete_node_address_matches(graph, matches);
                 if (bundles.size() != 1) continue;

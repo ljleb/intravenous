@@ -573,7 +573,9 @@ void add_module_message_handler(
     });
 }
 
-std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_snapshot(std::uint64_t generation)
+std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_snapshot(
+    std::uint64_t generation,
+    iv::details::IvModuleConfigureFunction module_build = &configure_module)
 {
     auto revision = std::make_shared<iv::PackageRevision>();
     revision->package_id = "iv.test.project_graph.package";
@@ -587,7 +589,7 @@ std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_snapshot(std::uint64_t g
         .source_file_size = sizeof(source_file) - 1,
         .package_root = package_root,
         .package_root_size = sizeof(package_root) - 1,
-        .module_build = &configure_module,
+        .module_build = module_build,
         .signature = &signature_callback,
     });
 
@@ -604,7 +606,7 @@ std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_snapshot(std::uint64_t g
             .package_root = revision->package_root,
             .module_id = definition_id,
             .provider = iv::NodeDefinitionProvider{
-                .module_build = &configure_module,
+                .module_build = module_build,
                 .signature = &signature_callback,
             },
         },
@@ -3934,6 +3936,42 @@ TEST_F(ProjectGraphFixture, ObservationCapabilitiesResolveModuleOutputTypesWitho
     ASSERT_TRUE(describe.capabilities);
     EXPECT_TRUE(std::ranges::any_of(*describe.capabilities, [](auto const& capability) {
         return capability["kind"] == "output" && capability["member"] == "main"
-            && capability["operations"] == nlohmann::ordered_json::array({"level"});
+            && capability["operations"] == nlohmann::ordered_json::array({"level", "value"})
+            && capability["channels"] == nlohmann::ordered_json::array({{{"index", 0}, {"name", "center"}}});
     })) << describe.capabilities->dump();
+}
+
+
+TEST_F(ProjectGraphFixture, StereoObservationCapabilitiesKeepPublicChannelNamesAndOperationSchemas)
+{
+    auto snapshot = make_snapshot(1, +[](iv::GraphBuilder& graph, std::span<ConfigurationArgument>) {
+        auto input = graph.input<"main">();
+        graph.outputs(graph.tile<iv::stereo>(input, input));
+    });
+    publish_definitions_snapshot(project_graph, {.snapshot = snapshot});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "stereo-module", .definition_id = definition_id,
+    }, create); });
+    ASSERT_EQ(create.build(), "stereo-module");
+    auto const generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    auto const root = generation->placements.at("stereo-module").root;
+    auto const output_config = generation->graph->node_bundles.resolve_sample_output(
+        {root, iv::PortKind::sample, 0}).config;
+    ASSERT_EQ(output_config.channel_layout.channel_type, iv::ChannelTypeId::stereo);
+    iv::ObservationGraphRequest describe{.describe_nodes = {{.instance_id = "stereo-module"}}};
+    in_event_source([&] { project_graph.handle_observation_request(describe); });
+    ASSERT_TRUE(describe.error.empty()) << describe.error;
+    ASSERT_TRUE(describe.capabilities);
+    auto const output = std::ranges::find_if(*describe.capabilities, [](auto const& capability) {
+        return capability["kind"] == "output" && capability["member"] == "main";
+    });
+    ASSERT_NE(output, describe.capabilities->end()) << describe.capabilities->dump();
+    EXPECT_EQ((*output)["channels"], nlohmann::ordered_json::array({
+        {{"index", 0}, {"name", "left"}}, {{"index", 1}, {"name", "right"}},
+    }));
+    EXPECT_EQ((*output)["operations"], nlohmann::ordered_json::array({"level", "value"}));
+    EXPECT_EQ((*output)["resultSchemas"][1]["fields"][0]["name"], "value");
+    EXPECT_EQ((*output)["resultSchemas"][1]["fields"][0]["type"], "float32");
 }

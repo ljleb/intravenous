@@ -7,6 +7,9 @@
 #include <intravenous/continuous_value.h>
 #include <intravenous/runtime/socket_rpc_requests.h>
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <atomic>
 #include <thread>
 
@@ -19,7 +22,7 @@ template<class T> T value_at(iv::ObservationResultData const& result, std::size_
 }
 }
 
-TEST(Observations, SampleLevelReadsWrappedStridedChannelsAndReportsNonfiniteValues)
+TEST(Observations, SampleLevelReadsEachWrappedStridedChannelWithoutMixing)
 {
     std::array<float, 8> interleaved{1, -2, 3, -4, 5, -6, 7, std::numeric_limits<float>::infinity()};
     std::array channels{
@@ -27,16 +30,39 @@ TEST(Observations, SampleLevelReadsWrappedStridedChannelsAndReportsNonfiniteValu
         iv::ObservationChannelView{reinterpret_cast<std::byte const*>(interleaved.data() + 1), 4, 2 * sizeof(float), 1},
     };
     auto const& type = iv::continuous_value_type_info(iv::ContinuousValueTypeId::sample);
-    ASSERT_EQ(type.observation_operations.size(), 1u);
+    ASSERT_EQ(type.observation_operations.size(), 2u);
     auto const& operation = type.observation_operations.front();
-    iv::ObservationCaptureState state;
-    operation.capture_block(state, {channels, 4, 2}); // Wrapped frames 3, 0.
-    auto result = operation.project(state);
-    EXPECT_DOUBLE_EQ(value_at<double>(result, 0), 7);
-    EXPECT_EQ(value_at<std::uint64_t>(result, 16), 3u);
-    EXPECT_EQ(value_at<std::uint64_t>(result, 24), 1u);
-    EXPECT_DOUBLE_EQ(value_at<double>(result, 8), std::sqrt(54.0 / 3));
+    iv::ObservationCaptureState left, right, unselected;
+    operation.capture_block(left, {std::span{channels}.first(1), 4, 2}); // Frames 3, 0.
+    operation.capture_block(right, {std::span{channels}.subspan(1), 4, 2});
+    operation.capture_block(unselected, {channels, 4, 2});
+    EXPECT_FALSE(unselected.captured); // No implicit mono reduction.
+    auto left_result = operation.project(left), right_result = operation.project(right);
+    EXPECT_DOUBLE_EQ(value_at<double>(left_result, 0), 7);
+    EXPECT_EQ(value_at<std::uint64_t>(left_result, 16), 2u);
+    EXPECT_DOUBLE_EQ(value_at<double>(left_result, 8), 5);
+    EXPECT_DOUBLE_EQ(value_at<double>(right_result, 0), 2);
+    EXPECT_EQ(value_at<std::uint64_t>(right_result, 16), 1u);
+    EXPECT_EQ(value_at<std::uint64_t>(right_result, 24), 1u);
     EXPECT_TRUE(iv::continuous_value_type_info(iv::ContinuousValueTypeId::fft_block).observation_operations.empty());
+}
+
+TEST(Observations, SampleValuePreservesTheSignedFinalSampleAcrossSlicesAndEmptyWindows)
+{
+    std::array<float, 4> samples{.25f, -.5f, 2.5f, -3.0f};
+    std::array channels{iv::ObservationChannelView{reinterpret_cast<std::byte const*>(samples.data()), 4, sizeof(float), 0}};
+    auto const& operations = iv::continuous_value_type_info(iv::ContinuousValueTypeId::sample).observation_operations;
+    auto operation = std::ranges::find(operations, "value", &iv::ObservationOperation::id);
+    ASSERT_NE(operation, operations.end());
+    iv::ObservationCaptureState state;
+    operation->capture_block(state, {channels, 0, 2});
+    EXPECT_FLOAT_EQ(value_at<float>(operation->project(state), 0), -.5f);
+    operation->capture_block(state, {channels, 2, 2});
+    EXPECT_FLOAT_EQ(value_at<float>(operation->project(state), 0), -3.0f);
+    operation->capture_block(state, {channels, 4, 0});
+    EXPECT_FLOAT_EQ(value_at<float>(operation->project(state), 0), -3.0f);
+    operation->capture_block(state, {channels, 4, 1}); // Ring wrap.
+    EXPECT_FLOAT_EQ(value_at<float>(operation->project(state), 0), .25f);
 }
 
 TEST(Observations, ScalarLatestCopiesOnlyItsRegisteredValue)
@@ -193,6 +219,48 @@ TEST_F(ObservationService, SharesOneCaptureAcrossClientsAndRenewsWithoutCompilat
     ASSERT_EQ(delivery.batches.size(), 2u);
     EXPECT_EQ((*delivery.batches[0].payload)["scopes"][0]["values"][0]["id"], "meter");
     EXPECT_EQ((*delivery.batches[1].payload)["scopes"][0]["values"][0]["id"], "other");
+}
+
+TEST_F(ObservationService, SharesOnlyMatchingChannelsAndOperationsAcrossClients)
+{
+    auto left = interest("left"); left.source.channel = 0;
+    auto right = interest("right"); right.source.channel = 1;
+    ASSERT_TRUE(reconcile("a", "lane", {left, right}).error.empty());
+    ASSERT_EQ(graph.accepted.probes.size(), 2u);
+    left.id = "shared-left";
+    ASSERT_TRUE(reconcile("b", "lane", {left}).error.empty());
+    EXPECT_EQ(graph.compilations, 1u);
+    right.id = "right-value";
+    right.operation = "value";
+    ASSERT_TRUE(reconcile("b", "lane", {left, right}).error.empty());
+    ASSERT_EQ(graph.accepted.probes.size(), 3u);
+    EXPECT_EQ(graph.compilations, 2u);
+}
+
+TEST_F(ObservationService, CollectionKeepsThirtyHertzAcrossTheRuntimeServicesTwentyMillisecondPoll)
+{
+    ASSERT_TRUE(reconcile("a", "lane", {interest()}).error.empty());
+    auto const origin = now;
+    std::size_t batches = 0;
+    for (int milliseconds = 0; milliseconds <= 1000; milliseconds += 20) {
+        executor.publish(graph.accepted, 1);
+        executor.frame->values[0].value.store(static_cast<float>(milliseconds));
+        delivery.batches.clear();
+        observations.collect(origin + std::chrono::milliseconds(milliseconds));
+        batches += delivery.batches.size();
+    }
+    EXPECT_EQ(batches, 31u); // Includes the first frame at time zero.
+    // After a long delay, collect once and skip missed deadlines.
+    executor.publish(graph.accepted, 1);
+    executor.frame->values[0].value.store(2000.0f);
+    delivery.batches.clear();
+    observations.collect(origin + std::chrono::seconds(2));
+    EXPECT_EQ(delivery.batches.size(), 1u);
+    delivery.batches.clear();
+    executor.publish(graph.accepted, 1);
+    executor.frame->values[0].value.store(2001.0f);
+    observations.collect(origin + std::chrono::milliseconds(2001));
+    EXPECT_TRUE(delivery.batches.empty());
 }
 
 TEST_F(ObservationService, CoalescedClientBatchContainsEveryScopeAndInvalidatesAfterActivation)

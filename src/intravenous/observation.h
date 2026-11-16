@@ -100,6 +100,9 @@ struct SampleLevelState {
 };
 inline void capture_sample_level(ObservationCaptureState& state, ObservationBlockView const& block) noexcept
 {
+    // Channel selection is part of the request. Never silently reduce two
+    // physical channels into a mono result.
+    if (block.channels.size() != 1) return;
     auto result = state.load<SampleLevelState>();
     for (auto const& channel : block.channels) {
         for (std::size_t offset = 0; offset < block.value_count; ++offset) {
@@ -124,8 +127,25 @@ inline ObservationResultData project_sample_level(ObservationCaptureState const&
     return result;
 }
 
+inline constexpr std::array sample_value_fields{
+    ObservationResultField{"value", ObservationNumberKind::float32, 0},
+};
+inline void capture_sample_value(ObservationCaptureState& result, ObservationBlockView const& block) noexcept
+{
+    if (block.channels.size() != 1 || block.value_count == 0) return;
+    // Retain the final authored sample, including its sign and nonfinite bits.
+    // Cold serialization retains nonfinite values as null, not a false zero.
+    result.store(sample_at(block.channels.front(), block.sequential_begin_index + block.value_count - 1));
+}
+inline ObservationResultData project_sample_value(ObservationCaptureState const& state) noexcept
+{
+    ObservationResultData result;
+    store(result, 0, state.load<float>());
+    return result;
+}
 inline constexpr std::array sample_operations{
     ObservationOperation{"level", sample_level_fields, &capture_sample_level, nullptr, &project_sample_level},
+    ObservationOperation{"value", sample_value_fields, &capture_sample_value, nullptr, &project_sample_value},
 };
 
 inline constexpr std::array float_fields{

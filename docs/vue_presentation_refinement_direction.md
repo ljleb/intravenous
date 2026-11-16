@@ -37,15 +37,24 @@ presentation may be tuned for readability; a raw linear amplitude fraction is
 **not** a dB meter. The existing `level` observation remains a sample-level
 block reduction, not an inter-sample true-peak claim.
 
-Add a Vue meter **`value` display mode** using a linear, untransformed sample
-value scale: for a unit 0-to-1 scale, `0.5` is exactly halfway up. The display
-must not apply dB, logarithmic, or nonlinear magnitude compression. The
-underlying signed sample value must not be silently replaced by its magnitude;
-the eventual signed/out-of-range visual convention can be established alongside
-the control, without changing what `value` means. If displaying a latest
-sample requires a different registered observation operation from block
-`level`, request that operation explicitly rather than relabeling a peak/RMS
-reduction as a sample value.
+Both **`level`** and **`value`** meter modes show the same per-channel
+sample-magnitude peak and RMS readings. Only the scale changes: `level` uses
+dBFS, while `value` uses a linear magnitude scale (on 0–1, `0.5` is halfway).
+Value mode is not a display of the final signed sample of the block. This owner
+update on 2026-11-16 supersedes the earlier signed-sample requirement, preserved
+[historically](./historical/vue_meter_value_before_shared_peak_display_2026-11-16.md).
+A mode switch changes presentation only; it does not request another capture
+operation or compile another graph.
+
+Use the same RMS fill and peak marker in both modes. A new peak snaps the
+marker up and resets its downward velocity. After a short hold, the marker
+falls with increasing speed toward zero, staying at least as high as the
+currently measured peak. Smooth the RMS fill with fast attack and slower
+release. Run this motion on the client at display refresh, independently of
+telemetry delivery. Missing/unavailable data remain unavailable rather than
+becoming silence. Reset obsolete-source motion on activation/invalidation and
+stop animation when hidden or settled. Hold and release tuning can be adjusted
+for feel without changing capture semantics.
 
 Both modes have **square corners**, no decorative rounding, and consistent
 ruler-like grading. Reuse the existing time ruler's tick/label/gradation

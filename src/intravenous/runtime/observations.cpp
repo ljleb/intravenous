@@ -12,7 +12,7 @@ namespace iv {
 namespace {
 using Json = nlohmann::ordered_json;
 constexpr auto scope_lease = std::chrono::seconds(30);
-constexpr auto collection_interval = std::chrono::milliseconds(50);
+constexpr auto collection_interval = std::chrono::microseconds(33333);
 constexpr std::size_t maximum_scopes = 64;
 constexpr std::size_t maximum_interests_per_scope = 64;
 
@@ -142,7 +142,10 @@ void Observations::collect(Clock::time_point now)
     IV_EVENT_SOURCE(Observations, "live observation collection") {
         std::scoped_lock lock(mutex_);
         if (now < next_collection_) return;
-        next_collection_ = now + collection_interval;
+        // Keep the cadence independent of the runtime service's 20 ms poll.
+        // A late collection skips missed deadlines instead of sending a burst.
+        next_collection_ += collection_interval;
+        if (next_collection_ <= now) next_collection_ = now + collection_interval;
         auto const expired = std::erase_if(scopes_, [&](auto const& scope) { return scope.expires <= now; });
         requirements_dirty_ |= expired != 0;
         if (requirements_dirty_) {

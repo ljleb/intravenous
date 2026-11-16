@@ -4,6 +4,12 @@ Everything in this directory is non-normative historical material.
 
 These documents are retained because they record deleted architectures, superseded design directions, completed migrations, profiling experiments, or implementation checkpoints that may still explain why the repository looks the way it does. They must not be treated as current requirements when they conflict with documents in the parent [`docs/`](../README.md) directory.
 
+## Superseded meter display semantics
+
+- [Meter Value Mode Before the Shared Peak/RMS Display (2026-11-16)](./vue_meter_value_before_shared_peak_display_2026-11-16.md)
+  preserves the signed latest-sample meter proposal. The owner now requests
+  identical peak/RMS displays with dBFS versus linear magnitude scales.
+
 ## Superseded backup proposal
 
 - [Backup/Checkpoint Proposals Before Git-Based Project Versioning (2026-11-15)](./backup_checkpoint_proposals_before_git_versioning_2026-11-15.md)
