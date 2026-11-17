@@ -242,6 +242,11 @@ test("meter status follows pointer ownership despite focused-channel telemetry u
         show(right, "right entered", 2);
         show(left, "left later frame", 2);
         assert.equal(text(), "right entered");
+        for (let frame = 0; frame < 3; ++frame) {
+            show(right, `right still hovered ${frame}`, 2);
+            show(left, `left later frame ${frame}`, 2);
+            assert.equal(text(), `right still hovered ${frame}`);
+        }
     } finally { scope.dispose(); }
 });
 

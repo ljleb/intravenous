@@ -3625,3 +3625,12 @@ The larger accepted remaining-work order still follows the verified metadata and
 bounded Tock observations with unified recording/Tock buffered storage, then
 output gain and graph-authored snapping as separate complete features. The
 input-wide drop-target request remains recorded for later implementation.
+
+### Meter hint re-entry ordering correction (2026-11-16)
+
+The owner's client test run exposed that an already registered focused hint
+did not renew its ordering when it became hovered. `PresentationObservations`
+now updates ordering on priority transitions, while telemetry updates at an
+unchanged priority preserve interaction order. The existing regression covers
+focus-to-hover re-entry and now repeats interleaved same-priority updates.
+`git diff --check` only; client tests remain owner-run.

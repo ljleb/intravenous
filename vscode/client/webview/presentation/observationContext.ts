@@ -153,9 +153,12 @@ export class PresentationObservations {
         ++this.version.value;
     }
     hint(owner: symbol, value: ObservationHint | null, priority = 0): void {
-        // Updating a reading must not promote its owner above the pointer's
-        // current target. Preserve insertion order until the interaction ends.
-        if (value) this.hints.set(owner, { value, priority });
+        // Hover/focus transitions renew interaction order; telemetry updates
+        // at the same priority must not steal ownership from the current target.
+        if (value) {
+            if (this.hints.get(owner)?.priority !== priority) this.hints.delete(owner);
+            this.hints.set(owner, { value, priority });
+        }
         else this.hints.delete(owner);
         let selected: { value: ObservationHint; priority: number } | undefined;
         for (const hint of this.hints.values())
