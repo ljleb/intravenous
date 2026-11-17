@@ -1,5 +1,6 @@
 #include <intravenous/runtime/persisted_data_store.h>
 #include <intravenous/runtime/tick_materialization_snapshot.h>
+#include <intravenous/runtime/graph_jit.h>
 
 #include <gtest/gtest.h>
 #include <algorithm>
@@ -597,6 +598,217 @@ TEST(SharedBufferedStorage, UnalignedPlanarSelectionRepacksOnlyItsBoundedViewAnd
     }
     selected = {};
     EXPECT_EQ(store.buffered_storage_usage().live_page_bytes, 0u);
+}
+
+TEST(SharedBufferedStorage, EvictionPreservesLogicalVersionsAndAuthoritativeRecordings)
+{
+    PersistedDataStore store;
+    auto recording = output(store, 0), cached = output(store, 1);
+    auto seed = store.begin_candidate(1);
+    seed.overwrite(samples(recording, span(0, 4), 12));
+    replace(seed, samples(cached, span(-4, 8), 20, mono_planar_channel_layout));
+    ASSERT_EQ(store.publish(std::move(seed)), PersistedDataPublishResult::published);
+    auto reader = store.register_reader();
+    auto old = reader.pin();
+    auto version = old->version();
+    store.reclaim_cached_payload({});
+    auto other = store.register_reader();
+    auto current = other.pin();
+    EXPECT_EQ(current->version(), version);
+    EXPECT_TRUE(store.is_current(old.snapshot()));
+    EXPECT_TRUE(current->shares_output_with(old.snapshot(), cached));
+    EXPECT_EQ(*current->find_sample_logical_coverage(cached), IndexCoverage{span(-4, 8)});
+    EXPECT_TRUE(current->find_sample_coverage(cached, mono_planar_channel_layout)->empty());
+    ASSERT_EQ(current->sample_regions(cached, mono_planar_channel_layout).size(), 1u);
+    EXPECT_EQ(current->sample_regions(cached, mono_planar_channel_layout)[0].range, span(-4, 8));
+    EXPECT_FLOAT_EQ(current->find_sample_region(recording, at(0))->at(at(0), 0).value, 12);
+    EXPECT_FLOAT_EQ(old->find_sample_region(cached, at(-4))->at(at(-4), 0).value, 20);
+}
+
+TEST(SharedBufferedStorage, DetachedPreparedReaderPinsOnlyItsSelectedPages)
+{
+    PersistedDataStore store;
+    auto id = output(store);
+    auto page = store.buffered_storage_usage().page_size, frames = page / sizeof(Sample);
+    auto seed = store.begin_candidate(1);
+    replace(seed, samples(id, span(0, 2 * frames), 0, mono_planar_channel_layout));
+    ASSERT_EQ(store.publish(std::move(seed)), PersistedDataPublishResult::published);
+    auto reader = store.register_reader();
+    auto lease = reader.pin();
+    lease.retain_payload(std::array{PersistedPayloadSelection{id, IndexCoverage{span(0, frames)}}});
+    store.reclaim_cached_payload({});
+    EXPECT_EQ(store.buffered_storage_usage().live_page_bytes, page);
+    EXPECT_FLOAT_EQ(lease->find_sample_region(id, at(3))->at(at(3), 0).value, 3);
+    EXPECT_EQ(*lease->find_sample_logical_coverage(id), IndexCoverage{span(0, 2 * frames)});
+    lease = {};
+    EXPECT_EQ(store.buffered_storage_usage().live_page_bytes, 0u);
+}
+
+TEST(SharedBufferedStorage, CachePressureEvictsComputedBeforeBufferedAndKeepsRecordings)
+{
+    PersistedDataStore probe;
+    auto page = probe.buffered_storage_usage().page_size, frames = page / sizeof(Sample);
+    BufferedStorageLimits limits;
+    limits.max_backing_bytes = 3 * page;
+    PersistedDataStore store(limits);
+    auto recording = output(store, 0), buffered = output(store, 1), computed = output(store, 2);
+    auto seed = store.begin_candidate(1);
+    seed.overwrite(samples(recording, span(0, frames), 1));
+    replace(seed, samples(buffered, span(0, frames), 2, mono_planar_channel_layout));
+    replace(seed, samples(computed, span(0, frames), 3, mono_planar_channel_layout));
+    ASSERT_EQ(store.publish(std::move(seed)), PersistedDataPublishResult::published);
+    (void)store.reclaim_retired();
+    store.set_cache_realization(computed, OutputRealization::computed);
+    store.prepare_cache(page, {}, [](auto) {});
+    auto reader = store.register_reader();
+    auto pin = reader.pin();
+    EXPECT_NE(pin->find_sample_region(recording, at(0)), nullptr);
+    EXPECT_NE(pin->find_sample_region(buffered, at(0)), nullptr);
+    EXPECT_EQ(pin->find_sample_region(computed, at(0)), nullptr);
+    EXPECT_EQ(store.buffered_storage_usage().live_page_bytes, 2 * page);
+    EXPECT_GT(store.buffered_storage_usage().cache_evictions, 0u);
+}
+
+TEST(SharedBufferedStorage, CachePressureRetainsRequiredWindowsWithoutFabricatingCoverage)
+{
+    PersistedDataStore probe;
+    auto page = probe.buffered_storage_usage().page_size, frames = page / sizeof(Sample);
+    BufferedStorageLimits limits;
+    limits.max_backing_bytes = 2 * page;
+    PersistedDataStore store(limits);
+    auto id = output(store);
+    auto seed = store.begin_candidate(1);
+    replace(seed, samples(id, span(0, 2 * frames), 7, mono_planar_channel_layout));
+    ASSERT_EQ(store.publish(std::move(seed)), PersistedDataPublishResult::published);
+    (void)store.reclaim_retired();
+    auto required = std::array{PersistedPayloadSelection{id, IndexCoverage{span(0, frames)}}};
+    store.prepare_cache(page, required, [](auto) {});
+    auto reader = store.register_reader();
+    auto pin = reader.pin();
+    EXPECT_EQ(*pin->find_sample_coverage(id, mono_planar_channel_layout), IndexCoverage{span(0, frames)});
+    EXPECT_EQ(*pin->find_sample_logical_coverage(id), IndexCoverage{span(0, 2 * frames)});
+    EXPECT_EQ(store.buffered_storage_usage().live_page_bytes, page);
+}
+
+TEST(SharedBufferedStorage, CacheReclamationDoesNotMakeAnUnchangedSemanticCandidateStale)
+{
+    PersistedDataStore store;
+    auto cached = output(store, 0), recording = output(store, 1);
+    auto seed = store.begin_candidate(1);
+    replace(seed, samples(cached, span(0, 4), 4, mono_planar_channel_layout));
+    ASSERT_EQ(store.publish(std::move(seed)), PersistedDataPublishResult::published);
+    auto successor = store.begin_candidate(2);
+    successor.retain_payload({});
+    store.reclaim_cached_payload({});
+    successor.overwrite(samples(recording, span(0, 4), 9));
+    ASSERT_EQ(store.publish(std::move(successor)), PersistedDataPublishResult::published);
+    auto stale = store.begin_candidate(3);
+    auto winner = store.begin_candidate(3);
+    ASSERT_EQ(store.publish(std::move(winner)), PersistedDataPublishResult::published);
+    EXPECT_EQ(store.publish(std::move(stale)), PersistedDataPublishResult::stale_base);
+}
+
+TEST(SharedBufferedStorage, ReconstructionKeepsExactRecordedInputsWithoutKeepingResultPages)
+{
+    PersistedDataStore store;
+    auto recording = output(store, 0), derived = output(store, 1);
+    auto code = std::make_shared<CompiledGraph>();
+    std::weak_ptr<CompiledGraph> code_lifetime = code;
+    auto reader = store.register_reader();
+    auto previous = reader.pin();
+    auto seed = store.begin_candidate(1);
+    seed.overwrite(samples(recording, span(0, 4), 10));
+    replace(seed, samples(derived, span(0, 4), 20, mono_planar_channel_layout));
+    auto inputs = std::make_shared<PersistedDataStore::Snapshot>(seed.working_snapshot());
+    inputs->select_outputs(std::array{recording});
+    auto context = std::make_shared<PersistedDataStore::Reconstruction>();
+    context->executable = code;
+    context->inputs = std::move(inputs);
+    context->dependencies = {recording};
+    seed.set_reconstruction(derived, std::move(context), previous.snapshot());
+    ASSERT_EQ(store.publish(std::move(seed)), PersistedDataPublishResult::published);
+    previous = {};
+    code.reset();
+    auto changed = store.begin_candidate(2);
+    changed.overwrite(samples(recording, span(0, 4), 50));
+    ASSERT_EQ(store.publish(std::move(changed)), PersistedDataPublishResult::published);
+    store.reclaim_cached_payload({});
+    {
+        auto pin = reader.pin();
+        auto selected = pin->reconstruction(derived);
+        ASSERT_NE(selected, nullptr);
+        EXPECT_FLOAT_EQ(selected->inputs->find_sample_region(recording, at(0))->at(at(0), 0).value, 10);
+        EXPECT_FLOAT_EQ(pin->find_sample_region(recording, at(0))->at(at(0), 0).value, 50);
+        EXPECT_EQ(pin->find_sample_region(derived, at(0)), nullptr);
+        EXPECT_FALSE(code_lifetime.expired());
+    }
+    auto remove = store.begin_candidate(3);
+    remove.erase_output(derived);
+    ASSERT_EQ(store.publish(std::move(remove)), PersistedDataPublishResult::published);
+    (void)store.reclaim_retired();
+    EXPECT_TRUE(code_lifetime.expired());
+}
+
+TEST(SharedBufferedStorage, EventEvictionPreservesDuplicateRegionsAndKnownEmptyResults)
+{
+    PersistedDataStore store;
+    auto events = output(store, 0, PortKind::event);
+    auto recording = output(store, 1, PortKind::event);
+    PersistedEventChunk active{.output = events, .range = span(10, 8), .type = EventTypeId::trigger};
+    active.events.push_back({.time = at(12), .value = TriggerEvent{}});
+    PersistedEventChunk empty{.output = events, .range = span(10, 8), .type = EventTypeId::trigger};
+    PersistedEventChunk recorded{.output = recording, .range = span(10, 8), .type = EventTypeId::trigger};
+    recorded.events.push_back({.time = at(13), .value = TriggerEvent{}});
+    auto seed = store.begin_candidate(1);
+    seed.replace_event_regions(events, EventTypeId::trigger, IndexCoverage{span(10, 8)},
+        std::array{span(10, 8), span(10, 8)}, {std::move(active), std::move(empty)});
+    seed.overwrite(std::move(recorded));
+    ASSERT_EQ(store.publish(std::move(seed)), PersistedDataPublishResult::published);
+    auto reader = store.register_reader();
+    auto old = reader.pin();
+    auto old_count = store.buffered_storage_usage().event_bytes;
+    store.reclaim_cached_payload({});
+    auto other = store.register_reader();
+    auto pin = other.pin();
+    EXPECT_EQ(pin->event_region_ranges(events, EventTypeId::trigger).size(), 2u);
+    EXPECT_EQ(*pin->find_event_logical_coverage(events), IndexCoverage{span(10, 8)});
+    EXPECT_TRUE(pin->find_event_coverage(events, EventTypeId::trigger)->empty());
+    EXPECT_EQ(old->event_timeline(events, EventTypeId::trigger).size(), 1u);
+    EXPECT_EQ(pin->event_timeline(recording, EventTypeId::trigger).size(), 1u);
+    EXPECT_TRUE(pin->shares_output_with(old.snapshot(), events));
+    old = {};
+    (void)store.reclaim_retired();
+    EXPECT_LT(store.buffered_storage_usage().event_bytes, old_count);
+}
+
+TEST(SharedBufferedStorage, PressureCannotDiscardPinnedPagesOrTheOnlyRecordingCopy)
+{
+    PersistedDataStore probe;
+    auto page = probe.buffered_storage_usage().page_size, frames = page / sizeof(Sample);
+    BufferedStorageLimits limits;
+    limits.max_backing_bytes = 2 * page;
+    PersistedDataStore store(limits);
+    auto recording = output(store, 0), cached = output(store, 1);
+    auto seed = store.begin_candidate(1);
+    seed.overwrite(samples(recording, span(0, frames), 1));
+    replace(seed, samples(cached, span(0, frames), 2, mono_planar_channel_layout));
+    ASSERT_EQ(store.publish(std::move(seed)), PersistedDataPublishResult::published);
+    auto reader = store.register_reader();
+    auto pin = reader.pin();
+    store.prepare_cache(page, {}, [](auto) {});
+    EXPECT_EQ(store.buffered_storage_usage().live_page_bytes, 2 * page);
+    auto failed = store.begin_candidate(2);
+    EXPECT_THROW(failed.overwrite(samples(recording, span(frames, frames), 3)), std::length_error);
+    EXPECT_FLOAT_EQ(pin->find_sample_region(cached, at(0))->at(at(0), 0).value, 2);
+    pin = {};
+    (void)store.reclaim_retired();
+    EXPECT_EQ(store.buffered_storage_usage().live_page_bytes, page);
+    auto accepted = store.begin_candidate(2);
+    accepted.overwrite(samples(recording, span(frames, frames), 3));
+    ASSERT_EQ(store.publish(std::move(accepted)), PersistedDataPublishResult::published);
+    auto final = reader.pin();
+    EXPECT_FLOAT_EQ(final->find_sample_region(recording, at(0))->at(at(0), 0).value, 1);
+    EXPECT_FLOAT_EQ(final->find_sample_region(recording, at(frames))->at(at(frames), 0).value, 3);
 }
 
 } // namespace

@@ -13,8 +13,8 @@
 
 namespace iv {
 
-// One immutable background-produced view that pins the exact canonical data
-// root and Tick-materialization root intended to become visible together.
+// One immutable background-produced view of a data version and its prepared
+// payload leases. Unrelated canonical cache contents are not playback owners.
 // Construction and destruction are non-realtime operations.
 class RealtimePersistedState {
     friend class RealtimePersistedStateMailbox;
@@ -26,6 +26,7 @@ class RealtimePersistedState {
     TickMaterializationStore::ReaderPin materialization_{};
     std::shared_ptr<TickMaterializationSnapshot const> owned_materialization_{};
     std::unique_ptr<TickMaterializationSnapshot> initial_materialization_{};
+    std::unique_ptr<PersistedDataStore::Snapshot> initial_data_{};
     std::shared_ptr<PersistedDataStore::Snapshot const> owned_data_{};
     RealtimePersistedState* returned_next_ = nullptr;
     bool captured_ = false;
@@ -55,8 +56,8 @@ public:
         TickMaterializationStore& materializations);
 
     // Allocates/registers the owner of a generation's empty initial
-    // materialization during staging. capture_initial() later pins the newest
-    // canonical retained-data root using no allocation.
+    // materialization during staging. capture_initial() later captures the
+    // newest data version without retaining unrequested payload or allocating.
     [[nodiscard]] static std::unique_ptr<RealtimePersistedState>
     prepare_initial(
         std::uint64_t generation,
@@ -71,6 +72,11 @@ public:
 
     [[nodiscard]] std::expected<void, std::string>
     capture_current();
+
+    // Background-only finalization. Tick materializations already lease their
+    // payload; retain canonical pages only for bindings that read them directly.
+    [[nodiscard]] std::expected<void, std::string> select_payload(
+        graph_jit::BackgroundEvaluationPlan const& plan, PersistedDataStore& store);
 
     // Cold preparation sets the exact requested playback positions, including
     // known gaps. Realtime checks this range without allocating.
@@ -87,7 +93,7 @@ public:
     [[nodiscard]] PersistedDataStore::Snapshot const& data() const noexcept
     {
         assert(captured_);
-        return owned_data_ ? *owned_data_ : data_.snapshot();
+        return owned_data_ ? *owned_data_ : initial_data_ ? *initial_data_ : data_.snapshot();
     }
 
     [[nodiscard]] TickMaterializationSnapshot const& materialization()

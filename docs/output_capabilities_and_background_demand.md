@@ -112,9 +112,9 @@ content still requires preparation; it never becomes absence or fallback.
 This decision replaces the earlier conservative policy that retained every
 valid Tock/buffered page until explicit invalidation. Prior wording is preserved
 [historically](./historical/buffered_reconstruction_before_2026-11-17/output_capabilities_and_background_demand.md).
-The shared storage implementation does not yet implement this differentiated
-valid-page eviction policy; restoration of Tick coverage and output gain remain
-the active source work.
+The differentiated eviction policy and ownership refactor are now in source,
+awaiting owner verification. See the
+[implementation and verification record](./page_cache_implementation.md).
 
 #### Retention cost and memory pressure (owner clarification, 2026-11-17)
 
@@ -148,8 +148,9 @@ allocate without bounds. Reclamation does not remove logical coverage or Region
 identity. Later covered reads require preparation before execution, never
 fallback merely because cached contents were reclaimed.
 
-This clarification refines the relative cache priority above. The source does
-not yet implement the corresponding admission and eviction policy.
+This clarification refines the relative cache priority above. The admission and
+eviction implementation awaits owner verification; its initial heuristics are
+measurement choices recorded in the implementation plan.
 
 ## 3. Input capability is a distinct compatibility constraint
 

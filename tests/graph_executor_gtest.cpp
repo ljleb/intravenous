@@ -1099,6 +1099,13 @@ TEST(GraphExecutorPersistedStorageCompatibility,
     EXPECT_TRUE(iv::graph_jit::persisted_storage_is_compatible(
         current, 0, previous, 0));
 
+    auto computed = previous;
+    computed.ports[0].realization = iv::OutputRealization::computed;
+    computed.storage.ports[0].storage = iv::graph_jit::PortStorageKind::background;
+    EXPECT_TRUE(iv::graph_jit::uses_output_cache(computed, computed.storage.ports[0], true));
+    EXPECT_FALSE(iv::graph_jit::uses_output_cache(computed, computed.storage.ports[0], false));
+    EXPECT_TRUE(iv::graph_jit::persisted_storage_is_compatible(computed, 0, computed, 0));
+
     current.ports[0].output_production = iv::OutputProductionKind::region;
     EXPECT_FALSE(iv::graph_jit::persisted_storage_is_compatible(
         current, 0, previous, 0));
@@ -2019,6 +2026,72 @@ TEST_F(
     EXPECT_FLOAT_EQ(region->at(index(2), 0).value, 102.0f);
 }
 
+TEST_F(GraphExecutorFixture, EvictedTockResultsReconstructTheirRequestedWindowAndKeepLogicalIdentity)
+{
+    for (bool computed : {false, true}) {
+        SCOPED_TRACE(computed);
+        persisted_probe_evaluate_calls = 0;
+        auto graph = std::make_shared<iv::CompiledGraph>(
+            computed ? ephemeral_tock_graph() : persisted_tock_graph());
+        auto states = initialize_tock_states(*graph);
+        auto const& plan = graph->background_evaluation_plan;
+        iv::BackgroundCoverageState coverage(plan.accumulators.output_change_count);
+        iv::BackgroundPropagationWorkspace propagation(plan, graph->specialization.sample_rate);
+        iv::PersistedDataStore data;
+        auto reader = data.register_reader();
+        auto handle = data.resolve_output(iv::persisted_output_id(plan, 0, graph->project_generation));
+        auto evaluate = [&](bool changed, iv::IndexCoverage demand) {
+            iv::CoveragePropagationRequest roots;
+            if (changed) roots.locally_changed_nodes = {0};
+            roots.output_demands.push_back({.port = 0, .required = std::move(demand)});
+            iv::BackgroundEvaluationTransaction transaction{*graph, states, coverage, propagation, data,
+                {.semantic_version = 7, .roots = std::move(roots), .reconstruction_graph = graph}};
+            return transaction.execute();
+        };
+        auto first = evaluate(true, index_coverage({{0, 8}}));
+        ASSERT_TRUE(first.has_value()) << first.error();
+        EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
+        auto reused = evaluate(false, index_coverage({{0, 8}}));
+        ASSERT_TRUE(reused.has_value()) << reused.error();
+        EXPECT_EQ(persisted_probe_evaluate_calls, 1u);
+        auto old = reader.pin();
+        auto const version = old->version();
+        data.reclaim_cached_payload({});
+        auto other = data.register_reader();
+        {
+            auto empty = other.pin();
+            EXPECT_EQ(empty->version(), version);
+            EXPECT_TRUE(empty->shares_output_with(old.snapshot(), handle));
+            EXPECT_EQ(*empty->find_sample_logical_coverage(handle), index_coverage({{0, 8}}));
+            EXPECT_TRUE(empty->find_sample_coverage(handle, iv::mono_planar_channel_layout)->empty());
+        }
+        auto rebuilt = evaluate(false, index_coverage({{2, 3}}));
+        ASSERT_TRUE(rebuilt.has_value()) << rebuilt.error();
+        EXPECT_EQ(persisted_probe_evaluate_calls, 2u);
+        auto current = other.pin();
+        EXPECT_TRUE(current->shares_output_with(old.snapshot(), handle));
+        EXPECT_EQ(*current->find_sample_coverage(handle, iv::mono_planar_channel_layout), index_coverage({{2, 3}}));
+        ASSERT_NE(current->find_sample_region(handle, index(2)), nullptr);
+        EXPECT_FLOAT_EQ(current->find_sample_region(handle, index(2))->at(index(2), 0).value, 102);
+        EXPECT_FLOAT_EQ(old->find_sample_region(handle, index(0))->at(index(0), 0).value, 100);
+        auto context = current->reconstruction(handle);
+        ASSERT_NE(context, nullptr);
+        auto canonical_version = current->version();
+        auto historical = iv::BackgroundEvaluationTransaction::reconstruct(
+            data, context, 0, index_coverage({{4, 2}}), resources_);
+        ASSERT_TRUE(historical.has_value()) << historical.error();
+        ASSERT_NE(historical->prepared_data, nullptr);
+        auto const* reconstructed = historical->prepared_data->find_sample_region(handle, index(4));
+        ASSERT_NE(reconstructed, nullptr);
+        EXPECT_FLOAT_EQ(reconstructed->at(index(4), 0).value, 104);
+        EXPECT_EQ(persisted_probe_evaluate_calls, 3u);
+        current = {};
+        auto latest = other.pin();
+        EXPECT_EQ(latest->version(), canonical_version);
+        EXPECT_EQ(*latest->find_sample_coverage(handle, iv::mono_planar_channel_layout), index_coverage({{2, 3}}));
+    }
+}
+
 TEST_F(
     GraphExecutorFixture,
     FailedPersistedBackgroundEvaluationPromotesNeitherDataNorCoverage)
@@ -2241,73 +2314,78 @@ TEST_F(
     GraphExecutorFixture,
     PersistedTickReplayPublishesOnlyTheDemandedPositionalRange)
 {
-    auto graph = replay_probe_graph();
-    auto const output_id = iv::graph_jit::StableOutputPortId{
-        .node = {
-            .graph = "persisted-replay-probe",
-            .virtual_node = "source",
-        },
-        .kind = iv::PortKind::sample,
-        .port_name = "output",
-        .port_index = 0,
-    };
-    auto& output = graph.background_evaluation_plan.ports[0];
-    output.persisted_tick_output = true;
-    output.realization = iv::OutputRealization::buffered;
-    output.stable_identity = output_id;
-    output.sample_layout = iv::mono_interleaved_channel_layout;
-    graph.background_evaluation_plan.storage.ports[0].storage =
-        iv::graph_jit::PortStorageKind::persisted_data;
-    graph.background_evaluation_plan.storage.ports[0].sample_layout =
-        iv::mono_interleaved_channel_layout;
-
-    auto tock_states = initialize_tock_states(graph);
-    iv::BackgroundCoverageState coverage(
-        graph.background_evaluation_plan.accumulators.output_change_count);
-    iv::BackgroundPropagationWorkspace propagation{
-        graph.background_evaluation_plan, graph.specialization.sample_rate};
-    iv::PersistedDataStore data;
-
-    iv::BackgroundEvaluationTransaction transaction{
-        graph,
-        tock_states,
-        coverage,
-        propagation,
-        data,
-        {
-            .semantic_version = 1,
-            .roots = {
-                .output_changes = {
-                    {
-                        .port = 0,
-                        .coverage = index_coverage({{0, 1000}}),
-                    },
-                    {
-                        .port = 1,
-                        .coverage = index_coverage({{0, 1000}}),
-                    },
-                },
-                .output_demands = {{
-                    .port = 0,
-                    .required = index_coverage({{123, 125}}),
-                }},
+    for (bool cache_computed : {false, true}) {
+        SCOPED_TRACE(cache_computed);
+        auto owner = std::make_shared<iv::CompiledGraph>(replay_probe_graph());
+        auto& graph = *owner;
+        auto const output_id = iv::graph_jit::StableOutputPortId{
+            .node = {
+                .graph = "persisted-replay-probe",
+                .virtual_node = "source",
             },
-        }};
-    auto result = transaction.execute();
-    ASSERT_TRUE(result.has_value()) << result.error();
-    ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
-    ASSERT_TRUE(result->published_data.has_value());
-    EXPECT_EQ(
-        replay_probe_regions,
-        (std::vector<iv::GlobalIndexRange>{range(123, 125)}));
+            .kind = iv::PortKind::sample,
+            .port_name = "output",
+            .port_index = 0,
+        };
+        auto& output = graph.background_evaluation_plan.ports[0];
+        output.persisted_tick_output = true;
+        output.realization = iv::OutputRealization::buffered;
+        output.stable_identity = output_id;
+        output.sample_layout = iv::mono_interleaved_channel_layout;
+        graph.background_evaluation_plan.storage.ports[0].storage =
+            iv::graph_jit::PortStorageKind::persisted_data;
+        graph.background_evaluation_plan.storage.ports[0].sample_layout =
+            iv::mono_interleaved_channel_layout;
 
-    auto reader = data.register_reader();
-    auto pin = reader.pin();
-    auto const output_handle = data.resolve_output(output_id);
-    auto const* published = pin->find_sample_coverage(
-        output_handle, iv::mono_interleaved_channel_layout);
-    ASSERT_NE(published, nullptr);
-    EXPECT_EQ(*published, index_coverage({{123, 125}}));
+        auto tock_states = initialize_tock_states(graph);
+        iv::BackgroundCoverageState coverage(
+            graph.background_evaluation_plan.accumulators.output_change_count);
+        iv::BackgroundPropagationWorkspace propagation{
+            graph.background_evaluation_plan, graph.specialization.sample_rate};
+        iv::PersistedDataStore data;
+
+        iv::BackgroundEvaluationTransaction transaction{
+            graph,
+            tock_states,
+            coverage,
+            propagation,
+            data,
+            {
+                .semantic_version = 1,
+                .roots = {
+                    .output_changes = {
+                        {
+                            .port = 0,
+                            .coverage = index_coverage({{0, 1000}}),
+                        },
+                        {
+                            .port = 1,
+                            .coverage = index_coverage({{0, 1000}}),
+                        },
+                    },
+                    .output_demands = {{
+                        .port = 0,
+                        .required = index_coverage({{123, 125}}),
+                    }},
+                },
+                .reconstruction_graph = cache_computed ? owner : nullptr,
+            }};
+        auto result = transaction.execute();
+        ASSERT_TRUE(result.has_value()) << result.error();
+        ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
+        ASSERT_TRUE(result->published_data.has_value());
+        EXPECT_EQ(
+            replay_probe_regions,
+            (std::vector<iv::GlobalIndexRange>{range(123, 125)}));
+
+        auto reader = data.register_reader();
+        auto pin = reader.pin();
+        auto const output_handle = data.resolve_output(output_id);
+        auto const* published = pin->find_sample_coverage(
+            output_handle, iv::mono_interleaved_channel_layout);
+        ASSERT_NE(published, nullptr);
+        EXPECT_EQ(*published, index_coverage({{123, 125}}));
+    }
 }
 
 TEST_F(

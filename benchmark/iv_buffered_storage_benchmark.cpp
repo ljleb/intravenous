@@ -1,11 +1,13 @@
 #include <intravenous/runtime/persisted_data_store.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -25,6 +27,81 @@ PersistedSampleRegion payload(PersistedOutputHandle output, GlobalIndexRange ran
     PersistedSampleRegion result{.output = output, .range = range, .layout = layout};
     result.values.assign(static_cast<std::size_t>(range.extent) * channel_count(layout), Sample{value});
     return result;
+}
+
+void measure_cache(std::size_t pages, std::size_t iterations, std::size_t pinned_versions)
+{
+    PersistedDataStore probe;
+    auto const page = probe.buffered_storage_usage().page_size;
+    auto const bytes = pages * page;
+    BufferedStorageLimits limits;
+    limits.max_cached_payload_bytes = 3 * bytes;
+    limits.max_backing_bytes = (5 + pinned_versions) * bytes;
+    PersistedDataStore store(limits);
+    auto handle = [&](std::size_t port) {
+        return store.resolve_output(GenerationLocalPersistedOutputId{1, port, PortKind::sample});
+    };
+    auto const recording = handle(0);
+    GlobalIndexRange whole{GlobalIndex::from_signed(0), bytes / sizeof(Sample)};
+    auto seed = store.begin_candidate(1);
+    seed.overwrite(payload(recording, whole, 42, mono_interleaved_channel_layout));
+    if (store.publish(std::move(seed)) != PersistedDataPublishResult::published)
+        throw std::runtime_error("cache benchmark recording publication failed");
+    (void)store.reclaim_retired();
+    std::vector<PersistedDataStore::ReaderSlot> readers;
+    std::vector<PersistedDataStore::ReaderPin> pins(pinned_versions);
+    std::vector<PersistedOutputHandle> held(pinned_versions);
+    std::vector<float> held_values(pinned_versions);
+    for (std::size_t index = 0; index < pinned_versions; ++index) readers.push_back(store.register_reader());
+    std::vector<double> elapsed;
+    std::size_t peak_live = bytes;
+    for (std::size_t index = 0; index < iterations; ++index) {
+        if (pinned_versions) pins[index % pinned_versions] = {};
+        auto output = handle(1 + index % 12);
+        auto const realization = index % 2 ? OutputRealization::buffered : OutputRealization::computed;
+        store.set_cache_realization(output, realization);
+        auto const started = Clock::now();
+        store.prepare_cache(bytes, std::array{PersistedPayloadSelection{output, IndexCoverage{whole}}}, [](auto) {});
+        auto candidate = store.begin_candidate(index + 2);
+        auto region = payload(output, whole, static_cast<float>(index), mono_planar_channel_layout);
+        candidate.replace_sample_regions(output, region.layout, region.geometry, IndexCoverage{whole},
+            std::array{whole}, {std::move(region)});
+        if (store.publish(std::move(candidate)) != PersistedDataPublishResult::published)
+            throw std::runtime_error("cache benchmark publication became stale");
+        (void)store.reclaim_retired();
+        elapsed.push_back(std::chrono::duration<double, std::micro>(Clock::now() - started).count());
+        peak_live = std::max(peak_live, store.buffered_storage_usage().live_page_bytes);
+        if (pinned_versions) {
+            auto slot = index % pinned_versions;
+            pins[slot] = readers[slot].pin();
+            pins[slot].select_outputs(std::array{output});
+            pins[slot].retain_payload(std::array{PersistedPayloadSelection{output, IndexCoverage{whole}}});
+            held[slot] = output;
+            held_values[slot] = static_cast<float>(index);
+            for (std::size_t selected = 0; selected < pinned_versions; ++selected) {
+                if (selected > index) break;
+                auto region = pins[selected]->find_sample_region(held[selected], whole.begin);
+                if (!region || region->at(whole.begin, 0).value != held_values[selected])
+                    throw std::runtime_error("cache eviction changed a pinned reader");
+            }
+        }
+    }
+    pins.clear();
+    (void)store.reclaim_retired();
+    store.prepare_cache(0, {}, [](auto) {});
+    auto reader = store.register_reader();
+    auto pin = reader.pin();
+    if (pin->find_sample_region(recording, whole.begin)->at(whole.begin, 0).value != 42)
+        throw std::runtime_error("cache pressure changed authoritative recording data");
+    auto usage = store.buffered_storage_usage();
+    if (usage.backing_bytes > limits.max_backing_bytes || usage.live_page_bytes < bytes)
+        throw std::runtime_error("cache benchmark violated its backing budget");
+    std::ranges::sort(elapsed);
+    std::cout << "case\tpages\titerations\treaders\tmedian_us\tp95_us\tpeak_live_bytes\tlive_bytes\tbacking_bytes\tcache_evictions\treused_pages\tmapping_calls\n"
+        << "cache_pressure\t" << pages << '\t' << iterations << '\t' << pinned_versions << '\t'
+        << elapsed[elapsed.size() / 2] << '\t' << elapsed[(elapsed.size() - 1) * 95 / 100] << '\t'
+        << peak_live << '\t' << usage.live_page_bytes << '\t' << usage.backing_bytes << '\t'
+        << usage.cache_evictions << '\t' << usage.reused_pages << '\t' << usage.mapping_calls << '\n';
 }
 void measure(std::string const& name, std::size_t pages, std::size_t iterations, std::size_t pinned_versions,
     BufferedStorageLimits limits, bool tock, PatchPattern pattern, bool stereo = false)
@@ -121,6 +198,15 @@ void measure(std::string const& name, std::size_t pages, std::size_t iterations,
 int main(int argc, char** argv)
 {
     try {
+        if (argc > 1 && std::string_view{argv[1]} == "--cache") {
+            auto pages = argc > 2 ? std::stoull(argv[2]) : 64;
+            auto iterations = argc > 3 ? std::stoull(argv[3]) : 100;
+            auto pins = argc > 4 ? std::stoull(argv[4]) : 4;
+            if (argc > 5 || !pages || pages > 4096 || !iterations || iterations > 100000 || pins > 32)
+                throw std::invalid_argument("usage: iv_buffered_storage_benchmark --cache [pages=64] [iterations=100] [pinned_readers=4]");
+            measure_cache(pages, iterations, pins);
+            return 0;
+        }
         auto pages = argc > 1 ? std::stoull(argv[1]) : 64;
         auto iterations = argc > 2 ? std::stoull(argv[2]) : 200;
         auto pins = argc > 3 ? std::stoull(argv[3]) : 4;

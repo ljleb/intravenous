@@ -995,130 +995,134 @@ TEST(BackgroundStorageRealization, GivesProducedPersistedStoragePrivateOwners)
 TEST(BackgroundStorageRealization,
      TickProducedPersistenceOverwritesOnlyTheSelectedPositionalRange)
 {
-    auto const sample_id = stable_output(iv::PortKind::sample, "samples");
-    auto const event_id = stable_output(iv::PortKind::event, "events");
-    iv::graph_jit::BackgroundEvaluationPlan plan;
-    plan.ports = {
-        {
-            .kind = iv::PortKind::sample,
-            .direction = iv::graph_jit::PortDirection::output,
-            .output_production = iv::OutputProductionKind::sequential,
-            .replayed_tick_output = true,
-            .realization = iv::OutputRealization::buffered,
-            .stable_identity = sample_id,
-            .sample_layout = iv::mono_interleaved_channel_layout,
-        },
-        {
-            .kind = iv::PortKind::event,
-            .direction = iv::graph_jit::PortDirection::output,
-            .output_production = iv::OutputProductionKind::sequential,
-            .replayed_tick_output = true,
-            .realization = iv::OutputRealization::buffered,
-            .stable_identity = event_id,
-            .event_type = iv::EventTypeId::trigger,
-            .max_events_per_index = 1.0,
-        },
-    };
-    plan.storage.ports = {
-        {
-            .kind = iv::PortKind::sample,
-            .storage = iv::graph_jit::PortStorageKind::persisted_data,
-            .output_port = 0,
-            .sample_layout = iv::mono_interleaved_channel_layout,
-            .sample_channels = {0},
-        },
-        {
-            .kind = iv::PortKind::event,
-            .storage = iv::graph_jit::PortStorageKind::persisted_data,
-            .output_port = 1,
-            .event_type = iv::EventTypeId::trigger,
-            .max_events_per_index = 1.0,
-        },
-    };
-    plan.runtime.bindings = {
-        {
-            .port = 0,
-            .kind = iv::PortKind::sample,
-            .direction = iv::graph_jit::PortDirection::output,
-            .storage = {0},
-        },
-        {
-            .port = 1,
-            .kind = iv::PortKind::event,
-            .direction = iv::graph_jit::PortDirection::output,
-            .storage = {1},
-        },
-    };
+    for (bool cache_computed : {false, true}) {
+        SCOPED_TRACE(cache_computed);
+        auto const sample_id = stable_output(iv::PortKind::sample, "samples");
+        auto const event_id = stable_output(iv::PortKind::event, "events");
+        iv::graph_jit::BackgroundEvaluationPlan plan;
+        plan.ports = {
+            {
+                .kind = iv::PortKind::sample,
+                .direction = iv::graph_jit::PortDirection::output,
+                .output_production = iv::OutputProductionKind::sequential,
+                .replayed_tick_output = true,
+                .realization = iv::OutputRealization::buffered,
+                .stable_identity = sample_id,
+                .sample_layout = iv::mono_interleaved_channel_layout,
+            },
+            {
+                .kind = iv::PortKind::event,
+                .direction = iv::graph_jit::PortDirection::output,
+                .output_production = iv::OutputProductionKind::sequential,
+                .replayed_tick_output = true,
+                .realization = iv::OutputRealization::buffered,
+                .stable_identity = event_id,
+                .event_type = iv::EventTypeId::trigger,
+                .max_events_per_index = 1.0,
+            },
+        };
+        plan.storage.ports = {
+            {
+                .kind = iv::PortKind::sample,
+                .storage = iv::graph_jit::PortStorageKind::persisted_data,
+                .output_port = 0,
+                .sample_layout = iv::mono_interleaved_channel_layout,
+                .sample_channels = {0},
+            },
+            {
+                .kind = iv::PortKind::event,
+                .storage = iv::graph_jit::PortStorageKind::persisted_data,
+                .output_port = 1,
+                .event_type = iv::EventTypeId::trigger,
+                .max_events_per_index = 1.0,
+            },
+        };
+        plan.runtime.bindings = {
+            {
+                .port = 0,
+                .kind = iv::PortKind::sample,
+                .direction = iv::graph_jit::PortDirection::output,
+                .storage = {0},
+            },
+            {
+                .port = 1,
+                .kind = iv::PortKind::event,
+                .direction = iv::graph_jit::PortDirection::output,
+                .storage = {1},
+            },
+        };
 
-    iv::PersistedDataStore store;
-    auto const sample_output = store.resolve_output(sample_id);
-    auto const event_output = store.resolve_output(event_id);
-    auto seed = store.begin_candidate(1);
-    seed.overwrite(iv::PersistedSampleRegion{
-        .output = sample_output,
-        .range = range(0, 8),
-        .layout = iv::mono_interleaved_channel_layout,
-        .values = std::vector<iv::Sample>(8, iv::Sample{1.0f}),
-    });
-    seed.overwrite(iv::PersistedEventChunk{
-        .output = event_output,
-        .range = range(0, 8),
-        .type = iv::EventTypeId::trigger,
-        .events = {
-            {.time = index(1), .value = iv::TriggerEvent{}},
-            {.time = index(5), .value = iv::TriggerEvent{}},
-        },
-    });
-    ASSERT_EQ(
-        store.publish(std::move(seed)),
-        iv::PersistedDataPublishResult::published);
+        iv::PersistedDataStore store;
+        auto const sample_output = store.resolve_output(sample_id);
+        auto const event_output = store.resolve_output(event_id);
+        auto seed = store.begin_candidate(1);
+        seed.overwrite(iv::PersistedSampleRegion{
+            .output = sample_output,
+            .range = range(0, 8),
+            .layout = iv::mono_interleaved_channel_layout,
+            .values = std::vector<iv::Sample>(8, iv::Sample{1.0f}),
+        });
+        seed.overwrite(iv::PersistedEventChunk{
+            .output = event_output,
+            .range = range(0, 8),
+            .type = iv::EventTypeId::trigger,
+            .events = {
+                {.time = index(1), .value = iv::TriggerEvent{}},
+                {.time = index(5), .value = iv::TriggerEvent{}},
+            },
+        });
+        ASSERT_EQ(
+            store.publish(std::move(seed)),
+            iv::PersistedDataPublishResult::published);
 
-    auto const selected = index_coverage({{2, 4}});
-    iv::BackgroundStorageRealization realization{
-        plan,
-        store,
-        {
-            .generation = 4,
-            .storage_coverage = {selected, selected},
-            .storage_regions = {{range(2, 4)}, {range(2, 4)}},
-            // A transaction always supplies this outer vector. Tick outputs
-            // intentionally have no authored logical Region list.
-            .published_output_regions = {{}, {}},
-            .persisted_replacement_coverage = {selected, selected},
-            .produce_storage = {true, true},
-        }};
-    ASSERT_TRUE(realization.sample_write(0)->write(index(2), 0, 9.0f));
-    ASSERT_TRUE(realization.sample_write(0)->write(index(3), 0, 10.0f));
-    ASSERT_TRUE(realization.event_write(1)->write(
-        0,
-        {.time = index(3), .value = iv::TriggerEvent{}}));
-    ASSERT_TRUE(realization.seal().has_value());
+        auto const selected = index_coverage({{2, 4}});
+        iv::BackgroundStorageRealization realization{
+            plan,
+            store,
+            {
+                .generation = 4,
+                .storage_coverage = {selected, selected},
+                .storage_regions = {{range(2, 4)}, {range(2, 4)}},
+                // A transaction always supplies this outer vector. Tick outputs
+                // intentionally have no authored logical Region list.
+                .published_output_regions = {{}, {}},
+                .persisted_replacement_coverage = {selected, selected},
+                .produce_storage = {true, true},
+                .cache_computed_outputs = cache_computed,
+            }};
+        ASSERT_TRUE(realization.sample_write(0)->write(index(2), 0, 9.0f));
+        ASSERT_TRUE(realization.sample_write(0)->write(index(3), 0, 10.0f));
+        ASSERT_TRUE(realization.event_write(1)->write(
+            0,
+            {.time = index(3), .value = iv::TriggerEvent{}}));
+        ASSERT_TRUE(realization.seal().has_value());
 
-    auto candidate = store.begin_candidate(2);
-    ASSERT_TRUE(realization.stage_persisted_data(candidate).has_value());
-    ASSERT_EQ(
-        store.publish(std::move(candidate)),
-        iv::PersistedDataPublishResult::published);
+        auto candidate = store.begin_candidate(2);
+        ASSERT_TRUE(realization.stage_persisted_data(candidate).has_value());
+        ASSERT_EQ(
+            store.publish(std::move(candidate)),
+            iv::PersistedDataPublishResult::published);
 
-    auto reader = store.register_reader();
-    auto pin = reader.pin();
-    auto const* before = pin->find_sample_region(sample_output, index(1));
-    auto const* replaced = pin->find_sample_region(sample_output, index(2));
-    auto const* after = pin->find_sample_region(sample_output, index(5));
-    ASSERT_NE(before, nullptr);
-    ASSERT_NE(replaced, nullptr);
-    ASSERT_NE(after, nullptr);
-    EXPECT_FLOAT_EQ(before->at(index(1), 0).value, 1.0f);
-    EXPECT_FLOAT_EQ(replaced->at(index(2), 0).value, 9.0f);
-    EXPECT_FLOAT_EQ(after->at(index(5), 0).value, 1.0f);
-    std::vector<iv::GlobalIndex> event_times;
-    for (auto const& event : pin->event_timeline(
-             event_output, iv::EventTypeId::trigger)) {
-        event_times.push_back(event.time);
+        auto reader = store.register_reader();
+        auto pin = reader.pin();
+        auto const* before = pin->find_sample_region(sample_output, index(1));
+        auto const* replaced = pin->find_sample_region(sample_output, index(2));
+        auto const* after = pin->find_sample_region(sample_output, index(5));
+        ASSERT_NE(before, nullptr);
+        ASSERT_NE(replaced, nullptr);
+        ASSERT_NE(after, nullptr);
+        EXPECT_FLOAT_EQ(before->at(index(1), 0).value, 1.0f);
+        EXPECT_FLOAT_EQ(replaced->at(index(2), 0).value, 9.0f);
+        EXPECT_FLOAT_EQ(after->at(index(5), 0).value, 1.0f);
+        std::vector<iv::GlobalIndex> event_times;
+        for (auto const& event : pin->event_timeline(
+                 event_output, iv::EventTypeId::trigger)) {
+            event_times.push_back(event.time);
+        }
+        EXPECT_EQ(
+            event_times,
+            (std::vector<iv::GlobalIndex>{index(1), index(3), index(5)}));
     }
-    EXPECT_EQ(
-        event_times,
-        (std::vector<iv::GlobalIndex>{index(1), index(3), index(5)}));
 }
 
 TEST(BackgroundStorageRealization,

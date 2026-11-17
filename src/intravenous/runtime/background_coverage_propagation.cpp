@@ -965,6 +965,10 @@ PreparedCoveragePropagation BackgroundPropagationWorkspace::prepare_discovery(
     struct Expansion { BackgroundCoverageDemandExpansion original; } selected{expansion};
     expansion.data = &selected;
     expansion.restrict_input = nullptr;
+    expansion.cached_output = +[](void* opaque, graph_jit::BackgroundPortIndex port) {
+        auto const& original = static_cast<Expansion*>(opaque)->original;
+        return original.cached_output && original.cached_output(original.data, port);
+    };
     expansion.expand_output = +[](void* opaque, graph_jit::BackgroundPortIndex output,
         IndexCoverage const& available, std::span<GlobalIndexRange const> regions,
         IndexCoverage const& changed, IndexCoverage const& required, IndexCoverage& additional) {
@@ -1352,8 +1356,13 @@ void BackgroundPropagationWorkspace::require_input(
             auto const& planned_source = port(source);
             auto const stored_boundary = planned_source.realization
                 && *planned_source.realization == OutputRealization::buffered;
+            bool cached = false;
+            if (planning_state_) {
+                auto const& expansion = planning_state_->group(this).expansion;
+                cached = expansion.cached_output && expansion.cached_output(expansion.data, source);
+            }
             require_output(
-                source, source_required, !stored_boundary);
+                source, source_required, !stored_boundary && !cached);
         };
         bool used_exact_routes = false;
         if (connection.kind == PortKind::sample
@@ -2086,7 +2095,8 @@ BackgroundPropagationWorkspace::prepare(
         auto const& planned = port(root.port);
         auto const stored_boundary = planned.realization
             && *planned.realization == OutputRealization::buffered;
-        require_output(root.port, root.required, !stored_boundary);
+        auto const cached = expansion.cached_output && expansion.cached_output(expansion.data, root.port);
+        require_output(root.port, root.required, !stored_boundary && !cached);
     }
     if (expansion.expand_output) {
         for (graph_jit::BackgroundPortIndex index = 0;

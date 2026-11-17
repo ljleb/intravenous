@@ -722,8 +722,31 @@ struct BackgroundEvaluationPlan {
     }
 };
 
-// Persisted data can remain under one stable output identity only while its
-// physical value representation and its authored production contract remain
+// Computed outputs may use the same optional page cache without acquiring the
+// authored complete-buffer guarantees of buffered outputs.
+[[nodiscard]] inline bool uses_output_cache(BackgroundEvaluationPlan const& plan,
+    PortStoragePlan const& storage, bool cache_computed) noexcept
+{
+    if (storage.storage == PortStorageKind::persisted_data) return true;
+    if (!cache_computed || storage.storage == PortStorageKind::current_tick
+        || !storage.output_port || *storage.output_port >= plan.ports.size()) return false;
+    auto const& output = plan.ports[*storage.output_port];
+    // Cache native output representations. Channel subsets read that same
+    // complete native payload; derived conversion/composition buffers remain
+    // demand-scoped rather than sharing an incompatible representation key.
+    if (storage.sample_materialization || storage.event_materialization) return false;
+    if (storage.kind == PortKind::sample) {
+        auto const channels = channel_count(storage.sample_layout);
+        if (storage.sample_layout != output.sample_layout
+            || storage.continuous_geometry != output.continuous_geometry) return false;
+        for (auto channel : storage.sample_channels) if (channel >= channels) return false;
+    }
+    return output.authored_tock_output || output.replayed_tick_output;
+}
+
+// Canonical recordings and optional computed caches can remain under one
+// stable output identity only while their physical value representation and
+// authored production contract remain
 // unchanged. GraphExecutor uses this predicate before deciding that a
 // predecessor output survives generation reconciliation.
 [[nodiscard]] inline bool persisted_storage_is_compatible(
@@ -738,8 +761,8 @@ struct BackgroundEvaluationPlan {
     }
     auto const& current = current_plan.storage.ports[current_storage];
     auto const& previous = previous_plan.storage.ports[previous_storage];
-    if (current.storage != PortStorageKind::persisted_data
-        || previous.storage != PortStorageKind::persisted_data
+    if (!uses_output_cache(current_plan, current, true)
+        || !uses_output_cache(previous_plan, previous, true)
         || current.kind != previous.kind
         || !current.output_port || !previous.output_port
         || *current.output_port >= current_plan.ports.size()

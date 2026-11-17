@@ -62,6 +62,8 @@ struct BufferedPageRunNode {
 
 
 struct SampleOutputState {
+    std::shared_ptr<void const> semantic_identity = std::make_shared<std::byte>();
+    std::shared_ptr<PersistedDataStore::Reconstruction const> reconstruction{};
     PersistedOutputHandle output{};
     IndexCoverage coverage{};
     std::optional<IndexCoverage> logical_coverage{};
@@ -91,6 +93,8 @@ struct BufferedSampleBacking {
 };
 
 struct EventOutputState {
+    std::shared_ptr<void const> semantic_identity = std::make_shared<std::byte>();
+    std::shared_ptr<PersistedDataStore::Reconstruction const> reconstruction{};
     PersistedOutputHandle output{};
     IndexCoverage coverage{};
     std::optional<IndexCoverage> logical_coverage{};
@@ -2259,7 +2263,7 @@ PersistedOutputId persisted_output_id(
         throw std::invalid_argument("persisted storage index is out of range");
     }
     auto const& planned = plan.storage.ports[storage];
-    if (planned.storage != graph_jit::PortStorageKind::persisted_data
+    if (!uses_output_cache(plan, planned, true)
         || !planned.output_port || *planned.output_port >= plan.ports.size()) {
         throw std::invalid_argument(
             "persisted storage has no generation output identity");
@@ -2725,9 +2729,9 @@ PersistedDataStore::Candidate::Candidate(
     Snapshot const& base,
     std::unique_ptr<Snapshot> successor) noexcept
     : store_(&store)
-    , base_(&base)
     , base_version_(base.version())
     , successor_(std::move(successor))
+    , base_identity_(base.logical_identity_)
 {}
 
 PersistedDataVersion
@@ -2743,17 +2747,360 @@ PersistedDataStore::Candidate::working_snapshot() const
     return *successor_;
 }
 
+namespace {
+template<class Node, class Transform>
+std::shared_ptr<Node const> transform_outputs(
+    std::shared_ptr<Node const> const& root, Transform const& transform)
+{
+    if (!root) return {};
+    if (auto const* entries = std::get_if<typename Node::Values>(&root->entries)) {
+        auto values = *entries;
+        bool changed = false;
+        for (auto& value : values) if (value) {
+            auto next = transform(value);
+            changed |= next != value;
+            value = std::move(next);
+        }
+        return changed ? make_output_leaf<Node>(std::move(values)) : root;
+    }
+    auto children = std::get<typename Node::Children>(root->entries);
+    bool changed = false;
+    for (auto& child : children) {
+        auto next = transform_outputs(child, transform);
+        changed |= next != child;
+        child = std::move(next);
+    }
+    return changed ? make_output_branch<Node>(std::move(children)) : root;
+}
+}
+
+void PersistedDataStore::Snapshot::retain_payload(
+    std::span<PersistedPayloadSelection const> selections, bool preserve_recordings)
+{
+    auto requested = [&](PersistedOutputHandle output) {
+        IndexCoverage result;
+        for (auto const& selection : selections)
+            if (selection.output == output) result.include(selection.coverage);
+        return result;
+    };
+    sample_outputs_ = transform_outputs(sample_outputs_, [&](auto const& source)
+        -> std::shared_ptr<SampleOutputState const> {
+        if (preserve_recordings && source->positional_recording) return source;
+        auto const selected = requested(source->output) & source->coverage;
+        if (selected == source->coverage) return source;
+        auto result = std::make_shared<SampleOutputState>(*source);
+        result->logical_coverage = source->logical_coverage.value_or(source->coverage);
+        result->coverage = selected;
+        result->regions.reset();
+        result->buffered_pages.reset();
+        result->recording_runs.reset();
+        result->recording_allocator.reset();
+        result->physical_region_count = 0;
+        auto logical = std::make_shared<std::vector<PersistedSampleRegion>>();
+        for (auto const& region : *source->logical_regions) {
+            PersistedSampleRegion retained{.output = region.output, .range = region.range,
+                .layout = region.layout, .geometry = region.geometry};
+            std::vector<PersistedSampleRegion> windows;
+            auto append = [&](PersistedSampleRegion const& window) {
+                for (auto part : selected & IndexCoverage{window.range}) {
+                    windows.push_back(part == window.range ? window : window.selected_view(part));
+                    ++result->physical_region_count;
+                    part.for_each_signed_order_segment([&](GlobalIndexRange segment) {
+                        result->regions = put_record(result->regions,
+                            std::make_shared<PersistedSampleRegion const>(
+                                segment == part ? windows.back() : slice(windows.back(), segment)));
+                    });
+                }
+            };
+            if (region.windows) for (auto const& window : *region.windows) append(window);
+            else if (region.storage_data()) append(region);
+            retained.set_prepared_windows(std::move(windows));
+            if (region.buffered_backing) {
+                auto backing = std::make_shared<BufferedSampleBacking>(*region.buffered_backing);
+                prune_tock_pages(*backing, region.layout, region.geometry,
+                    region.materialized_coverage(), selected & IndexCoverage{region.range});
+                retained.buffered_backing = std::move(backing);
+            }
+            logical->push_back(std::move(retained));
+        }
+        result->logical_regions = std::move(logical);
+        result->region_views = make_sample_region_views(result->logical_regions);
+        return result;
+    });
+    event_outputs_ = transform_outputs(event_outputs_, [&](auto const& source)
+        -> std::shared_ptr<EventOutputState const> {
+        if (preserve_recordings && source->positional_recording) return source;
+        // Immutable event chunks are the retention unit. Unlike fixed-width
+        // sample pages they cannot be split without copying event payload.
+        if (!(requested(source->output) & source->coverage).empty()) return source;
+        if (source->coverage.empty()) return source;
+        auto result = std::make_shared<EventOutputState>(*source);
+        result->logical_coverage = source->logical_coverage.value_or(source->coverage);
+        result->coverage = {};
+        result->chunks.reset();
+        result->timeline.reset();
+        result->timeline_accounting.reset();
+        auto logical = std::make_shared<std::vector<PersistedEventChunk>>();
+        for (auto const& region : *source->logical_regions)
+            logical->push_back({.output = region.output, .range = region.range,
+                .type = region.type, .prepared_coverage = IndexCoverage{}});
+        result->logical_regions = std::move(logical);
+        return result;
+    });
+}
+
+void PersistedDataStore::ReaderPin::retain_payload(
+    std::span<PersistedPayloadSelection const> selected, bool preserve_recordings)
+{
+    detach();
+    owned_snapshot_->retain_payload(selected, preserve_recordings);
+}
+
+void PersistedDataStore::ReaderPin::detach()
+{
+    assert(snapshot_);
+    if (!owned_snapshot_) {
+        owned_snapshot_ = std::make_unique<Snapshot>(*snapshot_);
+        snapshot_ = owned_snapshot_.get();
+        slot_->pinned.store(nullptr, std::memory_order_seq_cst);
+        slot_ = nullptr;
+    }
+}
+
+void PersistedDataStore::ReaderPin::select_outputs(std::span<PersistedOutputHandle const> outputs)
+{
+    detach();
+    owned_snapshot_->select_outputs(outputs);
+}
+
+void PersistedDataStore::Snapshot::copy_identity_from(Snapshot const& source) noexcept
+{
+    assert(!sample_outputs_ && !event_outputs_ && !logical_identity_);
+    version_ = source.version_;
+    output_owner_token_ = source.output_owner_token_;
+    logical_identity_ = source.logical_identity_;
+}
+
+void PersistedDataStore::Snapshot::select_outputs(std::span<PersistedOutputHandle const> outputs)
+{
+    auto samples = std::move(sample_outputs_);
+    auto events = std::move(event_outputs_);
+    auto const sample_levels = sample_output_levels_, event_levels = event_output_levels_;
+    sample_region_count_ = event_chunk_count_ = 0;
+    sample_output_levels_ = event_output_levels_ = 0;
+    std::vector<PersistedOutputHandle> copied;
+    for (auto output : outputs) {
+        if (!output.valid() || PersistedDataStore::output_owner_token(output) != output_owner_token_
+            || std::ranges::contains(copied, output)) continue;
+        copied.push_back(output);
+        auto index = PersistedDataStore::output_directory_index(output);
+        if (output.kind() == PortKind::sample) {
+            auto state = find_output_owner<SampleOutputNode, SampleOutputState>(samples, sample_levels, index);
+            if (!state) continue;
+            sample_region_count_ += state->region_count;
+            sample_outputs_ = put_output<SampleOutputNode, SampleOutputState>(
+                sample_outputs_, sample_output_levels_, index, std::move(state));
+        } else {
+            auto state = find_output_owner<EventOutputNode, EventOutputState>(events, event_levels, index);
+            if (!state) continue;
+            event_chunk_count_ += state->chunk_count;
+            event_outputs_ = put_output<EventOutputNode, EventOutputState>(
+                event_outputs_, event_output_levels_, index, std::move(state));
+        }
+    }
+}
+
+std::shared_ptr<PersistedDataStore::Reconstruction const>
+PersistedDataStore::Snapshot::reconstruction(PersistedOutputHandle output) const
+{
+    if (PersistedDataStore::output_owner_token(output) != output_owner_token_) return {};
+    auto index = PersistedDataStore::output_directory_index(output);
+    if (output.kind() == PortKind::sample) {
+        auto state = find_output<SampleOutputNode, SampleOutputState>(sample_outputs_, sample_output_levels_, index);
+        return state ? state->reconstruction : nullptr;
+    }
+    auto state = find_output<EventOutputNode, EventOutputState>(event_outputs_, event_output_levels_, index);
+    return state ? state->reconstruction : nullptr;
+}
+
+void PersistedDataStore::Candidate::set_reconstruction(PersistedOutputHandle output,
+    std::shared_ptr<Reconstruction const> context, Snapshot const& previous)
+{
+    if (!successor_ || !store_->owns_output(output) || !context || !context->inputs)
+        throw std::invalid_argument("reconstruction requires an output and immutable inputs");
+    auto const old_context = previous.reconstruction(output);
+    bool same = old_context && old_context->executable == context->executable
+        && old_context->dependencies == context->dependencies;
+    if (same) for (auto dependency : context->dependencies)
+        same = same && old_context->inputs->shares_output_with(*context->inputs, dependency);
+    auto same_regions = [](auto const* old, auto const& next) {
+        if (!old || old->logical_coverage != next.logical_coverage
+            || !old->logical_regions || !next.logical_regions
+            || old->logical_regions->size() != next.logical_regions->size()) return false;
+        for (std::size_t index = 0; index < next.logical_regions->size(); ++index)
+            if ((*old->logical_regions)[index].range != (*next.logical_regions)[index].range) return false;
+        return true;
+    };
+    auto index = PersistedDataStore::output_directory_index(output);
+    if (output.kind() == PortKind::sample) {
+        auto owner = find_output_owner<SampleOutputNode, SampleOutputState>(successor_->sample_outputs_, successor_->sample_output_levels_, index);
+        if (!owner || owner->positional_recording) return;
+        auto next = std::make_shared<SampleOutputState>(*owner);
+        auto old = find_output<SampleOutputNode, SampleOutputState>(previous.sample_outputs_, previous.sample_output_levels_, index);
+        if (same && same_regions(old, *owner)) next->semantic_identity = old->semantic_identity;
+        else next->semantic_identity = std::make_shared<std::byte>();
+        next->reconstruction = std::move(context);
+        successor_->sample_outputs_ = put_output<SampleOutputNode, SampleOutputState>(successor_->sample_outputs_, successor_->sample_output_levels_, index, std::move(next));
+    } else {
+        auto owner = find_output_owner<EventOutputNode, EventOutputState>(successor_->event_outputs_, successor_->event_output_levels_, index);
+        if (!owner || owner->positional_recording) return;
+        auto next = std::make_shared<EventOutputState>(*owner);
+        auto old = find_output<EventOutputNode, EventOutputState>(previous.event_outputs_, previous.event_output_levels_, index);
+        if (same && same_regions(old, *owner)) next->semantic_identity = old->semantic_identity;
+        else next->semantic_identity = std::make_shared<std::byte>();
+        next->reconstruction = std::move(context);
+        successor_->event_outputs_ = put_output<EventOutputNode, EventOutputState>(successor_->event_outputs_, successor_->event_output_levels_, index, std::move(next));
+    }
+}
+
+void PersistedDataStore::Candidate::retain_payload(
+    std::span<PersistedPayloadSelection const> selected)
+{
+    if (!successor_) throw std::logic_error("persisted data candidate is empty");
+    successor_->retain_payload(selected, true);
+}
+
+void PersistedDataStore::reclaim_cached_payload(
+    std::span<PersistedPayloadSelection const> protected_payload)
+{
+    auto next = std::make_unique<Snapshot>(*published_owner_);
+    next->retain_payload(protected_payload, true);
+    if (next->sample_outputs_ == published_owner_->sample_outputs_
+        && next->event_outputs_ == published_owner_->event_outputs_) return;
+    retired_.push_back(std::move(published_owner_));
+    published_owner_ = std::move(next);
+    published_.store(published_owner_.get(), std::memory_order_seq_cst);
+    ++cache_evictions_;
+    (void)reclaim_retired();
+}
+
+void PersistedDataStore::set_cache_realization(
+    PersistedOutputHandle output, OutputRealization realization)
+{
+    if (!owns_output(output)) throw std::invalid_argument("cache output belongs to another store");
+    auto& policy = cache_policy_[output];
+    policy.realization = realization;
+    pending_computed_reclamation_ |= realization == OutputRealization::computed && policy.uses < 2;
+}
+
+void PersistedDataStore::prepare_cache(std::size_t incoming_bytes,
+    std::span<PersistedPayloadSelection const> required,
+    std::function<void(std::span<PersistedPayloadSelection const>)> const& release_leases)
+{
+    auto const& limits = buffered_pages_->limits();
+    struct Victim { PersistedOutputHandle output; std::size_t bytes; CachePolicy policy; };
+    std::vector<Victim> victims;
+    std::vector<PersistedPayloadSelection> keep;
+    std::size_t retained_bytes = 0;
+    std::vector<PersistedOutputHandle> touched;
+    for (auto const& selection : required) {
+        if (selection.coverage.empty() || std::ranges::contains(touched, selection.output)) continue;
+        touched.push_back(selection.output);
+        auto& policy = cache_policy_[selection.output];
+        policy.last_use = ++cache_clock_;
+        ++policy.uses;
+    }
+    auto const usage = buffered_pages_->usage();
+    auto const live = usage.live_page_bytes + usage.event_bytes;
+    auto mapping_pressure = [&](BufferedStorageUsage const& current) {
+        return current.reserved_mapping_bytes > limits.max_total_mapping_bytes - limits.max_total_mapping_bytes / 4
+            || current.mapped_runs > limits.max_mapping_runs - limits.max_mapping_runs / 4;
+    };
+    if (!pending_computed_reclamation_ && live <= limits.max_cached_payload_bytes
+        && incoming_bytes <= limits.max_backing_bytes
+        && live <= limits.max_backing_bytes - incoming_bytes && !mapping_pressure(usage)) return;
+    if (required.empty()) pending_computed_reclamation_ = false;
+    auto requested = [&](PersistedOutputHandle output) {
+        IndexCoverage result;
+        for (auto const& selection : required)
+            if (selection.output == output) result.include(selection.coverage);
+        return result;
+    };
+    auto admit = [&](auto const& source, std::size_t bytes) {
+        if (source->positional_recording || source->coverage.empty()) return;
+        auto& policy = cache_policy_[source->output];
+        auto demand = requested(source->output);
+        keep.push_back({source->output, source->coverage});
+        retained_bytes += bytes;
+        if (!(source->coverage - demand).empty()) victims.push_back({source->output, bytes, policy});
+    };
+    (void)transform_outputs(published_owner_->sample_outputs_, [&](auto const& source) {
+        if (source->positional_recording) return source;
+        std::size_t bytes = 0;
+        // A conservative page-rounded footprint, including independent
+        // overlapping Regions. Hard allocation limits use allocator accounting.
+        for (auto const& region : *source->logical_regions)
+            for (auto range : region.materialized_coverage()) {
+                auto const width = source->geometry.value_size_bytes * channel_count(source->layout);
+                auto const page = buffered_pages_->page_size();
+                auto const count = checked_product(checked_frame_count(range), width);
+                bytes += count / page * page + (count % page ? page : 0);
+            }
+        admit(source, bytes);
+        return source;
+    });
+    (void)transform_outputs(published_owner_->event_outputs_, [&](auto const& source) {
+        if (source->positional_recording) return source;
+        std::size_t bytes = source->timeline ? source->timeline->capacity() * sizeof(TimedEvent) : 0;
+        for (auto const& region : *source->logical_regions) bytes += region.events.capacity() * sizeof(TimedEvent);
+        admit(source, bytes);
+        return source;
+    });
+    std::stable_sort(victims.begin(), victims.end(), [](auto const& left, auto const& right) {
+        if (left.policy.realization != right.policy.realization)
+            return left.policy.realization == OutputRealization::computed;
+        if (left.policy.last_use != right.policy.last_use) return left.policy.last_use < right.policy.last_use;
+        if (left.policy.uses != right.policy.uses) return left.policy.uses < right.policy.uses;
+        return left.bytes > right.bytes;
+    });
+    auto pressure = [&] {
+        auto const usage = buffered_pages_->usage();
+        auto const live = usage.live_page_bytes + usage.event_bytes;
+        return retained_bytes > limits.max_cached_payload_bytes
+            || incoming_bytes > limits.max_backing_bytes
+            || live > limits.max_backing_bytes - incoming_bytes || mapping_pressure(usage);
+    };
+    for (auto const& victim : victims) {
+        // Computed results are not admitted to optional retention on first
+        // use. Repeated reads establish reuse; buffered results favor caching.
+        bool const discard_computed = victim.policy.realization == OutputRealization::computed
+            && victim.policy.uses < 2;
+        if (!discard_computed && !pressure()) continue;
+        auto found = std::ranges::find(keep, victim.output, &PersistedPayloadSelection::output);
+        found->coverage = requested(victim.output);
+        release_leases(keep);
+        reclaim_cached_payload(keep);
+        retained_bytes -= std::min(retained_bytes, victim.bytes);
+    }
+}
+
 bool PersistedDataStore::Snapshot::shares_output_with(
     Snapshot const& other, PersistedOutputHandle output) const noexcept
 {
     if (output_owner_token_ != other.output_owner_token_ || !output.valid()
         || PersistedDataStore::output_owner_token(output) != output_owner_token_) return false;
     auto const index = PersistedDataStore::output_directory_index(output);
+    auto same_version = [](auto const* left, auto const* right) {
+        return left && right ? left->semantic_identity == right->semantic_identity
+            : left == right;
+    };
     if (output.kind() == PortKind::sample)
-        return find_output<SampleOutputNode, SampleOutputState>(sample_outputs_, sample_output_levels_, index)
-            == find_output<SampleOutputNode, SampleOutputState>(other.sample_outputs_, other.sample_output_levels_, index);
-    return find_output<EventOutputNode, EventOutputState>(event_outputs_, event_output_levels_, index)
-        == find_output<EventOutputNode, EventOutputState>(other.event_outputs_, other.event_output_levels_, index);
+        return same_version(
+            find_output<SampleOutputNode, SampleOutputState>(sample_outputs_, sample_output_levels_, index),
+            find_output<SampleOutputNode, SampleOutputState>(other.sample_outputs_, other.sample_output_levels_, index));
+    return same_version(
+        find_output<EventOutputNode, EventOutputState>(event_outputs_, event_output_levels_, index),
+        find_output<EventOutputNode, EventOutputState>(other.event_outputs_, other.event_output_levels_, index));
 }
 
 void PersistedDataStore::Candidate::reuse_output(Snapshot const& source, PersistedOutputHandle output)
@@ -2761,11 +3108,11 @@ void PersistedDataStore::Candidate::reuse_output(Snapshot const& source, Persist
     if (!successor_ || !store_->owns_output(output)
         || source.output_owner_token_ != successor_->output_owner_token_)
         throw std::invalid_argument("reused output does not belong to the candidate's data store");
-    if (successor_->shares_output_with(source, output)) return;
     auto const index = PersistedDataStore::output_directory_index(output);
     if (output.kind() == PortKind::sample) {
         auto const* from = find_output<SampleOutputNode, SampleOutputState>(source.sample_outputs_, source.sample_output_levels_, index);
         auto const* old = find_output<SampleOutputNode, SampleOutputState>(successor_->sample_outputs_, successor_->sample_output_levels_, index);
+        if (from == old) return;
         if (!from) { erase_output(output); return; }
         successor_->sample_region_count_ = successor_->sample_region_count_ - (old ? old->region_count : 0) + from->region_count;
         successor_->sample_outputs_ = put_output<SampleOutputNode, SampleOutputState>(
@@ -2774,6 +3121,7 @@ void PersistedDataStore::Candidate::reuse_output(Snapshot const& source, Persist
     } else {
         auto const* from = find_output<EventOutputNode, EventOutputState>(source.event_outputs_, source.event_output_levels_, index);
         auto const* old = find_output<EventOutputNode, EventOutputState>(successor_->event_outputs_, successor_->event_output_levels_, index);
+        if (from == old) return;
         if (!from) { erase_output(output); return; }
         successor_->event_chunk_count_ = successor_->event_chunk_count_ - (old ? old->chunk_count : 0) + from->chunk_count;
         successor_->event_outputs_ = put_output<EventOutputNode, EventOutputState>(
@@ -3376,6 +3724,7 @@ void PersistedDataStore::Candidate::erase_output(
         throw std::invalid_argument(
             "persisted output erasure requires a handle from its data store");
     }
+    erased_outputs_.push_back(output);
     auto const output_index =
         PersistedDataStore::output_directory_index(output);
     if (output.kind() == PortKind::sample) {
@@ -3417,10 +3766,10 @@ PersistedDataStore::ReaderPin::ReaderPin(
 
 void PersistedDataStore::ReaderPin::reset() noexcept
 {
-    if (!slot_) return;
-    slot_->pinned.store(nullptr, std::memory_order_seq_cst);
+    if (slot_) slot_->pinned.store(nullptr, std::memory_order_seq_cst);
     slot_ = nullptr;
     snapshot_ = nullptr;
+    owned_snapshot_.reset();
 }
 
 PersistedDataStore::ReaderPin::~ReaderPin()
@@ -3431,6 +3780,7 @@ PersistedDataStore::ReaderPin::~ReaderPin()
 PersistedDataStore::ReaderPin::ReaderPin(ReaderPin&& other) noexcept
     : slot_(std::exchange(other.slot_, nullptr))
     , snapshot_(std::exchange(other.snapshot_, nullptr))
+    , owned_snapshot_(std::move(other.owned_snapshot_))
 {}
 
 PersistedDataStore::ReaderPin& PersistedDataStore::ReaderPin::operator=(
@@ -3440,6 +3790,7 @@ PersistedDataStore::ReaderPin& PersistedDataStore::ReaderPin::operator=(
     reset();
     slot_ = std::exchange(other.slot_, nullptr);
     snapshot_ = std::exchange(other.snapshot_, nullptr);
+    owned_snapshot_ = std::move(other.owned_snapshot_);
     return *this;
 }
 
@@ -3497,6 +3848,7 @@ PersistedDataStore::PersistedDataStore(BufferedStorageLimits limits)
     , published_owner_([this] {
         auto snapshot = std::make_unique<Snapshot>();
         snapshot->output_owner_token_ = output_owner_token_;
+        snapshot->logical_identity_ = std::make_shared<std::byte>();
         return snapshot;
     }())
     , published_(published_owner_.get())
@@ -3509,7 +3861,9 @@ PersistedDataStore::~PersistedDataStore()
 
 BufferedStorageUsage PersistedDataStore::buffered_storage_usage() const
 {
-    return buffered_pages_->usage();
+    auto usage = buffered_pages_->usage();
+    usage.cache_evictions = cache_evictions_.load(std::memory_order_relaxed);
+    return usage;
 }
 
 std::shared_ptr<void const> PersistedDataStore::prepare_resident(std::span<BufferedResidentRange const> ranges)
@@ -3535,6 +3889,7 @@ PersistedDataStore::Candidate PersistedDataStore::begin_candidate(
     }
 
     auto successor = std::make_unique<Snapshot>();
+    successor->logical_identity_ = std::make_shared<std::byte>();
     successor->version_ = {
         .semantic = target_semantic_version,
         .revision = revision + 1,
@@ -3556,7 +3911,7 @@ PersistedDataPublishResult PersistedDataStore::publish(Candidate&& candidate)
             "persisted data candidate does not belong to this store");
     }
     auto const* current = published_.load(std::memory_order_seq_cst);
-    if (current != candidate.base_
+    if (current->logical_identity_ != candidate.base_identity_
         || current->version() != candidate.base_version_) {
         candidate = {};
         return PersistedDataPublishResult::stale_base;
@@ -3565,8 +3920,18 @@ PersistedDataPublishResult PersistedDataStore::publish(Candidate&& candidate)
     retired_.push_back(std::move(published_owner_));
     published_owner_ = std::move(candidate.successor_);
     published_.store(published_owner_.get(), std::memory_order_seq_cst);
+    published_revision_.store(published_owner_->version_.revision, std::memory_order_release);
+    for (auto output : candidate.erased_outputs_) {
+        auto index = output_directory_index(output);
+        bool const present = output.kind() == PortKind::sample
+            ? find_output<SampleOutputNode, SampleOutputState>(published_owner_->sample_outputs_,
+                published_owner_->sample_output_levels_, index) != nullptr
+            : find_output<EventOutputNode, EventOutputState>(published_owner_->event_outputs_,
+                published_owner_->event_output_levels_, index) != nullptr;
+        if (!present) cache_policy_.erase(output);
+    }
     candidate.store_ = nullptr;
-    candidate.base_ = nullptr;
+    candidate.base_identity_.reset();
     return PersistedDataPublishResult::published;
 }
 

@@ -43,6 +43,7 @@ RealtimePersistedState::prepare_initial(
     auto state = std::unique_ptr<RealtimePersistedState>{
         new RealtimePersistedState{generation, data.register_reader()}};
     state->initial_materialization_ = std::make_unique<TickMaterializationSnapshot>();
+    state->initial_data_ = std::make_unique<PersistedDataStore::Snapshot>();
     return state;
 }
 
@@ -66,6 +67,8 @@ bool RealtimePersistedState::capture_initial() noexcept
     if (captured_ || !initial_materialization_) return false;
     data_ = data_slot_.pin();
     auto const version = data_.snapshot().version();
+    initial_data_->copy_identity_from(data_.snapshot());
+    data_ = {};
     initial_materialization_->generation_ = generation_;
     initial_materialization_->semantic_version_ = version.semantic;
     initial_materialization_->data_version_ = version;
@@ -92,6 +95,47 @@ RealtimePersistedState::capture_current()
             "realtime persisted state data and materialization roots disagree");
     }
     return {};
+}
+
+std::expected<void, std::string> RealtimePersistedState::select_payload(
+    graph_jit::BackgroundEvaluationPlan const& plan, PersistedDataStore& store)
+{
+    try {
+        std::vector<PersistedPayloadSelection> selected;
+        auto append = [&](auto const& bindings, PortKind kind) {
+            for (auto const& binding : bindings) {
+                if ((kind == PortKind::sample && materialization().find_sample(binding.port))
+                    || (kind == PortKind::event && materialization().find_event(binding.port))) continue;
+                for (auto index : binding.storage) {
+                    auto const& storage = plan.storage.ports.at(index);
+                    if (storage.storage != graph_jit::PortStorageKind::persisted_data) continue;
+                    auto output = store.resolve_output(persisted_output_id(plan, index, generation_));
+                    auto const* coverage = kind == PortKind::sample
+                        ? data().find_sample_coverage(output, storage.sample_layout, storage.continuous_geometry)
+                        : data().find_event_coverage(output, storage.event_type);
+                    if (coverage) selected.push_back({output, *coverage});
+                }
+            }
+        };
+        append(plan.tick_runtime.sequential_sample_inputs, PortKind::sample);
+        append(plan.tick_runtime.sequential_event_inputs, PortKind::event);
+        append(plan.tick_runtime.random_access_sample_inputs, PortKind::sample);
+        append(plan.tick_runtime.random_access_event_inputs, PortKind::event);
+        std::vector<PersistedOutputHandle> outputs;
+        for (auto const& selection : selected) outputs.push_back(selection.output);
+        if (owned_data_) {
+            auto lease = std::make_shared<PersistedDataStore::Snapshot>(*owned_data_);
+            lease->select_outputs(outputs);
+            lease->retain_payload(selected);
+            owned_data_ = std::move(lease);
+        } else if (!initial_data_) {
+            data_.select_outputs(outputs);
+            data_.retain_payload(selected);
+        }
+        return {};
+    } catch (std::exception const& error) {
+        return std::unexpected(error.what());
+    }
 }
 
 RealtimePersistedStateMailbox::RealtimePersistedStateMailbox()

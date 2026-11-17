@@ -635,7 +635,7 @@ public:
 };
 
 class PersistedSampleReader {
-    PersistedDataStore::Snapshot const* snapshot_ = nullptr;
+    IndexCoverage valid_{};
     PersistedOutputHandle output_{};
     IndexCoverage const* coverage_ = nullptr;
     ContinuousValueStorageGeometry geometry_{};
@@ -654,14 +654,14 @@ public:
         ContinuousValueStorageGeometry geometry,
         ChannelLayout layout,
         std::span<std::size_t const> channels)
-        : snapshot_(&snapshot)
-        , output_(std::move(output))
+        : output_(std::move(output))
         , coverage_(&coverage)
         , geometry_(geometry)
         , layout_(layout)
         , channels_(channels)
     {
-        auto retained = snapshot_->sample_regions(output_, layout_);
+        if (auto valid = snapshot.find_sample_coverage(output_, layout_, geometry_)) valid_ = *valid;
+        auto retained = snapshot.sample_regions(output_, layout_);
         std::vector<bool> used(retained.size(), false);
         for (auto const selected : selected_regions) {
             for (std::size_t index = 0; index < retained.size(); ++index) {
@@ -707,8 +707,7 @@ public:
     [[nodiscard]] bool complete() const noexcept
     {
         if (!selected_regions_complete_) return false;
-        auto const* valid = snapshot_->find_sample_coverage(output_, layout_, geometry_);
-        if (!valid || !contains_coverage(*valid, *coverage_)) return false;
+        if (!contains_coverage(valid_, *coverage_)) return false;
         IndexCoverage descriptor_coverage;
         for (auto const& region : regions_) {
             IndexCoverage contents;
@@ -719,9 +718,7 @@ public:
         }
         if (!contains_coverage(descriptor_coverage, *coverage_)) return false;
         if (coverage_->empty()) return true;
-        auto const* retained = snapshot_->find_sample_coverage(
-            output_, layout_, geometry_);
-        return retained && contains_coverage(*retained, *coverage_)
+        return contains_coverage(valid_, *coverage_)
             && std::ranges::none_of(channels_, [&](std::size_t channel) {
                 return channel >= channel_count(layout_);
             });
@@ -731,7 +728,9 @@ public:
         GlobalIndex index,
         std::size_t channel) const noexcept
     {
-        auto const* region = snapshot_->find_sample_region(output_, index);
+        PersistedSampleRegion const* region = nullptr;
+        for (auto it = prepared_->rbegin(); it != prepared_->rend(); ++it)
+            if ((region = it->prepared_window(index))) break;
         IV_ASSERT(region != nullptr,
             "persisted sample read has no retained region");
         if (!region || region->layout != layout_
@@ -755,7 +754,7 @@ public:
 };
 
 class PersistedEventReader {
-    PersistedDataStore::Snapshot const* snapshot_ = nullptr;
+    std::unique_ptr<PersistedDataStore::Snapshot> snapshot_{};
     PersistedOutputHandle output_{};
     IndexCoverage const* coverage_ = nullptr;
     EventTypeId type_ = EventTypeId::empty;
@@ -770,11 +769,12 @@ public:
         IndexCoverage const& coverage,
         std::span<GlobalIndexRange const> selected_regions,
         EventTypeId type)
-        : snapshot_(&snapshot)
+        : snapshot_(std::make_unique<PersistedDataStore::Snapshot>(snapshot))
         , output_(std::move(output))
         , coverage_(&coverage)
         , type_(type)
     {
+        snapshot_->select_outputs(std::array{output_});
         auto retained = snapshot_->event_region_ranges(output_, type_);
         std::vector<bool> used(retained.size(), false);
         for (auto const selected : selected_regions) {
@@ -1196,8 +1196,7 @@ BackgroundStorageRealization::BackgroundStorageRealization(
             if (!has_explicit_published_output_regions) {
                 selection_.published_output_regions[index] = regions;
             }
-            if (plan.storage.ports[index].storage
-                    == graph_jit::PortStorageKind::persisted_data) {
+            if (uses_output_cache(plan, plan.storage.ports[index], selection_.cache_computed_outputs)) {
                 selection_.persisted_replacement_coverage[index].include(
                     selected);
             }
@@ -1216,7 +1215,7 @@ BackgroundStorageRealization::BackgroundStorageRealization(
         created->plan = &planned;
         created->coverage = &selection_.storage_coverage[index];
 
-        if (planned.storage == graph_jit::PortStorageKind::persisted_data) {
+        if (uses_output_cache(plan, planned, selection_.cache_computed_outputs)) {
             created->persisted_output = data.resolve_output(
                 persisted_output_id(plan, index, selection_.generation));
         }
@@ -1284,8 +1283,7 @@ BackgroundStorageRealization::BackgroundStorageRealization(
                 created->event_read = created->owned_event->read_view();
                 created->event_write = created->owned_event->write_view();
             }
-        } else if (planned.storage
-                == graph_jit::PortStorageKind::persisted_data
+        } else if (uses_output_cache(plan, planned, selection_.cache_computed_outputs)
             && selection_.published) {
             if (planned.kind == PortKind::sample) {
                 created->persisted_sample =
@@ -3143,6 +3141,7 @@ BackgroundStorageRealization::stage_persisted_data(
         GlobalIndexRange range{};
     };
     std::vector<StagedRange> staged;
+    std::vector<PersistedOutputHandle> staged_computed_outputs;
 
     for (graph_jit::PortStorageIndex index = 0;
          index < plan_->storage.ports.size(); ++index) {
@@ -3151,7 +3150,7 @@ BackgroundStorageRealization::stage_persisted_data(
         auto const produced = selection_.produce_storage.empty()
             ? storage_is_runtime_produced(*plan_, planned)
             : selection_.produce_storage[index];
-        if (planned.storage != graph_jit::PortStorageKind::persisted_data) {
+        if (!uses_output_cache(*plan_, planned, selection_.cache_computed_outputs)) {
             continue;
         }
         auto const& replacement =
@@ -3165,6 +3164,10 @@ BackgroundStorageRealization::stage_persisted_data(
             return std::unexpected(
                 "produced persisted storage has no output identity");
         }
+        if (planned.storage != graph_jit::PortStorageKind::persisted_data) {
+            if (std::ranges::contains(staged_computed_outputs, *selected.persisted_output)) continue;
+            staged_computed_outputs.push_back(*selected.persisted_output);
+        }
 
         if (planned.kind == PortKind::sample) {
             auto const channels = channel_count(planned.sample_layout);
@@ -3173,7 +3176,8 @@ BackgroundStorageRealization::stage_persisted_data(
             if (produced
                 && (!view
                     || view->geometry != planned.continuous_geometry
-                    || planned.sample_channels.size() != channels
+                    || (planned.storage == graph_jit::PortStorageKind::persisted_data
+                        && planned.sample_channels.size() != channels)
                     || !std::ranges::all_of(
                         planned.sample_channels,
                         [&](std::size_t channel) {
@@ -3238,10 +3242,13 @@ BackgroundStorageRealization::stage_persisted_data(
                     .range = descriptor.range,
                 });
             }
-            auto const positional_tick_output = planned.output_port
+            // Storage kind and production shape select the publication
+            // protocol. persisted_tick_output is a coverage-planning role;
+            // replayed Tick persistence also uses positional overwrites.
+            auto const positional_tick_output = planned.storage == graph_jit::PortStorageKind::persisted_data
+                && planned.output_port
                 && *planned.output_port < plan_->ports.size()
-                && plan_->ports[*planned.output_port].output_production
-                    == OutputProductionKind::sequential;
+                && plan_->ports[*planned.output_port].output_production == OutputProductionKind::sequential;
             if (positional_tick_output) {
                 for (auto& region : retained_regions) {
                     candidate.overwrite(std::move(region));
@@ -3297,10 +3304,10 @@ BackgroundStorageRealization::stage_persisted_data(
                 .range = region,
             });
         }
-        auto const positional_tick_output = planned.output_port
+        auto const positional_tick_output = planned.storage == graph_jit::PortStorageKind::persisted_data
+            && planned.output_port
             && *planned.output_port < plan_->ports.size()
-            && plan_->ports[*planned.output_port].output_production
-                == OutputProductionKind::sequential;
+            && plan_->ports[*planned.output_port].output_production == OutputProductionKind::sequential;
         if (positional_tick_output) {
             for (auto& region : retained_regions) {
                 candidate.overwrite(std::move(region));

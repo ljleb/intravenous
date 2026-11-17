@@ -268,7 +268,7 @@ std::vector<PersistedOutputHandle> retired_persisted_outputs(
          previous_storage < previous_plan.storage.ports.size();
          ++previous_storage) {
         auto const& prior = previous_plan.storage.ports[previous_storage];
-        if (prior.storage != graph_jit::PortStorageKind::persisted_data) {
+        if (!uses_output_cache(previous_plan, prior, true)) {
             continue;
         }
         auto const identity = persisted_output_id(
@@ -279,8 +279,7 @@ std::vector<PersistedOutputHandle> retired_persisted_outputs(
                  ++current_storage) {
                 auto const& candidate =
                     current_plan.storage.ports[current_storage];
-                if (candidate.storage
-                        != graph_jit::PortStorageKind::persisted_data
+                if (!uses_output_cache(current_plan, candidate, true)
                     || !graph_jit::persisted_storage_is_compatible(
                         current_plan,
                         current_storage,
@@ -1688,6 +1687,7 @@ GraphExecutor::evaluate_generation(
             .prepare_only = prepare_only,
             .reusable_data = background.prepared_data.get(),
             .reusable_materialization = background.prepared_materialization.get(),
+            .reconstruction_graph = generation.graph,
         },
         background.input_routes,
         background.input_selections,
@@ -1706,6 +1706,8 @@ GraphExecutor::evaluate_generation(
         background.prepared_materialization = std::move(result->prepared_materialization);
         auto selected = RealtimePersistedState::prepare_owned(generation.graph->project_generation,
             background.prepared_data, background.prepared_materialization);
+        if (auto leased = selected->select_payload(generation.graph->background_evaluation_plan, persisted_data_); !leased)
+            return std::unexpected(std::move(leased.error()));
         selected->set_prepared_playback(background.tick_materialization_demand);
         generation.prepared_initial_states.publish(std::move(selected));
     }
@@ -1713,6 +1715,9 @@ GraphExecutor::evaluate_generation(
     if (published_state) {
         if (auto captured = published_state->capture_current(); !captured) {
             persisted_state_error.emplace(std::move(captured.error()));
+        } else if (auto leased = published_state->select_payload(
+                generation.graph->background_evaluation_plan, persisted_data_); !leased) {
+            persisted_state_error.emplace(std::move(leased.error()));
         } else {
             published_state->set_prepared_playback(background.tick_materialization_demand);
             if (requires_prepared_playback(*generation.graph)
@@ -1839,6 +1844,7 @@ GraphExecutor::BackgroundExecutor::process_available_work_safely() noexcept
         // Retired snapshots must release obsolete pages before this pass tests
         // physical/residency budgets. Reclamation stays on the same writer.
         (void)owner_.reclaim_retired_snapshots_on_background();
+        owner_.persisted_data_.prepare_cache(0, {}, [](auto) {});
         auto result = process_available_work();
         if (result && result->published_data)
             observation_data_version_.store(result->published_data->revision, std::memory_order_release);
@@ -2207,7 +2213,8 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
                     project_observation_window(selected.query, selected.window, selected.positions, logical, view,
                         plan.ports[selected.port].persisted_tick_output);
                 }},
-                .maximum_materialized_sample_bytes = 16 * 1024 * 1024}};
+                .maximum_materialized_sample_bytes = 16 * 1024 * 1024,
+                .reconstruction_graph = current->graph}};
         auto evaluated = transaction.execute();
         if (!evaluated) throw std::runtime_error(evaluated.error());
         if (evaluated->status != BackgroundEvaluationStatus::committed)

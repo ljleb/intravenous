@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cmath>
 #include <limits>
 #include <ranges>
 #include <span>
@@ -130,6 +131,8 @@ class BackgroundEvaluationTransaction::Impl {
     std::vector<std::pair<PersistedOutputHandle, IndexCoverage>>
         captured_coverage_{};
     PersistedDataStore::Snapshot const* working_data_ = nullptr;
+    PersistedDataStore::Candidate* active_candidate_ = nullptr;
+    std::vector<PersistedPayloadSelection> prepared_payload_{};
     bool executed_ = false;
 
     void discard_prepared() noexcept
@@ -146,6 +149,7 @@ class BackgroundEvaluationTransaction::Impl {
 
     void release_reader() noexcept
     {
+        active_candidate_ = nullptr;
         pin_.reset();
         reader_ = {};
     }
@@ -543,6 +547,16 @@ class BackgroundEvaluationTransaction::Impl {
         return {};
     }
 
+    static bool cached_output(void* opaque, graph_jit::BackgroundPortIndex port)
+    {
+        auto& self = *static_cast<Impl*>(opaque);
+        auto const& plan = self.graph_->background_evaluation_plan;
+        return std::ranges::any_of(plan.storage.ports, [&](auto const& slot) {
+            return slot.output_port == port && runtime_produced(plan, slot)
+                && uses_output_cache(plan, slot, bool(self.inputs_.reconstruction_graph));
+        });
+    }
+
     static void
     expand_output_demand(void* opaque, graph_jit::BackgroundPortIndex port,
                          IndexCoverage const& available,
@@ -561,8 +575,7 @@ class BackgroundEvaluationTransaction::Impl {
         for (graph_jit::PortStorageIndex index = 0;
              index < plan.storage.ports.size(); ++index) {
             auto const& storage = plan.storage.ports[index];
-            if (storage.storage !=
-                    graph_jit::PortStorageKind::persisted_data ||
+            if (!uses_output_cache(plan, storage, bool(self.inputs_.reconstruction_graph)) ||
                 storage.output_port != port ||
                 !runtime_produced(plan, storage)) {
                 continue;
@@ -777,6 +790,7 @@ class BackgroundEvaluationTransaction::Impl {
                 std::vector<bool>(plan.storage.ports.size(), false),
             .published = &published,
         };
+        selection.cache_computed_outputs = bool(inputs_.reconstruction_graph);
 
         for (graph_jit::PortStorageIndex index = 0;
              index < plan.storage.ports.size(); ++index) {
@@ -784,8 +798,13 @@ class BackgroundEvaluationTransaction::Impl {
             if (!storage.output_port) {
                 continue;
             }
+            // Canonical Tick persistence has positional writes, not authored
+            // Regions. Optional computed replay caches use logical Regions to
+            // retain their known coverage independently of prepared windows.
             if (plan.ports[*storage.output_port].output_production
-                == OutputProductionKind::sequential) {
+                == OutputProductionKind::sequential
+                && (storage.storage == graph_jit::PortStorageKind::persisted_data
+                    || !uses_output_cache(plan, storage, bool(inputs_.reconstruction_graph)))) {
                 continue;
             }
             auto const regions = prepared_->output_regions(
@@ -890,8 +909,7 @@ class BackgroundEvaluationTransaction::Impl {
             for (graph_jit::PortStorageIndex index = 0;
                  index < plan.storage.ports.size(); ++index) {
                 auto const& storage = plan.storage.ports[index];
-                if (storage.storage ==
-                        graph_jit::PortStorageKind::persisted_data &&
+                if (uses_output_cache(plan, storage, bool(inputs_.reconstruction_graph)) &&
                     storage.output_port == required.port) {
                     selection.storage_coverage[index].include(
                         required.required);
@@ -952,8 +970,10 @@ class BackgroundEvaluationTransaction::Impl {
                         *materialization.target_port));
                 }
             } else if (storage.output_port
-                && plan.ports[*storage.output_port].output_production
-                    != OutputProductionKind::sequential) {
+                && (plan.ports[*storage.output_port].output_production
+                    != OutputProductionKind::sequential
+                    || (storage.storage != graph_jit::PortStorageKind::persisted_data
+                        && uses_output_cache(plan, storage, bool(inputs_.reconstruction_graph))))) {
                 append_intersecting(
                     prepared_->output_regions(*storage.output_port));
             } else {
@@ -1062,8 +1082,7 @@ class BackgroundEvaluationTransaction::Impl {
         for (graph_jit::PortStorageIndex index = 0;
              index < plan.storage.ports.size(); ++index) {
             auto const& storage = plan.storage.ports[index];
-            if (storage.storage !=
-                    graph_jit::PortStorageKind::persisted_data
+            if (!uses_output_cache(plan, storage, bool(inputs_.reconstruction_graph))
                 || !storage.output_port) {
                 continue;
             }
@@ -1125,17 +1144,120 @@ class BackgroundEvaluationTransaction::Impl {
         std::unique_ptr<BackgroundEvaluationCallFrame> frame{};
     };
 
+    void retain_reconstruction_inputs(PersistedDataStore::Candidate& candidate)
+    {
+        if (!inputs_.reconstruction_graph) return;
+        auto const& plan = graph_->background_evaluation_plan;
+        for (std::size_t output = 0; output < plan.ports.size(); ++output) {
+            auto const& port = plan.ports[output];
+            if (port.direction != graph_jit::PortDirection::output || port.persisted_tick_output) continue;
+            auto storage = std::ranges::find_if(plan.storage.ports, [&](auto const& slot) {
+                return uses_output_cache(plan, slot, true) && slot.output_port == output;
+            });
+            if (storage == plan.storage.ports.end()) continue;
+            auto const storage_index = static_cast<std::size_t>(storage - plan.storage.ports.begin());
+            auto handle = data_->resolve_output(persisted_output_id(plan, storage_index, graph_->project_generation));
+            bool const changed = std::ranges::any_of(prepared_->result().output_changes,
+                [&](auto const& change) { return change.port == output && !change.changed.empty(); });
+            if (!changed && candidate.working_snapshot().shares_output_with(pin_->snapshot(), handle)) continue;
+            std::vector<bool> visited(plan.ports.size(), false);
+            std::vector<PersistedOutputHandle> dependencies;
+            auto visit = [&](auto&& self, std::size_t index) -> void {
+                if (visited[index]) return;
+                visited[index] = true;
+                auto const& current = plan.ports[index];
+                if (current.persisted_tick_output) {
+                    auto identity = current.stable_identity
+                        ? PersistedOutputId{*current.stable_identity}
+                        : PersistedOutputId{GenerationLocalPersistedOutputId{
+                            graph_->project_generation, index, current.kind}};
+                    auto handle = data_->resolve_output(identity);
+                    if (!std::ranges::contains(dependencies, handle)) dependencies.push_back(handle);
+                    return;
+                }
+                if (current.direction == graph_jit::PortDirection::output) {
+                    for (auto input : plan.nodes[current.node].inputs) self(self, input);
+                } else for (auto connection : current.incoming_connections) {
+                    auto const& edge = plan.connections[connection];
+                    for (auto source : edge.sample_source_port_by_channel) if (source) self(self, *source);
+                    for (auto const& delivery : edge.event_deliveries) if (delivery.source_port) self(self, *delivery.source_port);
+                }
+            };
+            visit(visit, output);
+            std::ranges::sort(dependencies);
+            auto inputs = std::make_shared<PersistedDataStore::Snapshot>(candidate.working_snapshot());
+            // Only non-recomputable leaves are retained. Keeping intermediate
+            // contexts here would build a chain of old cache roots per request.
+            inputs->select_outputs(dependencies);
+            auto context = std::make_shared<PersistedDataStore::Reconstruction>();
+            context->executable = inputs_.reconstruction_graph;
+            context->inputs = std::move(inputs);
+            context->dependencies = std::move(dependencies);
+            data_->set_cache_realization(handle, port.realization.value_or(OutputRealization::computed));
+            candidate.set_reconstruction(handle, std::move(context), pin_->snapshot());
+        }
+    }
+
     [[nodiscard]] std::shared_ptr<Evaluation> prepare_evaluation()
     {
         auto binding = binding_selection();
         auto storage = storage_selection(binding, *working_data_);
         expand_output_binding_selection(binding, storage);
+        std::vector<PersistedPayloadSelection> needed;
+        std::vector<PersistedOutputHandle> accounted;
+        std::size_t incoming_bytes = 0;
+        auto const& plan = graph_->background_evaluation_plan;
+        auto const page = data_->buffered_storage_usage().page_size;
+        auto reserve = [&](std::size_t bytes) {
+            if (bytes > std::numeric_limits<std::size_t>::max() - (page - 1))
+                throw std::length_error("background cache demand exceeds addressable payload size");
+            auto const rounded = (bytes + page - 1) / page * page;
+            if (rounded > std::numeric_limits<std::size_t>::max() - incoming_bytes)
+                throw std::length_error("background cache demand exceeds addressable payload size");
+            incoming_bytes += rounded;
+        };
+        for (std::size_t index = 0; index < plan.storage.ports.size(); ++index) {
+            auto const& slot = plan.storage.ports[index];
+            if (!uses_output_cache(plan, slot, bool(inputs_.reconstruction_graph)) || !slot.output_port) continue;
+            auto output = data_->resolve_output(persisted_output_id(plan, index, graph_->project_generation));
+            needed.push_back({output, storage.storage_coverage[index]});
+            auto const& port = plan.ports[*slot.output_port];
+            data_->set_cache_realization(output, port.realization.value_or(OutputRealization::buffered));
+            if (!storage.produce_storage[index] || std::ranges::contains(accounted, output)) continue;
+            accounted.push_back(output);
+            if (slot.kind == PortKind::sample) {
+                auto const width = slot.continuous_geometry.value_size_bytes * channel_count(slot.sample_layout);
+                for (auto region : storage.storage_regions[index]) {
+                    for (auto part : storage.storage_coverage[index] & IndexCoverage{region}) {
+                        if (width && part.extent > std::numeric_limits<std::size_t>::max() / width)
+                            throw std::length_error("background cache demand exceeds addressable payload size");
+                        auto bytes = static_cast<std::size_t>(part.extent) * width;
+                        reserve(bytes);
+                    }
+                }
+            } else {
+                long double count = 0;
+                if (slot.max_event_count) count = *slot.max_event_count;
+                else for (auto range : storage.storage_coverage[index])
+                    count += std::ceil(static_cast<long double>(range.extent) * slot.max_events_per_index);
+                if (!std::isfinite(count) || count > std::numeric_limits<std::size_t>::max() / (2 * sizeof(TimedEvent)))
+                    throw std::length_error("background event cache demand exceeds addressable payload size");
+                reserve(static_cast<std::size_t>(count) * 2 * sizeof(TimedEvent));
+            }
+        }
+        // Release private optional ownership before canonical cache roots
+        // retire. Ordinary preparation keeps its shallow immutable base.
+        data_->prepare_cache(incoming_bytes, needed, [&](auto keep) {
+            pin_->retain_payload(keep, true);
+            if (active_candidate_) active_candidate_->retain_payload(keep);
+        });
+        prepared_payload_ = needed;
         if (remaining_materialized_sample_bytes_) {
             auto& remaining = *remaining_materialized_sample_bytes_;
             auto const& plan = graph_->background_evaluation_plan;
             for (std::size_t i = 0; i < plan.storage.ports.size(); ++i) {
                 auto const& slot = plan.storage.ports[i];
-                if (slot.kind != PortKind::sample || (slot.storage == graph_jit::PortStorageKind::persisted_data
+                if (slot.kind != PortKind::sample || (uses_output_cache(plan, slot, bool(inputs_.reconstruction_graph))
                     && !storage.produce_storage[i])) continue;
                 auto const bytes_per_frame = slot.continuous_geometry.value_size_bytes * channel_count(slot.sample_layout);
                 if (!bytes_per_frame) continue;
@@ -1226,6 +1348,8 @@ class BackgroundEvaluationTransaction::Impl {
                 "background evaluation transaction already executed");
         }
         executed_ = true;
+        if (inputs_.reconstruction && !inputs_.prepare_only)
+            return std::unexpected("historical reconstruction cannot publish canonical data");
         auto const plan_is_empty = graph_->background_evaluation_plan.nodes.empty()
             && graph_->background_evaluation_plan.ports.empty()
             && graph_->background_evaluation_plan.storage.ports.empty();
@@ -1245,6 +1369,7 @@ class BackgroundEvaluationTransaction::Impl {
         }
         reader_ = data_->register_reader();
         pin_.emplace(reader_.pin());
+        pin_->detach();
         auto const& base = pin_->snapshot();
         semantic_version_ = inputs_.semantic_version.value_or(
             base.version().semantic);
@@ -1254,8 +1379,22 @@ class BackgroundEvaluationTransaction::Impl {
         }
         auto decoded = decode_produced_records();
         if (!decoded) return std::unexpected(std::move(decoded.error()));
+        if (!decoded->empty()) {
+            auto const page = data_->buffered_storage_usage().page_size;
+            std::size_t incoming = 0;
+            for (auto const& record : *decoded) {
+                auto const bytes = record.header.payload_size;
+                if (incoming > std::numeric_limits<std::size_t>::max() - 4 * page
+                    || bytes > (std::numeric_limits<std::size_t>::max() - incoming - 4 * page) / 2)
+                    throw std::length_error("recording batch exceeds addressable backing size");
+                // Page-edge copy-on-write and an event timeline copy are
+                // included conservatively. The allocator enforces actual use.
+                incoming += 2 * (bytes + 2 * page);
+            }
+            data_->prepare_cache(incoming, {}, [&](auto keep) { pin_->retain_payload(keep, true); });
+        }
         std::optional<PersistedDataStore::Candidate> candidate;
-        if (!decoded->empty() || !inputs_.retired_outputs.empty() || inputs_.reusable_data) {
+        if (!decoded->empty() || !inputs_.retired_outputs.empty() || inputs_.reusable_data || inputs_.reconstruction) {
             candidate.emplace(data_->begin_candidate(semantic_version_));
             if (candidate->base_version() != base.version()) {
                 return BackgroundEvaluationResult{
@@ -1266,11 +1405,19 @@ class BackgroundEvaluationTransaction::Impl {
                 auto const& plan = graph_->background_evaluation_plan;
                 for (graph_jit::PortStorageIndex storage = 0; storage < plan.storage.ports.size(); ++storage) {
                     auto const& selected = plan.storage.ports[storage];
-                    if (selected.storage != graph_jit::PortStorageKind::persisted_data || !selected.output_port
-                        || !plan.ports[*selected.output_port].authored_tock_output) continue;
+                    if (!uses_output_cache(plan, selected, bool(inputs_.reconstruction_graph)) || !selected.output_port
+                        || plan.ports[*selected.output_port].persisted_tick_output) continue;
                     candidate->reuse_output(*inputs_.reusable_data,
                         data_->resolve_output(persisted_output_id(plan, storage, graph_->project_generation)));
                 }
+            }
+            if (inputs_.reconstruction) {
+                for (auto dependency : inputs_.reconstruction->dependencies)
+                    candidate->reuse_output(*inputs_.reconstruction->inputs, dependency);
+                // Cached results in the current root may have different
+                // recorded inputs. Reconstruct privately from the selected
+                // boundaries, with no incidental result-cache reuse.
+                candidate->retain_payload({});
             }
             for (auto const output : inputs_.retired_outputs) candidate->erase_output(output);
             if (auto applied = apply_produced_records(
@@ -1291,6 +1438,7 @@ class BackgroundEvaluationTransaction::Impl {
             return BackgroundEvaluationResult{.published_data = published,
                 .promoted_tick_materialization = promoted};
         }
+        active_candidate_ = candidate ? &*candidate : nullptr;
         working_data_ = candidate ? &candidate->working_snapshot() : &base;
         if (inputs_.reusable_materialization)
             previous_materialization_ = inputs_.reusable_materialization;
@@ -1319,7 +1467,7 @@ class BackgroundEvaluationTransaction::Impl {
                     ? snapshot.find_sample_coverage(handle, port.sample_layout, port.continuous_geometry)
                     : snapshot.find_event_coverage(handle, port.event_type);
             };
-            auto const* current = lookup(base);
+            auto const* current = lookup(inputs_.reconstruction ? *working_data_ : base);
             IndexCoverage changed = current ? *current : IndexCoverage{};
             if (inputs_.reusable_data) {
                 if (auto old = lookup(*inputs_.reusable_data)) changed.include(*old);
@@ -1340,6 +1488,7 @@ class BackgroundEvaluationTransaction::Impl {
                                       .data = this,
                                       .expand_output = &expand_output_demand,
                                       .restrict_input = &restrict_input_demand,
+                                      .cached_output = &cached_output,
                                   },
                                   BackgroundCoverageDiscovery{
                                       .data = this,
@@ -1357,8 +1506,7 @@ class BackgroundEvaluationTransaction::Impl {
              ++index) {
             auto const& planned =
                 graph_->background_evaluation_plan.storage.ports[index];
-            if (planned.storage ==
-                    graph_jit::PortStorageKind::persisted_data &&
+            if (uses_output_cache(plan, planned, bool(inputs_.reconstruction_graph)) &&
                 storage_selection.produce_storage[index] &&
                 !storage_selection.storage_coverage[index].empty()) {
                 has_produced_data = true;
@@ -1369,6 +1517,7 @@ class BackgroundEvaluationTransaction::Impl {
             if (!candidate) {
                 candidate.emplace(data_->begin_candidate(semantic_version_));
             }
+            active_candidate_ = &*candidate;
             if (candidate->base_version() != pin_->snapshot().version()) {
                 discard_prepared();
                 return BackgroundEvaluationResult{
@@ -1437,6 +1586,7 @@ class BackgroundEvaluationTransaction::Impl {
             if (candidate) {
                 if (auto staged = realization->stage_persisted_data(*candidate); !staged)
                     return std::unexpected(std::move(staged.error()));
+                retain_reconstruction_inputs(*candidate);
             }
             if (!data_->is_current(base)) {
                 discard_prepared();
@@ -1444,6 +1594,7 @@ class BackgroundEvaluationTransaction::Impl {
             }
             auto selected = std::make_unique<PersistedDataStore::Snapshot>(
                 candidate ? candidate->working_snapshot() : base);
+            selected->retain_payload(prepared_payload_);
             auto result = propagation_->commit(*coverage_, std::move(*prepared_));
             prepared_.reset();
             if (prepared_live_coverage_) {
@@ -1464,6 +1615,7 @@ class BackgroundEvaluationTransaction::Impl {
                 !staged) {
                 return std::unexpected(std::move(staged.error()));
             }
+            retain_reconstruction_inputs(*candidate);
             published = candidate->target_version();
             if (data_->publish(std::move(*candidate)) ==
                 PersistedDataPublishResult::stale_base) {
@@ -1550,6 +1702,50 @@ public:
         }
     }
 };
+
+std::expected<BackgroundEvaluationResult, std::string>
+BackgroundEvaluationTransaction::reconstruct(PersistedDataStore& data,
+    std::shared_ptr<PersistedDataStore::Reconstruction const> context,
+    graph_jit::BackgroundPortIndex output, IndexCoverage required,
+    ResourceContext const& resources)
+{
+    try {
+        if (!context || !context->executable || !context->inputs)
+            return std::unexpected("reconstruction has no immutable producer/input selection");
+        auto const& graph = *context->executable;
+        auto const& plan = graph.background_evaluation_plan;
+        if (output >= plan.ports.size() || plan.ports[output].direction != graph_jit::PortDirection::output
+            || plan.ports[output].persisted_tick_output)
+            return std::unexpected("reconstruction requires a recomputable output");
+        auto states = graph.tock_state_layout.create_storage(resources);
+        states.initialize();
+        BackgroundCoverageState coverage(plan.accumulators.output_change_count);
+        BackgroundPropagationWorkspace propagation(plan, graph.specialization.sample_rate);
+        CoveragePropagationRequest roots;
+        std::vector<bool> visited(plan.nodes.size(), false);
+        auto visit = [&](auto&& self, std::size_t node) -> void {
+            if (visited[node]) return;
+            visited[node] = true;
+            roots.locally_changed_nodes.push_back(node);
+            for (auto input : plan.nodes[node].inputs)
+                for (auto connection : plan.ports[input].incoming_connections) {
+                    auto const& edge = plan.connections[connection];
+                    for (auto source : edge.sample_source_port_by_channel)
+                        if (source) self(self, plan.ports[*source].node);
+                    for (auto const& delivery : edge.event_deliveries)
+                        if (delivery.source_port) self(self, plan.ports[*delivery.source_port].node);
+                }
+        };
+        visit(visit, plan.ports[output].node);
+        roots.output_demands.push_back({output, std::move(required)});
+        BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data,
+            {.roots = std::move(roots), .prepare_only = true,
+             .reconstruction_graph = context->executable, .reconstruction = std::move(context)}};
+        return transaction.execute();
+    } catch (std::exception const& error) {
+        return std::unexpected(error.what());
+    }
+}
 
 BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
     CompiledGraph const& graph, TockStateStorage& tock_states,

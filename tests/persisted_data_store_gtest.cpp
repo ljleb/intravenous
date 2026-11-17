@@ -3175,7 +3175,7 @@ TEST(RealtimePersistedStateMailbox,
 }
 
 TEST(RealtimePersistedStateMailbox,
-     InitialStatePinsDataAtActivationRatherThanPreparation)
+     InitialStateSelectsTheActivationVersionWithoutPinningUnrequestedPayload)
 {
     iv::PersistedDataStore data;
     auto initial = iv::RealtimePersistedState::prepare_initial(4, data);
@@ -3191,9 +3191,7 @@ TEST(RealtimePersistedStateMailbox,
     EXPECT_FALSE(initial->capture_initial());
     EXPECT_EQ(initial->data().version(),
         (iv::PersistedDataVersion{.semantic = 7, .revision = 1}));
-    auto const* region = initial->data().find_sample_region(output, index(0));
-    ASSERT_NE(region, nullptr);
-    EXPECT_FLOAT_EQ(region->at(index(0), 0).value, 30.0f);
+    EXPECT_EQ(initial->data().find_sample_region(output, index(0)), nullptr);
     EXPECT_EQ(initial->materialization().generation(), 4u);
     EXPECT_EQ(
         initial->materialization().data_version(), initial->data().version());

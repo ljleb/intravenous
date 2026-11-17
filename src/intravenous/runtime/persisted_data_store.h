@@ -12,8 +12,10 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <new>
 #include <optional>
@@ -24,6 +26,7 @@
 #include <vector>
 
 namespace iv {
+struct CompiledGraph;
 
 namespace persisted_data_store_detail { struct BufferedSampleBacking; }
 
@@ -92,6 +95,7 @@ static_assert(std::is_trivially_copyable_v<PersistedOutputHandle>);
     graph_jit::BackgroundEvaluationPlan const& plan,
     graph_jit::PortStorageIndex storage,
     std::uint64_t generation);
+
 
 struct PersistedDataVersion {
     std::uint64_t semantic = 0;
@@ -224,6 +228,9 @@ struct BufferedStorageLimits {
     std::size_t max_mapping_runs = 16384;
     std::size_t process_vma_headroom = 512;
     std::size_t max_resident_bytes = std::size_t{64} << 20;
+    // Optional retained results share the hard backing budget with recordings
+    // and pinned readers. This additional bound cannot evict either owner.
+    std::size_t max_cached_payload_bytes = std::size_t{256} << 20;
 };
 
 struct BufferedStorageUsage {
@@ -242,22 +249,36 @@ struct BufferedStorageUsage {
     std::size_t resident_bytes = 0;
     std::uint64_t reused_pages = 0;
     std::uint64_t mapping_calls = 0;
+    std::uint64_t cache_evictions = 0;
 };
 
 struct BufferedResidentRange { std::byte const* data = nullptr; std::size_t bytes = 0; };
+
+// Background-selected readable payload. Logical Regions and semantic output
+// versions survive when this selection releases their materialized contents.
+struct PersistedPayloadSelection {
+    PersistedOutputHandle output{};
+    IndexCoverage coverage{};
+};
 
 enum class PersistedDataPublishResult : std::uint8_t {
     published,
     stale_base,
 };
 
-// Executor-level canonical retained data for persisted sample and event
-// outputs. Candidate mutation and reclamation are serialized background/control
+// Executor-level canonical recording data and optional sample/event caches.
+// Candidate mutation and reclamation are serialized background/control
 // work. ReaderSlot::pin() and ReaderPin destruction are the only realtime APIs.
 class PersistedDataStore {
 public:
     class Candidate;
     class ReaderSlot;
+    class Snapshot;
+    struct Reconstruction {
+        std::shared_ptr<CompiledGraph const> executable{};
+        std::shared_ptr<Snapshot const> inputs{};
+        std::vector<PersistedOutputHandle> dependencies{};
+    };
 
     class Snapshot {
         friend class PersistedDataStore;
@@ -275,8 +296,23 @@ public:
         std::uint8_t event_output_levels_ = 0;
         std::size_t sample_region_count_ = 0;
         std::size_t event_chunk_count_ = 0;
+        // Residency changes preserve this identity and version_. A semantic
+        // candidate receives a fresh identity even when it reuses payload.
+        std::shared_ptr<void const> logical_identity_{};
 
     public:
+        // Cold-only lease selection. Unselected payload is released, while
+        // logical coverage, Region order and semantic identities are retained.
+        // Recording preservation is used for reconstruction dependency roots;
+        // playback uses false and owns only the selected readable windows.
+        void retain_payload(std::span<PersistedPayloadSelection const> selected,
+            bool preserve_recordings = false);
+        // Preallocated empty initial playback roots use only the version. No
+        // payload or directory ownership is acquired on the audio thread.
+        void copy_identity_from(Snapshot const& source) noexcept;
+        void select_outputs(std::span<PersistedOutputHandle const> outputs);
+        [[nodiscard]] std::shared_ptr<Reconstruction const> reconstruction(
+            PersistedOutputHandle output) const;
         using VisitSampleRegion = void (*)(
             void*, PersistedSampleRegion const&, GlobalIndexRange);
         using VisitEventChunk = void (*)(
@@ -420,9 +456,11 @@ public:
                 });
         }
 
-        // Equality of immutable output ownership, not a comparison of bytes.
+        // Equality of immutable semantic output identity, not payload ownership
+        // or a comparison of bytes.
         // False means dependencies must be invalidated even if values happen
-        // to compare equal. These operations run only on cold/background paths.
+        // to compare equal. Payload eviction preserves the semantic owner.
+        // These operations run only on cold/background paths.
         [[nodiscard]] bool shares_output_with(Snapshot const& other,
             PersistedOutputHandle output) const noexcept;
 
@@ -461,9 +499,10 @@ public:
         friend class PersistedDataStore;
 
         PersistedDataStore* store_ = nullptr;
-        Snapshot const* base_ = nullptr;
         PersistedDataVersion base_version_{};
         std::unique_ptr<Snapshot> successor_{};
+        std::shared_ptr<void const> base_identity_{};
+        std::vector<PersistedOutputHandle> erased_outputs_{};
 
         Candidate(
             PersistedDataStore& store,
@@ -490,6 +529,11 @@ public:
 
         [[nodiscard]] PersistedDataVersion target_version() const noexcept;
         [[nodiscard]] Snapshot const& working_snapshot() const;
+        void retain_payload(std::span<PersistedPayloadSelection const> selected);
+        // Attach the exact immutable producer/input selection after staging.
+        // Equal reconstruction inputs preserve the logical output identity.
+        void set_reconstruction(PersistedOutputHandle output,
+            std::shared_ptr<Reconstruction const> context, Snapshot const& previous);
 
         // Reuse one output's immutable Region/chunk/page roots from a prior
         // selection belonging to the same store. Directory paths are copied;
@@ -535,6 +579,7 @@ public:
 
         ReaderSlotState* slot_ = nullptr;
         Snapshot const* snapshot_ = nullptr;
+        std::unique_ptr<Snapshot> owned_snapshot_{};
 
         explicit ReaderPin(
             ReaderSlotState& slot,
@@ -550,6 +595,12 @@ public:
         ReaderPin& operator=(ReaderPin&& other) noexcept;
 
         [[nodiscard]] Snapshot const& snapshot() const noexcept;
+        // Cold-only detachment from the canonical cache root. Later selection
+        // mutates this private lease, never a published reader's Snapshot.
+        void retain_payload(std::span<PersistedPayloadSelection const> selected,
+            bool preserve_recordings = false);
+        void detach();
+        void select_outputs(std::span<PersistedOutputHandle const> outputs);
         [[nodiscard]] Snapshot const* operator->() const noexcept
         {
             return snapshot_;
@@ -583,6 +634,7 @@ private:
     std::uint32_t output_owner_token_ = 0;
     std::unique_ptr<Snapshot const> published_owner_{};
     std::atomic<Snapshot const*> published_{nullptr};
+    std::atomic<std::uint64_t> published_revision_{0};
     // Private preparations also need unique identities before publication.
     std::atomic<std::uint64_t> last_candidate_revision_{0};
     std::vector<std::unique_ptr<Snapshot const>> retired_{};
@@ -591,6 +643,15 @@ private:
         output_slots_{};
     mutable std::mutex reader_slots_mutex_{};
     std::vector<std::unique_ptr<ReaderSlotState>> reader_slots_{};
+    struct CachePolicy {
+        OutputRealization realization = OutputRealization::buffered;
+        std::uint64_t last_use = 0;
+        std::uint64_t uses = 0;
+    };
+    std::map<PersistedOutputHandle, CachePolicy> cache_policy_{};
+    std::uint64_t cache_clock_ = 0;
+    std::atomic<std::uint64_t> cache_evictions_{0};
+    bool pending_computed_reclamation_ = false;
 
     [[nodiscard]] static std::uint32_t output_owner_token(
         PersistedOutputHandle output) noexcept;
@@ -619,8 +680,21 @@ public:
 
     [[nodiscard]] bool is_current(Snapshot const& snapshot) const noexcept
     {
-        return published_.load(std::memory_order_seq_cst) == &snapshot;
+        return snapshot.output_owner_token_ == output_owner_token_
+            && published_revision_.load(std::memory_order_acquire) == snapshot.version_.revision;
     }
+
+    // Serialized background operation. Releases only reconstructible cached
+    // payload outside protected selections; authoritative recordings survive.
+    // Existing leases remain immutable. This is not a semantic publication.
+    void reclaim_cached_payload(std::span<PersistedPayloadSelection const> protected_payload);
+    void set_cache_realization(PersistedOutputHandle output, OutputRealization realization);
+    // Preflight before producer allocation, on the serialized background actor.
+    // release_leases removes optional ownership from the transaction's private
+    // roots before cache roots retire. Required payload is always preserved.
+    void prepare_cache(std::size_t incoming_bytes,
+        std::span<PersistedPayloadSelection const> required,
+        std::function<void(std::span<PersistedPayloadSelection const>)> const& release_leases);
 
     [[nodiscard]] ReaderSlot register_reader();
     [[nodiscard]] std::size_t reclaim_retired();

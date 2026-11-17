@@ -52,6 +52,13 @@ struct BackgroundTransactionInputs {
     BackgroundTransactionProjection projection{};
     // Optional background-query budget. Playback retains its normal policy.
     std::optional<std::size_t> maximum_materialized_sample_bytes{};
+    // Pins imported code, immutable configuration and resource ownership for
+    // reconstructible results. Component callers without an executable owner
+    // keep their results transaction-scoped rather than admitting a cache.
+    std::shared_ptr<CompiledGraph const> reconstruction_graph{};
+    // Historical reconstruction uses these exact recorded boundaries instead
+    // of the current canonical recording. It is always a private transaction.
+    std::shared_ptr<PersistedDataStore::Reconstruction const> reconstruction{};
 
 };
 
@@ -83,6 +90,11 @@ class BackgroundEvaluationTransaction {
     std::unique_ptr<Impl> impl_;
 
 public:
+    [[nodiscard]] static std::expected<BackgroundEvaluationResult, std::string>
+    reconstruct(PersistedDataStore& data,
+        std::shared_ptr<PersistedDataStore::Reconstruction const> context,
+        graph_jit::BackgroundPortIndex output, IndexCoverage required,
+        ResourceContext const& resources);
     BackgroundEvaluationTransaction(CompiledGraph const& graph,
                                     TockStateStorage& tock_states,
                                     BackgroundCoverageState& coverage,

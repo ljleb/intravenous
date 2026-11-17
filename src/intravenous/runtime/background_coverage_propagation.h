@@ -107,6 +107,8 @@ struct BackgroundCoverageDemandExpansion {
         void*, graph_jit::BackgroundPortIndex,
         BackgroundForwardOutputChanges const& forward,
         IndexCoverage& required) = nullptr;
+    // Runtime cache admission is independent of the authored realization.
+    bool (*cached_output)(void*, graph_jit::BackgroundPortIndex) = nullptr;
 };
 
 class PreparedCoveragePropagation;

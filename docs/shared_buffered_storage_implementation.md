@@ -11,6 +11,12 @@ policy after successful output-gain verification. Follow
 [the page-cache implementation plan](./page_cache_implementation.md). Playhead
 work waits for owner verification of that feature.
 
+Successor checkpoint, 2026-11-17: the page-cache ownership refactor, pressure
+policy, reconstruction path and regressions are ready for owner compilation
+and testing. This does not change the earlier benchmark results below. New
+measurements use `bash scripts/benchmark_page_cache.sh` and are recorded under
+`build-release/page-cache/`. See the successor plan for scope and limits.
+
 Latest checkpoint, 2026-11-17: the owner reports all tests pass and has run
 the storage benchmark. The results below verify the tested behaviour and expose
 two representation costs to resolve before storage performance is consolidated.
