@@ -46,6 +46,14 @@ update on 2026-11-16 supersedes the earlier signed-sample requirement, preserved
 A mode switch changes presentation only; it does not request another capture
 operation or compile another graph.
 
+Do not reserve space beside an output visualization for its name or a scale
+switch button. Output and channel identities remain available in hover status
+and accessibility labels. Right-clicking the visualization opens a context menu
+with Level (dBFS) and Value (linear), showing the selected mode. The same menu
+can gain more visualization choices later. Both stereo channels share the
+output's display preference. Keyboard users can open it from a focused meter
+with the context-menu key or Shift+F10.
+
 Use the same RMS fill and peak marker in both modes. A new peak snaps the
 marker up and resets its downward velocity. After a short hold, the marker
 falls with increasing speed toward zero, staying at least as high as the
@@ -338,12 +346,15 @@ The bounds and their ownership must survive presentation remount and project
 reload without altering the DSP curve's interpolation or sparse coverage.
 
 Honor the lane's existing **`nano`**, **`mini`**, and **`editable`** vertical
-zoom categories. In `nano`, show **where the curve has a value in time** using
-its exact coverage: an outgoing `empty` segment means no coverage until the
-next appropriate point, including the circular wrap and equal-index rules.
-Do not draw interpolated sample values as though they exist in those gaps.
-In `mini`, display the curve shape and empty portions legibly but disable
-point/tension/segment editing. Only `editable` displays interactive points,
+zoom categories. Both `nano` and `mini` display the curve shape scaled to the
+available lane height, including its exact gaps. Nano does not substitute a
+presence-only fill: at small heights the curve naturally approaches a line.
+An outgoing `empty` segment means no curve until the next appropriate point,
+including the circular wrap and equal-index rules. Do not draw interpolated
+values in those gaps. Both modes disable point/tension/segment editing.
+This owner refinement supersedes the earlier
+[coverage-only nano contract](./historical/vue_automation_nano_presence_before_curve_scaling_2026-11-16.md).
+Only `editable` displays interactive points,
 tension handles and the editing controls. Changing zoom level does not change
 point data, bounds or selection identity. Sample-accurate time snapping remains
 required for all edits in `editable`.
@@ -403,8 +414,8 @@ the header continuation open/closed, including a knob on the folding anchor;
 copying a raw value to the OS clipboard, pasting a value from another app,
 and observing the same live-graph activation and settled specialization as a
 completed drag; rejected clipboard content must not modify the graph. Test
-all four bound configurations for the automation value axis, coverage-only
-`nano` view, non-editable `mini`, and editable points/handles in `editable`.
+all four bound configurations for the automation value axis, scaled read-only
+curve paths in `nano` and `mini`, and editable points/handles in `editable`.
 For the ruler-header snap input, test multi-source covers, the selected cover,
 timestamp projection from different event payload types, and unavailable
 window requests before claiming graph-authored snapping is complete.

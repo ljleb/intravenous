@@ -15,11 +15,11 @@ small visual adjustments; no backend rebuild is needed for these values.
 | Port mouse target size | `NodePorts.vue`: `.port-handle` and `.port-slot`; these are larger than the visible circles |
 | Folded circle placement | `NodePorts.vue`: `.stacked-first`, `.stacked-second`; keep vertical centering at `50%` |
 | Ports that fit before folding | [`lanePortLayout.ts`](../vscode/client/src/lanePortLayout.ts), plus `NodePorts.vue`'s `portHeight()` |
-| Meter column spacing and scale button | [`LiveOutputMeters.vue`](../vscode/client/webview/presentation/LiveOutputMeters.vue): `.live-outputs`, `.output-label`, `.output-channels` |
+| Meter spacing and visualization context menu | [`LiveOutputMeters.vue`](../vscode/client/webview/presentation/LiveOutputMeters.vue): `.live-outputs`, `.output-channels`, `.visualization-menu`, `visualizationModes` |
 | Meter colours, fill height, marker width | [`SampleMeter.vue`](../vscode/client/webview/presentation/SampleMeter.vue): `.rms-fill`, `.reading-mark` |
 | Meter scale bounds | [`meterPresentation.ts`](../vscode/client/src/meterPresentation.ts): `levelDomain`, `valueDomain` |
 | Peak hold and fall speed | [`meterBallistics.ts`](../vscode/client/src/meterBallistics.ts): `holdMilliseconds`, `relativeAcceleration`; RMS attack/release are in `advance()` |
-| Curve colour, stroke, point size | [`AutomationCurvePresentation.vue`](../vscode/client/webview/presentation/AutomationCurvePresentation.vue): `.curve-line`, `.curve-point`, `.curve-coverage`, circle `r` |
+| Curve colour, stroke, point size | [`AutomationCurvePresentation.vue`](../vscode/client/webview/presentation/AutomationCurvePresentation.vue): `.curve-line`, `.curve-point`, circle `r`; the same curve path is scaled at every height |
 
 CSS is in each Vue file's `<style scoped>` block. Theme colours come from the
 `--vscode-*` variables. Prefer changing the visible shape separately from its mouse

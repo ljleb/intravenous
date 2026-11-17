@@ -311,3 +311,7 @@ Preserved before the owner separated configuration commitment from DSP readiness
 - [Package dependencies before implicit builtin import (2026-11-16)](package_dependencies_before_implicit_builtin_2026-11-16.md)
   preserves the blanket explicit-dependency wording before the owner clarified
   that every other package automatically imports `iv.builtin`.
+
+- [Automation nano presence before continuous curve scaling (2026-11-16)](vue_automation_nano_presence_before_curve_scaling_2026-11-16.md)
+  preserves the coverage-only nano contract before the owner requested the same
+  rescaled curve path at all lane heights and visualization selection by context menu.

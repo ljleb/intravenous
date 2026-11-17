@@ -3501,3 +3501,30 @@ and RMS motion through generation changes with late-frame rejection, and stable
 versus incompatible channel/schema identities. Source inspection and
 `git diff --check` only; the backend rebuild, C++/client tests, typecheck and manual
 curve-drag verification remain owner-run.
+
+
+### Visualization context menu and nano curve shape (2026-11-16)
+
+The owner removed the need for an output-name column and scale-switch button
+beside live meters. `LiveOutputMeters` now gives that space to the visualization
+and opens a context menu on right-click. Level (dBFS) and Value (linear) remain
+the two current choices, using the existing saved per-output preference. Both
+stereo channels share that preference; selecting a mode retains their component
+identities, readings and motion and does not change capture requirements.
+Output/channel names remain in hover status and accessibility labels.
+
+The menu marks the current choice, fits its position to the webview, supports
+the context-menu key/Shift+F10, arrow/Home/End navigation and Escape, and dismisses
+on outside interaction, scrolling, resizing or window blur. Selecting a choice
+or pressing Escape returns focus to the meter.
+
+`AutomationCurvePresentation` now renders its existing sparse curve path in
+every display mode. Nano no longer substitutes coverage rectangles; it scales
+the same curve to the smaller lane height, with empty segments remaining gaps.
+Point and segment editing remains restricted to editable mode. The superseded
+presence-only direction is preserved under `docs/historical/` and linked from
+the updated normative presentation document.
+
+These are frontend presentation changes. Source inspection and
+`git diff --check` only; extension rebuild, client tests/typecheck and manual
+menu/zoom verification remain owner-run.

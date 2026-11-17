@@ -96,11 +96,7 @@ onBeforeUnmount(() => { observer?.disconnect(); window.removeEventListener("poin
         <svg ref="surface" class="automation-curve" :viewBox="`0 0 ${width} ${height}`" preserveAspectRatio="none"
             :aria-label="`${node.displayName || 'Automation curve'}${editable ? '; double-click to add a point' : '; read-only'}`" @dblclick="add">
             <title>{{ error || (editable ? 'Double-click to add a point or edit a point’s segment. Drag a point to move it. Right-click a point to remove it.' : 'Automation curve') }}</title>
-            <template v-if="mode === 'nano'">
-                <rect v-for="(segment, index) in view?.paths ?? []" :key="index" class="curve-coverage"
-                    :x="x(segment.begin.seconds)" y="0" :width="Math.max(0, x(segment.end.seconds) - x(segment.begin.seconds))" :height="height" />
-            </template>
-            <path v-else :d="path" class="curve-line" />
+            <path :d="path" class="curve-line" />
             <circle v-for="point in editable ? view?.points ?? [] : []" :key="point.id" :cx="x(point.seconds)" :cy="y(point.value)"
                 r="5" class="curve-point" role="button" :aria-label="`Point at ${point.seconds} seconds: ${point.value}`"
                 @pointerdown="start($event, point.id)" @dblclick.stop="editSegment($event, point)" @contextmenu="remove($event, point.id)">
@@ -126,7 +122,6 @@ onBeforeUnmount(() => { observer?.disconnect(); window.removeEventListener("poin
 
 <style scoped>
 .automation-curve { display: block; width: 100%; height: 100%; min-height: 1px; overflow: hidden; touch-action: none; }
-.curve-coverage { fill: var(--vscode-charts-yellow, #e2c36b); opacity: .2; pointer-events: none; }
 .curve-line { fill: none; stroke: var(--vscode-charts-yellow, #e2c36b); stroke-width: 1.5; pointer-events: none; }
 .curve-point { fill: var(--vscode-editor-background); stroke: var(--vscode-charts-yellow, #e2c36b); stroke-width: 2; cursor: grab; }
 .curve-point[data-hovered] { fill: var(--vscode-charts-yellow, #e2c36b); }

@@ -52,7 +52,8 @@ watch([hovered, focused, () => props.label, status], () => {
     observations?.hint(owner, hovered.value || focused.value ? {
         text: `${props.label} · ${status.value}`,
         tooltip: props.mode === "level" ? "Sample peak and RMS; dBFS scale. The held peak marker falls with increasing speed and resets its momentum on a new peak."
-            : "The same sample peak and RMS; linear magnitude scale from 0 to 1. The held peak marker uses the same motion as level mode.",
+            + " Right-click for visualization modes."
+            : "The same sample peak and RMS; linear magnitude scale from 0 to 1. The held peak marker uses the same motion as level mode. Right-click for visualization modes.",
     } : null, hovered.value ? 2 : 1);
 }, { immediate: true });
 let resize: ResizeObserver | undefined;
@@ -69,7 +70,7 @@ onBeforeUnmount(() => { stopAnimation(); resize?.disconnect(); observations?.hin
 <template>
     <div ref="root" class="sample-meter" :class="{ unavailable: !reading.available, 'over-reference': reading.overReference, short: height < 23 }"
         :data-mode="mode" :data-below="reading.available && reading.below" :data-above="reading.available && reading.above"
-        role="meter" tabindex="0" :aria-label="label" :aria-valuemin="domain.min" :aria-valuemax="domain.max"
+        role="meter" tabindex="0" aria-haspopup="menu" :aria-label="label" :aria-valuemin="domain.min" :aria-valuemax="domain.max"
         :aria-valuenow="ariaValue" :aria-valuetext="status" :aria-busy="updating"
         @pointerenter="hovered = true" @pointerleave="hovered = false" @focus="focused = true" @blur="focused = false">
         <template v-if="reading.available">
