@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { levelDomain, meterPosition, meterReading, sampleDecibels } from "../src/meterPresentation";
+import { levelDomain, meterPosition, meterReading, MeterPresentationState, sampleDecibels } from "../src/meterPresentation";
+import { ObservationValues, type ObservationDisplayValue, type ObservationUpdate } from "../src/observations";
 import { numericTicks } from "../webview/timeline/geometry";
 
 test("level grading uses dBFS rather than a linear amplitude fraction", () => {
@@ -53,4 +54,57 @@ test("meter and timeline graduations share finite ordered numeric geometry", () 
     for (const tick of ticks) assert.equal(tick.x, meterPosition(tick.value, levelDomain.min, levelDomain.max) * 660);
     assert.ok(ticks.every((tick, i) => i === 0 || tick.x > ticks[i - 1].x));
     assert.deepEqual(numericTicks(0, 1, 0), []);
+});
+
+test("compatible graph transitions keep peak and RMS motion through pending telemetry", () => {
+    const meter = new MeterPresentationState(), uninterrupted = new MeterPresentationState();
+    const values = new ObservationValues();
+    const frame = (generation: string, activationId: string, value: ObservationDisplayValue): ObservationUpdate => ({
+        generation, activationId, revision: "1", index: "0", blockSize: 64,
+        scopes: [{ scopeId: "viewport", values: [{ id: "meter", ...value }] }],
+    });
+    const sample = (peak: number, rms: number): ObservationDisplayValue => ({ available: true,
+        value: { peak, rms, samples: "64", nonfinite: "0" } });
+    for (const state of [meter, uninterrupted]) {
+        state.update(sample(1, 1), true, 0);
+        state.update(sample(.1, .1), true, 0);
+        state.advance(200);
+    }
+    const before = meter.reading("value");
+    assert.ok(before.displayValue! > .9);
+    values.acceptGeneration(2);
+    meter.update(values.values.get("meter"), true, 200);
+    assert.deepEqual(meter.reading("value"), before);
+    assert.equal(meter.updating, true);
+
+    assert.equal(values.receive(frame("2", "1", { available: false, pending: true }), "viewport"), true);
+    meter.update(values.values.get("meter"), true, 220);
+    assert.equal(meter.reading("value").available, true);
+    assert.match(meter.status("value"), /Updating.*previous reading/);
+
+    // A delayed frame remains rejected; retaining the picture does not accept
+    // an obsolete execution as the configured graph's current measurement.
+    assert.equal(values.receive(frame("1", "1", sample(1, 1)), "viewport"), false);
+    assert.equal(values.receive(frame("2", "2", sample(.1, .1)), "viewport"), true);
+    meter.update(values.values.get("meter"), true, 230);
+    uninterrupted.update(sample(.1, .1), true, 230);
+    assert.equal(meter.updating, false);
+    for (const now of [230, 300, 450]) {
+        meter.advance(now);
+        uninterrupted.advance(now);
+        for (const mode of ["level", "value"] as const) {
+            const actual = meter.reading(mode), expected = uninterrupted.reading(mode);
+            assert.ok(Math.abs(actual.position - expected.position) < 1e-12);
+            assert.ok(Math.abs(actual.rmsPosition - expected.rmsPosition) < 1e-12);
+        }
+    }
+    // Actual source unavailability still invalidates history and motion.
+    meter.update({ available: false }, true, 460);
+    assert.equal(meter.reading("value").available, false);
+    assert.equal(meter.moving, false);
+    meter.update(sample(.1, .1), true, 470);
+    assert.equal(meter.reading("value").displayValue, .1);
+    meter.update(undefined, false, 480);
+    assert.equal(meter.reading("value").available, false);
+    assert.equal(meter.moving, false);
 });

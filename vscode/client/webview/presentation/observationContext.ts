@@ -23,7 +23,7 @@ export class PresentationObservations {
     private epoch = 0;
     private disposed = false;
     private modes = new Map<string, MeterMode>();
-    private hints = new Map<symbol, ObservationHint>();
+    private hints = new Map<symbol, { value: ObservationHint; priority: number }>();
     private desired: ObservationInterest[] = [];
     private queue = Promise.resolve();
     constructor(private readonly send: (request: ObservationHostRequest) => void,
@@ -120,7 +120,7 @@ export class PresentationObservations {
                     const operation = capability.delivery === "window" ? "waveform"
                         : capability.kind === "output" ? "level" : capability.operations[0];
                     if (!capability.operations.includes(operation)) continue;
-                    const id = this.id(source, operation);
+                    const id = this.id(source, operation, capability);
                     capabilities.push({ ...capability, source, id, operation, channelName: channel?.name });
                     if (capabilities.length === 64) break;
                 }
@@ -130,8 +130,13 @@ export class PresentationObservations {
             await this.reconcile(this.desired);
         } catch (error) { if (!this.disposed) this.error.value = String(error); }
     }
-    private id(source: ObservationSource, operation: string): string {
-        const key = `${observationSourceKey(source)}:${operation}`;
+    private id(source: ObservationSource, operation: string, capability: ObservationCapability): string {
+        // Equivalent sources keep their display history across graph revisions.
+        // A changed channel or result schema gets a new identity and must not
+        // inherit an incompatible source's readings or animation.
+        const key = JSON.stringify([observationSourceKey(source), operation, capability.delivery,
+            capability.channels?.find((channel) => channel.index === source.channel),
+            capability.resultSchemas?.find((schema) => schema.operation === operation)]);
         let id = this.sourceIds.get(key);
         if (!id) { id = `probe:${++this.nextSourceId}`; this.sourceIds.set(key, id); }
         return id;
@@ -147,10 +152,15 @@ export class PresentationObservations {
         this.preferences?.save(Object.fromEntries(this.modes));
         ++this.version.value;
     }
-    hint(owner: symbol, value: ObservationHint | null): void {
-        this.hints.delete(owner);
-        if (value) this.hints.set(owner, value);
-        this.publishHint([...this.hints.values()].at(-1) ?? null);
+    hint(owner: symbol, value: ObservationHint | null, priority = 0): void {
+        // Updating a reading must not promote its owner above the pointer's
+        // current target. Preserve insertion order until the interaction ends.
+        if (value) this.hints.set(owner, { value, priority });
+        else this.hints.delete(owner);
+        let selected: { value: ObservationHint; priority: number } | undefined;
+        for (const hint of this.hints.values())
+            if (!selected || hint.priority >= selected.priority) selected = hint;
+        this.publishHint(selected?.value ?? null);
     }
     private install(capabilities: Capability[]): void {
         const activeIds = new Set(capabilities.map((entry) => entry.id));

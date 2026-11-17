@@ -2284,9 +2284,10 @@ public:
                 .tick_block_batch = imported.callback(operations.tick_block_batch),
                 .skip_block = imported.callback(operations.skip_block),
                 .skip_block_batch = imported.callback(operations.skip_block_batch),
+                .initialize_sequential_input = imported.callback(operations.initialize_sequential_input),
                 .combine_sequential_input_values = imported.callback(operations.combine_sequential_input_values),
                 .native_operations = operations,
-                .host_initialize_sequential_input = &graph_jit::detail::initialize_observation_input,
+                .host_initialize_sequential_input = operations.initialize_sequential_input,
             });
         }
         graph_jit::LoweringInput lowering_input{

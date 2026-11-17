@@ -68,7 +68,7 @@ onBeforeUnmount(() => {
         class="presentation-host"
         :data-mode="mode"
         :data-presentation="selection.presentationId"
-        :style="regionHeight === undefined ? undefined : { height: `${regionHeight}px`, overflow: 'auto' }"
+        :style="regionHeight === undefined ? undefined : { height: `${regionHeight}px`, overflow: 'hidden' }"
     >
         <component :is="selection.component" :mode="mode" />
     </div>

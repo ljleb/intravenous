@@ -133,6 +133,54 @@ test("stereo meters keep their capture interests and readings across visual scal
 });
 
 
+test("compatible meter schemas retain identities across graph revisions while incompatible schemas clear old readings", async () => {
+    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    let fieldType: "float32" | "float64" = "float64";
+    let rightName = "right";
+    const scope = new PresentationObservations((request) => {
+        queueMicrotask(() => scope.receive({ type: "observationResponse", requestId: request.requestId,
+            result: request.type === "observationDescribe" ? { capabilities: [{ nodeIndex: 0, kind: "output", member: "audio",
+                operations: ["level"], channels: [{ index: 0, name: "left" }, { index: 1, name: rightName }],
+                resultSchemas: [{ operation: "level", fields: [{ name: "peak", type: fieldType }] }] }] }
+                : { revision: "1" } }));
+    });
+    const owner = Symbol("meter"), node = { instanceId: "stereo", path: [] };
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
+    try {
+        scope.configuredGeneration(1);
+        scope.node(owner, node, true);
+        await settle();
+        const initial = scope.capabilities.value.map((entry) => entry.id);
+        assert.equal(initial.length, 2);
+        scope.configuredGeneration(2);
+        scope.node(owner, structuredClone(node), true);
+        scope.refresh();
+        await settle();
+        assert.deepEqual(scope.capabilities.value.map((entry) => entry.id), initial);
+        scope.receive({ type: "observationUpdate", update: { generation: "2", activationId: "2", revision: "1",
+            index: "0", blockSize: 64, scopes: [{ scopeId: "viewport", values: initial.map((id) => ({
+                id, available: true, value: { peak: .5, rms: .1, samples: "64", nonfinite: "0" },
+            })) }] } });
+        assert.equal(scope.values.values.size, 2);
+
+        // A neighbouring channel's changed contract cannot reset the unchanged
+        // left channel, but the changed right channel must lose its old data.
+        rightName = "changed right";
+        scope.refresh();
+        await settle();
+        assert.equal(scope.capabilities.value[0].id, initial[0]);
+        assert.notEqual(scope.capabilities.value[1].id, initial[1]);
+        assert.equal(scope.values.values.has(initial[0]), true);
+        assert.equal(scope.values.values.has(initial[1]), false);
+
+        fieldType = "float32";
+        scope.refresh();
+        await settle();
+        assert.notEqual(scope.capabilities.value[0].id, initial[0]);
+        assert.equal(scope.values.values.size, 0);
+    } finally { scope.dispose(); }
+});
+
 test("viewport probe budget keeps complete stereo pairs and status ownership clears on disconnect", async () => {
     const { PresentationObservations } = await import("../webview/presentation/observationContext");
     const requests: import("../src/observations").ObservationHostRequest[] = [];
@@ -164,6 +212,38 @@ test("viewport probe budget keeps complete stereo pairs and status ownership cle
     } finally { scope.dispose(); }
 });
 
+
+test("meter status follows pointer ownership despite focused-channel telemetry updates", async () => {
+    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    let current: import("../src/observations").ObservationHint | null = null;
+    const scope = new PresentationObservations(() => assert.fail("no visible sources"), (hint) => { current = hint; });
+    const left = Symbol("left"), right = Symbol("right");
+    const show = (owner: symbol, text: string, priority: number) => scope.hint(owner, { text, tooltip: text }, priority);
+    const text = () => current?.text;
+    try {
+        show(left, "left focused", 1);
+        show(right, "right hovered", 2);
+        for (let frame = 0; frame < 3; ++frame) {
+            show(right, `right frame ${frame}`, 2);
+            show(left, `left frame ${frame}`, 1);
+            assert.equal(text(), `right frame ${frame}`);
+        }
+        // Changing hover/focus priority must work even when both owners stay
+        // registered. It cannot depend on which channel delivers data last.
+        show(left, "left hovered", 2);
+        show(right, "right focused", 1);
+        assert.equal(text(), "left hovered");
+        show(right, "right still focused", 1);
+        assert.equal(text(), "left hovered");
+        scope.hint(left, null);
+        assert.equal(text(), "right still focused");
+        // Equal-priority readings also retain their interaction order.
+        show(left, "left entered", 2);
+        show(right, "right entered", 2);
+        show(left, "left later frame", 2);
+        assert.equal(text(), "right entered");
+    } finally { scope.dispose(); }
+});
 
 test("meter display choices persist as frontend preferences without project mutations", () => {
     const source = { node: { instanceId: "node", path: [] }, kind: "output" as const, member: "out" };

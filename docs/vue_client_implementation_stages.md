@@ -3373,3 +3373,131 @@ bugs and two assertions had fixture mistakes:
 
 The agent inspected the owner log and source and ran `git diff --check`, without
 running builds, tests or profiling. Owner verification of these fixes is pending.
+
+
+### Stage 5 application follow-up: observed replay and automation presentation (2026-11-16)
+
+The owner reports 1,087 passing tests, but the application failed compiling an
+observed simple-sine graph with `GraphJit sequential input has no imported neutral
+initializer`. `observation_sink_operations` had a host helper for initialization,
+but its `NodeCompilerOperations`, runtime `NodeImplementation`, and compiler-owned
+`PrimitiveCallbackPlan` import path omitted the executable initialization callback.
+Those records now carry the same type-correct initializer through
+`CallbackImportAbi::sequential_initialize`. It accepts complete Sample storage
+spans, including empty spans, just like authored initialization callbacks. A new
+compiler/runtime regression attaches an observation sink to a Tock source,
+forcing background delivery. It exercises the generated neutral initializer,
+activates the graph and checks the captured samples.
+
+The owner also rejected the generic output display appearing on the automation
+module. This supersedes the Stage 5 mini/nano integration described above:
+`AutomationCurvePresentation` keeps its dedicated SVG in every display mode.
+Mini/compact draw the read-only authored curve, nano draws its covered intervals,
+and editable draws points and accepts point/segment mutations. No generic meter
+or output-observation subscription is installed by that specialized presentation.
+Generic presentations retain the new background waveform implementation.
+
+The agent inspected source and the application log and ran `git diff --check`.
+Builds, tests, typechecking and profiling remain owner-run; verification is pending.
+
+
+### Earlier editing threshold (owner refinement, 2026-11-16)
+
+The owner wants editable lanes at roughly the former mini height, mini at the
+former nano height, and a shorter nano mode. Frontend tuning now uses a 96 px
+editable threshold (previously 200 px), a 32 px nano/mini threshold (previously
+64 px), 6 px height hysteresis (previously 12 px), and a 24 px minimum lane
+height (previously 32 px). These are presentation tuning values, not backend
+contracts. Saved lane geometry is retained and selects its mode using the new
+thresholds. Existing geometry assertions are updated; owner-run client tests
+and typecheck remain pending. No build or tests were run by the agent.
+
+
+### Dense lane zoom and independent header layout (owner refinement, 2026-11-16)
+
+Further owner tuning sets editable to 48 px, nano through 16 px, and the minimum
+lane height to 12 px. Mini occupies the interval between nano and editable, with
+32 px as its representative height. Height-based mode selection has no hysteresis:
+the same allocated height yields the same content mode in either zoom direction.
+The existing compact-width hysteresis is separate and remains unchanged.
+
+`NodeLane` now uses its own size container for header layout. At 72 px or less,
+the header moves its port groups alongside the name, before the stacked header
+would lose its handles. This responds to header space independently of the
+presentation's content mode. The name's font is the smaller of the base font and
+lane height minus 4 px. Nested port slots retain their dimensions, hit areas,
+focus behavior and popovers while their normal border is transparent.
+
+Lane content and its allocated presentation host no longer create internal
+scrollbars. Sample meter groups/channels can shrink below their previous 20/9 px
+minimum heights. Short lanes reduce label detail and channel spacing while
+retaining both stereo meters; the surrounding timeline owns vertical scrolling.
+The existing mode regression now checks direction-independent selection across
+repeated zoom-in/zoom-out sequences. Source inspection and `git diff --check` only;
+client tests, typecheck, extension rebuild and manual UI checks remain owner-run.
+
+
+### Meter hover ownership and dense geometry follow-up (2026-11-16)
+
+The owner adjusted the independent inline-header breakpoint from 72 to 56 px and
+removed stereo channel labels beside the meters. Both adjustments are retained;
+channel names remain available in hover status and accessibility labels.
+
+`PresentationObservations.hint()` now preserves interaction order when telemetry
+updates a hint, with pointer hover taking priority over keyboard focus.
+`LiveOutputMeters` watches the semantic address key, so replacing a graph's JSON
+objects does not remove and re-register every unchanged node's interest.
+
+Configured-generation invalidation still clears current readings and rejects old
+frames. While awaiting a replacement frame, `SampleMeter` can retain a frozen,
+dimmed previous drawing. Hover status and accessibility text identify it as a
+previous reading; it is not exposed as a current numeric accessibility value.
+An explicit unavailable result clears it. Fresh activation resets motion, and
+removing a source removes its component and retained drawing. This follows the
+existing observation continuity contract without accepting old-generation frames.
+The in-meter out-of-range text is removed; exact values remain in hover status.
+
+Lane content padding now varies continuously with height instead of switching
+at 40 px. Automation uses fractional measured SVG dimensions and fills its
+viewport without aspect-ratio letterboxing. Folded port circles use vertical
+centering, matching direct port circles at the smallest lane height.
+
+[Vue visual tuning](./vue_ui_tuning.md) maps common adjustments to their source
+files and provides an extension-only rebuild command. A new client regression
+covers status ownership with interleaved channel updates and hover/focus changes.
+Only source inspection and `git diff --check` were performed by the agent;
+client tests, typecheck and manual UI checks remain owner-run.
+
+
+### Compatible meter continuity across automation edits (2026-11-16)
+
+The preceding hover/dense-geometry follow-up did not resolve the owner's meter
+flicker report. Its frozen, dimmed pending drawing and unconditional activation
+reset are superseded by this change. The lane and `SampleMeter` components were
+already kept alive by Vue's address/channel keys; the remaining invalidation was
+in telemetry delivery and animation state.
+
+`Observations::collect()` previously emitted `available: false` whenever its
+configured target was newer than its most recent executable frame. It now marks
+that case `pending: true`, so compilation in progress is distinguishable from
+unavailability after cutover. A missing/failed configuration does not claim to
+have an executable pending. Current-generation and activation-order checks remain
+in place; previous frames are not accepted as new measurements.
+
+`PresentationObservations` keeps capture identities for compatible semantic
+sources, operations, selected channels and result schemas. An incompatible
+channel/schema gets a new identity; `LiveOutputMeters` also keys the meter's
+component by node definition. Unchanged neighbouring channels keep their own
+identities. There is no graph-generation component key.
+
+`MeterPresentationState` owns copied scalar history and `MeterBallistics` across
+compatible activations. Missing/pending frames retain the picture and motion
+without opacity changes. Status/accessibility identifies previous measurements;
+explicit source unavailability, removal, replacement or hiding clears history.
+`SampleMeter` uses this state directly, rather than resetting on every activation.
+
+Regressions cover the server's pending/invalidated distinction, continuous peak
+and RMS motion through generation changes with late-frame rejection, and stable
+versus incompatible channel/schema identities. Source inspection and
+`git diff --check` only; the backend rebuild, C++/client tests, typecheck and manual
+curve-drag verification remain owner-run.

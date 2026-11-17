@@ -25,7 +25,7 @@ function hint(id: string | null): void {
         tooltip: item.result?.error || (item.result?.truncated
             ? "The bounded result is incomplete. Zoom in to request a smaller window."
             : "Approximate position samples. Gaps remain empty; peaks between samples may be missed. Vertical scale: −1 to 1."),
-    } : null);
+    } : null, 2);
 }
 onBeforeUnmount(() => observations?.hint(owner, null));
 </script>

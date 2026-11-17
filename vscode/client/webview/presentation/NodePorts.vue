@@ -421,9 +421,9 @@ onBeforeUnmount(() => {
 .port-circle { display: inline-block; flex: 0 0 10px; width: 10px; height: 10px; box-sizing: border-box; border: 2px solid var(--port-color); border-radius: 50%; }
 .connected .port-circle { background: var(--port-color); }
 .pending .port-circle { border-style: dashed; }
-.port-slot { position: relative; flex: 0 0 22px; width: 28px; height: 22px; box-sizing: border-box; border: 1px solid var(--vscode-panel-border); border-radius: 7px; }
-.stacked-first { position: absolute; left: 5px; top: 4px; }
-.stacked-second { position: absolute; left: 12px; top: 4px; background: var(--vscode-editor-background); }
+.port-slot { position: relative; flex: 0 0 22px; width: 28px; height: 22px; box-sizing: border-box; border: 1px solid transparent; border-radius: 7px; }
+.stacked-first { position: absolute; left: 5px; top: 50%; transform: translateY(-50%); }
+.stacked-second { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); background: var(--vscode-editor-background); }
 .port-slot[data-connection-state="partial"] .stacked-second,
 .port-slot[data-connection-state="full"] .port-circle { background: var(--port-color); }
 .port-handle:focus-visible, .port-slot:focus-visible { outline: 1px solid var(--vscode-focusBorder); }

@@ -299,6 +299,10 @@ void Observations::collect(Clock::time_point now)
                 if (value == end) continue;
                 Json entry{{"id", interest.id}, {"available", current_generation && value->status == ObservationValueStatus::available
                     && value->value.captured}};
+                // Configuration can be newer than the active executable. That
+                // is pending work, not evidence that an observed source was
+                // removed or became unavailable at an audio cutover.
+                if (!current_generation && target.configured_generation) entry["pending"] = true;
                 if (entry["available"].get<bool>()) entry["value"] = project_value(*value);
                 values.push_back(std::move(entry));
             }

@@ -42,6 +42,53 @@ TEST_F(GraphJitRuntimeFixture, LiveOutputObservationUsesTheProducedWindowWithout
     EXPECT_FALSE(executor.background_execution_failures().any());
 }
 
+TEST_F(GraphJitRuntimeFixture, ObservationSinkWithBackgroundDeliveryImportsItsSequentialInitializer)
+{
+    auto graph = configured_module_graph(*revision,
+        "iv.test.graph_jit.state_context.background_execution_module");
+    auto const bundles = concrete_bundles(*graph);
+    ASSERT_EQ(bundles.size(), 1u);
+    auto const& operation = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations.front();
+    // The compiler-level probe adds its ordinary Sequential sink. A Tock
+    // source forces background delivery and generated neutral initialization
+    // for the sink; a purely realtime source does not exercise that import.
+    auto compiled = jit->compile(GraphJitCompileRequest{
+        .project_generation = 733, .graph = graph, .definitions = definitions,
+        .observations = {.revision = 29, .probes = {{.id = 71, .operation = &operation,
+            .kind = ObservationSourceKind::output, .bundle = bundles.front(), .port = 0, .available = true}}},
+    });
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& plan = compiled.compiled_graph->background_evaluation_plan;
+    auto input = std::ranges::find_if(plan.ports, [](auto const& port) {
+        return port.direction == graph_jit::PortDirection::input && port.name == "observed";
+    });
+    ASSERT_NE(input, plan.ports.end());
+    ASSERT_TRUE(input->tick_sequential_input);
+    auto initialize = compiled.compiled_graph->root_operations.initialize_sequential_input;
+    ASSERT_NE(initialize, nullptr);
+    std::array<Sample, 3> neutral{Sample{3}, Sample{4}, Sample{5}};
+    EXPECT_TRUE(initialize(static_cast<std::size_t>(input - plan.ports.begin()),
+        reinterpret_cast<std::byte*>(neutral.data()), sizeof(neutral)));
+    for (auto value : neutral) EXPECT_FLOAT_EQ(value.value, 0);
+
+    GraphExecutor executor(resources);
+    ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    bool activated = false;
+    while (!(activated = executor.activate_pending(index(0))) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    ASSERT_TRUE(activated);
+    executor.tick_block(index(0), 32);
+    auto const* frame = executor.collect_observations();
+    ASSERT_NE(frame, nullptr);
+    ASSERT_EQ(frame->count, 1u);
+    EXPECT_TRUE(frame->values[0].value.captured);
+    auto const result = frame->values[0].value.load<observation_details::SampleLevelState>();
+    EXPECT_EQ(result.samples, 32u);
+    EXPECT_DOUBLE_EQ(result.peak, 12);
+    EXPECT_FALSE(executor.background_execution_failures().any());
+}
+
 TEST_F(GraphJitRuntimeFixture, LiveStateObservationRunsAfterSpecializedCallbacksAndInvalidatesOnRemoval)
 {
     auto graph = configured_module_graph(*revision, "iv.test.graph_jit.state_context.direct_sample_module");

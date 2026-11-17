@@ -13,9 +13,8 @@ export const nodeViewChoices: readonly NodeViewChoice[] = ["nano", "mini", "edit
 export const compactWidthPx = 180;
 const compactHysteresisPx = 16;
 // Initial geometry thresholds, to tune against real presentations.
-export const nanoHeightPx = 64;
-export const editableHeightPx = 200;
-const heightHysteresisPx = 12;
+export const nanoHeightPx = 16;
+export const editableHeightPx = 48;
 
 export function isNodeViewChoice(value: unknown): value is NodeViewChoice {
     return typeof value === "string"
@@ -23,8 +22,9 @@ export function isNodeViewChoice(value: unknown): value is NodeViewChoice {
 }
 
 // Width selects compact first. Otherwise an explicit view choice wins;
-// without one, allocated height selects nano, mini, or editable. Threshold
-// hysteresis prevents small geometry changes from repeatedly switching modes.
+// without one, allocated height selects nano, mini, or editable. Height is
+// independent of the previous mode so zooming in and out retraces the same
+// thresholds. Only compact-width selection retains hysteresis.
 export function effectiveDisplayMode(
     availableWidthPx: number | null,
     viewChoice: NodeViewChoice | null,
@@ -37,8 +37,6 @@ export function effectiveDisplayMode(
     if (availableWidthPx !== null && availableWidthPx < threshold) return "compact";
     if (viewChoice) return viewChoice;
     if (availableHeightPx === null) return "mini";
-    const nanoBoundary = previous === "nano" ? nanoHeightPx + heightHysteresisPx : nanoHeightPx;
-    if (availableHeightPx <= nanoBoundary) return "nano";
-    const editableBoundary = previous === "mini" ? editableHeightPx + heightHysteresisPx : editableHeightPx;
-    return availableHeightPx < editableBoundary ? "mini" : "editable";
+    if (availableHeightPx <= nanoHeightPx) return "nano";
+    return availableHeightPx < editableHeightPx ? "mini" : "editable";
 }

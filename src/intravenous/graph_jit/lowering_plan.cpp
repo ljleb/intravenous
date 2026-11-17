@@ -2537,12 +2537,14 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
             };
             add(implementation.tick_block, CallbackImportAbi::block);
             add(implementation.tick_block_batch, CallbackImportAbi::batch);
+            add(implementation.initialize_sequential_input, CallbackImportAbi::sequential_initialize);
             add(implementation.combine_sequential_input_values, CallbackImportAbi::sequential_combine);
             plan.primitive_callbacks.push_back({
                 .bundle = primitive.bundle.node_bundle,
                 .resolves_module_input = implementation.resolved_module_input.has_value(),
                 .tick_block = implementation.tick_block,
                 .tick_block_batch = implementation.tick_block_batch,
+                .initialize_sequential_input = implementation.initialize_sequential_input,
                 .combine_sequential_input_values = implementation.combine_sequential_input_values,
             });
             continue;

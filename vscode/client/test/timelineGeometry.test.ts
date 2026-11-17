@@ -46,7 +46,7 @@ test("timeline ruler terminates at large absolute times without repeating tick k
 
 test("presentation mode follows allocated height while compact takes precedence", () => {
     assert.equal(effectiveDisplayMode(600, null, null, nanoHeightPx), "nano");
-    assert.equal(effectiveDisplayMode(600, null, null, 120), "mini");
+    assert.equal(effectiveDisplayMode(600, null, null, 32), "mini");
     assert.equal(effectiveDisplayMode(600, null, null, editableHeightPx + 30), "editable");
     for (const height of [30, 120, 400]) {
         assert.equal(effectiveDisplayMode(compactWidthPx - 1, null, null, height), "compact");
@@ -54,9 +54,14 @@ test("presentation mode follows allocated height while compact takes precedence"
     assert.equal(effectiveDisplayMode(600, "mini", null, 400), "mini");
 });
 
-test("height hysteresis holds a presentation across small threshold changes", () => {
-    assert.equal(effectiveDisplayMode(600, null, "nano", nanoHeightPx + 4), "nano");
-    assert.equal(effectiveDisplayMode(600, null, "mini", nanoHeightPx + 4), "mini");
-    assert.equal(effectiveDisplayMode(600, null, "mini", editableHeightPx + 4), "mini");
-    assert.equal(effectiveDisplayMode(600, null, "editable", editableHeightPx + 4), "editable");
+test("vertical zoom selects the same mode in both directions", () => {
+    const heights = [12, nanoHeightPx, 32, editableHeightPx - 1, editableHeightPx, 64];
+    const expected = ["nano", "nano", "mini", "mini", "editable", "editable"] as const;
+    for (const previous of ["nano", "mini", "editable"] as const)
+        heights.forEach((height, i) => assert.equal(effectiveDisplayMode(600, null, previous, height), expected[i]));
+    let previous: "nano" | "mini" | "editable" | "compact" = "mini";
+    for (const i of [2, 4, 5, 4, 2, 0, 2, 4, 5, 4, 2]) {
+        previous = effectiveDisplayMode(600, null, previous, heights[i]);
+        assert.equal(previous, expected[i]);
+    }
 });

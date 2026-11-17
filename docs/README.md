@@ -12,6 +12,7 @@ The primary application-architecture entry points are:
 
 - [Outstanding Implementation Fronts](./implementation_fronts_direction.md)
 - [Vue Client Implementation Stages](./vue_client_implementation_stages.md)
+- [Vue Visual Tuning: Source Guide](./vue_ui_tuning.md)
 - [Design, Implementation, And Documentation Workflow](./development_workflow.md)
 - [Project Graph Application Architecture](./project_graph_application_architecture.md)
 - [Project Undo And Redo Direction](./project_undo_redo_and_backups_direction.md)

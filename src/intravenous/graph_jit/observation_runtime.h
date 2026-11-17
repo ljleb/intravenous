@@ -18,8 +18,9 @@ inline bool initialize_observation_input(std::size_t port, ContinuousValueTypeId
     iv::details::SequentialInputInitialization, std::byte* destination,
     std::size_t bytes, std::size_t elements)
 {
-    if (port || type != ContinuousValueTypeId::sample || bytes != sizeof(Sample) || elements != 1) return false;
-    std::memset(destination, 0, bytes);
+    if (port || type != ContinuousValueTypeId::sample || bytes % sizeof(Sample) || elements != 1
+        || (!destination && bytes)) return false;
+    if (bytes) std::memset(destination, 0, bytes);
     return true;
 }
 inline iv::details::NodeCompilerOperations observation_sink_operations()
@@ -30,6 +31,7 @@ inline iv::details::NodeCompilerOperations observation_sink_operations()
         .tick_block_batch = &tick_observation_sink_batch,
         .skip_block = &tick_observation_sink,
         .skip_block_batch = &tick_observation_sink_batch,
+        .initialize_sequential_input = &initialize_observation_input,
         .combine_sequential_input_values = &combine_module_input_values,
     };
 }

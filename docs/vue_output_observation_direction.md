@@ -377,6 +377,15 @@ incompatible sources must be invalidated when the applicable generation becomes
 active, not prematurely when it is merely staged. No observation may retain
 pointers into a reclaimed generation.
 
+An unchanged lane and compatible meter source keep their presentation instance
+and peak/RMS motion across executable replacement. A new graph or activation
+number alone must not reload the meter, blank it, or pulse its opacity. Waiting
+for executable preparation is distinct from confirmed source unavailability.
+While waiting, Vue can continue presenting its copied measurement history, with
+status/accessibility information identifying that it awaits a new measurement.
+Removed sources, changed node definitions, and incompatible channel/result
+contracts invalidate that history; an actual unavailable result still clears it.
+
 **Routing needs actual activation identity.** The identity used to validate
 collected values and source invalidations must distinguish the compiled
 execution/probe bindings that actually became active, including control-code

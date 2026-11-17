@@ -29,9 +29,9 @@ function updateVisibility(): void {
     visible.value = !!current && intersecting && !document.hidden;
     if (current) observations?.node(owner, current, visible.value, window.value);
 }
-watch(() => node.value.address, (address) => {
+watch(() => node.value.address ? addressKey(node.value.address) : null, () => {
     observations?.remove(owner);
-    current = address;
+    current = node.value.address;
     updateVisibility();
 }, { immediate: true });
 watch(window, updateVisibility);
@@ -64,11 +64,11 @@ function switchMode(member: string, mode: MeterMode): void {
 function channelLabel(item: PresentedObservation): string {
     return item.channels && item.channels.length > 1 ? `${item.member} · ${item.channelName}` : item.member;
 }
-function modeHint(member: string, mode: MeterMode, active: boolean): void {
+function modeHint(member: string, mode: MeterMode, active: boolean, priority = 2): void {
     observations?.hint(owner, active ? {
         text: `${member} · ${mode} meter · click to switch`,
         tooltip: "Both scales show sample peak and RMS. Level uses dBFS; value uses a linear magnitude scale.",
-    } : null);
+    } : null, priority);
 }
 function stateText(value: unknown): string {
     return typeof value === "number" && Number.isFinite(value) ? String(value) : "—";
@@ -102,14 +102,13 @@ onBeforeUnmount(() => {
                 <button v-if="output.operations.includes('level')" type="button"
                     :aria-label="`${output.member}: ${output.mode} meter. Switch to ${output.mode === 'level' ? 'value' : 'level'}`"
                     @pointerenter="modeHint(output.member, output.mode, true)" @pointerleave="modeHint(output.member, output.mode, false)"
-                    @focus="modeHint(output.member, output.mode, true)" @blur="modeHint(output.member, output.mode, false)"
+                    @focus="modeHint(output.member, output.mode, true, 1)" @blur="modeHint(output.member, output.mode, false)"
                     @click.stop="switchMode(output.member, output.mode === 'level' ? 'value' : 'level')">
                     {{ output.mode === 'level' ? 'level · dBFS' : 'value' }}
                 </button>
             </div>
             <div class="output-channels">
-                <div v-for="item in output.channels" :key="item.id" class="channel">
-                    <span v-if="output.channels.length > 1" class="channel-name">{{ item.channelName }}</span>
+                <div v-for="item in output.channels" :key="JSON.stringify([node.definitionId, item.id])" class="channel">
                     <SampleMeter :mode="output.mode" :label="channelLabel(item)" :result="item.result" :active="visible" />
                 </div>
             </div>
@@ -123,13 +122,12 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.live-outputs { height: 100%; min-height: 1px; display: flex; flex-direction: column; gap: 4px; padding: 0 8px; box-sizing: border-box; }
-.output-group { display: flex; flex: 1 1 0; align-items: stretch; gap: 8px; min-height: 20px; }
+.live-outputs { height: 100%; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 4px; padding: 0 8px; box-sizing: border-box; }
+.output-group { display: flex; flex: 1 1 0; align-items: stretch; gap: 8px; min-height: 0; overflow: hidden; }
 .output-label { display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 2px; flex: 0 1 90px; min-width: 35px; overflow: hidden; }
 .output-name { max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 11px; }
 .output-channels { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; min-height: 0; }
-.channel { display: flex; flex: 1; align-items: stretch; gap: 5px; min-height: 9px; min-width: 0; }
-.channel-name { display: flex; flex: 0 0 30px; align-items: center; font-size: 10px; color: var(--vscode-descriptionForeground); }
+.channel { display: flex; flex: 1; align-items: stretch; gap: 5px; min-height: 0; min-width: 0; }
 .state-field { display: flex; align-items: center; gap: 8px; font-size: 11px; }
 output { font-variant-numeric: tabular-nums; }
 [data-mode="nano"] .state-field { display: none; }
@@ -138,4 +136,11 @@ output { font-variant-numeric: tabular-nums; }
 button { border: 0; padding: 1px 3px; color: var(--vscode-descriptionForeground); background: transparent; font-size: 10px; white-space: nowrap; cursor: pointer; }
 button:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
 button:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+@container node-lane (max-height: 40px) {
+    .live-outputs { gap: 0; }
+    .output-label { flex-direction: row; align-items: center; }
+    .output-label .output-name, .state-field { display: none; }
+    .output-label button { font-size: min(10px, calc(100cqh - 4px)); line-height: 1; padding-top: 0; padding-bottom: 0; }
+    .output-channels { gap: 1px; }
+}
 </style>

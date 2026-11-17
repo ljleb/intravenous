@@ -356,7 +356,7 @@ TEST_F(ObservationService, RoutesRequireReadPermissionAndBindTheConnectionIdenti
 
 
 namespace iv::test::observation_tests {
-TEST_F(ObservationService, OlderExecutableFramesInvalidateWhenTheConfiguredGenerationChanges)
+TEST_F(ObservationService, OlderExecutableFramesArePendingUntilTheConfiguredGenerationActivates)
 {
     ASSERT_TRUE(reconcile("a", "lane", {interest()}).error.empty());
     executor.publish(graph.accepted, 1);
@@ -369,6 +369,7 @@ TEST_F(ObservationService, OlderExecutableFramesInvalidateWhenTheConfiguredGener
     collect();
     ASSERT_EQ(delivery.batches.size(), 1u);
     EXPECT_EQ((*delivery.batches.back().payload)["scopes"][0]["values"][0]["available"], false);
+    EXPECT_EQ((*delivery.batches.back().payload)["scopes"][0]["values"][0]["pending"], true);
     delivery.batches.clear();
     executor.publish(graph.accepted, 2);
     executor.frame->project_generation = 9;
@@ -376,6 +377,24 @@ TEST_F(ObservationService, OlderExecutableFramesInvalidateWhenTheConfiguredGener
     collect();
     ASSERT_EQ(delivery.batches.size(), 1u);
     EXPECT_EQ((*delivery.batches.back().payload)["scopes"][0]["values"][0]["available"], true);
+    EXPECT_FALSE((*delivery.batches.back().payload)["scopes"][0]["values"][0].contains("pending"));
+
+    // Actual invalidation after cutover is different from waiting for it.
+    delivery.batches.clear();
+    executor.publish(graph.accepted, 3, false);
+    executor.frame->configured_generation = 5;
+    collect();
+    ASSERT_EQ(delivery.batches.size(), 1u);
+    auto const& invalid = (*delivery.batches.back().payload)["scopes"][0]["values"][0];
+    EXPECT_EQ(invalid["available"], false);
+    EXPECT_FALSE(invalid.contains("pending"));
+
+    // A failed configuration has no pending executable to wait for.
+    delivery.batches.clear();
+    graph.generation.reset();
+    collect();
+    ASSERT_EQ(delivery.batches.size(), 1u);
+    EXPECT_FALSE((*delivery.batches.back().payload)["scopes"][0]["values"][0].contains("pending"));
 }
 
 TEST_F(ObservationService, WindowScopesShareCancelableQueriesWithoutCreatingLiveProbes)

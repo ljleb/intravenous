@@ -1,4 +1,5 @@
 import type { MeterMode, ObservationDisplayValue } from "./observations";
+import { MeterBallistics, type MeterMotion } from "./meterBallistics";
 
 export const levelDomain = { min: -60, max: 6 } as const;
 export const valueDomain = { min: 0, max: 1 } as const;
@@ -46,4 +47,42 @@ export function meterReading(mode: MeterMode, result?: ObservationDisplayValue):
         below: db < levelDomain.min, above: db > levelDomain.max, overReference: peak > 1,
         text: `${label(db)} dBFS peak · ${label(rmsDb)} dBFS RMS`
             + (nonfinite && nonfinite !== "0" ? ` · ${nonfinite} nonfinite samples` : "") };
+}
+
+// Owns one compatible meter's presentation history, independent of executable
+// lifetime. Only copied telemetry survives; no old frame is accepted as current.
+export class MeterPresentationState {
+    private readonly motion = new MeterBallistics();
+    private displayed: MeterMotion = { peak: 0, rms: 0 };
+    private current?: ObservationDisplayValue;
+    private previous?: ObservationDisplayValue;
+    private active = false;
+
+    update(result: ObservationDisplayValue | undefined, active: boolean, now: number): void {
+        this.current = result;
+        this.active = active;
+        const available = meterReading("value", result).available;
+        if (!active || (result !== undefined && !result.pending && !available)) {
+            this.previous = undefined;
+            this.displayed = { peak: 0, rms: 0 };
+        } else if (available) {
+            const peak = result!.value!.peak as number, rms = result!.value!.rms as number;
+            this.displayed = this.previous ? this.motion.update(peak, rms, now) : this.motion.reset(peak, rms, now);
+            this.previous = result;
+        } else this.advance(now);
+    }
+    advance(now: number): void {
+        if (this.active && this.previous) this.displayed = this.motion.advance(now);
+    }
+    get moving(): boolean { return this.active && !!this.previous && this.motion.moving; }
+    get updating(): boolean { return this.active && !!this.previous && (!this.current || !!this.current.pending); }
+    reading(mode: MeterMode): MeterReading {
+        const result = !this.active ? undefined : this.updating ? this.previous : this.current;
+        return meterReading(mode, result && { ...result,
+            value: { ...result.value, peak: this.displayed.peak, rms: this.displayed.rms } });
+    }
+    status(mode: MeterMode): string {
+        return this.updating ? `Updating · previous reading: ${meterReading(mode, this.previous).text}`
+            : meterReading(mode, this.active ? this.current : undefined).text;
+    }
 }

@@ -7,7 +7,7 @@ export type TimelineViewport = {
 export const initialTimelineViewport: TimelineViewport = {
     beginSeconds: 0, secondsPerPixel: 0.01, laneHeight: 240, scrollTop: 0,
 };
-export const minimumLaneHeight = 32;
+export const minimumLaneHeight = 12;
 export const maximumLaneHeight = 1600;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 

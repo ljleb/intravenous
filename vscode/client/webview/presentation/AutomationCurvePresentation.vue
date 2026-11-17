@@ -6,10 +6,10 @@ import type { AutomationPoint, CurveInterpolation } from "../../src/automationCu
 import { useNode } from "./nodeContext";
 import { useTimelineWindow } from "../timeline/timelineContext";
 import NodeLane from "./NodeLane.vue";
-import LiveOutputMeters from "./LiveOutputMeters.vue";
 import type { NodeDisplayMode } from "./displayMode";
 
-defineProps<{ mode: NodeDisplayMode }>();
+const props = defineProps<{ mode: NodeDisplayMode }>();
+const editable = computed(() => props.mode === "editable");
 const node = useNode();
 const { edits, version, begin } = useAutomationEditing();
 const time = useTimelineWindow();
@@ -44,13 +44,14 @@ const editing = ref<{ id: number; left: number; top: number } | null>(null);
 const segmentPopover = ref<HTMLElement | null>(null);
 const selected = computed<AutomationPoint | null>(() => curve.value?.points.find((point) => point.id === editing.value?.id) ?? null);
 function editSegment(event: MouseEvent, point: AutomationPoint) {
+    if (!editable.value) return;
     event.preventDefault(); event.stopPropagation();
     editing.value = { id: point.id, left: Math.max(4, Math.min(window.innerWidth - 220, event.clientX)),
         top: Math.max(4, Math.min(window.innerHeight - 125, event.clientY)) };
     void nextTick(() => segmentPopover.value?.querySelector<HTMLSelectElement>("select")?.focus({ preventScroll: true }));
 }
 function changeSegment(interpolation: CurveInterpolation, tension: number) {
-    if (!node.value.address || !selected.value || !Number.isFinite(tension) || tension < 0 || tension > 1) return;
+    if (!editable.value || !node.value.address || !selected.value || !Number.isFinite(tension) || tension < 0 || tension > 1) return;
     void edits.segment(node.value.address, selected.value.id, interpolation, tension);
 }
 function outside(event: PointerEvent) {
@@ -63,25 +64,27 @@ function pointerAxes(): CurveAxes | null {
     return { ...axes.value, left: rect.left, top: rect.top, width: rect.width, height: rect.height };
 }
 function start(event: PointerEvent, id: number) {
+    if (!editable.value) return;
     const axes = pointerAxes();
     if (axes && node.value.address) begin(event, node.value.address, id, axes);
 }
 function add(event: MouseEvent) {
-    if (event.button !== 0 || !node.value.address || !curve.value) return;
+    if (!editable.value || event.button !== 0 || !node.value.address || !curve.value) return;
     const axes = pointerAxes();
     if (!axes) return;
     event.preventDefault(); event.stopPropagation();
     void edits.add(node.value.address, curvePointAt(axes, { x: event.clientX, y: event.clientY }));
 }
 function remove(event: MouseEvent, id: number) {
+    if (!editable.value) return;
     event.preventDefault(); event.stopPropagation();
     if (node.value.address) void edits.remove(node.value.address, id);
 }
 let observer: ResizeObserver | null = null;
 onMounted(() => {
     window.addEventListener("pointerdown", outside, true);
-    observer = new ResizeObserver(() => {
-        if (surface.value) { width.value = Math.max(1, surface.value.clientWidth); height.value = Math.max(1, surface.value.clientHeight); }
+    observer = new ResizeObserver(([entry]) => {
+        if (entry) { width.value = Math.max(1, entry.contentRect.width); height.value = Math.max(1, entry.contentRect.height); }
     });
     if (surface.value) observer.observe(surface.value);
 });
@@ -90,13 +93,15 @@ onBeforeUnmount(() => { observer?.disconnect(); window.removeEventListener("poin
 
 <template>
     <NodeLane :mode="mode">
-        <LiveOutputMeters v-if="mode === 'mini' || mode === 'nano'" :mode="mode"
-            :bounds="axes ? { min: axes.min, max: axes.max } : undefined" />
-        <svg v-show="mode !== 'mini' && mode !== 'nano'" ref="surface" class="automation-curve" :viewBox="`0 0 ${width} ${height}`"
-            :aria-label="`${node.displayName || 'Automation curve'}; double-click to add a point`" @dblclick="add">
-            <title>{{ error || 'Double-click to add a point or edit a point’s segment. Drag a point to move it. Right-click a point to remove it.' }}</title>
-            <path :d="path" class="curve-line" />
-            <circle v-for="point in view?.points ?? []" :key="point.id" :cx="x(point.seconds)" :cy="y(point.value)"
+        <svg ref="surface" class="automation-curve" :viewBox="`0 0 ${width} ${height}`" preserveAspectRatio="none"
+            :aria-label="`${node.displayName || 'Automation curve'}${editable ? '; double-click to add a point' : '; read-only'}`" @dblclick="add">
+            <title>{{ error || (editable ? 'Double-click to add a point or edit a point’s segment. Drag a point to move it. Right-click a point to remove it.' : 'Automation curve') }}</title>
+            <template v-if="mode === 'nano'">
+                <rect v-for="(segment, index) in view?.paths ?? []" :key="index" class="curve-coverage"
+                    :x="x(segment.begin.seconds)" y="0" :width="Math.max(0, x(segment.end.seconds) - x(segment.begin.seconds))" :height="height" />
+            </template>
+            <path v-else :d="path" class="curve-line" />
+            <circle v-for="point in editable ? view?.points ?? [] : []" :key="point.id" :cx="x(point.seconds)" :cy="y(point.value)"
                 r="5" class="curve-point" role="button" :aria-label="`Point at ${point.seconds} seconds: ${point.value}`"
                 @pointerdown="start($event, point.id)" @dblclick.stop="editSegment($event, point)" @contextmenu="remove($event, point.id)">
                 <title>{{ `${point.seconds} s: ${point.value}` }}</title>
@@ -104,7 +109,7 @@ onBeforeUnmount(() => { observer?.disconnect(); window.removeEventListener("poin
         </svg>
     </NodeLane>
     <Teleport to="body">
-        <div v-if="editing && selected" ref="segmentPopover" class="automation-point-popover"
+        <div v-if="editable && editing && selected" ref="segmentPopover" class="automation-point-popover"
             :style="{ left: `${editing.left}px`, top: `${editing.top}px` }"
             role="dialog" aria-label="Automation segment" @keydown.esc="editing = null" @pointerdown.stop @wheel.stop>
             <label>Segment <select :value="selected.interpolation"
@@ -121,6 +126,7 @@ onBeforeUnmount(() => { observer?.disconnect(); window.removeEventListener("poin
 
 <style scoped>
 .automation-curve { display: block; width: 100%; height: 100%; min-height: 1px; overflow: hidden; touch-action: none; }
+.curve-coverage { fill: var(--vscode-charts-yellow, #e2c36b); opacity: .2; pointer-events: none; }
 .curve-line { fill: none; stroke: var(--vscode-charts-yellow, #e2c36b); stroke-width: 1.5; pointer-events: none; }
 .curve-point { fill: var(--vscode-editor-background); stroke: var(--vscode-charts-yellow, #e2c36b); stroke-width: 2; cursor: grab; }
 .curve-point[data-hovered] { fill: var(--vscode-charts-yellow, #e2c36b); }
