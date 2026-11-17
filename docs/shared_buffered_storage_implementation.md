@@ -6,6 +6,11 @@ This is coordination, not a replacement for the contracts in
 [Output capabilities, section 8](./output_capabilities_and_background_demand.md#8-shared-buffered-storage-sparse-mappings-and-resource-limits).
 Builds, tests, typechecks and profiling remain owner-run.
 
+Active successor, 2026-11-17: the owner authorizes the retention and reclamation
+policy after successful output-gain verification. Follow
+[the page-cache implementation plan](./page_cache_implementation.md). Playhead
+work waits for owner verification of that feature.
+
 Latest checkpoint, 2026-11-17: the owner reports all tests pass and has run
 the storage benchmark. The results below verify the tested behaviour and expose
 two representation costs to resolve before storage performance is consolidated.
