@@ -78,13 +78,30 @@ must preserve that lossless recording behaviour.
 
 ## Valid-content retention decision
 
-The owner explicitly selected preservation of all valid buffered contents for
-this implementation. Tick recording and Tock/buffered payloads are authoritative
-until invalidated; prepared mappings can be reclaimed independently. Do not
-infer a reconstruction guarantee from the Tock callback domain. Keep backing
-page ownership separate from view/cache ownership so future code with an
-explicit reconstruction guarantee can evict valid backing without changing
-the storage contract. Adding that guarantee is not part of this feature.
+The 2026-11-16 implementation preserved every valid buffered payload until
+invalidation. On 2026-11-17 the owner supplies a stronger reconstruction
+contract: Sequential/buffered recordings are non-recomputable, while
+Region/Coverage buffered results are recomputable for the same selected
+snapshot and receive cache priority over computed intermediates. The old
+policy is preserved [historically](./historical/buffered_reconstruction_before_2026-11-17/shared_buffered_storage_implementation.md).
+
+The shared page store currently still preserves valid Tock payloads. Near-term
+follow-up must classify authoritative recordings separately from recomputable
+cached Tock contents, reclaim only unpinned reconstructible content, preserve
+logical Regions/dependency versions, and schedule missing windows before use.
+Add memory-pressure, reconstruction, cache-priority and reader-pin regressions.
+Do not put eviction, reconstruction or allocation on the audio thread.
+This follow-up follows the active input-union restoration/output-gain feature;
+it is not claimed implemented by recording the new policy.
+
+The owner's later clarification defines asymmetric retention priorities:
+computed pages favor reclamation unless expected reuse justifies retention.
+Region/Coverage buffered pages favor retention, subject to memory pressure and
+reconstruction for the same snapshot. Sequential/buffered pages cannot lose
+their only recoverable contents. Implement cache admission as well as eviction
+under this [retention-cost contract](./output_capabilities_and_background_demand.md#retention-cost-and-memory-pressure-owner-clarification-2026-11-17).
+Include reuse after incremental changes to background subgraphs in the policy.
+Do not treat the priorities as fixed numerical cost estimates.
 
 ## Implementation checkpoint, 2026-11-17
 

@@ -94,7 +94,7 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_module_manual_fanout(
     graph.outputs();
     auto configured = iv::details::take_built_graph(session.get());
     configured.manual_controls.push_back({
-        .id = {.node = {.instance_id = "module"}, .input_name = "value"},
+        .id = {.node = {.instance_id = "module"}, .port_name = "value"},
         .input = {module_handle, iv::PortKind::sample, 0}, .settled_value = .25f,
         .participation = connected ? iv::ManualControlParticipation::disconnected_only
             : iv::ManualControlParticipation::participate_with_connections,
@@ -253,7 +253,7 @@ TEST_F(GraphJitRuntimeFixture,
             graph->manual_controls.push_back(iv::ConfiguredManualControl{
                 .id = {
                     .node = {.instance_id = "instance:manual"},
-                    .input_name = "value",
+                    .port_name = "value",
                 },
                 .input = {*target, iv::PortKind::sample, 0},
                 .settled_value = iv::Sample{0.25f},
@@ -378,7 +378,7 @@ TEST_F(GraphJitRuntimeFixture,
     connected_graph->manual_controls.push_back(iv::ConfiguredManualControl{
         .id = {
             .node = {.instance_id = "instance:connected"},
-            .input_name = "in",
+            .port_name = "in",
         },
         .input = {connected_targets[0], iv::PortKind::sample, 0},
         .settled_value = iv::Sample{0.5f},
@@ -388,7 +388,7 @@ TEST_F(GraphJitRuntimeFixture,
     connected_graph->manual_controls.push_back(iv::ConfiguredManualControl{
         .id = {
             .node = {.instance_id = "instance:disconnected-only"},
-            .input_name = "in",
+            .port_name = "in",
         },
         .input = {connected_targets[1], iv::PortKind::sample, 0},
         .settled_value = iv::Sample{0.5f},

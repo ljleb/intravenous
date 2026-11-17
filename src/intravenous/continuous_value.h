@@ -170,6 +170,11 @@ struct SampleContinuousValueExtension {
 
     using combine_values_type = Sample (*)(Sample, Sample) noexcept;
 
+    static constexpr void apply_output_gain(Sample& destination, Sample source, Sample gain) noexcept
+    {
+        destination = source * gain;
+    }
+
     [[nodiscard]] static constexpr const_reference read_value(
         std::span<storage_element const> elements) noexcept
     {
@@ -709,6 +714,12 @@ struct FFTBlockContinuousValueExtension {
         std::span<FFTBin>, std::span<FFTBin const>) noexcept;
     using neutral_value_type = void (*)(std::span<FFTBin>) noexcept;
 
+    static constexpr void apply_output_gain(MutableFFTBlock destination, FFTBlock source, Sample gain) noexcept
+    {
+        for (std::size_t index = 0; index < source.size(); ++index)
+            destination[index] = source[index] * gain.value;
+    }
+
     [[nodiscard]] static constexpr const_reference read_value(
         std::span<storage_element const> elements) noexcept
     {
@@ -1006,9 +1017,31 @@ struct ContinuousValueTypeInfo {
         void const* source,
         std::size_t source_elements) noexcept = nullptr;
     std::span<ObservationOperation const> observation_operations{};
+    // Writes one scaled value to a selected view; source contents are immutable.
+    void (*apply_output_gain)(void* destination, void const* source,
+        std::size_t elements_per_value, Sample gain) noexcept = nullptr;
 };
 
 namespace continuous_value_details {
+
+template<class Extension>
+void erased_output_gain(void* destination, void const* source,
+    std::size_t elements_per_value, Sample gain) noexcept
+{
+    using Element = typename Extension::storage_element;
+    Extension::apply_output_gain(
+        Extension::write_value(std::span{static_cast<Element*>(destination), elements_per_value}),
+        Extension::read_value(std::span{static_cast<Element const*>(source), elements_per_value}), gain);
+}
+
+template<class Extension>
+consteval auto output_gain_operation() noexcept
+{
+    using Operation = void (*)(void*, void const*, std::size_t, Sample) noexcept;
+    if constexpr (requires { &Extension::apply_output_gain; })
+        return static_cast<Operation>(&erased_output_gain<Extension>);
+    else return static_cast<Operation>(nullptr);
+}
 
 template<class Extension>
 bool erased_values_equal(
@@ -1090,6 +1123,8 @@ inline constexpr auto continuous_value_type_registry = std::array {
                 extension>(),                                            \
         .observation_operations =                                       \
             continuous_value_details::observation_operations<extension>(),\
+        .apply_output_gain =                                           \
+            continuous_value_details::output_gain_operation<extension>(),\
     },
     IV_CONTINUOUS_VALUE_TYPES(IV_CONTINUOUS_VALUE_TYPE_INFO)
 #undef IV_CONTINUOUS_VALUE_TYPE_INFO

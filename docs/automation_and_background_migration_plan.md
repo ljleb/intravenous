@@ -11,8 +11,15 @@ that baseline, not completion of this migration.
 
 ## 2026-11-16 superseding implementation destination
 
-The previously accepted `TickReplayMode::input_union`/`full` coverage coupling,
-whole-Region `tock_coverage()` materialization, and strict
+The November 16 removal of `TickReplayMode::input_union` was a documentation
+and source regression, corrected by the
+[2026-11-17 recovered contract](./tick_input_union_and_feedback_direction.md).
+Restore acyclic input-union coverage and apply effective full live coverage only
+to Tick members of feedback SCCs; exclude those SCCs from ordinary replay.
+Earlier mistaken wording is retained
+[historically](./historical/tick_coverage_before_intent_recovery_2026-11-17/automation_and_background_migration_plan.md).
+
+Whole-Region `tock_coverage()` materialization and strict
 `OutputRetention::persisted` retention are **superseded** by [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md). The
 historical decisions and source checkpoints later in this file remain useful
 as records of the staged implementation, not instructions to retain those
@@ -25,10 +32,11 @@ The complete follow-up migration must:
    and replace `OutputRetention::{ephemeral,persisted}` with
    `OutputRealization::{computed,buffered}` across static traits, reflection,
    configured graphs, serialization, GraphJit plans and public tests.
-2. Separate replay eligibility from output coverage. Live Tick Sequential
-   streams are full during physical execution; `.detach()` remains a
-   non-replayable stateful feedback boundary. Remove the generated
-   input-union/full live Tick coverage proof as a normative requirement.
+2. Preserve `TickReplayMode::{disabled,input_union,full}` and distinguish
+   computed values from logical coverage. Acyclic input-union nodes keep sparse
+   coverage. Tick members of feedback SCCs have effective full live coverage
+   and are explicitly ineligible for ordinary contextual replay. Remove only
+   the recursive coverage proof, not input-union semantics.
 3. Add windowed versus complete-buffer Region/Coverage input capabilities.
    Reject Coverage-to-Region and computed-to-complete-buffer connections;
    make explicit materialization nodes author a bounded buffered result.

@@ -416,7 +416,9 @@ class BackgroundPropagationWorkspace {
                                                IndexCoverage const& changed);
     static void publish_input_requirement_callback(void* accumulator,
                                                    IndexCoverage const& required);
-    // Generated full-coverage forward propagation for replayable Tick outputs.
+    // Generated input-union and full forward propagation. Both may also
+    // describe live Tick coverage without replaying Tick sample values.
+    static void replay_forward_coverage(void*, ReflectedNodeForwardCoverageContext const&);
     static void
     replay_full_forward_coverage(void*,
                                  ReflectedNodeForwardCoverageContext const& context);

@@ -445,7 +445,7 @@ void SocketRpcGraphScopeResultBuilder::fail(std::string message) {
 
 namespace {
 Json graph_scope_ports_json(std::vector<NodeInstancePortInfo> const& ports,
-    std::span<ProjectGraphScopeManualControl const> controls = {})
+    std::span<ProjectGraphScopeManualControl const> controls = {}, ManualControlKind kind = ManualControlKind::input)
 {
     auto json = Json::array();
     for (auto const& port : ports) {
@@ -457,7 +457,9 @@ Json graph_scope_ports_json(std::vector<NodeInstancePortInfo> const& ports,
         if (port.event_type) {
             entry["eventType"] = std::string(details::event_type_name(*port.event_type));
         }
-        auto control = std::ranges::find_if(controls, [&](auto const& value) { return value.control.id.input_name == port.name; });
+        auto control = std::ranges::find_if(controls, [&](auto const& value) {
+            return value.control.id.kind == kind && value.control.id.port_name == port.name;
+        });
         if (control != controls.end()) entry["manualControl"] = Json{
             {"value", control->control.stored_value.value}, {"enabled", control->control.enabled},
             {"participation", control->control.participation == ManualControlParticipation::disconnected_only
@@ -500,7 +502,7 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
             {"definitionId", node.construction_definition_id.empty()
                 ? node.instance.definition_id : node.construction_definition_id},
             {"sampleInputs", graph_scope_ports_json(node.interface.sample_inputs, node.manual_controls)},
-            {"sampleOutputs", graph_scope_ports_json(node.interface.sample_outputs)},
+            {"sampleOutputs", graph_scope_ports_json(node.interface.sample_outputs, node.manual_controls, ManualControlKind::output_gain)},
             {"eventInputs", graph_scope_ports_json(node.interface.event_inputs)},
             {"eventOutputs", graph_scope_ports_json(node.interface.event_outputs)},
             {"hasChildren", node.interface.has_children},

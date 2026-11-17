@@ -6,7 +6,10 @@ background scheduler have not yet been migrated to this contract. This document
 records intended behavior, not a claim about the checked-in implementation._
 
 This design follows [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md), which supersedes the
-old replay-mode/coverage coupling and establishes demand-scoped computed data.
+old whole-Region materialization assumptions and establishes demand-scoped
+computed data. The [2026-11-17 recovered coverage contract](./tick_input_union_and_feedback_direction.md)
+restores acyclic input-union coverage and limits full-coverage overrides to
+feedback SCCs; the November 16 removal of input-union semantics was erroneous.
 It also extends [Coverage, Random Access, And Background Evaluation](./coverage_and_background_evaluation.md),
 [Sequential Port Storage And Connection Planning](./sequential_port_storage_planning.md),
 [Batched Node Callback Direction](./batched_node_callbacks_direction.md), and
@@ -182,8 +185,8 @@ The default policy remains neutral, preserving existing input behavior. A
 Sequential Sample input can opt into manual fallback. Existing non-Sample
 neutral rules remain unchanged where no manual-control representation exists.
 
-**Sequential inputs resolve absence; live Tick Sequential outputs are
-continuous.** Each Sequential input supplies a resolved stream: it combines
+**Sequential inputs resolve absence; computed Tick values and output coverage
+remain distinct.** Each Sequential input supplies a resolved stream: it combines
 covered upstream contributions and uses its own neutral/manual fallback only
 when the selected source coverage is known absent. The callback receives an
 ordinary value for each executed position, with no optional sample type.
@@ -191,14 +194,19 @@ The input's fallback is not an additional source contribution.
 
 A live Tick `SequentialOutputConfig` produces a value for each physical
 execution position, including positions where its inputs used fallback.
-Its output existence is not the union of sparse source coverage. A buffered
-recording of those live samples has a separately published, possibly sparse
-**historical** recording coverage. If a Tick computation is intrinsically
-eligible for background replay, GraphJit must still prove contextual
-availability of upstream data and avoid non-replayable `.detach()` delays.
-The checked-in `TickReplayMode::{disabled,input_union,full}` and
-`prove_full_live_tick_coverage()` rules are implementation details to replace,
-not the intended output coverage semantics.
+Outside feedback SCCs, an `input_union` declaration derives output coverage
+from input coverage, while `full` declares full coverage. The callback's use
+of fallback does not fill output gaps. A downstream Sequential input applies
+its own fallback in those gaps. A buffered recording has separately published
+historical coverage and valid contents. Contextual replay still requires the
+selected dependencies to be available or reproducible.
+
+The [2026-11-17 correction](./tick_input_union_and_feedback_direction.md)
+restores that distinction. Only the recursive live-coverage proof is retired:
+Tick members of feedback SCCs have effective full live coverage and cannot be
+contextually replayed through ordinary background Tick replay. The declarations
+remain unchanged. Earlier full-only wording is preserved
+[historically](./historical/tick_coverage_before_intent_recovery_2026-11-17/automation_and_suspendable_coverage_direction.md).
 
 Automation is a Tock-produced **computed** Region/Coverage result, not a
 realtime Tick node with special authored sparse output coverage. The outgoing
@@ -419,19 +427,20 @@ feature across event declarations, trait/ABI bindings, scheduler, exact coverage
 manual fallback, and automation rather than adding local compatibility
 workarounds that make those contracts appear implemented when they are not.
 
-### Feedback SCCs and recorded boundaries (2026-11-16 supersession)
+### Feedback SCCs and recorded boundaries (2026-11-17 correction)
 
-The earlier input-union full-coverage proof was needed only because
-`TickReplayMode` combined replay eligibility with sparse live output coverage.
-With `SequentialOutputConfig`, each live Tick Sequential output is continuously
-produced. An initialized `.detach()` feedback delay is part of the realtime
-Sequential schedule, not a background coverage producer or a replayable
-position-addressed input. An unresolved feedback SCC cannot be replayed in
-background, even when its individual Tick computations are intrinsically pure.
-No recursive `input_union` coverage solver is required for live SCC output
-existence. Recorded Tick Sequential/buffered outputs expose actual published
-historical coverage separately. The old proof decision is preserved in the
-[historical predecessor](./historical/output_ports_before_computed_buffered_2026-11-16.md).
+Tick nodes in a feedback SCC have effective full live coverage, including
+members declared `input_union`. No independent full contribution or recursive
+coverage fixed point is required. Preserve each declaration. Explicit semantic
+SCC membership excludes ordinary background Tick replay even when every member
+is intrinsically replayable. An initialized `.detach()` remains part of realtime
+scheduling. Published recording boundaries can supply historical data without
+replaying their feedback producer.
+
+This override is local to feedback SCCs. Acyclic input-union nodes retain sparse
+coverage. The earlier proof and the mistaken full-only replacement are preserved
+in the [historical predecessor](./historical/output_ports_before_computed_buffered_2026-11-16.md)
+and [November 16 wording](./historical/tick_coverage_before_intent_recovery_2026-11-17/automation_and_suspendable_coverage_direction.md).
 
 ### Playback preparation and missed background deadlines
 

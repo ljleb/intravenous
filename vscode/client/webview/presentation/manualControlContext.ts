@@ -11,12 +11,13 @@ export function useOptionalManualControls(): Context | null { return inject(key,
 
 // Semantic presentation capability; transport and backend interaction IDs stay
 // in the host. Specialized components can use the same input as the fallback.
-export function useManualInput(inputName: MaybeRefOrGetter<string>) {
+export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: MaybeRefOrGetter<"input" | "output"> = "input") {
     const context = inject(key, null);
     const node = useNode();
     const id = computed<ManualControlId | null>(() => node.value.address
-        ? { node: node.value.address, inputName: toValue(inputName) } : null);
-    const port = computed(() => node.value.ports.find((entry) => entry.direction === "input"
+        ? toValue(direction) === "output" ? { node: node.value.address, outputName: toValue(inputName) }
+            : { node: node.value.address, inputName: toValue(inputName) } : null);
+    const port = computed(() => node.value.ports.find((entry) => entry.direction === toValue(direction)
         && entry.kind === "continuous" && entry.name === toValue(inputName)));
     const descriptor = computed(() => port.value?.kind === "continuous" ? port.value.manualControl : undefined);
     const state = computed(() => { void context?.version.value; return id.value ? context?.gestures.state(id.value) : undefined; });
@@ -31,6 +32,7 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>) {
             ?? descriptor.value?.value;
     });
     const limits = computed(() => {
+        if (toValue(direction) === "output") return { defaultValue: 1, min: undefined, max: undefined, scrubSpeed: undefined };
         const metadata = port.value?.kind === "continuous" ? port.value.valueTypes[0] : undefined;
         const finite = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) ? value : undefined;
         return { min: finite(metadata?.minValue), max: finite(metadata?.maxValue),

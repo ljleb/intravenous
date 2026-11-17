@@ -10,6 +10,7 @@
 #include <intravenous/basic_nodes/debug_probe.h>
 #include <intravenous/basic_nodes/filters.h>
 #include <intravenous/basic_nodes/noise.h>
+#include <intravenous/basic_nodes/output_gain.h>
 #include <intravenous/basic_nodes/polyphonic.h>
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/basic_nodes/shaping.h>
@@ -17,6 +18,7 @@
 #include <intravenous/basic_nodes/timing.h>
 
 IV_NODE("iv.builtin.constant", iv::Constant);
+IV_REGISTER_OUTPUT_GAIN_NODES();
 IV_NODE("iv.builtin.debug_probe", ::DebugProbe);
 
 IV_NODE("iv.builtin.automation.point_source", iv::automation::PointSource);

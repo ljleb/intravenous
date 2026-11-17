@@ -20,10 +20,12 @@ std::string_view graph_jit_runtime_package_source()
     static constexpr std::string_view part_1 = R"cpp(
 #include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/automation.h>
+#include <intravenous/basic_nodes/output_gain.h>
 
 // This fixture has an independent package catalog. Register the automation
 // implementations here without loading the rest of the builtin package.
 IV_NODE("iv.builtin.automation.point_source", iv::automation::PointSource);
+IV_REGISTER_OUTPUT_GAIN_NODES();
 IV_NODE("iv.builtin.automation.interpreter", iv::automation::Curve);
 IV_MODULE_CLASS("iv.builtin.automation.curve", iv::automation::AutomationCurve);
 
@@ -7349,7 +7351,7 @@ IV_MODULE("iv.test.automation.window_module", automation_window_module);
 // resolves to the input's neutral value. Their declared TickReplayMode decides
 // where that value is output.
 struct ReplayAddOne {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
     static constexpr auto inputs() { return std::array{iv::input<iv::Sample>("in")}; }
     static constexpr auto outputs() { return std::array{iv::output<iv::Sample>("out")}; }
     void tick_block(iv::TickBlockContext<ReplayAddOne> const& ctx) const {
@@ -7418,7 +7420,7 @@ void replay_sequential_resolution_module(iv::GraphBuilder& graph) {
     auto flip = graph.node<"iv.test.replay.ten_minus">();
     add(source);
     flip(source);
-    // Sequential replay resolves source gaps before evaluating add_one.
+    // Input-union replay preserves source gaps instead of publishing fallback values.
     auto added = graph.node<"iv.test.replay.window">(std::int64_t{18}, std::uint64_t{8});
     added(add);
     // full: [18, 26) straddles the source Region; [100, 104) lies outside it.
@@ -7437,7 +7439,8 @@ IV_MODULE("iv.test.replay.sequential_resolution_module", replay_sequential_resol
 
 template<bool ModuleChild>
 struct ReplayManualFallback {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = ModuleChild
+        ? iv::TickReplayMode::input_union : iv::TickReplayMode::full;
     // A nonzero neutral value must remain the combiner's identity, as the
     // Sequential fan-in contract requires: combine(neutral, x) == x.
     static constexpr iv::Sample shifted_add(iv::Sample left, iv::Sample right) noexcept {
@@ -7480,6 +7483,17 @@ struct ReplayLiveProbe {
     }
 };
 IV_NODE("iv.test.replay.live_probe", ReplayLiveProbe);
+void live_union_fallback_module(iv::GraphBuilder& graph) {
+    auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
+    auto sparse = graph.node<"iv.test.replay.add_one">();
+    auto resolved = graph.node<"iv.test.replay.manual_full">();
+    auto probe = graph.node<"iv.test.replay.live_probe">();
+    sparse(source);
+    resolved(sparse);
+    probe(resolved);
+    graph.outputs();
+}
+IV_MODULE("iv.test.replay.live_union_fallback", live_union_fallback_module);
 void replay_module_manual_resolution(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
     auto direct = graph.node<"iv.test.replay.manual_full">();

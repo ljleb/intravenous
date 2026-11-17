@@ -46,6 +46,7 @@ struct NodeImplementation {
     std::size_t node_bundle = 0;
     std::optional<NodeBundlePortId> resolved_module_input{};
     std::optional<std::size_t> observation_slot{};
+    bool native_background_gain = false;
     ContinuousInputConfig const* module_input_config = nullptr;
     RegisteredNodeTypeIdentity identity{};
     NodeCodeKey code_key{};

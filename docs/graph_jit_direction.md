@@ -2078,6 +2078,12 @@ This is intended behavior, not a current implementation claim; eventual
 verification should inspect emitted code as well as audio values at unity,
 non-unity, and during gesture transitions.
 
+The owner clarified on 2026-11-17 that this is a non-destructive output
+transform for every gain-capable output shape/realization, including buffered
+data already retained before the gain changed. Apply the selected gain on
+consumption without rewriting source backing or node state. Background/replay
+reads and observations must retain coherent gain-version selection.
+
 ## Lowering boundary
 
 The lowering result should carry immutable metadata sufficient for runtime work

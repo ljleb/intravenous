@@ -966,7 +966,7 @@ iv::ManualControlId manual_control_id()
 {
     return {
         .node = {.instance_id = "instance:manual"},
-        .input_name = "value",
+        .port_name = "value",
     };
 }
 
@@ -4395,4 +4395,94 @@ TEST_F(GraphExecutorFixture, PreparedGenerationCanBeDiscardedWithoutPublishingAC
     executor.handle_execution_read(read);
     EXPECT_EQ(read.active_generation, 1u);
     EXPECT_EQ(std::move(prepared).publish(), iv::GraphExecutorStageResult::ignored_stale);
+}
+
+
+TEST_F(GraphExecutorFixture, PreparedOutputGainsRejectCodeOnlyReplacementAndIgnoreLiveTargets)
+{
+    std::size_t state_offset = 0;
+    auto graph = std::const_pointer_cast<iv::CompiledGraph>(compiled_graph(
+        1, &observe_first, manual_control_layout(state_offset)));
+    auto id = manual_control_id();
+    id.kind = iv::ManualControlKind::output_gain;
+    iv::ConfiguredManualControl configured{.id = id, .settled_value = .5f, .requires_preparation = true};
+    auto configuration = std::make_shared<iv::ConfiguredGraph>();
+    configuration->manual_controls.push_back(configured);
+    graph->configured_graph = configuration;
+    graph->manual_controls.push_back({.configured = configured, .state_storage_offset = state_offset, .participates = true});
+    auto changed = std::make_shared<iv::CompiledGraph>(*graph);
+    auto successor = std::make_shared<iv::ConfiguredGraph>(*configuration);
+    successor->manual_controls[0].settled_value = .75f;
+    changed->configured_graph = successor;
+    EXPECT_FALSE(iv::GraphExecutor::can_replace_realtime_code(*graph, *changed));
+    EXPECT_TRUE(iv::GraphExecutor::can_replace_realtime_code(*graph, *graph));
+    iv::GraphExecutor executor;
+    ASSERT_EQ(stage_graph(executor, graph), iv::GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+    executor.tick_block(index(0), 16);
+    ASSERT_NE(first_tick.storage, nullptr);
+    iv::ManualControlRuntimeState before;
+    std::memcpy(&before, first_tick.storage + state_offset, sizeof(before));
+    EXPECT_FALSE(executor.set_manual_control_target(1, id, .9f));
+    executor.tick_block(index(16), 16);
+    iv::ManualControlRuntimeState after;
+    std::memcpy(&after, first_tick.storage + state_offset, sizeof(after));
+    EXPECT_EQ(after.target_bits, before.target_bits);
+}
+
+
+TEST_F(BackgroundCoveragePropagationFixture, InputUnionReplayPreservesGapsWhileFullReplayCoversThem)
+{
+    using namespace iv;
+    using namespace iv::graph_jit;
+    for (auto [mode, authored] : {std::pair{TickReplayMode::input_union, false},
+            std::pair{TickReplayMode::full, false}, std::pair{TickReplayMode::full, true}}) {
+        BackgroundEvaluationPlan plan;
+        plan.nodes = {{.bundle = 0, .replays_tick = true,
+            .authored_forward_coverage = authored,
+            .uses_replay_forward_coverage = !authored, .replay_mode = mode,
+            .inputs = {0, 1}, .outputs = {2}}};
+        plan.ports = {
+            {.node = 0, .configured_port = {0, PortKind::sample, 0},
+                .kind = PortKind::sample, .direction = PortDirection::input,
+                .sample_fallback_value = .25f,
+                .accumulators = {.input_change = 0, .input_requirement = 0}},
+            {.node = 0, .configured_port = {0, PortKind::sample, 1},
+                .kind = PortKind::sample, .direction = PortDirection::input,
+                .sample_fallback_value = 1.f,
+                .accumulators = {.input_change = 1, .input_requirement = 1}},
+            {.node = 0, .configured_port = {0, PortKind::sample, 0},
+                .kind = PortKind::sample, .direction = PortDirection::output,
+                .replayed_tick_output = true,
+                .accumulators = {.output_change = 0, .output_requirement = 0}},
+        };
+        plan.accumulators = {.input_change_count = 2, .output_change_count = 1,
+            .output_requirement_count = 1, .input_requirement_count = 2};
+        BackgroundCoverageState state(1);
+        BackgroundPropagationWorkspace workspace(plan, 48000);
+        CompiledGraphBackgroundOperations operations{
+            .propagate_forward = +[](BackgroundEvaluationCall* call) {
+                for (auto const& node : std::span<BackgroundNodeCall>(call->nodes)) {
+                    if (!has_activity(node.activity, BackgroundNodeActivity::forward)) continue;
+                    if (node.replay_forward)
+                        node.replay_forward(node.replay_context, node.forward);
+                    else {
+                        auto const coverage = node.forward.inputs.data()[0].coverage();
+                        node.forward.outputs.data()[0].publish_coverage(coverage);
+                        node.forward.outputs.data()[0].change(coverage);
+                    }
+                }
+            },
+            .propagate_reverse = &no_op_background_evaluate, .evaluate = &no_op_background_evaluate};
+        auto prepared = workspace.prepare(operations, state, {
+            .locally_changed_nodes = {0},
+            .input_changes = {{.port = 0, .coverage = index_coverage({{20, 24}}),
+                .changed = index_coverage({{20, 24}})}, {.port = 1}},
+        });
+        auto result = workspace.commit(state, std::move(prepared));
+        ASSERT_EQ(result.output_changes.size(), 1u);
+        if (authored || mode == TickReplayMode::input_union)
+            EXPECT_EQ(result.output_changes[0].coverage, index_coverage({{20, 24}}));
+        else EXPECT_EQ(result.output_changes[0].coverage, full_index_coverage());
+    }
 }

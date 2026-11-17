@@ -1,6 +1,8 @@
 import { addressKey, type GraphScope, type NodeAddress } from "./graphScope";
 
-export type ManualControlId = { node: NodeAddress; inputName: string };
+export type ManualControlId = { node: NodeAddress } & (
+    { inputName: string; outputName?: never } | { outputName: string; inputName?: never });
+export function manualControlName(control: ManualControlId): string { return control.outputName ?? control.inputName; }
 export type ManualControlDescriptor = {
     value: number;
     enabled: boolean;
@@ -32,11 +34,12 @@ export interface ManualControlTransport {
     endManualControl(interactionId: string, value: number): Promise<void>;
 }
 export function manualControlKey(control: ManualControlId): string {
-    return JSON.stringify([addressKey(control.node), control.inputName]);
+    return JSON.stringify([addressKey(control.node), control.outputName === undefined ? "input" : "outputGain", manualControlName(control)]);
 }
 export function resolveManualControl(scope: GraphScope | null, id: ManualControlId) {
     const node = scope?.nodes.find((entry) => addressKey(entry.address) === addressKey(id.node));
-    return node?.sampleInputs.find((port) => port.name === id.inputName)?.manualControl;
+    return (id.outputName === undefined ? node?.sampleInputs : node?.sampleOutputs)
+        ?.find((port) => port.name === manualControlName(id))?.manualControl;
 }
 
 type Interaction = ManualControlInteractionState & {
@@ -87,13 +90,13 @@ export class ManualControlInteractions {
         const key = this.key(owner, action.interactionId);
         if (action.action === "begin") {
             const descriptor = resolveManualControl(this.scope, action.control);
-            if (!descriptor?.available || !descriptor.enabled) throw new Error("The manual input is unavailable");
+            if (!descriptor?.available || !descriptor.enabled) throw new Error("The control is unavailable");
             if (this.entries.has(key) && !["failed", "settled"].includes(this.entries.get(key)!.phase))
                 throw new Error("This manual interaction is already active");
             if ([...this.entries.values()].some((entry) => entry.phase !== "failed" && entry.phase !== "settled"
                 && manualControlKey(entry.control) === manualControlKey(action.control)
                 && !(entry.owner === owner && entry.ending)))
-                throw new Error("This input already has an active interaction");
+                throw new Error("This control already has an active interaction");
             const predecessors = [...this.entries.values()].filter((entry) => entry.owner === owner && entry.ending
                 && entry.phase !== "failed" && entry.phase !== "settled"
                 && manualControlKey(entry.control) === manualControlKey(action.control));
@@ -220,10 +223,12 @@ export class ManualControlInteractions {
     reconcile(scope: GraphScope): void {
         this.scope = scope;
         for (const node of scope.nodes) {
-            for (const port of node.sampleInputs) {
+            for (const { port, control } of [
+                ...node.sampleInputs.map((port) => ({ port, control: { node: node.address, inputName: port.name } as ManualControlId })),
+                ...node.sampleOutputs.map((port) => ({ port, control: { node: node.address, outputName: port.name } as ManualControlId })),
+            ]) {
                 const descriptor = port.manualControl;
                 if (!descriptor) continue;
-                const control = { node: node.address, inputName: port.name };
                 const key = manualControlKey(control);
                 if (!descriptor.live) this.remoteLive.delete(key);
                 else if (descriptor.liveValue !== undefined && !this.remoteLive.has(key))

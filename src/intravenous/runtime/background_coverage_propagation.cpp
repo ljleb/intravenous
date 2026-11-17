@@ -1141,8 +1141,9 @@ void BackgroundPropagationWorkspace::publish_output_coverage(
     graph_jit::BackgroundPortIndex output, IndexCoverage const& published_coverage)
 {
     auto const& planned = port(output);
-    auto const& coverage = planned.replayed_tick_output
-        ? graph_jit::full_index_coverage() : published_coverage;
+    // Generated full/union callbacks choose their coverage explicitly. An
+    // authored callback retains its own contract even on a replayed Tick.
+    auto const& coverage = published_coverage;
     if (planned.output_production != OutputProductionKind::sequential) {
         throw std::invalid_argument(
             "Region or Coverage output must publish Region ranges");
@@ -1429,6 +1430,20 @@ void publish_replay_outputs(ReflectedNodeForwardCoverageContext const& context,
 }
 } // namespace
 
+// An open manual/default input contributes a value, not a connected coverage
+// source. Its fallback must not enlarge the input union.
+void BackgroundPropagationWorkspace::replay_forward_coverage(
+    void*, ReflectedNodeForwardCoverageContext const& context)
+{
+    IndexCoverage coverage;
+    for (auto const& input : static_cast<std::span<InputCoverageChange const>>(context.inputs))
+        coverage.include(input.coverage());
+    for (auto const& input : static_cast<std::span<InputCoverageChange const>>(context.event_inputs))
+        coverage.include(input.coverage());
+    auto changed = context.local_state_changed ? coverage : replay_input_changes(context);
+    publish_replay_outputs(context, coverage, changed);
+}
+
 // TickReplayMode::full. The output exists at every position, including where
 // every Sequential input resolves to its fallback and for nodes without
 // inputs. Reverse propagation still requires only covered upstream positions.
@@ -1599,7 +1614,8 @@ void BackgroundPropagationWorkspace::initialize_calls()
             .sample_rate = sample_rate_,
         };
         if (node.uses_replay_forward_coverage) {
-            frame.replay_forward = &replay_full_forward_coverage;
+            frame.replay_forward = node.replay_mode == TickReplayMode::input_union
+                ? &replay_forward_coverage : &replay_full_forward_coverage;
         }
         if (node.uses_replay_reverse_coverage) {
             frame.replay_reverse = &replay_reverse_coverage;

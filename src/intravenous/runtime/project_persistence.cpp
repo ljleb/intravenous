@@ -357,6 +357,9 @@ void ProjectPersistence::replay(std::vector<ProjectMessageNotification>& message
             } else if (command.command == "graphConnections.delete") {
                 connections.erase(require_string(args, "connection_id"));
             } else if (command.command == "manualControls.upsert") {
+                if (args.contains("input_name") && args.contains("output_name"))
+                    throw std::runtime_error("manual control must select one input or output");
+                auto const output_gain = args.contains("output_name");
                 auto const node = args.find("node");
                 auto const value = args.find("value");
                 auto const enabled = args.find("enabled");
@@ -388,7 +391,8 @@ void ProjectPersistence::replay(std::vector<ProjectMessageNotification>& message
                     .id = {
                         .node = parse_node_address_json(
                             *node, ProjectConnectionJsonNames::project_file),
-                        .input_name = require_string(args, "input_name"),
+                        .port_name = require_string(args, output_gain ? "output_name" : "input_name"),
+                        .kind = output_gain ? ManualControlKind::output_gain : ManualControlKind::input,
                     },
                     .stored_value = value->get<float>(),
                     .participation = parsed_participation,
@@ -397,9 +401,12 @@ void ProjectPersistence::replay(std::vector<ProjectMessageNotification>& message
                 auto key = node_address_json(
                     control.id.node,
                     ProjectConnectionJsonNames::project_file).dump()
-                    + "\n" + control.id.input_name;
+                    + (output_gain ? "\noutput:" : "\ninput:") + control.id.port_name;
                 manual_controls[std::move(key)] = std::move(control);
             } else if (command.command == "manualControls.delete") {
+                if (args.contains("input_name") && args.contains("output_name"))
+                    throw std::runtime_error("manual control must select one input or output");
+                auto const output_gain = args.contains("output_name");
                 auto const node = args.find("node");
                 if (node == args.end()) {
                     throw std::runtime_error(
@@ -409,7 +416,8 @@ void ProjectPersistence::replay(std::vector<ProjectMessageNotification>& message
                     parse_node_address_json(
                         *node, ProjectConnectionJsonNames::project_file),
                     ProjectConnectionJsonNames::project_file).dump()
-                    + "\n" + require_string(args, "input_name");
+                    + (output_gain ? "\noutput:" : "\ninput:")
+                    + require_string(args, output_gain ? "output_name" : "input_name");
                 manual_controls.erase(key);
             } else {
                 throw std::runtime_error("unknown project command: " + command.command);
@@ -465,8 +473,8 @@ void ProjectPersistence::replay(std::vector<ProjectMessageNotification>& message
                 lhs.id.node, ProjectConnectionJsonNames::project_file).dump();
             auto const rhs_address = node_address_json(
                 rhs.id.node, ProjectConnectionJsonNames::project_file).dump();
-            return std::tie(lhs_address, lhs.id.input_name)
-                < std::tie(rhs_address, rhs.id.input_name);
+            return std::tie(lhs_address, lhs.id.kind, lhs.id.port_name)
+                < std::tie(rhs_address, rhs.id.kind, rhs.id.port_name);
         });
     try {
         // Startup replay runs before any client attaches; clients read the

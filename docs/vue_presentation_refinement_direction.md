@@ -298,6 +298,19 @@ are consumed, without compromising version consistency. The exact handling of
 non-numeric and event-valued outputs is an explicit implementation-design
 question, not permission to multiply arbitrary payloads.
 
+**Owner clarification, 2026-11-17:** the gain is a non-destructive transform
+after the public output, including buffered outputs. It retroactively scales
+previously stored contents when those contents are read. Retained source bytes
+and node state are unchanged. This applies to all output shapes/realizations
+with a defined scalar gain operation, not only Sequential/computed outputs.
+Each consumer/evaluation uses a coherent selected gain snapshot; scaling must
+not change Region identities, coverage or materialized-valid positions.
+
+The owner explicitly selects `Sample` and `FFTBlock` as gain-capable types:
+multiply each Sample, or each real/imaginary FFT-bin component, across all
+channels. Event and `FractionalGlobalIndex` position outputs receive no gain
+control. Additional value types require their own explicit scaling capability.
+
 ## 4. Connection-cable legibility and future subgraphs
 
 Selection should **emphasize** the selected lanes' connections; it should not

@@ -193,6 +193,8 @@ struct CompiledGraph {
     std::uint64_t definitions_generation = 0;
     GraphJitKernelSpecialization specialization{};
     std::shared_ptr<ConfiguredGraph const> configured_graph{};
+    std::vector<std::pair<NodeBundlePortId, NodeBundlePortId>> output_gain_views{};
+    std::vector<std::pair<NodeBundlePortId, NodeBundlePortId>> background_output_gain_views{};
     std::vector<std::shared_ptr<PackageRevision const>> package_revisions{};
     graph_jit::ResolvedPortRealization port_realization{};
     NodeLayout node_layout{};

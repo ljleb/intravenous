@@ -3703,3 +3703,41 @@ The [measurement and correction checkpoint](./shared_buffered_storage_implementa
 records the focused owner command. No benchmark rerun is needed for this
 registration correction. Run those cases before declaring the follow-up complete
 and moving to output gain. Builds, tests and measurements remain owner-run.
+
+### Shared storage verified; output gain authorized (2026-11-17)
+
+The owner reports all 1,108 tests pass, including the newly registered storage
+regressions, and requests the next feature. Shared storage and its measured
+follow-up are consolidated for the tested scope; further tuning remains driven
+by real workloads. Output gain is now active, ahead of graph-authored snapping.
+
+The owner clarifies that gain is a non-destructive output transform, including
+retroactive reads of buffered contents. The short-lived same-session proposal
+to restrict gain to Sequential/computed outputs was withdrawn before source
+implementation. The [output gain implementation record](./output_gain_implementation.md)
+retains the accepted contract, implementation order and concrete source gaps.
+
+### Tick coverage intent recovery before output gain (2026-11-17)
+
+The owner identified the November 16 full-only Tick coverage migration as a
+semantic regression. The [recovered contract](./tick_input_union_and_feedback_direction.md)
+restores acyclic `input_union` coverage and uses effective full live coverage
+only for feedback SCC members, which cannot be contextually replayed. Restore
+that prerequisite before finishing output gain with multiplication nodes.
+The owner also requests removal of unnecessary unstaged gain-specific code.
+Output gain remains unfinished and unverified; no build/test/profile has been
+run by the agent. Preserve the existing computed/buffered and windowed-storage
+work. Do not confuse the earlier passing suite with verification of recovered
+intent.
+
+### Buffered reconstruction and cache priority follow-up (2026-11-17)
+
+Owner decision: Sequential/buffered recordings are non-recomputable;
+Region/Coverage buffered results are recomputable for the selected snapshot,
+with cache priority over computed results. The normative contract is in
+[output capabilities](./output_capabilities_and_background_demand.md#reconstruction-and-cache-priority-owner-decision-2026-11-17).
+This supersedes the earlier preserve-all-valid-Tock-payload policy. Implement
+snapshot-correct, pin-safe eviction/reconstruction and relative cache priority
+soon after the active Tick coverage restoration and output-gain cleanup; the
+shared-storage implementation record carries its verification requirements.
+No differentiated eviction implementation or measurement is claimed here.

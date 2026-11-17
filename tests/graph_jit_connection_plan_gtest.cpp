@@ -723,7 +723,7 @@ struct BackgroundFFTSink {
 };
 
 struct ReplayablePass {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
 
     static constexpr auto inputs()
     {
@@ -739,7 +739,7 @@ struct ReplayablePass {
 };
 
 struct ReplayablePair {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
     static constexpr auto inputs() {
         return std::array{iv::input<iv::Sample>("signal"), iv::input<iv::Sample>("feedback")};
     }
@@ -1370,7 +1370,7 @@ TEST(GraphJitConnectionPlan, ModuleInputFanInPreservesConversionsAndManualContro
     graph.outputs();
     auto configured = std::move(graph).finish();
     configured.manual_controls.push_back({
-        .id = {.node = {.instance_id = "module"}, .input_name = "in"},
+        .id = {.node = {.instance_id = "module"}, .port_name = "in"},
         .input = {module.node_bundle_handle(), PortKind::sample, 0},
         .settled_value = .25f,
     });
@@ -4556,7 +4556,7 @@ TEST(GraphJitConnectionPlan, FullLiveSequentialCoverageDoesNotMakeFeedbackValues
     auto configured = std::move(graph).finish();
     auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_FALSE(plan);
-    EXPECT_NE(plan.error().find("contextual replay dependency cycle"), std::string::npos);
+    EXPECT_NE(plan.error().find("feedback SCC"), std::string::npos);
 }
 
 TEST(GraphJitConnectionPlan, RejectsContextualReplayCycles)
@@ -4575,7 +4575,7 @@ TEST(GraphJitConnectionPlan, RejectsContextualReplayCycles)
     auto configured = std::move(graph).finish();
     auto plan = build_connection_analysis_plan(configured, 64);
     ASSERT_FALSE(plan.has_value());
-    EXPECT_NE(plan.error().find("contextual replay dependency cycle"),
+    EXPECT_NE(plan.error().find("feedback SCC"),
         std::string::npos);
 }
 
@@ -4594,7 +4594,7 @@ TEST(GraphJitConnectionPlan, ModuleManualInputKeepsItsInternalChannelConversion)
     graph.outputs();
     auto configured = std::move(graph).finish();
     configured.manual_controls.push_back({
-        .id = {.node = {.instance_id = "module"}, .input_name = "gain"},
+        .id = {.node = {.instance_id = "module"}, .port_name = "gain"},
         .input = {module.node_bundle_handle(), PortKind::sample, 0},
         .settled_value = .5f,
     });
@@ -4622,7 +4622,7 @@ TEST(GraphJitConnectionPlan, ManualOverrideReplacesOnlyItsSelectedInputSource)
     graph.outputs();
     auto configured = std::move(graph).finish();
     configured.manual_controls.push_back({
-        .id = {.node = {.instance_id = "selected"}, .input_name = "in"},
+        .id = {.node = {.instance_id = "selected"}, .port_name = "in"},
         .input = {selected.node_bundle_handle(), PortKind::sample, 0},
         .settled_value = .25f,
         .dynamic = true,
@@ -4661,7 +4661,7 @@ TEST(GraphJitConnectionPlan, ModuleManualFanoutPreservesDetachAndOrdinarySourceP
     graph.outputs();
     auto configured = std::move(graph).finish();
     configured.manual_controls.push_back({
-        .id = {.node = {.instance_id = "module"}, .input_name = "gain"},
+        .id = {.node = {.instance_id = "module"}, .port_name = "gain"},
         .input = {module.node_bundle_handle(), PortKind::sample, 0}, .settled_value = .5f,
     });
     auto disconnected_only = build_connection_analysis_plan(configured, 64);
@@ -4705,7 +4705,7 @@ TEST(GraphJitConnectionPlan, RejectsAcyclicDetachOfAModuleManualInput)
     graph.outputs();
     auto configured = std::move(graph).finish();
     configured.manual_controls.push_back({
-        .id = {.node = {.instance_id = "module"}, .input_name = "gain"},
+        .id = {.node = {.instance_id = "module"}, .port_name = "gain"},
         .input = {handle, PortKind::sample, 0}, .settled_value = .5f,
     });
     auto plan = build_connection_analysis_plan(configured, 64);
@@ -4753,4 +4753,53 @@ TEST(GraphJitConnectionPlan, SequentialModuleEventResolutionPreservesNestedFanIn
         ++stages;
     }
     EXPECT_EQ(stages, 2u);
+}
+
+
+TEST(GraphJitConnectionPlan, AcyclicInputUnionTracksCoverageWithoutBecomingFull)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<BackgroundSource>(graph);
+    auto gain = details::configure_concrete_node<ReplayablePass>(graph);
+    auto sink = details::configure_concrete_node<RealtimeSink>(graph);
+    auto const bundle = gain.node_bundle_handle();
+    gain(source);
+    sink(gain);
+    graph.outputs();
+    auto configured = std::move(graph).finish();
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan) << plan.error();
+    auto node = std::ranges::find(plan->nodes, bundle, &graph_jit::detail::PlannedGraphNode::bundle);
+    ASSERT_NE(node, plan->nodes.end());
+    EXPECT_EQ(node->replay_mode, TickReplayMode::input_union);
+    EXPECT_FALSE(node->full_live_tick_coverage);
+    EXPECT_FALSE(node->contextually_replayable); // Live coverage needs no value replay.
+    auto background = plan->background.bundle_to_background_node[bundle];
+    ASSERT_TRUE(background);
+    EXPECT_TRUE(plan->background.nodes[*background].tracks_live_tick_coverage);
+    EXPECT_TRUE(plan->background.requires_live_tick_coverage);
+}
+
+TEST(GraphJitConnectionPlan, EntirelyInputUnionFeedbackKeepsItsDeclarationsAndHasFullLiveCoverage)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto first = details::configure_concrete_node<ReplayablePass>(graph);
+    auto second = details::configure_concrete_node<ReplayablePass>(graph);
+    auto const bundles = std::array{first.node_bundle_handle(), second.node_bundle_handle()};
+    first(second);
+    second(static_cast<SamplePortRef>(first).detach(1));
+    graph.outputs();
+    auto configured = std::move(graph).finish();
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan) << plan.error();
+    for (auto bundle : bundles) {
+        auto node = std::ranges::find(plan->nodes, bundle, &graph_jit::detail::PlannedGraphNode::bundle);
+        ASSERT_NE(node, plan->nodes.end());
+        EXPECT_EQ(node->replay_mode, TickReplayMode::input_union);
+        EXPECT_TRUE(node->full_live_tick_coverage);
+        EXPECT_FALSE(node->contextually_replayable);
+    }
+    EXPECT_FALSE(plan->background.requires_live_tick_coverage);
 }

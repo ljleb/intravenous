@@ -2,8 +2,8 @@
 import { computed, onBeforeUnmount } from "vue";
 import { useManualInput } from "./manualControlContext";
 import { knobFraction, knobScrubSpeed } from "../../src/knobPresentation";
-const props = defineProps<{ name: string; showName?: boolean }>();
-const control = useManualInput(() => props.name);
+const props = defineProps<{ name: string; showName?: boolean; showValue?: boolean; direction?: "input" | "output" }>();
+const control = useManualInput(() => props.name, () => props.direction ?? "input");
 const { value, available, limits, state, descriptor } = control;
 const increment = computed(() => knobScrubSpeed(limits.value) * 2);
 onBeforeUnmount(() => control.hover(false));
@@ -23,6 +23,7 @@ function step(direction: number) {
 
 <template>
     <div class="manual-input" :class="{ inactive: !descriptor?.participates, active: control.dragging.value }"
+        :data-direction="direction ?? 'input'"
         :data-manual-control="control.key.value"
         @pointerdown.stop @click.stop @contextmenu="control.numeric"
         @iv-hoverenter="control.hover(true)" @iv-hoverleave="control.hover(false)">
@@ -40,7 +41,7 @@ function step(direction: number) {
                 <line class="knob-indicator" x1="16" y1="16" :x2="indicator.x" :y2="indicator.y" />
             </svg>
         </button>
-        <span class="manual-values" aria-hidden="true">
+        <span v-if="showValue !== false" class="manual-values" aria-hidden="true">
             <span class="logical-value">{{ logicalValue }}</span>
             <span v-if="normalizedValue !== null" class="normalized-value">{{ normalizedValue }}</span>
         </span>
@@ -54,6 +55,7 @@ function step(direction: number) {
 .manual-knob { display: block; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%;
     background: transparent; color: var(--vscode-terminal-ansiYellow); cursor: ns-resize; touch-action: none; user-select: none; }
 .manual-knob svg { display: block; width: 100%; height: 100%; }
+.manual-input[data-direction="output"] .manual-knob { color: var(--vscode-terminal-ansiBlue); }
 .manual-knob { flex: 0 0 30px; }
 .manual-values { display: flex; flex-direction: column; min-width: 0; font-variant-numeric: tabular-nums; }
 .logical-value { font-size: 12px; color: var(--vscode-foreground); overflow: hidden; text-overflow: ellipsis; }

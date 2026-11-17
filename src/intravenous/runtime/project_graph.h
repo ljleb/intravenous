@@ -200,6 +200,7 @@ class ProjectGraph {
         ManualControlId control{};
         std::shared_ptr<ManualControlLiveTarget> target{};
         Sample value{};
+        bool requires_preparation = false;
     };
     struct ControlCompileTrace;
     bool restore_live_targets_ = false;

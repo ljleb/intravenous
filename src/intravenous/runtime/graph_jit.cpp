@@ -2,6 +2,7 @@
 
 #include <intravenous/graph_jit/lowering.h>
 #include <intravenous/graph_jit/module_input_resolution.h>
+#include <intravenous/graph_jit/output_gain.h>
 #include <intravenous/graph_jit/observation_runtime.h>
 #include <intravenous/graph_jit/package_callback_abi.h>
 #include <intravenous/graph_jit/realtime_root.h>
@@ -278,6 +279,9 @@ CapturedInputs capture_inputs(GraphJitCompileRequest const& request)
         [&](ConfiguredNodeBundleView const& view) {
             auto const current_bundle = node_bundle++;
             if (view.kind != ConfiguredNodeBundleKind::concrete) return;
+            // Tock gain views use native background callbacks; Tick gain is an
+            // ordinary package primitive and follows normal capture below.
+            if (view.output_gain_source && !view.operations->runtime.tick_block) return;
 
             if (view.registered_node_type_identity) {
                 auto const& identity = *view.registered_node_type_identity;
@@ -2017,7 +2021,22 @@ public:
         auto const compile_begin = Clock::now();
         GraphJitCompileTimings timings{.transition = transition != nullptr};
         GraphJitCompileResult result{.attempted = true};
-        auto captured = capture_inputs(request);
+        if (!request.graph || !request.definitions) {
+            auto missing = capture_inputs(request);
+            result.diagnostics = std::move(missing.diagnostics);
+            return result;
+        }
+        auto resolved_graph = *request.graph;
+        graph_jit::detail::OutputGainExpansion output_gains;
+        try {
+            output_gains = graph_jit::detail::expand_output_gains(resolved_graph, *request.definitions);
+        } catch (std::exception const& error) {
+            result.diagnostics.push_back(diagnostic(GraphJitDiagnosticStage::input_capture, error.what()));
+            return result;
+        }
+        auto capture_request = request;
+        capture_request.graph = std::make_shared<ConfiguredGraph const>(resolved_graph);
+        auto captured = capture_inputs(capture_request);
         timings.capture_us = microseconds_since(compile_begin);
         if (!captured.diagnostics.empty()) {
             result.diagnostics = std::move(captured.diagnostics);
@@ -2217,7 +2236,7 @@ public:
             region_specializations_,
             timings,
             request.definitions->package_revisions);
-        auto resolved_graph = graph_jit::detail::resolve_module_inputs(*request.graph);
+        resolved_graph = graph_jit::detail::resolve_module_inputs(resolved_graph);
         std::vector<ContinuousInputConfig> module_input_configs;
         module_input_configs.reserve(resolved_graph.node_bundles.size() - request.graph->node_bundles.size());
         for (NodeBundleHandle bundle = request.graph->node_bundles.size();
@@ -2244,10 +2263,40 @@ public:
                 .native_operations = operations,
             });
         }
+        for (auto const& stage : output_gains.stages) {
+            if (stage.tick) continue; // Ordinary package node, captured above.
+            using namespace graph_jit::detail;
+            iv::details::NodeCompilerOperations operations{
+                .declare_node = &declare_output_gain,
+                .tock_coverage = &tock_output_gain,
+                .tock_coverage_batch = &tock_output_gain_batch,
+                .propagate_forward_coverage = &forward_output_gain,
+                .propagate_forward_coverage_batch = &forward_output_gain_batch,
+                .propagate_reverse_coverage = &reverse_output_gain,
+                .propagate_reverse_coverage_batch = &reverse_output_gain_batch,
+            };
+            implementations.push_back(graph_jit::NodeImplementation{
+                .node_bundle = stage.bundle, .native_background_gain = true,
+                .configuration_identity = stage.configuration,
+                .replay_mode = TickReplayMode::disabled,
+                .node_data = stage.configuration.get(), .declare_node = &declare_output_gain,
+                .tock_coverage = imported.callback(operations.tock_coverage),
+                .tock_coverage_batch = imported.callback(operations.tock_coverage_batch),
+                .propagate_forward_coverage = imported.callback(operations.propagate_forward_coverage),
+                .propagate_forward_coverage_batch = imported.callback(operations.propagate_forward_coverage_batch),
+                .propagate_reverse_coverage = imported.callback(operations.propagate_reverse_coverage),
+                .propagate_reverse_coverage_batch = imported.callback(operations.propagate_reverse_coverage_batch),
+                .native_operations = operations,
+            });
+        }
         if (request.observations.probes.size() > maximum_live_observation_probes)
             throw std::invalid_argument("too many executable observation probes");
         for (std::size_t slot = 0; slot < request.observations.probes.size(); ++slot) {
-            auto const& probe = request.observations.probes[slot];
+            auto probe = request.observations.probes[slot];
+            if (auto const found = output_gains.outputs.find({probe.bundle, PortKind::sample, probe.port}); found != output_gains.outputs.end()) {
+                probe.bundle = found->second.node_bundle_handle;
+                probe.port = found->second.port_index;
+            }
             if (!probe.available || probe.kind != ObservationSourceKind::output) continue;
             auto const source = resolved_graph.node_bundles.resolve_sample_output(
                 {probe.bundle, PortKind::sample, probe.port}).config;
@@ -2416,6 +2465,8 @@ public:
                 .definitions_generation = request.definitions->generation,
                 .specialization = specialization_,
                 .configured_graph = request.graph,
+                .output_gain_views = {output_gains.outputs.begin(), output_gains.outputs.end()},
+                .background_output_gain_views = {output_gains.background_outputs.begin(), output_gains.background_outputs.end()},
                 .package_revisions = std::move(package_revisions),
                 .port_realization = std::move(lowering->port_realization),
                 .node_layout = std::move(lowering->node_layout),

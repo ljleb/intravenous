@@ -1,5 +1,7 @@
 # Coverage, Random Access, And Background Evaluation
 
+> **2026-11-17 owner correction:** [Tick input-union coverage and feedback](./tick_input_union_and_feedback_direction.md) governs Tick coverage. Computing a value does not itself establish coverage; the full-live override is local to feedback SCCs. The full-only November 16 wording was erroneous.
+
 [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md) defines the vocabulary used here.
 
 > **2026-11-16 accepted design supersession:** [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md)
@@ -676,15 +678,20 @@ Intrinsic replay eligibility remains separate from port output shape and
 realization. Replay is permitted only for deterministic, side-effect-free Tick
 computations with no stateful Sequential history/latency and only when
 contextual dependencies can be obtained from the same immutable snapshot.
-The former `TickReplayMode::{disabled,input_union,full}` coverage coupling is
-historical. Intrinsic replay permission is independent of output realization;
-`TickReplayMode::{disabled,full}` retains that permission in the current source
-migration. A replayable node's own outputs must be computed Sequential outputs.
-It may consume published buffered data from other nodes. Live Tick/Sequential output
-existence is continuous without authored sparse replay coverage.
-Stateful `.detach()` delays make unresolved feedback SCCs ineligible for
-background replay. Port declaration validation still has to ensure that
-replay cannot write into or mutate buffered resources as a side effect.
+`TickReplayMode::{disabled,input_union,full}` remains the intended declaration.
+Outside feedback SCCs, input-union output coverage follows input coverage;
+full output coverage spans the whole circle. Computing a fallback value does
+not make an absent input-union output covered. Feedback SCC members instead
+have effective full live coverage and are explicitly excluded from ordinary
+contextual replay, without changing their declarations or solving recursive
+coverage. See the [recovered contract](./tick_input_union_and_feedback_direction.md).
+The erroneous November 16 full-only wording is preserved
+[historically](./historical/tick_coverage_before_intent_recovery_2026-11-17/coverage_and_background_evaluation.md).
+
+Intrinsic replay permission remains independent of output realization. A
+replayable node's own outputs must be computed Sequential outputs. It may
+consume published buffered data from other nodes. Port validation prevents
+replay from mutating buffered resources as a side effect.
 
 
 Event replay, if enabled, must additionally preserve deterministic timestamp/order

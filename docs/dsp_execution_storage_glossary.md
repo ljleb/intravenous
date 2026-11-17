@@ -1,5 +1,7 @@
 # DSP Execution And Storage Glossary
 
+> **2026-11-17 owner correction:** [Tick input-union coverage and feedback](./tick_input_union_and_feedback_direction.md) governs Tick coverage. Computing a value does not itself establish coverage; the full-live override is local to feedback SCCs. The full-only November 16 wording was erroneous.
+
 _Status: normative terminology for current DSP, GraphJit, coverage, storage, and executor design documents._
 
 This glossary names independent architectural properties directly. It intentionally
@@ -61,8 +63,11 @@ A **Sequential** output has the authored `SequentialOutputConfig` contract,
 which replaces the former `TickOutputConfig` terminology. Its production is a
 stream of ordered values produced by Tick on the audio thread. Tock cannot
 declare a Sequential output: its Region or Coverage data may instead be prepared
-for a Sequential consumer. A live Tick/Sequential stream produces values at every executed position;
-recorded historical coverage is a separate stored-data fact.
+for a Sequential consumer. Tick callbacks produce ordinary values at executed
+positions; those values can remain logically uncovered for acyclic input-union
+nodes. Full nodes and live Tick members of feedback SCCs have full coverage.
+See the [recovered coverage contract](./tick_input_union_and_feedback_direction.md).
+Recorded historical coverage remains a separate stored-data fact.
 
 ### Region output / Region production
 
@@ -106,6 +111,8 @@ buffer proportional to its logical covered extent. Bounded transaction-local
 buffers and executor-controlled caches are permitted. Complete logical Region
 pointer access is **not** guaranteed. A computed Tick output is not
 historically addressable unless its replay dependencies can be satisfied.
+Optional computed pages favor reclamation. Expected reuse, including reuse
+after incremental changes to a background subgraph, can justify retention.
 
 ### Buffered output
 
@@ -114,7 +121,13 @@ resource. Its extent may be populated partially and on demand; complete Region
 pointer access is possible only after that entire requested Region is prepared.
 Realized buffers are not necessarily permanently resident in RAM; cache lifetime
 belongs to the executor. Tick/Sequential/buffered writes form ordinary
-recording data, published coherently by the background actor.
+recording data, published coherently by the background actor. Those committed
+Sequential/buffered contents are non-recomputable. Region/Coverage buffered
+contents are recomputable for the same selected snapshot and receive cache
+priority over computed results. See the [2026-11-17 reconstruction policy](./output_capabilities_and_background_demand.md#reconstruction-and-cache-priority-owner-decision-2026-11-17).
+Buffered pages favor retention within resource budgets. Memory pressure can
+reclaim reconstructible Region/Coverage payloads. It cannot discard the only
+recoverable copy of Sequential/buffered recording data.
 
 The final authored enum is `OutputRealization::{computed, buffered}`. The
 existing source name `OutputRetention` and values `ephemeral`/`persisted` are

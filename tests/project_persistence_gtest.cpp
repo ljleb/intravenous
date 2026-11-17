@@ -280,7 +280,7 @@ TEST(ProjectPersistenceBuilder, SerializesOnlyDurableConfiguredStateInStableOrde
                     .source_identity = "processor",
                 }},
             },
-            .input_name = "gain",
+            .port_name = "gain",
         },
         .stored_value = iv::Sample{0.625f},
         .participation =
@@ -501,7 +501,7 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
         manual_controls[0].id.node.instance_id,
         "instance:0");
     ASSERT_EQ(manual_controls[0].id.node.path.size(), 1u);
-    EXPECT_EQ(manual_controls[0].id.input_name, "gain");
+    EXPECT_EQ(manual_controls[0].id.port_name, "gain");
     EXPECT_FLOAT_EQ(
         static_cast<float>(manual_controls[0].stored_value),
         0.75f);
@@ -711,4 +711,22 @@ TEST(ProjectPersistence, ExplicitNullOverridesSurviveMergingAndDefaultAudioIdSta
     EXPECT_FALSE(request.input_device_id);
     EXPECT_TRUE(request.specifies(iv::ProjectSettingField::input_device_id));
     EXPECT_FALSE(request.specifies(iv::ProjectSettingField::c_compiler));
+}
+
+
+TEST(ProjectPersistenceBuilder, InputAndOutputControlsWithTheSameNameRemainDistinct)
+{
+    auto workspace = fresh_workspace("project_output_gain_identity");
+    iv::ProjectPersistenceBuilder builder(workspace, startup_for(workspace));
+    iv::ManualControlId input{.node = {.instance_id = "synth"}, .port_name = "main"};
+    auto output = input;
+    output.kind = iv::ManualControlKind::output_gain;
+    builder.add_manual_controls({{.id = output, .stored_value = -.5f}, {.id = input, .stored_value = 440}});
+    auto commands = builder.build();
+    ASSERT_EQ(commands.size(), 2u);
+    EXPECT_EQ(commands[0].args.at("input_name"), "main");
+    EXPECT_FALSE(commands[0].args.contains("output_name"));
+    EXPECT_EQ(commands[1].args.at("output_name"), "main");
+    EXPECT_FALSE(commands[1].args.contains("input_name"));
+    EXPECT_EQ(commands[1].args.at("value"), -.5f);
 }

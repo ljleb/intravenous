@@ -199,8 +199,8 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
             lhs.id.node, ProjectConnectionJsonNames::project_file).dump();
         auto const rhs_address = node_address_json(
             rhs.id.node, ProjectConnectionJsonNames::project_file).dump();
-        return std::tie(lhs_address, lhs.id.input_name)
-            < std::tie(rhs_address, rhs.id.input_name);
+        return std::tie(lhs_address, lhs.id.kind, lhs.id.port_name)
+            < std::tie(rhs_address, rhs.id.kind, rhs.id.port_name);
     });
     for (auto const& control : controls) {
         commands.push_back(ProjectCommand{
@@ -209,7 +209,7 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
                 {"node", node_address_json(
                     control.id.node,
                     ProjectConnectionJsonNames::project_file)},
-                {"input_name", control.id.input_name},
+                {control.id.kind == ManualControlKind::output_gain ? "output_name" : "input_name", control.id.port_name},
                 {"value", static_cast<float>(control.stored_value)},
                 {"participation", control.participation
                         == ManualControlParticipation::disconnected_only

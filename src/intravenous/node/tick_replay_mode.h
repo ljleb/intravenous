@@ -5,7 +5,10 @@
 namespace iv {
 
 // Intrinsic permission to replay a deterministic, stateless Tick computation.
-// Live Sequential outputs always exist at executed positions. Replay additionally
+// Values computed at an executed position and logical output coverage are
+// distinct. Acyclic input_union outputs follow upstream coverage; Tick members
+// of feedback SCCs have effective full live coverage without changing this mode.
+// Replay additionally
 // requires contextual input availability and an acyclic dependency path; it
 // never crosses a stateful .detach() delay. Known gaps in replay inputs are
 // resolved by their declared Sequential fallback.
@@ -13,6 +16,7 @@ namespace iv {
 // from other nodes remain valid replay dependencies.
 enum class TickReplayMode : std::uint8_t {
     disabled,
+    input_union,
     full,
 };
 

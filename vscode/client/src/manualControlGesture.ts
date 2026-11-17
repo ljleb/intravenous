@@ -1,5 +1,5 @@
 import type { ManualControlAction, ManualControlDescriptor, ManualControlId, ManualControlInteractionState, ManualControlLiveValue } from "./manualControls";
-import { manualControlKey } from "./manualControls";
+import { manualControlKey, manualControlName } from "./manualControls";
 import { addressKey, type NodeAddress } from "./graphScope";
 
 export type ManualControlLimits = { min?: number; max?: number; defaultValue?: number; scrubSpeed?: number };
@@ -13,7 +13,8 @@ export type ManualValueEntry = Hover & {
 type Gesture = {
     interactionId: string; control: ManualControlId; value: number;
     pointer?: { id: number; position: number; initialScale: number; speed: number;
-        plateau: number; limits: ManualControlLimits };
+        plateau: number; limits: ManualControlLimits;
+        anchorPosition: number; anchorValue: number; anchorPlateau: number };
 };
 const plateauHalfWidth = 6; // Extra pixels on either side of the exact default.
 const clamp = (value: number, limits: ManualControlLimits) =>
@@ -80,7 +81,10 @@ export class ManualControlGestures {
             this.entry.descriptor = descriptor; this.entry.limits = limits; changed = true;
         }
         if (this.active?.pointer && manualControlKey(this.active.control) === key) {
-            if (this.active.pointer.limits.defaultValue !== limits.defaultValue) this.active.pointer.plateau = 0;
+            const old = this.active.pointer.limits;
+            if (old.defaultValue !== limits.defaultValue) this.active.pointer.plateau = 0;
+            if (old.defaultValue !== limits.defaultValue || old.min !== limits.min || old.max !== limits.max)
+                this.anchorPointer();
             this.active.pointer.limits = limits; changed = true;
         }
         if (changed) this.changed();
@@ -101,7 +105,8 @@ export class ManualControlGestures {
         this.cancelEntry();
         this.edit(control, descriptor);
         if (!this.active || !Number.isFinite(unitsPerPixel) || unitsPerPixel <= 0) return false;
-        this.active.pointer = { id: pointerId, position, initialScale: unitsPerPixel, speed: precise ? -2 : 0, plateau: 0, limits };
+        this.active.pointer = { id: pointerId, position, initialScale: unitsPerPixel, speed: precise ? -2 : 0, plateau: 0, limits,
+            anchorPosition: position, anchorValue: this.active.value, anchorPlateau: 0 };
         this.changed();
         return true;
     }
@@ -114,25 +119,30 @@ export class ManualControlGestures {
     move(pointerId: number, position: number, min?: number, max?: number): void {
         const pointer = this.active?.pointer;
         if (!pointer || pointer.id !== pointerId || !this.active) return;
-        const delta = position - pointer.position;
+        // Recompute from one anchor for this sensitivity instead of adding
+        // rounded increments. Identical travel must not depend on event count.
+        const delta = position - pointer.anchorPosition;
         pointer.position = position;
         const limits = { ...pointer.limits, min: min ?? pointer.limits.min, max: max ?? pointer.limits.max };
         const scale = pointer.initialScale * 2 ** pointer.speed;
         const before = this.active.value;
         const target = limits.defaultValue;
-        let value = before + delta * scale;
+        let value = pointer.anchorValue + delta * scale;
         if (target !== undefined && Number.isFinite(target) && clamp(target, limits) === target) {
             // Numeric values occupy their full range. Only the exact default
             // gets extra physical travel, retained across sensitivity changes.
-            const start = before < target ? (before - target) / scale - plateauHalfWidth
-                : before > target ? (before - target) / scale + plateauHalfWidth : pointer.plateau;
+            const start = pointer.anchorValue < target ? (pointer.anchorValue - target) / scale - plateauHalfWidth
+                : pointer.anchorValue > target ? (pointer.anchorValue - target) / scale + plateauHalfWidth : pointer.anchorPlateau;
             const end = start + delta;
             value = end < -plateauHalfWidth ? target + (end + plateauHalfWidth) * scale
                 : end > plateauHalfWidth ? target + (end - plateauHalfWidth) * scale : target;
             pointer.plateau = Math.max(-plateauHalfWidth, Math.min(plateauHalfWidth, end));
         }
+        const unclamped = value;
         value = clamp(value, limits);
         if (value !== before) this.update(this.active.control, value);
+        // Do not accumulate invisible travel beyond a hard bound.
+        if (value !== unclamped) this.anchorPointer();
     }
     moveBy(pointerId: number, delta: number): void {
         const pointer = this.active?.pointer;
@@ -142,9 +152,17 @@ export class ManualControlGestures {
         const pointer = this.active?.pointer;
         if (!pointer) return false;
         if (!delta) return true;
+        this.anchorPointer();
         pointer.speed = Math.max(-10, Math.min(10, pointer.speed - Math.sign(delta)));
         this.changed();
         return true;
+    }
+    private anchorPointer(): void {
+        const pointer = this.active?.pointer;
+        if (!pointer || !this.active) return;
+        pointer.anchorPosition = pointer.position;
+        pointer.anchorValue = this.active.value;
+        pointer.anchorPlateau = pointer.plateau;
     }
     isEditingNode(address: NodeAddress): boolean {
         return [this.active?.control, this.entry?.control].some((control) =>
@@ -199,16 +217,16 @@ export class ManualControlGestures {
         return true;
     }
     hint(): ManualControlHint | null {
-        if (this.entry) return { text: `${this.entry.control.inputName}: Enter accept · Esc cancel`,
+        if (this.entry) return { text: `${manualControlName(this.entry.control)}: Enter accept · Esc cancel`,
             tooltip: "Type an exact value. Enter accepts; Escape or clicking outside cancels. Drag snapping does not affect numeric entry." };
         if (this.active?.pointer) return {
-            text: `${this.active.control.inputName} ${displayValue(this.active.value)} · ${displayValue(2 ** this.active.pointer.speed)}×`,
+            text: `${manualControlName(this.active.control)} ${displayValue(this.active.value)} · ${displayValue(2 ** this.active.pointer.speed)}×`,
             tooltip: "Drag up to increase or down to decrease. Scroll down for finer control; scroll up for faster control."
                 + " Each wheel step halves or doubles sensitivity. Release to finish; Escape releases the pointer.",
         };
         if (!this.hoverDetails?.descriptor.available || !this.hoverDetails.descriptor.enabled) return null;
         const reset = this.hoverDetails.limits.defaultValue !== undefined;
-        return { text: `${this.hoverDetails.control.inputName}: drag · Ctrl-drag ¼×${reset ? " · double-click reset" : ""} · right-click value`,
+        return { text: `${manualControlName(this.hoverDetails.control)}: drag · Ctrl-drag ¼×${reset ? " · double-click reset" : ""} · right-click value`,
             tooltip: "Drag up/down to adjust. While dragging, use the wheel to change sensitivity. Right-click for numeric entry."
                 + " Ctrl-click starts at 0.25× sensitivity."
                 + (reset ? " Double-click to reset to the declared default." : "") + " Arrow keys adjust the focused knob." };

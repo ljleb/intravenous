@@ -113,6 +113,8 @@ public:
   constexpr std::optional<NodeBundlePortId> resolved_module_input() const {
     return _resolved_module_input;
   }
+  constexpr void set_output_gain_source(NodeBundlePortId source) { _output_gain_source = source; }
+  constexpr std::optional<NodeBundlePortId> output_gain_source() const { return _output_gain_source; }
   // Compiler-private resolution stages inherit their capacity from ingress.
   constexpr void set_input_resolution_event_bounds(
       double rate, std::optional<size_t> total_count) {
@@ -189,6 +191,7 @@ private:
 
   std::optional<Payload> _payload{};
   std::optional<NodeBundlePortId> _resolved_module_input{};
+  std::optional<NodeBundlePortId> _output_gain_source{};
   std::vector<size_t> _virtual_node_handles{};
   NodeSourceAnnotations _source_annotations{};
 
@@ -257,6 +260,7 @@ struct ConfiguredNodeBundleRecord {
 // promote GraphBuilder storage directly without materializing an owning record.
 struct ConfiguredNodeBundleView {
   std::optional<NodeBundlePortId> resolved_module_input{};
+    std::optional<NodeBundlePortId> output_gain_source{};
   ConfiguredNodeBundleKind kind = ConfiguredNodeBundleKind::boundary;
   NodePorts const* ports = nullptr;
   NodePortConstraints const* port_constraints = nullptr;
@@ -1091,6 +1095,7 @@ constexpr NodeBundlePortId NodeBundle::output_port_at(
 
 constexpr void NodeBundle::import_into(size_t node_bundle_offset) {
   if (!_payload) details::error("empty NodeBundle");
+  if (_output_gain_source) _output_gain_source->node_bundle_handle += node_bundle_offset;
   std::visit([&](auto &payload) {
     using Bundle = std::remove_cvref_t<decltype(payload)>;
     if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
@@ -1106,6 +1111,7 @@ constexpr void NodeBundle::import_into(size_t node_bundle_offset) {
 template<class Map>
 constexpr void NodeBundle::remap_bundle_handles(Map&& map) {
   if (!_payload) details::error("empty NodeBundle");
+  if (_output_gain_source) _output_gain_source->node_bundle_handle = map(_output_gain_source->node_bundle_handle);
   std::visit([&](auto &payload) {
     using Bundle = std::remove_cvref_t<decltype(payload)>;
     if constexpr (std::is_same_v<Bundle, TiledNodeBundle>) {
@@ -1501,6 +1507,7 @@ constexpr void GraphBuilderNodeBundles::for_each_configured_bundle(
   for (auto const& bundle : _bundles) {
     ConfiguredNodeBundleView view{
         .resolved_module_input = bundle._resolved_module_input,
+        .output_gain_source = bundle._output_gain_source,
         .virtual_node_handles = bundle._virtual_node_handles,
         .source_infos = bundle._source_annotations.infos,
     };

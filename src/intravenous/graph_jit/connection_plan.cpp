@@ -29,6 +29,13 @@
 namespace iv::graph_jit::detail {
 namespace {
 
+bool reads_output_gain_source_indices(ConfiguredGraph const& graph, NodeBundlePortId input)
+{
+    auto const& node = graph.node_bundles.bundle(input.node_bundle_handle);
+    return node.output_gain_source() && input.port_kind == PortKind::sample
+        && input.port_index == 0 && is_random_access(node.sample_input_descriptor(0).config);
+}
+
 // Front 2 starts with a small fixed cap so native batch adapters cannot turn a
 // large ready frontier into an unbounded callback stack frame. Front 16 owns
 // measurement-driven sizing and joint stack/layout costing.
@@ -363,6 +370,16 @@ std::expected<void, std::string> inventory_nodes(
                 return;
             }
             auto stable_identity = stable_concrete_node_identity(graph, current);
+            if (view.output_gain_source) {
+                auto const source = *view.output_gain_source;
+                if (auto owner = stable_concrete_node_identity(graph, source.node_bundle_handle)) {
+                    auto const name = graph.node_bundles.resolve_sample_output(source).config.name;
+                    stable_identity = StableConcreteNodeId{
+                        .graph = std::string(has_tick_callback ? "compiler.output_gain.sequential:" : "compiler.output_gain.random:")
+                            + migration_identity_fields(*owner),
+                        .virtual_node = name, .direct_member = source.port_index};
+                }
+            }
             std::optional<StableInputPortId> module_input;
             if (view.resolved_module_input) {
                 auto const origin = *view.resolved_module_input;
@@ -1155,6 +1172,7 @@ std::expected<void, std::string> inventory_sample_connections(
                 realization.input(first_target.bundle, first_target.port).history;
             auto const target_access = destination_access(input_access(target));
             connection_plan.destination_access = target_access;
+            auto const source_indices = reads_output_gain_source_indices(graph, connection_plan.target_port);
 
             std::optional<ChannelLayout> canonical_source_layout;
             connection_plan.source_channel_timings.reserve(
@@ -1199,7 +1217,7 @@ std::expected<void, std::string> inventory_sample_connections(
                         .delivery = *delivery,
                         .source_history = source_history,
                         .source_latency = source_latency,
-                        .read_latency = source_latency,
+                        .read_latency = source_indices ? 0 : source_latency,
                     });
                 auto& timing = connection_plan.source_channel_timings.back();
                 if (timing.detach) {
@@ -1229,7 +1247,7 @@ std::expected<void, std::string> inventory_sample_connections(
                 }
             }
             connection_plan.canonical_source_layout = canonical_source_layout;
-            connection_plan.read_latency = connection_plan.source_latency;
+            connection_plan.read_latency = source_indices ? 0 : connection_plan.source_latency;
             connection_plan.routed_contributions.reserve(
                 routed.contributions.size());
             for (auto const& routed_contribution : routed.contributions) {
@@ -1645,7 +1663,8 @@ std::expected<void, std::string> normalize_sample_target_projections(
                 "GraphJit sample target-channel projection does not cover every target channel");
         }
 
-        merged.read_latency = merged.source_latency;
+        merged.read_latency = reads_output_gain_source_indices(graph, merged.target_port)
+            ? 0 : merged.source_latency;
         merged.requires_block_materialization = requires_block_materialization;
         merged.external_boundary = external_boundary;
         // A normalized projection is intentionally kept as a composition even
@@ -2195,6 +2214,14 @@ struct ReplayDependencyFact {
     std::size_t configured_connection_index = 0;
 };
 
+bool belongs_to_feedback_scc(ConnectionAnalysisPlan const& plan, NodeBundleHandle bundle)
+{
+    auto const& background = plan.background;
+    if (bundle >= background.bundle_to_semantic_node.size()) return false;
+    auto const semantic = background.bundle_to_semantic_node[bundle];
+    return semantic && background.semantic_sccs[background.semantic_nodes[*semantic].scc].cyclic;
+}
+
 std::expected<void, std::string> derive_contextual_replayability(
     ConfiguredGraph const& graph,
     ConnectionAnalysisPlan& plan)
@@ -2269,6 +2296,10 @@ std::expected<void, std::string> derive_contextual_replayability(
             return std::unexpected(
                 "GraphJit contextual replay reached an unavailable live source bundle "
                 + std::to_string(bundle));
+        }
+        if (belongs_to_feedback_scc(plan, bundle)) {
+            return std::unexpected("GraphJit contextual replay cannot traverse feedback SCC member bundle "
+                + std::to_string(bundle) + "; an explicit recorder is required");
         }
         if (node->replay_mode == TickReplayMode::disabled) {
             return std::unexpected(
@@ -2785,12 +2816,108 @@ std::expected<BackgroundEvaluationPlan, std::string> build_semantic_background_p
     return result;
 }
 
-// Live Tick output existence follows its Sequential execution contract, not
-// sparse upstream coverage or replay eligibility. This does not grant replay
-// through a stateful feedback delay or make unrecorded history available.
-void mark_live_sequential_outputs(ConnectionAnalysisPlan& plan)
+// Feedback SCCs are full by contract, without an independent contribution.
+// Outside feedback, prove simple full input unions once at compile time so an
+// ordinary gain on a full live stream needs no background coverage tracking.
+void mark_live_sequential_outputs(ConfiguredGraph const& graph, ConnectionAnalysisPlan& plan)
 {
-    for (auto& node : plan.nodes) node.full_live_tick_coverage = node.tick_execution;
+    struct Clause { std::size_t target; std::size_t remaining; };
+    std::vector<Clause> clauses;
+    std::vector<std::vector<std::size_t>> waiting(plan.nodes.size());
+    std::vector<std::optional<std::size_t>> node_index(graph.node_bundles.size());
+    std::vector<std::size_t> ready;
+    for (std::size_t i = 0; i < plan.nodes.size(); ++i) {
+        auto& node = plan.nodes[i];
+        node_index[node.bundle] = i;
+        node.full_live_tick_coverage = node.tick_execution
+            && (belongs_to_feedback_scc(plan, node.bundle)
+                || (!node.authored_forward_coverage && node.replay_mode != TickReplayMode::input_union));
+        if (node.full_live_tick_coverage) ready.push_back(i);
+    }
+    auto target_index = [&](NodeBundleHandle bundle) -> std::optional<std::size_t> {
+        if (bundle >= node_index.size() || !node_index[bundle]) return {};
+        auto index = *node_index[bundle];
+        auto const& node = plan.nodes[index];
+        if (!node.tick_execution || node.full_live_tick_coverage || node.authored_forward_coverage
+            || node.replay_mode != TickReplayMode::input_union) return {};
+        return index;
+    };
+    auto append = [&](std::size_t target, std::vector<std::size_t> sources) {
+        if (sources.empty()) return;
+        std::ranges::sort(sources);
+        sources.erase(std::unique(sources.begin(), sources.end()), sources.end());
+        auto const clause = clauses.size();
+        clauses.push_back({target, sources.size()});
+        for (auto source : sources) waiting[source].push_back(clause);
+    };
+    for (auto const& connection : plan.sample_connections) {
+        auto target = target_index(connection.target_port.node_bundle_handle);
+        if (!target || connection.destination_access != PlannedDestinationAccess::sequential) continue;
+        auto projection = [&](std::span<std::size_t const> indices) {
+            std::vector<std::size_t> sources;
+            for (auto index : indices) {
+                if (index >= connection.source_channel_timings.size()) return;
+                auto const& source = connection.source_channel_timings[index];
+                if (source.production != PlannedSourceProduction::tick
+                    || !uses_realtime_storage(source.delivery)
+                    || source.source.bundle >= node_index.size()
+                    || !node_index[source.source.bundle]) return;
+                sources.push_back(*node_index[source.source.bundle]);
+            }
+            append(*target, std::move(sources));
+        };
+        if (!connection.routed_contributions.empty()) {
+            for (auto const& contribution : connection.routed_contributions) {
+                if (!std::ranges::any_of(contribution.target_coefficients,
+                        [](float value) { return value != 0; })) continue;
+                std::vector<std::size_t> indices;
+                for (std::size_t i = 0; i < contribution.source_coefficients.size(); ++i)
+                    if (contribution.source_coefficients[i] != 0) indices.push_back(i);
+                projection(indices);
+            }
+        } else if (!connection.projection_contributions.empty()) {
+            for (auto const& contribution : connection.projection_contributions)
+                projection(contribution.source_channel_indices);
+        } else {
+            std::vector<std::size_t> indices(connection.source_channel_timings.size());
+            std::iota(indices.begin(), indices.end(), 0);
+            projection(indices);
+        }
+    }
+    for (auto const& connection : plan.event_connections) {
+        for (auto const& delivery : connection.deliveries) {
+            auto const& to = connection.target_plans[delivery.target_index];
+            auto target = target_index(to.target.bundle);
+            if (!target || to.access != PlannedDestinationAccess::sequential) continue;
+            auto const& source = connection.source_plans[delivery.source_index];
+            if (source.production == PlannedSourceProduction::tick
+                && uses_realtime_storage(delivery.mechanism)
+                && source.source.bundle < node_index.size()
+                && node_index[source.source.bundle])
+                append(*target, {*node_index[source.source.bundle]});
+        }
+    }
+    for (auto const& control : graph.manual_controls) {
+        if (control.participation != ManualControlParticipation::participate_with_connections
+            || control.override_connections || control.input.port_kind != PortKind::sample) continue;
+        auto target = target_index(control.input.node_bundle_handle);
+        if (!target || !std::ranges::any_of(plan.sample_connections,
+                [&](auto const& connection) { return connection.target_port == control.input; })) continue;
+        if (!plan.nodes[*target].full_live_tick_coverage) {
+            plan.nodes[*target].full_live_tick_coverage = true;
+            ready.push_back(*target);
+        }
+    }
+    for (std::size_t cursor = 0; cursor < ready.size(); ++cursor) {
+        for (auto index : waiting[ready[cursor]]) {
+            auto& clause = clauses[index];
+            if (--clause.remaining != 0) continue;
+            auto& target = plan.nodes[clause.target];
+            if (target.full_live_tick_coverage) continue;
+            target.full_live_tick_coverage = true;
+            ready.push_back(clause.target);
+        }
+    }
 }
 
 std::expected<void, std::string> populate_background_topology(
@@ -2812,7 +2939,10 @@ std::expected<void, std::string> populate_background_topology(
     // Forward coverage is needed by live Sequential connections as well as
     // replay. A declaration can publish sparse coverage without any consumer
     // requesting background replay of its Tick values.
-    auto tracks_tick_coverage = [](PlannedGraphNode const&) { return false; };
+    auto tracks_tick_coverage = [](PlannedGraphNode const& node) {
+        return node.tick_execution && !node.full_live_tick_coverage
+            && (node.authored_forward_coverage || node.replay_mode == TickReplayMode::input_union);
+    };
     std::vector<bool> needs_background_node(graph.node_bundles.size(), false);
     auto require_bundle = [&](NodeBundleHandle bundle) {
         if (bundle < needs_background_node.size()
@@ -2862,6 +2992,19 @@ std::expected<void, std::string> populate_background_topology(
             require_bundle(connection.target_plans[delivery.target_index].target.bundle);
         }
     }
+
+    for (auto const& connection : connections.sample_connections)
+        if (std::ranges::any_of(connection.source_channel_timings, [&](auto const& source) {
+                auto node = planned_node_for_bundle(connections, source.source.bundle);
+                return node && tracks_tick_coverage(*node);
+            })) require_bundle(connection.target_port.node_bundle_handle);
+    for (auto const& connection : connections.event_connections)
+        for (auto const& delivery : connection.deliveries) {
+            auto const& source = connection.source_plans[delivery.source_index];
+            auto node = planned_node_for_bundle(connections, source.source.bundle);
+            if (node && tracks_tick_coverage(*node))
+                require_bundle(connection.target_plans[delivery.target_index].target.bundle);
+        }
 
     for (std::size_t semantic_node = 0;
          semantic_node < connections.nodes.size(); ++semantic_node) {
@@ -3334,7 +3477,9 @@ std::expected<void, std::string> populate_background_topology(
             [](SampleSourceChannelTimingPlan const& source) {
                 return !uses_realtime_storage(source.delivery);
             });
-        if (!has_background_delivery && !target_replay
+        auto const sparse_source = std::ranges::any_of(connection.source_channel_timings,
+            [&](auto const& source) { return tracks_coverage_for_bundle(source.source.bundle); });
+        if (!has_background_delivery && !target_replay && !sparse_source
             && !tracks_coverage_for_bundle(target_bundle)) continue;
 
         bool tick_sequential_target = std::ranges::any_of(
@@ -3343,6 +3488,12 @@ std::expected<void, std::string> populate_background_topology(
                 return source.delivery
                     == PlannedDeliveryMechanism::tock_to_sequential;
             });
+        if (sparse_source && !tick_sequential_target
+            && is_internal_bundle(target_bundle, connections.boundary_bundle)) {
+            auto ensured = ensure_port(connection.target_port, PortDirection::input,
+                PortRoles{.coverage_input = true});
+            if (!ensured) return std::unexpected(std::move(ensured.error()));
+        }
         if (tick_sequential_target
             && is_internal_bundle(target_bundle, connections.boundary_bundle)) {
             auto ensured_port = ensure_port(
@@ -3449,7 +3600,8 @@ std::expected<void, std::string> populate_background_topology(
             any_relevant = any_relevant
                 || !uses_realtime_storage(delivery.mechanism)
                 || node_is_contextually_replayable(target.target.bundle)
-                || tracks_coverage_for_bundle(target.target.bundle);
+                || tracks_coverage_for_bundle(target.target.bundle)
+                || tracks_coverage_for_bundle(connection.source_plans[delivery.source_index].source.bundle);
         }
         if (!any_relevant) continue;
 
@@ -3467,8 +3619,14 @@ std::expected<void, std::string> populate_background_topology(
             auto const& target = connection.target_plans[delivery.target_index];
             auto const target_replay =
                 node_is_contextually_replayable(target.target.bundle);
+            auto const sparse_source = tracks_coverage_for_bundle(source.source.bundle);
             auto const relevant = !uses_realtime_storage(delivery.mechanism)
-                || target_replay;
+                || target_replay; // Coverage-only edges do not request sample replay.
+            if (sparse_source && is_internal_bundle(target.target.bundle, connections.boundary_bundle)) {
+                auto ensured = ensure_port({target.target.bundle, PortKind::event, target.target.port},
+                    PortDirection::input, PortRoles{.coverage_input = true});
+                if (!ensured) return std::unexpected(std::move(ensured.error()));
+            }
 
             NodeBundlePortId const source_configured_port{
                 source.source.bundle, PortKind::event, source.source.port};
@@ -4567,7 +4725,7 @@ std::expected<std::size_t, std::string> align_incoming_paths(
 // carry the latency of its aligned inputs plus its internal latency, before the
 // authored latency of any particular output port.
 std::expected<void, std::string> plan_latency_compensation(
-    ConnectionAnalysisPlan& plan)
+    ConfiguredGraph const& graph, ConnectionAnalysisPlan& plan)
 {
     std::vector<std::optional<std::size_t>> node_output_latency(
         plan.schedule.bundle_to_region.size());
@@ -4583,9 +4741,13 @@ std::expected<void, std::string> plan_latency_compensation(
     // does not align (background access, boundaries, and detached feedback
     // inputs, whose read delay is their authored one).
     for (auto& connection : plan.sample_connections) {
-        connection.read_latency = connection.source_latency;
+        // A private Tock gain view rescales retained values at their source
+        // indices. Output latency controls live finalization, not an extra
+        // time shift of the already indexed recording.
+        auto const source_indices = reads_output_gain_source_indices(graph, connection.target_port);
+        connection.read_latency = source_indices ? 0 : connection.source_latency;
         for (auto& channel : connection.source_channel_timings) {
-            channel.read_latency = channel.source_latency;
+            channel.read_latency = source_indices ? 0 : channel.source_latency;
         }
     }
     for (auto& connection : plan.event_connections) {
@@ -6536,14 +6698,6 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
             graph, port_realization, plan, *routed_events); !events) {
         return std::unexpected(std::move(events.error()));
     }
-    mark_live_sequential_outputs(plan);
-    if (auto replay = derive_contextual_replayability(graph, plan); !replay) {
-        return std::unexpected(std::move(replay.error()));
-    }
-    if (auto replay = validate_contextual_replay_realization(
-            graph, port_realization, plan); !replay) {
-        return std::unexpected(std::move(replay.error()));
-    }
     if (retained_background_plan) {
         if (retained_background_plan->semantic_nodes.size()
                 != plan.nodes.size()
@@ -6564,6 +6718,14 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
         auto background = build_semantic_background_plan(graph, plan);
         if (!background) return std::unexpected(std::move(background.error()));
         plan.background = std::move(*background);
+    }
+    mark_live_sequential_outputs(graph, plan);
+    if (auto replay = derive_contextual_replayability(graph, plan); !replay) {
+        return std::unexpected(std::move(replay.error()));
+    }
+    if (auto replay = validate_contextual_replay_realization(
+            graph, port_realization, plan); !replay) {
+        return std::unexpected(std::move(replay.error()));
     }
     // Semantic SCC validation intentionally precedes the narrower storage
     // restriction on detach transport so background feedback is diagnosed in
@@ -6631,7 +6793,7 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
         !finalized) {
         return std::unexpected(std::move(finalized.error()));
     }
-    if (auto latency = plan_latency_compensation(plan); !latency) {
+    if (auto latency = plan_latency_compensation(graph, plan); !latency) {
         return std::unexpected(std::move(latency.error()));
     }
     if (auto in_flight =

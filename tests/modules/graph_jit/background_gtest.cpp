@@ -1763,14 +1763,14 @@ TEST_F(GraphJitRuntimeFixture, ReplayResolvesStoredManualFallbackBeforeModuleFan
         ASSERT_TRUE(direct);
         ASSERT_TRUE(module);
         configured->manual_controls.push_back({
-            .id = {.node = {.instance_id = "direct"}, .input_name = "gain"},
+            .id = {.node = {.instance_id = "direct"}, .port_name = "gain"},
             .input = {*direct, iv::PortKind::sample, 0}, .settled_value = 0.75f,
             .participation = explicit_contribution
                 ? iv::ManualControlParticipation::participate_with_connections
                 : iv::ManualControlParticipation::disconnected_only,
         });
         configured->manual_controls.push_back({
-            .id = {.node = {.instance_id = "module"}, .input_name = "boundary-gain"},
+            .id = {.node = {.instance_id = "module"}, .port_name = "boundary-gain"},
             .input = {*module, iv::PortKind::sample, 0}, .settled_value = 1.25f,
         });
         auto compiled = compile_graph(configured, 3004 + explicit_contribution);
@@ -1859,7 +1859,7 @@ TEST_F(GraphJitRuntimeFixture, ReplayResolvesStoredManualFallbackBeforeModuleFan
     }
 }
 
-TEST_F(GraphJitRuntimeFixture, ReplaySequentialCoverageRemainsFullAcrossSparseUpstreamData)
+TEST_F(GraphJitRuntimeFixture, ReplayCoverageDistinguishesInputUnionFromFullAcrossSparseUpstreamData)
 {
     auto compiled = compile("iv.test.replay.sequential_resolution_module", 3002);
     ASSERT_TRUE(compiled.succeeded())
@@ -1874,7 +1874,7 @@ TEST_F(GraphJitRuntimeFixture, ReplaySequentialCoverageRemainsFullAcrossSparseUp
         if (plan.ports[port].replayed_tick_output) replayed.push_back(port);
         if (plan.ports[port].name == "window") windows.push_back(port);
     }
-    // Both processors and the generator have dense Sequential outputs.
+    // The processors use input_union and full; the generator uses full.
     ASSERT_EQ(replayed.size(), 3u);
     ASSERT_EQ(windows.size(), 4u);
 
@@ -1898,8 +1898,8 @@ TEST_F(GraphJitRuntimeFixture, ReplaySequentialCoverageRemainsFullAcrossSparseUp
     ASSERT_TRUE(result.has_value()) << result.error();
     ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
 
-    // Replay resolves known upstream absence before computing each Sequential
-    // output, including the processor that used to declare input_union.
+    // Input-union preserves absence; full replay computes its input fallback
+    // in gaps and publishes those output values.
     constexpr auto half = std::uint64_t{1} << 63;
     iv::IndexCoverage const full{
         iv::GlobalIndexRange{iv::GlobalIndex::from_bits(0), half},
@@ -1911,7 +1911,8 @@ TEST_F(GraphJitRuntimeFixture, ReplaySequentialCoverageRemainsFullAcrossSparseUp
         ASSERT_NE(change, result->coverage.output_changes.end());
         replayed_coverage.push_back(change->coverage);
     }
-    EXPECT_EQ(std::ranges::count(replayed_coverage, full), 3);
+    EXPECT_EQ(std::ranges::count(replayed_coverage, full), 2);
+    EXPECT_EQ(std::ranges::count(replayed_coverage, index_coverage({{20, 24}})), 1);
     // Replay requires the actual upstream values wherever the source is
     // covered, so the cold source is materialized there instead of resolved
     // by fallback. Uncovered positions require nothing upstream.
@@ -1945,13 +1946,59 @@ TEST_F(GraphJitRuntimeFixture, ReplaySequentialCoverageRemainsFullAcrossSparseUp
     // The source values 4..7 appear only on [20, 24). Elsewhere the input
     // resolves to the neutral value 0, and the full-mode node outputs 10 - 0.
     std::vector<std::vector<float>> const expected{
-        {1, 1, 5, 6, 7, 8, 1, 1},
+        // ReplayWindow deliberately publishes its whole [18,26) Region and
+        // writes zero where its sparse Coverage input has no contribution.
+        {0, 0, 5, 6, 7, 8, 0, 0},
         {10, 10, 6, 5, 4, 3, 10, 10},
         {10, 10, 10, 10},
         {51, 52, 53},
     };
     EXPECT_EQ(stored.size(), expected.size());
-    for (auto const& values : expected) EXPECT_TRUE(std::ranges::contains(stored, values));
+    std::ranges::sort(stored);
+    auto sorted_expected = expected;
+    std::ranges::sort(sorted_expected);
+    EXPECT_EQ(stored, sorted_expected);
+}
+
+TEST_F(GraphJitRuntimeFixture, LiveInputUnionPreservesGapsForTheNextInputsManualFallback)
+{
+    auto compiled = compile("iv.test.replay.live_union_fallback", 3010);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    auto const& plan = graph.background_evaluation_plan;
+    iv::PersistedDataStore data;
+    iv::TickMaterializationStore materializations;
+    auto data_reader = data.register_reader();
+    auto materialization_reader = materializations.register_reader();
+    auto states = graph.tock_state_layout.create_storage(resources);
+    states.initialize();
+    iv::BackgroundCoverageState coverage{plan.accumulators.output_change_count};
+    iv::BackgroundPropagationWorkspace propagation{plan, graph.specialization.sample_rate};
+    iv::CoveragePropagationRequest roots;
+    for (std::size_t node = 0; node < plan.nodes.size(); ++node)
+        roots.locally_changed_nodes.push_back(node);
+    for (auto port : plan.tick_sequential_inputs)
+        roots.input_demands.push_back({.port = port, .required = index_coverage({{18, 26}})});
+    iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data, materializations,
+        {.semantic_version = 1, .roots = std::move(roots)}};
+    auto prepared = transaction.execute();
+    ASSERT_TRUE(prepared) << prepared.error();
+
+    auto storage = graph.node_layout.create_storage(resources);
+    storage.initialize();
+    iv::TickInvocationWorkspace workspace{plan, graph.project_generation, data,
+        graph.specialization.block_size, graph.root_operations.combine_sequential_input,
+        graph.root_operations.initialize_sequential_input};
+    iv::TickInvocationFrame frame{data_reader, materialization_reader, workspace, index(18), 8};
+    graph.root_operations.tick_block(storage.buffer().data(), &frame.call(), index(18), 8);
+    struct State { std::uint64_t calls; std::array<float, 8> values; };
+    auto probe = find_unique_state<State>(graph.node_layout, storage);
+    ASSERT_NE(probe, nullptr);
+    EXPECT_EQ(probe->calls, 1u);
+    // AddOne may compute 1 in its own gaps. Those values are uncovered, so
+    // ManualFull must use its own .25 fallback there, then add 1.
+    EXPECT_EQ(probe->values, (std::array<float, 8>{1.25f, 1.25f, 6, 7, 8, 9, 1.25f, 1.25f}));
 }
 
 TEST_F(GraphJitRuntimeFixture, ComputedTockRegionMaterializesOnlyTheDemandedPlaybackWindow)

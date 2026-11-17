@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { manualControlName } from "../../src/manualControls";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { ManualControlGestures } from "../../src/manualControlGesture";
 
@@ -40,10 +41,10 @@ onBeforeUnmount(() => window.removeEventListener("resize", resize));
 <template>
     <Teleport to="body">
         <form v-if="entry" class="manual-value-popover" :style="position" role="dialog"
-            :aria-label="`${entry.control.inputName} value`" @submit.prevent="close(true)"
+            :aria-label="`${manualControlName(entry.control)} value`" @submit.prevent="close(true)"
             @pointerdown.stop @keydown.esc.stop.prevent="close(false)">
             <input ref="input" type="text" inputmode="decimal" :value="entry.draft"
-                :aria-label="`${entry.control.inputName} value`" :aria-invalid="!!entry.error"
+                :aria-label="`${manualControlName(entry.control)} value`" :aria-invalid="!!entry.error"
                 :title="entry.error || undefined" autocomplete="off" spellcheck="false"
                 @input="props.gestures.setEntryDraft(($event.target as HTMLInputElement).value)" @blur="blur" />
             <span v-if="entry.error" class="entry-error" role="alert">{{ entry.error }}</span>

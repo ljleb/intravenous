@@ -156,7 +156,7 @@ TEST(SocketRpcRequestParser, ParsesManualControlDurableAndInteractionRequests)
     ASSERT_NE(durable, nullptr);
     EXPECT_EQ(durable->control.id.node.instance_id, "instance:synth");
     ASSERT_EQ(durable->control.id.node.path.size(), 1u);
-    EXPECT_EQ(durable->control.id.input_name, "gain");
+    EXPECT_EQ(durable->control.id.port_name, "gain");
     EXPECT_FLOAT_EQ(static_cast<float>(durable->control.stored_value), 0.625f);
     EXPECT_EQ(
         durable->control.participation,
@@ -170,7 +170,7 @@ TEST(SocketRpcRequestParser, ParsesManualControlDurableAndInteractionRequests)
     ASSERT_NE(hovered, nullptr);
     EXPECT_TRUE(hovered->client_id.empty());
     ASSERT_TRUE(hovered->id);
-    EXPECT_EQ(hovered->id->input_name, "gain");
+    EXPECT_EQ(hovered->id->port_name, "gain");
 
     auto const begin = iv::parse_socket_rpc_request(
         R"({"jsonrpc":"2.0","id":42,"method":"manualControls.begin","params":{"interactionId":"pointer:3","node":{"instanceId":"instance:synth","path":[]},"inputName":"gain","value":0.75}})");
@@ -179,7 +179,7 @@ TEST(SocketRpcRequestParser, ParsesManualControlDurableAndInteractionRequests)
     ASSERT_NE(started, nullptr);
     EXPECT_TRUE(started->interaction.client_id.empty());
     EXPECT_EQ(started->interaction.interaction_id, "pointer:3");
-    EXPECT_EQ(started->id.input_name, "gain");
+    EXPECT_EQ(started->id.port_name, "gain");
     EXPECT_FLOAT_EQ(static_cast<float>(started->value), 0.75f);
 
     // A live update is an id-less notification outside the request table.
@@ -816,4 +816,24 @@ TEST(SocketRpcRequestParser, NodeMessageGestureRoutesHaveDistinctPayloadsAndNeve
     ASSERT_TRUE(dispatched->gesture);
     EXPECT_EQ(dispatched->gesture->interaction_id, "drag");
     EXPECT_TRUE(dispatched->gesture->client_id.empty());
+}
+
+
+TEST(SocketRpcRequestParser, OutputGainsUseOutputNamesAndRejectAmbiguousControlIdentity)
+{
+    auto hover = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":44,"method":"manualControls.hover","params":{"node":{"instanceId":"synth","path":[]},"outputName":"main"}})");
+    auto const* hovered = std::get_if<iv::SetManualControlHoverRequest>(&hover.payload);
+    ASSERT_NE(hovered, nullptr);
+    ASSERT_TRUE(hovered->id);
+    EXPECT_EQ(hovered->id->kind, iv::ManualControlKind::output_gain);
+    EXPECT_EQ(hovered->id->port_name, "main");
+    auto request = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":45,"method":"manualControls.begin","params":{"node":{"instanceId":"synth","path":[]},"outputName":"main","value":1,"interactionId":"gain"}})");
+    auto const* gain = std::get_if<iv::BeginManualControlInteractionRequest>(&request.payload);
+    ASSERT_NE(gain, nullptr);
+    EXPECT_EQ(gain->id.kind, iv::ManualControlKind::output_gain);
+    EXPECT_EQ(gain->id.port_name, "main");
+    EXPECT_THROW((void)iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":46,"method":"manualControls.hover","params":{"node":{"instanceId":"synth","path":[]},"inputName":"main","outputName":"main"}})"), std::runtime_error);
 }

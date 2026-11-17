@@ -23,6 +23,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -108,11 +109,11 @@ std::string jsonrpc_result(int id, Json result)
     });
 }
 
-std::string jsonrpc_error(int id, int code, std::string message)
+std::string jsonrpc_error(std::optional<int> id, int code, std::string message)
 {
     return json_line(Json{
         {"jsonrpc", "2.0"},
-        {"id", id},
+        {"id", id ? Json(*id) : Json(nullptr)},
         {"error", {{"code", code}, {"message", std::move(message)}}},
     });
 }
@@ -653,7 +654,7 @@ struct SocketRpcServer::Impl {
         if (!request->applied) return true;
         auto const frame = jsonrpc_notification("manualControls.liveValue", Json{
             {"node", node_address_json(request->control.node, ProjectConnectionJsonNames::socket_rpc)},
-            {"inputName", request->control.input_name},
+            {request->control.kind == ManualControlKind::output_gain ? "outputName" : "inputName", request->control.port_name},
             {"value", request->value.value},
         });
         auto const key = live_gesture_key(request->interaction);
@@ -965,7 +966,7 @@ struct SocketRpcServer::Impl {
 
     void process_command(Command command)
     {
-        int request_id = 0;
+        std::optional<int> request_id;
         std::string response;
         std::vector<std::string> after_response;
         SocketRpcRouteResult route;
@@ -1017,6 +1018,19 @@ struct SocketRpcServer::Impl {
             route_known = true;
             response = std::move(route.response);
         } catch (std::exception const& error) {
+            // Payload validation can fail before parse_socket_rpc_request()
+            // returns. Preserve a valid envelope ID so the client can finish
+            // that request and continue its ordered interaction queue.
+            if (!request_id) {
+                auto envelope = Json::parse(command.line, nullptr, false);
+                if (envelope.is_object()) {
+                    auto id = envelope.find("id");
+                    if (id != envelope.end() && id->is_number_integer()
+                        && *id >= std::numeric_limits<int>::min()
+                        && *id <= std::numeric_limits<int>::max())
+                        request_id = id->get<int>();
+                }
+            }
             response = jsonrpc_error(request_id, -32000, error.what());
         }
         auto deferred = finish_deferred_notifications();

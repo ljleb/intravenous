@@ -88,6 +88,69 @@ blocks do not create one authored Region. A Tick Sequential/buffered output can
 therefore feed a Coverage input through its published recording, never a
 Region input simply because its current stored extent is contiguous.
 
+### Reconstruction and cache priority (owner decision, 2026-11-17)
+
+The background executor distinguishes output shapes when deciding what it can
+regenerate:
+
+- **Sequential/buffered:** committed contents are non-recomputable recordings.
+  A cache or RAM mapping may be dropped only if the authoritative bytes remain
+  recoverable elsewhere. Do not replay the producer to invent lost recording
+  data, even when a related computation is intrinsically replayable.
+- **Region/buffered and Coverage/buffered:** contents are recomputable for the
+  same selected semantic/input snapshot. The executor may reclaim unpinned
+  cached payload and regenerate requested windows through Tock. Preserve logical
+  Region identities, coverage, and snapshot dependencies while doing so.
+- **Computed results:** cached content is also disposable where reproduction is
+  permitted. Prefer retaining buffered Region/Coverage content over computed
+  intermediates when selecting cache victims. This is a relative cache priority,
+  not unlimited retention or permission to invalidate pinned reader contents.
+
+Reconstruction must reproduce the same values and Region structure. It cannot
+substitute a newer configuration or newer recorded inputs. Missing known-covered
+content still requires preparation; it never becomes absence or fallback.
+This decision replaces the earlier conservative policy that retained every
+valid Tock/buffered page until explicit invalidation. Prior wording is preserved
+[historically](./historical/buffered_reconstruction_before_2026-11-17/output_capabilities_and_background_demand.md).
+The shared storage implementation does not yet implement this differentiated
+valid-page eviction policy; restoration of Tick coverage and output gain remain
+the active source work.
+
+#### Retention cost and memory pressure (owner clarification, 2026-11-17)
+
+`computed` and `buffered` express different default retention priorities.
+They do not specify measured execution costs or permanent RAM residency.
+The executor applies these priorities to optional background pages:
+
+- Computed contents favor reclamation after the current demand and reader pins
+  end. Retain them only when expected reuse justifies the memory cost. Reuse
+  includes avoiding repeated work after incremental changes to a background
+  subgraph, not only repeated reads of the same final output.
+- Region/Coverage buffered contents favor retention while valid and within
+  resource budgets. Memory pressure can reclaim unpinned contents that the
+  executor can reconstruct for the same semantic snapshot. Give these pages
+  greater retention priority than comparable computed intermediates.
+- Sequential/buffered contents are authoritative recordings. Memory pressure
+  cannot discard their only recoverable copy. The executor can release a RAM
+  page only when another owner or backing resource preserves its contents.
+  Removing recording data requires a separate semantic operation.
+
+The executor considers expected reuse, reconstruction work, retained dependency
+cost, page size and current memory pressure. These factors refine cache
+admission and eviction within the default priorities. They do not grant Tick
+replay permission or make a missing reconstruction dependency available.
+No fixed cost ratio follows from the output declaration.
+
+Reader pins and imminent execution requirements constrain every eviction.
+If the executor cannot preserve required data within its resource budgets, it
+must report a resource failure. It must not silently discard recordings or
+allocate without bounds. Reclamation does not remove logical coverage or Region
+identity. Later covered reads require preparation before execution, never
+fallback merely because cached contents were reclaimed.
+
+This clarification refines the relative cache priority above. The source does
+not yet implement the corresponding admission and eviction policy.
+
 ## 3. Input capability is a distinct compatibility constraint
 
 A `RegionInputConfig` accepts exactly one logical Region; a
@@ -240,24 +303,25 @@ because a consumer requests a small part of it.
 
 ## 6. Audio thread, Sequential production, and feedback
 
-Sequential Tick outputs supply a value for every physical invocation; their
-**live Sequential stream** is continuously produced and fully available at
-executed positions. A Tick Sequential output does not need authored sparse
-coverage propagation to make live values exist. Sequential inputs resolve
-absence from *upstream random-access contributions* through their own
-neutral/manual fallback before Tick computation. Do not confuse this live
-stream guarantee with the sparse historical coverage of a recorded buffer.
+Tick callbacks produce ordinary values at executed positions, but computed
+values and logical output coverage are separate. Acyclic `input_union` Tick
+nodes derive coverage from their inputs; `full` nodes declare full coverage.
+Sequential consumers apply their own fallback where that output is absent,
+even when the upstream Tick callback computed a fallback value there. The
+[recovered coverage contract](./tick_input_union_and_feedback_direction.md)
+corrects the November 16 full-only wording, preserved
+[historically](./historical/tick_coverage_before_intent_recovery_2026-11-17/output_capabilities_and_background_demand.md).
 
 A `.detach()` connection is a stateful Sequential feedback delay with initialized
 history. It belongs to realtime scheduling, not background replay. Even if its
 neighboring Tick computations qualify intrinsically for replay, an unresolved
 feedback SCC cannot be contextually replayed through its stateful delay.
-GraphJit schedules the feedback SCC on the audio thread and the background
-executor does not solve delayed coverage recurrences inside it. No
-`TickReplayMode::input_union`-driven coverage fixed point or
-`prove_full_live_tick_coverage()` is required to establish continuous live
-Sequential output existence. The old proof and replay-mode/coverage coupling
-are a migration target, not a semantic requirement.
+GraphJit schedules the feedback SCC on the audio thread. Its Tick members have
+effective full live coverage regardless of their declared replay mode. Their
+declarations remain unchanged. No recursive coverage solver or independent
+full-contribution proof is required. Explicit semantic SCC membership excludes
+ordinary contextual background replay; it does not invalidate an input-union
+declaration. The override is local to feedback SCCs.
 
 Tick callbacks write only their scheduled, preallocated Sequential output data.
 Their published recording may expose historical Coverage, but the authored
@@ -373,12 +437,13 @@ without retaining its information elsewhere; a regenerable Tock result may be
 recomputed. This difference is a property of the data's provenance, **not** a
 third authored output realization or a different page-store interface.
 
-**Initial retention policy (owner clarification, 2026-11-16):** preserve all
-valid buffered contents until invalidation. This includes Tock/buffered data;
-the callback domain alone does not guarantee reconstruction. Reclaim obsolete
-backing and prepared views now, while separating page ownership from view/cache
-ownership so valid pages can eventually be evicted when reconstruction is
-explicitly guaranteed. Adding that guarantee is deferred.
+**Reconstruction policy (owner correction, 2026-11-17):** Sequential/buffered
+recording data remain non-recomputable. Region/Coverage buffered results are
+recomputable for their selected snapshot and have cache priority over computed
+results. Page and view ownership remain separate; pinned readers keep their
+contents alive. See [reconstruction and cache priority](#reconstruction-and-cache-priority-owner-decision-2026-11-17).
+The earlier preserve-all-valid-pages policy is retained
+[historically](./historical/buffered_reconstruction_before_2026-11-17/output_capabilities_and_background_demand.md).
 
 ### 8.2 Bounded virtual address reservations
 

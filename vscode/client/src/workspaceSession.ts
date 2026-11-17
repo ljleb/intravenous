@@ -321,10 +321,13 @@ export class WorkspaceSession {
         // manual value or an audio selection.
         this.notifications.subscribe("session.revisionChanged", () => this.graphChanges.fire());
         // Another client's open gesture: unreliable, display only.
-        this.notifications.subscribe<{ node?: NodeAddress; inputName?: string; value?: number }>(
+        this.notifications.subscribe<{ node?: NodeAddress; inputName?: string; outputName?: string; value?: number }>(
             "manualControls.liveValue", (params) => {
-                if (!params.node || typeof params.inputName !== "string" || typeof params.value !== "number") return;
-                this.manualControls.receiveLive({ control: { node: params.node, inputName: params.inputName }, value: params.value });
+                if (!params.node || typeof params.value !== "number") return;
+                if (typeof params.outputName === "string" && params.inputName === undefined)
+                    this.manualControls.receiveLive({ control: { node: params.node, outputName: params.outputName }, value: params.value });
+                else if (typeof params.inputName === "string" && params.outputName === undefined)
+                    this.manualControls.receiveLive({ control: { node: params.node, inputName: params.inputName }, value: params.value });
             });
         this.notifications.subscribe<ServerMessageNotification>("server.message", (params) => {
             if (!params.message) {
@@ -879,7 +882,7 @@ export class WorkspaceSession {
             fs.closeSync(processLog);
         }
         this.process = spawnedProcess;
-        this.outputChannel.appendLine("Intravenous startup: server process spawned");
+        this.outputChannel.appendLine(`Intravenous startup: server process spawned (PID ${spawnedProcess.pid ?? "unavailable"})`);
 
         spawnedProcess.on("error", (error) => {
             this.outputChannel.appendLine(`Intravenous server spawn failed: ${error.message}`);

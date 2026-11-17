@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <optional>
 
 namespace iv {
 
@@ -19,12 +20,15 @@ enum class ManualControlParticipation {
     participate_with_connections,
 };
 
-// Durable semantic identity of one manually controlled authored input. The
+// Durable semantic identity of one authored input control or output gain. The
 // NodeAddress is resolved again for every ProjectGraph generation; no
 // GraphBuilder-local bundle or port index crosses that boundary.
+enum class ManualControlKind : std::uint8_t { input, output_gain };
+
 struct ManualControlId {
     NodeAddress node{};
-    std::string input_name{};
+    std::string port_name{};
+    ManualControlKind kind = ManualControlKind::input;
 
     bool operator==(ManualControlId const&) const = default;
 };
@@ -38,9 +42,9 @@ struct ManualControlInteractionId {
     bool operator==(ManualControlInteractionId const&) const = default;
 };
 
-// Project-owned state. Front 14 initially supports scalar Sample controls. A
-// scalar value is broadcast to every channel of the resolved Sequential Sample
-// input and enters that input's authored combine operation.
+// Project-owned scalar state. Input controls broadcast a Sample to the resolved
+// Sequential input. Output gains multiply each channel through its value type's
+// explicit gain operation, independently of input participation policy.
 struct ProjectManualControl {
     ManualControlId id{};
     Sample stored_value{};
@@ -51,7 +55,7 @@ struct ProjectManualControl {
     bool operator==(ProjectManualControl const&) const = default;
 };
 
-// One ProjectGraph-specialization binding after NodeAddress and input-name
+// One ProjectGraph-specialization binding after NodeAddress and port-name
 // resolution. Several records can retain one ManualControlId when its semantic
 // address intentionally selects several concrete nodes.
 struct ConfiguredManualControl {
@@ -65,6 +69,12 @@ struct ConfiguredManualControl {
     // Transient source replacement for a live gesture. Independent of the
     // durable participation policy; never serialized into the project.
     bool override_connections = false;
+    // Public output gain before compiler-private transform expansion. The
+    // authored input field is unused for this control until that expansion.
+    std::optional<NodeBundlePortId> output{};
+    // Its value is frozen into a prepared graph, never copied from an atomic
+    // live target into an already active background-dependent executable.
+    bool requires_preparation = false;
 
     bool operator==(ConfiguredManualControl const&) const = default;
 };

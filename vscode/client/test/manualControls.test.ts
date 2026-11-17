@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ManualControlInteractions, type ManualControlDescriptor, type ManualControlId,
+import { ManualControlInteractions, manualControlKey, resolveManualControl, type ManualControlDescriptor, type ManualControlId,
     type ManualControlTransport } from "../src/manualControls";
 import { ManualControlGestures } from "../src/manualControlGesture";
 import type { GraphScope } from "../src/graphScope";
@@ -313,6 +313,25 @@ test("clamping does not accumulate hidden travel at an input limit", () => {
     assert.equal(gestures.state(control)?.value, 9);
 });
 
+test("output gain scrubbing reaches exact zero independently of pointer event count", () => {
+    const gain: ManualControlId = { node: control.node, outputName: "main" };
+    const limits = { defaultValue: 1 };
+    const make = () => {
+        const gestures = new ManualControlGestures(() => {}, () => "drag", () => {});
+        assert.equal(gestures.scrub(gain, { ...descriptor, value: 1 }, 1, 0, .01, limits), true);
+        return gestures;
+    };
+    const single = make();
+    single.moveBy(1, -106); // Six pixels leave the default plateau, then 100 scale the value to zero.
+    const repeated = make();
+    for (let i = 0; i < 106; ++i) repeated.moveBy(1, -1);
+    assert.equal(single.state(gain)?.value, 0);
+    assert.equal(repeated.state(gain)?.value, 0);
+    repeated.moveBy(1, -.01);
+    assert.ok(Math.abs(repeated.state(gain)!.value + .0001) < 1e-12);
+    assert.notEqual(repeated.state(gain)?.value, 0); // Nearby values remain reachable.
+});
+
 test("numeric entry commits one exact gesture and cancellation sends no edit", () => {
     const actions: unknown[] = [];
     const gestures = new ManualControlGestures((action) => actions.push(action), () => "entry", () => {});
@@ -475,4 +494,30 @@ test("disconnect clears relayed values before a replacement session uses the sam
     gestures.disconnected();
     assert.equal(gestures.liveValue(control), undefined);
     assert.equal(gestures.state(control), undefined);
+});
+
+
+test("output gains keep their identity and gesture lifetime separate from same-named inputs", async () => {
+    const gain: ManualControlId = { node: control.node, outputName: "frequency" };
+    assert.notEqual(manualControlKey(gain), manualControlKey(control));
+    const graph = scope();
+    graph.nodes[0].sampleOutputs = [{ name: "frequency", index: 0,
+        manualControl: { ...descriptor, value: 1 } }];
+    assert.equal(resolveManualControl(graph, control)?.value, 440);
+    assert.equal(resolveManualControl(graph, gain)?.value, 1);
+    const controls: ManualControlId[] = [];
+    const { manager, calls } = harness({ beginManualControl: async (_id, id, value) => {
+        controls.push(id); calls.push({ action: "begin", value });
+    } });
+    manager.reconcile(graph);
+    manager.action("lane", { action: "begin", interactionId: "gain", control: gain, value: 1 });
+    await manager.settled();
+    manager.action("lane", { action: "update", interactionId: "gain", value: -.5 });
+    manager.action("lane", { action: "end", interactionId: "gain", value: -.25 });
+    await manager.settled();
+    assert.deepEqual(controls, [gain]);
+    assert.deepEqual(calls.map(({ action, value }) => [action, value]), [
+        ["begin", 1], ["update", -.5], ["end", -.25],
+    ]);
+    assert.equal(manager.states("lane")[0].value, -.25);
 });

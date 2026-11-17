@@ -195,7 +195,7 @@ namespace {
         {
             if (request.interaction.interaction_id != "drag" || !drag_open.load()) return;
             request.applied = true;
-            request.control = {.node = {.instance_id = "osc"}, .input_name = "frequency"};
+            request.control = {.node = {.instance_id = "osc"}, .port_name = "frequency"};
         }
         void handle_begin_manual_control(
             iv::BeginManualControlInteractionRequest const&, iv::SocketRpcAckResponseBuilder& builder)
@@ -726,6 +726,26 @@ TEST(SocketRpcServer, PublishesControlCompilationTimingsWithoutAnActivationClaim
         EXPECT_EQ(json["params"]["preparationUs"], expected.preparation_us);
         EXPECT_FALSE(json["params"].contains("activationUs"));
     }
+}
+
+TEST(SocketRpcServer, InvalidControlPayloadKeepsItsRequestIdAndTheNextGestureCanBegin)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+    // A rejected hover must complete its own client request. Replying with
+    // another ID leaves the client's entire ordered gesture queue waiting.
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":95,"method":"manualControls.hover","params":{"node":{"instanceId":"osc","path":[]},"inputName":"frequency","outputName":"main"}})" "\n");
+    auto const rejected = nlohmann::ordered_json::parse(harness.read_response(95));
+    EXPECT_EQ(rejected["id"], 95);
+    ASSERT_TRUE(rejected.contains("error"));
+    EXPECT_EQ(rejected["error"]["data"]["currentRevision"], 0);
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":96,"method":"manualControls.begin","params":{"interactionId":"drag","node":{"instanceId":"osc","path":[]},"inputName":"frequency","value":0.5}})" "\n");
+    auto const started = nlohmann::ordered_json::parse(harness.read_response(96));
+    ASSERT_TRUE(started.contains("result"));
+    EXPECT_EQ(started["result"]["sessionRevision"], 1);
 }
 
 TEST(SocketRpcServer, RelaysLiveManualValuesToOtherClientsUntilTheGestureEnds)

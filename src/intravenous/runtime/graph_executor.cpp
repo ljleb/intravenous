@@ -47,6 +47,15 @@ bool compatible_realtime_code(
     CompiledGraph const& structural,
     CompiledGraph const& replacement) noexcept
 {
+    if (replacement.configured_graph) {
+        for (auto const& control : replacement.configured_graph->manual_controls) {
+            if (!control.requires_preparation) continue;
+            if (!structural.configured_graph) return false;
+            auto const previous = std::ranges::find(structural.configured_graph->manual_controls, control.id, &ConfiguredManualControl::id);
+            if (previous == structural.configured_graph->manual_controls.end()
+                || previous->settled_value != control.settled_value) return false;
+        }
+    }
     auto const steady_regions = static_cast<std::size_t>(std::ranges::count_if(
         structural.node_layout.regions,
         [](NodeLayout::Region const& region) { return !region.transition_only; }));
@@ -220,6 +229,7 @@ bool write_manual_control_target(
     bool updated = false;
     for (auto const& binding : graph.manual_controls) {
         if (binding.configured.id != id) continue;
+        if (binding.configured.requires_preparation) continue;
         auto const offset = binding.state_storage_offset
             + offsetof(ManualControlRuntimeState, target_bits);
         if (offset > storage.size()
@@ -2132,8 +2142,13 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
             throw std::invalid_argument("invalid background observation window");
         auto const& graph = *current->graph;
         auto const& plan = graph.background_evaluation_plan;
+        auto selected_output = query.output;
+        for (auto const& [source, view] : graph.background_output_gain_views) if (source == query.output) {
+            selected_output = view;
+            break;
+        }
         auto found = std::ranges::find_if(plan.ports, [&](auto const& port) {
-            return port.direction == graph_jit::PortDirection::output && port.configured_port == query.output;
+            return port.direction == graph_jit::PortDirection::output && port.configured_port == selected_output;
         });
         if (found == plan.ports.end() || !query.operation || !query.operation->capture_point
             || found->kind != PortKind::sample || found->continuous_geometry.value_type != ContinuousValueTypeId::sample
@@ -2178,7 +2193,8 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
                     BackgroundSampleReadView const* view = nullptr;
                     for (graph_jit::PortStorageIndex i = 0; i < plan.storage.ports.size(); ++i) {
                         auto const& slot = plan.storage.ports[i];
-                        if (slot.output_port != selected.port && slot.source_port != selected.query.output) continue;
+                        if (slot.output_port != selected.port
+                            && slot.source_port != plan.ports[selected.port].configured_port) continue;
                         auto* candidate = storage.sample_read(i);
                         if (candidate && candidate->has_channel(selected.query.channel)) { view = candidate; break; }
                     }

@@ -174,3 +174,17 @@ test("observation reads normalize root node addresses without adding a mutation 
     ]);
     assert.deepEqual(node, { instanceId: "oscillator" });
 });
+
+
+test("output gain requests use outputName without inventing an input identity", async () => {
+    const calls: unknown[] = [];
+    const client = { request: async (method, params) => { calls.push({ method, params }); } } as unknown as JsonRpcSocketClient;
+    const rpc = new WorkspaceRpc(client, () => 9);
+    const gain = { node: { instanceId: "synth" }, outputName: "main" };
+    await rpc.hoverManualControl(gain);
+    await rpc.beginManualControl("gain-drag", gain, 1);
+    assert.deepEqual(calls, [
+        { method: "manualControls.hover", params: gain },
+        { method: "manualControls.begin", params: { interactionId: "gain-drag", ...gain, value: 1, expectedRevision: 9 } },
+    ]);
+});

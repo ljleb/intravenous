@@ -144,7 +144,8 @@ struct ProjectRecordKeyHash {
         return hash;
     }
     std::size_t operator()(ManualControlId const& value) const {
-        return (*this)(value.node) ^ ((*this)(value.input_name) << 1);
+        return (*this)(value.node) ^ ((*this)(value.port_name) << 1)
+            ^ (static_cast<std::size_t>(value.kind) << 2);
     }
 };
 

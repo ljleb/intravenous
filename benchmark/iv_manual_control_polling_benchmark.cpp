@@ -75,7 +75,7 @@ void measure(std::size_t count, std::size_t iterations, std::size_t trials)
     for (std::size_t i = 0; i < count; ++i) {
         auto const offset = graph->node_layout.regions[regions[i].index].storage_offset;
         graph->manual_controls.push_back({
-            .configured = {.id = {.node = {.instance_id = "node:" + std::to_string(i)}, .input_name = "value"},
+            .configured = {.id = {.node = {.instance_id = "node:" + std::to_string(i)}, .port_name = "value"},
                 .input = {i, iv::PortKind::sample, 0}},
             .state_storage_offset = offset, .participates = true,
         });

@@ -19,7 +19,7 @@ const editingControl = computed(() => {
     void manualControls?.version.value;
     return !!node.value.address && !!manualControls?.gestures.isEditingNode(node.value.address);
 });
-const hasKnob = (port: SemanticPort) => port.direction === "input" && port.kind === "continuous"
+const hasKnob = (port: SemanticPort) => port.kind === "continuous"
     && !!port.manualControl?.available;
 const portHeight = (port: SemanticPort) => hasKnob(port) ? 30 : 22;
 const panel = ref<HTMLElement | null>(null);
@@ -349,7 +349,8 @@ onBeforeUnmount(() => {
                     @pointerdown="start($event, port)">
                     <span class="port-circle" />
                 </button>
-                <ManualInput v-if="hasKnob(port)" :name="port.name" />
+                <ManualInput v-if="hasKnob(port)" :name="port.name" :direction="port.direction"
+                    :show-value="port.direction !== 'output'" />
                 <span v-if="direction === 'input'" class="direct-port-name" :title="port.name">{{ port.name || port.index + 1 }}</span>
             </div>
             <div v-if="layout[direction].folded.length" :ref="(element) => setOverflow(direction, element)"
@@ -381,7 +382,7 @@ onBeforeUnmount(() => {
                             @pointerdown="pickConnection($event, end)">
                             <span class="port-circle" /><span class="port-name">{{ connectionLabel(end.connection.connection) }}</span>
                         </button>
-                        <ManualInput v-if="index === 0 && popoverHasKnob(chooserPort)" :name="chooserPort.name" />
+                        <ManualInput v-if="index === 0 && popoverHasKnob(chooserPort)" :name="chooserPort.name" :direction="chooserPort.direction" />
                     </div>
                 </template>
                 <template v-else>
@@ -396,7 +397,7 @@ onBeforeUnmount(() => {
                             <span class="port-circle" /><span class="port-name">{{ port.name || port.index + 1 }}</span>
                             <small v-if="!hasKnob(port)">{{ portDescription(port) }}</small>
                         </button>
-                        <ManualInput v-if="hasKnob(port)" :name="port.name" />
+                        <ManualInput v-if="hasKnob(port)" :name="port.name" :direction="port.direction" />
                     </div>
                 </template>
             </div>

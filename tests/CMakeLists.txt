@@ -103,6 +103,9 @@ add_iv_gtest(
     intravenous_configured_graph_embedding_tests
     configured_graph_embedding_gtest.cpp)
 add_iv_gtest(
+    intravenous_output_gain_tests
+    output_gain_gtest.cpp)
+add_iv_gtest(
     intravenous_scoped_graph_builder_tests
     scoped_graph_builder_gtest.cpp)
 add_iv_gtest(
@@ -213,6 +216,7 @@ set(iv_graph_jit_test_sources
     modules/graph_jit/event_runtime_gtest.cpp
     modules/graph_jit/events_gtest.cpp
     modules/graph_jit/observations_gtest.cpp
+    modules/graph_jit/output_gain_gtest.cpp
     modules/graph_jit/manual_control_gtest.cpp
     modules/graph_jit/playback_gtest.cpp
     modules/graph_jit/runtime_gtest.cpp

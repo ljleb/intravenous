@@ -201,10 +201,14 @@ ManualControlId parse_manual_control_id(Json const& params)
         throw std::runtime_error(
             "manual control request requires object param 'node'");
     }
+    if (params.contains("inputName") && params.contains("outputName"))
+        throw std::runtime_error("manual control request must select one input or output");
+    auto const output_gain = params.contains("outputName");
     return {
         .node = parse_node_address_json(
             *node, ProjectConnectionJsonNames::socket_rpc),
-        .input_name = parse_string_param(params, "inputName"),
+        .port_name = parse_string_param(params, output_gain ? "outputName" : "inputName"),
+        .kind = output_gain ? ManualControlKind::output_gain : ManualControlKind::input,
     };
 }
 
@@ -448,11 +452,11 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
     }
     if (method == "manualControls.hover") {
         auto const node = params.find("node");
-        auto const input = params.find("inputName");
+        auto const has_port = params.contains("inputName") || params.contains("outputName");
         auto id = std::optional<ManualControlId>{};
-        if ((node == params.end()) != (input == params.end())) {
+        if ((node != params.end()) != has_port) {
             throw std::runtime_error(
-                "manual control hover requires both 'node' and 'inputName', or neither");
+                "manual control hover requires a node and one inputName or outputName, or neither");
         }
         if (node != params.end()) id = parse_manual_control_id(params);
         return parsed(SetManualControlHoverRequest{
