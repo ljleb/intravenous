@@ -1466,6 +1466,21 @@ struct ProjectGraphManualControlSchedulingFixture : ::testing::Test {
         EXPECT_TRUE(project_graph.wait_for_compilation());
         return result;
     }
+
+    std::array<iv::ManualControlId, 2> realize_output_and_input_controls()
+    {
+        publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+        iv::ProjectAckBuilder response;
+        in_event_source([&] { project_graph.handle_project_replace_graph({
+            .instances = {{.instance_id = "output", .definition_id = definition_id},
+                {.instance_id = "input", .definition_id = manual_control_leaf_definition_id}},
+        }, response); });
+        EXPECT_NO_THROW(response.build());
+        EXPECT_TRUE(project_graph.wait_for_compilation());
+        return {iv::ManualControlId{.node = {.instance_id = "output"}, .port_name = "main",
+                    .kind = iv::ManualControlKind::output_gain},
+            iv::ManualControlId{.node = {.instance_id = "input"}, .port_name = "gain"}};
+    }
 };
 } // namespace
 
@@ -3090,6 +3105,62 @@ TEST_F(ProjectGraphManualControlSchedulingFixture,
     EXPECT_TRUE(probe.compilations().back().has_predecessor);
     EXPECT_TRUE(probe.compilations().back().dynamic_inputs.empty());
     EXPECT_FLOAT_EQ(probe.compilations().back().controls[0].settled_value.value, .5f);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       InputHoverPrecompilesAfterOutputGainSettlesThroughAStorageTransition)
+{
+    auto const [output, input] = realize_output_and_input_controls();
+    auto const initial_stages = probe.structural_stage_count();
+    probe.require_storage_for_dynamic_controls();
+    hover("ui", output);
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "output"};
+    begin(gesture, output, 1);
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    ASSERT_EQ(probe.structural_stage_count(), initial_stages + 1);
+    end(gesture, .5f);
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    hover("ui", std::nullopt);
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    ASSERT_EQ(probe.structural_stage_count(), initial_stages + 2);
+    auto const settled = project_graph.current_generation();
+    ASSERT_TRUE(settled->graph_executor_accepted);
+    auto const before_hover = probe.compilation_count();
+
+    // No click or gesture is needed to resume predictive compilation.
+    hover("ui", input);
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    ASSERT_EQ(probe.compilation_count(), before_hover + 1);
+    EXPECT_EQ(probe.compilations().back().dynamic_inputs, std::vector<iv::ManualControlId>{input});
+    EXPECT_EQ(probe.structural_stage_count(), initial_stages + 2);
+    EXPECT_TRUE(probe.stages().empty());
+    EXPECT_EQ(project_graph.current_generation(), settled);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       InputHoverDuringOutputGainSettlementIsPreparedAfterTheStorageTransition)
+{
+    auto const [output, input] = realize_output_and_input_controls();
+    auto const initial_stages = probe.structural_stage_count();
+    probe.require_storage_for_dynamic_controls();
+    hover("ui", output);
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "output"};
+    begin(gesture, output, 1);
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    end(gesture, .5f);
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    probe.block_next_compilation();
+    hover("ui", std::nullopt);
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    auto const before_hover = probe.compilation_count();
+    hover("ui", input);
+    EXPECT_EQ(probe.compilation_count(), before_hover);
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    ASSERT_EQ(probe.compilation_count(), before_hover + 1);
+    EXPECT_EQ(probe.compilations().back().dynamic_inputs, std::vector<iv::ManualControlId>{input});
+    EXPECT_EQ(probe.structural_stage_count(), initial_stages + 2);
+    EXPECT_TRUE(probe.stages().empty());
 }
 
 TEST_F(ProjectGraphManualControlSchedulingFixture,

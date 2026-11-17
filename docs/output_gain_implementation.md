@@ -381,3 +381,24 @@ input/output independence. The owner must run `npm test` and
 `npm run typecheck`, then rebuild/reinstall the extension. The agent did not
 run builds, tests or typechecks. Backend source and protocol remain unchanged
 by this UI pass.
+
+## Predictive hover after storage-changing settlement, 2026-11-17
+
+The owner reports that an output-gain edit prevents later input hover from
+preparing a dynamic variant until a click starts an interaction. Settled
+code accepted through realtime replacement clears `settling_controls_`.
+`ProjectGraph::compile_graph()` did not clear it when the same settlement
+required a structural storage transition. The next hover updated its address
+but skipped predictive scheduling because settlement still appeared active.
+
+After executor acceptance, structural compilation now clears that flag when
+the accepted configured graph matches the current settled controls. It then
+prepares the latest hover using the existing predictive path. Failed or stale
+compilation does not release the flag. Preparation still does not activate
+hover-only code.
+
+Two scheduling regressions exercise a real output-control identity with a
+storage-changing mock executable. One hovers an input after output settlement.
+The other changes hover while the settling transition is blocked, then checks
+that completion prepares the latest input without activating it. The owner
+must rebuild and run C++ tests. No builds or tests were run by the agent.

@@ -741,6 +741,15 @@ void ProjectGraph::compile_graph(GraphCompileRequest request, std::stop_token st
             }
             if (diagnostic_flag_enabled("IV_EDIT_TIMING")) log_edit_timing(*state);
             if (state->graph_executor_accepted) {
+                // Storage-changing controls settle through structural staging
+                // rather than code replacement. Release the same settlement
+                // gate before preparing the latest hover-only variant.
+                if (settling_controls_ && dynamic_inputs_.empty()
+                    && state->compiled_graph->configured_graph
+                    && control_configuration_matches_locked(
+                        *state->compiled_graph->configured_graph, dynamic_inputs_)) {
+                    settling_controls_ = false;
+                }
                 // Attach any gestures opened while the executable was pending
                 // to this generation's own live cells, never the older graph.
                 ProjectGraphGraphExecutorControlsRequest controls;
