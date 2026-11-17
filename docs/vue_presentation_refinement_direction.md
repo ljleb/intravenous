@@ -54,15 +54,23 @@ can gain more visualization choices later. Both stereo channels share the
 output's display preference. Keyboard users can open it from a focused meter
 with the context-menu key or Shift+F10.
 
-Use the same RMS fill and peak marker in both modes. A new peak snaps the
-marker up and resets its downward velocity. After a short hold, the marker
+Use the same latest-peak fill and held peak marker in both modes. The fill shows
+the latest received block's sample-magnitude peak immediately, on both rises
+and falls. Do not smooth it toward RMS or interpolate it as a fictional stream
+of measurements between telemetry updates. Here, instantaneous means the latest
+received block peak, not an audio-rate sample value or a guarantee of observing
+every peak between publications. RMS can remain in the numeric readout.
+
+A new peak snaps the held marker up and resets its downward velocity. After a
+short hold, the marker
 falls with increasing speed toward zero, staying at least as high as the
-currently measured peak. Smooth the RMS fill with fast attack and slower
-release. Run this motion on the client at display refresh, independently of
-telemetry delivery. Missing/unavailable data remain unavailable rather than
+currently measured peak. Run only this held-marker motion on the client at
+display refresh, independently of telemetry delivery. Missing/unavailable data
+remain unavailable rather than
 becoming silence. Reset obsolete-source motion on activation/invalidation and
 stop animation when hidden or settled. Hold and release tuning can be adjusted
-for feel without changing capture semantics.
+for feel without changing capture semantics. This owner refinement supersedes
+the [RMS-fill motion contract](./historical/vue_rms_fill_before_latest_peak_2026-11-16.md).
 
 Both modes have **square corners**, no decorative rounding, and consistent
 ruler-like grading. Reuse the existing time ruler's tick/label/gradation
@@ -79,6 +87,26 @@ Stereo and other multichannel meters remain distinct, clearly identified
 channel readings within that full-width area, with aligned graduations and
 legible levels. Do not sacrifice input/output controls or force an artificial
 lane width to achieve the fill; the meter adapts to the available space.
+
+The default visualization fills its allocated viewport without surrounding
+horizontal or vertical padding. Keep the channels distinguishable; spacing
+between channels is separate from an outer margin around the visualization.
+
+### Visualization performance and display settings (deferred)
+
+Add visualization-specific performance and display preferences later. Meters
+need selectable refresh rates and display options, including held-peak timing
+and appearance. Distinguish telemetry delivery cadence from client animation
+frame rate; rendering the same received value more often does not create more
+audio measurements. Other visualization types may need different quality,
+resolution or update controls rather than sharing one universal settings set.
+
+For now, store these preferences in VS Code with presentation preferences, not
+in node construction data or the project's audio graph. Rate/display changes
+that only affect presentation or delivery must not rebuild DSP code. Preserve
+the distinction if a future quality option actually changes producer work.
+This records future work only; no new settings UI or configurable rates are
+implemented by this refinement.
 
 ### Future signal-distribution and spectral views (deferred)
 

@@ -53,7 +53,7 @@ export function meterReading(mode: MeterMode, result?: ObservationDisplayValue):
 // lifetime. Only copied telemetry survives; no old frame is accepted as current.
 export class MeterPresentationState {
     private readonly motion = new MeterBallistics();
-    private displayed: MeterMotion = { peak: 0, rms: 0 };
+    private displayed: MeterMotion = { peak: 0 };
     private current?: ObservationDisplayValue;
     private previous?: ObservationDisplayValue;
     private active = false;
@@ -64,10 +64,10 @@ export class MeterPresentationState {
         const available = meterReading("value", result).available;
         if (!active || (result !== undefined && !result.pending && !available)) {
             this.previous = undefined;
-            this.displayed = { peak: 0, rms: 0 };
+            this.displayed = { peak: 0 };
         } else if (available) {
-            const peak = result!.value!.peak as number, rms = result!.value!.rms as number;
-            this.displayed = this.previous ? this.motion.update(peak, rms, now) : this.motion.reset(peak, rms, now);
+            const peak = result!.value!.peak as number;
+            this.displayed = this.previous ? this.motion.update(peak, now) : this.motion.reset(peak, now);
             this.previous = result;
         } else this.advance(now);
     }
@@ -76,10 +76,14 @@ export class MeterPresentationState {
     }
     get moving(): boolean { return this.active && !!this.previous && this.motion.moving; }
     get updating(): boolean { return this.active && !!this.previous && (!this.current || !!this.current.pending); }
-    reading(mode: MeterMode): MeterReading {
+    reading(mode: MeterMode): MeterReading & { heldPosition: number; heldOverReference: boolean } {
         const result = !this.active ? undefined : this.updating ? this.previous : this.current;
-        return meterReading(mode, result && { ...result,
-            value: { ...result.value, peak: this.displayed.peak, rms: this.displayed.rms } });
+        // The filled bar follows received peaks immediately in both directions.
+        // Only the separate held marker uses presentation motion.
+        const reading = meterReading(mode, result);
+        const held = meterReading(mode, result && { ...result,
+            value: { ...result.value, peak: this.displayed.peak } });
+        return { ...reading, heldPosition: held.position, heldOverReference: held.overReference };
     }
     status(mode: MeterMode): string {
         return this.updating ? `Updating · previous reading: ${meterReading(mode, this.previous).text}`

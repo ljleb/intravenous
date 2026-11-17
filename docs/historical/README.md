@@ -315,3 +315,7 @@ Preserved before the owner separated configuration commitment from DSP readiness
 - [Automation nano presence before continuous curve scaling (2026-11-16)](vue_automation_nano_presence_before_curve_scaling_2026-11-16.md)
   preserves the coverage-only nano contract before the owner requested the same
   rescaled curve path at all lane heights and visualization selection by context menu.
+
+- [RMS fill before latest-peak display (2026-11-16)](vue_rms_fill_before_latest_peak_2026-11-16.md)
+  preserves the RMS-fill motion contract before the owner requested a latest
+  received peak bar alongside the separate momentum peak marker.

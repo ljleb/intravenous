@@ -3528,3 +3528,32 @@ the updated normative presentation document.
 These are frontend presentation changes. Source inspection and
 `git diff --check` only; extension rebuild, client tests/typecheck and manual
 menu/zoom verification remain owner-run.
+
+
+### Latest peak versus momentum peak; visualization preferences deferred (2026-11-16)
+
+The owner clarified that the meter should compare the latest received peak with
+the held/momentum peak, rather than showing an RMS fill beside a peak marker.
+`MeterPresentationState.reading()` now keeps the live peak position separate from
+`heldPosition`; `SampleMeter` uses the former for `.peak-fill` and the latter for
+the held marker. The fill follows incoming peaks immediately in both directions.
+`MeterBallistics` animates only the held peak, retaining its hold and accelerating
+fall and the existing compatible-transition continuity. Unused RMS animation is
+removed. Actual RMS measurements remain in the numeric readout. Each indicator
+has its own above-reference colour state.
+
+The default meter's `NodeLane` content bypasses the shared vertical padding, and
+`LiveOutputMeters` no longer adds horizontal padding. The matching negative
+waveform margin is removed so background visualizations also use their allocated
+width without overflow. Channel separation remains unchanged.
+
+Future visualization-specific refresh rates and display/performance settings are
+recorded in the normative presentation document. They belong in VS Code with
+presentation preferences for now, with telemetry cadence distinct from display
+frame rate. No settings UI, configurable rate or backend capture change is part
+of this work.
+
+Regression sources now distinguish immediate peak changes from held-marker
+motion, including independent reference warnings and compatible graph cutovers.
+Source inspection and `git diff --check` only; client tests, typecheck, extension
+rebuild and visual checks remain owner-run.

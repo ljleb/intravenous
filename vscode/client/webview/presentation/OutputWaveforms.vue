@@ -48,7 +48,7 @@ onBeforeUnmount(() => observations?.hint(owner, null));
 </template>
 
 <style scoped>
-.window-outputs { display: flex; flex-direction: column; flex: 1; min-height: 1px; margin: 0 -8px; }
+.window-outputs { display: flex; flex-direction: column; flex: 1; min-height: 1px; }
 .waveform { position: relative; flex: 1; min-height: 1px; color: #62bf7b; overflow: hidden; }
 .waveform svg { display: block; width: 100%; height: 100%; min-height: 1px; }
 .coverage { fill: currentColor; opacity: .045; }

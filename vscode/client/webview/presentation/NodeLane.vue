@@ -36,7 +36,7 @@ const outputSummary = computed(() => outputs.value.map((port) => `${port.name}: 
                 <span :title="outputSummary" :aria-label="`${outputs.length} outputs`">{{ outputs.length }} →</span>
             </div>
         </header>
-        <div class="lane-content"><slot><LiveOutputMeters :mode="mode" /></slot></div>
+        <div class="lane-content" :class="{ 'meter-content': !$slots.default }"><slot><LiveOutputMeters :mode="mode" /></slot></div>
     </div>
 </template>
 
@@ -60,4 +60,5 @@ const outputSummary = computed(() => outputs.value.map((port) => `${port.name}: 
 .copy-debug[data-hovered] { background: var(--vscode-toolbar-hoverBackground); }
 .copy-debug:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
 .lane-content { min-width: 0; min-height: 0; overflow: hidden; padding: clamp(0px, calc(12.5cqh - 2px), 4px) 0; box-sizing: border-box; }
+.lane-content.meter-content { padding: 0; }
 </style>

@@ -56,7 +56,7 @@ test("meter and timeline graduations share finite ordered numeric geometry", () 
     assert.deepEqual(numericTicks(0, 1, 0), []);
 });
 
-test("compatible graph transitions keep peak and RMS motion through pending telemetry", () => {
+test("compatible graph transitions keep latest and held peaks through pending telemetry", () => {
     const meter = new MeterPresentationState(), uninterrupted = new MeterPresentationState();
     const values = new ObservationValues();
     const frame = (generation: string, activationId: string, value: ObservationDisplayValue): ObservationUpdate => ({
@@ -71,7 +71,8 @@ test("compatible graph transitions keep peak and RMS motion through pending tele
         state.advance(200);
     }
     const before = meter.reading("value");
-    assert.ok(before.displayValue! > .9);
+    assert.equal(before.displayValue, .1);
+    assert.ok(before.heldPosition > .9);
     values.acceptGeneration(2);
     meter.update(values.values.get("meter"), true, 200);
     assert.deepEqual(meter.reading("value"), before);
@@ -95,6 +96,7 @@ test("compatible graph transitions keep peak and RMS motion through pending tele
         for (const mode of ["level", "value"] as const) {
             const actual = meter.reading(mode), expected = uninterrupted.reading(mode);
             assert.ok(Math.abs(actual.position - expected.position) < 1e-12);
+            assert.ok(Math.abs(actual.heldPosition - expected.heldPosition) < 1e-12);
             assert.ok(Math.abs(actual.rmsPosition - expected.rmsPosition) < 1e-12);
         }
     }
@@ -106,5 +108,34 @@ test("compatible graph transitions keep peak and RMS motion through pending tele
     assert.equal(meter.reading("value").displayValue, .1);
     meter.update(undefined, false, 480);
     assert.equal(meter.reading("value").available, false);
+    assert.equal(meter.moving, false);
+});
+
+test("the fill follows received peaks immediately while only the held marker has momentum", () => {
+    const meter = new MeterPresentationState();
+    const sample = (peak: number, rms: number): ObservationDisplayValue => ({ available: true,
+        value: { peak, rms, samples: "64", nonfinite: "0" } });
+    meter.update(sample(.8, .1), true, 0);
+    assert.equal(meter.reading("value").position, .8);
+    assert.equal(meter.reading("value").heldPosition, .8);
+    meter.update(sample(.2, .05), true, 20);
+    assert.equal(meter.reading("value").position, .2);
+    assert.equal(meter.reading("value").heldPosition, .8);
+    const db = meter.reading("level");
+    assert.equal(db.position, meterPosition(sampleDecibels(.2), levelDomain.min, levelDomain.max));
+    assert.equal(db.heldPosition, meterPosition(sampleDecibels(.8), levelDomain.min, levelDomain.max));
+    meter.advance(220);
+    assert.equal(meter.reading("value").position, .2);
+    assert.ok(meter.reading("value").heldPosition > .2 && meter.reading("value").heldPosition < .8);
+    meter.update(sample(.9, .1), true, 230);
+    assert.equal(meter.reading("value").position, .9);
+    assert.equal(meter.reading("value").heldPosition, .9);
+    assert.match(meter.status("value"), /0\.1 RMS/);
+    // A released held peak may remain above reference after the live bar drops.
+    meter.update(sample(2, .1), true, 240);
+    meter.update(sample(.2, .1), true, 250);
+    assert.equal(meter.reading("value").overReference, false);
+    assert.equal(meter.reading("value").heldOverReference, true);
+    meter.advance(5000);
     assert.equal(meter.moving, false);
 });

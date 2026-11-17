@@ -51,9 +51,9 @@ const ariaValue = computed(() => reading.value.available && !updating.value
 watch([hovered, focused, () => props.label, status], () => {
     observations?.hint(owner, hovered.value || focused.value ? {
         text: `${props.label} · ${status.value}`,
-        tooltip: props.mode === "level" ? "Sample peak and RMS; dBFS scale. The held peak marker falls with increasing speed and resets its momentum on a new peak."
-            + " Right-click for visualization modes."
-            : "The same sample peak and RMS; linear magnitude scale from 0 to 1. The held peak marker uses the same motion as level mode. Right-click for visualization modes.",
+        tooltip: "The fill shows the latest received block peak immediately; the separate peak marker holds, then falls with increasing speed. "
+            + (props.mode === "level" ? "dBFS scale. " : "Linear magnitude scale from 0 to 1. ")
+            + "RMS is included in the numeric reading. Right-click for visualization modes.",
     } : null, hovered.value ? 2 : 1);
 }, { immediate: true });
 let resize: ResizeObserver | undefined;
@@ -68,14 +68,14 @@ onBeforeUnmount(() => { stopAnimation(); resize?.disconnect(); observations?.hin
 </script>
 
 <template>
-    <div ref="root" class="sample-meter" :class="{ unavailable: !reading.available, 'over-reference': reading.overReference, short: height < 23 }"
+    <div ref="root" class="sample-meter" :class="{ unavailable: !reading.available, 'over-reference': reading.overReference, 'held-over-reference': reading.heldOverReference, short: height < 23 }"
         :data-mode="mode" :data-below="reading.available && reading.below" :data-above="reading.available && reading.above"
         role="meter" tabindex="0" aria-haspopup="menu" :aria-label="label" :aria-valuemin="domain.min" :aria-valuemax="domain.max"
         :aria-valuenow="ariaValue" :aria-valuetext="status" :aria-busy="updating"
         @pointerenter="hovered = true" @pointerleave="hovered = false" @focus="focused = true" @blur="focused = false">
         <template v-if="reading.available">
-            <span class="rms-fill" :style="{ width: `${reading.rmsPosition * 100}%` }" />
-            <span class="reading-mark" :style="{ left: `${reading.position * 100}%` }" />
+            <span class="peak-fill" :style="{ width: `${reading.position * 100}%` }" />
+            <span class="reading-mark" :style="{ left: `${reading.heldPosition * 100}%` }" />
         </template>
         <RulerGraduations :ticks="ticks" compact />
         <span v-if="!reading.available" class="unavailable-mark" aria-hidden="true">—</span>
@@ -84,9 +84,9 @@ onBeforeUnmount(() => { stopAnimation(); resize?.disconnect(); observations?.hin
 
 <style scoped>
 .sample-meter { flex: 1; position: relative; min-width: 0; min-height: 0; height: auto; overflow: hidden; border: 1px solid color-mix(in srgb, var(--vscode-foreground) 18%, transparent); box-sizing: border-box; background: color-mix(in srgb, var(--vscode-foreground) 5%, transparent); }
-.rms-fill { position: absolute; bottom: 0; left: 0; height: 35%; min-height: 2px; background: #3ab963; }
+.peak-fill { position: absolute; bottom: 0; left: 0; height: 35%; min-height: 2px; background: #3ab963; }
 .reading-mark { position: absolute; bottom: 0; width: 2px; height: 45%; min-height: 3px; transform: translateX(-1px); background: #9ceaac; }
-.over-reference .reading-mark, [data-above="true"] .reading-mark, [data-below="true"] .reading-mark { background: #f0b45c; }
+.over-reference .peak-fill, .held-over-reference .reading-mark { background: #f0b45c; }
 .unavailable { background: repeating-linear-gradient(135deg, transparent, transparent 7px, color-mix(in srgb, var(--vscode-foreground) 4%, transparent) 7px, color-mix(in srgb, var(--vscode-foreground) 4%, transparent) 8px); }
 .unavailable-mark { position: absolute; right: 5px; bottom: 1px; opacity: .6; }
 .short :deep(.ruler-tick span) { display: none; }
