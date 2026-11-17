@@ -13,6 +13,7 @@ import { beginPortConnection, canDropPortConnection, finishPortConnection, moveP
 import { initialPortHoverShift, keyboardPortHoverShift, pointerPortHoverShift } from "../../src/portHoverShift";
 import { connectionCursorOutputFraction, type PortColorColumns } from "../../src/connectionPreview";
 import { ManualControlGestures } from "../../src/manualControlGesture";
+import { knobScrubSpeed } from "../../src/knobPresentation";
 import { provideManualControls } from "../presentation/manualControlContext";
 import ManualValuePopover from "../presentation/ManualValuePopover.vue";
 import { manualControlKey, resolveManualControl } from "../../src/manualControls";
@@ -69,9 +70,8 @@ provideManualControls({ gestures: manualGestures, version: manualVersion, startK
         manualGestures.resetHovered();
         return;
     }
-    const scale = limits.min !== undefined && limits.max !== undefined && limits.max > limits.min
-        ? (limits.max - limits.min) / 200 : Math.max(Math.abs(manualGestures.state(control)?.value ?? descriptor.value), 1) / 100;
-    if (!manualGestures.scrub(control, descriptor, event.pointerId, -event.clientY, scale, limits)) return;
+    const scale = knobScrubSpeed(limits);
+    if (!manualGestures.scrub(control, descriptor, event.pointerId, -event.clientY, scale, limits, event.ctrlKey)) return;
     surface.value?.setPointerCapture(event.pointerId);
     manualLockError = "";
     manualPointer.start(event.pointerId, origin, event.pointerType === "mouse");

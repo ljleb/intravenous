@@ -637,6 +637,7 @@ export class WorkspaceSession {
         }
         const minValue = parseScalarPresentationNumber(candidate.minValue);
         const maxValue = parseScalarPresentationNumber(candidate.maxValue);
+        const scrubSpeed = parseScalarPresentationNumber(candidate.scrubSpeed);
 
         return {
             type: candidate.type,
@@ -645,6 +646,7 @@ export class WorkspaceSession {
             ...(defaultValue === undefined ? {} : { defaultValue }),
             ...(minValue === undefined ? {} : { minValue }),
             ...(maxValue === undefined ? {} : { maxValue }),
+            ...(scrubSpeed === undefined ? {} : { scrubSpeed }),
         };
     }
 

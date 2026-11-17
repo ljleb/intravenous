@@ -1,20 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount } from "vue";
 import { useManualInput } from "./manualControlContext";
+import { knobFraction, knobScrubSpeed } from "../../src/knobPresentation";
 const props = defineProps<{ name: string; showName?: boolean }>();
 const control = useManualInput(() => props.name);
 const { value, available, limits, state, descriptor } = control;
-const increment = computed(() => limits.value.min !== undefined && limits.value.max !== undefined
-    ? (limits.value.max - limits.value.min) / 100 : Math.max(Math.abs(value.value ?? 0), 1) / 100);
+const increment = computed(() => knobScrubSpeed(limits.value) * 2);
 onBeforeUnmount(() => control.hover(false));
-const fraction = computed(() => {
-    const { min, max, defaultValue } = limits.value;
-    const center = defaultValue ?? 0;
-    const current = value.value ?? center;
-    return min !== undefined && max !== undefined && max > min
-        ? Math.max(0, Math.min(1, (current - min) / (max - min)))
-        : .5 + Math.atan((current - center) / Math.max(Math.abs(center), 1)) / Math.PI;
-});
+const fraction = computed(() => knobFraction(value.value ?? limits.value.defaultValue ?? 0, limits.value));
 const indicator = computed(() => {
     const angle = (-135 + 270 * fraction.value) * Math.PI / 180;
     return { x: 16 + 9 * Math.sin(angle), y: 16 - 9 * Math.cos(angle) };

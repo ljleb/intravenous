@@ -44,6 +44,7 @@ export type ContinuousValueAlternative = {
     defaultValue?: ScalarPresentationNumber | FractionalGlobalIndexValue;
     minValue?: ScalarPresentationNumber;
     maxValue?: ScalarPresentationNumber;
+    scrubSpeed?: ScalarPresentationNumber;
 };
 
 export type VirtualContinuousPort = {

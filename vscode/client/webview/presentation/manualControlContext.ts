@@ -34,7 +34,8 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>) {
         const metadata = port.value?.kind === "continuous" ? port.value.valueTypes[0] : undefined;
         const finite = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) ? value : undefined;
         return { min: finite(metadata?.minValue), max: finite(metadata?.maxValue),
-            defaultValue: metadata?.defaultValue === undefined ? 0 : finite(metadata?.defaultValue) };
+            defaultValue: metadata?.defaultValue === undefined ? 0 : finite(metadata?.defaultValue),
+            scrubSpeed: finite(metadata?.scrubSpeed) };
     });
     const available = computed(() => !!context && !!descriptor.value?.available && !!descriptor.value.enabled
         && typeof value.value === "number" && Number.isFinite(value.value));

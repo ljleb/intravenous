@@ -3579,3 +3579,49 @@ The shared header-height value keeps marker geometry and zoom anchoring aligned.
 
 Source inspection and `git diff --check` only. Extension rebuild and manual checks
 of track markers, thumb hover/drag and scroll/zoom remain owner-run.
+
+### Owner follow-up: input-wide connection targets (2026-11-16)
+
+Recorded for later implementation: while dragging a connection, every element
+belonging to a destination input should resolve that same input and preview the
+ghost connection. Dropping on its knob, name, port or associated control area
+should connect under the usual compatibility rules. This applies to direct
+controls and popover/continuation entries; it must not require aiming at the
+circle. Ordinary knob gestures remain unchanged. The normative rule is in
+[input-wide connection drop targets](./vue_presentation_refinement_direction.md#input-wide-connection-drop-targets-owner-follow-up-deferred).
+
+
+### One-sided knobs and declaration-owned scrub speed (2026-11-16)
+
+Before starting the next larger feature, the owner reported a minimum-only
+radial-range error and value-dependent drag sensitivity. `knobFraction()` now
+uses distinct bounded, minimum-only, maximum-only and unbounded mappings, with
+the finite bound at the appropriate arc endpoint. `knobScrubSpeed()` derives a
+stable default from the declared range/default and accepts `scrubSpeed`; it
+does not read the current manual value. Pointer drags and keyboard steps share
+that declaration-owned policy. Ctrl-click initializes the existing power-of-two
+sensitivity modifier to ×0.25; wheel changes and subsequent ordinary ×1 drags
+retain their usual behaviour.
+
+`SampleContinuousValueExtension` adds optional `scrub_speed` to Sequential and
+boundary input options, sequential metadata and introspection metadata. The
+hint survives boundary-to-sequential conversion and configured-graph binary
+serialization, and is projected as `scrubSpeed` through the existing value-type
+metadata. `WorkspaceSession` and `useManualInput` preserve it for the Vue knob.
+No new RPC route or audio-thread work is added.
+
+The reported zero-frequency/detune behaviour was traced to the saved
+`simple_sine` graph: a nonzero automation curve is connected to detune. Clicking
+temporarily overrides it with the stored zero; leaving restores the connection.
+The owner confirmed this is the intended behaviour. No oscillator/GraphJit fix
+is needed for that report.
+
+Regression sources cover one-sided arcs, stable and explicit speeds, Ctrl/wheel
+interaction, metadata JSON projection, and root/subgraph metadata archive round
+trips. Source inspection and `git diff --check` only; backend/PCH/package/client
+rebuilds, tests and typecheck remain owner-run.
+
+The larger accepted remaining-work order still follows the verified metadata and
+bounded Tock observations with unified recording/Tock buffered storage, then
+output gain and graph-authored snapping as separate complete features. The
+input-wide drop-target request remains recorded for later implementation.

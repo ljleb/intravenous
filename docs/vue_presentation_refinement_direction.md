@@ -137,6 +137,52 @@ inputs and temporarily expanded port lists must use the same composition.
 The input name must remain readable when cables cross the lane area; cable
 layout/opacity must not obscure it.
 
+### Input-wide connection drop targets (owner follow-up, deferred)
+
+When dragging a port connection over an input, treat that input's related
+elements as the same candidate destination: its port handle, knob, name and
+associated row/control area, including within a port continuation or popover.
+Hovering any of those elements must resolve the intended input and show the
+same ghost connection as hovering its handle. Releasing there creates the
+connection when the existing compatibility rules permit it. This widens the
+target area; it does not relax connection compatibility or change the gestures
+used to tweak a knob when no connection is being dragged. Implementation is
+deferred from the current feature.
+
+### Stable knob range and scrub sensitivity (owner refinement, 2026-11-16)
+
+A finite minimum without a maximum maps to the beginning of the radial arc;
+a finite maximum without a minimum maps to its end. The remaining unbounded
+direction uses a stable monotone curved mapping, with its scale derived from
+the declaration rather than the current knob value. Two finite bounds retain
+their linear mapping. One-sided bounds must not be drawn as if the knob were
+unbounded on both sides.
+
+The 1× scrub speed must remain stable when the knob's current value changes.
+Sample Sequential input options, including module boundary options, can declare
+an optional positive finite `scrub_speed`: logical value units per vertical
+pointer pixel at 1×. It is presentation metadata, alongside default/min/max;
+it does not alter signal processing or the manual-control value. The frontend
+metadata spelling is `scrubSpeed`. Absent or unusable hints use stable defaults:
+one two-hundredth of a finite declared range per pixel, otherwise one hundredth
+of the larger of the declared default's magnitude and 1. Neither rule depends
+on the current manual value or an incoming connected signal.
+
+For example, a module can author its frequency control as:
+
+```cpp
+auto frequency = g.input<"freq", Sample>({
+    .default_value = Sample{220.f}, .min = Sample{0.f},
+    .scrub_speed = Sample{2.f},
+});
+```
+
+Ctrl-click starts a drag at ×0.25 sensitivity. The existing wheel interaction
+still doubles or halves that modifier per step, without changing the current
+value. A later ordinary drag starts at ×1 again. Keyboard steps also use the
+declared speed rather than recalculating sensitivity from the current value.
+Keep the modifier and the Ctrl-click shortcut discoverable in status information.
+
 ### Folded inputs extend the existing lane header
 
 When the available lane-header height requires folding inputs, the **last

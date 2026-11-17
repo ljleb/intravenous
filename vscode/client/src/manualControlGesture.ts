@@ -2,7 +2,7 @@ import type { ManualControlAction, ManualControlDescriptor, ManualControlId, Man
 import { manualControlKey } from "./manualControls";
 import { addressKey, type NodeAddress } from "./graphScope";
 
-export type ManualControlLimits = { min?: number; max?: number; defaultValue?: number };
+export type ManualControlLimits = { min?: number; max?: number; defaultValue?: number; scrubSpeed?: number };
 export type ManualControlHint = { text: string; tooltip: string };
 type Hover = { control: ManualControlId; descriptor: ManualControlDescriptor; limits: ManualControlLimits };
 export type ManualValueEntry = Hover & {
@@ -96,12 +96,12 @@ export class ManualControlGestures {
         this.changed();
     }
     scrub(control: ManualControlId, descriptor: ManualControlDescriptor,
-        pointerId: number, position: number, unitsPerPixel: number, limits: ManualControlLimits = {}): boolean {
+        pointerId: number, position: number, unitsPerPixel: number, limits: ManualControlLimits = {}, precise = false): boolean {
         if (this.active?.pointer) return false;
         this.cancelEntry();
         this.edit(control, descriptor);
         if (!this.active || !Number.isFinite(unitsPerPixel) || unitsPerPixel <= 0) return false;
-        this.active.pointer = { id: pointerId, position, initialScale: unitsPerPixel, speed: 0, plateau: 0, limits };
+        this.active.pointer = { id: pointerId, position, initialScale: unitsPerPixel, speed: precise ? -2 : 0, plateau: 0, limits };
         this.changed();
         return true;
     }
@@ -208,8 +208,9 @@ export class ManualControlGestures {
         };
         if (!this.hoverDetails?.descriptor.available || !this.hoverDetails.descriptor.enabled) return null;
         const reset = this.hoverDetails.limits.defaultValue !== undefined;
-        return { text: `${this.hoverDetails.control.inputName}: drag${reset ? " · double-click reset" : ""} · right-click value`,
+        return { text: `${this.hoverDetails.control.inputName}: drag · Ctrl-drag ¼×${reset ? " · double-click reset" : ""} · right-click value`,
             tooltip: "Drag up/down to adjust. While dragging, use the wheel to change sensitivity. Right-click for numeric entry."
+                + " Ctrl-click starts at 0.25× sensitivity."
                 + (reset ? " Double-click to reset to the declared default." : "") + " Arrow keys adjust the focused knob." };
     }
     pointerControl(): ManualControlId | null { return this.active?.pointer ? this.active.control : null; }

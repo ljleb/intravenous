@@ -592,6 +592,7 @@ TEST(SocketRpcGraphQueryResultBuilder, SerializesNodes)
                             -std::numeric_limits<iv::Sample::storage>::infinity()},
                         .max = iv::Sample{
                             std::numeric_limits<iv::Sample::storage>::infinity()},
+                        .scrub_speed = iv::Sample{0.125f},
                     },
                     iv::FractionalGlobalIndexContinuousValueExtension::
                         IntrospectionMetadata{
@@ -641,6 +642,7 @@ TEST(SocketRpcGraphQueryResultBuilder, SerializesNodes)
     ASSERT_EQ(continuous["valueTypes"].size(), 3u);
     EXPECT_EQ(continuous["valueTypes"][0]["type"], "Sample");
     EXPECT_EQ(continuous["valueTypes"][0]["defaultValue"], 0.5f);
+    EXPECT_EQ(continuous["valueTypes"][0]["scrubSpeed"], 0.125f);
     EXPECT_EQ(
         continuous["valueTypes"][0]["minValue"], "negativeInfinity");
     EXPECT_EQ(

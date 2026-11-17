@@ -213,6 +213,9 @@ struct SampleContinuousValueExtension {
         Sample max = std::numeric_limits<Sample::storage>::infinity();
 
         SequentialFallback fallback = SequentialFallback::neutral;
+        // Presentation hint: logical units per vertical pointer pixel at 1x.
+        // Absent means a stable speed derived from declared bounds/default.
+        std::optional<Sample> scrub_speed {};
 
         constexpr bool operator==(BoundaryInputOptions const&) const = default;
     };
@@ -226,6 +229,7 @@ struct SampleContinuousValueExtension {
         Sample neutral_value = 0.0f;
         combine_values_type combine_values = &add;
         SequentialFallback fallback = SequentialFallback::neutral;
+        std::optional<Sample> scrub_speed {};
 
         constexpr bool operator==(SequentialInputOptions const&) const = default;
     };
@@ -240,6 +244,7 @@ struct SampleContinuousValueExtension {
             .min = options.min,
             .max = options.max,
             .fallback = options.fallback,
+            .scrub_speed = options.scrub_speed,
         };
     }
 
@@ -249,6 +254,7 @@ struct SampleContinuousValueExtension {
         Sample max = std::numeric_limits<Sample::storage>::infinity();
         Sample neutral_value = 0.0f;
         SequentialFallback fallback = SequentialFallback::neutral;
+        std::optional<Sample> scrub_speed {};
 
         constexpr bool operator==(SequentialInputMetadata const&) const = default;
 
@@ -260,13 +266,15 @@ struct SampleContinuousValueExtension {
             writer.pod(max.value);
             writer.pod(neutral_value.value);
             writer.pod(static_cast<std::uint8_t>(fallback));
+            writer.pod(scrub_speed.has_value());
+            if (scrub_speed) writer.pod(scrub_speed->value);
         }
 
         template<class Reader>
         [[nodiscard]] static SequentialInputMetadata read_binary(
             Reader& reader)
         {
-            return {
+            SequentialInputMetadata result {
                 .default_value = Sample{
                     reader.template pod<Sample::storage>()},
                 .min = Sample{reader.template pod<Sample::storage>()},
@@ -275,6 +283,9 @@ struct SampleContinuousValueExtension {
                     reader.template pod<Sample::storage>()},
                 .fallback = static_cast<SequentialFallback>(reader.template pod<std::uint8_t>()),
             };
+            if (reader.template pod<bool>())
+                result.scrub_speed = Sample{reader.template pod<Sample::storage>()};
+            return result;
         }
     };
 
@@ -282,6 +293,7 @@ struct SampleContinuousValueExtension {
         std::optional<Sample> default_value {};
         std::optional<Sample> min {};
         std::optional<Sample> max {};
+        std::optional<Sample> scrub_speed {};
 
         constexpr bool operator==(
             IntrospectionMetadata const&) const = default;
@@ -298,6 +310,7 @@ struct SampleContinuousValueExtension {
             if (max) {
                 write_value(json, "maxValue", *max);
             }
+            if (scrub_speed) write_value(json, "scrubSpeed", *scrub_speed);
         }
 
     private:
@@ -325,6 +338,7 @@ struct SampleContinuousValueExtension {
             .default_value = metadata.default_value,
             .min = metadata.min,
             .max = metadata.max,
+            .scrub_speed = metadata.scrub_speed,
         };
     }
 
@@ -376,6 +390,7 @@ struct SampleContinuousValueExtension {
             .max = options.max,
             .neutral_value = options.neutral_value,
             .fallback = options.fallback,
+            .scrub_speed = options.scrub_speed,
         };
     }
 

@@ -15,6 +15,7 @@ small visual adjustments; no backend rebuild is needed for these values.
 | Port circle size / stroke | [`NodePorts.vue`](../vscode/client/webview/presentation/NodePorts.vue): `.port-circle`; both direct and folded ports use it |
 | Port mouse target size | `NodePorts.vue`: `.port-handle` and `.port-slot`; these are larger than the visible circles |
 | Folded circle placement | `NodePorts.vue`: `.stacked-first`, `.stacked-second`; keep vertical centering at `50%` |
+| Knob value mapping and default drag speed | [`knobPresentation.ts`](../vscode/client/src/knobPresentation.ts): `knobFraction`, `knobScrubSpeed`; an authored Sample input's `scrub_speed` overrides the default speed |
 | Ports that fit before folding | [`lanePortLayout.ts`](../vscode/client/src/lanePortLayout.ts), plus `NodePorts.vue`'s `portHeight()` |
 | Meter spacing and visualization context menu | [`LiveOutputMeters.vue`](../vscode/client/webview/presentation/LiveOutputMeters.vue): `.live-outputs`, `.output-channels`, `.visualization-menu`, `visualizationModes` |
 | Meter colours, fill height, marker width | [`SampleMeter.vue`](../vscode/client/webview/presentation/SampleMeter.vue): `.peak-fill`, `.reading-mark` |

@@ -255,6 +255,21 @@ test("each nonzero wheel event doubles or halves sensitivity regardless of its p
     assert.match(gestures.hint()!.text, /1×/);
 });
 
+test("Ctrl precision starts at one quarter speed and the wheel still changes it by powers of two", () => {
+    const gestures = new ManualControlGestures(() => {}, () => "drag", () => {});
+    gestures.scrub(control, { ...descriptor, value: 0 }, 1, 0, 2, {}, true);
+    assert.match(gestures.hint()!.text, /0.25×/);
+    gestures.moveBy(1, 8);
+    assert.equal(gestures.state(control)?.value, 4);
+    gestures.changeSensitivity(-1);
+    assert.match(gestures.hint()!.text, /0.5×/);
+    gestures.moveBy(1, 8);
+    assert.equal(gestures.state(control)?.value, 12);
+    gestures.release(1);
+    gestures.scrub(control, descriptor, 2, 0, 2);
+    assert.match(gestures.hint()!.text, /1×/);
+});
+
 test("capture-induced pointer leave does not end hover before release", () => {
     const actions: Array<{ action: string }> = [];
     const gestures = new ManualControlGestures((action) => actions.push(action), () => "drag", () => {});

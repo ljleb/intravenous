@@ -426,7 +426,8 @@ TEST(GraphModules, PublicInputAccessSurvivesSubgraphsAndArchiveRoundTrips)
 {
     GraphBuilder graph;
     (void)graph.input<"sequential", Sample>(InputAccess::sequential, {
-        .default_value = Sample{0.25f}, .fallback = SequentialFallback::manual_control});
+        .default_value = Sample{0.25f}, .fallback = SequentialFallback::manual_control,
+        .scrub_speed = Sample{0.375f}});
     (void)graph.input<"region", stereo>(InputAccess::region);
     (void)graph.input<"coverage", Sample>(InputAccess::coverage, {
         .channel_layout = mono_planar_channel_layout});
@@ -435,8 +436,9 @@ TEST(GraphModules, PublicInputAccessSurvivesSubgraphsAndArchiveRoundTrips)
     (void)graph.event_input<"region-events">(EventTypeId::trigger, InputAccess::region);
     (void)graph.event_input(EventTypeId::trigger, InputAccess::coverage);
     auto child = graph.subgraph([](SubgraphBuilder& boundary) {
-        (void)boundary.input<"sequential", Sample>(InputAccess::sequential, {
-            .default_value = Sample{0.5f}, .fallback = SequentialFallback::manual_control});
+        (void)boundary.input<"sequential", Sample>({
+            .default_value = Sample{0.5f}, .fallback = SequentialFallback::manual_control,
+            .scrub_speed = Sample{0.125f}});
         (void)boundary.input<"region", stereo>(InputAccess::region);
         (void)boundary.input<FFTBlock>(InputAccess::coverage);
         (void)boundary.input(InputAccess::region);
@@ -460,6 +462,14 @@ TEST(GraphModules, PublicInputAccessSurvivesSubgraphsAndArchiveRoundTrips)
             sequential_input_properties(inputs[0]));
         EXPECT_EQ(metadata.fallback, SequentialFallback::manual_control);
         EXPECT_FLOAT_EQ(metadata.default_value.value, 0.25f);
+        ASSERT_TRUE(metadata.scrub_speed.has_value());
+        EXPECT_FLOAT_EQ(metadata.scrub_speed->value, 0.375f);
+        EXPECT_FALSE(sequential_input_metadata<Sample>(sequential_input_properties(inputs[3])).scrub_speed.has_value());
+        auto const child_input = built.node_bundles.resolve_sample_input(
+            {child_handle, PortKind::sample, 0}).config;
+        auto const child_metadata = sequential_input_metadata<Sample>(sequential_input_properties(child_input));
+        ASSERT_TRUE(child_metadata.scrub_speed.has_value());
+        EXPECT_FLOAT_EQ(child_metadata.scrub_speed->value, 0.125f);
         auto const events = built.public_ports.event_inputs(built.node_bundles);
         ASSERT_EQ(events.size(), 3u);
         EXPECT_EQ(input_access(events[0]), InputAccessKind::sequential);
