@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cmath>
+#include <charconv>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -498,6 +499,24 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
                 if (source.contains("channel")) {
                     if (!source["channel"].is_number_unsigned()) throw std::invalid_argument("observation channel must be unsigned");
                     interest.source.channel = source["channel"].get<std::size_t>();
+                }
+                if (item.contains("window")) {
+                    auto const& window = item.at("window");
+                    auto const begin_text = parse_string_param(window, "begin");
+                    auto const length_text = parse_string_param(window, "length");
+                    std::int64_t begin = 0;
+                    std::uint64_t length = 0;
+                    auto parsed_begin = std::from_chars(begin_text.data(), begin_text.data() + begin_text.size(), begin);
+                    auto parsed_length = std::from_chars(length_text.data(), length_text.data() + length_text.size(), length);
+                    if (parsed_begin.ec != std::errc{} || parsed_begin.ptr != begin_text.data() + begin_text.size()
+                        || parsed_length.ec != std::errc{} || parsed_length.ptr != length_text.data() + length_text.size()
+                        || !length || length > static_cast<std::uint64_t>(INT64_MAX)
+                        || !window.at("points").is_number_unsigned())
+                        throw std::invalid_argument("invalid observation window range");
+                    auto points = window.at("points").get<std::uint64_t>();
+                    if (!points || points > maximum_observation_window_points || interest.source.kind != ObservationSourceKind::output)
+                        throw std::invalid_argument("invalid observation window points or source");
+                    interest.window = ObservationWindow{GlobalIndex::from_signed(begin), length, static_cast<std::size_t>(points)};
                 }
                 request.interests.push_back(std::move(interest));
             }

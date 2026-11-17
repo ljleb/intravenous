@@ -3,34 +3,44 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useNode } from "./nodeContext";
 import { useObservations, type PresentedObservation } from "./observationContext";
 import SampleMeter from "./SampleMeter.vue";
+import OutputWaveforms from "./OutputWaveforms.vue";
+import { useTimelineWindow } from "../timeline/timelineContext";
+import { sampleWindow } from "../../src/sampleWaveform";
 import { addressKey, type NodeAddress } from "../../src/graphScope";
 import type { MeterMode } from "../../src/observations";
 import type { NodeDisplayMode } from "./displayMode";
 
-defineProps<{ mode?: NodeDisplayMode }>();
+const props = defineProps<{ mode?: NodeDisplayMode; bounds?: { min: number; max: number } }>();
 
 const node = useNode();
 const observations = useObservations();
 const root = ref<HTMLElement | null>(null);
 const owner = Symbol("live output presentation");
 let observer: IntersectionObserver | undefined;
+let resize: ResizeObserver | undefined;
+const timeline = useTimelineWindow();
+const width = ref(0);
+const window = computed(() => timeline ? sampleWindow(timeline.value.beginSeconds,
+    timeline.value.endSeconds, timeline.value.sampleRate, props.mode === "nano" ? 2 : width.value) : undefined);
 let intersecting = false;
 const visible = ref(false);
 let current: NodeAddress | undefined;
 function updateVisibility(): void {
     visible.value = !!current && intersecting && !document.hidden;
-    if (current) observations?.node(owner, current, visible.value);
+    if (current) observations?.node(owner, current, visible.value, window.value);
 }
 watch(() => node.value.address, (address) => {
     observations?.remove(owner);
     current = address;
     updateVisibility();
 }, { immediate: true });
+watch(window, updateVisibility);
 const items = computed(() => {
     observations?.version.value;
     const address = node.value.address;
     if (!address || !observations) return [];
-    return observations.capabilities.value.filter((entry) => addressKey(entry.source.node) === addressKey(address))
+    return observations.capabilities.value.filter((entry) => entry.delivery !== "window"
+        && addressKey(entry.source.node) === addressKey(address))
         .map((entry) => ({ ...entry, result: observations.values.values.get(entry.id) }));
 });
 const outputs = computed(() => {
@@ -69,11 +79,16 @@ onMounted(() => {
         intersecting = !!entry?.isIntersecting;
         updateVisibility();
     }, { rootMargin: "100px 0px" });
-    if (root.value) observer.observe(root.value);
+    if (root.value) {
+        observer.observe(root.value);
+        resize = new ResizeObserver(([entry]) => { width.value = entry?.contentRect.width ?? 0; });
+        resize.observe(root.value);
+    }
 });
 onBeforeUnmount(() => {
     document.removeEventListener("visibilitychange", updateVisibility);
     observer?.disconnect();
+    resize?.disconnect();
     observations?.remove(owner);
     observations?.hint(owner, null);
 });
@@ -99,6 +114,7 @@ onBeforeUnmount(() => {
                 </div>
             </div>
         </div>
+        <OutputWaveforms :mode="mode" :bounds="bounds" />
         <div v-for="item in state" :key="item.id" class="state-field">
             <span class="output-name">{{ item.member }}</span>
             <output :aria-label="item.member">{{ item.result?.available ? stateText(item.result.value?.value) : '—' }}</output>

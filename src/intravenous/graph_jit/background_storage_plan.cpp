@@ -2163,7 +2163,7 @@ std::expected<void, std::string> validate_tick_runtime_plan(
         auto const& port = plan.ports[binding.port];
         if (port.node != node || port.kind != kind
             || port.direction != PortDirection::input
-            || !port.random_access_input) {
+            || !port.random_access_input || plan.nodes[node].authored_tock_execution) {
             return std::unexpected(
                 "GraphJit Tick runtime binding does not match its Random Access input");
         }
@@ -2521,6 +2521,10 @@ std::expected<void, std::string> finalize_tick_runtime_plan(
             runtime.random_access_event_inputs.size();
         invocation.sample_capture_begin = runtime.sample_captures.size();
         invocation.event_capture_begin = runtime.event_captures.size();
+        // Tock inputs have background invocation bindings. They are not
+        // complete-buffer inputs of a realtime callback, even when a Tick
+        // consumer downstream reads the Tock output sequentially.
+        if (plan.nodes[node].authored_tock_execution) continue;
         for (auto const port_index : plan.nodes[node].inputs) {
             if (port_index >= plan.ports.size()) {
                 return std::unexpected(

@@ -3374,14 +3374,17 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
                 for (auto const& [name, channel_type] : outputs) {
                     auto const sources = resolve_project_sample_output(graph, placements,
                         address, name, std::nullopt);
-                    Json channels = Json::array();
+                    Json channels = Json::array(), window_channels = Json::array();
                     for (std::size_t channel = 0; channel < sources.size(); ++channel) {
                         ObservationRequirements requirements{.probes = {{.source = {
                             .node = address, .kind = ObservationSourceKind::output, .member = name,
                             .channel = channel}, .operation = "level"}}};
                         auto plan = resolve_observation_requirements(graph, placements, requirements,
                             port_realization);
-                        if (!plan.probes.front().available) continue;
+                        ObservationWindowQuery window_query;
+                        bool const window_available = resolve_observation_window_source(graph, placements,
+                            requirements.probes.front().source, "waveform", window_query, port_realization);
+                        if (!plan.probes.front().available && !window_available) continue;
                         auto const source = sources[channel];
                         auto const output = graph.node_bundles.resolve_sample_output(
                             {source.bundle, PortKind::sample, source.port}).config;
@@ -3389,11 +3392,26 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
                         auto const& public_layout = channel_type_info(channel_type);
                         auto const label = sources.size() == public_layout.channel_count
                             ? public_layout.channel_names[channel] : physical_layout.channel_names[source.channel];
-                        channels.push_back({{"index", channel}, {"name", label}});
+                        if (plan.probes.front().available)
+                            channels.push_back({{"index", channel}, {"name", label}});
+                        if (window_available)
+                            window_channels.push_back({{"index", channel}, {"name", label}});
+                    }
+                    if (!window_channels.empty()) {
+                        Json operations = Json::array(), schemas = Json::array();
+                        for (auto const& operation : continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations) {
+                            if (!operation.capture_point) continue;
+                            operations.push_back(operation.id);
+                            schemas.push_back(describe_result(operation));
+                        }
+                        capabilities.push_back({{"nodeIndex", node_index}, {"kind", "output"},
+                            {"member", name}, {"delivery", "window"}, {"channels", std::move(window_channels)},
+                            {"operations", std::move(operations)}, {"resultSchemas", std::move(schemas)}});
                     }
                     if (channels.empty()) continue;
                     Json operations = Json::array(), schemas = Json::array();
                     for (auto const& operation : continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations) {
+                        if (!operation.capture_block) continue;
                         operations.push_back(operation.id);
                         schemas.push_back(describe_result(operation));
                     }
@@ -3433,6 +3451,20 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
             } else if (!configuration_failure_ && current_generation_) {
                 describe(*current_generation_->graph, current_generation_->placements,
                     current_generation_->compiled_graph ? &current_generation_->compiled_graph->port_realization : nullptr);
+            }
+        }
+        for (auto const& window : request.windows) {
+            auto& query = *window.query;
+            query.configured_generation = current_generation_ && !configuration_failure_
+                ? current_generation_->configured_generation : 0;
+            if (current_generation_ && !configuration_failure_
+                && resolve_observation_window_source(*current_generation_->graph, current_generation_->placements,
+                    window.source, window.operation, query,
+                    current_generation_->compiled_graph ? &current_generation_->compiled_graph->port_realization : nullptr)) {
+                query.configured_generation = current_generation_->configured_generation;
+            } else {
+                query.result.status = ObservationWindowResult::Status::unavailable;
+                query.complete.store(true, std::memory_order_release);
             }
         }
         request.capabilities = std::make_shared<nlohmann::ordered_json const>(std::move(capabilities));

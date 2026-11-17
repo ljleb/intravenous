@@ -1,4 +1,5 @@
 #include <intravenous/runtime/observation_types.h>
+#include <intravenous/runtime/observation_window.h>
 #include <intravenous/runtime/observations.h>
 #include <intravenous/runtime/socket_rpc_routes.h>
 #include <intravenous/bridge.h>
@@ -30,8 +31,9 @@ TEST(Observations, SampleLevelReadsEachWrappedStridedChannelWithoutMixing)
         iv::ObservationChannelView{reinterpret_cast<std::byte const*>(interleaved.data() + 1), 4, 2 * sizeof(float), 1},
     };
     auto const& type = iv::continuous_value_type_info(iv::ContinuousValueTypeId::sample);
-    ASSERT_EQ(type.observation_operations.size(), 2u);
-    auto const& operation = type.observation_operations.front();
+    auto registered = std::ranges::find(type.observation_operations, "level", &iv::ObservationOperation::id);
+    ASSERT_NE(registered, type.observation_operations.end());
+    auto const& operation = *registered;
     iv::ObservationCaptureState left, right, unselected;
     operation.capture_block(left, {std::span{channels}.first(1), 4, 2}); // Frames 3, 0.
     operation.capture_block(right, {std::span{channels}.subspan(1), 4, 2});
@@ -146,13 +148,23 @@ struct Graph {
         request.handled = true;
         request.configured_generation = generation;
         if (request.requirements) { accepted = *request.requirements; ++compilations; }
+        for (auto const& window : request.windows) {
+            window.query->configured_generation = generation.value_or(0);
+            window.query->operation = &observation_details::sample_operations.back();
+        }
         request.capabilities = std::make_shared<Json const>(Json::array());
     }
 };
 struct Executor {
     std::optional<LiveObservationFrame> frame;
+    std::vector<std::shared_ptr<ObservationWindowQuery>> windows{};
+    std::uint64_t data_version = 0;
     void collect(ObservationCollectRequest& request)
-    { request.handled = true; request.frame = std::move(frame); frame.reset(); }
+    {
+        request.handled = true; request.frame = std::move(frame); frame.reset();
+        windows.insert(windows.end(), request.windows.begin(), request.windows.end());
+        request.background_data_version = data_version;
+    }
     void publish(ObservationRequirements const& requirements, std::uint64_t activation, bool available = true)
     {
         frame.emplace();
@@ -365,4 +377,127 @@ TEST_F(ObservationService, OlderExecutableFramesInvalidateWhenTheConfiguredGener
     ASSERT_EQ(delivery.batches.size(), 1u);
     EXPECT_EQ((*delivery.batches.back().payload)["scopes"][0]["values"][0]["available"], true);
 }
+
+TEST_F(ObservationService, WindowScopesShareCancelableQueriesWithoutCreatingLiveProbes)
+{
+    auto window = interest("wave");
+    window.operation = "waveform";
+    window.window = ObservationWindow{GlobalIndex::from_signed(-2), 12, 12};
+    ASSERT_TRUE(reconcile("a", "lane", {window}).error.empty());
+    auto shared = window; shared.id = "other";
+    ASSERT_TRUE(reconcile("b", "lane", {shared}).error.empty());
+    EXPECT_EQ(graph.compilations, 0u);
+    collect();
+    ASSERT_EQ(executor.windows.size(), 1u);
+    auto query = executor.windows.front();
+    query->result.status = ObservationWindowResult::Status::ready;
+    query->result.sample_rate = 48000;
+    query->result.regions.push_back({.range = {GlobalIndex::from_signed(0), 3}});
+    ObservationCaptureState zero; zero.store(0.0f);
+    query->result.regions.back().values.emplace_back(GlobalIndex::from_signed(0), zero);
+    query->complete.store(true, std::memory_order_release);
+    collect();
+    ASSERT_EQ(delivery.batches.size(), 2u);
+    auto const& result = (*delivery.batches[0].payload)["scopes"][0]["windows"][0];
+    EXPECT_EQ(result["id"], "wave");
+    EXPECT_EQ(result["status"], "ready");
+    EXPECT_EQ(result["regions"][0]["points"][0]["value"]["value"], 0);
+    EXPECT_EQ(result["regions"][0]["begin"], "0");
+    EXPECT_EQ(result["regions"][0]["length"], "3");
+    EXPECT_EQ(graph.compilations, 0u);
+
+    window.window->begin = GlobalIndex::from_signed(30);
+    ASSERT_TRUE(reconcile("a", "lane", {window}).error.empty());
+    ASSERT_TRUE(reconcile("b", "lane", {}).error.empty());
+    collect();
+    EXPECT_TRUE(query->canceled.load(std::memory_order_acquire));
+    ASSERT_EQ(executor.windows.size(), 2u);
+    auto pending = executor.windows.back();
+    EXPECT_EQ(pending->window.begin.signed_value(), 30);
+    auto const& moved = (*delivery.batches[0].payload)["scopes"][0]["windows"][0];
+    EXPECT_EQ(moved["window"]["begin"], "30");
+    EXPECT_EQ(moved["status"], "pending");
+    EXPECT_EQ(graph.compilations, 0u);
+    ASSERT_TRUE(reconcile("a", "lane", {}).error.empty());
+    collect();
+    EXPECT_TRUE(pending->canceled.load(std::memory_order_acquire));
+}
+
+TEST_F(ObservationService, PublishedDataChangeInvalidatesWindowContentsWithoutRecompilation)
+{
+    auto window = interest(); window.operation = "waveform";
+    window.window = ObservationWindow{GlobalIndex{}, 32, 8};
+    ASSERT_TRUE(reconcile("a", "lane", {window}).error.empty());
+    collect();
+    ASSERT_EQ(executor.windows.size(), 1u);
+    auto query = executor.windows.front();
+    query->result.status = ObservationWindowResult::Status::ready;
+    query->complete.store(true, std::memory_order_release);
+    collect();
+    EXPECT_EQ((*delivery.batches[0].payload)["scopes"][0]["windows"][0]["status"], "ready");
+    executor.data_version = 1;
+    collect();
+    EXPECT_EQ((*delivery.batches[0].payload)["scopes"][0]["windows"][0]["status"], "ready");
+    EXPECT_EQ((*delivery.batches[0].payload)["scopes"][0]["windows"][0]["outdated"], true);
+    collect(); collect(); collect();
+    EXPECT_TRUE(query->canceled.load(std::memory_order_acquire));
+    EXPECT_EQ(executor.windows.size(), 2u);
+    EXPECT_EQ(graph.compilations, 0u);
+}
+
+}
+
+
+TEST(Observations, WindowProjectionPreservesGapsOverlapsAndUnavailableValues)
+{
+    using namespace iv;
+    auto index = [](std::int64_t value) { return GlobalIndex::from_signed(value); };
+    std::array<float, 3> first{0, .25f, .5f};
+    std::array<float, 2> second{1, 2}, third{-1, -2};
+    std::array logical{GlobalIndexRange{index(0), 3}, GlobalIndexRange{index(10), 2}, GlobalIndexRange{index(10), 2}};
+    std::array views{
+        ContinuousRegionStorageView{.storage = reinterpret_cast<std::byte*>(first.data()), .range = logical[0]},
+        ContinuousRegionStorageView{.storage = reinterpret_cast<std::byte*>(second.data()), .range = logical[1]},
+        ContinuousRegionStorageView{.storage = reinterpret_cast<std::byte*>(third.data()), .range = logical[2]},
+    };
+    IndexCoverage coverage{logical[0], logical[1]};
+    std::array<std::size_t, 1> channels{0};
+    BackgroundSampleReadView view{.coverage_value = &coverage, .regions = views,
+        .layout = {.channel_type = ChannelTypeId::mono}, .channels = channels};
+    ObservationWindowQuery query;
+    query.operation = &observation_details::sample_operations.back();
+    ASSERT_EQ(query.operation->id, "waveform");
+    EXPECT_EQ(query.operation->capture_block, nullptr);
+    auto positions = observation_window_positions({index(0), 12}, 12);
+    project_observation_window(query, {index(0), 12}, positions, logical, &view);
+    ASSERT_EQ(query.result.regions.size(), 3u);
+    EXPECT_EQ(query.result.regions[0].values.size(), 3u);
+    EXPECT_FLOAT_EQ(query.result.regions[0].values[0].second.load<float>(), 0);
+    EXPECT_FLOAT_EQ(query.result.regions[1].values[0].second.load<float>(), 1);
+    EXPECT_FLOAT_EQ(query.result.regions[2].values[0].second.load<float>(), -1);
+    EXPECT_EQ(query.result.regions[1].range.begin, index(10));
+
+    // Covered data not prepared is unavailable, never a fabricated zero.
+    views[0].storage = nullptr;
+    query.result.regions.clear();
+    project_observation_window(query, {index(0), 12}, positions, logical, &view);
+    EXPECT_FALSE(query.result.regions[0].values[0].second.captured);
+    EXPECT_TRUE(query.result.regions[1].values[0].second.captured);
+}
+
+TEST(Observations, WindowRpcPreservesSignedIndicesAndBoundsTheRequest)
+{
+    auto message = nlohmann::ordered_json::parse(R"({"jsonrpc":"2.0","id":1,"method":"observations.reconcile","params":{"scopeId":"viewport","interests":[{"id":"wave","source":{"node":{"instanceId":"node","path":[]},"kind":"output","member":"out"},"operation":"waveform","window":{"begin":"-50","length":"1000000000","points":512}}]}})");
+    auto parsed = iv::parse_socket_rpc_request(message.dump());
+    auto const* request = std::get_if<iv::ReconcileObservationsRequest>(&parsed.payload);
+    ASSERT_NE(request, nullptr);
+    ASSERT_EQ(request->interests.size(), 1u);
+    ASSERT_TRUE(request->interests[0].window);
+    EXPECT_EQ(request->interests[0].window->begin.signed_value(), -50);
+    EXPECT_EQ(request->interests[0].window->length, 1000000000u);
+    message["params"]["interests"][0]["window"]["points"] = 513u;
+    EXPECT_THROW(iv::parse_socket_rpc_request(message.dump()), std::invalid_argument);
+    message["params"]["interests"][0]["window"]["points"] = 1u;
+    message["params"]["interests"][0]["window"]["length"] = "-1";
+    EXPECT_THROW(iv::parse_socket_rpc_request(message.dump()), std::invalid_argument);
 }

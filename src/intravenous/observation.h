@@ -68,6 +68,9 @@ struct ObservationOperation {
     void (*capture_block)(ObservationCaptureState&, ObservationBlockView const&) noexcept = nullptr;
     void (*capture_state)(ObservationCaptureState&, void const*) noexcept = nullptr;
     ObservationResultData (*project)(ObservationCaptureState const&) noexcept = nullptr;
+    // Background-only point projection, while the selected immutable or
+    // transaction-local value is valid. Never installs a live capture probe.
+    void (*capture_point)(ObservationCaptureState&, void const*) noexcept = nullptr;
 };
 
 namespace observation_details {
@@ -143,9 +146,16 @@ inline ObservationResultData project_sample_value(ObservationCaptureState const&
     store(result, 0, state.load<float>());
     return result;
 }
+inline void capture_sample_point(ObservationCaptureState& state, void const* value) noexcept
+{
+    float sample;
+    std::memcpy(&sample, value, sizeof(sample));
+    state.store(sample);
+}
 inline constexpr std::array sample_operations{
     ObservationOperation{"level", sample_level_fields, &capture_sample_level, nullptr, &project_sample_level},
     ObservationOperation{"value", sample_value_fields, &capture_sample_value, nullptr, &project_sample_value},
+    ObservationOperation{"waveform", sample_value_fields, nullptr, nullptr, &project_sample_value, &capture_sample_point},
 };
 
 inline constexpr std::array float_fields{

@@ -30,7 +30,8 @@ const root = ref<HTMLElement | null>(null);
 const timeRegion = ref<HTMLElement | null>(null);
 const timeWidth = ref(0);
 const timeWindow = computed(() => ({ beginSeconds: viewport.value.beginSeconds,
-    endSeconds: viewport.value.beginSeconds + Math.max(1, timeWidth.value) * viewport.value.secondsPerPixel }));
+    endSeconds: viewport.value.beginSeconds + Math.max(1, timeWidth.value) * viewport.value.secondsPerPixel,
+    sampleRate: scope.value.sampleRate }));
 provideTimelineWindow(timeWindow);
 const pan = shallowRef<MiddlePan | null>(null);
 let panMoved = false;

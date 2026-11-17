@@ -3,6 +3,8 @@
 #include <intravenous/runtime/socket_rpc_response_builders.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <nlohmann/json.hpp>
+#include <chrono>
+#include <thread>
 
 namespace iv::test::graph_jit_tests {
 namespace {
@@ -236,4 +238,103 @@ TEST_F(GraphJitRuntimeFixture, StereoObservationResolvesExplicitChannelSelectors
     EXPECT_EQ(resolved.probes[2].channels, std::vector<std::size_t>{1});
     EXPECT_EQ(resolved.probes[2].operation->id, "value");
 }
+TEST_F(GraphJitRuntimeFixture, BackgroundWaveformQueriesProjectSparseComputedOutputsBeforeStorageExpires)
+{
+    auto compiled = compile("iv.test.automation.transformed_sparse_curve", 731);
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    auto const& plan = graph.background_evaluation_plan;
+    for (std::size_t node = 0; node < plan.nodes.size(); ++node) {
+        if (!plan.nodes[node].authored_tock_execution) continue;
+        auto const& invocation = plan.tick_runtime.nodes[node];
+        EXPECT_EQ(invocation.random_access_sample_count, 0u);
+        EXPECT_EQ(invocation.random_access_event_count, 0u);
+    }
+    auto port = std::ranges::find_if(plan.ports, [](auto const& port) {
+        return port.kind == PortKind::sample && port.authored_tock_output && port.name == "value";
+    });
+    ASSERT_NE(port, plan.ports.end());
+    auto const& operations = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations;
+    auto operation = std::ranges::find(operations, "waveform", &ObservationOperation::id);
+    ASSERT_NE(operation, operations.end());
+    auto query = std::make_shared<ObservationWindowQuery>();
+    query->configured_generation = graph.configured_generation.value_or(graph.project_generation);
+    query->output = port->configured_port;
+    query->operation = &*operation;
+    query->window = {index(0), 8, 8};
+    {
+        GraphExecutor executor(resources);
+        ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        bool activated = false;
+        while (!(activated = executor.activate_pending(index(0))) && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        ASSERT_TRUE(activated);
+        auto submit = [&](std::shared_ptr<ObservationWindowQuery> const& request) {
+            ObservationCollectRequest collection{.windows = {request}};
+            executor.handle_observation_collect(collection);
+            while (!request->complete.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::yield();
+            return request->complete.load(std::memory_order_acquire);
+        };
+        ASSERT_TRUE(submit(query));
+        ASSERT_EQ(query->result.status, ObservationWindowResult::Status::ready) << query->result.error;
+        ASSERT_EQ(query->result.regions.size(), 1u);
+        EXPECT_EQ(query->result.regions[0].range, range(0, 4));
+        ASSERT_EQ(query->result.regions[0].values.size(), 4u);
+        EXPECT_FLOAT_EQ(query->result.regions[0].values[0].second.load<float>(), 0);
+        EXPECT_FLOAT_EQ(query->result.regions[0].values[3].second.load<float>(), 1.5f);
+
+        auto distant = std::make_shared<ObservationWindowQuery>();
+        distant->configured_generation = query->configured_generation;
+        distant->output = query->output;
+        distant->operation = query->operation;
+        distant->window = {index(0), std::uint64_t{1} << 40, 512};
+        ASSERT_TRUE(submit(distant));
+        ASSERT_EQ(distant->result.status, ObservationWindowResult::Status::ready) << distant->result.error;
+        ASSERT_EQ(distant->result.regions.size(), 1u);
+        ASSERT_EQ(distant->result.regions[0].values.size(), 1u);
+        EXPECT_EQ(distant->result.regions[0].values[0].first, index(0));
+        EXPECT_FALSE(executor.background_execution_failures().any());
+    }
+    // No transaction view or generation-local storage backs the returned value.
+    EXPECT_FLOAT_EQ(query->result.regions[0].values[3].second.load<float>(), 1.5f);
+}
+
+TEST_F(GraphJitRuntimeFixture, BackgroundWaveformReadsPublishedTickRecordingWithoutReplayingTheProducer)
+{
+    auto compiled = compile("iv.test.graph_jit.state_context.tick_capture_module", 732);
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    auto port = std::ranges::find_if(graph.background_evaluation_plan.ports, [](auto const& port) {
+        return port.kind == PortKind::sample && port.persisted_tick_output;
+    });
+    ASSERT_NE(port, graph.background_evaluation_plan.ports.end());
+    GraphExecutor executor(resources);
+    ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+    executor.tick_block(index(0), 32);
+    auto query = std::make_shared<ObservationWindowQuery>();
+    query->configured_generation = graph.configured_generation.value_or(graph.project_generation);
+    query->output = port->configured_port;
+    query->operation = &observation_details::sample_operations.back();
+    query->window = {index(4), 4, 4};
+    ObservationCollectRequest collection{.windows = {query}};
+    executor.handle_observation_collect(collection);
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!query->complete.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    ASSERT_TRUE(query->complete.load(std::memory_order_acquire));
+    ASSERT_EQ(query->result.status, ObservationWindowResult::Status::ready) << query->result.error;
+    ASSERT_EQ(query->result.regions.size(), 1u);
+    EXPECT_EQ(query->result.regions[0].range, range(4, 8));
+    ASSERT_EQ(query->result.regions[0].values.size(), 4u);
+    for (std::size_t i = 0; i < 4; ++i) {
+        EXPECT_TRUE(query->result.regions[0].values[i].second.captured);
+        EXPECT_FLOAT_EQ(query->result.regions[0].values[i].second.load<float>(), static_cast<float>(i) + 4.5f);
+    }
+    EXPECT_GT(query->result.data_version, 0u);
+    EXPECT_FALSE(executor.background_execution_failures().any());
+}
+
 } // namespace iv::test::graph_jit_tests

@@ -6,6 +6,7 @@ import type { AutomationPoint, CurveInterpolation } from "../../src/automationCu
 import { useNode } from "./nodeContext";
 import { useTimelineWindow } from "../timeline/timelineContext";
 import NodeLane from "./NodeLane.vue";
+import LiveOutputMeters from "./LiveOutputMeters.vue";
 import type { NodeDisplayMode } from "./displayMode";
 
 defineProps<{ mode: NodeDisplayMode }>();
@@ -89,7 +90,9 @@ onBeforeUnmount(() => { observer?.disconnect(); window.removeEventListener("poin
 
 <template>
     <NodeLane :mode="mode">
-        <svg ref="surface" class="automation-curve" :viewBox="`0 0 ${width} ${height}`"
+        <LiveOutputMeters v-if="mode === 'mini' || mode === 'nano'" :mode="mode"
+            :bounds="axes ? { min: axes.min, max: axes.max } : undefined" />
+        <svg v-show="mode !== 'mini' && mode !== 'nano'" ref="surface" class="automation-curve" :viewBox="`0 0 ${width} ${height}`"
             :aria-label="`${node.displayName || 'Automation curve'}; double-click to add a point`" @dblclick="add">
             <title>{{ error || 'Double-click to add a point or edit a point’s segment. Drag a point to move it. Right-click a point to remove it.' }}</title>
             <path :d="path" class="curve-line" />

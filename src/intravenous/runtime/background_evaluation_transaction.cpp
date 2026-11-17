@@ -112,6 +112,7 @@ class BackgroundEvaluationTransaction::Impl {
     PersistedDataStore* data_ = nullptr;
     TickMaterializationStore* materializations_ = nullptr;
     BackgroundTransactionInputs inputs_{};
+    std::optional<std::size_t> remaining_materialized_sample_bytes_{};
     std::uint64_t semantic_version_ = 0;
     std::span<BackgroundProducedInputRoute const> produced_routes_{};
     std::span<PinnedBlockPrefix const> produced_prefixes_{};
@@ -911,7 +912,24 @@ class BackgroundEvaluationTransaction::Impl {
                     }
                 }
             };
-            if (storage.sample_materialization) {
+            if (storage.storage == graph_jit::PortStorageKind::persisted_data
+                && storage.output_port
+                && plan.ports[*storage.output_port].persisted_tick_output) {
+                // Recording queries select positions within the published
+                // logical Regions. Keep those descriptors intact: the reader
+                // matches Region identity, not the requested subwindow.
+                auto const output = data_->resolve_output(persisted_output_id(
+                    plan, index, graph_->project_generation));
+                if (storage.kind == PortKind::sample) {
+                    for (auto const& region : published.sample_regions(output, storage.sample_layout)) {
+                        if (region.geometry == storage.continuous_geometry
+                            && selection.storage_coverage[index].intersects(region.range))
+                            selected_regions.push_back(region.range);
+                    }
+                } else {
+                    append_intersecting(published.event_region_ranges(output, storage.event_type));
+                }
+            } else if (storage.sample_materialization) {
                 auto const& materialization = plan.storage
                     .sample_materializations[*storage.sample_materialization];
                 auto const sequential = materialization.target_port
@@ -1112,6 +1130,26 @@ class BackgroundEvaluationTransaction::Impl {
         auto binding = binding_selection();
         auto storage = storage_selection(binding, *working_data_);
         expand_output_binding_selection(binding, storage);
+        if (remaining_materialized_sample_bytes_) {
+            auto& remaining = *remaining_materialized_sample_bytes_;
+            auto const& plan = graph_->background_evaluation_plan;
+            for (std::size_t i = 0; i < plan.storage.ports.size(); ++i) {
+                auto const& slot = plan.storage.ports[i];
+                if (slot.kind != PortKind::sample || (slot.storage == graph_jit::PortStorageKind::persisted_data
+                    && !storage.produce_storage[i])) continue;
+                auto const bytes_per_frame = slot.continuous_geometry.value_size_bytes * channel_count(slot.sample_layout);
+                if (!bytes_per_frame) continue;
+                // Logical Regions can overlap; each owns its materialization.
+                for (auto const region : storage.storage_regions[i]) {
+                    auto const selected = storage.storage_coverage[i] & IndexCoverage{region};
+                    for (auto const range : selected) {
+                        if (range.extent > remaining / bytes_per_frame)
+                            throw std::runtime_error("observation window exceeds its background materialization budget");
+                        remaining -= static_cast<std::size_t>(range.extent) * bytes_per_frame;
+                    }
+                }
+            }
+        }
         auto realization = std::make_unique<BackgroundStorageRealization>(
             graph_->background_evaluation_plan,
             *data_,
@@ -1353,6 +1391,10 @@ class BackgroundEvaluationTransaction::Impl {
             return std::unexpected(std::move(complete.error()));
         }
 
+        if (inputs_.projection.project)
+            inputs_.projection.project(inputs_.projection.data, plan, *prepared_, *realization,
+                candidate ? candidate->target_version() : base.version());
+
         if (materializations_ && graph_->background_evaluation_plan.requires_live_tick_coverage) {
             if (!live_coverage_) {
                 owned_live_coverage_ = std::make_unique<LiveTickCoverageState>(
@@ -1473,6 +1515,7 @@ public:
         , data_(&data)
         , materializations_(materializations)
         , inputs_(std::move(inputs))
+        , remaining_materialized_sample_bytes_(inputs_.maximum_materialized_sample_bytes)
         , produced_routes_(produced_routes)
         , produced_prefixes_(produced_prefixes)
         , live_coverage_(live_coverage)

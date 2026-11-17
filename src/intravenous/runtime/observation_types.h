@@ -9,8 +9,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <memory>
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace iv {
 
@@ -74,8 +76,47 @@ struct LiveObservationFrame {
     std::array<RawObservationValue, maximum_live_observation_probes> values{};
 };
 
+inline constexpr std::size_t maximum_observation_window_points = 512;
+inline constexpr std::size_t maximum_observation_window_values = 2048;
+struct ObservationWindow {
+    GlobalIndex begin{};
+    std::uint64_t length = 0;
+    std::size_t points = 0;
+    bool operator==(ObservationWindow const&) const = default;
+};
+struct ObservationWindowRegion {
+    GlobalIndexRange range{};
+    std::vector<std::pair<GlobalIndex, ObservationCaptureState>> values{};
+};
+struct ObservationWindowResult {
+    enum class Status { ready, pending_execution, unavailable, failed } status = Status::pending_execution;
+    std::uint64_t configured_generation = 0;
+    std::uint64_t execution_generation = 0;
+    std::uint64_t semantic_version = 0;
+    std::uint64_t data_version = 0;
+    double sample_rate = 0;
+    std::int32_t pace_exponent = 0;
+    bool truncated = false;
+    std::vector<ObservationWindowRegion> regions{};
+    std::string error{};
+};
+// Immutable request, one background writer, one control reader. Cancellation
+// never interrupts an in-progress transaction or destroys borrowed storage.
+struct ObservationWindowQuery {
+    std::uint64_t configured_generation = 0;
+    NodeBundlePortId output{};
+    std::size_t channel = 0;
+    ObservationOperation const* operation = nullptr;
+    ObservationWindow window{};
+    std::atomic<bool> canceled{false};
+    std::atomic<bool> complete{false};
+    ObservationWindowResult result{};
+};
+
 struct ObservationCollectRequest {
     std::optional<LiveObservationFrame> frame{};
+    std::vector<std::shared_ptr<ObservationWindowQuery>> windows{};
+    std::uint64_t background_data_version = 0;
     bool handled = false;
 };
 

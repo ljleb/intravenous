@@ -2,9 +2,9 @@ import { inject, provide, ref, type InjectionKey } from "vue";
 import type { NodeAddress } from "../../src/graphScope";
 import { addressKey } from "../../src/graphScope";
 import { ObservationValues, observationSourceKey, type ObservationCapability, type ObservationHostRequest,
-    type ObservationInterest, type ObservationResponse, type ObservationSource, type ObservationUpdate, type MeterMode, type ObservationHint } from "../../src/observations";
+    type ObservationInterest, type ObservationResponse, type ObservationSource, type ObservationUpdate, type MeterMode, type ObservationHint, type ObservationWindow, sameObservationWindow } from "../../src/observations";
 
-type NodeInterest = { node: NodeAddress; visible: boolean };
+type NodeInterest = { node: NodeAddress; visible: boolean; window?: ObservationWindow };
 export type PresentedObservation = ObservationCapability & { source: ObservationSource; id: string; operation: string; channelName?: string };
 type Capability = PresentedObservation;
 export class PresentationObservations {
@@ -66,10 +66,11 @@ export class PresentationObservations {
         if (message.error) pending.reject(new Error(message.error));
         else pending.resolve(message.result);
     }
-    node(owner: symbol, node: NodeAddress, visible: boolean): void {
+    node(owner: symbol, node: NodeAddress, visible: boolean, window?: ObservationWindow): void {
         const previous = this.nodes.get(owner);
-        if (previous?.visible === visible && addressKey(previous.node) === addressKey(node)) return;
-        this.nodes.set(owner, { node, visible });
+        if (previous?.visible === visible && addressKey(previous.node) === addressKey(node)
+            && sameObservationWindow(previous.window, window)) return;
+        this.nodes.set(owner, { node, visible, window });
         this.schedule();
     }
     remove(owner: symbol): void { this.nodes.delete(owner); this.schedule(); }
@@ -116,7 +117,8 @@ export class PresentationObservations {
                 for (const channel of channels) {
                     const source: ObservationSource = { node, kind: capability.kind, member: capability.member,
                         ...(channel ? { channel: channel.index } : {}) };
-                    const operation = capability.kind === "output" ? "level" : capability.operations[0];
+                    const operation = capability.delivery === "window" ? "waveform"
+                        : capability.kind === "output" ? "level" : capability.operations[0];
                     if (!capability.operations.includes(operation)) continue;
                     const id = this.id(source, operation);
                     capabilities.push({ ...capability, source, id, operation, channelName: channel?.name });
@@ -162,8 +164,16 @@ export class PresentationObservations {
             for (const key of this.modes.keys()) if (!active.has(key)) this.modes.delete(key);
         }
         this.capabilities.value = capabilities;
-        this.desired = capabilities.map((capability) => ({ id: capability.id, source: capability.source,
-            operation: capability.operation }));
+        this.desired = capabilities.flatMap<ObservationInterest>((capability) => {
+            if (capability.delivery === "window") {
+                const node = [...this.nodes.values()].find((node) => node.visible
+                    && addressKey(node.node) === addressKey(capability.source.node) && node.window);
+                return node?.window ? [{ id: capability.id, source: capability.source,
+                    operation: capability.operation, window: node.window }] : [];
+            }
+            return [{ id: capability.id, source: capability.source, operation: capability.operation }];
+        });
+        this.values.expectWindows(this.desired);
         ++this.version.value;
     }
     private reconcile(interests: ObservationInterest[]): Promise<void> {

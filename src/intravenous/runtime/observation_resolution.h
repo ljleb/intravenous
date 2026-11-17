@@ -8,6 +8,41 @@
 #include <algorithm>
 
 namespace iv {
+inline bool resolve_observation_window_source(
+    ConfiguredGraph const& graph,
+    std::unordered_map<std::string, NodeInstancePlacement> const& placements,
+    ObservationSource const& source, std::string_view operation_id,
+    ObservationWindowQuery& query,
+    graph_jit::ResolvedPortRealization const* realization = nullptr)
+{
+    if (source.kind != ObservationSourceKind::output) return false;
+    auto channels = resolve_project_sample_output(graph, placements, source.node, source.member, source.channel);
+    if (channels.size() != 1) return false;
+    auto const selected = channels.front();
+    auto const output = graph.node_bundles.resolve_sample_output(
+        {selected.bundle, PortKind::sample, selected.port}).config;
+    if (is_sequential_output(output) && output.realization != OutputRealization::buffered) return false;
+    auto type = continuous_value_type_domain(output).sole_type();
+    std::optional<graph_jit::ResolvedPortRealization> inferred;
+    if (!type) {
+        if (!realization || realization->bundle_count() < graph.node_bundles.size()) {
+            auto resolved = graph_jit::resolve_port_realization(graph);
+            if (!resolved) return false;
+            inferred.emplace(std::move(*resolved));
+            realization = &*inferred;
+        }
+        type = realization->output(selected.bundle, selected.port).value_type;
+    }
+    if (type != ContinuousValueTypeId::sample) return false;
+    auto const& operations = continuous_value_type_info(*type).observation_operations;
+    auto operation = std::ranges::find(operations, operation_id, &ObservationOperation::id);
+    if (operation == operations.end() || !operation->capture_point || !operation->project) return false;
+    query.output = {selected.bundle, PortKind::sample, selected.port};
+    query.channel = selected.channel;
+    query.operation = &*operation;
+    return true;
+}
+
 inline CompiledObservationPlan resolve_observation_requirements(
     ConfiguredGraph const& graph,
     std::unordered_map<std::string, NodeInstancePlacement> const& placements,
@@ -51,7 +86,7 @@ inline CompiledObservationPlan resolve_observation_requirements(
                     auto const& type = continuous_value_type_info(ContinuousValueTypeId::sample);
                     auto operation = std::ranges::find(type.observation_operations,
                         requirement.operation, &ObservationOperation::id);
-                    if (operation != type.observation_operations.end()) {
+                    if (operation != type.observation_operations.end() && operation->capture_block) {
                         probe.operation = &*operation;
                         probe.bundle = source.bundle;
                         probe.port = source.port;

@@ -11,6 +11,7 @@ struct ObservationInterest {
     std::string id;
     ObservationSource source{};
     std::string operation;
+    std::optional<ObservationWindow> window{};
 };
 struct ObservationProtocolRequest {
     enum class Kind { describe, reconcile } kind = Kind::describe;
@@ -27,6 +28,12 @@ struct ReconcileObservationsRequest : ObservationProtocolRequest {};
 struct ObservationGraphRequest {
     std::optional<ObservationRequirements> requirements{};
     std::vector<NodeAddress> describe_nodes{};
+    struct WindowSource {
+        ObservationSource source{};
+        std::string operation{};
+        std::shared_ptr<ObservationWindowQuery> query{};
+    };
+    std::vector<WindowSource> windows{};
     std::shared_ptr<nlohmann::ordered_json const> capabilities{};
     std::string error{};
     std::optional<std::uint64_t> configured_generation{};

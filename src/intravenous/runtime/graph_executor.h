@@ -325,7 +325,10 @@ class GraphExecutor {
         Command* last_command_ = nullptr;
         bool stopping_ = false;
         std::atomic<bool> progress_failed_{false};
+        std::deque<std::shared_ptr<ObservationWindowQuery>> observation_windows_{};
+        std::atomic<std::uint64_t> observation_data_version_{0};
         std::jthread worker_{};
+        void process_window(ObservationWindowQuery& query) noexcept;
 
         [[nodiscard]] ExecutionGeneration& generation();
         [[nodiscard]] bool advance_generation();
@@ -354,6 +357,10 @@ class GraphExecutor {
         void set_tick_materialization_demand(
             ExecutionGeneration& target,
             IndexCoverage demand);
+        void queue_windows(std::span<std::shared_ptr<ObservationWindowQuery> const> queries);
+        std::uint64_t observation_data_version() const noexcept {
+            return observation_data_version_.load(std::memory_order_acquire);
+        }
         void notify_generation_cutover() noexcept;
         [[nodiscard]] AsyncWorkSignal& work_signal() noexcept;
         [[nodiscard]] std::optional<std::uint64_t>
@@ -555,11 +562,7 @@ public:
     // entry point.
     void tick_block(GlobalIndex sample_index, std::size_t block_size);
     // One control-path collector; the borrowed frame lasts until next collect.
-    void handle_observation_collect(ObservationCollectRequest& request)
-    {
-        request.handled = true;
-        if (auto const* frame = observations_.collect()) request.frame = *frame;
-    }
+    void handle_observation_collect(ObservationCollectRequest& request);
     [[nodiscard]] LiveObservationFrame const* collect_observations() noexcept
     { return observations_.collect(); }
 

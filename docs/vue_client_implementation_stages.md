@@ -3270,3 +3270,106 @@ namespace is valid, along with dotted descendants subject to longest-prefix
 ownership. Regression tests cover automatic builtin closure selection, registered
 builtin construction, and desired healthy meter capabilities during a failed root
 configuration. Owner-run build and tests are pending; the agent has not run them.
+
+### Stage 5 active feature: bounded output windows (2026-11-16)
+
+The owner reports all 1,081 tests pass and the application functions after the
+configured-metadata checkpoint. Builds, tests, typechecks and profiling remain
+owner-run.
+
+Next complete feature: representative Sample waveform windows for Tock outputs
+and published buffered outputs, from background execution through the generic
+Vue lane. These are bounded, approximate position samples, not exact peak
+envelopes. Requested positions, exact sparse coverage, unavailable contents,
+configuration identity and persisted semantic/data versions remain distinct.
+Projection must copy its bounded result before transaction storage expires.
+
+Implementation order within this feature:
+
+1. Register the window operation and connect projection to the existing
+   background transaction's selected output views.
+2. Queue bounded, cancelable window work on GraphExecutor's BackgroundExecutor,
+   after playback/cutover work; never read mutable Tock state on a control thread.
+3. Extend Observations' batched scope protocol and version checks without
+   introducing live capture probes or DSP recompilation for viewport changes.
+4. Connect the lane timeline/visibility to window requests and render truthful
+   gaps. Retain live meters for Sequential outputs and reuse the generic host.
+5. Add regression coverage for sparse projection, lifetime/version boundaries,
+   stale requests and the complete frontend request/result path. Hand verification
+   to the owner before taking the next feature.
+
+This records active work, not completion. Exact envelopes, multiresolution caches,
+Tock State and input observations remain deferred. Complete buffered-output
+publication remains the existing runtime's responsibility, not a viewport policy.
+
+
+### Stage 5 representative-window source checkpoint (2026-11-16)
+
+Implemented in source; owner verification is pending:
+
+- Sample's type-owned operation catalog includes background-only `waveform`.
+  Capability discovery separates window operations from live operations, retains
+  public channel names and advertises configured structure before execution.
+- Reconciled interests optionally name an integer project-sample window and a
+  representative point count. Compatible windows share work across scopes and
+  clients. Replacing a viewport, losing a scope or changing configuration cancels
+  obsolete work without interrupting an already running background transaction.
+- `GraphExecutor::BackgroundExecutor` services these requests only after its
+  playback/cutover work and cold commands. Its generation owns Tock State.
+  Projection runs after evaluation validation and before temporary storage expires;
+  delivery receives copied scalar values, not borrowed views or generation storage.
+- Results carry configuration/execution identity, semantic/data versions, native
+  pace, actual logical Region fragments and explicit unavailable values. Overlaps
+  remain separate. Covered zero, missing coverage and unavailable contents differ.
+  Buffered Tick output queries read recorded samples; they do not replay Tick.
+- Initial tuning limits are 512 representative positions, 2,048 result values or
+  Region fragments, and 16 MiB of newly selected sample materialization per query
+  transaction, including discovery evaluations. These are bounded query limits,
+  not a guarantee that arbitrary authored callbacks are cheap. Exceeding the sample
+  budget reports a failed view request and leaves playback policy unchanged.
+- Published-data changes refresh a compatible window at most four times per second.
+  The preceding immutable result can remain visible while explicitly marked
+  outdated/updating; it retains its own provenance. Source/version replacement
+  clears incompatible data. Invalidation currently uses the conservative global
+  persisted-data revision; per-output/intersecting-range reuse remains an optimization.
+- The generic lane renders background Sample waveforms against the shared timeline.
+  Automation's `mini` mode uses the same actual Tock window path with its existing
+  vertical bounds; `nano` shows coverage intervals, while its editable SVG and
+  point gestures remain frontend-owned. Nano requests reduce point count to two.
+  Generic Sample waveform scale is fixed at −1..1. Status-bar hover information
+  identifies representative sampling, pending work, older snapshots and errors.
+
+New regressions exercise gap/overlap/unavailability projection, signed and bounded
+RPC windows, shared/canceled requests without live-probe compilation, data-version
+refresh, real computed-Tock projection/lifetime, recorded Tick reads, paced rendering,
+and viewport/configuration/data-version rejection in the client.
+
+The agent ran only source inspection and `git diff --check`. The owner should run
+the usual backend build/CTest, client tests and typecheck, then reinstall the client.
+For a direct UI check, zoom an automation lane down to `mini`, pan/zoom horizontally,
+and zoom down further to `nano` to inspect its coverage. Editable mode retains the
+point editor. Inspect a generic buffered Sample output similarly when available.
+Exact peak envelopes and derived multiresolution caches remain deferred.
+
+
+### Stage 5 owner verification: three-failure correction (2026-11-16)
+
+The owner ran 1,087 tests; 1,084 passed. Two failures exposed runtime selection
+bugs and two assertions had fixture mistakes:
+
+- `finalize_tick_runtime_plan` included authored Tock Region/Coverage inputs among
+  complete-buffer Tick readers. Initial playback preparation consequently
+  requested full-circle materialization of a dense replay dependency. Tock nodes
+  now keep their background bindings and have no Tick invocation bindings;
+  validation rejects a Tock random-access binding in the Tick plan. Existing
+  topology and real waveform regressions assert this domain boundary.
+- Recording subwindow queries selected their clipped sample positions as Region
+  descriptors. `PersistedSampleReader` requires the original published Region
+  identities and could not match those descriptors. Transaction storage selection
+  now retains intersecting published recording Regions while requested coverage
+  stays bounded. The real recording waveform regression checks captured values.
+- The window RPC fixture now supplies the required empty node-address `path`.
+  The recording assertion uses the test helper's begin/end convention for [4,8).
+
+The agent inspected the owner log and source and ran `git diff --check`, without
+running builds, tests or profiling. Owner verification of these fixes is pending.

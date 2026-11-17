@@ -2891,6 +2891,17 @@ TEST(GraphJitConnectionPlan, RetainsCompleteBackgroundTopologyAndRetention)
     EXPECT_EQ(planned_source->stable_identity->direct_member, 0u);
     auto const& plan = built->background;
 
+    // Tock's Region/Coverage readers belong to background callbacks. Adding
+    // them to the Tick runtime would demand whole outputs before activation.
+    ASSERT_EQ(plan.tick_runtime.nodes.size(), plan.nodes.size());
+    EXPECT_TRUE(plan.tick_runtime.random_access_sample_inputs.empty());
+    EXPECT_TRUE(plan.tick_runtime.random_access_event_inputs.empty());
+    for (std::size_t node = 0; node < plan.nodes.size(); ++node) {
+        if (!plan.nodes[node].authored_tock_execution) continue;
+        EXPECT_EQ(plan.tick_runtime.nodes[node].random_access_sample_count, 0u);
+        EXPECT_EQ(plan.tick_runtime.nodes[node].random_access_event_count, 0u);
+    }
+
     ASSERT_EQ(plan.nodes.size(), 5u);
     ASSERT_EQ(plan.connections.size(), 4u);
     ASSERT_EQ(plan.components.size(), 2u);

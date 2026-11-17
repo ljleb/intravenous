@@ -15,6 +15,13 @@
 #include <string>
 
 namespace iv {
+class BackgroundStorageRealization;
+struct BackgroundTransactionProjection {
+    void* data = nullptr;
+    void (*project)(void*, graph_jit::BackgroundEvaluationPlan const&,
+        PreparedCoveragePropagation const&, BackgroundStorageRealization const&,
+        PersistedDataVersion) = nullptr;
+};
 
 // Generation-local destination metadata aligned with one independently pinned
 // realtime-producer queue. The block prefix remains owned by GraphExecutor and
@@ -40,6 +47,11 @@ struct BackgroundTransactionInputs {
     bool prepare_only = false;
     PersistedDataStore::Snapshot const* reusable_data = nullptr;
     TickMaterializationSnapshot const* reusable_materialization = nullptr;
+    // Projects only while transaction views and the immutable data pin live.
+    // The caller publishes the independently owned result only after commit.
+    BackgroundTransactionProjection projection{};
+    // Optional background-query budget. Playback retains its normal policy.
+    std::optional<std::size_t> maximum_materialized_sample_bytes{};
 
 };
 
