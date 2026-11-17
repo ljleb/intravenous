@@ -359,3 +359,25 @@ The startup log now includes the spawned server PID. No builds or tests were
 run by the agent. The owner must rebuild the server, test and reinstall the
 client, then restart the running server/client session to clear the request
 that is already waiting for the old unmatched error response.
+
+
+## Nonnegative magnitude and polarity toggle, 2026-11-17
+
+The owner confirms the application gesture correction works and requests a
+nonnegative output knob with a separate invert toggle. This pass changes the
+client only. Magnitude is the absolute signed gain and has minimum zero.
+Gestures, numeric entry and default reset preserve polarity. The invert button
+keeps magnitude and commits the opposite signed gain through the existing
+interaction transport and history. Input knobs retain their existing semantics.
+
+At zero, the editor retains inversion as VS Code webview state. It sends no
+backend mutation for a polarity change that leaves gain zero. A later magnitude
+increase uses the retained polarity. Nonzero server values, including undo,
+redo and observed remote values, determine polarity when displayed.
+
+Regressions cover inverted scrubbing through zero, reopening with an inverted
+zero preference, one-gesture inversion, nonnegative numeric entry, reset and
+input/output independence. The owner must run `npm test` and
+`npm run typecheck`, then rebuild/reinstall the extension. The agent did not
+run builds, tests or typechecks. Backend source and protocol remain unchanged
+by this UI pass.

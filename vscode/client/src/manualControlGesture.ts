@@ -30,8 +30,16 @@ export class ManualControlGestures {
     private remote: ManualControlInteractionState[] = [];
     private live: ManualControlLiveValue[] = [];
     private readonly ending = new Map<string, ManualControlInteractionState>();
+    // Zero carries no polarity over JSON. Keep the editor's last choice so
+    // reducing an inverted gain to zero and raising it again stays inverted.
+    private readonly outputInversions = new Map<string, boolean>();
     constructor(private readonly send: (action: ManualControlAction) => void,
-        private readonly newId: () => string, private readonly changed: () => void) {}
+        private readonly newId: () => string, private readonly changed: () => void,
+        private readonly outputPolarity: { initial?: Record<string, boolean>;
+            save?: (inverted: Record<string, boolean>) => void } = {}) {
+        for (const [key, inverted] of Object.entries(outputPolarity.initial ?? {}))
+            if (inverted === true) this.outputInversions.set(key, true);
+    }
     state(control: ManualControlId): ManualControlInteractionState | undefined {
         if (this.active && manualControlKey(this.active.control) === manualControlKey(control))
             return { ...this.active, phase: "active" };
@@ -43,6 +51,30 @@ export class ManualControlGestures {
     liveValue(control: ManualControlId): number | undefined {
         return this.live.find((entry) => manualControlKey(entry.control) === manualControlKey(control))?.value;
     }
+    displayValue(control: ManualControlId, value: number): number {
+        return control.outputName === undefined ? value : Math.abs(value);
+    }
+    outputInverted(control: ManualControlId, value: number): boolean {
+        return control.outputName !== undefined && (value !== 0
+            ? value < 0 : this.outputInversions.get(manualControlKey(control)) ?? false);
+    }
+    valueFromDisplay(control: ManualControlId, value: number): number {
+        if (control.outputName === undefined) return value;
+        const magnitude = Math.max(0, value);
+        if (magnitude === 0) return 0;
+        return this.outputInversions.get(manualControlKey(control)) ? -magnitude : magnitude;
+    }
+    private rememberOutputInversion(control: ManualControlId, value: number): void {
+        if (control.outputName !== undefined && value !== 0)
+            this.setOutputInversion(control, value < 0);
+    }
+    private setOutputInversion(control: ManualControlId, inverted: boolean): void {
+        const key = manualControlKey(control);
+        if ((this.outputInversions.get(key) ?? false) === inverted) return;
+        if (inverted) this.outputInversions.set(key, true);
+        else this.outputInversions.delete(key);
+        this.outputPolarity.save?.(Object.fromEntries(this.outputInversions));
+    }
     receive(states: ManualControlInteractionState[], live: ManualControlLiveValue[] = []): void {
         this.remote = states;
         this.live = live;
@@ -52,6 +84,11 @@ export class ManualControlGestures {
         }
         if (this.active && states.some((entry) => entry.interactionId === this.active?.interactionId && entry.phase === "failed"))
             this.active = null;
+        for (const entry of [...states, ...live]) {
+            const key = manualControlKey(entry.control);
+            if ((this.active && manualControlKey(this.active.control) === key) || this.ending.has(key)) continue;
+            this.rememberOutputInversion(entry.control, entry.value);
+        }
         this.changed();
     }
     hover(control: ManualControlId | null, descriptor?: ManualControlDescriptor, limits: ManualControlLimits = {}): void {
@@ -59,6 +96,8 @@ export class ManualControlGestures {
         // other knobs. They cannot transfer ownership of a held drag.
         if (this.active?.pointer && (!control
             || manualControlKey(control) !== manualControlKey(this.active.control))) return;
+        if (control && descriptor) this.rememberOutputInversion(control,
+            this.state(control)?.value ?? this.liveValue(control) ?? descriptor.value);
         this.hoverDetails = control && descriptor ? { control, descriptor, limits } : null;
         const same = this.hovered && control && manualControlKey(this.hovered) === manualControlKey(control);
         if (!same && (this.hovered || control)) this.send({ action: "hover", control });
@@ -73,6 +112,8 @@ export class ManualControlGestures {
     }
     refresh(control: ManualControlId, descriptor: ManualControlDescriptor, limits: ManualControlLimits): void {
         const key = manualControlKey(control);
+        if ((!this.active || manualControlKey(this.active.control) !== key) && !this.ending.has(key))
+            this.rememberOutputInversion(control, this.state(control)?.value ?? this.liveValue(control) ?? descriptor.value);
         let changed = false;
         if (this.hoverDetails && manualControlKey(this.hoverDetails.control) === key) {
             this.hoverDetails = { control, descriptor, limits }; changed = true;
@@ -95,6 +136,7 @@ export class ManualControlGestures {
         const value = this.state(control)?.value ?? descriptor.value;
         if (!Number.isFinite(value) || !descriptor.available || !descriptor.enabled) return;
         this.ending.delete(manualControlKey(control));
+        this.rememberOutputInversion(control, value);
         this.active = { interactionId: this.newId(), control, value };
         this.send({ action: "begin", ...this.active });
         this.changed();
@@ -106,13 +148,14 @@ export class ManualControlGestures {
         this.edit(control, descriptor);
         if (!this.active || !Number.isFinite(unitsPerPixel) || unitsPerPixel <= 0) return false;
         this.active.pointer = { id: pointerId, position, initialScale: unitsPerPixel, speed: precise ? -2 : 0, plateau: 0, limits,
-            anchorPosition: position, anchorValue: this.active.value, anchorPlateau: 0 };
+            anchorPosition: position, anchorValue: this.displayValue(control, this.active.value), anchorPlateau: 0 };
         this.changed();
         return true;
     }
     update(control: ManualControlId, value: number): void {
         if (!this.active || manualControlKey(this.active.control) !== manualControlKey(control) || !Number.isFinite(value)) return;
         this.active.value = value;
+        this.rememberOutputInversion(control, value);
         this.send({ action: "update", interactionId: this.active.interactionId, value });
         this.changed();
     }
@@ -125,7 +168,7 @@ export class ManualControlGestures {
         pointer.position = position;
         const limits = { ...pointer.limits, min: min ?? pointer.limits.min, max: max ?? pointer.limits.max };
         const scale = pointer.initialScale * 2 ** pointer.speed;
-        const before = this.active.value;
+        const before = this.displayValue(this.active.control, this.active.value);
         const target = limits.defaultValue;
         let value = pointer.anchorValue + delta * scale;
         if (target !== undefined && Number.isFinite(target) && clamp(target, limits) === target) {
@@ -140,7 +183,7 @@ export class ManualControlGestures {
         }
         const unclamped = value;
         value = clamp(value, limits);
-        if (value !== before) this.update(this.active.control, value);
+        if (value !== before) this.update(this.active.control, this.valueFromDisplay(this.active.control, value));
         // Do not accumulate invisible travel beyond a hard bound.
         if (value !== unclamped) this.anchorPointer();
     }
@@ -161,7 +204,7 @@ export class ManualControlGestures {
         const pointer = this.active?.pointer;
         if (!pointer || !this.active) return;
         pointer.anchorPosition = pointer.position;
-        pointer.anchorValue = this.active.value;
+        pointer.anchorValue = this.displayValue(this.active.control, this.active.value);
         pointer.anchorPlateau = pointer.plateau;
     }
     isEditingNode(address: NodeAddress): boolean {
@@ -173,7 +216,7 @@ export class ManualControlGestures {
         this.finish();
         if (!descriptor.available || !descriptor.enabled) return;
         this.entry = { id: this.newId(), control, descriptor, limits, anchor,
-            draft: String(this.state(control)?.value ?? descriptor.value), error: "" };
+            draft: String(this.displayValue(control, this.state(control)?.value ?? descriptor.value)), error: "" };
         this.changed();
     }
     numericEntry(): ManualValueEntry | null { return this.entry ? { ...this.entry } : null; }
@@ -192,7 +235,7 @@ export class ManualControlGestures {
         }
         this.entry = null;
         this.edit(entry.control, entry.descriptor);
-        this.update(entry.control, value);
+        this.update(entry.control, this.valueFromDisplay(entry.control, value));
         this.finish(entry.control);
         this.changed(); return true;
     }
@@ -202,25 +245,45 @@ export class ManualControlGestures {
     }
     resetHovered(): boolean {
         if (this.active?.pointer && this.active.pointer.limits.defaultValue !== undefined) {
-            this.update(this.active.control, clamp(this.active.pointer.limits.defaultValue, this.active.pointer.limits));
+            this.update(this.active.control, this.valueFromDisplay(this.active.control,
+                clamp(this.active.pointer.limits.defaultValue, this.active.pointer.limits)));
             this.active.pointer.plateau = 0;
+            this.anchorPointer();
             return true;
         }
         const hover = this.hoverDetails;
         if (!hover || !hover.descriptor.available || !hover.descriptor.enabled
             || hover.limits.defaultValue === undefined) return false;
         const value = clamp(hover.limits.defaultValue, hover.limits);
-        if ((this.state(hover.control)?.value ?? hover.descriptor.value) === value) return true;
+        if (this.displayValue(hover.control, this.state(hover.control)?.value ?? hover.descriptor.value) === value) return true;
         this.edit(hover.control, hover.descriptor);
-        this.update(hover.control, value);
+        this.update(hover.control, this.valueFromDisplay(hover.control, value));
         this.finish(hover.control);
+        return true;
+    }
+    invertOutput(control: ManualControlId, descriptor: ManualControlDescriptor): boolean {
+        if (control.outputName === undefined || !descriptor.available || !descriptor.enabled || this.active?.pointer) return false;
+        this.cancelEntry();
+        this.finish();
+        const value = this.state(control)?.value ?? this.liveValue(control) ?? descriptor.value;
+        if (!Number.isFinite(value)) return false;
+        const inverted = !this.outputInverted(control, value);
+        if (value !== 0) {
+            this.edit(control, { ...descriptor, value });
+            this.update(control, -value);
+            this.finish(control);
+        }
+        this.setOutputInversion(control, inverted);
+        this.changed();
         return true;
     }
     hint(): ManualControlHint | null {
         if (this.entry) return { text: `${manualControlName(this.entry.control)}: Enter accept · Esc cancel`,
             tooltip: "Type an exact value. Enter accepts; Escape or clicking outside cancels. Drag snapping does not affect numeric entry." };
         if (this.active?.pointer) return {
-            text: `${manualControlName(this.active.control)} ${displayValue(this.active.value)} · ${displayValue(2 ** this.active.pointer.speed)}×`,
+            text: `${manualControlName(this.active.control)} ${displayValue(this.displayValue(this.active.control, this.active.value))}`
+                + (this.outputInverted(this.active.control, this.active.value) ? " · inverted" : "")
+                + ` · ${displayValue(2 ** this.active.pointer.speed)}×`,
             tooltip: "Drag up to increase or down to decrease. Scroll down for finer control; scroll up for faster control."
                 + " Each wheel step halves or doubles sensitivity. Release to finish; Escape releases the pointer.",
         };
@@ -229,7 +292,8 @@ export class ManualControlGestures {
         return { text: `${manualControlName(this.hoverDetails.control)}: drag · Ctrl-drag ¼×${reset ? " · double-click reset" : ""} · right-click value`,
             tooltip: "Drag up/down to adjust. While dragging, use the wheel to change sensitivity. Right-click for numeric entry."
                 + " Ctrl-click starts at 0.25× sensitivity."
-                + (reset ? " Double-click to reset to the declared default." : "") + " Arrow keys adjust the focused knob." };
+                + (reset ? " Double-click to reset to the declared default." : "") + " Arrow keys adjust the focused knob."
+                + (this.hoverDetails.control.outputName !== undefined ? " The invert button reverses output polarity without changing magnitude." : "") };
     }
     pointerControl(): ManualControlId | null { return this.active?.pointer ? this.active.control : null; }
     pointerId(): number | null { return this.active?.pointer?.id ?? null; }

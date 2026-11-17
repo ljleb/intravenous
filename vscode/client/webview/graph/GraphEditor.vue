@@ -45,7 +45,10 @@ let manualLockError = "";
 const knobClicks = new KnobClicks();
 const manualGestures = new ManualControlGestures(
     (action) => webviewApi.postMessage({ type: "manualControlAction", action }),
-    () => crypto.randomUUID(), () => { ++manualVersion.value; publishManualHint(); });
+    () => crypto.randomUUID(), () => { ++manualVersion.value; publishManualHint(); }, {
+        initial: webviewApi.getState()?.outputInversions,
+        save: (outputInversions) => webviewApi.setState({ ...webviewApi.getState(), outputInversions }),
+    });
 const manualPointer = new KnobPointerLock({
     request: () => surface.value!.requestPointerLock(),
     exit: () => document.exitPointerLock(),

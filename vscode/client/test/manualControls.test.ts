@@ -315,7 +315,7 @@ test("clamping does not accumulate hidden travel at an input limit", () => {
 
 test("output gain scrubbing reaches exact zero independently of pointer event count", () => {
     const gain: ManualControlId = { node: control.node, outputName: "main" };
-    const limits = { defaultValue: 1 };
+    const limits = { defaultValue: 1, min: 0 };
     const make = () => {
         const gestures = new ManualControlGestures(() => {}, () => "drag", () => {});
         assert.equal(gestures.scrub(gain, { ...descriptor, value: 1 }, 1, 0, .01, limits), true);
@@ -327,9 +327,73 @@ test("output gain scrubbing reaches exact zero independently of pointer event co
     for (let i = 0; i < 106; ++i) repeated.moveBy(1, -1);
     assert.equal(single.state(gain)?.value, 0);
     assert.equal(repeated.state(gain)?.value, 0);
-    repeated.moveBy(1, -.01);
-    assert.ok(Math.abs(repeated.state(gain)!.value + .0001) < 1e-12);
+    repeated.moveBy(1, .01);
+    assert.ok(Math.abs(repeated.state(gain)!.value - .0001) < 1e-12);
     assert.notEqual(repeated.state(gain)?.value, 0); // Nearby values remain reachable.
+});
+
+test("inverted output scrubbing changes magnitude, clamps at zero and retains polarity", () => {
+    const gain: ManualControlId = { node: control.node, outputName: "main" };
+    const gestures = new ManualControlGestures(() => {}, () => "drag", () => {});
+    gestures.scrub(gain, { ...descriptor, value: -.5 }, 1, 0, .01, { defaultValue: 1, min: 0 });
+    gestures.moveBy(1, 10);
+    assert.ok(Math.abs(gestures.state(gain)!.value + .6) < 1e-12);
+    assert.ok(Math.abs(gestures.displayValue(gain, gestures.state(gain)!.value) - .6) < 1e-12);
+    gestures.moveBy(1, -1000);
+    assert.equal(gestures.state(gain)?.value, 0);
+    assert.equal(gestures.outputInverted(gain, 0), true);
+    gestures.moveBy(1, 10);
+    assert.ok(Math.abs(gestures.state(gain)!.value + .1) < 1e-12);
+});
+
+test("output inversion flips the signed gain in one gesture without changing magnitude", () => {
+    const gain: ManualControlId = { node: control.node, outputName: "main" };
+    const actions: Array<{ action: string; value?: number }> = [];
+    const gestures = new ManualControlGestures((action) => actions.push(action), () => "invert", () => {});
+    assert.equal(gestures.invertOutput(gain, { ...descriptor, value: .75 }), true);
+    assert.deepEqual(actions.map(({ action, value }) => [action, value]), [
+        ["begin", .75], ["update", -.75], ["end", -.75],
+    ]);
+    assert.equal(gestures.displayValue(gain, gestures.state(gain)!.value), .75);
+    assert.equal(gestures.outputInverted(gain, gestures.state(gain)!.value), true);
+    gestures.receive([{ interactionId: "invert", control: gain, value: .75, phase: "settled" }]);
+    assert.equal(gestures.outputInverted(gain, gestures.state(gain)!.value), false);
+});
+
+test("inversion at zero is local and applies when the magnitude increases", () => {
+    const gain: ManualControlId = { node: control.node, outputName: "main" };
+    const actions: Array<{ action: string }> = [];
+    let saved: Record<string, boolean> = {};
+    const gestures = new ManualControlGestures((action) => actions.push(action), () => "drag", () => {},
+        { save: (inverted) => { saved = inverted; } });
+    const zero = { ...descriptor, value: 0 };
+    assert.equal(gestures.invertOutput(gain, zero), true);
+    assert.equal(actions.length, 0); // The server's zero is unchanged.
+    assert.equal(gestures.outputInverted(gain, 0), true);
+    assert.equal(saved[manualControlKey(gain)], true);
+    const reopened = new ManualControlGestures(() => {}, () => "drag", () => {}, { initial: saved });
+    reopened.scrub(gain, zero, 1, 0, .01, { defaultValue: 1, min: 0 });
+    reopened.moveBy(1, 10);
+    assert.ok(Math.abs(reopened.state(gain)!.value + .1) < 1e-12);
+    assert.equal(gestures.valueFromDisplay(control, -2), -2); // Input controls retain their signed range.
+});
+
+test("inverted gain numeric entry and default reset edit magnitude and preserve polarity", () => {
+    const gain: ManualControlId = { node: control.node, outputName: "main" };
+    let next = 0;
+    const gestures = new ManualControlGestures(() => {}, () => `gain:${++next}`, () => {});
+    const inverted = { ...descriptor, value: -.5 };
+    const limits = { min: 0, defaultValue: 1 };
+    gestures.openEntry(gain, inverted, limits, { left: 0, top: 0, bottom: 30 });
+    assert.equal(gestures.numericEntry()?.draft, "0.5");
+    gestures.setEntryDraft("-0.25");
+    assert.equal(gestures.acceptEntry(), false);
+    gestures.setEntryDraft("0.25");
+    assert.equal(gestures.acceptEntry(), true);
+    assert.equal(gestures.state(gain)?.value, -.25);
+    gestures.hover(gain, inverted, limits);
+    assert.equal(gestures.resetHovered(), true);
+    assert.equal(gestures.state(gain)?.value, -1);
 });
 
 test("numeric entry commits one exact gesture and cancellation sends no edit", () => {

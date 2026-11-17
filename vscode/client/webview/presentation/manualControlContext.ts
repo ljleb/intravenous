@@ -26,13 +26,20 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: M
         const pointerControl = context?.gestures.pointerControl();
         return !!id.value && !!pointerControl && manualControlKey(id.value) === manualControlKey(pointerControl);
     });
-    const value = computed(() => {
+    const signedValue = computed(() => {
         void context?.version.value;
         return state.value?.value ?? (id.value ? context?.gestures.liveValue(id.value) : undefined)
             ?? descriptor.value?.value;
     });
+    const value = computed(() => toValue(direction) === "output" && signedValue.value !== undefined
+        ? Math.abs(signedValue.value) : signedValue.value);
+    const inverted = computed(() => {
+        void context?.version.value;
+        return !!id.value && signedValue.value !== undefined
+            && (context?.gestures.outputInverted(id.value, signedValue.value) ?? signedValue.value < 0);
+    });
     const limits = computed(() => {
-        if (toValue(direction) === "output") return { defaultValue: 1, min: undefined, max: undefined, scrubSpeed: undefined };
+        if (toValue(direction) === "output") return { defaultValue: 1, min: 0, max: undefined, scrubSpeed: undefined };
         const metadata = port.value?.kind === "continuous" ? port.value.valueTypes[0] : undefined;
         const finite = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) ? value : undefined;
         return { min: finite(metadata?.minValue), max: finite(metadata?.maxValue),
@@ -45,7 +52,7 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: M
         if (context && id.value && descriptor.value) context.gestures.refresh(id.value, descriptor.value, limits.value);
     });
     return {
-        value, available, limits, state, descriptor, dragging,
+        value, available, limits, state, descriptor, dragging, inverted,
         key: computed(() => id.value ? manualControlKey(id.value) : ""),
         hover(hovered: boolean) {
             if (!context || !id.value) return;
@@ -57,7 +64,12 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: M
             if (!id.value || !Number.isFinite(value)) return;
             if (limits.value.min !== undefined) value = Math.max(limits.value.min, value);
             if (limits.value.max !== undefined) value = Math.min(limits.value.max, value);
-            context?.gestures.update(id.value, value);
+            if (context) context.gestures.update(id.value, context.gestures.valueFromDisplay(id.value, value));
+        },
+        invert() {
+            if (!context || !id.value || !descriptor.value || !available.value) return;
+            context.gestures.hover(id.value, descriptor.value, limits.value);
+            context.gestures.invertOutput(id.value, descriptor.value);
         },
         finish() { if (id.value) context?.gestures.finish(id.value); },
         numeric(event: MouseEvent) {

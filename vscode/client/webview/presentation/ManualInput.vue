@@ -41,6 +41,15 @@ function step(direction: number) {
                 <line class="knob-indicator" x1="16" y1="16" :x2="indicator.x" :y2="indicator.y" />
             </svg>
         </button>
+        <button v-if="direction === 'output'" type="button" class="output-invert"
+            :class="{ inverted: control.inverted.value }" :aria-pressed="control.inverted.value"
+            :disabled="!available" :aria-label="`${name}: invert output polarity`" title="Invert output polarity"
+            @pointerdown.stop @click.stop="control.invert" @contextmenu.stop.prevent
+            @focus="control.hover(true)" @blur="control.hover(false)">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="8" cy="8" r="4.5" /><path d="M 3 13 L 13 3" />
+            </svg>
+        </button>
         <span v-if="showValue !== false" class="manual-values" aria-hidden="true">
             <span class="logical-value">{{ logicalValue }}</span>
             <span v-if="normalizedValue !== null" class="normalized-value">{{ normalizedValue }}</span>
@@ -56,6 +65,13 @@ function step(direction: number) {
     background: transparent; color: var(--vscode-terminal-ansiYellow); cursor: ns-resize; touch-action: none; user-select: none; }
 .manual-knob svg { display: block; width: 100%; height: 100%; }
 .manual-input[data-direction="output"] .manual-knob { color: var(--vscode-terminal-ansiBlue); }
+.output-invert { flex: 0 0 18px; width: 18px; height: 22px; padding: 1px; border: 0; border-radius: 3px;
+    background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; }
+.output-invert svg { display: block; width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.25; }
+.output-invert:hover:not(:disabled), .output-invert.inverted { color: var(--vscode-terminal-ansiBlue);
+    background: color-mix(in srgb, var(--vscode-terminal-ansiBlue) 12%, transparent); }
+.output-invert:disabled { opacity: .4; cursor: default; }
+.output-invert:focus-visible { outline: 1px solid var(--vscode-terminal-ansiBlue); outline-offset: 1px; }
 .manual-knob { flex: 0 0 30px; }
 .manual-values { display: flex; flex-direction: column; min-width: 0; font-variant-numeric: tabular-nums; }
 .logical-value { font-size: 12px; color: var(--vscode-foreground); overflow: hidden; text-overflow: ellipsis; }

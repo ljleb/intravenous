@@ -277,8 +277,27 @@ compilation request.
 ## 3. Output gain controls and GraphJit specialization
 
 Add a gain knob to every output for which multiplication by a scalar gain is
-semantically defined. Its authored/default value is **exactly `1`**, with **no
-minimum or maximum**. Avoid claiming a numeric gain operation for event or
+semantically defined. Its backend authored/default value is **exactly `1`**,
+with **no minimum or maximum** on the signed gain. The client presents a
+magnitude knob with minimum **`0`**, no maximum, and default **`1`**. A separate
+polarity toggle selects normal or inverted output. The client combines
+magnitude and polarity into the existing signed backend value.
+
+This UI contract is the owner's 2026-11-17 revision. The earlier signed-knob
+presentation is preserved [historically](./historical/output_gain_ui_before_2026-11-17/vue_presentation_refinement_direction.md).
+Dragging upward increases magnitude in either polarity. Numeric entry accepts
+nonnegative magnitude. Reset restores magnitude `1` and preserves polarity.
+Toggling polarity preserves magnitude and uses one ordinary control gesture
+when the signed value changes. Undo and redo continue using the signed gain.
+
+At exact zero, polarity has no distinct backend value. Keep that choice as a
+presentation preference in VS Code webview state, so reducing an inverted gain
+to zero and increasing it again preserves inversion. Changing polarity at
+zero does not create a backend edit. A nonzero signed value remains authoritative
+when loading or observing the project. No new RPC or project-file fields are
+required.
+
+Avoid claiming a numeric gain operation for event or
 other output value types without a defined scaling meaning; the supported
 value-type behavior must be explicit. Output gain is a port-owned control:
 its effect applies consistently to the output value seen by its consumers,
