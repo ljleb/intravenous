@@ -26,6 +26,17 @@ function clickedLane(event: MouseEvent, address: NodeAddress) {
 const viewport = computed({ get: () => layout.value.timeline,
     set: (value) => { layout.value.timeline = value; } });
 const laneHeight = computed(() => viewport.value.laneHeight);
+const headerHeight = 36;
+const selectedLaneIndex = computed(() => scope.value.nodes.findIndex((child) => addressKey(child.address) === selectedLane.value));
+const scrollbarStyle = computed(() => {
+    const contentHeight = headerHeight + scope.value.nodes.length * laneHeight.value;
+    const begin = headerHeight + selectedLaneIndex.value * laneHeight.value;
+    return {
+        "--timeline-header-height": `${headerHeight}px`,
+        "--lane-selection-start": `${100 * begin / contentHeight}%`,
+        "--lane-selection-end": `${100 * (begin + laneHeight.value) / contentHeight}%`,
+    };
+});
 const root = ref<HTMLElement | null>(null);
 const timeRegion = ref<HTMLElement | null>(null);
 const timeWidth = ref(0);
@@ -72,7 +83,7 @@ function wheel(event: WheelEvent) {
         viewport.value = zoomTimelineHorizontally(viewport.value,
             Math.max(0, Math.min(axis.width, event.clientX - axis.left)), delta);
     } else {
-        const top = root.value.getBoundingClientRect().top + 36;
+        const top = root.value.getBoundingClientRect().top + headerHeight;
         viewport.value = zoomTimelineVertically(viewport.value, Math.max(0, event.clientY - top), delta);
         void applyScroll();
     }
@@ -130,6 +141,7 @@ onBeforeUnmount(() => {
 
 <template>
     <section ref="root" class="timeline-scope" :class="{ panning: !!pan }" aria-label="Project timeline"
+        :style="scrollbarStyle" :data-has-selection="selectedLaneIndex >= 0"
         @wheel="wheel" @scroll="scrolled" @pointerdown="beginPan" @pointermove="movePan"
         @pointerup="endPan" @pointercancel="endPan" @lostpointercapture="endPan"
         @mousedown="preventMiddleDefault" @auxclick="preventMiddleDefault">
@@ -153,11 +165,28 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.timeline-scope { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; scrollbar-gutter: stable; --node-label-width: clamp(120px, 22%, 260px); }
+.timeline-scope { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; scrollbar-gutter: stable; scrollbar-color: auto; scrollbar-width: auto; --node-label-width: clamp(120px, 22%, 260px); }
+.timeline-scope::-webkit-scrollbar { width: 14px; height: 10px; }
+.timeline-scope::-webkit-scrollbar-track { background-color: var(--vscode-scrollbar-background, transparent); }
+/* Paint the overview marker in the native track. It adds no hit target and
+   leaves thumb dragging, track clicks and wheel scrolling to the browser. */
+.timeline-scope[data-has-selection="true"]::-webkit-scrollbar-track:vertical {
+    background-image: linear-gradient(to bottom,
+        transparent min(var(--lane-selection-start), calc(100% - 2px)),
+        var(--vscode-editorOverviewRuler-selectionHighlightForeground, var(--vscode-focusBorder)) min(var(--lane-selection-start), calc(100% - 2px)),
+        var(--vscode-editorOverviewRuler-selectionHighlightForeground, var(--vscode-focusBorder)) max(var(--lane-selection-end), calc(var(--lane-selection-start) + 2px)),
+        transparent max(var(--lane-selection-end), calc(var(--lane-selection-start) + 2px)));
+    background-size: 3px 100%; background-position: right; background-repeat: no-repeat;
+}
+.timeline-scope::-webkit-scrollbar-thumb { background-color: var(--vscode-scrollbarSlider-background); border-radius: 0; }
+.timeline-scope::-webkit-scrollbar-thumb:hover { background-color: var(--vscode-scrollbarSlider-hoverBackground); }
+.timeline-scope::-webkit-scrollbar-thumb:active { background-color: var(--vscode-scrollbarSlider-activeBackground); }
+.timeline-scope::-webkit-scrollbar-button { display: none; }
+.timeline-scope::-webkit-scrollbar-corner { background: transparent; }
 .timeline-scope.panning { cursor: grabbing; }
 .time-region { min-width: 0; }
 .timeline-heading { display: grid; grid-template-columns: var(--node-label-width) minmax(0, 1fr); }
-.timeline-heading { box-sizing: border-box; position: sticky; top: 0; z-index: 1; background: var(--vscode-editor-background); flex: 0 0 36px; border-bottom: 1px solid var(--vscode-panel-border); }
+.timeline-heading { box-sizing: border-box; position: sticky; top: 0; z-index: 1; background: var(--vscode-editor-background); flex: 0 0 var(--timeline-header-height); border-bottom: 1px solid var(--vscode-panel-border); }
 .node-column { box-sizing: border-box; min-width: 0; padding: 8px 12px; border-right: 1px solid var(--vscode-panel-border); }
 .lanes { flex: 0 0 auto; min-height: 0; }
 .lane { box-sizing: border-box; border-bottom: 1px solid var(--vscode-panel-border); }

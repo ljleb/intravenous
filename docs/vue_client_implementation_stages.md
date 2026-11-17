@@ -3557,3 +3557,25 @@ Regression sources now distinguish immediate peak changes from held-marker
 motion, including independent reference warnings and compatible graph cutovers.
 Source inspection and `git diff --check` only; client tests, typecheck, extension
 rebuild and visual checks remain owner-run.
+
+
+### Themed native scrollbar and selection overview (2026-11-16)
+
+The owner requested reuse of VS Code scrollbars and an editor-like selection
+marker if straightforward. The supported webview API provides an independent
+HTML view and theme colour variables, rather than a reusable editor scrollbar
+control. The timeline keeps its browser-native scrolling and styles the track
+and normal/hover/active thumb with VS Code's `scrollbar`/`scrollbarSlider`
+colours. References: [webview API](https://code.visualstudio.com/api/extension-guides/webview)
+and [scrollbar theme colours](https://code.visualstudio.com/api/references/theme-color#scrollbar-control).
+
+`TimelineScopePresentation` paints the selected lane's proportional range as a
+thin marker in the native vertical track, using the overview-ruler selection
+colour. It remains visible when that lane scrolls offscreen and follows lane
+order/height changes. A minimum marker height keeps short lanes visible in long
+graphs. No extra scrollbar widget, pointer handler, dependency or scrolling
+implementation is added. Track clicks, thumb dragging and wheel input stay native.
+The shared header-height value keeps marker geometry and zoom anchoring aligned.
+
+Source inspection and `git diff --check` only. Extension rebuild and manual checks
+of track markers, thumb hover/drag and scroll/zoom remain owner-run.
