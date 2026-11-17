@@ -1428,6 +1428,9 @@ class BackgroundEvaluationTransaction::Impl {
                 tick_materialization->carry_forward(
                     *previous_materialization_, materialization_retention_);
             }
+            // All allocation/faulting/locking precedes publication. The audio
+            // callback adopts the immutable payload and its residency lease.
+            tick_materialization->prepare_resident(*data_);
         }
 
         if (inputs_.prepare_only) {

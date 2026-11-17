@@ -68,3 +68,14 @@ target_include_directories(iv_manual_control_polling_benchmark PRIVATE ${PROJECT
 target_include_directories(iv_manual_control_polling_benchmark SYSTEM PRIVATE
     ${PROJECT_SOURCE_DIR}/src/intravenous/third_party)
 iv_add_host_runtime_objects(iv_manual_control_polling_benchmark)
+
+# Shared buffered-store allocation, page/view reuse and fragmentation. No DSP
+# compilation is performed by the benchmark itself.
+add_executable(iv_buffered_storage_benchmark
+    iv_buffered_storage_benchmark.cpp
+    ${PROJECT_SOURCE_DIR}/src/intravenous/third_party/miniaudio/miniaudio.c)
+target_compile_features(iv_buffered_storage_benchmark PRIVATE cxx_std_23)
+target_include_directories(iv_buffered_storage_benchmark PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_include_directories(iv_buffered_storage_benchmark SYSTEM PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/intravenous/third_party)
+iv_add_host_runtime_objects(iv_buffered_storage_benchmark)

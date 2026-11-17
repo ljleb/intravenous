@@ -17,6 +17,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -975,11 +976,14 @@ TEST(PersistedDataStore,
     EXPECT_TRUE(pinned->find_sample_coverage(output, iv::mono_planar_channel_layout)->contains(index(11)));
 }
 
-TEST(PersistedDataStore, HugeLogicalRegionSharesUnchangedPreparedWindowsAcrossRevisions)
+TEST(PersistedDataStore, HugeLogicalRegionSharesPreparedViewsOnUnchangedPagesAcrossRevisions)
 {
     iv::PersistedDataStore store;
     auto const output = store.resolve_output(stable_output(iv::PortKind::sample, "huge"));
     auto const logical = range(0, std::uint64_t{1} << 50);
+    // Separate pages let the first mapping remain shared. A same-page fill
+    // needs copy-on-write; SharedBufferedStorage covers that ownership case.
+    auto const later = range(static_cast<std::int64_t>(store.buffered_storage_usage().page_size / sizeof(iv::Sample)) + 100, 2);
     auto fill = [&](std::uint64_t revision, iv::GlobalIndexRange window, float value) {
         iv::PersistedSampleRegion region{.output = output, .range = logical,
             .layout = iv::mono_planar_channel_layout, .geometry = sample_geometry()};
@@ -997,7 +1001,7 @@ TEST(PersistedDataStore, HugeLogicalRegionSharesUnchangedPreparedWindowsAcrossRe
     ASSERT_EQ(old_regions.size(), 1u);
     ASSERT_NE(old_regions.front().windows, nullptr);
     auto const* first_storage = old_regions.front().windows->front().storage_data();
-    ASSERT_EQ(fill(2, range(100, 2), 10.0f), iv::PersistedDataPublishResult::published);
+    ASSERT_EQ(fill(2, later, 10.0f), iv::PersistedDataPublishResult::published);
     auto current_reader = store.register_reader();
     auto current = current_reader.pin();
     auto regions = current->sample_regions(output, iv::mono_planar_channel_layout);
@@ -1006,10 +1010,10 @@ TEST(PersistedDataStore, HugeLogicalRegionSharesUnchangedPreparedWindowsAcrossRe
     ASSERT_EQ(regions.front().windows->size(), 2u);
     EXPECT_EQ(regions.front().windows->front().storage_data(), first_storage);
     EXPECT_FLOAT_EQ(regions.front().at(index(41), 0).value, 5.0f);
-    EXPECT_FLOAT_EQ(regions.front().at(index(100), 0).value, 10.0f);
+    EXPECT_FLOAT_EQ(regions.front().at(later.begin, 0).value, 10.0f);
     EXPECT_EQ(*current->find_sample_logical_coverage(output), iv::IndexCoverage{logical});
     EXPECT_EQ(*current->find_sample_coverage(output, iv::mono_planar_channel_layout),
-        (iv::IndexCoverage{range(40, 3), range(100, 2)}));
+        (iv::IndexCoverage{range(40, 3), later}));
     EXPECT_EQ(*old->find_sample_coverage(output, iv::mono_planar_channel_layout), iv::IndexCoverage{range(40, 3)});
     EXPECT_EQ(old_regions.front().windows->size(), 1u);
     old = {};
@@ -2609,6 +2613,71 @@ TEST(BackgroundEvaluationTransaction,
         ASSERT_NE(region, nullptr);
         EXPECT_FLOAT_EQ(region->at(position, 0).value, expected[offset]);
     }
+}
+
+TEST(BackgroundEvaluationTransaction,
+     BufferedBackingPressureRetainsQueuedRecordingForRetry)
+{
+    auto graph = queued_persisted_graph(iv::PortKind::sample);
+    iv::ResourceContext resources;
+    auto states = graph.tock_state_layout.create_storage(resources);
+    states.initialize();
+    iv::BackgroundCoverageState coverage{1};
+    iv::BackgroundPropagationWorkspace propagation{
+        graph.background_evaluation_plan, graph.specialization.sample_rate};
+    iv::PersistedDataStore probe;
+    iv::BufferedStorageLimits limits;
+    limits.max_backing_bytes = 2 * probe.buffered_storage_usage().page_size;
+    iv::PersistedDataStore data{limits};
+    auto const output = data.resolve_output(local_output(iv::PortKind::sample, 0));
+    auto seed = data.begin_candidate(1);
+    seed.overwrite(sample_region(output, range(0, 4), 10));
+    ASSERT_EQ(data.publish(std::move(seed)), iv::PersistedDataPublishResult::published);
+    auto old_reader = data.register_reader();
+    auto old = old_reader.pin();
+    auto current = data.begin_candidate(2);
+    current.overwrite(sample_region(output, range(0, 4), 20));
+    ASSERT_EQ(data.publish(std::move(current)), iv::PersistedDataPublishResult::published);
+    auto reader = data.register_reader();
+    auto const version = reader.pin()->version();
+
+    iv::TickMaterializationStore materializations;
+    iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
+    iv::AsyncCapacityManager manager{1};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue pending{reserve, work_signal};
+    ASSERT_EQ(manager.maintain(reserve, {1, 1, 2}), 2u);
+    std::array<iv::Sample, 4> payload{30, 31, 32, 33};
+    publish_record(reserve, pending, {
+        .payload_kind = iv::RealtimeProducedPayloadKind::continuous_values,
+        .record_block_count = 1,
+        .payload_size = sizeof(payload),
+        .begin = index(0),
+        .range_extent = 4,
+        .continuous_layout = iv::mono_interleaved_channel_layout,
+        .continuous_geometry = sample_geometry(),
+    }, std::as_bytes(std::span{payload}));
+    auto const bytes = queued_bytes(pending.pin());
+    std::array routes{iv::BackgroundProducedInputRoute{.output = output, .port = 0, .kind = iv::PortKind::sample}};
+    std::array selections{pending.pin()};
+    iv::BackgroundEvaluationTransaction failed{graph, states, coverage, propagation,
+        data, materializations, {.semantic_version = 3}, routes, selections};
+    auto failure = failed.execute();
+    ASSERT_FALSE(failure.has_value());
+    EXPECT_NE(failure.error().find("backing limit"), std::string::npos);
+    EXPECT_EQ(reader.pin()->version(), version);
+    EXPECT_EQ(queued_bytes(pending.pin()), bytes);
+    EXPECT_FLOAT_EQ(old->find_sample_region(output, index(0))->at(index(0), 0).value, 10);
+
+    old = {};
+    (void)data.reclaim_retired();
+    iv::BackgroundEvaluationTransaction retry{graph, states, coverage, propagation,
+        data, materializations, {.semantic_version = 3}, routes, selections};
+    auto accepted = retry.execute();
+    ASSERT_TRUE(accepted.has_value()) << accepted.error();
+    EXPECT_EQ(accepted->status, iv::BackgroundEvaluationStatus::committed);
+    auto published = reader.pin();
+    EXPECT_FLOAT_EQ(published->find_sample_region(output, index(0))->at(index(0), 0).value, 30);
 }
 
 TEST(BackgroundEvaluationTransaction,

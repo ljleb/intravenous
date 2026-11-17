@@ -642,6 +642,7 @@ class PersistedSampleReader {
     ChannelLayout layout_{};
     std::span<std::size_t const> channels_{};
     std::vector<ContinuousRegionStorageView> regions_{};
+    std::shared_ptr<std::vector<PersistedSampleRegion>> prepared_ = std::make_shared<std::vector<PersistedSampleRegion>>();
     bool selected_regions_complete_ = false;
 
 public:
@@ -670,13 +671,31 @@ public:
                     continue;
                 }
                 used[index] = true;
+                // Canonical contents may be segmented. A full Region request
+                // gets an actual contiguous, bounded view; a window request
+                // owns only the selected page/view subset, not the old output.
+                PersistedSampleRegion selected_region{.output = region.output, .range = region.range,
+                    .layout = region.layout, .geometry = region.geometry};
+                if (coverage.contains(region.range)) selected_region = region.contiguous_view();
+                else {
+                    std::vector<PersistedSampleRegion> windows;
+                    auto append = [&](PersistedSampleRegion const& window) {
+                        for (auto const part : IndexCoverage{window.range} & coverage)
+                            windows.push_back(window.selected_view(part));
+                    };
+                    if (region.windows) for (auto const& window : *region.windows) append(window);
+                    else append(region);
+                    selected_region.set_prepared_windows(std::move(windows));
+                }
+                prepared_->push_back(std::move(selected_region));
+                auto const& prepared = prepared_->back();
                 regions_.push_back({
-                    .storage = const_cast<std::byte*>(region.storage_data()),
+                    .storage = const_cast<std::byte*>(prepared.storage_data()),
                     .range = region.range,
                     .geometry = region.geometry,
                     .channel_layout = region.layout,
-                    .windows = region.window_views
-                        ? std::span<ContinuousRegionStorageView const>{*region.window_views}
+                    .windows = prepared.window_views
+                        ? std::span<ContinuousRegionStorageView const>{*prepared.window_views}
                         : std::span<ContinuousRegionStorageView const>{},
                 });
                 break;
@@ -730,7 +749,7 @@ public:
             .geometry = geometry_,
             .layout = layout_,
             .channels = channels_,
-            .owner = snapshot_->sample_output_owner(output_),
+            .owner = prepared_,
         };
     }
 };

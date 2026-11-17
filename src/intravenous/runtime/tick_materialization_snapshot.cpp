@@ -10,6 +10,46 @@
 #include <utility>
 
 namespace iv {
+void TickMaterializationSnapshot::prepare_resident(PersistedDataStore& data)
+{
+    std::vector<BufferedResidentRange> ranges;
+    auto product = [](std::size_t left, std::size_t right) {
+        if (right && left > std::numeric_limits<std::size_t>::max() / right)
+            throw std::length_error("prepared resident payload size overflows");
+        return left * right;
+    };
+    for (auto const& input : samples_) for (auto const& region : input.regions) {
+        auto const frame_count = static_cast<std::size_t>(region.range.extent);
+        auto const frames = region.storage_frames ? region.storage_frames : frame_count;
+        auto const* storage = region.storage_data();
+        if (!storage || !frame_count) continue;
+        if (input.layout.sample_layout == SampleStreamLayout::planar) {
+            for (std::size_t channel = 0; channel < input.channels.size(); ++channel)
+                ranges.push_back({storage + product(product(channel, frames) + region.first_frame, input.geometry.value_size_bytes),
+                    product(frame_count, input.geometry.value_size_bytes)});
+        } else {
+            auto const frame_bytes = product(input.channels.size(), input.geometry.value_size_bytes);
+            ranges.push_back({storage + product(region.first_frame, frame_bytes), product(frame_count, frame_bytes)});
+        }
+    }
+    for (auto const& input : events_) {
+        for (auto const& chunk : input.chunks) {
+            if (chunk.events && chunk.begin < chunk.end)
+                ranges.push_back({reinterpret_cast<std::byte const*>(chunk.events->data() + chunk.begin),
+                    product(chunk.end - chunk.begin, sizeof(TimedEvent))});
+            if (chunk.semantic_source_indices && chunk.begin < chunk.end)
+                ranges.push_back({reinterpret_cast<std::byte const*>(chunk.semantic_source_indices->data() + chunk.begin),
+                    product(chunk.end - chunk.begin, sizeof(std::size_t))});
+        }
+        if (input.merged_events && !input.merged_events->empty())
+            ranges.push_back({reinterpret_cast<std::byte const*>(input.merged_events->data()),
+                product(input.merged_events->size(), sizeof(TimedEvent))});
+        if (input.merged_semantic_source_indices && !input.merged_semantic_source_indices->empty())
+            ranges.push_back({reinterpret_cast<std::byte const*>(input.merged_semantic_source_indices->data()),
+                product(input.merged_semantic_source_indices->size(), sizeof(std::size_t))});
+    }
+    resident_ = data.prepare_resident(ranges);
+}
 namespace {
 
 [[nodiscard]] std::size_t checked_product(

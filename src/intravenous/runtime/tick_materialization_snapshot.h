@@ -222,6 +222,8 @@ class TickMaterializationSnapshot {
     PersistedDataVersion data_version_{};
     std::vector<TickMaterializedSampleInput> samples_{};
     std::vector<TickMaterializedEventInput> events_{};
+    // Declared after payload owners so residency is released before storage.
+    std::shared_ptr<void const> resident_{};
     // Semantic coverage selected with this snapshot's data version. Entries
     // use BackgroundEvaluationPlan's output-change accumulator indices.
     // An empty vector on an initial root means coverage is not yet known.
@@ -288,6 +290,7 @@ public:
     void carry_forward(
         TickMaterializationSnapshot const& previous,
         std::span<TickMaterializationRetention const> retention);
+    void prepare_resident(PersistedDataStore& data);
 };
 
 // Single-writer, pre-registered-reader publication for Tick materializations.

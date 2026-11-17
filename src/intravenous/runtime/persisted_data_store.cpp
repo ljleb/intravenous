@@ -1,4 +1,5 @@
 #include <intravenous/runtime/persisted_data_store.h>
+#include <intravenous/runtime/buffered_storage.h>
 
 #include <algorithm>
 #include <array>
@@ -8,6 +9,7 @@
 #include <cstring>
 #include <limits>
 #include <iterator>
+#include <numeric>
 #include <ranges>
 #include <stdexcept>
 #include <system_error>
@@ -29,56 +31,35 @@ struct RangeNode {
     std::uint32_t height = 1;
 };
 
-struct RecordingPageKey {
+struct BufferedPageKey {
     std::uint64_t high = 0;
     std::uint64_t low = 0;
 
-    auto operator<=>(RecordingPageKey const&) const = default;
+    auto operator<=>(BufferedPageKey const&) const = default;
 };
 
-struct RecordingPage {
-    std::uint64_t file_offset = 0;
-};
 
-struct RecordingPageNode {
-    RecordingPageKey key{};
-    std::shared_ptr<RecordingPage const> page{};
-    std::shared_ptr<RecordingPageNode const> left{};
-    std::shared_ptr<RecordingPageNode const> right{};
+struct BufferedPageNode {
+    BufferedPageKey key{};
+    std::shared_ptr<BufferedPage const> page{};
+    std::shared_ptr<BufferedPageNode const> left{};
+    std::shared_ptr<BufferedPageNode const> right{};
     std::uint32_t height = 1;
 };
 
-struct RecordingPageRun {
-    RecordingPageKey first{};
+struct BufferedPageRun {
+    BufferedPageKey first{};
     std::size_t page_count = 0;
     std::uint64_t file_offset = 0;
 };
 
-struct RecordingPageRunNode {
-    RecordingPageRun run{};
-    std::shared_ptr<RecordingPageRunNode const> left{};
-    std::shared_ptr<RecordingPageRunNode const> right{};
+struct BufferedPageRunNode {
+    BufferedPageRun run{};
+    std::shared_ptr<BufferedPageRunNode const> left{};
+    std::shared_ptr<BufferedPageRunNode const> right{};
     std::uint32_t height = 1;
 };
 
-class RecordingPageAllocator {
-    int file_ = -1;
-    std::size_t page_size_ = 0;
-    std::uint64_t next_file_offset_ = 0;
-
-public:
-    RecordingPageAllocator();
-    ~RecordingPageAllocator();
-
-    RecordingPageAllocator(RecordingPageAllocator const&) = delete;
-    RecordingPageAllocator& operator=(RecordingPageAllocator const&) = delete;
-
-    [[nodiscard]] int file() const noexcept { return file_; }
-    [[nodiscard]] std::size_t page_size() const noexcept { return page_size_; }
-    void read(RecordingPage const& page, std::span<std::byte> target) const;
-    [[nodiscard]] std::shared_ptr<RecordingPage const> allocate(
-        std::span<std::byte const> contents);
-};
 
 struct SampleOutputState {
     PersistedOutputHandle output{};
@@ -89,12 +70,24 @@ struct SampleOutputState {
     std::shared_ptr<RangeNode<PersistedSampleRegion> const> regions{};
     std::shared_ptr<std::vector<PersistedSampleRegion> const> logical_regions{};
     std::shared_ptr<std::vector<ContinuousRegionStorageView> const> region_views{};
-    std::shared_ptr<RecordingPageAllocator> recording_allocator{};
-    std::shared_ptr<RecordingPageNode const> recording_pages{};
-    std::shared_ptr<RecordingPageRunNode const> recording_runs{};
+    std::shared_ptr<BufferedPageAllocator> recording_allocator{};
+    std::shared_ptr<BufferedPageNode const> buffered_pages{};
+    std::shared_ptr<BufferedPageRunNode const> recording_runs{};
     bool positional_recording = false;
     std::size_t physical_region_count = 0;
     std::size_t region_count = 0;
+};
+
+struct BufferedSampleBacking {
+    std::shared_ptr<BufferedPageAllocator> allocator{};
+    std::shared_ptr<BufferedPageNode const> pages{};
+    std::shared_ptr<BufferedPageRunNode const> runs{};
+    GlobalIndex origin{};
+    unsigned __int128 byte_begin = 0;
+    // Authored Regions own a stable native-coordinate directory. Planar
+    // channel origins are page aligned independently of prepared windows.
+    std::optional<GlobalIndexRange> logical_range{};
+    unsigned __int128 plane_stride_bytes = 0;
 };
 
 struct EventOutputState {
@@ -108,6 +101,7 @@ struct EventOutputState {
     std::shared_ptr<std::vector<TimedEvent> const> timeline{};
     bool positional_recording = false;
     std::size_t chunk_count = 0;
+    std::shared_ptr<void const> timeline_accounting{};
 };
 
 template<typename State>
@@ -121,117 +115,19 @@ struct OutputDirectoryNode {
 
 } // namespace persisted_data_store_detail
 
-persisted_data_store_detail::RecordingPageAllocator::RecordingPageAllocator()
-{
-#if defined(__linux__)
-    auto const page_size = ::sysconf(_SC_PAGESIZE);
-    if (page_size <= 0) {
-        throw std::system_error(
-            errno, std::generic_category(), "cannot query the Linux page size");
-    }
-    page_size_ = static_cast<std::size_t>(page_size);
-    file_ = ::memfd_create("iv-persisted-recording", MFD_CLOEXEC);
-    if (file_ < 0) {
-        throw std::system_error(
-            errno, std::generic_category(), "cannot create recording page storage");
-    }
-#else
-    throw std::runtime_error(
-        "persisted Tick continuous recording requires Linux virtual memory");
-#endif
-}
-
-persisted_data_store_detail::RecordingPageAllocator::~RecordingPageAllocator()
-{
-#if defined(__linux__)
-    if (file_ >= 0) ::close(file_);
-#endif
-}
-
-void persisted_data_store_detail::RecordingPageAllocator::read(
-    RecordingPage const& page,
-    std::span<std::byte> target) const
-{
-    if (target.size() != page_size_) {
-        throw std::invalid_argument("recording page read has the wrong size");
-    }
-#if defined(__linux__)
-    std::size_t read_bytes = 0;
-    while (read_bytes != target.size()) {
-        auto const result = ::pread(
-            file_,
-            target.data() + read_bytes,
-            target.size() - read_bytes,
-            static_cast<off_t>(page.file_offset + read_bytes));
-        if (result < 0) {
-            if (errno == EINTR) continue;
-            throw std::system_error(
-                errno, std::generic_category(), "cannot read a recording page");
-        }
-        if (result == 0) {
-            throw std::runtime_error("recording page storage ended unexpectedly");
-        }
-        read_bytes += static_cast<std::size_t>(result);
-    }
-#else
-    (void)page;
-#endif
-}
-
-std::shared_ptr<persisted_data_store_detail::RecordingPage const>
-persisted_data_store_detail::RecordingPageAllocator::allocate(
-    std::span<std::byte const> contents)
-{
-    if (contents.size() != page_size_) {
-        throw std::invalid_argument("recording page write has the wrong size");
-    }
-    if (next_file_offset_
-        > static_cast<std::uint64_t>(std::numeric_limits<off_t>::max())
-            - page_size_) {
-        throw std::length_error("recording page storage is exhausted");
-    }
-    auto const offset = next_file_offset_;
-    auto const new_file_size = next_file_offset_ + page_size_;
-#if defined(__linux__)
-    if (::ftruncate(file_, static_cast<off_t>(new_file_size)) != 0) {
-        throw std::system_error(
-            errno, std::generic_category(), "cannot extend recording page storage");
-    }
-    std::size_t written = 0;
-    while (written != contents.size()) {
-        auto const result = ::pwrite(
-            file_,
-            contents.data() + written,
-            contents.size() - written,
-            static_cast<off_t>(offset + written));
-        if (result < 0) {
-            if (errno == EINTR) continue;
-            throw std::system_error(
-                errno, std::generic_category(), "cannot write a recording page");
-        }
-        if (result == 0) {
-            throw std::runtime_error("recording page write made no progress");
-        }
-        written += static_cast<std::size_t>(result);
-    }
-#endif
-    next_file_offset_ = new_file_size;
-    return std::make_shared<RecordingPage const>(RecordingPage{
-        .file_offset = offset,
-    });
-}
 
 namespace {
 
 using persisted_data_store_detail::EventOutputNode;
 using persisted_data_store_detail::EventOutputState;
 using persisted_data_store_detail::RangeNode;
-using persisted_data_store_detail::RecordingPage;
-using persisted_data_store_detail::RecordingPageAllocator;
-using persisted_data_store_detail::RecordingPageKey;
-using persisted_data_store_detail::RecordingPageNode;
-using persisted_data_store_detail::RecordingPageRun;
-using persisted_data_store_detail::RecordingPageRunNode;
+using persisted_data_store_detail::BufferedPage;
+using persisted_data_store_detail::BufferedPageAllocator;
+using persisted_data_store_detail::BufferedSampleBacking;
+using persisted_data_store_detail::BufferedPageKey;
+using persisted_data_store_detail::BufferedPageNode;
+using persisted_data_store_detail::BufferedPageRun;
+using persisted_data_store_detail::BufferedPageRunNode;
 using persisted_data_store_detail::SampleOutputNode;
 using persisted_data_store_detail::SampleOutputState;
 
@@ -426,6 +322,22 @@ struct LinearRange {
     return false;
 }
 
+void validate_sample_representation(ChannelLayout layout, ContinuousValueStorageGeometry geometry)
+{
+    if (!is_valid_channel_type(layout.channel_type)
+        || !is_valid_sample_stream_layout(layout.sample_layout)) {
+        throw std::invalid_argument(
+            "sample region has an invalid channel layout");
+    }
+    if (!is_registered_continuous_value_type(geometry.value_type)
+        || geometry.value_size_bytes == 0
+        || geometry.element_alignment == 0
+        || !std::has_single_bit(geometry.element_alignment)) {
+        throw std::invalid_argument(
+            "sample region has invalid continuous-value geometry");
+    }
+}
+
 void validate(PersistedSampleRegion const& region)
 {
     if (!region.output.valid()
@@ -433,18 +345,7 @@ void validate(PersistedSampleRegion const& region)
         throw std::invalid_argument(
             "sample region requires a sample output identity");
     }
-    if (!is_valid_channel_type(region.layout.channel_type)
-        || !is_valid_sample_stream_layout(region.layout.sample_layout)) {
-        throw std::invalid_argument(
-            "sample region has an invalid channel layout");
-    }
-    if (!is_registered_continuous_value_type(region.geometry.value_type)
-        || region.geometry.value_size_bytes == 0
-        || region.geometry.element_alignment == 0
-        || !std::has_single_bit(region.geometry.element_alignment)) {
-        throw std::invalid_argument(
-            "sample region has invalid continuous-value geometry");
-    }
+    validate_sample_representation(region.layout, region.geometry);
     if (region.windows) {
         if (!region.values.empty() || !region.continuous_values.empty()
             || !region.window_views || region.window_views->size() != region.windows->size())
@@ -511,11 +412,16 @@ void validate(PersistedEventChunk const& chunk)
     }
 }
 
+[[nodiscard]] PersistedSampleRegion map_buffered_slice(PersistedSampleRegion const&, GlobalIndexRange);
+[[nodiscard]] PersistedSampleRegion page_backed_region(PersistedSampleRegion,
+    std::shared_ptr<BufferedPageAllocator> const&);
+
 [[nodiscard]] PersistedSampleRegion slice(
     PersistedSampleRegion const& source,
     GlobalIndexRange range)
 {
     assert(source.range.contains(range) && !range.empty());
+    if (source.buffered_backing) return map_buffered_slice(source, range);
     auto const source_frames = checked_frame_count(source.range);
     auto const frames = checked_frame_count(range);
     auto const frame_offset = static_cast<std::size_t>(
@@ -756,14 +662,33 @@ void for_each_record(
     for_each_record(root->right, fn);
 }
 
-[[nodiscard]] std::shared_ptr<RecordingPageNode const> make_recording_page_node(
-    RecordingPageKey key,
-    std::shared_ptr<RecordingPage const> page,
-    std::shared_ptr<RecordingPageNode const> left = {},
-    std::shared_ptr<RecordingPageNode const> right = {})
+[[nodiscard]] std::shared_ptr<void const> account_event_contents(
+    std::shared_ptr<BufferedPageAllocator> const& allocator,
+    std::shared_ptr<std::vector<PersistedEventChunk> const> const& logical,
+    std::shared_ptr<RangeNode<PersistedEventChunk> const> const& chunks,
+    std::shared_ptr<std::vector<TimedEvent> const> const& timeline)
+{
+    auto account = [&](PersistedEventChunk const& chunk) {
+        auto const bytes = checked_product(chunk.events.capacity(), sizeof(TimedEvent));
+        if (chunk.accounted_storage == chunk.events.data() && chunk.accounted_bytes == bytes) return;
+        auto charge = allocator->retain_event_bytes(bytes);
+        chunk.storage_accounting = std::move(charge);
+        chunk.accounted_storage = chunk.events.data();
+        chunk.accounted_bytes = bytes;
+    };
+    if (logical) for (auto const& chunk : *logical) account(chunk);
+    for_each_record(chunks, account);
+    return allocator->retain_event_bytes(timeline ? checked_product(timeline->capacity(), sizeof(TimedEvent)) : 0);
+}
+
+[[nodiscard]] std::shared_ptr<BufferedPageNode const> make_buffered_page_node(
+    BufferedPageKey key,
+    std::shared_ptr<BufferedPage const> page,
+    std::shared_ptr<BufferedPageNode const> left = {},
+    std::shared_ptr<BufferedPageNode const> right = {})
 {
     auto const height = 1 + std::max(node_height(left), node_height(right));
-    return std::make_shared<RecordingPageNode const>(RecordingPageNode{
+    return std::make_shared<BufferedPageNode const>(BufferedPageNode{
         .key = key,
         .page = std::move(page),
         .left = std::move(left),
@@ -772,8 +697,8 @@ void for_each_record(
     });
 }
 
-[[nodiscard]] std::shared_ptr<RecordingPageNode const> balance_recording_page_node(
-    std::shared_ptr<RecordingPageNode const> node)
+[[nodiscard]] std::shared_ptr<BufferedPageNode const> balance_buffered_page_node(
+    std::shared_ptr<BufferedPageNode const> node)
 {
     auto const balance = static_cast<int>(node_height(node->left))
         - static_cast<int>(node_height(node->right));
@@ -781,62 +706,62 @@ void for_each_record(
         auto left = node->left;
         if (node_height(left->left) < node_height(left->right)) {
             auto const pivot = left->right;
-            left = make_recording_page_node(
+            left = make_buffered_page_node(
                 left->key, left->page, left->left, pivot->left);
-            left = make_recording_page_node(
+            left = make_buffered_page_node(
                 pivot->key, pivot->page, std::move(left), pivot->right);
         }
-        auto const new_right = make_recording_page_node(
+        auto const new_right = make_buffered_page_node(
             node->key, node->page, left->right, node->right);
-        return make_recording_page_node(
+        return make_buffered_page_node(
             left->key, left->page, left->left, std::move(new_right));
     }
     if (balance < -1) {
         auto right = node->right;
         if (node_height(right->right) < node_height(right->left)) {
             auto const pivot = right->left;
-            right = make_recording_page_node(
+            right = make_buffered_page_node(
                 right->key, right->page, pivot->right, right->right);
-            right = make_recording_page_node(
+            right = make_buffered_page_node(
                 pivot->key, pivot->page, pivot->left, std::move(right));
         }
-        auto const new_left = make_recording_page_node(
+        auto const new_left = make_buffered_page_node(
             node->key, node->page, node->left, right->left);
-        return make_recording_page_node(
+        return make_buffered_page_node(
             right->key, right->page, std::move(new_left), right->right);
     }
     return node;
 }
 
-[[nodiscard]] std::shared_ptr<RecordingPageNode const> put_recording_page(
-    std::shared_ptr<RecordingPageNode const> const& root,
-    RecordingPageKey key,
-    std::shared_ptr<RecordingPage const> page)
+[[nodiscard]] std::shared_ptr<BufferedPageNode const> put_buffered_page(
+    std::shared_ptr<BufferedPageNode const> const& root,
+    BufferedPageKey key,
+    std::shared_ptr<BufferedPage const> page)
 {
     if (!root) {
-        return make_recording_page_node(key, std::move(page));
+        return make_buffered_page_node(key, std::move(page));
     }
     if (key < root->key) {
-        return balance_recording_page_node(make_recording_page_node(
+        return balance_buffered_page_node(make_buffered_page_node(
             root->key,
             root->page,
-            put_recording_page(root->left, key, std::move(page)),
+            put_buffered_page(root->left, key, std::move(page)),
             root->right));
     }
     if (root->key < key) {
-        return balance_recording_page_node(make_recording_page_node(
+        return balance_buffered_page_node(make_buffered_page_node(
             root->key,
             root->page,
             root->left,
-            put_recording_page(root->right, key, std::move(page))));
+            put_buffered_page(root->right, key, std::move(page))));
     }
-    return make_recording_page_node(
+    return make_buffered_page_node(
         key, std::move(page), root->left, root->right);
 }
 
-[[nodiscard]] RecordingPage const* find_recording_page(
-    std::shared_ptr<RecordingPageNode const> const& root,
-    RecordingPageKey key) noexcept
+[[nodiscard]] BufferedPage const* find_buffered_page(
+    std::shared_ptr<BufferedPageNode const> const& root,
+    BufferedPageKey key) noexcept
 {
     auto const* node = root.get();
     while (node) {
@@ -851,10 +776,26 @@ void for_each_record(
     return nullptr;
 }
 
-using RecordingByteAddress = unsigned __int128;
+[[nodiscard]] std::shared_ptr<BufferedPageNode const> erase_buffered_page(
+    std::shared_ptr<BufferedPageNode const> const& root, BufferedPageKey key)
+{
+    if (!root) return {};
+    if (key < root->key) return balance_buffered_page_node(make_buffered_page_node(root->key, root->page,
+        erase_buffered_page(root->left, key), root->right));
+    if (root->key < key) return balance_buffered_page_node(make_buffered_page_node(root->key, root->page,
+        root->left, erase_buffered_page(root->right, key)));
+    if (!root->left) return root->right;
+    if (!root->right) return root->left;
+    auto next = root->right;
+    while (next->left) next = next->left;
+    return balance_buffered_page_node(make_buffered_page_node(next->key, next->page,
+        root->left, erase_buffered_page(root->right, next->key)));
+}
 
-[[nodiscard]] RecordingPageKey recording_page_key(
-    RecordingByteAddress address,
+using BufferedByteAddress = unsigned __int128;
+
+[[nodiscard]] BufferedPageKey buffered_page_key(
+    BufferedByteAddress address,
     std::size_t page_size) noexcept
 {
     auto const page = address / page_size;
@@ -864,8 +805,8 @@ using RecordingByteAddress = unsigned __int128;
     };
 }
 
-[[nodiscard]] RecordingPageKey add_recording_pages(
-    RecordingPageKey key,
+[[nodiscard]] BufferedPageKey add_buffered_pages(
+    BufferedPageKey key,
     std::size_t count) noexcept
 {
     auto const previous = key.low;
@@ -874,12 +815,12 @@ using RecordingByteAddress = unsigned __int128;
     return key;
 }
 
-using RecordingPageNumber = unsigned __int128;
+using BufferedPageNumber = unsigned __int128;
 
-[[nodiscard]] RecordingPageNumber recording_page_number(
-    RecordingPageKey key) noexcept
+[[nodiscard]] BufferedPageNumber buffered_page_number(
+    BufferedPageKey key) noexcept
 {
-    return (static_cast<RecordingPageNumber>(key.high) << 64) | key.low;
+    return (static_cast<BufferedPageNumber>(key.high) << 64) | key.low;
 }
 
 [[nodiscard]] std::size_t checked_page_count_sum(
@@ -892,14 +833,14 @@ using RecordingPageNumber = unsigned __int128;
     return left + right;
 }
 
-[[nodiscard]] std::shared_ptr<RecordingPageRunNode const>
-make_recording_page_run_node(
-    RecordingPageRun run,
-    std::shared_ptr<RecordingPageRunNode const> left = {},
-    std::shared_ptr<RecordingPageRunNode const> right = {})
+[[nodiscard]] std::shared_ptr<BufferedPageRunNode const>
+make_buffered_page_run_node(
+    BufferedPageRun run,
+    std::shared_ptr<BufferedPageRunNode const> left = {},
+    std::shared_ptr<BufferedPageRunNode const> right = {})
 {
     auto const height = 1 + std::max(node_height(left), node_height(right));
-    return std::make_shared<RecordingPageRunNode const>(RecordingPageRunNode{
+    return std::make_shared<BufferedPageRunNode const>(BufferedPageRunNode{
         .run = run,
         .left = std::move(left),
         .right = std::move(right),
@@ -907,9 +848,9 @@ make_recording_page_run_node(
     });
 }
 
-[[nodiscard]] std::shared_ptr<RecordingPageRunNode const>
-balance_recording_page_run_node(
-    std::shared_ptr<RecordingPageRunNode const> node)
+[[nodiscard]] std::shared_ptr<BufferedPageRunNode const>
+balance_buffered_page_run_node(
+    std::shared_ptr<BufferedPageRunNode const> node)
 {
     auto const balance = static_cast<int>(node_height(node->left))
         - static_cast<int>(node_height(node->right));
@@ -917,89 +858,89 @@ balance_recording_page_run_node(
         auto left = node->left;
         if (node_height(left->left) < node_height(left->right)) {
             auto const pivot = left->right;
-            left = make_recording_page_run_node(
+            left = make_buffered_page_run_node(
                 left->run, left->left, pivot->left);
-            left = make_recording_page_run_node(
+            left = make_buffered_page_run_node(
                 pivot->run, std::move(left), pivot->right);
         }
-        auto const new_right = make_recording_page_run_node(
+        auto const new_right = make_buffered_page_run_node(
             node->run, left->right, node->right);
-        return make_recording_page_run_node(
+        return make_buffered_page_run_node(
             left->run, left->left, std::move(new_right));
     }
     if (balance < -1) {
         auto right = node->right;
         if (node_height(right->right) < node_height(right->left)) {
             auto const pivot = right->left;
-            right = make_recording_page_run_node(
+            right = make_buffered_page_run_node(
                 right->run, pivot->right, right->right);
-            right = make_recording_page_run_node(
+            right = make_buffered_page_run_node(
                 pivot->run, pivot->left, std::move(right));
         }
-        auto const new_left = make_recording_page_run_node(
+        auto const new_left = make_buffered_page_run_node(
             node->run, node->left, right->left);
-        return make_recording_page_run_node(
+        return make_buffered_page_run_node(
             right->run, std::move(new_left), right->right);
     }
     return node;
 }
 
-[[nodiscard]] std::shared_ptr<RecordingPageRunNode const>
-put_recording_page_run(
-    std::shared_ptr<RecordingPageRunNode const> const& root,
-    RecordingPageRun run)
+[[nodiscard]] std::shared_ptr<BufferedPageRunNode const>
+put_buffered_page_run(
+    std::shared_ptr<BufferedPageRunNode const> const& root,
+    BufferedPageRun run)
 {
-    if (!root) return make_recording_page_run_node(run);
+    if (!root) return make_buffered_page_run_node(run);
     if (run.first < root->run.first) {
-        return balance_recording_page_run_node(make_recording_page_run_node(
+        return balance_buffered_page_run_node(make_buffered_page_run_node(
             root->run,
-            put_recording_page_run(root->left, run),
+            put_buffered_page_run(root->left, run),
             root->right));
     }
     if (root->run.first < run.first) {
-        return balance_recording_page_run_node(make_recording_page_run_node(
+        return balance_buffered_page_run_node(make_buffered_page_run_node(
             root->run,
             root->left,
-            put_recording_page_run(root->right, run)));
+            put_buffered_page_run(root->right, run)));
     }
-    return make_recording_page_run_node(run, root->left, root->right);
+    return make_buffered_page_run_node(run, root->left, root->right);
 }
 
-[[nodiscard]] std::shared_ptr<RecordingPageRunNode const>
-erase_recording_page_run(
-    std::shared_ptr<RecordingPageRunNode const> const& root,
-    RecordingPageKey first)
+[[nodiscard]] std::shared_ptr<BufferedPageRunNode const>
+erase_buffered_page_run(
+    std::shared_ptr<BufferedPageRunNode const> const& root,
+    BufferedPageKey first)
 {
     if (!root) return {};
     if (first < root->run.first) {
-        return balance_recording_page_run_node(make_recording_page_run_node(
+        return balance_buffered_page_run_node(make_buffered_page_run_node(
             root->run,
-            erase_recording_page_run(root->left, first),
+            erase_buffered_page_run(root->left, first),
             root->right));
     }
     if (root->run.first < first) {
-        return balance_recording_page_run_node(make_recording_page_run_node(
+        return balance_buffered_page_run_node(make_buffered_page_run_node(
             root->run,
             root->left,
-            erase_recording_page_run(root->right, first)));
+            erase_buffered_page_run(root->right, first)));
     }
     if (!root->left) return root->right;
     if (!root->right) return root->left;
     auto successor = root->right;
     while (successor->left) successor = successor->left;
-    return balance_recording_page_run_node(make_recording_page_run_node(
+    return balance_buffered_page_run_node(make_buffered_page_run_node(
         successor->run,
         root->left,
-        erase_recording_page_run(root->right, successor->run.first)));
+        erase_buffered_page_run(root->right, successor->run.first)));
 }
 
-[[nodiscard]] RecordingPageRun const* find_recording_page_run(
-    std::shared_ptr<RecordingPageRunNode const> const& root,
-    RecordingPageKey page) noexcept
+[[nodiscard]] BufferedPageRun const* find_buffered_page_run(
+    std::shared_ptr<BufferedPageRunNode const> const& root,
+    BufferedPageKey page) noexcept
 {
-    auto const page_number = recording_page_number(page);
+    auto const page_number = buffered_page_number(page);
     auto const* node = root.get();
-    RecordingPageRun const* candidate = nullptr;
+    BufferedPageRun const* candidate = nullptr;
     while (node) {
         if (page < node->run.first) {
             node = node->left.get();
@@ -1010,16 +951,16 @@ erase_recording_page_run(
     }
     if (!candidate) return nullptr;
     auto const offset = page_number
-        - recording_page_number(candidate->first);
+        - buffered_page_number(candidate->first);
     return offset < candidate->page_count ? candidate : nullptr;
 }
 
-[[nodiscard]] RecordingPageRun const* find_recording_page_run_before(
-    std::shared_ptr<RecordingPageRunNode const> const& root,
-    RecordingPageKey first) noexcept
+[[nodiscard]] BufferedPageRun const* find_buffered_page_run_before(
+    std::shared_ptr<BufferedPageRunNode const> const& root,
+    BufferedPageKey first) noexcept
 {
     auto const* node = root.get();
-    RecordingPageRun const* result = nullptr;
+    BufferedPageRun const* result = nullptr;
     while (node) {
         if (node->run.first < first) {
             result = std::addressof(node->run);
@@ -1031,12 +972,12 @@ erase_recording_page_run(
     return result;
 }
 
-[[nodiscard]] RecordingPageRun const* find_recording_page_run_after(
-    std::shared_ptr<RecordingPageRunNode const> const& root,
-    RecordingPageKey first) noexcept
+[[nodiscard]] BufferedPageRun const* find_buffered_page_run_after(
+    std::shared_ptr<BufferedPageRunNode const> const& root,
+    BufferedPageKey first) noexcept
 {
     auto const* node = root.get();
-    RecordingPageRun const* result = nullptr;
+    BufferedPageRun const* result = nullptr;
     while (node) {
         if (first < node->run.first) {
             result = std::addressof(node->run);
@@ -1048,62 +989,62 @@ erase_recording_page_run(
     return result;
 }
 
-[[nodiscard]] bool recording_page_runs_are_contiguous(
-    RecordingPageRun const& left,
-    RecordingPageRun const& right,
+[[nodiscard]] bool buffered_page_runs_are_contiguous(
+    BufferedPageRun const& left,
+    BufferedPageRun const& right,
     std::size_t page_size) noexcept
 {
-    return add_recording_pages(left.first, left.page_count) == right.first
+    return add_buffered_pages(left.first, left.page_count) == right.first
         && left.file_offset + left.page_count * page_size
             == right.file_offset;
 }
 
-[[nodiscard]] std::shared_ptr<RecordingPageRunNode const>
-put_coalesced_recording_page_run(
-    std::shared_ptr<RecordingPageRunNode const> root,
-    RecordingPageRun run,
+[[nodiscard]] std::shared_ptr<BufferedPageRunNode const>
+put_coalesced_buffered_page_run(
+    std::shared_ptr<BufferedPageRunNode const> root,
+    BufferedPageRun run,
     std::size_t page_size)
 {
-    if (auto const* previous = find_recording_page_run_before(
+    if (auto const* previous = find_buffered_page_run_before(
             root, run.first);
-        previous && recording_page_runs_are_contiguous(
+        previous && buffered_page_runs_are_contiguous(
             *previous, run, page_size)) {
         auto const first = previous->first;
         auto const file_offset = previous->file_offset;
         auto const page_count = previous->page_count;
-        root = erase_recording_page_run(root, first);
+        root = erase_buffered_page_run(root, first);
         run.first = first;
         run.file_offset = file_offset;
         run.page_count = checked_page_count_sum(
             page_count, run.page_count);
     }
-    if (auto const* next = find_recording_page_run_after(root, run.first);
-        next && recording_page_runs_are_contiguous(run, *next, page_size)) {
+    if (auto const* next = find_buffered_page_run_after(root, run.first);
+        next && buffered_page_runs_are_contiguous(run, *next, page_size)) {
         auto const first = next->first;
         auto const page_count = next->page_count;
-        root = erase_recording_page_run(root, first);
+        root = erase_buffered_page_run(root, first);
         run.page_count = checked_page_count_sum(
             run.page_count, page_count);
     }
-    return put_recording_page_run(root, run);
+    return put_buffered_page_run(root, run);
 }
 
-[[nodiscard]] std::shared_ptr<RecordingPageRunNode const>
-replace_recording_page_run(
-    std::shared_ptr<RecordingPageRunNode const> root,
-    RecordingPageKey page,
-    std::uint64_t file_offset,
+[[nodiscard]] std::shared_ptr<BufferedPageRunNode const>
+replace_buffered_page_run(
+    std::shared_ptr<BufferedPageRunNode const> root,
+    BufferedPageKey page,
+    std::optional<std::uint64_t> file_offset,
     std::size_t page_size)
 {
-    if (auto const* previous = find_recording_page_run(root, page)) {
+    if (auto const* previous = find_buffered_page_run(root, page)) {
         auto const old = *previous;
-        root = erase_recording_page_run(root, old.first);
-        auto const prefix_number = recording_page_number(page)
-            - recording_page_number(old.first);
+        root = erase_buffered_page_run(root, old.first);
+        auto const prefix_number = buffered_page_number(page)
+            - buffered_page_number(old.first);
         auto const prefix = static_cast<std::size_t>(prefix_number);
         assert(prefix < old.page_count);
         if (prefix != 0) {
-            root = put_recording_page_run(root, RecordingPageRun{
+            root = put_buffered_page_run(root, BufferedPageRun{
                 .first = old.first,
                 .page_count = prefix,
                 .file_offset = old.file_offset,
@@ -1111,33 +1052,34 @@ replace_recording_page_run(
         }
         auto const suffix = old.page_count - prefix - 1;
         if (suffix != 0) {
-            root = put_recording_page_run(root, RecordingPageRun{
-                .first = add_recording_pages(page, 1),
+            root = put_buffered_page_run(root, BufferedPageRun{
+                .first = add_buffered_pages(page, 1),
                 .page_count = suffix,
                 .file_offset = old.file_offset
                     + (prefix + 1) * page_size,
             });
         }
     }
-    return put_coalesced_recording_page_run(
+    if (!file_offset) return root;
+    return put_coalesced_buffered_page_run(
         std::move(root),
-        RecordingPageRun{
+        BufferedPageRun{
             .first = page,
             .page_count = 1,
-            .file_offset = file_offset,
+            .file_offset = *file_offset,
         },
         page_size);
 }
 
-[[nodiscard]] RecordingByteAddress recording_byte_address(
+[[nodiscard]] BufferedByteAddress buffered_byte_address(
     GlobalIndex index,
     std::size_t bytes_per_frame) noexcept
 {
-    return static_cast<RecordingByteAddress>(
+    return static_cast<BufferedByteAddress>(
         SignedGlobalIndexOrder::key(index)) * bytes_per_frame;
 }
 
-[[nodiscard]] std::size_t recording_bytes_per_frame(
+[[nodiscard]] std::size_t buffered_bytes_per_frame(
     ChannelLayout layout,
     ContinuousValueStorageGeometry geometry)
 {
@@ -1145,14 +1087,45 @@ replace_recording_page_run(
         channel_count(layout), geometry.value_size_bytes);
 }
 
+void prune_erased_pages(std::shared_ptr<BufferedPageNode const>& pages,
+    std::shared_ptr<BufferedPageRunNode const>& runs, IndexCoverage const& retained,
+    GlobalIndexRange erased, std::size_t bytes_per_frame, std::size_t page_size)
+{
+    std::vector<BufferedPageKey> removed;
+    erased.for_each_signed_order_segment([&](GlobalIndexRange segment) {
+        auto const begin = buffered_byte_address(segment.begin, bytes_per_frame);
+        auto const end = begin + static_cast<BufferedByteAddress>(segment.extent) * bytes_per_frame;
+        auto const first = buffered_page_key(begin, page_size), last = buffered_page_key(end - 1, page_size);
+        auto visit = [&](auto&& self, std::shared_ptr<BufferedPageNode const> const& node) -> void {
+            if (!node) return;
+            if (first < node->key) self(self, node->left);
+            if (first <= node->key && node->key <= last) {
+                bool valid = false;
+                for (auto const range : retained) range.for_each_signed_order_segment([&](GlobalIndexRange part) {
+                    auto const a = buffered_byte_address(part.begin, bytes_per_frame);
+                    auto const b = a + static_cast<BufferedByteAddress>(part.extent) * bytes_per_frame;
+                    if (buffered_page_key(a, page_size) <= node->key && node->key <= buffered_page_key(b - 1, page_size)) valid = true;
+                });
+                if (!valid) removed.push_back(node->key);
+            }
+            if (node->key < last) self(self, node->right);
+        };
+        visit(visit, pages);
+    });
+    for (auto const key : removed) {
+        pages = erase_buffered_page(pages, key);
+        runs = replace_buffered_page_run(runs, key, std::nullopt, page_size);
+    }
+}
+
 void write_recording_region(
-    std::shared_ptr<RecordingPageNode const>& root,
-    std::shared_ptr<RecordingPageRunNode const>& runs,
-    RecordingPageAllocator& allocator,
+    std::shared_ptr<BufferedPageNode const>& root,
+    std::shared_ptr<BufferedPageRunNode const>& runs,
+    BufferedPageAllocator& allocator,
     PersistedSampleRegion const& record)
 {
     assert(record.layout.sample_layout == SampleStreamLayout::interleaved);
-    auto const bytes_per_frame = recording_bytes_per_frame(
+    auto const bytes_per_frame = buffered_bytes_per_frame(
         record.layout, record.geometry);
     auto const page_size = allocator.page_size();
     record.range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
@@ -1163,24 +1136,24 @@ void write_recording_region(
             source_frame, bytes_per_frame);
         auto remaining = checked_product(segment_frames, bytes_per_frame);
         auto const* source = record.storage_data() + source_offset;
-        auto address = recording_byte_address(
+        auto address = buffered_byte_address(
             segment.begin, bytes_per_frame);
         while (remaining != 0) {
-            auto const key = recording_page_key(address, page_size);
+            auto const key = buffered_page_key(address, page_size);
             auto const in_page = static_cast<std::size_t>(address % page_size);
             auto const count = std::min(remaining, page_size - in_page);
             std::vector<std::byte> contents(page_size);
-            if (auto const* previous = find_recording_page(root, key)) {
+            bool unchanged = false;
+            if (auto const* previous = find_buffered_page(root, key)) {
                 allocator.read(*previous, contents);
+                unchanged = std::memcmp(contents.data() + in_page, source, count) == 0;
             }
-            std::memcpy(contents.data() + in_page, source, count);
-            auto page = allocator.allocate(contents);
-            runs = replace_recording_page_run(
-                std::move(runs),
-                key,
-                page->file_offset,
-                page_size);
-            root = put_recording_page(root, key, std::move(page));
+            if (!unchanged) {
+                std::memcpy(contents.data() + in_page, source, count);
+                auto page = allocator.allocate(contents);
+                runs = replace_buffered_page_run(std::move(runs), key, page->file_offset, page_size);
+                root = put_buffered_page(root, key, std::move(page));
+            }
             source += count;
             remaining -= count;
             address += count;
@@ -1188,59 +1161,158 @@ void write_recording_region(
     });
 }
 
-class RecordingRegionMapping {
+class BufferedRegionMapping {
     void* mapping_ = nullptr;
     std::size_t mapping_size_ = 0;
 
 public:
-    std::shared_ptr<RecordingPageAllocator> allocator{};
-    std::shared_ptr<RecordingPageRunNode const> runs{};
+    std::shared_ptr<BufferedPageAllocator> allocator{};
+    std::shared_ptr<void> accounting{};
+    std::vector<std::shared_ptr<void const>> page_pins{};
 
-    RecordingRegionMapping(
+    BufferedRegionMapping(
         void* mapping,
         std::size_t mapping_size,
-        std::shared_ptr<RecordingPageAllocator> allocator_value,
-        std::shared_ptr<RecordingPageRunNode const> runs_value) noexcept
+        std::shared_ptr<BufferedPageAllocator> allocator_value,
+        std::shared_ptr<void> charge,
+        std::vector<std::shared_ptr<void const>> pins) noexcept
         : mapping_(mapping)
         , mapping_size_(mapping_size)
         , allocator(std::move(allocator_value))
-        , runs(std::move(runs_value))
+        , accounting(std::move(charge))
+        , page_pins(std::move(pins))
     {}
 
-    ~RecordingRegionMapping()
+    ~BufferedRegionMapping()
     {
 #if defined(__linux__)
         if (mapping_) ::munmap(mapping_, mapping_size_);
 #endif
     }
 
-    RecordingRegionMapping(RecordingRegionMapping const&) = delete;
-    RecordingRegionMapping& operator=(RecordingRegionMapping const&) = delete;
+    BufferedRegionMapping(BufferedRegionMapping const&) = delete;
+    BufferedRegionMapping& operator=(BufferedRegionMapping const&) = delete;
 };
 
-[[nodiscard]] PersistedSampleRegion map_recording_region(
+[[nodiscard]] std::shared_ptr<BufferedPageNode const> retain_page_range(
+    std::shared_ptr<BufferedPageNode const> const& root, BufferedPageKey first, BufferedPageKey last,
+    bool lower = true, bool upper = true)
+{
+    if (!root) return {};
+    if (!lower && !upper) return root;
+    if (lower && root->key < first) return retain_page_range(root->right, first, last, true, upper);
+    if (upper && last < root->key) return retain_page_range(root->left, first, last, lower, true);
+    auto left = retain_page_range(root->left, first, last, lower, false);
+    auto right = retain_page_range(root->right, first, last, false, upper);
+    if (left == root->left && right == root->right) return root;
+    // This immutable view index is never used as an insertion tree.
+    return make_buffered_page_node(root->key, root->page, std::move(left), std::move(right));
+}
+
+[[nodiscard]] bool same_buffered_runs(BufferedPageRunNode const* old_runs,
+    std::shared_ptr<BufferedPageRunNode const> const& next_runs, BufferedPageKey first,
+    std::size_t count, std::size_t page_size)
+{
+    // Both indexes are immutable. Compare physical runs, never walk each page.
+    auto old = [&](BufferedPageKey key) -> BufferedPageRun const* {
+        BufferedPageRun const* found = nullptr;
+        auto* node = old_runs;
+        while (node) {
+            if (key < node->run.first) node = node->left.get();
+            else { found = &node->run; node = node->right.get(); }
+        }
+        return found && buffered_page_number(key) - buffered_page_number(found->first) < found->page_count ? found : nullptr;
+    };
+    while (count) {
+        auto const* before = old(first);
+        auto const* after = find_buffered_page_run(next_runs, first);
+        if (!before || !after) return false;
+        auto const a = static_cast<std::size_t>(buffered_page_number(first) - buffered_page_number(before->first));
+        auto const b = static_cast<std::size_t>(buffered_page_number(first) - buffered_page_number(after->first));
+        if (before->file_offset + a * page_size != after->file_offset + b * page_size) return false;
+        auto const common = std::min({count, before->page_count - a, after->page_count - b});
+        first = add_buffered_pages(first, common);
+        count -= common;
+    }
+    return true;
+}
+
+// Pin fully enclosed subtrees in one operation and visit only the two boundary
+// paths. A small mapped window must not retain every page of its old output.
+void pin_buffered_pages(std::shared_ptr<BufferedPageNode const> const& root,
+    BufferedPageKey first, BufferedPageKey last,
+    std::vector<std::shared_ptr<void const>>& pins, bool lower = true, bool upper = true)
+{
+    if (!root) return;
+    if (!lower && !upper) { pins.push_back(root); return; }
+    if (lower && root->key < first) {
+        pin_buffered_pages(root->right, first, last, pins, true, upper);
+        return;
+    }
+    if (upper && last < root->key) {
+        pin_buffered_pages(root->left, first, last, pins, lower, true);
+        return;
+    }
+    pins.push_back(root->page);
+    pin_buffered_pages(root->left, first, last, pins, lower, false);
+    pin_buffered_pages(root->right, first, last, pins, false, upper);
+}
+
+[[nodiscard]] PersistedSampleRegion map_buffered_region(
     PersistedOutputHandle output,
     GlobalIndexRange range,
     ChannelLayout layout,
     ContinuousValueStorageGeometry geometry,
-    std::shared_ptr<RecordingPageAllocator> const& allocator,
-    std::shared_ptr<RecordingPageRunNode const> const& runs)
+    std::shared_ptr<BufferedPageAllocator> const& allocator,
+    std::shared_ptr<BufferedPageRunNode const> const& runs,
+    std::shared_ptr<BufferedPageNode const> const& pages,
+    bool retain_backing = false,
+    std::optional<BufferedByteAddress> byte_begin = {},
+    std::vector<std::shared_ptr<void const>> extra_pins = {})
 {
-    assert(layout.sample_layout == SampleStreamLayout::interleaved);
-    auto const bytes_per_frame = recording_bytes_per_frame(layout, geometry);
+    auto const bytes_per_frame = buffered_bytes_per_frame(layout, geometry);
     auto const bytes = checked_product(
         checked_frame_count(range), bytes_per_frame);
     auto const page_size = allocator->page_size();
-    auto const address = recording_byte_address(range.begin, bytes_per_frame);
+    auto const address = byte_begin.value_or(buffered_byte_address(range.begin, bytes_per_frame));
     auto const in_page = static_cast<std::size_t>(address % page_size);
     if (bytes > std::numeric_limits<std::size_t>::max() - in_page) {
-        throw std::length_error("recording Region mapping is too large");
+        throw std::length_error("buffered Region mapping is too large");
     }
     auto const occupied = in_page + bytes;
     auto const page_count = occupied / page_size
         + static_cast<std::size_t>(occupied % page_size != 0);
     auto const mapping_size = checked_product(page_count, page_size);
+    if (mapping_size > allocator->limits().max_contiguous_mapping_bytes)
+        throw std::length_error("buffered contiguous view requires " + std::to_string(mapping_size)
+            + " bytes; limit " + std::to_string(allocator->limits().max_contiguous_mapping_bytes));
 #if defined(__linux__)
+    auto const first_key = buffered_page_key(address, page_size);
+    std::vector<BufferedPageRun> selected_runs;
+    for (std::size_t mapped_pages = 0; mapped_pages < page_count;) {
+        auto const key = add_buffered_pages(first_key, mapped_pages);
+        auto const* run = find_buffered_page_run(runs, key);
+        if (!run) throw std::logic_error("buffered coverage references an unallocated page");
+        auto const offset = static_cast<std::size_t>(buffered_page_number(key) - buffered_page_number(run->first));
+        auto const count = std::min(page_count - mapped_pages, run->page_count - offset);
+        selected_runs.push_back({.first = key, .page_count = count,
+            .file_offset = run->file_offset + offset * page_size});
+        if (selected_runs.size() > allocator->limits().max_mapping_runs)
+            throw std::length_error("buffered view mapping-run limit exceeded");
+        mapped_pages += count;
+    }
+    auto backing = retain_backing ? std::make_shared<BufferedSampleBacking>(BufferedSampleBacking{
+        .allocator = allocator, .pages = retain_page_range(pages, first_key, add_buffered_pages(first_key, page_count - 1)),
+        .runs = runs, .origin = range.begin, .byte_begin = address,
+        .plane_stride_bytes = layout.sample_layout == SampleStreamLayout::planar
+            ? static_cast<BufferedByteAddress>(range.extent) * geometry.value_size_bytes : 0}) : nullptr;
+    auto pins = std::move(extra_pins);
+    pin_buffered_pages(pages, first_key, add_buffered_pages(first_key, page_count - 1), pins);
+    allocator->reserve_mapping(mapping_size, selected_runs.size());
+    // Shared ownership also makes exceptional paths release the mapping charge.
+    auto charge = std::shared_ptr<void>(nullptr, [allocator, mapping_size, count = selected_runs.size()](void*) noexcept {
+        allocator->release_mapping(mapping_size, count);
+    });
     auto* mapping = ::mmap(
         nullptr,
         mapping_size,
@@ -1250,48 +1322,31 @@ public:
         0);
     if (mapping == MAP_FAILED) {
         throw std::system_error(
-            errno, std::generic_category(), "cannot reserve a recording Region mapping");
+            errno, std::generic_category(), "cannot reserve a buffered Region mapping");
     }
-    auto const first_key = recording_page_key(address, page_size);
+    auto unmap = [mapping_size](void* address) noexcept { ::munmap(address, mapping_size); };
+    std::unique_ptr<void, decltype(unmap)> mapping_guard{mapping, unmap};
     std::size_t mapped_pages = 0;
-    try {
-        while (mapped_pages != page_count) {
-            auto const key = add_recording_pages(first_key, mapped_pages);
-            auto const* run = find_recording_page_run(runs, key);
-            if (!run) {
-                throw std::logic_error(
-                    "recording coverage references an unallocated page");
-            }
-            auto const run_offset_number = recording_page_number(key)
-                - recording_page_number(run->first);
-            auto const run_offset = static_cast<std::size_t>(
-                run_offset_number);
-            assert(run_offset < run->page_count);
-            auto const run_pages = std::min(
-                page_count - mapped_pages,
-                run->page_count - run_offset);
-            auto const run_size = checked_product(run_pages, page_size);
-            auto* const target = static_cast<std::byte*>(mapping)
-                + mapped_pages * page_size;
-            if (::mmap(
-                    target,
-                    run_size,
-                    PROT_READ,
-                    MAP_SHARED | MAP_FIXED,
-                    allocator->file(),
-                    static_cast<off_t>(run->file_offset
-                        + run_offset * page_size)) == MAP_FAILED) {
-                throw std::system_error(
-                    errno, std::generic_category(), "cannot map recording Region pages");
-            }
-            mapped_pages += run_pages;
+    for (auto const& run : selected_runs) {
+        auto const run_pages = run.page_count;
+        auto const run_size = checked_product(run_pages, page_size);
+        auto* const target = static_cast<std::byte*>(mapping)
+            + mapped_pages * page_size;
+        if (::mmap(
+                target,
+                run_size,
+                PROT_READ,
+                MAP_SHARED | MAP_FIXED,
+                allocator->file(),
+                static_cast<off_t>(run.file_offset)) == MAP_FAILED) {
+            throw std::system_error(
+                errno, std::generic_category(), "cannot map buffered Region pages");
         }
-    } catch (...) {
-        ::munmap(mapping, mapping_size);
-        throw;
+        mapped_pages += run_pages;
     }
-    auto owner = std::make_shared<RecordingRegionMapping const>(
-        mapping, mapping_size, allocator, runs);
+    auto owner = std::make_shared<BufferedRegionMapping const>(
+        mapping, mapping_size, allocator, std::move(charge), std::move(pins));
+    (void)mapping_guard.release();
     return PersistedSampleRegion{
         .output = output,
         .range = range,
@@ -1302,12 +1357,16 @@ public:
             static_cast<std::byte const*>(mapping) + in_page,
             bytes,
             geometry.element_alignment),
+        .buffered_backing = std::move(backing),
     };
 #else
     (void)output;
     (void)runs;
+    (void)pages;
+    (void)retain_backing;
+    (void)extra_pins;
     throw std::runtime_error(
-        "persisted Tick continuous recording requires Linux virtual memory");
+        "buffered sample storage requires Linux virtual memory");
 #endif
 }
 
@@ -1317,17 +1376,407 @@ make_recording_regions(
     IndexCoverage const& coverage,
     ChannelLayout layout,
     ContinuousValueStorageGeometry geometry,
-    std::shared_ptr<RecordingPageAllocator> const& allocator,
-    std::shared_ptr<RecordingPageRunNode const> const& runs)
+    std::shared_ptr<BufferedPageAllocator> const& allocator,
+    std::shared_ptr<BufferedPageRunNode const> const& runs,
+    std::shared_ptr<BufferedPageNode const> const& pages,
+    std::shared_ptr<std::vector<PersistedSampleRegion> const> const& previous = {})
 {
     auto regions = std::make_shared<std::vector<PersistedSampleRegion>>();
     regions->reserve(coverage.size());
     for (auto const range : coverage) {
-        regions->push_back(map_recording_region(
-            output, range, layout, geometry, allocator, runs));
+        PersistedSampleRegion logical{.output = output, .range = range, .layout = layout, .geometry = geometry};
+        auto const frame_bytes = buffered_bytes_per_frame(layout, geometry);
+        auto const page_size = allocator->page_size();
+        auto const preferred = std::min<std::size_t>(allocator->limits().max_contiguous_mapping_bytes, 1024 * 1024)
+            / page_size * page_size;
+        std::vector<PersistedSampleRegion> windows;
+        auto begin = range.begin;
+        auto remaining = range.extent;
+        while (remaining) {
+            auto const address = buffered_byte_address(begin, frame_bytes);
+            auto const offset = static_cast<std::size_t>(address % page_size);
+            auto const frames = preferred > offset ? (preferred - offset) / frame_bytes : 0;
+            if (!frames) throw std::length_error("buffered view limit cannot fit one aligned frame");
+            GlobalIndexRange part{begin, std::min<std::uint64_t>(remaining, frames)};
+            PersistedSampleRegion const* reusable = nullptr;
+            if (previous) for (auto const& old_region : *previous) {
+                auto const* window = old_region.prepared_window(part.begin);
+                if (!window || window->range != part || !window->buffered_backing) continue;
+                auto const bytes = checked_product(static_cast<std::size_t>(part.extent), frame_bytes);
+                auto const count = (offset + bytes + page_size - 1) / page_size;
+                if (same_buffered_runs(window->buffered_backing->runs.get(), runs,
+                    buffered_page_key(address, page_size), count, page_size)) reusable = window;
+                break;
+            }
+            windows.push_back(reusable ? *reusable
+                : map_buffered_region(output, part, layout, geometry, allocator, runs, pages, true));
+            begin = begin.advanced_by(part.extent);
+            remaining -= part.extent;
+        }
+        if (windows.size() == 1) logical = std::move(windows.front());
+        else {
+            logical.set_prepared_windows(std::move(windows));
+            logical.buffered_backing = std::make_shared<BufferedSampleBacking>(BufferedSampleBacking{
+                .allocator = allocator, .pages = pages, .runs = runs, .origin = range.begin,
+                .byte_begin = buffered_byte_address(range.begin, frame_bytes)});
+        }
+        regions->push_back(std::move(logical));
     }
     return std::shared_ptr<std::vector<PersistedSampleRegion> const>{
         std::move(regions)};
+}
+
+// Native byte intervals in a logical Region's stable page directory.
+using BufferedByteSpan = std::pair<BufferedByteAddress, std::size_t>;
+std::vector<BufferedByteSpan> buffered_byte_spans(BufferedSampleBacking const& backing,
+    ChannelLayout layout, ContinuousValueStorageGeometry geometry, GlobalIndexRange range)
+{
+    auto const offset = static_cast<BufferedByteAddress>(backing.origin.forward_distance_to(range.begin));
+    if (layout.sample_layout != SampleStreamLayout::planar || channel_count(layout) == 1)
+        return {{backing.byte_begin + offset * buffered_bytes_per_frame(layout, geometry),
+            checked_product(checked_frame_count(range), buffered_bytes_per_frame(layout, geometry))}};
+    std::vector<BufferedByteSpan> result;
+    for (std::size_t channel = 0; channel < channel_count(layout); ++channel)
+        result.emplace_back(backing.byte_begin + channel * backing.plane_stride_bytes + offset * geometry.value_size_bytes,
+            checked_product(checked_frame_count(range), geometry.value_size_bytes));
+    return result;
+}
+
+// These trimmed read indexes never enter the mutable AVL directory.
+std::shared_ptr<BufferedPageNode const> remove_first_view_page(std::shared_ptr<BufferedPageNode const> const& root)
+{
+    if (!root->left) return root->right;
+    return make_buffered_page_node(root->key, root->page, remove_first_view_page(root->left), root->right);
+}
+std::shared_ptr<BufferedPageNode const> join_page_views(std::shared_ptr<BufferedPageNode const> left,
+    std::shared_ptr<BufferedPageNode const> right)
+{
+    if (!left) return right;
+    if (!right) return left;
+    auto first = right;
+    while (first->left) first = first->left;
+    return make_buffered_page_node(first->key, first->page, std::move(left), remove_first_view_page(right));
+}
+std::shared_ptr<BufferedSampleBacking const> select_buffered_backing(BufferedSampleBacking const& backing,
+    std::span<BufferedByteSpan const> spans)
+{
+    auto selected = std::make_shared<BufferedSampleBacking>(backing);
+    std::vector<std::pair<BufferedPageKey, BufferedPageKey>> intervals;
+    auto const page_size = backing.allocator->page_size();
+    for (auto [begin, bytes] : spans) {
+        auto const first = buffered_page_key(begin, page_size), last = buffered_page_key(begin + bytes - 1, page_size);
+        if (!intervals.empty() && first <= add_buffered_pages(intervals.back().second, 1))
+            intervals.back().second = std::max(intervals.back().second, last);
+        else intervals.emplace_back(first, last);
+    }
+    selected->pages = {};
+    for (auto [first, last] : intervals)
+        selected->pages = join_page_views(selected->pages, retain_page_range(backing.pages, first, last));
+    return selected;
+}
+
+void read_buffered_bytes(BufferedSampleBacking const& backing, BufferedByteAddress address,
+    std::span<std::byte> destination, std::vector<std::byte>& scratch)
+{
+    auto const page_size = backing.allocator->page_size();
+    while (!destination.empty()) {
+        auto const* page = find_buffered_page(backing.pages, buffered_page_key(address, page_size));
+        if (!page) throw std::logic_error("buffered valid contents have no backing page");
+        backing.allocator->read(*page, scratch);
+        auto const offset = static_cast<std::size_t>(address % page_size);
+        auto const count = std::min(destination.size(), page_size - offset);
+        std::memcpy(destination.data(), scratch.data() + offset, count);
+        destination = destination.subspan(count);
+        address += count;
+    }
+}
+
+[[nodiscard]] PersistedSampleRegion map_buffered_slice(PersistedSampleRegion const& source, GlobalIndexRange range)
+{
+    auto const& backing = *source.buffered_backing;
+    auto const spans = buffered_byte_spans(backing, source.layout, source.geometry, range);
+    auto selected = select_buffered_backing(backing, spans);
+    if (spans.size() == 1) {
+        auto result = map_buffered_region(source.output, range, source.layout, source.geometry,
+            backing.allocator, backing.runs, backing.pages, false, spans.front().first);
+        result.buffered_backing = std::move(selected);
+        return result;
+    }
+    auto const bytes = checked_product(checked_frame_count(range), buffered_bytes_per_frame(source.layout, source.geometry));
+    auto const page_size = backing.allocator->page_size();
+    auto const first_offset = static_cast<std::size_t>(spans.front().first % page_size);
+    auto const limit = backing.allocator->limits().max_contiguous_mapping_bytes;
+    if (bytes > limit) throw std::length_error("buffered planar view exceeds the contiguous view limit");
+    bool direct = first_offset <= limit - bytes
+        && (first_offset + bytes) / page_size + ((first_offset + bytes) % page_size != 0) <= limit / page_size;
+    std::shared_ptr<BufferedPageRunNode const> view_runs;
+    auto destination = first_offset;
+    for (auto [address, count_bytes] : spans) {
+        if (!direct) break;
+        if (destination % page_size != address % page_size) { direct = false; break; }
+        auto const first = buffered_page_key(address, page_size);
+        auto const target = buffered_page_key(destination, page_size);
+        auto const occupied = static_cast<std::size_t>(address % page_size) + count_bytes;
+        auto const count = occupied / page_size + (occupied % page_size != 0);
+        for (std::size_t done = 0; done < count;) {
+            auto const key = add_buffered_pages(first, done);
+            auto const* run = find_buffered_page_run(backing.runs, key);
+            if (!run) throw std::logic_error("buffered planar view has no source run");
+            auto const offset = static_cast<std::size_t>(buffered_page_number(key) - buffered_page_number(run->first));
+            auto const pages = std::min(count - done, run->page_count - offset);
+            auto const file_offset = run->file_offset + offset * page_size;
+            auto const destination_key = add_buffered_pages(target, done);
+            if (auto const* existing = find_buffered_page_run(view_runs, destination_key)) {
+                auto const existing_offset = static_cast<std::size_t>(buffered_page_number(destination_key)
+                    - buffered_page_number(existing->first));
+                if (existing->file_offset + existing_offset * page_size != file_offset) { direct = false; break; }
+                done += std::min(pages, existing->page_count - existing_offset);
+            } else {
+                view_runs = put_coalesced_buffered_page_run(view_runs,
+                    {.first = destination_key, .page_count = pages, .file_offset = file_offset}, page_size);
+                done += pages;
+            }
+        }
+        destination += count_bytes;
+    }
+    if (direct) {
+        auto result = map_buffered_region(source.output, range, source.layout, source.geometry,
+            backing.allocator, view_runs, {}, false, BufferedByteAddress{first_offset}, {selected});
+        result.buffered_backing = std::move(selected);
+        return result;
+    }
+    // A native planar view may pack two partial planes into one page although
+    // their source pages differ. Only that bounded prepared view is repacked;
+    // canonical ownership remains the Region's shared page directory.
+    PersistedSampleRegion packed{.output = source.output, .range = range, .layout = source.layout,
+        .geometry = source.geometry, .continuous_values = PersistedContinuousStorage{bytes, source.geometry.element_alignment}};
+    std::vector<std::byte> scratch(page_size);
+    std::size_t cursor = 0;
+    for (auto [address, count] : spans) {
+        read_buffered_bytes(backing, address, {packed.storage_data() + cursor, count}, scratch);
+        cursor += count;
+    }
+    auto result = page_backed_region(std::move(packed), backing.allocator);
+    result.buffered_backing = std::move(selected);
+    return result;
+}
+
+[[nodiscard]] PersistedSampleRegion page_backed_region(PersistedSampleRegion window,
+    std::shared_ptr<BufferedPageAllocator> const& allocator)
+{
+    if (window.buffered_backing) return window;
+    auto const page_size = allocator->page_size();
+    BufferedByteAddress address = 0;
+    auto remaining = window.storage_size_bytes();
+    auto const* data = window.storage_data();
+    auto const offset = static_cast<std::size_t>(address % page_size);
+    auto const limit = allocator->limits().max_contiguous_mapping_bytes;
+    if (offset > limit || remaining > limit - offset
+        || (offset + remaining) / page_size + ((offset + remaining) % page_size != 0) > limit / page_size)
+        throw std::length_error("buffered payload exceeds the contiguous view limit");
+    std::shared_ptr<BufferedPageNode const> pages;
+    std::shared_ptr<BufferedPageRunNode const> runs;
+    // Private backing only for a bounded native-layout repack. Canonical Tock
+    // contents are owned by replace_tock_region()'s independent directory.
+    std::vector<std::byte> contents(page_size);
+    while (remaining) {
+        auto const key = buffered_page_key(address, page_size);
+        auto const in_page = static_cast<std::size_t>(address % page_size);
+        auto const count = std::min(remaining, page_size - in_page);
+        std::fill(contents.begin(), contents.end(), std::byte{});
+        std::memcpy(contents.data() + in_page, data, count);
+        auto page = allocator->allocate(contents);
+        runs = put_coalesced_buffered_page_run(runs,
+            {.first = key, .page_count = 1, .file_offset = page->file_offset}, page_size);
+        pages = put_buffered_page(pages, key, std::move(page));
+        data += count;
+        address += count;
+        remaining -= count;
+    }
+    return map_buffered_region(window.output, window.range, window.layout, window.geometry, allocator, runs, pages, true, BufferedByteAddress{0});
+}
+
+using BufferedPageInterval = std::pair<BufferedPageKey, BufferedPageKey>;
+std::vector<BufferedPageInterval> valid_page_intervals(BufferedSampleBacking const& backing,
+    ChannelLayout layout, ContinuousValueStorageGeometry geometry, IndexCoverage const& valid)
+{
+    std::vector<BufferedPageInterval> intervals;
+    auto const page_size = backing.allocator->page_size();
+    for (auto range : valid) for (auto [address, bytes] : buffered_byte_spans(backing, layout, geometry, range))
+        intervals.emplace_back(buffered_page_key(address, page_size), buffered_page_key(address + bytes - 1, page_size));
+    std::ranges::sort(intervals);
+    std::vector<BufferedPageInterval> merged;
+    for (auto interval : intervals) {
+        if (!merged.empty() && interval.first <= add_buffered_pages(merged.back().second, 1))
+            merged.back().second = std::max(merged.back().second, interval.second);
+        else merged.push_back(interval);
+    }
+    return merged;
+}
+void prune_tock_pages(BufferedSampleBacking& backing, ChannelLayout layout,
+    ContinuousValueStorageGeometry geometry, IndexCoverage const& touched, IndexCoverage const& valid)
+{
+    if (valid.empty()) { backing.pages = {}; backing.runs = {}; return; }
+    auto const kept = valid_page_intervals(backing, layout, geometry, valid);
+    std::vector<BufferedPageKey> removed;
+    for (auto [first, last] : valid_page_intervals(backing, layout, geometry, touched)) {
+        auto visit = [&](auto&& self, std::shared_ptr<BufferedPageNode const> const& node) -> void {
+            if (!node) return;
+            if (first < node->key) self(self, node->left);
+            if (first <= node->key && node->key <= last) {
+                auto after = std::upper_bound(kept.begin(), kept.end(), node->key,
+                    [](auto key, auto interval) { return key < interval.first; });
+                if (after == kept.begin() || std::prev(after)->second < node->key) removed.push_back(node->key);
+            }
+            if (node->key < last) self(self, node->right);
+        };
+        visit(visit, backing.pages);
+    }
+    for (auto key : removed) {
+        backing.pages = erase_buffered_page(backing.pages, key);
+        backing.runs = replace_buffered_page_run(backing.runs, key, std::nullopt, backing.allocator->page_size());
+    }
+}
+
+void write_tock_windows(BufferedSampleBacking& backing, ChannelLayout layout,
+    ContinuousValueStorageGeometry geometry, PersistedSampleRegion const* incoming)
+{
+    if (!incoming) return;
+    struct Write { BufferedByteAddress address; std::span<std::byte const> bytes; };
+    std::vector<Write> writes;
+    auto append = [&](PersistedSampleRegion const& window) {
+        std::size_t offset = 0;
+        for (auto [address, bytes] : buffered_byte_spans(backing, layout, geometry, window.range)) {
+            writes.push_back({address, {window.storage_data() + offset, bytes}});
+            offset += bytes;
+        }
+    };
+    if (incoming->windows) for (auto const& window : *incoming->windows) append(window);
+    else append(*incoming);
+    std::ranges::sort(writes, {}, &Write::address);
+    auto const page_size = backing.allocator->page_size();
+    std::vector<std::byte> contents(page_size);
+    std::optional<BufferedPageKey> pending;
+    bool changed = false;
+    auto finish = [&] {
+        if (!pending || !changed) return;
+        auto page = backing.allocator->allocate(contents);
+        backing.runs = replace_buffered_page_run(backing.runs, *pending, page->file_offset, page_size);
+        backing.pages = put_buffered_page(backing.pages, *pending, std::move(page));
+    };
+    // Sort spans, then stream one scratch page. Separate incoming windows that
+    // touch the same page receive one copy-on-write allocation, not one each.
+    for (auto write : writes) while (!write.bytes.empty()) {
+        auto const key = buffered_page_key(write.address, page_size);
+        if (!pending || *pending != key) {
+            finish();
+            pending = key;
+            auto const* old = find_buffered_page(backing.pages, key);
+            changed = !old;
+            if (old) backing.allocator->read(*old, contents);
+            else std::fill(contents.begin(), contents.end(), std::byte{});
+        }
+        auto const offset = static_cast<std::size_t>(write.address % page_size);
+        auto const count = std::min(write.bytes.size(), page_size - offset);
+        changed |= std::memcmp(contents.data() + offset, write.bytes.data(), count) != 0;
+        std::memcpy(contents.data() + offset, write.bytes.data(), count);
+        write.address += count;
+        write.bytes = write.bytes.subspan(count);
+    }
+    finish();
+}
+
+bool unchanged_tock_view(PersistedSampleRegion const& view, BufferedSampleBacking const& backing,
+    ChannelLayout layout, ContinuousValueStorageGeometry geometry)
+{
+    if (!view.buffered_backing || view.buffered_backing->logical_range != backing.logical_range) return false;
+    auto const page_size = backing.allocator->page_size();
+    for (auto [address, bytes] : buffered_byte_spans(backing, layout, geometry, view.range)) {
+        auto const occupied = static_cast<std::size_t>(address % page_size) + bytes;
+        auto const count = occupied / page_size + (occupied % page_size != 0);
+        if (!same_buffered_runs(view.buffered_backing->runs.get(), backing.runs,
+                buffered_page_key(address, page_size), count, page_size)) return false;
+    }
+    return true;
+}
+
+PersistedSampleRegion replace_tock_region(PersistedOutputHandle output, GlobalIndexRange logical,
+    ChannelLayout layout, ContinuousValueStorageGeometry geometry, IndexCoverage const& domain,
+    PersistedSampleRegion const* prior, PersistedSampleRegion const* incoming,
+    std::shared_ptr<BufferedPageAllocator> const& allocator)
+{
+    auto backing = std::make_shared<BufferedSampleBacking>();
+    if (prior) {
+        if (!prior->buffered_backing || prior->buffered_backing->logical_range != logical)
+            throw std::logic_error("authored Region lost its canonical backing directory");
+        *backing = *prior->buffered_backing;
+    } else {
+        backing->allocator = allocator;
+        backing->origin = logical.begin;
+        backing->logical_range = logical;
+        if (layout.sample_layout == SampleStreamLayout::planar && channel_count(layout) > 1) {
+            auto const plane = static_cast<BufferedByteAddress>(logical.extent) * geometry.value_size_bytes;
+            auto const page = allocator->page_size();
+            backing->plane_stride_bytes = plane * channel_count(layout) <= page ? plane
+                : (plane / page + (plane % page != 0)) * page;
+        }
+    }
+    auto const old_valid = prior ? prior->materialized_coverage() : IndexCoverage{};
+    auto valid = old_valid - domain;
+    if (incoming) valid.include(incoming->materialized_coverage());
+    write_tock_windows(*backing, layout, geometry, incoming);
+    prune_tock_pages(*backing, layout, geometry, old_valid & domain, valid);
+    if (prior && valid == old_valid && backing->pages == prior->buffered_backing->pages) return *prior;
+
+    PersistedSampleRegion result{.output = output, .range = logical, .layout = layout,
+        .geometry = geometry, .buffered_backing = backing};
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> frames;
+    for (auto range : valid) {
+        auto const offset = logical.begin.forward_distance_to(range.begin);
+        frames.emplace_back(offset, offset + range.extent);
+    }
+    std::ranges::sort(frames);
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> merged;
+    for (auto interval : frames) {
+        if (!merged.empty() && interval.first == merged.back().second) merged.back().second = interval.second;
+        else merged.push_back(interval);
+    }
+    auto const page = allocator->page_size();
+    auto const preferred = std::min<std::size_t>(allocator->limits().max_contiguous_mapping_bytes, 1024 * 1024) / page * page;
+    auto const frame_bytes = buffered_bytes_per_frame(layout, geometry);
+    auto chunk_frames = preferred / frame_bytes;
+    if (!chunk_frames && !valid.empty()) throw std::length_error("buffered view limit cannot fit one frame");
+    auto const step = page / std::gcd(page, layout.sample_layout == SampleStreamLayout::planar
+        ? geometry.value_size_bytes : frame_bytes);
+    if (chunk_frames >= step) chunk_frames = chunk_frames / step * step;
+    struct PriorView {
+        std::pair<std::uint64_t, std::uint64_t> key;
+        PersistedSampleRegion const* view;
+    };
+    std::vector<PriorView> prior_views;
+    if (prior) {
+        auto remember = [&](PersistedSampleRegion const& view) {
+            prior_views.push_back({{logical.begin.forward_distance_to(view.range.begin), view.range.extent}, &view});
+        };
+        if (prior->windows) for (auto const& view : *prior->windows) remember(view);
+        else remember(*prior);
+        std::ranges::sort(prior_views, {}, &PriorView::key);
+    }
+    std::vector<PersistedSampleRegion> windows;
+    for (auto [begin, end] : merged) while (begin < end) {
+        auto const count = std::min<std::uint64_t>(end - begin, chunk_frames - begin % chunk_frames);
+        GlobalIndexRange range{logical.begin.advanced_by(begin), count};
+        std::pair<std::uint64_t, std::uint64_t> const key{begin, count};
+        auto const cached = std::ranges::lower_bound(prior_views, key, {}, &PriorView::key);
+        auto const* old = cached != prior_views.end() && cached->key == key ? cached->view : nullptr;
+        if (old && unchanged_tock_view(*old, *backing, layout, geometry)) windows.push_back(*old);
+        else windows.push_back(map_buffered_slice(result, range));
+        begin += count;
+    }
+    if (windows.size() == 1 && windows.front().range == logical) result = std::move(windows.front());
+    else result.set_prepared_windows(std::move(windows));
+    result.buffered_backing = std::move(backing);
+    return result;
 }
 
 [[nodiscard]] std::shared_ptr<
@@ -1678,6 +2127,53 @@ void PersistedSampleRegion::set_prepared_windows(std::vector<PersistedSampleRegi
         .storage = const_cast<std::byte*>(window.storage_data()),
         .range = window.range, .geometry = window.geometry, .channel_layout = window.layout});
     window_views = std::move(views);
+}
+
+PersistedSampleRegion PersistedSampleRegion::contiguous_view() const
+{
+    if (storage_data()) return *this;
+    if (!materialized_coverage().contains(range))
+        throw std::runtime_error("complete buffered Region contains unprepared positions");
+    if (buffered_backing) return map_buffered_slice(*this, range);
+    if (!windows || windows->empty() || !windows->front().buffered_backing)
+        throw std::runtime_error("complete buffered Region has no backing owner");
+    auto const allocator = windows->front().buffered_backing->allocator;
+    auto const frames = checked_frame_count(range);
+    auto const channels = channel_count(layout);
+    auto const bytes = checked_product(checked_product(frames, channels), geometry.value_size_bytes);
+    if (bytes > allocator->limits().max_contiguous_mapping_bytes)
+        throw std::length_error("complete buffered Region requires " + std::to_string(bytes)
+            + " bytes; contiguous limit " + std::to_string(allocator->limits().max_contiguous_mapping_bytes));
+    PersistedSampleRegion contiguous{.output = output, .range = range, .layout = layout, .geometry = geometry,
+        .continuous_values = PersistedContinuousStorage{bytes, geometry.element_alignment}};
+    for (auto const& window : *windows) {
+        auto const offset = static_cast<std::size_t>(range.begin.forward_distance_to(window.range.begin));
+        auto const count = checked_frame_count(window.range);
+        if (layout.sample_layout == SampleStreamLayout::interleaved)
+            std::memcpy(contiguous.storage_data() + offset * channels * geometry.value_size_bytes,
+                window.storage_data(), count * channels * geometry.value_size_bytes);
+        else for (std::size_t channel = 0; channel < channels; ++channel)
+            std::memcpy(contiguous.storage_data() + (channel * frames + offset) * geometry.value_size_bytes,
+                window.storage_data() + channel * count * geometry.value_size_bytes, count * geometry.value_size_bytes);
+    }
+    return page_backed_region(std::move(contiguous), allocator);
+}
+
+PersistedSampleRegion PersistedSampleRegion::selected_view(GlobalIndexRange selected) const
+{
+    if (selected.empty() || !range.contains(selected))
+        throw std::invalid_argument("buffered selected view lies outside its Region");
+    if (windows) {
+        std::vector<PersistedSampleRegion> prepared;
+        for (auto const& window : *windows)
+            for (auto const part : IndexCoverage{window.range} & IndexCoverage{selected})
+                prepared.push_back(window.selected_view(part));
+        PersistedSampleRegion result{.output = output, .range = selected, .layout = layout, .geometry = geometry};
+        result.set_prepared_windows(std::move(prepared));
+        return result;
+    }
+    if (selected == range) return *this;
+    return slice(*this, selected);
 }
 
 IndexCoverage PersistedSampleRegion::materialized_coverage() const
@@ -2315,13 +2811,11 @@ void PersistedDataStore::Candidate::overwrite(PersistedSampleRegion record)
             "persisted sample output cannot mix authored Regions with positional recording");
     }
 
-    auto allocator = current && current->recording_allocator
-        ? current->recording_allocator
-        : std::make_shared<RecordingPageAllocator>();
-    auto pages = current ? current->recording_pages
-                         : std::shared_ptr<RecordingPageNode const>{};
+    auto allocator = store_->buffered_pages_;
+    auto pages = current ? current->buffered_pages
+                         : std::shared_ptr<BufferedPageNode const>{};
     auto runs = current ? current->recording_runs
-                        : std::shared_ptr<RecordingPageRunNode const>{};
+                        : std::shared_ptr<BufferedPageRunNode const>{};
     write_recording_region(pages, runs, *allocator, record);
     auto coverage = current ? current->coverage : IndexCoverage{};
     coverage.include(record.range);
@@ -2331,7 +2825,9 @@ void PersistedDataStore::Candidate::overwrite(PersistedSampleRegion record)
         record.layout,
         record.geometry,
         allocator,
-        runs);
+        runs,
+        pages,
+        current ? current->logical_regions : nullptr);
     auto region_views = make_sample_region_views(logical_const);
 
     auto const previous_count = current ? current->region_count : 0;
@@ -2346,7 +2842,7 @@ void PersistedDataStore::Candidate::overwrite(PersistedSampleRegion record)
         .logical_regions = std::move(logical_const),
         .region_views = std::move(region_views),
         .recording_allocator = std::move(allocator),
-        .recording_pages = std::move(pages),
+        .buffered_pages = std::move(pages),
         .recording_runs = std::move(runs),
         .positional_recording = true,
         .region_count = logical_count,
@@ -2425,6 +2921,7 @@ void PersistedDataStore::Candidate::overwrite(PersistedEventChunk record)
         std::vector<PersistedEventChunk> const>{std::move(logical)};
     auto region_ranges = make_event_region_ranges(coverage);
     auto timeline = make_event_timeline(logical_const);
+    auto accounting = account_event_contents(store_->buffered_pages_, logical_const, root, timeline);
 
     auto const previous_count = current ? current->chunk_count : 0;
     successor_->event_chunk_count_ =
@@ -2439,6 +2936,7 @@ void PersistedDataStore::Candidate::overwrite(PersistedEventChunk record)
         .timeline = std::move(timeline),
         .positional_recording = true,
         .chunk_count = count,
+        .timeline_accounting = std::move(accounting),
     });
     successor_->event_outputs_ = put_output<EventOutputNode, EventOutputState>(
         successor_->event_outputs_,
@@ -2460,6 +2958,7 @@ void PersistedDataStore::Candidate::replace_sample_regions(
         throw std::invalid_argument(
             "sample Region batch requires an output handle from its data store");
     }
+    validate_sample_representation(layout, geometry);
     for (auto const& region : regions) {
         validate(region);
         if (region.output != output || region.layout != layout || region.geometry != geometry
@@ -2476,49 +2975,28 @@ void PersistedDataStore::Candidate::replace_sample_regions(
         ? current->logical_regions->size() : 0;
     std::vector<PersistedSampleRegion> next;
     std::vector<bool> used_new(regions.size(), false), used_old(previous_size, false);
-    auto share_payload = [](PersistedSampleRegion window) {
-        // One owner per immutable physical payload. Retaining a window must
-        // not retain the other (possibly replaced) windows of an old version.
-        auto owner = std::make_shared<PersistedSampleRegion const>(std::move(window));
-        return PersistedSampleRegion{.output = owner->output, .range = owner->range,
-            .layout = owner->layout, .geometry = owner->geometry,
-            .continuous_values = PersistedContinuousStorage::mapped(owner,
-                owner->storage_data(), owner->storage_size_bytes(), owner->geometry.element_alignment)};
-    };
     for (auto const expected : logical_order) {
         if (expected.empty()) throw std::invalid_argument("logical Region is empty");
-        PersistedSampleRegion merged{.output = output, .range = expected,
-            .layout = layout, .geometry = geometry};
-        std::vector<PersistedSampleRegion> windows;
-        auto append_retained = [&](PersistedSampleRegion const& prior) {
-            auto retain = [&](PersistedSampleRegion const& window) {
-                for (auto const range : IndexCoverage{window.range} - domain)
-                    if (range != window.range) windows.push_back(share_payload(slice(window, range)));
-                    else windows.push_back(window);
-            };
-            if (prior.windows) for (auto const& window : *prior.windows) retain(window);
-            else retain(prior);
-        };
+        PersistedSampleRegion const* prior = nullptr;
+        PersistedSampleRegion const* incoming = nullptr;
         if (current && current->logical_regions) {
             for (std::size_t index = 0; index < previous_size; ++index) {
-                auto const& prior = (*current->logical_regions)[index];
-                if (!used_old[index] && prior.range == expected) {
-                    used_old[index] = true; append_retained(prior); break;
+                if (!used_old[index] && (*current->logical_regions)[index].range == expected) {
+                    used_old[index] = true;
+                    prior = &(*current->logical_regions)[index];
+                    break;
                 }
             }
         }
         for (std::size_t index = 0; index < regions.size(); ++index) {
-            if (used_new[index] || regions[index].range != expected) continue;
-            used_new[index] = true;
-            if (regions[index].windows) {
-                for (auto const& window : *regions[index].windows)
-                    windows.push_back(share_payload(window));
-            } else windows.push_back(share_payload(std::move(regions[index])));
-            break;
+            if (!used_new[index] && regions[index].range == expected) {
+                used_new[index] = true;
+                incoming = &regions[index];
+                break;
+            }
         }
-        if (windows.size() == 1 && windows.front().range == expected)
-            next.push_back(std::move(windows.front()));
-        else { merged.set_prepared_windows(std::move(windows)); next.push_back(std::move(merged)); }
+        next.push_back(replace_tock_region(output, expected, layout, geometry, domain,
+            prior, incoming, store_->buffered_pages_));
     }
     if (std::ranges::contains(used_new, false))
         throw std::invalid_argument("sample windows have no published logical Region");
@@ -2651,6 +3129,7 @@ void PersistedDataStore::Candidate::replace_event_regions(
         std::move(next));
     auto region_ranges = make_event_region_ranges(logical);
     auto timeline = make_event_timeline(logical);
+    auto accounting = account_event_contents(store_->buffered_pages_, logical, root, timeline);
     successor_->event_chunk_count_ =
         successor_->event_chunk_count_ - previous_count + physical_count;
     auto state = std::make_shared<EventOutputState const>(EventOutputState{
@@ -2668,6 +3147,7 @@ void PersistedDataStore::Candidate::replace_event_regions(
         .timeline = std::move(timeline),
         .positional_recording = false,
         .chunk_count = physical_count,
+        .timeline_accounting = std::move(accounting),
     });
     successor_->event_outputs_ = put_output<EventOutputNode, EventOutputState>(
         successor_->event_outputs_,
@@ -2716,13 +3196,19 @@ void PersistedDataStore::Candidate::erase_sample(
                 output_index);
             return;
         }
+        auto pages = current->buffered_pages;
+        auto runs = current->recording_runs;
+        prune_erased_pages(pages, runs, coverage, range,
+            buffered_bytes_per_frame(layout, current->geometry), current->recording_allocator->page_size());
         auto logical = make_recording_regions(
             output,
             coverage,
             layout,
             current->geometry,
             current->recording_allocator,
-            current->recording_runs);
+            runs,
+            pages,
+            current->logical_regions);
         auto region_views = make_sample_region_views(logical);
         auto const logical_count = logical->size();
         successor_->sample_region_count_ =
@@ -2737,8 +3223,8 @@ void PersistedDataStore::Candidate::erase_sample(
                 .logical_regions = std::move(logical),
                 .region_views = std::move(region_views),
                 .recording_allocator = current->recording_allocator,
-                .recording_pages = current->recording_pages,
-                .recording_runs = current->recording_runs,
+                .buffered_pages = std::move(pages),
+                .recording_runs = std::move(runs),
                 .positional_recording = true,
                 .region_count = logical_count,
             });
@@ -2862,6 +3348,7 @@ void PersistedDataStore::Candidate::erase_events(
         ? make_event_region_ranges(coverage)
         : make_event_region_ranges(logical_const);
     auto timeline = make_event_timeline(logical_const);
+    auto accounting = account_event_contents(store_->buffered_pages_, logical_const, root, timeline);
     auto state = std::make_shared<EventOutputState const>(EventOutputState{
         .output = output,
         .coverage = std::move(coverage),
@@ -2872,6 +3359,7 @@ void PersistedDataStore::Candidate::erase_events(
         .timeline = std::move(timeline),
         .positional_recording = current->positional_recording,
         .chunk_count = count,
+        .timeline_accounting = std::move(accounting),
     });
     successor_->event_outputs_ = put_output<EventOutputNode, EventOutputState>(
         successor_->event_outputs_,
@@ -3003,8 +3491,9 @@ PersistedDataStore::ReaderPin PersistedDataStore::ReaderSlot::pin() noexcept
     return ReaderPin{*state_, store_->published_};
 }
 
-PersistedDataStore::PersistedDataStore()
-    : output_owner_token_(allocate_persisted_output_owner())
+PersistedDataStore::PersistedDataStore(BufferedStorageLimits limits)
+    : buffered_pages_(std::make_shared<BufferedPageAllocator>(limits))
+    , output_owner_token_(allocate_persisted_output_owner())
     , published_owner_([this] {
         auto snapshot = std::make_unique<Snapshot>();
         snapshot->output_owner_token_ = output_owner_token_;
@@ -3016,6 +3505,16 @@ PersistedDataStore::PersistedDataStore()
 PersistedDataStore::~PersistedDataStore()
 {
     assert(reader_slots_.empty());
+}
+
+BufferedStorageUsage PersistedDataStore::buffered_storage_usage() const
+{
+    return buffered_pages_->usage();
+}
+
+std::shared_ptr<void const> PersistedDataStore::prepare_resident(std::span<BufferedResidentRange const> ranges)
+{
+    return buffered_pages_->prepare_resident(ranges);
 }
 
 PersistedDataStore::Candidate PersistedDataStore::begin_candidate(

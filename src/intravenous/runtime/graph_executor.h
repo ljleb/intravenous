@@ -458,7 +458,8 @@ class GraphExecutor {
 public:
     explicit GraphExecutor(
         ResourceContext resources = {},
-        RealtimeProducerCapacityConfig producer_capacity = {});
+        RealtimeProducerCapacityConfig producer_capacity = {},
+        BufferedStorageLimits buffered_storage = {});
     ~GraphExecutor();
 
     GraphExecutor(GraphExecutor const&) = delete;
@@ -533,6 +534,7 @@ public:
     // and waits for the reclaimed-owner counts. A live callback pin always
     // defers its owner.
     [[nodiscard]] GraphExecutorReclaimedSnapshots reclaim_retired_snapshots();
+    [[nodiscard]] BufferedStorageUsage buffered_storage_usage() const { return persisted_data_.buffered_storage_usage(); }
 
     // Sticky failures to reserve complete realtime-produced records. In
     // particular, insufficient_reserve_capacity means at least one mandatory

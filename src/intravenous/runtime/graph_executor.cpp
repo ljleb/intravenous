@@ -1105,9 +1105,11 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
 
 GraphExecutor::GraphExecutor(
     ResourceContext resources,
-    RealtimeProducerCapacityConfig producer_capacity)
+    RealtimeProducerCapacityConfig producer_capacity,
+    BufferedStorageLimits buffered_storage)
     : resources_(std::move(resources))
     , producer_capacity_(producer_capacity)
+    , persisted_data_(buffered_storage)
     , background_executor_(*this)
 {
     measure_observation_capture_ = diagnostic_flag_enabled("IV_OBSERVATION_TIMING");
@@ -1824,6 +1826,9 @@ GraphExecutor::BackgroundExecutor::Result
 GraphExecutor::BackgroundExecutor::process_available_work_safely() noexcept
 {
     try {
+        // Retired snapshots must release obsolete pages before this pass tests
+        // physical/residency budgets. Reclamation stays on the same writer.
+        (void)owner_.reclaim_retired_snapshots_on_background();
         auto result = process_available_work();
         if (result && result->published_data)
             observation_data_version_.store(result->published_data->revision, std::memory_order_release);
@@ -2112,6 +2117,7 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
     auto& result = query.result;
     result.configured_generation = query.configured_generation;
     try {
+        (void)owner_.reclaim_retired_snapshots_on_background();
         auto* current = generation_chain_.get();
         if (!current || prepared_generation_ || !preparation_queue_.empty()
             || !current->background_initialized || current->background.has_selected_inputs()

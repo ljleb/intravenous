@@ -3634,3 +3634,72 @@ now updates ordering on priority transitions, while telemetry updates at an
 unchanged priority preserve interaction order. The existing regression covers
 focus-to-hover re-entry and now repeats interleaved same-priority updates.
 `git diff --check` only; client tests remain owner-run.
+
+### Next feature authorized: shared buffered storage (2026-11-16)
+
+The owner reports all tests pass after the knob and hint-order corrections and
+requests the next feature. The accepted order now advances to unified recording
+and Tock/buffered storage. Scope, implementation order and verification obligations
+are recorded before source changes in
+[Shared buffered-output storage implementation](./shared_buffered_storage_implementation.md).
+Further UI refinements, output gain and graph-authored snapping retain their
+recorded positions rather than entering this storage feature incidentally.
+
+### Shared buffered storage source checkpoint (2026-11-17)
+
+Recording and Tock/buffered sample publication now share page allocation,
+immutable page/view ownership, retired-offset reuse and resource accounting.
+Unused cached sample backing can be reclaimed under pressure; valid buffered
+contents remain authoritative. Event chunks share the retained-payload budget.
+Tick materialization prepares residency before publication, and background work
+reclaims retired snapshots before testing the next transaction's limits.
+
+The [implementation checkpoint and owner-run measurements](./shared_buffered_storage_implementation.md#implementation-checkpoint-2026-11-17)
+record exact source behaviour, provisional limits and remaining measurement
+questions. Regression sources and `scripts/benchmark_buffered_storage.sh` are
+ready. Only source inspection and static diff checks have been performed; owner
+builds, tests and measurements remain pending before advancing the feature order.
+
+### Shared buffered storage verification and measured friction (2026-11-17)
+
+The owner reports all tests pass and ran all eight storage benchmark cases.
+The retained backend log shows 1,089 tests with zero failures. The agent reviewed
+the generated reports without rerunning builds, tests or measurements.
+
+The [measurement and friction report](./shared_buffered_storage_implementation.md#owner-verification-and-measured-friction-2026-11-17)
+records bounded recording reuse, dense-write mapping fragmentation and Tock's
+extra backing for partial-window replacements. Shared storage is functionally
+verified for the tests run; its measured representation costs remain open.
+The proposed continuation is run-aware page reuse, followed by per-logical-Region
+Tock backing and patch measurements, before proceeding to output gain and
+graph-authored snapping. This recommendation awaits discussion; it does not
+silently replace the accepted storage or retention contracts.
+
+### Approved storage fixes implemented (2026-11-17)
+
+The owner approves both measured fixes. Ordered free-page reuse and canonical
+page backing per logical Tock Region are implemented, with immutable snapshots,
+sparse validity and independent duplicate Regions preserved. Prepared planar
+views can map shared runs directly or use bounded repacking when required.
+Regressions and the expanded storage benchmark cover the measured costs and
+their ownership boundaries. See the [approved follow-up checkpoint](./shared_buffered_storage_implementation.md#approved-follow-up-implementation-2026-11-17).
+Owner rebuilds, backend tests and fresh measurements remain pending before this
+storage follow-up is consolidated or the next feature begins.
+
+### Storage measurements reviewed; focused verification pending (2026-11-17)
+
+The owner rebuilt, reports the suite passes and supplied fresh storage results.
+All 80 benchmark rows finish with live backing equal to their payload size.
+The observed 4 MiB dense recording median with 1 MiB views falls from 6.073 ms
+to 2.239 ms; dense Tock falls from 5.390 ms to 2.092 ms. Recording mapping calls
+fall from 99,477 to 800 across 100 dense writes, and scattered Tock updates no
+longer retain the earlier redundant pages.
+
+Review also exposed the agent's test-registration mistake: the 19
+`SharedBufferedStorage` cases were compiled but added after configure-time test
+discovery, so they were absent from the passing 1,089-case CTest run. CMake now
+includes the source before discovery through `add_iv_gtest(EXTRA_SOURCES ...)`.
+The [measurement and correction checkpoint](./shared_buffered_storage_implementation.md#follow-up-measurements-and-test-registration-correction-2026-11-17)
+records the focused owner command. No benchmark rerun is needed for this
+registration correction. Run those cases before declaring the follow-up complete
+and moving to output gain. Builds, tests and measurements remain owner-run.

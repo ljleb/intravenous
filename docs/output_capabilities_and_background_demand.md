@@ -373,6 +373,13 @@ without retaining its information elsewhere; a regenerable Tock result may be
 recomputed. This difference is a property of the data's provenance, **not** a
 third authored output realization or a different page-store interface.
 
+**Initial retention policy (owner clarification, 2026-11-16):** preserve all
+valid buffered contents until invalidation. This includes Tock/buffered data;
+the callback domain alone does not guarantee reconstruction. Reclaim obsolete
+backing and prepared views now, while separating page ownership from view/cache
+ownership so valid pages can eventually be evicted when reconstruction is
+explicitly guaranteed. Adding that guarantee is deferred.
+
 ### 8.2 Bounded virtual address reservations
 
 Sparse contiguous mapping is **optional, not universal**. The background

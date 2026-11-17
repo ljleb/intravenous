@@ -25,6 +25,8 @@
 
 namespace iv {
 
+namespace persisted_data_store_detail { struct BufferedSampleBacking; }
+
 struct GenerationLocalPersistedOutputId {
     std::uint64_t generation = 0;
     graph_jit::BackgroundPortIndex port = 0;
@@ -160,10 +162,17 @@ struct PersistedSampleRegion {
     // payload window is independently bounded and shared by later snapshots.
     std::shared_ptr<std::vector<PersistedSampleRegion> const> windows{};
     std::shared_ptr<std::vector<ContinuousRegionStorageView> const> window_views{};
+    // Physical pages are independent of this Region's selected readable view.
+    // Only the page-directory subset for this payload is retained.
+    std::shared_ptr<persisted_data_store_detail::BufferedSampleBacking const> buffered_backing{};
 
     void set_prepared_windows(std::vector<PersistedSampleRegion> prepared);
     [[nodiscard]] IndexCoverage materialized_coverage() const;
     [[nodiscard]] PersistedSampleRegion const* prepared_window(GlobalIndex) const noexcept;
+    // Cold-only mapping of a completely materialized page-backed Region.
+    // Logical coverage is never broadened and all resource limits still apply.
+    [[nodiscard]] PersistedSampleRegion contiguous_view() const;
+    [[nodiscard]] PersistedSampleRegion selected_view(GlobalIndexRange selected) const;
 
     [[nodiscard]] std::byte* storage_data() noexcept;
     [[nodiscard]] std::byte const* storage_data() const noexcept;
@@ -183,6 +192,11 @@ struct PersistedEventChunk {
     EventTypeId type = EventTypeId::empty;
     std::vector<TimedEvent> events{};
     std::optional<IndexCoverage> prepared_coverage{};
+    // Accounting is attached only by the serialized background writer. A
+    // copied vector is charged separately from the immutable vector it copied.
+    mutable std::shared_ptr<void const> storage_accounting{};
+    mutable void const* accounted_storage = nullptr;
+    mutable std::size_t accounted_bytes = 0;
 
     [[nodiscard]] IndexCoverage materialized_coverage() const {
         return prepared_coverage ? *prepared_coverage : IndexCoverage{range};
@@ -191,6 +205,7 @@ struct PersistedEventChunk {
 
 namespace persisted_data_store_detail {
 
+class BufferedPageAllocator;
 struct SampleOutputState;
 struct EventOutputState;
 template<typename State>
@@ -199,6 +214,37 @@ using SampleOutputNode = OutputDirectoryNode<SampleOutputState>;
 using EventOutputNode = OutputDirectoryNode<EventOutputState>;
 
 } // namespace persisted_data_store_detail
+
+// Executor resources, not authored port semantics. Defaults are provisional
+// limits for the initial shared backend and remain configurable by its owner.
+struct BufferedStorageLimits {
+    std::size_t max_contiguous_mapping_bytes = std::size_t{1} << 30;
+    std::size_t max_total_mapping_bytes = std::size_t{4} << 30;
+    std::size_t max_backing_bytes = std::size_t{1} << 30;
+    std::size_t max_mapping_runs = 16384;
+    std::size_t process_vma_headroom = 512;
+    std::size_t max_resident_bytes = std::size_t{64} << 20;
+};
+
+struct BufferedStorageUsage {
+    std::size_t page_size = 0;
+    // Physical sample backing; event_bytes is charged alongside it.
+    std::size_t backing_bytes = 0;
+    // Logical file extent includes punched, reusable slots.
+    std::size_t file_extent_bytes = 0;
+    std::size_t live_page_bytes = 0;
+    std::size_t event_bytes = 0;
+    // All free offsets, including slots without physical backing.
+    std::size_t reusable_page_bytes = 0;
+    std::size_t cached_page_bytes = 0;
+    std::size_t reserved_mapping_bytes = 0;
+    std::size_t mapped_runs = 0;
+    std::size_t resident_bytes = 0;
+    std::uint64_t reused_pages = 0;
+    std::uint64_t mapping_calls = 0;
+};
+
+struct BufferedResidentRange { std::byte const* data = nullptr; std::size_t bytes = 0; };
 
 enum class PersistedDataPublishResult : std::uint8_t {
     published,
@@ -533,6 +579,7 @@ public:
     };
 
 private:
+    std::shared_ptr<persisted_data_store_detail::BufferedPageAllocator> buffered_pages_{};
     std::uint32_t output_owner_token_ = 0;
     std::unique_ptr<Snapshot const> published_owner_{};
     std::atomic<Snapshot const*> published_{nullptr};
@@ -554,7 +601,7 @@ private:
     void unregister_reader(ReaderSlotState& state) noexcept;
 
 public:
-    PersistedDataStore();
+    explicit PersistedDataStore(BufferedStorageLimits limits = {});
     ~PersistedDataStore();
 
     PersistedDataStore(PersistedDataStore const&) = delete;
@@ -577,6 +624,10 @@ public:
 
     [[nodiscard]] ReaderSlot register_reader();
     [[nodiscard]] std::size_t reclaim_retired();
+    [[nodiscard]] BufferedStorageUsage buffered_storage_usage() const;
+    // Cold preparation. The lease must be destroyed before the payload owners;
+    // it keeps overlapping selections locked until their last lease retires.
+    [[nodiscard]] std::shared_ptr<void const> prepare_resident(std::span<BufferedResidentRange const> ranges);
     [[nodiscard]] std::size_t retired_snapshot_count() const noexcept
     {
         return retired_.size();

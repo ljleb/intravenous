@@ -24,10 +24,10 @@ endif()
 function(add_iv_gtest target source)
     set(options ALL_TESTS_REQUIRE_IV_MODULE_COMPILATION NO_HOST_RUNTIME_OBJECTS)
     set(oneValueArgs)
-    set(multiValueArgs IV_MODULE_COMPILATION_TESTS)
+    set(multiValueArgs IV_MODULE_COMPILATION_TESTS EXTRA_SOURCES)
     cmake_parse_arguments(IVGT "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-    add_executable(${target} ${source})
+    add_executable(${target} ${source} ${IVGT_EXTRA_SOURCES})
     # Direct-loader tests use the same staged built-in package as the server.
     # Building a single test executable must stage it even if the server target
     # was not built in this build directory.
@@ -194,7 +194,8 @@ add_iv_gtest(
     async_capacity_manager_gtest.cpp)
 add_iv_gtest(
     intravenous_persisted_data_store_tests
-    persisted_data_store_gtest.cpp)
+    persisted_data_store_gtest.cpp
+    EXTRA_SOURCES shared_buffered_storage_gtest.cpp)
 add_iv_gtest(
     intravenous_background_planning_tests
     background_planning_gtest.cpp)
