@@ -560,7 +560,7 @@ onBeforeUnmount(() => {
 .with-knob > .manual-input { grid-column: 2; grid-row: 1; z-index: 1; }
 .with-knob[data-direction="input"] > .manual-input { grid-column: 1; }
 .port-entry { display: flex; flex-shrink: 0; gap: 10px; align-items: center; width: 100%; padding: 5px; border: 0; background: transparent; color: inherit; text-align: left; cursor: crosshair; touch-action: none; }
-.port-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.port-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--iv-port-label-base); }
 .port-entry[data-hovered] { background: var(--vscode-list-hoverBackground); }
 .unavailable { --port-color: color-mix(in srgb, var(--port-base-color) 25%, var(--vscode-disabledForeground) 75%); color: var(--vscode-disabledForeground); }
 </style>

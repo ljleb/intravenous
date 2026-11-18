@@ -3834,3 +3834,7 @@ cutoff for meter scale labels.
 On zoom, `NodePorts.vue` reads the current port area height and waits for the
 resized rows before placing a hover popover. An open continuation also
 realigns when the knob size changes and the same ports stay visible.
+
+Lane names use a softer theme colour. Port labels use a quieter base colour
+with a small tint from their port. High-contrast themes use the theme
+foreground for both.

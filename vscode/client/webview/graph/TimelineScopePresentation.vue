@@ -198,10 +198,11 @@ onBeforeUnmount(() => {
 .timeline-heading { box-sizing: border-box; position: sticky; top: 0; z-index: 1; background: var(--vscode-editor-background); flex: 0 0 var(--timeline-header-height); border-bottom: 1px solid var(--vscode-panel-border); }
 .node-column { box-sizing: border-box; min-width: 0; padding: 8px 12px; border-right: 1px solid var(--vscode-panel-border); }
 .lanes { flex: 0 0 auto; min-height: 0; position: relative; }
-.playback-position { overflow: hidden; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.playback-position small { opacity: .6; margin-left: 6px; }
+.playback-position { overflow: hidden; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--iv-lane-title-color); }
+.playback-position small { color: var(--iv-port-label-base); margin-left: 6px; }
 .lane { box-sizing: border-box; border-bottom: 1px solid var(--vscode-panel-border); }
-.lane.selected { background: var(--vscode-list-inactiveSelectionBackground); outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.lane.selected { --iv-lane-title-color: var(--vscode-list-inactiveSelectionForeground, var(--vscode-foreground));
+    background: var(--vscode-list-inactiveSelectionBackground); outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 .lane:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 .empty { padding: 12px; }
 </style>

@@ -93,7 +93,9 @@ const emit = defineEmits<{
 .with-knob .port-handle[data-hovered] .port-circle { filter: brightness(1.25); }
 .port-handle:focus-visible { outline: 1px solid currentColor; outline-offset: -1px; }
 .direct-port-name { grid-column: 3; grid-row: 1; padding-right: 3px; min-width: 0; overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+    text-overflow: ellipsis; white-space: nowrap; font-size: 11px;
+    color: color-mix(in srgb, var(--port-color) var(--iv-port-label-accent), var(--iv-port-label-base)); }
+.unavailable .direct-port-name { color: var(--vscode-disabledForeground); }
 [data-direction="output"] .direct-port-name { grid-column: 1; text-align: right; }
 .with-knob .direct-port-name { align-self: start; margin-block-start: 2px; margin-inline-start: -17px; line-height: 13px; }
 [data-direction="output"].with-knob .direct-port-name {

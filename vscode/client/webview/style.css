@@ -14,6 +14,9 @@
 }
 
 body {
+    --iv-lane-title-color: color-mix(in srgb, var(--vscode-foreground) 85%, var(--vscode-editor-background));
+    --iv-port-label-base: var(--vscode-descriptionForeground, var(--vscode-foreground));
+    --iv-port-label-accent: 16%;
     margin: 0;
     padding: 0;
     background: var(--vscode-sideBar-background);
@@ -23,6 +26,12 @@ body {
     font-weight: var(--vscode-font-weight);
     user-select: none;
     -webkit-user-select: none;
+}
+
+body:is(.vscode-high-contrast, .vscode-high-contrast-light) {
+    --iv-lane-title-color: var(--vscode-foreground);
+    --iv-port-label-base: var(--vscode-foreground);
+    --iv-port-label-accent: 0%;
 }
 
 .live-graph {

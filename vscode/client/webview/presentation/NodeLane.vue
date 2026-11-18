@@ -64,7 +64,8 @@ const laneStatus = computed(() => node.value.loadState === "waitingForDefinition
 }
 .inline-header .port-summary { display: none; }
 .lane-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    font-size: min(calc(100cqh - 4px), var(--heading-height), var(--vscode-font-size, 13px)); line-height: 1; }
+    font-size: min(calc(100cqh - 4px), var(--heading-height), var(--vscode-font-size, 13px)); line-height: 1;
+    color: var(--iv-lane-title-color); font-weight: 500; }
 .lane-name.failed { color: var(--vscode-errorForeground, #f14c4c); }
 .copy-debug { flex: 0 0 20px; height: var(--heading-height); padding: 0; border: 0; border-radius: 3px;
     color: var(--vscode-icon-foreground); background: transparent; cursor: pointer; font-size: min(16px, var(--heading-height)); line-height: 1; }
