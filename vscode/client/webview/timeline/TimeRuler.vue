@@ -19,11 +19,12 @@ const markerPosition = (selected: bigint | null) => selected === null ? -1
         * width.value / (props.window.endSeconds - props.window.beginSeconds);
 const marker = computed(() => markerPosition(position.value));
 const executionMarker = computed(() => markerPosition(executionIndex.value));
+const displayedStart = computed(() => dragPosition.value ?? state.value?.startPosition);
 const startMarker = computed(() => {
-    const start = state.value?.startPosition;
+    const start = displayedStart.value;
     return markerPosition(start === undefined ? null : BigInt(start));
 });
-const startLabel = computed(() => `Selected start at sample ${state.value?.startPosition}`);
+const startLabel = computed(() => `Selected start at sample ${displayedStart.value}`);
 const requestedMarker = computed(() => markerPosition(dragPosition.value === null ? requestedPosition.value : null));
 let pointer: { id: number; x: number; position: string } | null = null;
 let postedPosition: string | null = null;
@@ -138,7 +139,9 @@ onBeforeUnmount(() => {
 .execution-marker { background: var(--vscode-foreground); opacity: .24; }
 .requested-marker { position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--vscode-focusBorder, #569cd6); pointer-events: none; }
 .start-marker {
-    position: absolute; bottom: 0; transform: translateX(-50%);
+    position: absolute; bottom: 0; margin-left: -5px;
+    /* The tip shares the cursor's one-pixel column. */
+    box-sizing: content-box; width: 1px; height: 0;
     border-inline: 5px solid transparent; border-bottom: 7px solid var(--vscode-foreground);
 }
 </style>
