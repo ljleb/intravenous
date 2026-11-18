@@ -403,3 +403,28 @@ Sequential binding needs the source identities and a local delivery position.
 The drag contract still needs a policy for direction changes and for segments
 that exceed the Event budget. These decisions affect the playback command,
 the background readiness record, and the bound on Event delivery at Tick.
+
+### Deferred drag audition and MIDI clips
+
+The owner prefers to drop crossed Events that exceed the drag audition
+budget. The budget size and the behavior on direction changes remain open.
+
+The proposed builtin MIDI clip is a module node that wraps a MIDI Event
+primitive and an Event gate. The gate drops clip Events during paused Tick
+execution, including paused seeks and ruler drags. A piano roll presentation
+edits the stored Events using the automation curve as the editing model.
+The module needs to release notes it started before a pause, because the
+gate can block their later note-offs.
+
+The proposal exposes the wrapped clip in the node picker and keeps its raw
+primitive private to the package. `WorkspaceSession.graphDefinitions()`
+currently lists the module and node type IDs that the server returns. If
+private definitions must also be unavailable to direct creation requests,
+apply that rule at instance creation as well as in the picker.
+
+`GraphExecutor::render_block()` uses `ProjectPlayback::Block::state.running`
+for the block it selects. One option is a runtime-owned source that publishes
+that value on an existing Sample port. The gate can read it through an
+ordinary connection using the current node API and port types. The
+[optional Tick playback context](./project_playback_and_presentation_grids_direction.md#node-visible-playback-state)
+is another option for supplying the same state.
