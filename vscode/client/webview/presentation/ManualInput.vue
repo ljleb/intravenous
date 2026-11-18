@@ -40,10 +40,11 @@ const logicalValue = computed(() => value.value === undefined ? "" : Number(valu
 const knobHint = computed(() => {
     const port = knobPortStatus(control.port.value);
     if (!available.value || value.value === undefined)
-        return [props.name, port, "Unavailable"].filter(Boolean).join(" · ");
+        return { text: [props.name, port, "Unavailable"].filter(Boolean).join(" · ") };
     const hint = manualKnobStatus(props.name, value.value, limits.value.defaultValue !== undefined, port);
-    if (activity.value === "retained") return `${hint} · Override held`;
-    return descriptor.value?.enabled || activity.value === "active" ? hint : `${hint} · Manual value off`;
+    if (activity.value === "retained") hint.text += " · Override held";
+    else if (!descriptor.value?.enabled && activity.value !== "active") hint.text += " · Manual value off";
+    return hint;
 });
 function step(direction: number) {
     if (!available.value) return;
@@ -56,7 +57,7 @@ function step(direction: number) {
         :data-direction="direction ?? 'input'"
         :data-activity="activity"
         :data-manual-control="control.key.value"
-        :data-status-hint="knobHint"
+        :data-status-hint="knobHint.text" :data-status-shortcuts="knobHint.shortcuts"
         @pointerdown.stop @click.stop @contextmenu="control.numeric"
         @iv-hoverenter="control.hover(true)" @iv-hoverleave="control.hover(false)">
         <span v-if="showName" class="manual-name">{{ name }}</span>
@@ -68,7 +69,7 @@ function step(direction: number) {
         </button>
         <button ref="knob" type="button" class="manual-knob" role="slider" :aria-label="name"
             :aria-valuenow="value" :aria-valuemin="limits.min" :aria-valuemax="limits.max"
-            :aria-disabled="!available" :disabled="!available" :data-status-hint="knobHint"
+            :aria-disabled="!available" :disabled="!available" :data-status-hint="knobHint.text" :data-status-shortcuts="knobHint.shortcuts"
             @focus="control.hover(true)" @blur="control.hover(false)"
             @iv-hoverenter="hovered = true" @iv-hoverleave="hovered = false"
             @pointerdown="control.scrub" @dblclick.stop.prevent @contextmenu="control.numeric"

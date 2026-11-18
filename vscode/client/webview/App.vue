@@ -45,7 +45,7 @@ function createInstance(): void {
 const status = useElementStatusHint();
 const trustedHover = new TrustedHover(undefined, status.hover);
 const resetHover = () => trustedHover.reset();
-watch(status.text, (hint) => postToHost({ type: "interactionHint", hint }));
+watch(status.hint, (hint) => postToHost({ type: "interactionHint", hint }));
 onMounted(() => window.addEventListener("blur", resetHover));
 onBeforeUnmount(() => {
     window.removeEventListener("blur", resetHover);

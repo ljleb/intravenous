@@ -41,7 +41,7 @@ export function browserHoverEnvironment(): HoverEnvironment {
             const observer = new MutationObserver(changed);
             observer.observe(document.body, {
                 childList: true, subtree: true, attributes: true,
-                attributeFilter: ["class", "style", "hidden", "disabled", "data-status-hint"],
+                attributeFilter: ["class", "style", "hidden", "disabled", "data-status-hint", "data-status-shortcuts"],
             });
             return () => observer.disconnect();
         },

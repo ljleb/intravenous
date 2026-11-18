@@ -1,11 +1,11 @@
 import type { ManualControlAction, ManualControlDescriptor, ManualControlId, ManualControlInteractionState, ManualControlLiveValue } from "./manualControls";
 import { manualControlKey, canEditManualControl, manualControlName } from "./manualControls";
 import { addressKey, type NodeAddress } from "./graphScope";
-import { rightClickHint } from "./statusBarText";
-import { ScrubSensitivity } from "./scrubSensitivity";
+import { rightClickHint, type StatusHint } from "./statusBarText";
+import { ScrubSensitivity, scrubSensitivityShortcut } from "./scrubSensitivity";
 
 export type ManualControlLimits = { min?: number; max?: number; defaultValue?: number; scrubSpeed?: number };
-export type ManualControlHint = { text: string };
+export type ManualControlHint = StatusHint & { text: string };
 export type KnobActivity = "idle" | "hover" | "active" | "retained";
 type Hover = { control: ManualControlId; descriptor: ManualControlDescriptor; limits: ManualControlLimits; portStatus?: string };
 export type ManualValueEntry = Hover & {
@@ -21,9 +21,9 @@ type Gesture = {
 const clamp = (value: number, limits: ManualControlLimits) =>
     Math.max(limits.min ?? -Infinity, Math.min(limits.max ?? Infinity, value));
 const displayValue = (value: number) => Number(value.toPrecision(6)).toString();
-export function manualKnobStatus(name: string, value: number, canReset: boolean, port = ""): string {
-    return `${port ? `${port} · ` : ""}${name} ${displayValue(value)} · ↑↓ · ${rightClickHint} value`
-        + (canReset ? " · Dbl-click reset" : "");
+export function manualKnobStatus(name: string, value: number, canReset: boolean, port = ""): ManualControlHint {
+    return { text: `${port ? `${port} · ` : ""}${name} ${displayValue(value)}`,
+        shortcuts: `↑↓ · ${rightClickHint} value` + (canReset ? " · Dbl-click reset" : "") };
 }
 // Owned by the webview root, never by a presentation widget. Components can
 // disappear while these window-level pointer and keyboard gestures continue.
@@ -297,18 +297,21 @@ export class ManualControlGestures {
         return true;
     }
     hint(): ManualControlHint | null {
-        if (this.entry) return { text: `${manualControlName(this.entry.control)} · `
-            + (this.entry.error ? `${this.entry.error} · Esc cancel` : "Enter apply · Esc cancel") };
+        if (this.entry) return {
+            text: this.entry.error ? `${manualControlName(this.entry.control)} · ${this.entry.error}` : manualControlName(this.entry.control),
+            shortcuts: this.entry.error ? "Esc cancel" : "Enter apply · Esc cancel",
+        };
         if (this.active?.pointer) return {
             text: `${manualControlName(this.active.control)} ${displayValue(this.displayValue(this.active.control, this.active.value))}`
                 + (this.outputInverted(this.active.control, this.active.value) ? " · inverted" : "")
-                + ` · ${this.active.pointer.sensitivity.hint()} · Esc release`,
+                + ` · ${this.active.pointer.sensitivity.hint()}`,
+            shortcuts: `${scrubSensitivityShortcut} · Esc release`,
         };
         if (!this.hoverDetails || !canEditManualControl(this.hoverDetails.control, this.hoverDetails.descriptor)) return null;
         const reset = this.hoverDetails.limits.defaultValue !== undefined;
         const { control, descriptor, portStatus } = this.hoverDetails;
         const value = this.state(control)?.value ?? this.liveValue(control) ?? descriptor.value;
-        return { text: manualKnobStatus(manualControlName(control), this.displayValue(control, value), reset, portStatus) };
+        return manualKnobStatus(manualControlName(control), this.displayValue(control, value), reset, portStatus);
     }
     pointerControl(): ManualControlId | null { return this.active?.pointer ? this.active.control : null; }
     pointerId(): number | null { return this.active?.pointer?.id ?? null; }

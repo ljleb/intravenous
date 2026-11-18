@@ -27,6 +27,8 @@ import { TrustedHover } from "../../src/trustedHover";
 import { providePlayback } from "../timeline/playbackContext";
 import { useAutomationEditing } from "../presentation/automationEditingContext";
 import { automationPointStatus, useElementStatusHint } from "../statusHints";
+import { scrubSensitivityShortcut } from "../../src/scrubSensitivity";
+import type { StatusHint } from "../../src/statusBarText";
 import { projectHistoryShortcut } from "../../src/projectHistoryShortcut";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
 import { updateSelection } from "../../src/selection";
@@ -51,7 +53,7 @@ provideObservations(observations);
 const layout = ref(readLayout(null));
 const manualVersion = ref(0);
 const timelineZoomHint = ref<string | null>(null);
-let lastInteractionHint: string | null | undefined;
+let lastInteractionHint: StatusHint | null | undefined;
 let pointerLockError = "";
 let automationPointerId: number | null = null;
 type PointDragWarp = CursorWarpAnchor & { initialCenter: Point | null; destination: () => Point | null; trace: boolean; moved: boolean };
@@ -195,7 +197,7 @@ provideManualControls({ gestures: manualGestures, version: manualVersion, setEna
     pointerLock.start(event.pointerId, origin, event.pointerType === "mouse");
 } });
 function publishInteractionHint() {
-    const manual = document.hasFocus() ? manualGestures.hint()?.text : null;
+    const manual = document.hasFocus() ? manualGestures.hint() : null;
     const adjustingKnob = manualGestures.pointerControl();
     const point = document.hasFocus() ? automation.edits.activePoint() : null;
     const bound = document.hasFocus() ? automation.edits.activeBound() : null;
@@ -203,18 +205,19 @@ function publishInteractionHint() {
     const edit = point ? automationPointStatus(point) : bound
         ? `${bound.side === "min" ? "Minimum" : "Maximum"} ${Number(bound.value.toPrecision(6))}` : null;
     const drag = playback.dragPosition.value;
-    const hint = (manual && (adjustingKnob || manualGestures.numericEntry())
-        ? manual + (adjustingKnob && pointerLockError ? ` · Pointer lock unavailable. ${pointerLockError}` : "") : null)
-        ?? (edit ? edit + (sensitivity ? ` · ${sensitivity}` : "")
-            + (pointerLockError ? " · Pointer lock unavailable" : "") : null)
-        ?? timelineZoomHint.value
-        ?? (drag === null ? null : `Start ${drag} smp`)
-        ?? elementStatus.text.value ?? manual ?? null;
-    if (hint === lastInteractionHint) return;
+    const hint: StatusHint | null = (manual && (adjustingKnob || manualGestures.numericEntry())
+        ? { ...manual, text: manual.text + (adjustingKnob && pointerLockError ? ` · Pointer lock unavailable. ${pointerLockError}` : "") } : null)
+        ?? (edit ? { text: edit + (sensitivity ? ` · ${sensitivity}` : "") + (pointerLockError ? " · Pointer lock unavailable" : ""),
+            shortcuts: sensitivity ? scrubSensitivityShortcut : undefined } : null)
+        ?? (timelineZoomHint.value ? { text: timelineZoomHint.value } : null)
+        ?? (drag === null ? null : { text: `Start ${drag} smp` })
+        ?? elementStatus.hint.value ?? manual ?? null;
+    if (lastInteractionHint !== undefined && hint?.text === lastInteractionHint?.text
+        && hint?.shortcuts === lastInteractionHint?.shortcuts) return;
     lastInteractionHint = hint;
     webviewApi.postMessage({ type: "graphInteractionHint", hint });
 }
-watch([elementStatus.text, playback.dragPosition, automation.version, timelineZoomHint], publishInteractionHint);
+watch([elementStatus.hint, playback.dragPosition, automation.version, timelineZoomHint], publishInteractionHint);
 function focusPointerHint() {
     if (document.hasFocus()) pointerLock.retryAfterFocus();
     lastInteractionHint = undefined; publishInteractionHint();

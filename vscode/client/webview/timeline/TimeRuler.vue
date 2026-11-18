@@ -119,7 +119,7 @@ onBeforeUnmount(() => {
     <div ref="root" class="time-ruler" :class="{ seekable: playback }" aria-label="Time in seconds"
         @pointerdown="beginSeek" @pointermove="moveSeek" @pointerup="endSeek"
         @pointercancel="cancelSeek" @lostpointercapture="cancelSeek"
-        :data-status-hint="playback ? 'Click/drag seek · Space ▶/Ⅱ' : undefined">
+        :data-status-shortcuts="playback ? 'Click/drag seek · Space ▶/Ⅱ' : undefined">
         <RulerGraduations :ticks="ticks" />
         <div v-if="playback && executionMarker >= 0 && executionMarker <= width && executionMarker !== marker"
             class="playhead-marker execution-marker" :style="{ left: `${executionMarker}px` }"

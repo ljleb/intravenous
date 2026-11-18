@@ -1,4 +1,5 @@
 import type { VirtualNode } from "./graphModel";
+import { isStatusHint, type StatusHint } from "./statusBarText";
 
 // Messages between the extension host and the Vue webview. This module is
 // imported by both sides; it must contain only types and pure functions.
@@ -57,7 +58,7 @@ export type LiveGraphWebviewMessage =
     | LiveGraphReadyMessage
     | LiveGraphSelectInstanceMessage
     | LiveGraphCreateInstanceMessage
-    | { type: "interactionHint"; hint: string | null };
+    | { type: "interactionHint"; hint: StatusHint | null };
 
 // The webview messages that WorkspaceSession acts on.
 export type LiveGraphControlMessage =
@@ -75,6 +76,6 @@ export function isLiveGraphWebviewMessage(message: unknown): message is LiveGrap
     if (candidate.type === "selectInstance") {
         return candidate.instanceId == null || typeof candidate.instanceId === "string";
     }
-    if (candidate.type === "interactionHint") return candidate.hint === null || typeof candidate.hint === "string";
+    if (candidate.type === "interactionHint") return candidate.hint === null || isStatusHint(candidate.hint);
     return candidate.type === "ready" || candidate.type === "createInstance";
 }

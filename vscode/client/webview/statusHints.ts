@@ -1,19 +1,25 @@
 import { onBeforeUnmount, onMounted, shallowRef } from "vue";
 import type { HoverElement } from "../src/trustedHover";
 import type { AutomationPointPosition } from "../src/automationCurveGeometry";
+import type { StatusHint } from "../src/statusBarText";
 
-const hintSelector = '[data-status-hint]:not([data-status-hint=""])';
+const hintSelector = '[data-status-hint]:not([data-status-hint=""]), [data-status-shortcuts]:not([data-status-shortcuts=""])';
 const hintTarget = (target: Element | null) => target?.closest(hintSelector) ?? null;
+function elementHint(target: Element | null): StatusHint | null {
+    return target ? { text: target.getAttribute("data-status-hint") || undefined,
+        shortcuts: target.getAttribute("data-status-shortcuts") || undefined } : null;
+}
 
 export function useElementStatusHint() {
-    const text = shallowRef<string | null>(null);
+    const hint = shallowRef<StatusHint | null>(null);
     let hovered: Element | null = null;
     let preferFocus = false;
 
     function refresh() {
-        const focused = document.hasFocus() ? hintTarget(document.activeElement)?.getAttribute("data-status-hint") : null;
-        const hoveredText = hovered?.isConnected ? hovered.getAttribute("data-status-hint") : null;
-        text.value = document.hidden ? null : (preferFocus ? focused ?? hoveredText : hoveredText ?? focused) ?? null;
+        const focused = document.hasFocus() ? elementHint(hintTarget(document.activeElement)) : null;
+        const hoveredHint = hovered?.isConnected ? elementHint(hovered) : null;
+        const next = document.hidden ? null : preferFocus ? focused ?? hoveredHint : hoveredHint ?? focused;
+        if (next?.text !== hint.value?.text || next?.shortcuts !== hint.value?.shortcuts) hint.value = next;
     }
     function focus(event: FocusEvent) {
         preferFocus = event.target instanceof Element && event.target.matches(":focus-visible");
@@ -40,7 +46,7 @@ export function useElementStatusHint() {
         window.removeEventListener("blur", blur);
     });
     return {
-        text,
+        hint,
         hover(target: HoverElement | null, pointerMoved: boolean) {
             const next = hintTarget(target instanceof Element ? target : null);
             if (pointerMoved || next !== hovered) preferFocus = false;

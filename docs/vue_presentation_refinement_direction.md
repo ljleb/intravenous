@@ -622,6 +622,10 @@ accessible descriptions independently of visual tooltip display. Keep the
 status item consistent with the pointer and active gesture, especially while
 moving sample-quantized control points or adjusting knob values.
 
+The user setting `intravenous.hideStatusBarShortcuts` hides shortcut reminders
+in the status bar. Values, port details, active gesture readouts, and errors
+remain visible. Shortcut reminders are visible by default.
+
 ## 7. Scope and sequencing
 
 Acceptance checks must also cover stable nested-row knob coordinates with

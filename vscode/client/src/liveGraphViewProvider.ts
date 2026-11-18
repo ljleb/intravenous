@@ -5,6 +5,7 @@ import { VirtualNode } from "./graphModel";
 import { isNodeEventRequest, isNodeEventGestureRequest, replyToNodeEvent, replyToNodeEventGesture } from "./nodeEventMessaging";
 import type { NodeAddress } from "./graphScope";
 import type { SerializedNodeEvent } from "./nodeEvents";
+import type { StatusHint } from "./statusBarText";
 import {
     LiveGraphInstanceRecord,
     liveGraphInstances,
@@ -27,7 +28,7 @@ export class LiveGraphViewProvider implements vscode.WebviewViewProvider {
     private webviewReady = false;
     private postScheduled = false;
     private controlHandler: LiveGraphControlHandler | null = null;
-    private publishInteractionHint?: (hint: string | null) => void;
+    private publishInteractionHint?: (hint: StatusHint | null) => void;
     private nodeEventHandler: ((target: NodeAddress, event: SerializedNodeEvent, interactionId?: string) => Promise<number | void>) | null = null;
     private nodeGestureHandler: ((target: NodeAddress, interactionId: string, begin: boolean) => Promise<number | void>) | null = null;
     private releaseNodeGestures: (() => void) | null = null;
@@ -83,7 +84,7 @@ export class LiveGraphViewProvider implements vscode.WebviewViewProvider {
         this.controlHandler = handler;
     }
 
-    setInteractionHintHandler(publish: (hint: string | null) => void): void {
+    setInteractionHintHandler(publish: (hint: StatusHint | null) => void): void {
         this.publishInteractionHint = publish;
     }
 

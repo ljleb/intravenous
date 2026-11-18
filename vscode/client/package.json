@@ -51,6 +51,12 @@
                     "scope": "application",
                     "description": "Move the system cursor to the automation point after a locked drag when the local X11 display supports it."
                 },
+                "intravenous.hideStatusBarShortcuts": {
+                    "type": "boolean",
+                    "default": false,
+                    "scope": "application",
+                    "description": "Hide keyboard and mouse shortcut hints in the Intravenous status bar while showing values, states, and errors."
+                },
                 "intravenous.autoRelaunchWithXWayland": {
                     "type": "boolean",
                     "default": false,

@@ -427,7 +427,7 @@ onBeforeUnmount(() => {
         @pointercancel="middlePointerCancelled" @lostpointercapture="middleCaptureLost"
         @mousedown.capture="preventMiddleDefault" @auxclick.capture="preventMiddleDefault">
         <header class="timeline-heading">
-            <div class="node-column playback-position" data-status-hint="Space ▶/Ⅱ">
+            <div class="node-column playback-position" data-status-shortcuts="Space ▶/Ⅱ">
                 <template v-if="playbackSeconds !== null">
                     {{ playback.state.value?.running ? '▷' : 'Ⅱ' }} {{ playbackSeconds.toFixed(3) }} s
                     <small>{{ playback.position.value?.toString() }} smp</small>

@@ -244,11 +244,12 @@ const error = computed(() => {
     void version.value;
     return node.value.address ? edits.error(node.value.address) || node.value.constructionError : "";
 });
-const curveStatus = computed(() => error.value || (editable.value && curve.value?.sampleRate
-    ? `${rightClickHint} Add point · Drag Select` : "Read-only curve"));
+const curveStatus = computed(() => error.value || (editable.value && curve.value?.sampleRate ? "" : "Read-only curve"));
+const curveShortcuts = `${rightClickHint} Add point · Drag Select`;
+const pointShortcuts = `⇧Click Delete · ${rightClickHint} Segment`;
 function pointStatus(point: AutomationPoint) {
     const { id, sampleIndex, seconds, value } = point;
-    return automationPointStatus({ id, sampleIndex, seconds, value }) + ` · ⇧Click Delete · ${rightClickHint} Segment`;
+    return automationPointStatus({ id, sampleIndex, seconds, value });
 }
 function pointerAxes(): CurveAxes | null {
     if (!surface.value || !axes.value) return null;
@@ -291,9 +292,13 @@ function start(event: PointerEvent, id: number, kind: CurveDragKind = "point") {
     const target = node.value.address;
     if (axes && target) {
         const control = event.currentTarget as SVGElement;
+        control.setAttribute("data-pointer-focus", "");
         control.focus({ preventScroll: true });
         editor?.startAutomation(event, target, id, axes, kind, kind === "point" ? () => pointCursorPosition(control, target, id) : undefined);
     }
+}
+function clearPointerFocusStyle(event: Event) {
+    if (event.target instanceof SVGElement) event.target.removeAttribute("data-pointer-focus");
 }
 function preparePointClick(event: PointerEvent, pointId: number) {
     pointClick = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, pointId };
@@ -472,10 +477,12 @@ onBeforeUnmount(() => {
         <div class="automation-surface">
             <RulerGraduations class="clip-ruler" :ticks="ticks" :label-inset="valueLabelInset" :hide-labels="hideLabels" compact />
             <svg ref="surface" class="automation-curve" :viewBox="`0 0 ${width} ${height}`" preserveAspectRatio="none"
-                :aria-label="node.displayName || 'Automation curve'" :aria-description="curveStatus"
-                :data-status-hint="curveStatus" :tabindex="editable ? 0 : undefined" :data-lane-item-editor="editable ? '' : undefined"
+                :aria-label="node.displayName || 'Automation curve'" :aria-description="curveStatus || curveShortcuts"
+                :data-status-hint="curveStatus" :data-status-shortcuts="curveStatus ? undefined : curveShortcuts"
+                :tabindex="editable ? 0 : undefined" :data-lane-item-editor="editable ? '' : undefined"
                 @pointerdown.self="beginSelection" @pointermove="moveSelection" @pointerup="finishSelection"
                 @pointercancel="cancelSelection" @lostpointercapture.self="cancelSelection"
+                @focusout="clearPointerFocusStyle" @keydown.capture="clearPointerFocusStyle"
                 @keydown.delete.self="deleteSelected" @contextmenu.self="addPoint">
                 <g class="value-guides" aria-hidden="true">
                     <g v-for="guide in valueGuides" :key="guide.value" :class="{ zero: guide.value === 0, unit: Math.abs(guide.value) === 1 }">
@@ -489,7 +496,7 @@ onBeforeUnmount(() => {
                 <g v-for="point in handles" :key="`tension-${point.id}`" class="curve-tension"
                     :transform="`translate(${pointX(point)} ${handleY(point)})`"
                     role="slider" tabindex="0" aria-label="Bézier tension" :aria-valuemin="0" :aria-valuemax="1"
-                    :aria-valuenow="point.tension" :data-status-hint="`Tension ${Number(point.tension.toFixed(2))} · ↔ Drag`"
+                    :aria-valuenow="point.tension" :data-status-hint="`Tension ${Number(point.tension.toFixed(2))}`" data-status-shortcuts="↔ Drag"
                     @pointerdown="start($event, point.id, 'tension')" @click.stop
                     @keydown="tensionKey($event, point)" @contextmenu.stop="editSegment($event, point)">
                     <path class="tension-stem" :d="`M0 0 V${markerY(point) - handleY(point)}`" />
@@ -502,7 +509,7 @@ onBeforeUnmount(() => {
                     :data-selected="selectedIds.has(point.id) || undefined"
                     :data-limited="eventValue(point) !== point.value || undefined"
                     :aria-label="`Point at ${point.sampleIndex ?? point.seconds} ${point.sampleIndex === undefined ? 'seconds' : 'samples'}, value ${point.value}${selectedIds.has(point.id) ? ', selected' : ''}`"
-                    :data-status-hint="pointStatus(point)"
+                    :data-status-hint="pointStatus(point)" :data-status-shortcuts="pointShortcuts"
                     aria-description="Drag to move. Shift-click to delete. Right-click for segment options."
                     @pointerdown="start($event, point.id)"
                     @click.stop="applyPointClick($event, point.id)"
@@ -545,7 +552,7 @@ onBeforeUnmount(() => {
                     <button type="button" class="automation-bound-knob" role="slider" :aria-label="bound.name"
                         :aria-valuenow="bound.value" :aria-valuemin="bound.limits.min" :aria-valuemax="bound.limits.max"
                         :disabled="!bound.enabled" :aria-disabled="!bound.enabled || boundsPending"
-                        :data-status-hint="`${bound.name} ${Number(bound.value.toPrecision(6))} · Drag`"
+                        :data-status-hint="`${bound.name} ${Number(bound.value.toPrecision(6))}`" data-status-shortcuts="Drag"
                         @pointerdown="startBound($event, bound.side)"
                         @keydown.up.stop.prevent="stepBound(bound.side, 1)" @keydown.right.stop.prevent="stepBound(bound.side, 1)"
                         @keydown.down.stop.prevent="stepBound(bound.side, -1)" @keydown.left.stop.prevent="stepBound(bound.side, -1)">
@@ -599,8 +606,9 @@ onBeforeUnmount(() => {
 .curve-point:is(:has([data-hovered]), [data-hovered]) .point-marker { r: 3.3px; }
 .curve-point[data-selected] .point-marker { r: 3.2px; }
 .tension-stem { fill: none; stroke: currentColor; stroke-opacity: .22; pointer-events: none; }
-.curve-tension:is(:focus-visible, :has([data-hovered]), [data-hovered], :active) .tension-marker { fill-opacity: 1; }
-.curve-point:focus-visible:not([data-selected]) .point-marker, .curve-tension:focus-visible .tension-marker {
+.curve-tension:is(:has([data-hovered]), [data-hovered], :active) .tension-marker { fill-opacity: 1; transform: scale(1.27); }
+.curve-tension:focus-visible:not([data-pointer-focus]) .tension-marker { stroke: currentColor; stroke-width: 1.5px; }
+.curve-point:focus-visible:not([data-selected], [data-pointer-focus]) .point-marker {
     fill: var(--vscode-editor-foreground, currentColor);
 }
 .automation-scale-button {

@@ -5,7 +5,7 @@ import { addressKey, readLayout, type GraphScope } from "./graphScope";
 import { nodeDebugDetails } from "./nodeDebugDetails";
 import type { CursorReturnGesture, GraphEditorAction, GraphEditorState, GraphEditorWebviewMessage } from "./graphEditorProtocol";
 import type { WorkspaceSession } from "./workspaceSession";
-import { rightClickHint, statusBarText } from "./statusBarText";
+import { formatStatusHint, isStatusHint, playbackShortcut, rightClickHint, type StatusHint } from "./statusBarText";
 import { isNodeEventRequest, isNodeEventGestureRequest, replyToNodeEvent, replyToNodeEventGesture } from "./nodeEventMessaging";
 import { isPendingPlaybackSeek, playbackSeekPosition, type PlaybackDrag, type PlaybackDragPhase,
     type PlaybackSeek, type PlaybackSnapshot } from "./playback";
@@ -13,8 +13,8 @@ import type { NativeClientHelper } from "./nativeClientHelper";
 
 export class GraphEditorProvider implements vscode.Disposable {
     private readonly panels = new Set<vscode.WebviewPanel>();
-    private readonly interactionHints = new Map<vscode.WebviewPanel, string>();
-    private inspectionHint: string | null = null;
+    private readonly interactionHints = new Map<vscode.WebviewPanel, StatusHint>();
+    private inspectionHint: StatusHint | null = null;
     private readonly interactionStatus = vscode.window.createStatusBarItem(
         "intravenous.manualControlHints", vscode.StatusBarAlignment.Left, 10);
     private readonly controlOwners = new Map<vscode.WebviewPanel, string>();
@@ -27,6 +27,7 @@ export class GraphEditorProvider implements vscode.Disposable {
     private readonly layoutLoaded: Promise<void>;
     private readonly changed: vscode.Disposable;
     private readonly windowFocusChanged: vscode.Disposable;
+    private readonly shortcutSettingChanged: vscode.Disposable;
     private state: GraphEditorState = {
         sessionStatus: "starting", scope: null, layout: readLayout(null), definitions: [], error: "",
     };
@@ -163,6 +164,9 @@ export class GraphEditorProvider implements vscode.Disposable {
             this.updateInteractionStatus();
             for (const panel of this.ready) void panel.webview.postMessage({ type: "graphWindowFocus", focused });
         });
+        this.shortcutSettingChanged = vscode.workspace.onDidChangeConfiguration((event) => {
+            if (event.affectsConfiguration("intravenous.hideStatusBarShortcuts")) this.updateInteractionStatus();
+        });
     }
 
     private updateInteractionStatus(): void {
@@ -172,22 +176,24 @@ export class GraphEditorProvider implements vscode.Disposable {
         }
         const panel = [...this.panels].find((candidate) => candidate.active);
         const hint = (panel ? this.interactionHints.get(panel) : undefined) ?? this.inspectionHint;
-        if (!hint && !panel) {
+        const hideShortcuts = vscode.workspace.getConfiguration("intravenous").get("hideStatusBarShortcuts", false);
+        const text = hint ? formatStatusHint(hint, hideShortcuts) : "";
+        if (!text && (!panel || hideShortcuts)) {
             this.interactionStatus.hide();
             return;
         }
-        this.interactionStatus.command = hint ? undefined : "intravenous.togglePlayback";
-        this.interactionStatus.text = hint ?? "Space ▶/Ⅱ";
+        this.interactionStatus.command = text ? undefined : "intravenous.togglePlayback";
+        this.interactionStatus.text = text || playbackShortcut;
         this.interactionStatus.accessibilityInformation = {
-            label: hint?.replaceAll(rightClickHint, "Right-click").replaceAll("↑↓", "up/down arrows")
-                .replaceAll("▶/Ⅱ", "play or pause") ?? "Space to play or pause",
+            label: text ? text.replaceAll(rightClickHint, "Right-click").replaceAll("↑↓", "up/down arrows")
+                .replaceAll("▶/Ⅱ", "play or pause") : "Space to play or pause",
         };
         this.interactionStatus.show();
     }
 
-    setInspectionHint(hint: string | null): void {
+    setInspectionHint(hint: StatusHint | null): void {
         if (this.disposed) return;
-        this.inspectionHint = hint && vscode.window.state.focused ? statusBarText(hint) : null;
+        this.inspectionHint = vscode.window.state.focused ? hint : null;
         this.updateInteractionStatus();
     }
 
@@ -354,8 +360,8 @@ export class GraphEditorProvider implements vscode.Disposable {
                     catch (error) { void vscode.window.showErrorMessage(`Cannot edit project: ${error.message}`); }
                 }
             } else if (message?.type === "graphInteractionHint") {
-                if (typeof message.hint === "string" && panel.active && vscode.window.state.focused) {
-                    this.interactionHints.set(panel, statusBarText(message.hint));
+                if (isStatusHint(message.hint) && panel.active && vscode.window.state.focused) {
+                    this.interactionHints.set(panel, message.hint);
                 } else this.interactionHints.delete(panel);
                 this.updateInteractionStatus();
             } else if (message?.type === "manualControlAction") {
@@ -502,6 +508,7 @@ export class GraphEditorProvider implements vscode.Disposable {
         this.controlsChanged.dispose();
         this.observationsChanged.dispose();
         this.windowFocusChanged.dispose();
+        this.shortcutSettingChanged.dispose();
         for (const panel of this.panels) panel.dispose();
         this.panels.clear();
         this.interactionStatus.dispose();

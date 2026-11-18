@@ -5,6 +5,7 @@ import type { LiveGraphSessionStatus } from "./liveGraphProtocol";
 import type { GraphConnectionEdit, GraphPortEndpoint } from "./graphConnectionEditing";
 import type { NodeEventHostRequest, NodeEventResponse } from "./nodeEventMessaging";
 import type { PlaybackDragPhase, PlaybackSnapshot } from "./playback";
+import type { StatusHint } from "./statusBarText";
 
 export type CursorWarp = {
     originX: number; originY: number;
@@ -40,7 +41,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "playbackDrag"; phase: PlaybackDragPhase; position: string }
     | ObservationHostRequest
     | NodeEventHostRequest
-    | { type: "graphInteractionHint"; hint: string | null }
+    | { type: "graphInteractionHint"; hint: StatusHint | null }
     | { type: "warpCursorAfterPointDrag" | "warpCursorAfterMiddleDrag"; warp: CursorWarp; requestId: number }
     | { type: "cursorReturnSkipped"; detail: string }
     | { type: "cursorReturnTrace"; gesture: CursorReturnGesture; detail: string }

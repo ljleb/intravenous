@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { ManualControlInteractions, manualControlKey, resolveManualControl, type ManualControlDescriptor, type ManualControlId,
     type ManualControlTransport } from "../src/manualControls";
 import { ManualControlGestures } from "../src/manualControlGesture";
+import { formatStatusHint, playbackShortcut } from "../src/statusBarText";
 import type { GraphScope } from "../src/graphScope";
 
 const control: ManualControlId = { node: { instanceId: "osc" }, inputName: "frequency" };
@@ -472,15 +473,26 @@ test("interaction hints describe the current gesture and clear with its hover", 
     const gestures = new ManualControlGestures(() => {}, () => "drag", () => {});
     assert.equal(gestures.hint(), null);
     gestures.hover(control, descriptor, { defaultValue: 440 }, "Sequential input");
-    assert.match(gestures.hint()!.text, /^Sequential input.*↑↓.*🖱︎R value.*Dbl-click reset/);
+    assert.match(formatStatusHint(gestures.hint()!, false), /^Sequential input.*↑↓.*🖱︎R value.*Dbl-click reset/);
+    assert.equal(formatStatusHint(gestures.hint()!, true), "Sequential input · frequency 440");
     gestures.refresh(control, { ...descriptor, value: 450 }, { defaultValue: 440 });
     assert.match(gestures.hint()!.text, /^Sequential input · frequency 450/);
     gestures.scrub(control, descriptor, 1, 0, 1);
     gestures.changeSensitivity(100);
     assert.match(gestures.hint()!.text, /0.5×/);
+    assert.match(formatStatusHint(gestures.hint()!, false), /0.5× · Wheel .* · Esc release/);
+    assert.equal(formatStatusHint(gestures.hint()!, true), "frequency 440 · 0.5×");
     gestures.release(1);
     gestures.hover(null);
     assert.equal(gestures.hint(), null);
+});
+
+test("a shortcut-only status has no text when shortcuts are hidden", () => {
+    const hint = { shortcuts: playbackShortcut };
+    assert.equal(formatStatusHint(hint, false), playbackShortcut);
+    assert.equal(formatStatusHint(hint, true), "");
+    const error = { text: "Pointer lock unavailable", shortcuts: "Esc release" };
+    assert.equal(formatStatusHint(error, true), error.text);
 });
 
 test("a disabled knob distinguishes predictive hover, active drag and held override", () => {

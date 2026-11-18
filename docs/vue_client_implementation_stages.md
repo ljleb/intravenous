@@ -3910,6 +3910,9 @@ Run **Intravenous: Trace Next Middle-Button Cursor Return** and pan once to
 log pointer lock, the wrapped release position, and the X11 result.
 If XFixes is available, the helper hides the system cursor while it moves the
 cursor to the wrapped position. Some XWayland servers require this step.
+When the desktop process ID is available, middle-button release checks that
+the focused X11 window belongs to VS Code. The helper applies the offset to
+the current cursor position and checks that the move stays in that window.
 The middle-button trace checks the X11 position again after 35 ms.
 The X11 helper checks the result of each cursor move. The output channel
 reports failed requests and explains why they stop. If the dragged automation

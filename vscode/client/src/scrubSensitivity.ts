@@ -1,4 +1,5 @@
 const detentHalfWidth = 12;
+export const scrubSensitivityShortcut = "Wheel ↑×2 ↓½";
 type DetentValue = { value: number; plateau: number };
 
 // Knobs and automation points change sensitivity around the current value.
@@ -53,6 +54,6 @@ export class ScrubSensitivity {
         return true;
     }
     hint(): string {
-        return `${Number(this.multiplier.toPrecision(6))}× · Wheel ↑×2 ↓½`;
+        return `${Number(this.multiplier.toPrecision(6))}×`;
     }
 }
