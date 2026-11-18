@@ -6,9 +6,9 @@ import { semanticNodeFromScopeChild } from "../presentation/semanticNode";
 import PresentationHost from "../presentation/PresentationHost.vue";
 import { nodeDisplayName } from "../presentation/nodeSummary";
 import TimeRuler from "../timeline/TimeRuler.vue";
-import { provideTimelineWheelHandler, provideTimelineWindow } from "../timeline/timelineContext";
-import { moveMiddlePan, timelineWheelAction, wheelPixels, zoomTimelineHorizontally,
-    zoomTimelineVertically, type MiddlePan } from "../../src/timelineViewport";
+import { provideTimelineNavigation, provideTimelineWindow } from "../timeline/timelineContext";
+import { moveMiddleDrag, timelineMiddleDragAction, timelineWheelAction, wheelPixels, zoomTimelineHorizontally,
+    zoomTimelineVertically, type MiddleDrag, type TimelineZoomAction } from "../../src/timelineViewport";
 import { useGraphEditor } from "./context";
 import { usePlayback } from "../timeline/playbackContext";
 
@@ -48,9 +48,9 @@ const timeWindow = computed(() => ({ beginSeconds: viewport.value.beginSeconds,
     endSeconds: viewport.value.beginSeconds + Math.max(1, timeWidth.value) * viewport.value.secondsPerPixel,
     sampleRate: scope.value.sampleRate }));
 provideTimelineWindow(timeWindow);
-provideTimelineWheelHandler(wheel);
-const pan = shallowRef<MiddlePan | null>(null);
-let panMoved = false;
+provideTimelineNavigation({ wheel, beginMiddleDrag });
+const middleDrag = shallowRef<MiddleDrag | null>(null);
+let middleDragMoved = false;
 let observer: ResizeObserver | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let scrollRequest = 0;
@@ -72,61 +72,77 @@ function scrolled() {
     viewport.value.scrollTop = root.value.scrollTop;
     scheduleSave();
 }
+function zoomAnchor(action: TimelineZoomAction, event: MouseEvent): number {
+    if (action === "horizontalZoom") {
+        const axis = timeRegion.value?.getBoundingClientRect();
+        return axis ? Math.max(0, Math.min(axis.width, event.clientX - axis.left)) : 0;
+    }
+    const contentTop = (root.value?.getBoundingClientRect().top ?? 0) + headerHeight;
+    return Math.max(0, event.clientY - contentTop);
+}
 function wheel(event: WheelEvent) {
     const action = timelineWheelAction(event);
     if (action === "verticalScroll") return; // Native scrolling, including its bounds and momentum.
     event.preventDefault();
     event.stopPropagation();
     if (!root.value || !timeRegion.value) return;
-    const axis = timeRegion.value.getBoundingClientRect();
-    const delta = wheelPixels(event.deltaY || event.deltaX, event.deltaMode, root.value.clientHeight);
     if (action === "horizontalScroll") {
+        const axis = timeRegion.value.getBoundingClientRect();
         const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
         viewport.value = { ...viewport.value, beginSeconds: viewport.value.beginSeconds
             + wheelPixels(horizontal, event.deltaMode, axis.width) * viewport.value.secondsPerPixel };
-    } else if (action === "horizontalZoom") {
-        viewport.value = zoomTimelineHorizontally(viewport.value,
-            Math.max(0, Math.min(axis.width, event.clientX - axis.left)), delta);
     } else {
-        const top = root.value.getBoundingClientRect().top + headerHeight;
-        viewport.value = zoomTimelineVertically(viewport.value, Math.max(0, event.clientY - top), delta);
-        void applyScroll();
+        const delta = wheelPixels(event.deltaY || event.deltaX, event.deltaMode, root.value.clientHeight);
+        const anchor = zoomAnchor(action, event);
+        viewport.value = action === "horizontalZoom" ? zoomTimelineHorizontally(viewport.value, anchor, delta)
+            : zoomTimelineVertically(viewport.value, anchor, delta);
+        if (action === "verticalZoom") void applyScroll();
     }
     scheduleSave();
 }
 function preventMiddleDefault(event: MouseEvent) {
     if (event.button === 1) event.preventDefault();
 }
-function beginPan(event: PointerEvent) {
-    if (event.button !== 1 || !root.value) return;
+function beginMiddleDrag(event: PointerEvent) {
+    const surface = root.value;
+    if (event.button !== 1 || !surface || middleDrag.value) return;
+    const targetTimeline = event.target instanceof Element ? event.target.closest(".timeline-scope") : null;
+    if (targetTimeline && targetTimeline !== surface) return;
     event.preventDefault();
-    pan.value = { pointerId: event.pointerId, x: event.clientX, y: event.clientY,
-        view: { ...viewport.value, scrollTop: root.value.scrollTop } };
-    panMoved = false;
-    root.value.setPointerCapture(event.pointerId);
+    event.stopPropagation();
+    middleDrag.value = { pointerId: event.pointerId, x: event.clientX, y: event.clientY,
+        action: timelineMiddleDragAction(event) };
+    middleDragMoved = false;
+    surface.setPointerCapture(event.pointerId);
 }
-function movePan(event: PointerEvent) {
-    if (!pan.value || event.pointerId !== pan.value.pointerId) return;
-    const moved = moveMiddlePan({ ...pan.value, view: { ...viewport.value } }, event.buttons, event.clientX, event.clientY);
-    if (!moved) { endPan(); return; }
-    if (event.clientX === pan.value.x && event.clientY === pan.value.y) return;
-    panMoved = true;
-    pan.value = { ...pan.value, x: event.clientX, y: event.clientY, view: moved };
+function updateMiddleDrag(event: PointerEvent) {
+    const drag = middleDrag.value;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const view = viewport.value;
+    const { action } = drag;
+    const anchor = action !== "pan" && (action === "verticalZoom" ? event.clientX !== drag.x : event.clientY !== drag.y)
+        ? zoomAnchor(action, event) : 0;
+    const moved = moveMiddleDrag(view, drag, event.buttons, event.clientX, event.clientY, anchor);
+    if (!moved) { endMiddleDrag(); return; }
+    if (event.clientX === drag.x && event.clientY === drag.y) return;
+    middleDrag.value = { ...drag, x: event.clientX, y: event.clientY };
+    if (moved === view) return;
+    middleDragMoved = true;
     viewport.value = moved;
-    void applyScroll();
+    if (drag.action !== "horizontalZoom") void applyScroll();
     scheduleSave();
 }
-function endPan(event?: PointerEvent) {
-    if (!pan.value || (event && event.pointerId !== pan.value.pointerId)) return;
-    const pointerId = pan.value.pointerId;
-    pan.value = null;
+function endMiddleDrag(event?: PointerEvent) {
+    const pointerId = middleDrag.value?.pointerId;
+    if (pointerId === undefined || (event && event.pointerId !== pointerId)) return;
+    middleDrag.value = null;
     if (root.value?.hasPointerCapture(pointerId)) root.value.releasePointerCapture(pointerId);
-    if (!panMoved) return;
+    if (!middleDragMoved) return;
     clearTimeout(saveTimer);
     saveTimer = undefined;
     save();
 }
-const blurred = () => endPan();
+const blurred = () => endMiddleDrag();
 onMounted(() => {
     observer = new ResizeObserver((entries) => {
         for (const entry of entries) if (entry.target === timeRegion.value) timeWidth.value = entry.contentRect.width;
@@ -139,16 +155,17 @@ onBeforeUnmount(() => {
     disposed = true;
     observer?.disconnect();
     window.removeEventListener("blur", blurred);
-    if (pan.value) endPan();
+    if (middleDrag.value) endMiddleDrag();
     if (saveTimer) { clearTimeout(saveTimer); save(); }
 });
 </script>
 
 <template>
-    <section ref="root" class="timeline-scope" :class="{ panning: !!pan }" aria-label="Project timeline"
+    <section ref="root" class="timeline-scope"
+        :data-middle-drag="middleDrag?.action" aria-label="Project timeline"
         :style="scrollbarStyle" :data-has-selection="selectedLaneIndex >= 0"
-        @wheel="wheel" @scroll="scrolled" @pointerdown="beginPan" @pointermove="movePan"
-        @pointerup="endPan" @pointercancel="endPan" @lostpointercapture="endPan"
+        @wheel="wheel" @scroll="scrolled" @pointerdown.capture="beginMiddleDrag" @pointermove="updateMiddleDrag"
+        @pointerup="endMiddleDrag" @pointercancel="endMiddleDrag" @lostpointercapture="endMiddleDrag"
         @mousedown="preventMiddleDefault" @auxclick="preventMiddleDefault">
         <header class="timeline-heading">
             <div class="node-column playback-position" data-status-hint="Space ▶/Ⅱ">
@@ -192,7 +209,9 @@ onBeforeUnmount(() => {
 .timeline-scope::-webkit-scrollbar-thumb:active { background-color: var(--vscode-scrollbarSlider-activeBackground); }
 .timeline-scope::-webkit-scrollbar-button { display: none; }
 .timeline-scope::-webkit-scrollbar-corner { background: transparent; }
-.timeline-scope.panning { cursor: grabbing; }
+.timeline-scope[data-middle-drag="pan"] { cursor: grabbing; }
+.timeline-scope[data-middle-drag="horizontalZoom"] { cursor: ns-resize; }
+.timeline-scope[data-middle-drag="verticalZoom"] { cursor: ew-resize; }
 .time-region { min-width: 0; }
 .timeline-heading { display: grid; grid-template-columns: var(--node-label-width) minmax(0, 1fr); }
 .timeline-heading { box-sizing: border-box; position: sticky; top: 0; z-index: 1; background: var(--vscode-editor-background); flex: 0 0 var(--timeline-header-height); border-bottom: 1px solid var(--vscode-panel-border); }

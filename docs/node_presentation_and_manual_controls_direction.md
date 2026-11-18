@@ -103,11 +103,21 @@ The owner specified these viewport interactions on 2026-11-12:
 | Shift + scroll | Horizontal scroll |
 | Ctrl + scroll | Horizontal zoom |
 | Hold the middle mouse button and move | Simultaneous horizontal and vertical scroll |
+| Alt + middle-button drag | Vertical zoom from horizontal mouse movement |
+| Ctrl + middle-button drag | Horizontal zoom from vertical mouse movement |
 | Quick middle click | No special action; never enter a persistent movement mode |
 
 Middle-button movement ends on release or cancellation. Viewport navigation
 does not modify graph nodes or port data. Zoom preserves the position under the
 pointer where the scroll bounds permit it.
+The middle-button press selects the zoom axis. With Alt, drag right to zoom
+in vertically or left to zoom out at the cursor's current height. With Ctrl,
+drag up to zoom in horizontally or down to zoom out at the cursor's current
+horizontal position. Movement along the anchor axis alone leaves the view
+unchanged. Ctrl takes precedence when both Ctrl and Alt are held.
+The earlier gestures used the press position as the anchor for
+[horizontal zoom](./historical/vue_middle_zoom_before_live_horizontal_anchor.md)
+and [vertical zoom](./historical/vue_middle_zoom_before_live_vertical_anchor.md).
 
 A timeline is a reusable client display feature that a presentation can use
 when appropriate. It is not required for every node. The default lane must
@@ -1034,8 +1044,8 @@ lane interface. They do not claim that the current client implements them._
 
 ### Navigation, selection, and lane order
 
-- Alt + middle-button drag uses vertical mouse movement for vertical zoom, with
-  the same effect as Alt + wheel.
+- Alt + middle-button drag uses horizontal mouse movement for vertical zoom
+  at the cursor's current height.
 - Ctrl + middle-button drag uses vertical mouse movement for horizontal zoom,
   with the same effect as Ctrl + wheel.
 - Support multiple selected lanes. Ctrl-click toggles a lane in the selection.

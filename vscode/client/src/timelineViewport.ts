@@ -23,12 +23,14 @@ export function readTimelineViewport(value: Partial<TimelineViewport> | undefine
     };
 }
 
-export type TimelineWheelAction = "verticalScroll" | "verticalZoom" | "horizontalScroll" | "horizontalZoom";
-export function timelineWheelAction(modifiers: { ctrlKey: boolean; altKey: boolean; shiftKey: boolean }): TimelineWheelAction {
-    if (modifiers.ctrlKey) return "horizontalZoom";
-    if (modifiers.altKey) return "verticalZoom";
-    if (modifiers.shiftKey) return "horizontalScroll";
-    return "verticalScroll";
+export type TimelineZoomAction = "verticalZoom" | "horizontalZoom";
+export type TimelineWheelAction = "verticalScroll" | "horizontalScroll" | TimelineZoomAction;
+type ZoomModifiers = { ctrlKey: boolean; altKey: boolean };
+function timelineZoomAction(modifiers: ZoomModifiers): TimelineZoomAction | null {
+    return modifiers.ctrlKey ? "horizontalZoom" : modifiers.altKey ? "verticalZoom" : null;
+}
+export function timelineWheelAction(modifiers: ZoomModifiers & { shiftKey: boolean }): TimelineWheelAction {
+    return timelineZoomAction(modifiers) ?? (modifiers.shiftKey ? "horizontalScroll" : "verticalScroll");
 }
 
 export function wheelPixels(delta: number, mode: number, pageSize: number): number {
@@ -47,9 +49,19 @@ export function zoomTimelineVertically(view: TimelineViewport, pointerY: number,
     return { ...view, laneHeight, scrollTop: Math.max(0, lanePosition * laneHeight - pointerY) };
 }
 
-export type MiddlePan = { pointerId: number; x: number; y: number; view: TimelineViewport };
-export function moveMiddlePan(pan: MiddlePan, buttons: number, x: number, y: number): TimelineViewport | null {
+export type MiddleDrag = { pointerId: number; x: number; y: number; action: "pan" | TimelineZoomAction };
+export function timelineMiddleDragAction(modifiers: ZoomModifiers): MiddleDrag["action"] {
+    return timelineZoomAction(modifiers) ?? "pan";
+}
+const middleDragZoomSensitivity = 2;
+export function moveMiddleDrag(view: TimelineViewport, drag: MiddleDrag, buttons: number, x: number, y: number,
+    anchor: number): TimelineViewport | null {
     if (!(buttons & 4)) return null;
-    return { ...pan.view, beginSeconds: pan.view.beginSeconds - (x - pan.x) * pan.view.secondsPerPixel,
-        scrollTop: Math.max(0, pan.view.scrollTop - (y - pan.y)) };
+    const dx = x - drag.x;
+    const dy = y - drag.y;
+    if (drag.action === "verticalZoom") return dx ? zoomTimelineVertically(view, anchor, -dx * middleDragZoomSensitivity) : view;
+    if (drag.action === "horizontalZoom") return dy ? zoomTimelineHorizontally(view, anchor, dy * middleDragZoomSensitivity) : view;
+    if (dx === 0 && dy === 0) return view;
+    return { ...view, beginSeconds: view.beginSeconds - dx * view.secondsPerPixel,
+        scrollTop: Math.max(0, view.scrollTop - dy) };
 }

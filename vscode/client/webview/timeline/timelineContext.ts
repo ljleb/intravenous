@@ -5,6 +5,10 @@ const timeWindowKey: InjectionKey<Readonly<Ref<PresentationTimeWindow>>> = Symbo
 export function provideTimelineWindow(window: Readonly<Ref<PresentationTimeWindow>>): void { provide(timeWindowKey, window); }
 export function useTimelineWindow(): Readonly<Ref<PresentationTimeWindow>> | null { return inject(timeWindowKey, null); }
 
-const wheelHandlerKey: InjectionKey<(event: WheelEvent) => void> = Symbol("iv.timelineWheelHandler");
-export function provideTimelineWheelHandler(handler: (event: WheelEvent) => void): void { provide(wheelHandlerKey, handler); }
-export function useTimelineWheelHandler(): ((event: WheelEvent) => void) | null { return inject(wheelHandlerKey, null); }
+type TimelineNavigation = {
+    wheel: (event: WheelEvent) => void;
+    beginMiddleDrag: (event: PointerEvent) => void;
+};
+const navigationKey: InjectionKey<TimelineNavigation> = Symbol("iv.timelineNavigation");
+export function provideTimelineNavigation(navigation: TimelineNavigation): void { provide(navigationKey, navigation); }
+export function useTimelineNavigation(): TimelineNavigation | null { return inject(navigationKey, null); }

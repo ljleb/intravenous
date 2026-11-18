@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { addressKey, type GraphScopeConnection } from "../../src/graphScope";
 import { canMoveConnectionEnd, connectionEndsAtPort, type GraphConnectionEnd, type GraphPortEndpoint } from "../../src/graphConnectionEditing";
 import { useOptionalGraphEditor } from "../graph/context";
-import { useTimelineWheelHandler } from "../timeline/timelineContext";
+import { useTimelineNavigation } from "../timeline/timelineContext";
 import { useNode } from "./nodeContext";
 import { portDescription, portTypeSummary } from "./nodeSummary";
 import type { SemanticPort, SemanticPortDirection } from "./semanticNode";
@@ -16,7 +16,7 @@ import { lanePortLayout } from "../../src/lanePortLayout";
 
 const node = useNode();
 const editor = useOptionalGraphEditor();
-const timelineWheel = useTimelineWheelHandler();
+const timelineNavigation = useTimelineNavigation();
 const manualControls = useOptionalManualControls();
 const editingControl = computed(() => {
     void manualControls?.version.value;
@@ -484,7 +484,8 @@ onBeforeUnmount(() => {
             :style="[panelPosition, { '--output-knob-column': outputKnobColumn(panelKnobSize) }]"
             :aria-hidden="!panelPositioned"
             :data-port-group="expanded" :data-node-key="nodeKey" :data-direction="expanded"
-            @iv-hoverleave="leave" @focusout="leaveFocus" @keydown.esc="closePanel" @wheel="timelineWheel?.($event)">
+            @iv-hoverleave="leave" @focusout="leaveFocus" @keydown.esc="closePanel"
+            @wheel="timelineNavigation?.wheel($event)" @pointerdown.capture="timelineNavigation?.beginMiddleDrag($event)">
             <div class="expansion-body">
                 <template v-if="chooserPort">
                     <div v-for="(end, index) in choices" :key="end.connection.id" class="port-row"
