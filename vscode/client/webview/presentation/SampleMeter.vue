@@ -6,8 +6,9 @@ import { numericTicks } from "../timeline/geometry";
 import RulerGraduations from "../timeline/RulerGraduations.vue";
 import { rightClickHint } from "../../src/statusBarText";
 
-const props = defineProps<{ mode: MeterMode; label: string; result?: ObservationDisplayValue; active?: boolean }>();
-const root = ref<HTMLElement | null>(null), width = ref(0), height = ref(0);
+const props = defineProps<{ mode: MeterMode; label: string; result?: ObservationDisplayValue; active?: boolean;
+    showScaleLabels: boolean }>();
+const root = ref<HTMLElement | null>(null), width = ref(0);
 const domain = computed(() => props.mode === "level" ? levelDomain : valueDomain);
 const presentation = new MeterPresentationState();
 const motionVersion = ref(0);
@@ -48,17 +49,15 @@ const ariaValue = computed(() => reading.value.available && !updating.value
 const meterHint = computed(() => `${props.label} · ${status.value} · ${rightClickHint} scale`);
 let resize: ResizeObserver | undefined;
 onMounted(() => {
-    resize = new ResizeObserver(([entry]) => {
-        width.value = entry?.contentRect.width ?? 0;
-        height.value = entry?.contentRect.height ?? 0;
-    });
+    resize = new ResizeObserver(([entry]) => { width.value = entry?.contentRect.width ?? 0; });
     if (root.value) resize.observe(root.value);
 });
 onBeforeUnmount(() => { stopAnimation(); resize?.disconnect(); });
 </script>
 
 <template>
-    <div ref="root" class="sample-meter" :class="{ unavailable: !reading.available, 'over-reference': reading.overReference, 'held-over-reference': reading.heldOverReference, short: height < 23 }"
+    <div ref="root" class="sample-meter" :class="{ unavailable: !reading.available, 'over-reference': reading.overReference,
+        'held-over-reference': reading.heldOverReference, 'hide-scale-labels': !showScaleLabels }"
         :data-mode="mode" :data-below="reading.available && reading.below" :data-above="reading.available && reading.above"
         role="meter" tabindex="0" aria-haspopup="menu" :aria-label="label" :aria-valuemin="domain.min" :aria-valuemax="domain.max"
         :aria-valuenow="ariaValue" :aria-valuetext="status" :aria-busy="updating"
@@ -79,6 +78,6 @@ onBeforeUnmount(() => { stopAnimation(); resize?.disconnect(); });
 .over-reference .peak-fill, .held-over-reference .reading-mark { background: #f0b45c; }
 .unavailable { background: repeating-linear-gradient(135deg, transparent, transparent 7px, color-mix(in srgb, var(--vscode-foreground) 4%, transparent) 7px, color-mix(in srgb, var(--vscode-foreground) 4%, transparent) 8px); }
 .unavailable-mark { position: absolute; right: 5px; bottom: 1px; opacity: .6; }
-.short :deep(.ruler-tick span) { display: none; }
+.hide-scale-labels :deep(.ruler-tick span) { display: none; }
 .sample-meter:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 </style>

@@ -13,6 +13,7 @@ type GraphEditorContext = {
     selectedLane: Readonly<Ref<string | null>>;
     selectLane: (address: NodeAddress) => void;
     portsChanged: () => void;
+    elementAtPointer: () => Element | null;
     connectionDrag: Ref<PortConnectionDrag | null>;
     hoveredPortGroup: Ref<{ nodeKey: string; direction: "input" | "output" } | null>;
     startConnection: (event: PointerEvent, port: GraphPortEndpoint, edit?: GraphConnectionEnd) => void;

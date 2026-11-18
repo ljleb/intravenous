@@ -11,6 +11,7 @@ import type { MeterMode } from "../../src/observations";
 import type { NodeDisplayMode } from "./displayMode";
 
 const props = defineProps<{ mode?: NodeDisplayMode; bounds?: { min: number; max: number } }>();
+const showScaleLabels = computed(() => props.mode === "editable" || props.mode === undefined);
 
 const node = useNode();
 const observations = useObservations();
@@ -152,7 +153,8 @@ onBeforeUnmount(() => {
             @contextmenu="openMenu($event, output.member)" @keydown="openMenu($event, output.member)">
             <div class="output-channels">
                 <div v-for="item in output.channels" :key="JSON.stringify([node.definitionId, item.id])" class="channel">
-                    <SampleMeter :mode="output.mode" :label="channelLabel(item)" :result="item.result" :active="visible" />
+                    <SampleMeter :mode="output.mode" :label="channelLabel(item)" :result="item.result" :active="visible"
+                        :show-scale-labels="showScaleLabels" />
                 </div>
             </div>
         </div>
@@ -183,15 +185,12 @@ onBeforeUnmount(() => {
 .channel { display: flex; flex: 1; align-items: stretch; gap: 5px; min-height: 0; min-width: 0; }
 .state-field { display: flex; align-items: center; gap: 8px; font-size: 11px; }
 output { font-variant-numeric: tabular-nums; }
-[data-mode="nano"] .state-field { display: none; }
+:is([data-mode="mini"], [data-mode="nano"]).live-outputs { gap: 0; }
+:is([data-mode="mini"], [data-mode="nano"]) .state-field { display: none; }
+:is([data-mode="mini"], [data-mode="nano"]) .output-channels { gap: 1px; }
 .visualization-menu { position: fixed; z-index: 1000; min-width: 160px; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border)); border-radius: 4px; background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); color: var(--vscode-menu-foreground, var(--vscode-foreground)); box-shadow: 0 2px 8px var(--vscode-widget-shadow); }
 .visualization-menu.positioning { visibility: hidden; pointer-events: none; }
 .visualization-menu button { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 8px; border: 0; border-radius: 2px; background: transparent; color: inherit; font: inherit; text-align: left; white-space: nowrap; cursor: pointer; }
 .visualization-menu button span { width: 12px; }
 .visualization-menu button:hover, .visualization-menu button:focus { outline: none; color: var(--vscode-menu-selectionForeground, var(--vscode-list-activeSelectionForeground)); background: var(--vscode-menu-selectionBackground, var(--vscode-list-activeSelectionBackground)); }
-@container node-lane (max-height: 40px) {
-    .live-outputs { gap: 0; }
-    .state-field { display: none; }
-    .output-channels { gap: 1px; }
-}
 </style>

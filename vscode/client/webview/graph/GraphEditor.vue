@@ -256,6 +256,10 @@ provideGraphEditor({ layout, save,
     scope: computed(() => state.value.scope), shiftHeld: computed(() => hoverShift.value.held),
     connectionDrag, hoveredPortGroup, startConnection, cancelConnection,
     selectedLane, selectLane: (address) => { selectedLane.value = addressKey(address); }, portsChanged: scheduleWireUpdate,
+    elementAtPointer: () => {
+        const element = trustedHover.elementAtPointer();
+        return element instanceof Element ? element : null;
+    },
 });
 
 function measureWireAnchor(element: HTMLElement, id: string, direction: "input" | "output"): PortWireAnchor | null {

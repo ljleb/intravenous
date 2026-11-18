@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from "vue";
 
 import { effectiveDisplayMode, type NodeDisplayMode, type NodeViewChoice } from "./displayMode";
 import { provideNode } from "./nodeContext";
@@ -19,7 +19,7 @@ const props = defineProps<{
     lane?: boolean;
 }>();
 const emit = defineEmits<{ copyDebugDetails: [] }>();
-provideLane(props.lane ? { copyDebugDetails: () => emit("copyDebugDetails") } : null);
+provideLane(props.lane ? { copyDebugDetails: () => emit("copyDebugDetails"), regionHeight: toRef(() => props.regionHeight) } : null);
 
 const nodeEvents = useNodeEventMessaging();
 const semanticNode = computed(() => {

@@ -134,6 +134,8 @@ input control**, not two unrelated rows. Favor a compact composition with the
 name to the right of the combined control. Keep separate pointer targets and
 normal port/knob gestures, even if their visuals appear joined. Directly shown
 inputs and temporarily expanded port lists must use the same composition.
+Place a knob's label close to its upper-right edge for inputs and its
+upper-left edge for outputs.
 The input name must remain readable when cables cross the lane area; cable
 layout/opacity must not obscure it.
 
@@ -215,6 +217,19 @@ port's actual geometry while the extension is open and collapse coherently
 when it closes. The earlier standalone folded-slot placement is preserved
 [historically](./historical/vue_nested_port_clip_scale_and_ruler_input_before_2026-11-16.md#previous-folded-port-slot-geometry).
 
+When a side has hidden ports, show one dim ellipsis at the bottom of the
+header. Center the three spaced dots below the last visible knob or port.
+The [earlier indicator](./historical/vue_port_overflow_indicator_before_header_footer.md)
+used a vertical stack.
+As the lane shrinks, step from full-size knobs to compact knobs and then to
+the folded port indicators. At mini and smaller heights, show a single port
+symbol or a stack on each side. Each symbol opens a popover with full-size
+controls and enough room for names to wrap.
+
+In `editable`, keep the port rows below the lane name and show meter scale
+labels. At the transition to `mini`, place the port symbols beside the lane
+name and hide the meter scale labels as automation becomes read-only.
+
 Do **not** render the knob's numeric value permanently beside the input. The
 existing VS Code status item remains the lightweight value/shortcut readout
 during hover and manipulation. Explore a temporary knob popover, shown on
@@ -286,6 +301,10 @@ with **no minimum or maximum** on the signed gain. The client presents a
 magnitude knob with minimum **`0`**, no maximum, and default **`1`**. A separate
 polarity toggle selects normal or inverted output. The client combines
 magnitude and polarity into the existing signed backend value.
+
+Place output names to the left of their port circles in direct rows and
+folded rows. Show `+` for normal polarity and `−` for inverted polarity on
+the toggle beside the gain knob. Keep `+` subdued and highlight `−`.
 
 This UI contract is the owner's 2026-11-17 revision. The earlier signed-knob
 presentation is preserved [historically](./historical/output_gain_ui_before_2026-11-17/vue_presentation_refinement_direction.md).

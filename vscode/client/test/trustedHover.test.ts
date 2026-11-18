@@ -103,6 +103,21 @@ test("content changing under a resting pointer, and leaving the window, update h
     assert.equal(freq.attributes.size, 0);
 });
 
+test("layout can hit-test the trusted pointer before hover transitions run", () => {
+    const { hover, log, move, layout, freq, detune, capture, lock } = page();
+    assert.equal(hover.elementAtPointer(), null);
+    move(10, 10);
+    assert.equal(hover.elementAtPointer(), freq);
+    layout.set("10,10", detune);
+    assert.equal(hover.elementAtPointer(), detune);
+    assert.deepEqual(log, ["enter editor", "enter lane", "enter freq"]);
+    capture(true);
+    assert.equal(hover.elementAtPointer(), null);
+    capture(false);
+    lock(true);
+    assert.equal(hover.elementAtPointer(), null);
+});
+
 test("status refreshes under a stationary pointer and clears when the pointer leaves", () => {
     const displayed: Array<string | null> = [];
     const { freq, detune, move, domChanged, flush, out, capture } = page((target) => displayed.push(target?.status ?? null));

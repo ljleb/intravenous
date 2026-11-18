@@ -3794,3 +3794,43 @@ Selected cables fade to the same faint level near the visible text and
 brighten away from it. The dial boxes grow to 24 pixels in compact rows and
 31 pixels in taller rows when space allows. At minimum lane height, ports
 still use the folded slot.
+
+`NodePortRow.vue` centers three dim dots beneath the last visible knob on
+each side with hidden ports. If the row has no knob, the dots sit under its
+port. The compact header makes room for the 24-pixel knob and its 8-pixel
+indicator. If the row and dots do not fit, the folded slot shows a single
+port circle or a stack of two.
+
+The overflow dots now sit in a horizontal row at the bottom of the header.
+The last visible knob or port sets their horizontal position.
+The folded rows start one row gap below the last visible control, even when
+the dots sit farther down.
+The dots use solid 2-pixel marks. Port popovers pass modified wheel events
+to the timeline. Plain wheel input scrolls the popover.
+
+Output names sit to the left of their port circles. Folded output rows
+keep the same right edge as the direct rows, so longer names can extend
+left while the controls line up. The polarity button beside the gain knob
+shows `+` or `−` and preserves the gain magnitude when toggled.
+
+The polarity button sits close to the dial. The normal sign is dim and the
+inverted sign has a blue background. After zoom changes the port layout,
+the editor checks the pointer again and opens the continuation if the
+hovered side has hidden ports.
+
+The continuation starts at the next row position with no extra top padding.
+Input knob labels sit near the upper right of the dial. Output knob labels
+sit near the upper left.
+
+At mini heights, both single and grouped ports fold into port symbols. The
+standalone popover shows full-size knobs and wraps long port names. It can
+shift inside the viewport to retain room for the names near an edge.
+
+`NodeLane.vue`, `LiveOutputMeters.vue`, and automation editing use the
+same `editable` to `mini` transition. Knob rows stay beneath the lane name
+throughout `editable`. The stereo channel height no longer sets an earlier
+cutoff for meter scale labels.
+
+On zoom, `NodePorts.vue` reads the current port area height and waits for the
+resized rows before placing a hover popover. An open continuation also
+realigns when the knob size changes and the same ports stay visible.

@@ -71,9 +71,7 @@ function step(direction: number) {
             aria-description="Changes the sign and keeps the magnitude"
             @pointerdown.stop @click.stop="control.invert" @contextmenu.stop.prevent
             @focus="control.hover(true)" @blur="control.hover(false)">
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-                <circle cx="8" cy="8" r="4.5" /><path d="M 3 13 L 13 3" />
-            </svg>
+            <span aria-hidden="true">{{ control.inverted.value ? '−' : '+' }}</span>
         </button>
         <span v-if="state?.error" class="manual-error" :data-status-hint="state.error"
             role="img" :aria-label="`Manual control error. ${state.error}`">!</span>
@@ -88,16 +86,20 @@ function step(direction: number) {
 
 <style scoped>
 .manual-input { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; min-width: 0; padding: 0 4px; }
+.manual-input[data-direction="output"] { position: relative; gap: 0; }
 .manual-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .manual-knob { display: block; width: var(--knob-size, 30px); height: var(--knob-size, 30px); padding: 0; border: 0; border-radius: 50%;
     background: transparent; color: var(--vscode-terminal-ansiYellow); cursor: ns-resize; touch-action: none; user-select: none; }
 .manual-knob svg { display: block; width: 100%; height: 100%; }
 .manual-input[data-direction="output"] .manual-knob, .knob-preview[data-direction="output"] { color: var(--vscode-terminal-ansiBlue); }
-.output-invert { flex: 0 0 16px; width: 16px; height: 20px; padding: 1px; border: 0; border-radius: 3px;
-    background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; }
-.output-invert svg { display: block; width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.25; }
-.output-invert:hover:not(:disabled), .output-invert.inverted { color: var(--vscode-terminal-ansiBlue);
-    background: color-mix(in srgb, var(--vscode-terminal-ansiBlue) 12%, transparent); }
+.output-invert { display: grid; place-items: center; flex: 0 0 var(--output-polarity-width, 12px);
+    width: var(--output-polarity-width, 12px); height: 20px; margin-inline-start: calc(-1 * var(--output-polarity-inset, 2px));
+    padding: 0; border: 0; border-radius: 3px; background: transparent; cursor: pointer;
+    color: color-mix(in srgb, var(--vscode-descriptionForeground) 55%, var(--vscode-editor-background));
+    font: 600 12px / 1 var(--vscode-editor-font-family, monospace); }
+.output-invert > span { display: grid; place-items: center; width: 100%; height: 12px; border-radius: 3px; }
+.output-invert[data-hovered]:not(:disabled) { color: var(--vscode-terminal-ansiBlue); }
+.output-invert.inverted > span { color: var(--vscode-editor-background); background: var(--vscode-terminal-ansiBlue); }
 .output-invert:disabled { opacity: .4; cursor: default; }
 .output-invert:focus-visible { outline: 1px solid var(--vscode-terminal-ansiBlue); outline-offset: 1px; }
 .manual-knob { flex: 0 0 var(--knob-size, 30px); }
@@ -112,6 +114,7 @@ function step(direction: number) {
 .manual-knob:disabled { cursor: default; opacity: .4; }
 .inactive .manual-name { color: var(--vscode-descriptionForeground); }
 .manual-error { color: var(--vscode-errorForeground); }
+.manual-input[data-direction="output"] .manual-error { position: absolute; top: 0; left: 0; font-size: 11px; line-height: 1; }
 .knob-preview { position: fixed; z-index: 35; transform: translateX(-50%); pointer-events: none;
     display: grid; justify-items: center; gap: 2px; padding: 4px 8px;
     color: var(--vscode-terminal-ansiYellow); background: var(--vscode-editorWidget-background);

@@ -85,6 +85,11 @@ export class TrustedHover {
 
     private frozen(): boolean { return this.env.locked() || this.captured.size !== 0; }
 
+    // Layout owners can recheck the last trusted position before hover events refresh.
+    elementAtPointer(): HoverElement | null {
+        return !this.frozen() && this.position ? this.env.elementAt(this.position) : null;
+    }
+
     private moved(event: PointerFields): void {
         // Locked positions are frozen; the dragged control keeps its hover.
         if (this.env.locked()) return;

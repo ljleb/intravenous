@@ -8,7 +8,7 @@ small visual adjustments; no backend rebuild is needed for these values.
 | --- | --- |
 | Editable / mini / nano height boundaries | [`displayMode.ts`](../vscode/client/webview/presentation/displayMode.ts): `editableHeightPx` (48), `nanoHeightPx` (16) |
 | Smallest / initial / largest lane height | [`timelineViewport.ts`](../vscode/client/src/timelineViewport.ts): `minimumLaneHeight` (12), `initialTimelineViewport.laneHeight` (240), `maximumLaneHeight` (1600) |
-| Header changes from stacked to inline | [`NodeLane.vue`](../vscode/client/webview/presentation/NodeLane.vue): `@container node-lane (max-height: 56px)`; independent of the presentation mode |
+| Header changes from stacked to inline | [`NodeLane.vue`](../vscode/client/webview/presentation/NodeLane.vue) follows the `editable` to `mini` boundary. The [earlier cutoff](./historical/vue_lane_zoom_before_shared_modes.md) was independent. |
 | Lane name size and header width | `NodeLane.vue`: `.lane-name` and `--node-label-width` |
 | Scrollbar and selection marker | [`TimelineScopePresentation.vue`](../vscode/client/webview/graph/TimelineScopePresentation.vue): native `::-webkit-scrollbar` parts use VS Code theme colours; the track's gradient marks the selected lane |
 | Content spacing at small heights | `NodeLane.vue`: `.lane-content` padding grows from 0 px at height 16 to 4 px at height 48 for specialized content; `.meter-content` removes it for default meters |
@@ -19,6 +19,7 @@ small visual adjustments; no backend rebuild is needed for these values.
 | Ports that fit before folding | [`lanePortLayout.ts`](../vscode/client/src/lanePortLayout.ts), plus `NodePorts.vue`'s `portHeight()` |
 | Meter spacing and visualization context menu | [`LiveOutputMeters.vue`](../vscode/client/webview/presentation/LiveOutputMeters.vue): `.live-outputs`, `.output-channels`, `.visualization-menu`, `visualizationModes` |
 | Meter colours, fill height, marker width | [`SampleMeter.vue`](../vscode/client/webview/presentation/SampleMeter.vue): `.peak-fill`, `.reading-mark` |
+| Meter scale labels | `LiveOutputMeters.vue` shows them in `editable`, at the same height as automation point editing. |
 | Meter scale bounds | [`meterPresentation.ts`](../vscode/client/src/meterPresentation.ts): `levelDomain`, `valueDomain` |
 | Peak hold and fall speed | [`meterBallistics.ts`](../vscode/client/src/meterBallistics.ts): `holdMilliseconds`, `relativeAcceleration`; only the held marker is animated, while the fill uses the latest received peak |
 | Curve colour, stroke, point size | [`AutomationCurvePresentation.vue`](../vscode/client/webview/presentation/AutomationCurvePresentation.vue): `.curve-line`, `.curve-point`, circle `r`; the same curve path is scaled at every height |
