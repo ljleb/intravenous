@@ -65,11 +65,11 @@ test("horizontal middle zoom uses vertical motion and the supplied horizontal an
     assert.equal(moveMiddleDrag(view, drag, 4, 180, 100, 80), view);
     assert.equal(moveMiddleDrag(view, drag, 0, 180, 150, 80), null);
     for (const dy of [-50, 50]) {
-        assert.deepEqual(moveMiddleDrag(view, drag, 4, 180, 100 + dy, 80), zoomTimelineHorizontally(view, 80, dy * 2));
+        assert.deepEqual(moveMiddleDrag(view, drag, 4, 180, 100 + dy, 80), zoomTimelineHorizontally(view, 80, dy * 3));
     }
     const first = moveMiddleDrag(view, drag, 4, 120, 150, 80)!;
     const second = moveMiddleDrag(first, { ...drag, x: 120, y: 150 }, 4, 140, 175, 140);
-    assert.deepEqual(second, zoomTimelineHorizontally(first, 140, 50));
+    assert.deepEqual(second, zoomTimelineHorizontally(first, 140, 75));
 });
 
 test("vertical middle zoom uses horizontal motion and the supplied vertical anchor", () => {
@@ -78,11 +78,11 @@ test("vertical middle zoom uses horizontal motion and the supplied vertical anch
     assert.equal(moveMiddleDrag(view, drag, 4, 100, 180, 80), view);
     assert.equal(moveMiddleDrag(view, drag, 0, 150, 180, 80), null);
     for (const dx of [-50, 50]) {
-        assert.deepEqual(moveMiddleDrag(view, drag, 4, 100 + dx, 180, 80), zoomTimelineVertically(view, 80, -dx * 2));
+        assert.deepEqual(moveMiddleDrag(view, drag, 4, 100 + dx, 180, 80), zoomTimelineVertically(view, 80, -dx * 3));
     }
     const first = moveMiddleDrag(view, drag, 4, 150, 120, 80)!;
     const second = moveMiddleDrag(first, { ...drag, x: 150, y: 120 }, 4, 175, 140, 140);
-    assert.deepEqual(second, zoomTimelineVertically(first, 140, -50));
+    assert.deepEqual(second, zoomTimelineVertically(first, 140, -75));
 });
 
 test("vertical middle zoom can reverse immediately after hitting the scale limit", () => {

@@ -3844,4 +3844,4 @@ vertical zoom and Ctrl + middle-button drag for horizontal zoom. Alt uses
 horizontal movement and anchors at the cursor's current height. Ctrl uses
 vertical movement and anchors at the cursor's current horizontal position.
 Port popovers forward the same gestures to the timeline. Each pixel of drag
-applies twice the zoom of a pixel of wheel input.
+applies three times the zoom of a pixel of wheel input.

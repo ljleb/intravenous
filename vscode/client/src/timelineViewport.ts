@@ -53,7 +53,7 @@ export type MiddleDrag = { pointerId: number; x: number; y: number; action: "pan
 export function timelineMiddleDragAction(modifiers: ZoomModifiers): MiddleDrag["action"] {
     return timelineZoomAction(modifiers) ?? "pan";
 }
-const middleDragZoomSensitivity = 2;
+const middleDragZoomSensitivity = 3;
 export function moveMiddleDrag(view: TimelineViewport, drag: MiddleDrag, buttons: number, x: number, y: number,
     anchor: number): TimelineViewport | null {
     if (!(buttons & 4)) return null;
