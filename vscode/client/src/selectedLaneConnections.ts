@@ -9,6 +9,8 @@ export type SelectedLaneWire = {
     target: PortWireAnchor;
     connectionIds: string[];
     applied: boolean;
+    kind: GraphPortEndpoint["kind"] | "mixed";
+    emphasized: boolean;
 };
 
 export function portEndpointKey(port: GraphPortEndpoint): string {
@@ -27,9 +29,10 @@ export function connectionEndKey(connectionId: string, port: GraphPortEndpoint):
 // drawing's visible endpoint pairs; preserve the underlying connection IDs.
 export function selectedLaneConnections(scope: GraphScope, selected: string | null,
     anchorFor: (port: GraphPortEndpoint, connectionId: string) => PortWireAnchor | null,
-    revealedEnds: readonly RevealedConnectionEnd[] = []): SelectedLaneWire[] {
+    revealedEnds: readonly RevealedConnectionEnd[] = [],
+    context?: { top: number; bottom: number }): SelectedLaneWire[] {
     const node = scope.nodes.find((entry) => addressKey(entry.address) === selected);
-    if (!node && !revealedEnds.length) return [];
+    if (!node && !revealedEnds.length && !context) return [];
     const revealed = new Map<string, Set<string>>();
     for (const end of revealedEnds) {
         const ports = revealed.get(end.connectionId) ?? new Set<string>();
@@ -39,7 +42,7 @@ export function selectedLaneConnections(scope: GraphScope, selected: string | nu
     const wires = new Map<string, SelectedLaneWire>();
     for (const entry of scope.connections) {
         const { connection } = entry;
-        if (!revealed.has(entry.id) && (!node || ![...connection.outputs, ...connection.inputs]
+        if (!context && !revealed.has(entry.id) && (!node || ![...connection.outputs, ...connection.inputs]
             .some((matcher) => matcher.instanceId === node.instance.instanceId))) continue;
         const resolve = (direction: "input" | "output") => {
             const matchers = direction === "input" ? connection.inputs : connection.outputs;
@@ -69,16 +72,21 @@ export function selectedLaneConnections(scope: GraphScope, selected: string | nu
         const inputs = resolve("input");
         for (const output of outputs) {
             for (const input of inputs) {
-                if (!output.selected && !input.selected && !output.revealed && !input.revealed) continue;
                 const source = output.anchor;
                 const target = input.anchor;
+                const emphasized = output.selected || input.selected || output.revealed || input.revealed;
+                if (!emphasized && (!context || source.y < context.top || source.y > context.bottom
+                    || target.y < context.top || target.y > context.bottom)) continue;
                 const key = JSON.stringify([source.id, target.id]);
                 const existing = wires.get(key);
                 if (existing) {
                     if (!existing.connectionIds.includes(entry.id)) existing.connectionIds.push(entry.id);
                     existing.applied = existing.applied && entry.applied;
+                    existing.emphasized ||= emphasized;
+                    if (existing.kind !== connection.kind) existing.kind = "mixed";
                 } else {
-                    wires.set(key, { key, source, target, connectionIds: [entry.id], applied: entry.applied });
+                    wires.set(key, { key, source, target, connectionIds: [entry.id], applied: entry.applied,
+                        kind: connection.kind, emphasized });
                 }
             }
         }

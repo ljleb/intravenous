@@ -4,11 +4,12 @@ import { addressKey, type GraphScopeConnection } from "../../src/graphScope";
 import { canMoveConnectionEnd, connectionEndsAtPort, type GraphConnectionEnd, type GraphPortEndpoint } from "../../src/graphConnectionEditing";
 import { useOptionalGraphEditor } from "../graph/context";
 import { useNode } from "./nodeContext";
-import { portDescription } from "./nodeSummary";
+import { portDescription, portTypeSummary } from "./nodeSummary";
 import type { SemanticPort, SemanticPortDirection } from "./semanticNode";
 import { acceptsPortConnection } from "../../src/portConnectionGesture";
 import { portSlotKey } from "../../src/selectedLaneConnections";
 import ManualInput from "./ManualInput.vue";
+import NodePortRow from "./NodePortRow.vue";
 import { useOptionalManualControls } from "./manualControlContext";
 import { lanePortLayout } from "../../src/lanePortLayout";
 
@@ -21,10 +22,11 @@ const editingControl = computed(() => {
 });
 const hasKnob = (port: SemanticPort) => port.kind === "continuous"
     && !!port.manualControl?.available;
-const portHeight = (port: SemanticPort) => hasKnob(port) ? 30 : 22;
 const panel = ref<HTMLElement | null>(null);
 const portArea = ref<HTMLElement | null>(null);
 const portAreaHeight = ref(22);
+const knobSize = computed(() => portAreaHeight.value < 28 ? 22 : 28);
+const portHeight = (port: SemanticPort) => hasKnob(port) ? knobSize.value : 22;
 let portAreaObserver: ResizeObserver | null = null;
 const expanded = ref<SemanticPortDirection | null>(null);
 const chooserPort = ref<SemanticPort | null>(null);
@@ -35,6 +37,7 @@ let panelPositionVersion = 0;
 const panelPositioned = ref(false);
 const panelPosition = ref<Record<string, string>>({ left: "0px", top: "0px" });
 const above = ref(false);
+const continuation = ref(false);
 const groups: Partial<Record<SemanticPortDirection, HTMLElement>> = {};
 const nodeKey = computed(() => node.value.address ? addressKey(node.value.address) : "");
 const directions: SemanticPortDirection[] = ["input", "output"];
@@ -45,6 +48,8 @@ const layout = computed(() => ({
 }));
 const overflowSlots: Partial<Record<SemanticPortDirection, HTMLElement>> = {};
 const isDirect = (port: SemanticPort) => layout.value[port.direction].direct.some((entry) => portKey(entry) === portKey(port));
+const isOverflowAnchor = (port: SemanticPort) => !!layout.value[port.direction].folded.length
+    && layout.value[port.direction].direct.at(-1) === port;
 const popoverHasKnob = (port: SemanticPort) => hasKnob(port) && !isDirect(port);
 const editable = computed(() => !!editor?.scope.value?.editable && !!node.value.address);
 const shiftHeld = computed(() => editor?.shiftHeld.value ?? false);
@@ -95,15 +100,32 @@ function setOverflow(direction: SemanticPortDirection, element: unknown) {
 function expand(direction: SemanticPortDirection, origin?: DOMRect | null) {
     const group = groups[direction];
     if (!group?.isConnected || !ports(direction).length) return;
+    const anchor = origin ? null : group.querySelector<HTMLElement>(".control-row[data-folded-ports]");
+    if (anchor) {
+        const bounds = anchor.getBoundingClientRect();
+        const top = bounds.bottom;
+        ++panelPositionVersion;
+        above.value = false;
+        continuation.value = true;
+        panelPosition.value = {
+            left: `${bounds.left}px`, top: `${top}px`, minWidth: `${bounds.width}px`,
+            width: "max-content", maxWidth: `${Math.max(bounds.width, window.innerWidth - bounds.left - 4)}px`,
+            maxHeight: `${Math.max(0, window.innerHeight - top - 4)}px`,
+        };
+        panelPositioned.value = true;
+        expanded.value = direction;
+        editor?.portsChanged();
+        return;
+    }
     const rect = origin ?? overflowSlots[direction]?.getBoundingClientRect() ?? null;
     if (!validOrigin(rect)) return;
     const version = ++panelPositionVersion;
     panelPositioned.value = false;
-    const width = Math.min(340, window.innerWidth - 8);
+    continuation.value = false;
     above.value = window.innerHeight - rect.top < 180;
     panelPosition.value = {
-        left: `${Math.max(4, Math.min(rect.left, window.innerWidth - width - 4))}px`,
-        width: `${width}px`,
+        left: `${Math.max(4, Math.min(rect.left, window.innerWidth - 32))}px`,
+        width: "max-content", maxWidth: `${window.innerWidth - 8}px`,
         ...(above.value ? { bottom: `${Math.max(4, window.innerHeight - rect.bottom)}px` }
             : { top: `${Math.max(4, rect.top)}px` }),
         maxHeight: `${Math.max(40, Math.min(360, above.value ? rect.bottom - 4 : window.innerHeight - rect.top - 4))}px`,
@@ -115,7 +137,7 @@ function alignFirstRow(origin: DOMRect, version: number) {
     // Measure the rendered row, rather than assuming a font size or line height.
     void nextTick(() => {
         if (version !== panelPositionVersion || !panel.value || !expanded.value) return;
-        const firstCircle = panel.value.querySelector<HTMLElement>(".port-entry .port-circle");
+        const firstCircle = panel.value.querySelector<HTMLElement>("[data-port-endpoint] .port-circle, [data-connection-end] .port-circle");
         if (!firstCircle) return;
         const circle = firstCircle.getBoundingClientRect();
         const popup = panel.value.getBoundingClientRect();
@@ -202,7 +224,7 @@ function closeConnectionChooser() {
     if (!port || editingControl.value) return;
     ++panelPositionVersion;
     chooserPort.value = null;
-    if (isDirect(port)) closePanel();
+    if (isDirect(port) && !isOverflowAnchor(port)) closePanel();
     else expand(port.direction);
 }
 function endpoint(port: SemanticPort): GraphPortEndpoint {
@@ -229,7 +251,8 @@ function enterPort(event: Event, port: SemanticPort) {
     hoveredPortRect = rect;
     if (shiftHeld.value) openConnectionChooser(port, hoveredPortRect);
     else if (!dragPort.value && !editingControl.value
-        && expanded.value && event.currentTarget instanceof Element && !event.currentTarget.closest(".port-panel")) {
+        && expanded.value && !isOverflowAnchor(port)
+        && event.currentTarget instanceof Element && !event.currentTarget.closest(".port-panel")) {
         closePanel();
         hoveredPort.value = port;
         hoveredPortRect = rect;
@@ -263,9 +286,15 @@ function connectionLabel(connection: GraphScopeConnection["connection"]) {
     };
     return `${connection.outputs.map(label).join(", ")} → ${connection.inputs.map(label).join(", ")}`;
 }
-function portTitle(port: SemanticPort) {
-    const details = `${port.direction}: ${port.name || port.index + 1} · ${portDescription(port)}`;
-    return [details, ...portLinks(port).map((entry) => `${connectionLabel(entry.connection)}${entry.applied ? "" : " (not applied)"}`)].join("\n");
+function portStatus(port: SemanticPort) {
+    const links = portLinks(port);
+    const pending = links.filter((entry) => !entry.applied).length;
+    const first = links[0]?.connection;
+    const route = first && links.length === 1 && first.outputs.length === 1 && first.inputs.length === 1
+        ? connectionLabel(first)
+        : links.length ? `${links.length} ${links.length === 1 ? "connection" : "connections"}` : "";
+    const name = `${port.direction === "input" ? "In" : "Out"} ${port.name || port.index + 1}`;
+    return [name, route, pending ? `${pending} pending` : "", portTypeSummary(port)].filter(Boolean).join(" · ");
 }
 watch(() => editor?.hoveredPortGroup.value, (group) => {
     if (!dragPort.value) return;
@@ -305,10 +334,27 @@ function viewportChanged(event: Event) {
     if (event.target instanceof Node && panel.value?.contains(event.target)) return;
     closePanel();
 }
+function focusContinuation(direction: SemanticPortDirection) {
+    hoverGroup(direction);
+    void nextTick(async () => {
+        await nextTick();
+        panel.value?.querySelector<HTMLButtonElement>(".port-handle")?.focus({ preventScroll: true });
+    });
+}
 function dismissPanel(event: KeyboardEvent) {
     if (event.key === "Escape" && !editingControl.value) closePanel();
 }
 function windowBlurred() { if (!editingControl.value) closePanel(); }
+function leaveFocus() {
+    queueMicrotask(() => {
+        const direction = expanded.value;
+        const focused = document.activeElement;
+        if (!direction || editingControl.value || dragPort.value
+            || groups[direction]?.contains(focused) || panel.value?.contains(focused)) return;
+        if (popoverPointer) checkPopoverPointer();
+        else closePanel();
+    });
+}
 onMounted(() => {
     portAreaObserver = new ResizeObserver(([entry]) => {
         if (entry) portAreaHeight.value = entry.contentRect.height;
@@ -334,51 +380,49 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-    <div ref="portArea" class="node-ports" @iv-hoverleave="leave">
+    <div ref="portArea" class="node-ports" @iv-hoverleave="leave" @focusout="leaveFocus">
         <div v-for="direction in directions" :key="direction" :ref="(element) => setGroup(direction, element)"
             class="port-group" :data-port-group="direction" :data-node-key="nodeKey" :data-direction="direction">
-            <div v-for="port in layout[direction].direct" :key="`${port.kind}:${port.index}`"
-                class="direct-port-row" :style="{ height: `${portHeight(port)}px` }">
-                <button type="button" class="port-handle"
-                    :class="{ connected: applied(port), pending: pending(port), unavailable: destinationDirection === port.direction && !accepts(port) }"
-                    :aria-disabled="destinationDirection === port.direction && !accepts(port)"
-                    :data-port-endpoint="JSON.stringify(endpoint(port))"
-                    :title="portTitle(port)"
-                    :aria-label="`${port.direction} ${port.name || port.index + 1}`"
-                    @iv-hoverenter="enterPort($event, port)" @pointermove="enterPort($event, port)" @iv-hoverleave="hoveredPort = null"
-                    @pointerdown="start($event, port)">
-                    <span class="port-circle" />
-                </button>
-                <ManualInput v-if="hasKnob(port)" :name="port.name" :direction="port.direction"
-                    :show-value="port.direction !== 'output'" />
-                <span v-if="direction === 'input'" class="direct-port-name" :title="port.name">{{ port.name || port.index + 1 }}</span>
-            </div>
-            <div v-if="layout[direction].folded.length" :ref="(element) => setOverflow(direction, element)"
+            <NodePortRow v-for="port in layout[direction].direct" :key="portKey(port)" :port="port" :endpoint="endpoint(port)"
+                :height="portHeight(port)" :knob-size="knobSize" :has-knob="hasKnob(port)" :hint="portStatus(port)"
+                :connected="applied(port)" :pending="pending(port)" :unavailable="destinationDirection === port.direction && !accepts(port)"
+                :overflow-slot="isOverflowAnchor(port) && node.address ? portSlotKey(node.address, direction) : undefined"
+                :expanded="expanded === direction && !chooserPort"
+                @handle-hover="enterPort($event, port)" @handle-leave="hoveredPort = null"
+                @wire-start="start($event, port)" @overflow="hoverGroup(direction)" @focus-overflow="focusContinuation(direction)" />
+            <div v-if="layout[direction].folded.length && !layout[direction].direct.length" :ref="(element) => setOverflow(direction, element)"
                 class="port-slot" role="button" tabindex="0" :data-folded-ports="direction"
-                :class="{ pending: groupConnections[direction].pending, unavailable: destinationDirection === direction && !groupAccepts(direction) }"
+                :class="{ single: layout[direction].folded.length === 1,
+                    pending: groupConnections[direction].pending, unavailable: destinationDirection === direction && !groupAccepts(direction) }"
+                :data-port-kind="layout[direction].folded.every((port) => port.kind === 'event') ? 'event' : 'sample'"
                 :data-connection-state="groupConnections[direction].state"
                 :data-port-slot="node.address ? portSlotKey(node.address, direction) : undefined"
                 :aria-label="`${layout[direction].folded.length} more ${direction} ports; ${groupConnections[direction].connected} connected`" :aria-expanded="expanded === direction && !chooserPort"
                 :aria-disabled="destinationDirection === direction && !groupAccepts(direction)"
-                :title="`${layout[direction].folded.length} more ${direction} ports; ${groupConnections[direction].connected} connected`"
-                @iv-hoverenter="hoverGroup(direction)" @focus="hoverGroup(direction)" @keydown.enter="hoverGroup(direction)">
-                <span class="port-circle stacked-first" /><span class="port-circle stacked-second" />
+                :data-status-hint="`${layout[direction].folded.length} more ${direction} ports · ${groupConnections[direction].connected} connected`"
+                @iv-hoverenter="hoverGroup(direction)" @focus="hoverGroup(direction)" @keydown.enter="hoverGroup(direction)"
+                @keydown.down.prevent="focusContinuation(direction)">
+                <span class="port-circle stacked-first" />
+                <span v-if="layout[direction].folded.length > 1" class="port-circle stacked-second" />
             </div>
         </div>
     </div>
     <Teleport to="body">
-        <div v-if="expanded" ref="panel" class="port-panel" :class="{ above, positioning: !panelPositioned }" :style="panelPosition"
+        <div v-if="expanded" ref="panel" class="port-panel" :class="{ above, continuation, positioning: !panelPositioned }" :style="panelPosition"
             :aria-hidden="!panelPositioned"
             :data-port-group="expanded" :data-node-key="nodeKey" :data-direction="expanded"
-            @iv-hoverleave="leave" @keydown.esc="closePanel">
+            @iv-hoverleave="leave" @focusout="leaveFocus" @keydown.esc="closePanel">
             <div class="expansion-body">
                 <template v-if="chooserPort">
                     <div v-for="(end, index) in choices" :key="end.connection.id" class="port-row"
+                        :data-direction="end.port.direction"
                         :class="{ 'with-knob': index === 0 && popoverHasKnob(chooserPort) }">
                         <button type="button" class="port-entry connection-choice"
+                            :data-port-kind="end.port.kind"
                             :data-connection-end="JSON.stringify({ connectionId: end.connection.id, port: end.port })"
                             :class="{ connected: end.connection.applied, pending: !end.connection.applied }"
-                            :title="`${chooserPort.name} · ${portDescription(chooserPort)}\n${connectionLabel(end.connection.connection)}`"
+                            :data-status-hint="`${end.connection.applied ? '' : 'Pending · '}${connectionLabel(end.connection.connection)}`"
+                            :aria-description="`${chooserPort.name} · ${portDescription(chooserPort)}`"
                             @pointerdown="pickConnection($event, end)">
                             <span class="port-circle" /><span class="port-name">{{ connectionLabel(end.connection.connection) }}</span>
                         </button>
@@ -386,19 +430,10 @@ onBeforeUnmount(() => {
                     </div>
                 </template>
                 <template v-else>
-                    <div v-for="port in shownPorts" :key="`${port.direction}:${port.kind}:${port.index}`" class="port-row"
-                        :class="{ 'with-knob': hasKnob(port) }">
-                        <button type="button" class="port-entry"
-                            :class="{ unavailable: destinationDirection === port.direction && !accepts(port), connected: applied(port), pending: pending(port) }"
-                            :aria-disabled="destinationDirection === port.direction && !accepts(port)"
-                            :data-port-endpoint="JSON.stringify(endpoint(port))" :title="portTitle(port)"
-                            @iv-hoverenter="enterPort($event, port)" @pointermove="enterPort($event, port)" @iv-hoverleave="hoveredPort = null"
-                            @pointerdown="start($event, port)">
-                            <span class="port-circle" /><span class="port-name">{{ port.name || port.index + 1 }}</span>
-                            <small v-if="!hasKnob(port)">{{ portDescription(port) }}</small>
-                        </button>
-                        <ManualInput v-if="hasKnob(port)" :name="port.name" :direction="port.direction" />
-                    </div>
+                    <NodePortRow v-for="port in shownPorts" :key="portKey(port)" :port="port" :endpoint="endpoint(port)"
+                        :height="portHeight(port)" :knob-size="knobSize" :has-knob="hasKnob(port)" :hint="portStatus(port)"
+                        :connected="applied(port)" :pending="pending(port)" :unavailable="destinationDirection === port.direction && !accepts(port)"
+                        continuation @handle-hover="enterPort($event, port)" @handle-leave="hoveredPort = null" @wire-start="start($event, port)" />
                 </template>
             </div>
         </div>
@@ -406,44 +441,44 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.node-ports { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: start; gap: 6px; margin-top: 5px; min-height: 22px; container: lane-ports / inline-size; }
-.port-group { display: flex; flex-direction: column; gap: 3px; min-height: 22px; }
-.direct-port-row { display: flex; align-items: center; gap: 2px; min-width: 0; flex-shrink: 0; }
-.direct-port-row .port-handle { flex: 0 0 22px; }
-.direct-port-row > .manual-input { box-sizing: border-box; flex: 0 1 auto; min-width: 38px; max-width: 105px; padding: 0 2px; }
-.direct-port-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
-@container lane-ports (max-width: 150px) {
-    .direct-port-row :deep(.manual-values) { display: none; }
-    .direct-port-name { display: none; }
-}
-[data-direction="input"] { --port-base-color: var(--vscode-terminal-ansiYellow); --port-color: var(--port-base-color); }
-[data-direction="output"] { --port-base-color: var(--vscode-terminal-ansiBlue); --port-color: var(--port-base-color); }
-.port-handle { display: grid; place-items: center; padding: 0; height: 22px; width: 22px; border: 0; background: transparent; cursor: crosshair; touch-action: none; }
-.port-circle { display: inline-block; flex: 0 0 10px; width: 10px; height: 10px; box-sizing: border-box; border: 2px solid var(--port-color); border-radius: 50%; }
+.node-ports { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: start; gap: 4px; margin-top: 5px; min-height: 22px; }
+.port-group { display: flex; flex-direction: column; gap: 3px; min-height: var(--port-slot-height, 22px); }
+[data-direction="input"] { --port-base-color: var(--iv-sample-input); --port-event-color: var(--iv-event-input); --port-color: var(--port-base-color); }
+[data-direction="output"] { --port-base-color: var(--iv-sample-output); --port-event-color: var(--iv-event-output); --port-color: var(--port-base-color); }
+[data-port-kind="event"] { --port-color: var(--port-event-color); }
+.port-circle { display: inline-block; flex: 0 0 12px; width: 12px; height: 12px; box-sizing: border-box; border: 2px solid var(--port-color); border-radius: 50%; }
+[data-port-kind="event"]:not(.single) .port-circle { border-radius: 3px; }
 .connected .port-circle { background: var(--port-color); }
 .pending .port-circle { border-style: dashed; }
-.port-slot { position: relative; flex: 0 0 22px; width: 28px; height: 22px; box-sizing: border-box; border: 1px solid transparent; border-radius: 7px; }
-.stacked-first { position: absolute; left: 5px; top: 50%; transform: translateY(-50%); }
-.stacked-second { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); background: var(--vscode-editor-background); }
+.port-slot { position: relative; flex: 0 0 var(--port-slot-height, 22px); width: 28px; height: var(--port-slot-height, 22px);
+    box-sizing: border-box; border: 1px solid transparent; border-radius: 7px; }
+.port-slot .port-circle { width: min(12px, calc(var(--port-slot-height, 22px) - 2px)); height: auto; aspect-ratio: 1; }
+.stacked-first { position: absolute; left: 4px; top: 50%; transform: translateY(-50%); }
+.stacked-second { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); background: var(--vscode-editor-background); }
+.single .stacked-first { left: 7px; }
 .port-slot[data-connection-state="partial"] .stacked-second,
 .port-slot[data-connection-state="full"] .port-circle { background: var(--port-color); }
-.port-handle:focus-visible, .port-slot:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+.port-slot[data-hovered] { background: color-mix(in srgb, var(--port-color) 12%, transparent); }
+.port-slot:focus-visible { outline: 1px solid var(--port-color); }
 .port-panel { position: fixed; z-index: 20; display: flex; flex-direction: column; box-sizing: border-box; border: 1px solid var(--vscode-panel-border); border-radius: 7px; background: var(--vscode-editorWidget-background); color: var(--vscode-foreground); box-shadow: 0 3px 12px #0005; }
+.port-panel.continuation { border: 0; border-radius: 0 0 6px 6px; box-shadow: 0 1px var(--vscode-panel-border), 0 3px 10px #0005; }
 .port-panel.positioning { visibility: hidden; pointer-events: none; }
-.expansion-body { overflow-y: auto; min-height: 0; padding: 3px; }
+.expansion-body { display: flex; flex-direction: column; gap: 3px; overflow-y: auto; overflow-x: hidden; min-height: 0; padding: 3px; }
+.continuation .expansion-body { padding: 3px 0; }
 .above .expansion-body { display: flex; flex-direction: column-reverse; }
 .port-row { display: flex; flex-shrink: 0; align-items: center; min-width: 0; }
 .port-row .port-entry { flex: 1; min-width: 0; width: auto; }
-.port-row.with-knob { display: grid; grid-template-columns: 20px 120px minmax(0, 1fr); }
+.port-row.with-knob { --chooser-columns: 24px 52px minmax(0, 1fr); display: grid; grid-template-columns: var(--chooser-columns); }
+.port-row.with-knob[data-direction="input"] { --chooser-columns: 36px 24px minmax(0, 1fr); }
 .with-knob > .port-entry { grid-column: 1 / -1; grid-row: 1; display: grid;
-    grid-template-columns: 20px 120px minmax(0, 1fr); gap: 0; width: 100%; box-sizing: border-box; }
+    grid-template-columns: var(--chooser-columns); gap: 0; width: 100%; box-sizing: border-box; padding-inline: 0 5px; }
 .with-knob > .port-entry .port-circle { grid-column: 1; }
+.with-knob[data-direction="input"] > .port-entry .port-circle { grid-column: 2; }
 .with-knob > .port-entry .port-name { grid-column: 3; }
 .with-knob > .manual-input { grid-column: 2; grid-row: 1; z-index: 1; }
+.with-knob[data-direction="input"] > .manual-input { grid-column: 1; }
 .port-entry { display: flex; flex-shrink: 0; gap: 10px; align-items: center; width: 100%; padding: 5px; border: 0; background: transparent; color: inherit; text-align: left; cursor: crosshair; touch-action: none; }
 .port-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.port-entry small { max-width: 45%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); text-align: right; }
 .port-entry[data-hovered] { background: var(--vscode-list-hoverBackground); }
 .unavailable { --port-color: color-mix(in srgb, var(--port-base-color) 25%, var(--vscode-disabledForeground) 75%); color: var(--vscode-disabledForeground); }
-.unavailable small { color: var(--vscode-disabledForeground); }
 </style>

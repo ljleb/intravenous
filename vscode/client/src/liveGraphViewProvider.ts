@@ -27,6 +27,7 @@ export class LiveGraphViewProvider implements vscode.WebviewViewProvider {
     private webviewReady = false;
     private postScheduled = false;
     private controlHandler: LiveGraphControlHandler | null = null;
+    private publishInteractionHint?: (hint: string | null) => void;
     private nodeEventHandler: ((target: NodeAddress, event: SerializedNodeEvent, interactionId?: string) => Promise<number | void>) | null = null;
     private nodeGestureHandler: ((target: NodeAddress, interactionId: string, begin: boolean) => Promise<number | void>) | null = null;
     private releaseNodeGestures: (() => void) | null = null;
@@ -82,6 +83,10 @@ export class LiveGraphViewProvider implements vscode.WebviewViewProvider {
         this.controlHandler = handler;
     }
 
+    setInteractionHintHandler(publish: (hint: string | null) => void): void {
+        this.publishInteractionHint = publish;
+    }
+
     setNodeEventHandler(handler: (target: NodeAddress, event: SerializedNodeEvent, interactionId?: string) => Promise<number | void>,
         gesture: (target: NodeAddress, interactionId: string, begin: boolean) => Promise<number | void>, release: () => void): void {
         this.nodeEventHandler = handler;
@@ -112,11 +117,16 @@ export class LiveGraphViewProvider implements vscode.WebviewViewProvider {
             if (!isLiveGraphWebviewMessage(message)) {
                 return;
             }
+            if (message.type === "interactionHint") {
+                if (this.view === webviewView && webviewView.visible) this.publishInteractionHint?.(message.hint);
+                return;
+            }
             if (message.type === "ready") {
                 if (this.webviewReady) this.releaseNodeGestures?.();
                 // The webview (re)loaded; it has no state until it receives
                 // this snapshot.
                 if (this.view === webviewView) {
+                    this.publishInteractionHint?.(null);
                     this.webviewReady = true;
                     this.postState();
                 }
@@ -130,9 +140,13 @@ export class LiveGraphViewProvider implements vscode.WebviewViewProvider {
                 await this.controlHandler(message);
             }
         });
+        webviewView.onDidChangeVisibility(() => {
+            if (this.view === webviewView && !webviewView.visible) this.publishInteractionHint?.(null);
+        });
         webviewView.onDidDispose(() => {
             this.releaseNodeGestures?.();
             if (this.view === webviewView) {
+                this.publishInteractionHint?.(null);
                 this.view = null;
                 this.webviewReady = false;
             }

@@ -37,6 +37,7 @@ import { autoDetectedServerDirectoriesForWorkspaceRoot } from "./serverBinaryPat
 import { WorkspaceNotificationRouter } from "./workspaceNotifications";
 import { WorkspaceRpc } from "./workspaceRpc";
 import { audioOutputDiagnostic } from "./audioOutputDiagnostic";
+import { statusBarText } from "./statusBarText";
 
 declare const __INTRAVENOUS_DEFAULT_DIR__: string;
 
@@ -320,10 +321,10 @@ export class WorkspaceSession {
             const progress = this.controlCompilationProgress.receive(status);
             this.outputChannel.appendLine(progress.text);
             if (this.controlCompilationTimer) clearTimeout(this.controlCompilationTimer);
-            this.controlCompilationStatus.text = progress.queued || progress.compiling
-                ? `$(sync~spin) IV: ${progress.compiling} compiling · ${progress.queued} queued`
-                : `$(${progress.failed ? "error" : "check"}) IV: ${progress.summary}`;
-            this.controlCompilationStatus.tooltip = `${progress.text}\nTimes start when ProjectGraph requests compilation and end at preparation or executor acceptance. They exclude RPC transit and audio activation.`;
+            this.controlCompilationStatus.text = progress.failed ? "$(error) IV compile failed · See Output"
+                : progress.queued || progress.compiling
+                    ? `$(sync~spin) IV ${progress.compiling} compiling · ${progress.queued} queued`
+                    : `$(check) IV ${progress.summary}`;
             this.controlCompilationStatus.show();
             if (!progress.queued && !progress.compiling && !progress.failed) {
                 this.controlCompilationTimer = setTimeout(() => this.controlCompilationStatus.hide(), 3000);
@@ -420,7 +421,7 @@ export class WorkspaceSession {
                 this.logCapturedServerFailureContext();
                 // Keep the actionable failure below compiler output and traces.
                 this.logServerState("Intravenous rebuild failed", params);
-                this.showRebuildFailure(params);
+                this.showRebuildFailure();
                 await this.refreshProjectCatalog();
                 return;
             }
@@ -1358,14 +1359,13 @@ export class WorkspaceSession {
     }
 
     private showRebuildStatus(params: ServerStatusNotification): void {
-        this.rebuildStatusBar.text = "$(sync~spin) Intravenous: Building module";
-        this.rebuildStatusBar.tooltip = params.message || "Building updated Intravenous module definitions";
+        const name = params.packageRoot ? statusBarText(path.basename(params.packageRoot)) : "module";
+        this.rebuildStatusBar.text = `$(sync~spin) IV building ${name}`;
         this.rebuildStatusBar.show();
     }
 
-    private showRebuildFailure(params: ServerStatusNotification): void {
-        this.rebuildStatusBar.text = "$(error) Intravenous: Module build failed";
-        this.rebuildStatusBar.tooltip = params.message || "An Intravenous module build failed";
+    private showRebuildFailure(): void {
+        this.rebuildStatusBar.text = "$(error) IV build failed · See Output";
         this.rebuildStatusBar.show();
     }
 

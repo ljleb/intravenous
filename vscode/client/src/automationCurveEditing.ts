@@ -95,6 +95,9 @@ export class AutomationCurveEditing {
         return this.active?.key === key ? this.active.axes : this.ending.get(key)?.values().next().value?.axes ?? null;
     }
     pointerId(): number | null { return this.active?.finishing ? null : this.active?.pointerId ?? null; }
+    activePoint(): AutomationPointPosition | null {
+        return this.active?.finishing ? null : this.active?.desired ?? null;
+    }
     begin(target: NodeAddress, id: number, pointerId: number, axes: CurveAxes, position?: ScreenPoint): boolean {
         if (this.active || axes.width <= 0 || axes.height <= 0) return false;
         const key = addressKey(target);

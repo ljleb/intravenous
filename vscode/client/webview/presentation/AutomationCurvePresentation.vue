@@ -7,6 +7,8 @@ import { useNode } from "./nodeContext";
 import { useTimelineWindow } from "../timeline/timelineContext";
 import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
 import NodeLane from "./NodeLane.vue";
+import { automationPointStatus } from "../statusHints";
+import { rightClickHint } from "../../src/statusBarText";
 import type { NodeDisplayMode } from "./displayMode";
 
 const props = defineProps<{ mode: NodeDisplayMode }>();
@@ -59,6 +61,11 @@ function outside(event: PointerEvent) {
     if (!(event.target instanceof Element) || !event.target.closest(".automation-point-popover")) editing.value = null;
 }
 const error = computed(() => { void version.value; return node.value.address ? edits.error(node.value.address) || node.value.constructionError : ""; });
+const curveStatus = computed(() => error.value || (editable.value ? "Dbl-click add point" : "Read-only curve"));
+function pointStatus(point: AutomationPoint) {
+    return automationPointStatus(point, time?.value.sampleRate)
+        + ` · Drag · Dbl-click segment · ${rightClickHint} remove`;
+}
 function pointerAxes(): CurveAxes | null {
     if (!surface.value || !axes.value) return null;
     const rect = surface.value.getBoundingClientRect();
@@ -95,15 +102,15 @@ onBeforeUnmount(() => { observer?.disconnect(); window.removeEventListener("poin
 <template>
     <NodeLane :mode="mode">
         <svg ref="surface" class="automation-curve" :viewBox="`0 0 ${width} ${height}`" preserveAspectRatio="none"
-            :aria-label="`${node.displayName || 'Automation curve'}${editable ? '; double-click to add a point' : '; read-only'}`" @dblclick="add">
-            <title>{{ error || (editable ? 'Double-click to add a point or edit a point’s segment. Drag a point to move it. Right-click a point to remove it.' : 'Automation curve') }}</title>
+            :aria-label="node.displayName || 'Automation curve'" :aria-description="curveStatus"
+            :data-status-hint="curveStatus" @dblclick="add">
             <path :d="path" class="curve-line" />
             <TimelinePlayhead />
             <circle v-for="point in editable ? view?.points ?? [] : []" :key="point.id" :cx="x(point.seconds)" :cy="y(point.value)"
                 r="5" class="curve-point" role="button" :aria-label="`Point at ${point.seconds} seconds: ${point.value}`"
-                @pointerdown="start($event, point.id)" @dblclick.stop="editSegment($event, point)" @contextmenu="remove($event, point.id)">
-                <title>{{ `${point.seconds} s: ${point.value}` }}</title>
-            </circle>
+                :data-status-hint="pointStatus(point)"
+                aria-description="Drag to move. Double-click to edit the segment. Right-click to remove."
+                @pointerdown="start($event, point.id)" @dblclick.stop="editSegment($event, point)" @contextmenu="remove($event, point.id)" />
         </svg>
     </NodeLane>
     <Teleport to="body">

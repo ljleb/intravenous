@@ -150,7 +150,7 @@ onBeforeUnmount(() => {
         @pointerup="endPan" @pointercancel="endPan" @lostpointercapture="endPan"
         @mousedown="preventMiddleDefault" @auxclick="preventMiddleDefault">
         <header class="timeline-heading">
-            <div class="node-column playback-position" title="Space: play/pause. Click or drag the ruler to seek.">
+            <div class="node-column playback-position" data-status-hint="Space ▶/Ⅱ">
                 <template v-if="playbackSeconds !== null">
                     {{ playback.state.value?.running ? '▷' : 'Ⅱ' }} {{ playbackSeconds.toFixed(3) }} s
                     <small>{{ playback.position.value?.toString() }} smp</small>
@@ -173,7 +173,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.timeline-scope { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; scrollbar-gutter: stable; scrollbar-color: auto; scrollbar-width: auto; --node-label-width: clamp(120px, 22%, 260px); }
+.timeline-scope { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; scrollbar-gutter: stable; scrollbar-color: auto; scrollbar-width: auto; --node-label-width: clamp(144px, 22%, 260px); }
 .timeline-scope::-webkit-scrollbar { width: 14px; height: 10px; }
 .timeline-scope::-webkit-scrollbar-track { background-color: var(--vscode-scrollbar-background, transparent); }
 /* Paint the overview marker in the native track. It adds no hit target and

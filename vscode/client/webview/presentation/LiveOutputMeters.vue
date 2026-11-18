@@ -143,7 +143,6 @@ onBeforeUnmount(() => {
     observer?.disconnect();
     resize?.disconnect();
     observations?.remove(owner);
-    observations?.hint(owner, null);
 });
 </script>
 

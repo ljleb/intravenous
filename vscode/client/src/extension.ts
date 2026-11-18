@@ -39,6 +39,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
 
     const graphEditor = new GraphEditorProvider(context.extensionUri, session);
+    provider.setInteractionHintHandler((hint) => graphEditor.setInspectionHint(hint));
     context.subscriptions.push(graphEditor);
     for (const seek of [false, true]) context.subscriptions.push(vscode.commands.registerCommand(
         seek ? "intravenous.seekPlayback" : "intravenous.togglePlayback", async () => {

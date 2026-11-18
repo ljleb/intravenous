@@ -56,7 +56,8 @@ export type LiveGraphCreateInstanceMessage = {
 export type LiveGraphWebviewMessage =
     | LiveGraphReadyMessage
     | LiveGraphSelectInstanceMessage
-    | LiveGraphCreateInstanceMessage;
+    | LiveGraphCreateInstanceMessage
+    | { type: "interactionHint"; hint: string | null };
 
 // The webview messages that WorkspaceSession acts on.
 export type LiveGraphControlMessage =
@@ -74,5 +75,6 @@ export function isLiveGraphWebviewMessage(message: unknown): message is LiveGrap
     if (candidate.type === "selectInstance") {
         return candidate.instanceId == null || typeof candidate.instanceId === "string";
     }
+    if (candidate.type === "interactionHint") return candidate.hint === null || typeof candidate.hint === "string";
     return candidate.type === "ready" || candidate.type === "createInstance";
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount } from "vue";
+import { computed } from "vue";
 import { addressKey } from "../../src/graphScope";
 import { sampleWaveform } from "../../src/sampleWaveform";
 import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
@@ -8,7 +8,6 @@ import { useObservations } from "./observationContext";
 const props = defineProps<{ bounds?: { min: number; max: number }; mode?: string }>();
 const node = useNode();
 const observations = useObservations();
-const owner = Symbol("waveform status");
 const outputs = computed(() => {
     observations?.version.value;
     const address = node.value.address;
@@ -19,23 +18,20 @@ const outputs = computed(() => {
         return { ...entry, result, geometry: sampleWaveform(result, props.bounds) };
     });
 });
-function hint(id: string | null): void {
-    const item = outputs.value.find((entry) => entry.id === id);
-    observations?.hint(owner, item ? {
-        text: `${item.member}${item.channelName ? ` · ${item.channelName}` : ""} · representative waveform · ${item.result?.outdated ? "updating" : item.result?.status ?? "pending"}`,
-        tooltip: item.result?.error || (item.result?.truncated
-            ? "The bounded result is incomplete. Zoom in to request a smaller window."
-            : "Approximate position samples. Gaps remain empty; peaks between samples may be missed. Vertical scale: −1 to 1."),
-    } : null, 2);
+function waveformStatus(item: (typeof outputs.value)[number]): string {
+    const label = [item.member, item.channelName].filter(Boolean).join(" · ");
+    const detail = item.result?.error || (item.result?.outdated ? "Updating" : item.result?.truncated ? "Zoom in for full window"
+        : item.result?.status === "ready" ? `Approx. · ${props.bounds?.min ?? -1}…${props.bounds?.max ?? 1}`
+            : item.result?.status ?? "pending");
+    return `${label} · ${detail}`;
 }
-onBeforeUnmount(() => observations?.hint(owner, null));
 </script>
 
 <template>
     <div v-if="outputs.length" class="window-outputs" :data-mode="mode">
         <div v-for="output in outputs" :key="output.id" class="waveform"
             :class="{ unavailable: output.result?.status !== 'ready' || output.result?.outdated, failed: output.result?.status === 'failed' }"
-            @pointerenter="hint(output.id)" @pointerleave="hint(null)">
+            :data-status-hint="waveformStatus(output)">
             <svg viewBox="0 0 1000 100" preserveAspectRatio="none" role="img"
                 :aria-label="`${output.member}: ${output.result?.status ?? 'pending'} representative waveform`">
                 <rect v-for="(region, i) in output.geometry.coverage" :key="`coverage-${i}`"

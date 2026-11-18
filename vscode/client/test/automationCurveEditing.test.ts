@@ -50,7 +50,9 @@ test("coalescing keeps the latest point while a message runs, and release flushe
     const remountedView = () => h.edits.drafts(target);
     h.edits.move(7, { x: 40, y: 25 });
     assert.deepEqual(remountedView(), [{ id: 1, seconds: 4, value: .75 }]);
+    assert.deepEqual(h.edits.activePoint(), remountedView()[0]);
     const finished = h.edits.finish();
+    assert.equal(h.edits.activePoint(), null);
     assert.equal(h.closed(), 0);
     release(); await finished;
     assert.deepEqual(sent, [{ id: 1, seconds: 3, value: .5 }, { id: 1, seconds: 4, value: .75 }]);

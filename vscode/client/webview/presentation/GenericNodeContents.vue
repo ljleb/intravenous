@@ -44,9 +44,10 @@ function toggleMember(index: number): void {
 
 <template>
     <div class="generic-node" :class="`mode-${mode}`">
-        <div class="node-header" :title="`${node.kind} • ${description}`">
+        <div class="node-header" :data-status-hint="`${node.kind} · ${description}`">
             <span class="node-icon" v-html="icon" />
-            <span class="node-kind" :class="{ failed: node.loadState === 'failed' }" :title="node.errorMessage">{{ nodeDisplayName(node) }}</span>
+            <span class="node-kind" :class="{ failed: node.loadState === 'failed' }"
+                :data-status-hint="node.errorMessage" :aria-description="node.errorMessage">{{ nodeDisplayName(node) }}</span>
             <span v-if="mode === 'compact'" class="node-description">
                 {{ inputCount }} in · {{ outputCount }} out
             </span>
@@ -59,8 +60,11 @@ function toggleMember(index: number): void {
                 :key="portKey(port)"
                 class="port-dot"
                 :data-direction="port.direction"
+                :data-kind="port.kind"
                 :data-connectivity="port.connectivity"
-                :title="`${port.direction} ${port.name} • ${portDescription(port)}`"
+                :data-status-hint="`${port.direction} ${port.name} · ${portDescription(port)}`"
+                :aria-label="`${port.direction} ${port.name} · ${portDescription(port)}`"
+                role="img"
             />
         </div>
 
@@ -185,11 +189,18 @@ function toggleMember(index: number): void {
 }
 
 .port-dot[data-direction="input"] {
-    background: var(--vscode-terminal-ansiYellow);
+    background: var(--iv-sample-input);
 }
 
 .port-dot[data-direction="output"] {
-    background: var(--vscode-terminal-ansiBlue);
+    background: var(--iv-sample-output);
+}
+.port-dot[data-kind="event"] { border-radius: 2px; }
+.port-dot[data-kind="event"][data-direction="input"] {
+    background: var(--iv-event-input);
+}
+.port-dot[data-kind="event"][data-direction="output"] {
+    background: var(--iv-event-output);
 }
 
 .port-dot[data-connectivity="connected"],

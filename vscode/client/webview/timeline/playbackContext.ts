@@ -26,6 +26,7 @@ export function providePlayback() {
     };
     provide(key, { state, position, executionIndex, requestedPosition, dragPosition });
     return {
+        dragPosition,
         receive(snapshot: PlaybackSnapshot | null, requested: string | null) {
             cancelAnimationFrame(frame);
             display.update(snapshot, performance.now());

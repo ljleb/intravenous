@@ -1,20 +1,44 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useManualInput } from "./manualControlContext";
-import { knobFraction, knobScrubSpeed } from "../../src/knobPresentation";
-const props = defineProps<{ name: string; showName?: boolean; showValue?: boolean; direction?: "input" | "output" }>();
+import { knobScrubSpeed } from "../../src/knobPresentation";
+import { manualKnobStatus } from "../../src/manualControlGesture";
+import KnobFace from "./KnobFace.vue";
+const props = defineProps<{ name: string; showName?: boolean; direction?: "input" | "output" }>();
 const control = useManualInput(() => props.name, () => props.direction ?? "input");
 const { value, available, limits, state, descriptor } = control;
 const increment = computed(() => knobScrubSpeed(limits.value) * 2);
-onBeforeUnmount(() => control.hover(false));
-const fraction = computed(() => knobFraction(value.value ?? limits.value.defaultValue ?? 0, limits.value));
-const indicator = computed(() => {
-    const angle = (-135 + 270 * fraction.value) * Math.PI / 180;
-    return { x: 16 + 9 * Math.sin(angle), y: 16 - 9 * Math.cos(angle) };
+const knob = ref<HTMLButtonElement | null>(null);
+const hovered = ref(false);
+const preview = ref<{ left: string; top: string } | null>(null);
+let previewTimer: ReturnType<typeof setTimeout> | undefined;
+function positionPreview() {
+    const bounds = knob.value?.getBoundingClientRect();
+    if (!bounds) return;
+    const center = bounds.left + bounds.width / 2;
+    preview.value = { left: `${Math.max(46, Math.min(window.innerWidth - 46, center))}px`,
+        top: `${Math.max(2, bounds.top - 82)}px` };
+}
+watch([hovered, control.dragging, available], ([over, dragging, enabled]) => {
+    clearTimeout(previewTimer);
+    if (!enabled || (!over && !dragging)) preview.value = null;
+    else if (dragging || preview.value) positionPreview();
+    else previewTimer = setTimeout(positionPreview, 300);
 });
+watch(() => preview.value !== null, (visible, _, onCleanup) => {
+    if (!visible) return;
+    window.addEventListener("resize", positionPreview);
+    window.addEventListener("scroll", positionPreview, true);
+    onCleanup(() => {
+        window.removeEventListener("resize", positionPreview);
+        window.removeEventListener("scroll", positionPreview, true);
+    });
+});
+onBeforeUnmount(() => { clearTimeout(previewTimer); control.hover(false); });
 const logicalValue = computed(() => value.value === undefined ? "" : Number(value.value.toPrecision(6)).toString());
-const normalizedValue = computed(() => limits.value.min !== undefined && limits.value.max !== undefined
-    && limits.value.max > limits.value.min ? fraction.value.toFixed(3) : null);
+const knobHint = computed(() => available.value && value.value !== undefined
+    ? manualKnobStatus(props.name, value.value, limits.value.defaultValue !== undefined)
+    : `${props.name} · Unavailable`);
 function step(direction: number) {
     if (!available.value) return;
     control.edit(); control.update((value.value ?? 0) + direction * increment.value); control.finish();
@@ -25,71 +49,72 @@ function step(direction: number) {
     <div class="manual-input" :class="{ inactive: !descriptor?.participates, active: control.dragging.value }"
         :data-direction="direction ?? 'input'"
         :data-manual-control="control.key.value"
+        :data-status-hint="knobHint"
         @pointerdown.stop @click.stop @contextmenu="control.numeric"
         @iv-hoverenter="control.hover(true)" @iv-hoverleave="control.hover(false)">
         <span v-if="showName" class="manual-name">{{ name }}</span>
-        <button type="button" class="manual-knob" role="slider" :aria-label="name"
+        <button ref="knob" type="button" class="manual-knob" role="slider" :aria-label="name"
             :aria-valuenow="value" :aria-valuemin="limits.min" :aria-valuemax="limits.max"
-            :aria-disabled="!available" :disabled="!available" :title="`${name}: ${value}`"
+            :aria-disabled="!available" :disabled="!available"
             @focus="control.hover(true)" @blur="control.hover(false)"
+            @iv-hoverenter="hovered = true" @iv-hoverleave="hovered = false"
             @pointerdown="control.scrub" @dblclick.stop.prevent @contextmenu="control.numeric"
             @keydown.left.stop.prevent="step(-1)" @keydown.down.stop.prevent="step(-1)"
             @keydown.right.stop.prevent="step(1)" @keydown.up.stop.prevent="step(1)">
-            <svg viewBox="0 0 32 32" aria-hidden="true">
-                <path class="knob-track" d="M 7.5 24.5 A 12 12 0 1 1 24.5 24.5" />
-                <circle class="knob-body" cx="16" cy="16" r="9" />
-                <line class="knob-indicator" x1="16" y1="16" :x2="indicator.x" :y2="indicator.y" />
-            </svg>
+            <KnobFace :value="value ?? limits.defaultValue ?? 0" :limits="limits" />
         </button>
         <button v-if="direction === 'output'" type="button" class="output-invert"
             :class="{ inverted: control.inverted.value }" :aria-pressed="control.inverted.value"
-            :disabled="!available" :aria-label="`${name}: invert output polarity`" title="Invert output polarity"
+            :disabled="!available" :aria-label="`${name}: invert output polarity`"
+            :data-status-hint="control.inverted.value ? 'Restore polarity' : 'Invert polarity'"
+            aria-description="Changes the sign and keeps the magnitude"
             @pointerdown.stop @click.stop="control.invert" @contextmenu.stop.prevent
             @focus="control.hover(true)" @blur="control.hover(false)">
             <svg viewBox="0 0 16 16" aria-hidden="true">
                 <circle cx="8" cy="8" r="4.5" /><path d="M 3 13 L 13 3" />
             </svg>
         </button>
-        <span v-if="showValue !== false" class="manual-values" aria-hidden="true">
-            <span class="logical-value">{{ logicalValue }}</span>
-            <span v-if="normalizedValue !== null" class="normalized-value">{{ normalizedValue }}</span>
-        </span>
-        <span v-if="state?.error" class="manual-error" :title="state.error" aria-label="Manual input error">!</span>
+        <span v-if="state?.error" class="manual-error" :data-status-hint="state.error"
+            role="img" :aria-label="`Manual control error. ${state.error}`">!</span>
+        <Teleport to="body">
+            <div v-if="preview" class="knob-preview" :data-direction="direction ?? 'input'" :style="preview" aria-hidden="true">
+                <KnobFace :value="value ?? limits.defaultValue ?? 0" :limits="limits" />
+                <span>{{ direction === 'output' && control.inverted.value ? '−' : '' }}{{ logicalValue }}</span>
+            </div>
+        </Teleport>
     </div>
 </template>
 
 <style scoped>
 .manual-input { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; min-width: 0; padding: 0 4px; }
 .manual-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.manual-knob { display: block; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%;
+.manual-knob { display: block; width: var(--knob-size, 30px); height: var(--knob-size, 30px); padding: 0; border: 0; border-radius: 50%;
     background: transparent; color: var(--vscode-terminal-ansiYellow); cursor: ns-resize; touch-action: none; user-select: none; }
 .manual-knob svg { display: block; width: 100%; height: 100%; }
-.manual-input[data-direction="output"] .manual-knob { color: var(--vscode-terminal-ansiBlue); }
-.output-invert { flex: 0 0 18px; width: 18px; height: 22px; padding: 1px; border: 0; border-radius: 3px;
+.manual-input[data-direction="output"] .manual-knob, .knob-preview[data-direction="output"] { color: var(--vscode-terminal-ansiBlue); }
+.output-invert { flex: 0 0 16px; width: 16px; height: 20px; padding: 1px; border: 0; border-radius: 3px;
     background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; }
 .output-invert svg { display: block; width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.25; }
 .output-invert:hover:not(:disabled), .output-invert.inverted { color: var(--vscode-terminal-ansiBlue);
     background: color-mix(in srgb, var(--vscode-terminal-ansiBlue) 12%, transparent); }
 .output-invert:disabled { opacity: .4; cursor: default; }
 .output-invert:focus-visible { outline: 1px solid var(--vscode-terminal-ansiBlue); outline-offset: 1px; }
-.manual-knob { flex: 0 0 30px; }
-.manual-values { display: flex; flex-direction: column; min-width: 0; font-variant-numeric: tabular-nums; }
-.logical-value { font-size: 12px; color: var(--vscode-foreground); overflow: hidden; text-overflow: ellipsis; }
-.normalized-value { font-size: 10px; color: var(--vscode-descriptionForeground); }
-.knob-track { fill: none; stroke: currentColor; stroke-width: 1.5; opacity: .3; }
-.knob-body { fill: var(--vscode-editor-background); stroke: currentColor; stroke-width: 1; stroke-opacity: .55; }
-.knob-indicator { stroke: currentColor; stroke-width: 2; stroke-linecap: round; opacity: .8; }
-.knob-track, .knob-body, .knob-indicator { transition: fill 100ms ease, opacity 100ms ease, stroke-opacity 100ms ease; }
-.manual-input[data-hovered] .manual-knob:not(:disabled) .knob-body { fill: color-mix(in srgb, currentColor 9%, var(--vscode-editor-background)); stroke-opacity: .9; }
-.manual-input[data-hovered] .knob-track { opacity: .55; }
-.manual-input[data-hovered] .knob-indicator { opacity: 1; }
-.manual-input.active .manual-knob .knob-body { fill: color-mix(in srgb, currentColor 20%, var(--vscode-editor-background)); stroke-opacity: 1; }
-.manual-input.active .knob-track { opacity: .9; }
-.manual-input.active .knob-indicator { opacity: 1; }
+.manual-knob { flex: 0 0 var(--knob-size, 30px); }
+.manual-input[data-hovered] .manual-knob:not(:disabled) :deep(.knob-body) { fill: color-mix(in srgb, currentColor 9%, var(--vscode-editor-background)); stroke-opacity: .9; }
+.manual-input[data-hovered] :deep(.knob-track) { opacity: .55; }
+.manual-input[data-hovered] :deep(.knob-indicator) { opacity: 1; }
+.manual-input.active .manual-knob :deep(.knob-body) { fill: color-mix(in srgb, currentColor 20%, var(--vscode-editor-background)); stroke-opacity: 1; }
+.manual-input.active :deep(.knob-track) { opacity: .9; }
+.manual-input.active :deep(.knob-indicator) { opacity: 1; }
 .manual-knob:focus { outline: none; box-shadow: none; }
 .manual-knob:focus-visible { box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 45%, transparent); }
-@media (prefers-reduced-motion: reduce) { .knob-track, .knob-body, .knob-indicator { transition: none; } }
 .manual-knob:disabled { cursor: default; opacity: .4; }
 .inactive .manual-name { color: var(--vscode-descriptionForeground); }
 .manual-error { color: var(--vscode-errorForeground); }
+.knob-preview { position: fixed; z-index: 35; transform: translateX(-50%); pointer-events: none;
+    display: grid; justify-items: center; gap: 2px; padding: 4px 8px;
+    color: var(--vscode-terminal-ansiYellow); background: var(--vscode-editorWidget-background);
+    border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 6px; }
+.knob-preview svg { width: 48px; height: 48px; }
+.knob-preview span { color: var(--vscode-foreground); font-variant-numeric: tabular-nums; font-size: 11px; }
 </style>

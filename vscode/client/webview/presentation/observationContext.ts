@@ -2,7 +2,7 @@ import { inject, provide, ref, type InjectionKey } from "vue";
 import type { NodeAddress } from "../../src/graphScope";
 import { addressKey } from "../../src/graphScope";
 import { ObservationValues, observationSourceKey, type ObservationCapability, type ObservationHostRequest,
-    type ObservationInterest, type ObservationResponse, type ObservationSource, type ObservationUpdate, type MeterMode, type ObservationHint, type ObservationWindow, sameObservationWindow } from "../../src/observations";
+    type ObservationInterest, type ObservationResponse, type ObservationSource, type ObservationUpdate, type MeterMode, type ObservationWindow, sameObservationWindow } from "../../src/observations";
 
 type NodeInterest = { node: NodeAddress; visible: boolean; window?: ObservationWindow };
 export type PresentedObservation = ObservationCapability & { source: ObservationSource; id: string; operation: string; channelName?: string };
@@ -23,11 +23,9 @@ export class PresentationObservations {
     private epoch = 0;
     private disposed = false;
     private modes = new Map<string, MeterMode>();
-    private hints = new Map<symbol, { value: ObservationHint; priority: number }>();
     private desired: ObservationInterest[] = [];
     private queue = Promise.resolve();
     constructor(private readonly send: (request: ObservationHostRequest) => void,
-        private readonly publishHint: (hint: ObservationHint | null) => void = () => {},
         private readonly preferences?: { initial?: Record<string, MeterMode>; save(modes: Record<string, MeterMode>): void }) {
         for (const [key, mode] of Object.entries(preferences?.initial ?? {}).slice(0, 4096))
             if (mode === "level" || mode === "value") this.modes.set(key, mode);
@@ -152,19 +150,6 @@ export class PresentationObservations {
         this.preferences?.save(Object.fromEntries(this.modes));
         ++this.version.value;
     }
-    hint(owner: symbol, value: ObservationHint | null, priority = 0): void {
-        // Hover/focus transitions renew interaction order; telemetry updates
-        // at the same priority must not steal ownership from the current target.
-        if (value) {
-            if (this.hints.get(owner)?.priority !== priority) this.hints.delete(owner);
-            this.hints.set(owner, { value, priority });
-        }
-        else this.hints.delete(owner);
-        let selected: { value: ObservationHint; priority: number } | undefined;
-        for (const hint of this.hints.values())
-            if (!selected || hint.priority >= selected.priority) selected = hint;
-        this.publishHint(selected?.value ?? null);
-    }
     private install(capabilities: Capability[]): void {
         const activeIds = new Set(capabilities.map((entry) => entry.id));
         for (const id of this.values.values.keys()) if (!activeIds.has(id)) this.values.values.delete(id);
@@ -205,8 +190,6 @@ export class PresentationObservations {
         this.capabilities.value = [];
         ++this.version.value;
         this.desired = [];
-        this.hints.clear();
-        this.publishHint(null);
         for (const request of this.pending.values()) {
             clearTimeout(request.timer);
             request.reject(new Error("Observation session disconnected"));

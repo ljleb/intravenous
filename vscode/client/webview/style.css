@@ -1,5 +1,16 @@
 :root {
     color-scheme: light dark;
+    --iv-sample-input: var(--vscode-terminal-ansiYellow, #d8ba69);
+    --iv-sample-output: var(--vscode-terminal-ansiBlue, #6b9dde);
+    --iv-event-input: color-mix(in srgb, var(--iv-sample-input) 42%, #ff883d);
+    --iv-event-output: color-mix(in srgb, var(--iv-sample-output) 42%, #bd75f4);
+}
+
+@supports (color: rgb(from red r g b)) {
+    :root {
+        --iv-event-input: rgb(from var(--iv-sample-input) r calc(g - 56) b);
+        --iv-event-output: rgb(from var(--iv-sample-output) calc(r + 56) g b);
+    }
 }
 
 body {

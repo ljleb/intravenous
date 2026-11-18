@@ -5,6 +5,7 @@ import { hoverEnterEvent, hoverLeaveEvent, TrustedHover, type HoverElement, type
 class FakeElement extends EventTarget implements HoverElement {
     readonly attributes = new Set<string>();
     isConnected = true;
+    status = "";
     constructor(readonly name: string, readonly parentElement: FakeElement | null, log: string[]) {
         super();
         this.addEventListener(hoverEnterEvent, () => log.push(`enter ${name}`));
@@ -14,7 +15,7 @@ class FakeElement extends EventTarget implements HoverElement {
     removeAttribute(name: string) { this.attributes.delete(name); }
 }
 
-function page() {
+function page(refreshed?: (target: FakeElement | null) => void) {
     const log: string[] = [];
     const editor = new FakeElement("editor", null, log);
     const lane = new FakeElement("lane", editor, log);
@@ -35,7 +36,7 @@ function page() {
         requestFrame: (callback) => frames.push(callback),
         cancelFrame: () => {},
     };
-    const hover = new TrustedHover(env);
+    const hover = new TrustedHover(env, (target) => refreshed?.(target as FakeElement | null));
     const pointer = (type: string, fields: Record<string, unknown>) =>
         windowTarget.dispatchEvent(Object.assign(new Event(type), fields));
     return {
@@ -100,4 +101,25 @@ test("content changing under a resting pointer, and leaving the window, update h
     out(-1, 50);
     assert.deepEqual(log.slice(5), ["leave detune", "leave lane", "leave editor"]);
     assert.equal(freq.attributes.size, 0);
+});
+
+test("status refreshes under a stationary pointer and clears when the pointer leaves", () => {
+    const displayed: Array<string | null> = [];
+    const { freq, detune, move, domChanged, flush, out, capture } = page((target) => displayed.push(target?.status ?? null));
+    freq.status = "Frequency · 440";
+    move(10, 10);
+    assert.equal(displayed.at(-1), "Frequency · 440");
+    freq.status = "Frequency · 441";
+    detune.status = "Detune · 2";
+    domChanged();
+    flush();
+    assert.equal(displayed.at(-1), "Frequency · 441");
+    capture(true);
+    move(10, 40);
+    assert.equal(displayed.at(-1), "Frequency · 441");
+    capture(false);
+    flush();
+    assert.equal(displayed.at(-1), "Detune · 2");
+    out(-1, 50);
+    assert.equal(displayed.at(-1), null);
 });

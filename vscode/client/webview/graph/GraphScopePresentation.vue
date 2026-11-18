@@ -29,14 +29,14 @@ function endpoints(matcher: GraphPortMatcher, kind: "sample" | "event", directio
     });
 }
 const wires = computed(() => scope.value.connections.flatMap((entry) => {
-    const result: Array<{ key: string; path: string; applied: boolean; title: string }> = [];
+    const result: Array<{ key: string; path: string; applied: boolean; connectionId: string }> = [];
     entry.connection.outputs.forEach((output, sourceIndex) => {
         entry.connection.inputs.forEach((input, targetIndex) => {
             const sources = endpoints(output, entry.connection.kind, "output");
             const targets = endpoints(input, entry.connection.kind, "input");
             sources.forEach((source, sourcePort) => targets.forEach((target, targetPort) => {
                 const bend = Math.max(60, Math.abs(target.x - source.x) / 2);
-                result.push({ key: `${entry.id}:${sourceIndex}:${targetIndex}:${sourcePort}:${targetPort}`, applied: entry.applied, title: entry.id,
+                result.push({ key: `${entry.id}:${sourceIndex}:${targetIndex}:${sourcePort}:${targetPort}`, applied: entry.applied, connectionId: entry.id,
                     path: `M ${source.x} ${source.y} C ${source.x + bend} ${source.y}, ${target.x - bend} ${target.y}, ${target.x} ${target.y}` });
             }));
         });
@@ -117,19 +117,20 @@ onBeforeUnmount(() => {
             @pointerdown="down" @pointermove="move" @pointerup="up" @pointercancel="up" @lostpointercapture="up" @wheel="wheel">
             <div class="world" :style="{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})` }">
                 <svg class="wires" aria-hidden="true">
-                    <path v-for="wire in wires" :key="wire.key" :d="wire.path" :class="{ pending: !wire.applied }"><title>{{ wire.title }}</title></path>
+                    <path v-for="wire in wires" :key="wire.key" :d="wire.path" :class="{ pending: !wire.applied }"
+                        :data-status-hint="`Connection ${wire.connectionId} · ${wire.applied ? 'Applied' : 'Pending'}`" />
                 </svg>
                 <article v-for="{ child, semantic } in children" :key="addressKey(child.address)" class="node-card"
                     :class="{ unrealized: !child.instance.realized }"
                     :style="{ left: `${position(child).x}px`, top: `${position(child).y}px`, width: `${nodeWidth}px`, height: `${height(child)}px` }">
-                    <header :data-node-drag="addressKey(child.address)" class="node-title" :title="child.instance.instanceId">
+                    <header :data-node-drag="addressKey(child.address)" class="node-title" :data-status-hint="child.instance.instanceId">
                         {{ child.instance.displayName || child.instance.definitionId }}
                         <span v-if="!child.instance.realized">(not realized)</span>
                     </header>
                     <div v-for="(port, row) in inputs(child)" :key="`in:${port.kind}:${port.index}`" class="socket input"
-                        :class="port.kind" :style="{ top: `${64 + row * 24}px` }" :title="`Input ${portTitle(port)}`" />
+                        :class="port.kind" :style="{ top: `${64 + row * 24}px` }" :data-status-hint="`Input ${portTitle(port)}`" />
                     <div v-for="(port, row) in outputs(child)" :key="`out:${port.kind}:${port.index}`" class="socket output"
-                        :class="port.kind" :style="{ top: `${64 + row * 24}px` }" :title="`Output ${portTitle(port)}`" />
+                        :class="port.kind" :style="{ top: `${64 + row * 24}px` }" :data-status-hint="`Output ${portTitle(port)}`" />
                     <div class="node-content">
                         <PresentationHost :node="semantic" :view-choice="choice" :scale="viewport.scale" />
                     </div>
@@ -156,7 +157,7 @@ onBeforeUnmount(() => {
 .canvas { position: relative; flex: 1; min-height: 200px; overflow: hidden; touch-action: none; background-image: radial-gradient(var(--vscode-editorWhitespace-foreground, #7775) 1px, transparent 1px); background-size: 24px 24px; }
 .world { position: absolute; transform-origin: 0 0; }
 .wires { position: absolute; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
-.wires path { fill: none; stroke: var(--vscode-charts-blue, #559ddd); stroke-width: 2; }
+.wires path { fill: none; stroke: var(--vscode-charts-blue, #559ddd); stroke-width: 2; pointer-events: stroke; }
 .wires .pending { stroke-dasharray: 6 4; stroke: var(--vscode-editorWarning-foreground); }
 .node-card { position: absolute; box-sizing: border-box; border: 1px solid var(--vscode-panel-border, #777); border-radius: 6px; background: var(--vscode-editorWidget-background); box-shadow: 0 3px 10px #0003; }
 .node-card.unrealized { border-style: dashed; }

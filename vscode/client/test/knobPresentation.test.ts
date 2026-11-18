@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { knobFraction, knobScrubSpeed } from "../src/knobPresentation";
+import { knobFraction, knobMagnitude, knobScrubSpeed } from "../src/knobPresentation";
 
 test("one-sided bounds occupy the corresponding end of a stable knob arc", () => {
     const lower = { min: 10, defaultValue: 30 };
@@ -35,4 +35,13 @@ test("scrub speed is fixed by the declaration and can be explicitly overridden",
     assert.equal(knobScrubSpeed({ min: -100, max: 100, scrubSpeed: .125 }), .125);
     for (const scrubSpeed of [0, -1, Infinity, NaN])
         assert.equal(knobScrubSpeed({ defaultValue: 220, scrubSpeed }), 2.2);
+});
+
+test("the magnitude cue distinguishes extremes on an unbounded side", () => {
+    assert.ok(knobMagnitude(10000, {}) > knobMagnitude(100, {}));
+    assert.equal(knobMagnitude(-100, {}), knobMagnitude(100, {}));
+    assert.equal(knobMagnitude(0, { min: 0, defaultValue: 1 }), 0);
+    assert.equal(knobMagnitude(1, { min: 0, defaultValue: 1 }), 0);
+    assert.ok(knobMagnitude(10000, { min: 0, defaultValue: 1 }) > 3);
+    assert.equal(knobMagnitude(100, { min: 0, max: 200 }), 0);
 });

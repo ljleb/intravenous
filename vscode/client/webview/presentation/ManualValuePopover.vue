@@ -45,7 +45,8 @@ onBeforeUnmount(() => window.removeEventListener("resize", resize));
             @pointerdown.stop @keydown.esc.stop.prevent="close(false)">
             <input ref="input" type="text" inputmode="decimal" :value="entry.draft"
                 :aria-label="`${manualControlName(entry.control)} value`" :aria-invalid="!!entry.error"
-                :title="entry.error || undefined" autocomplete="off" spellcheck="false"
+                :aria-description="entry.error || undefined"
+                autocomplete="off" spellcheck="false"
                 @input="props.gestures.setEntryDraft(($event.target as HTMLInputElement).value)" @blur="blur" />
             <span v-if="entry.error" class="entry-error" role="alert">{{ entry.error }}</span>
         </form>

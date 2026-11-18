@@ -1,6 +1,5 @@
 import type { ObservationHostRequest, ObservationResponse, ObservationUpdate } from "./observations";
 import type { ManualControlAction, ManualControlInteractionState, ManualControlLiveValue } from "./manualControls";
-import type { ManualControlHint } from "./manualControlGesture";
 import type { GraphLayout, GraphScope } from "./graphScope";
 import type { LiveGraphSessionStatus } from "./liveGraphProtocol";
 import type { GraphConnectionEdit, GraphPortEndpoint } from "./graphConnectionEditing";
@@ -30,7 +29,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "playbackDrag"; phase: PlaybackDragPhase; position: string }
     | ObservationHostRequest
     | NodeEventHostRequest
-    | { type: "graphInteractionHint"; hint: ManualControlHint | null }
+    | { type: "graphInteractionHint"; hint: string | null }
     | { type: "manualControlAction"; action: ManualControlAction }
     | { type: "projectHistory"; direction: "undo" | "redo" }
     | { type: "copyNodeDebugDetails"; nodeKey: string }

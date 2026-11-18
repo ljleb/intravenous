@@ -45,6 +45,16 @@ test("selected lane shows incoming and outgoing connections and excludes unrelat
     assert.deepEqual(selectedLaneConnections(graph, addressKey({ instanceId: "removed" }), anchors([])), []);
 });
 
+test("viewport context keeps visible unrelated cables faint and selected cables emphasized", () => {
+    const graph = scope([connection("selected", "a", 1, "b", 1),
+        connection("context", "b", 1, "c", 1), connection("offscreen", "c", 2, "b", 1)]);
+    const direct = anchors([group("a", "output"), group("b", "input"), group("b", "output"),
+        group("c", "input"), group("c", "output")]);
+    const wires = selectedLaneConnections(graph, selected, direct, [], { top: 10, bottom: 30 });
+    assert.deepEqual(wires.map((wire) => [wire.connectionIds[0], wire.emphasized]),
+        [["selected", true], ["context", false]]);
+});
+
 test("hover expansion splits a wire to a grouped slot into the connected port rows", () => {
     const graph = scope([connection("first", "a", 0, "b", 0), connection("second", "a", 0, "b", 2)]);
     const original = JSON.stringify(graph);

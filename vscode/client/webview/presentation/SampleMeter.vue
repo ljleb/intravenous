@@ -4,13 +4,10 @@ import type { MeterMode, ObservationDisplayValue } from "../../src/observations"
 import { levelDomain, meterPosition, MeterPresentationState, valueDomain } from "../../src/meterPresentation";
 import { numericTicks } from "../timeline/geometry";
 import RulerGraduations from "../timeline/RulerGraduations.vue";
-import { useObservations } from "./observationContext";
+import { rightClickHint } from "../../src/statusBarText";
 
 const props = defineProps<{ mode: MeterMode; label: string; result?: ObservationDisplayValue; active?: boolean }>();
-const observations = useObservations();
 const root = ref<HTMLElement | null>(null), width = ref(0), height = ref(0);
-const hovered = ref(false), focused = ref(false);
-const owner = Symbol("meter status");
 const domain = computed(() => props.mode === "level" ? levelDomain : valueDomain);
 const presentation = new MeterPresentationState();
 const motionVersion = ref(0);
@@ -48,14 +45,7 @@ const ticks = computed(() => {
 });
 const ariaValue = computed(() => reading.value.available && !updating.value
     ? Math.max(domain.value.min, Math.min(domain.value.max, reading.value.displayValue!)) : undefined);
-watch([hovered, focused, () => props.label, status], () => {
-    observations?.hint(owner, hovered.value || focused.value ? {
-        text: `${props.label} · ${status.value}`,
-        tooltip: "The fill shows the latest received block peak immediately; the separate peak marker holds, then falls with increasing speed. "
-            + (props.mode === "level" ? "dBFS scale. " : "Linear magnitude scale from 0 to 1. ")
-            + "RMS is included in the numeric reading. Right-click for visualization modes.",
-    } : null, hovered.value ? 2 : 1);
-}, { immediate: true });
+const meterHint = computed(() => `${props.label} · ${status.value} · ${rightClickHint} scale`);
 let resize: ResizeObserver | undefined;
 onMounted(() => {
     resize = new ResizeObserver(([entry]) => {
@@ -64,7 +54,7 @@ onMounted(() => {
     });
     if (root.value) resize.observe(root.value);
 });
-onBeforeUnmount(() => { stopAnimation(); resize?.disconnect(); observations?.hint(owner, null); });
+onBeforeUnmount(() => { stopAnimation(); resize?.disconnect(); });
 </script>
 
 <template>
@@ -72,7 +62,7 @@ onBeforeUnmount(() => { stopAnimation(); resize?.disconnect(); observations?.hin
         :data-mode="mode" :data-below="reading.available && reading.below" :data-above="reading.available && reading.above"
         role="meter" tabindex="0" aria-haspopup="menu" :aria-label="label" :aria-valuemin="domain.min" :aria-valuemax="domain.max"
         :aria-valuenow="ariaValue" :aria-valuetext="status" :aria-busy="updating"
-        @pointerenter="hovered = true" @pointerleave="hovered = false" @focus="focused = true" @blur="focused = false">
+        :data-status-hint="meterHint">
         <template v-if="reading.available">
             <span class="peak-fill" :style="{ width: `${reading.position * 100}%` }" />
             <span class="reading-mark" :style="{ left: `${reading.heldPosition * 100}%` }" />

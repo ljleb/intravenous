@@ -41,7 +41,7 @@ export function browserHoverEnvironment(): HoverEnvironment {
             const observer = new MutationObserver(changed);
             observer.observe(document.body, {
                 childList: true, subtree: true, attributes: true,
-                attributeFilter: ["class", "style", "hidden", "disabled"],
+                attributeFilter: ["class", "style", "hidden", "disabled", "data-status-hint"],
             });
             return () => observer.disconnect();
         },
@@ -61,7 +61,8 @@ export class TrustedHover {
     private readonly stopObserving: () => void;
     private readonly listeners: Array<[EventTarget, string, EventListener, boolean]> = [];
 
-    constructor(private readonly env: HoverEnvironment = browserHoverEnvironment()) {
+    constructor(private readonly env: HoverEnvironment = browserHoverEnvironment(),
+        private readonly refreshed?: (target: HoverElement | null, pointerMoved: boolean) => void) {
         const pointer = (event: Event) => event as unknown as PointerFields;
         this.listen(env.window, "pointermove", (event) => this.moved(pointer(event)), true);
         this.listen(env.window, "pointerout", (event) => this.left(pointer(event)), true);
@@ -87,8 +88,9 @@ export class TrustedHover {
     private moved(event: PointerFields): void {
         // Locked positions are frozen; the dragged control keeps its hover.
         if (this.env.locked()) return;
+        const pointerMoved = this.position?.x !== event.clientX || this.position?.y !== event.clientY;
         this.position = { x: event.clientX, y: event.clientY };
-        this.refresh();
+        this.refresh(pointerMoved);
     }
 
     private left(event: PointerFields): void {
@@ -104,17 +106,17 @@ export class TrustedHover {
         this.frame = this.env.requestFrame(() => { this.frame = 0; this.refresh(); });
     }
 
-    private refresh(): void {
+    private refresh(pointerMoved = false): void {
         if (this.frozen()) return;
         const next: HoverElement[] = [];
         for (let element = this.position ? this.env.elementAt(this.position) : null; element; element = element.parentElement)
             next.push(element);
-        this.apply(next);
+        this.apply(next, pointerMoved);
     }
 
     // Leaves innermost first and enters outermost first, like a browser does
     // for one pointer movement. Enter and leave events do not bubble.
-    private apply(next: HoverElement[]): void {
+    private apply(next: HoverElement[], pointerMoved = false): void {
         const { leaving, entering } = hoverTransition(this.chain, next);
         this.chain = next;
         for (const element of leaving) {
@@ -125,6 +127,7 @@ export class TrustedHover {
             element.setAttribute(hoveredAttribute, "");
             element.dispatchEvent(new Event(hoverEnterEvent));
         }
+        this.refreshed?.(next[0] ?? null, pointerMoved);
     }
 
     // Leaves everything until the next pointer move, which enters its chain

@@ -181,10 +181,9 @@ test("compatible meter schemas retain identities across graph revisions while in
     } finally { scope.dispose(); }
 });
 
-test("viewport probe budget keeps complete stereo pairs and status ownership clears on disconnect", async () => {
+test("viewport probe budget keeps complete stereo pairs", async () => {
     const { PresentationObservations } = await import("../webview/presentation/observationContext");
     const requests: import("../src/observations").ObservationHostRequest[] = [];
-    const hints: Array<import("../src/observations").ObservationHint | null> = [];
     const scope = new PresentationObservations((request) => {
         requests.push(request);
         queueMicrotask(() => scope.receive({ type: "observationResponse", requestId: request.requestId,
@@ -194,7 +193,7 @@ test("viewport probe budget keeps complete stereo pairs and status ownership cle
                 { nodeIndex: 0, kind: "output", member: "stereo", operations: ["level", "value"],
                     channels: [{ index: 0, name: "left" }, { index: 1, name: "right" }] },
             ] } : { revision: "1" } }));
-    }, (hint) => hints.push(hint));
+    });
     try {
         scope.node(Symbol(), { instanceId: "many-outputs" }, true);
         await new Promise((resolve) => setTimeout(resolve, 250));
@@ -202,51 +201,6 @@ test("viewport probe budget keeps complete stereo pairs and status ownership cle
         assert.ok(request?.type === "observationReconcile");
         assert.equal(request.interests.length, 63);
         assert.ok(request.interests.every((entry) => entry.source.member !== "stereo"));
-        const first = Symbol(), second = Symbol();
-        scope.hint(first, { text: "left", tooltip: "left" });
-        scope.hint(second, { text: "right", tooltip: "right" });
-        scope.hint(second, null);
-        assert.equal(hints.at(-1)?.text, "left");
-        scope.disconnect();
-        assert.equal(hints.at(-1), null);
-    } finally { scope.dispose(); }
-});
-
-
-test("meter status follows pointer ownership despite focused-channel telemetry updates", async () => {
-    const { PresentationObservations } = await import("../webview/presentation/observationContext");
-    let current: import("../src/observations").ObservationHint | null = null;
-    const scope = new PresentationObservations(() => assert.fail("no visible sources"), (hint) => { current = hint; });
-    const left = Symbol("left"), right = Symbol("right");
-    const show = (owner: symbol, text: string, priority: number) => scope.hint(owner, { text, tooltip: text }, priority);
-    const text = () => current?.text;
-    try {
-        show(left, "left focused", 1);
-        show(right, "right hovered", 2);
-        for (let frame = 0; frame < 3; ++frame) {
-            show(right, `right frame ${frame}`, 2);
-            show(left, `left frame ${frame}`, 1);
-            assert.equal(text(), `right frame ${frame}`);
-        }
-        // Changing hover/focus priority must work even when both owners stay
-        // registered. It cannot depend on which channel delivers data last.
-        show(left, "left hovered", 2);
-        show(right, "right focused", 1);
-        assert.equal(text(), "left hovered");
-        show(right, "right still focused", 1);
-        assert.equal(text(), "left hovered");
-        scope.hint(left, null);
-        assert.equal(text(), "right still focused");
-        // Equal-priority readings also retain their interaction order.
-        show(left, "left entered", 2);
-        show(right, "right entered", 2);
-        show(left, "left later frame", 2);
-        assert.equal(text(), "right entered");
-        for (let frame = 0; frame < 3; ++frame) {
-            show(right, `right still hovered ${frame}`, 2);
-            show(left, `left later frame ${frame}`, 2);
-            assert.equal(text(), `right still hovered ${frame}`);
-        }
     } finally { scope.dispose(); }
 });
 
@@ -256,14 +210,14 @@ test("meter display choices persist as frontend preferences without project muta
     let saved: Record<string, import("../src/observations").MeterMode> = {};
     // Construction/disposal do not issue RPC requests without visible interests.
     return import("../webview/presentation/observationContext").then(({ PresentationObservations }) => {
-        const scope = new PresentationObservations(() => assert.fail("no visible sources"), () => {}, {
+        const scope = new PresentationObservations(() => assert.fail("no visible sources"), {
             initial: { [key]: "value" }, save: (modes) => { saved = modes; },
         });
         assert.equal(scope.mode(source.node, source.member), "value");
         scope.setMode(source.node, source.member, "level");
         assert.equal(saved[key], "level");
         scope.dispose();
-        const restored = new PresentationObservations(() => assert.fail("no visible sources"), () => {}, {
+        const restored = new PresentationObservations(() => assert.fail("no visible sources"), {
             initial: saved, save: () => {},
         });
         assert.equal(restored.mode(source.node, source.member), "level");

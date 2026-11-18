@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import { hostState, loadLocalState, postToHost, saveLocalState } from "./host";
 import { instanceLabel, visibleNodes } from "./liveGraphView";
@@ -7,6 +7,7 @@ import { isNodeViewChoice, nodeViewChoices, type NodeViewChoice } from "./presen
 import PresentationHost from "./presentation/PresentationHost.vue";
 import { semanticNodeFromVirtualNode } from "./presentation/semanticNode";
 import { TrustedHover } from "../src/trustedHover";
+import { useElementStatusHint } from "./statusHints";
 
 const storedViewChoice = loadLocalState().viewChoice;
 const viewChoice = ref<NodeViewChoice>(
@@ -41,8 +42,16 @@ function createInstance(): void {
     postToHost({ type: "createInstance" });
 }
 // The presentation components' hover comes from this shared unit.
-const trustedHover = new TrustedHover();
-onBeforeUnmount(() => trustedHover.dispose());
+const status = useElementStatusHint();
+const trustedHover = new TrustedHover(undefined, status.hover);
+const resetHover = () => trustedHover.reset();
+watch(status.text, (hint) => postToHost({ type: "interactionHint", hint }));
+onMounted(() => window.addEventListener("blur", resetHover));
+onBeforeUnmount(() => {
+    window.removeEventListener("blur", resetHover);
+    trustedHover.dispose();
+    postToHost({ type: "interactionHint", hint: null });
+});
 </script>
 
 <template>
@@ -88,7 +97,7 @@ onBeforeUnmount(() => trustedHover.dispose());
         <div
             v-if="nodes.length === 0"
             class="empty"
-            title="No visible virtual nodes at the current selection"
+            data-status-hint="No nodes at the current selection"
         >
             [no nodes]
         </div>

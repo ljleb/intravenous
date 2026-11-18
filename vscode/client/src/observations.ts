@@ -7,7 +7,6 @@ export type ObservationSource = {
     channel?: number;
 };
 export type MeterMode = "level" | "value";
-export type ObservationHint = { text: string; tooltip: string };
 export type ObservationWindow = { begin: string; length: string; points: number };
 export type ObservationWindowResult = {
     id: string; window: ObservationWindow; status: "pending" | "ready" | "unavailable" | "failed";

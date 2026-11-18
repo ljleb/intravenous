@@ -119,7 +119,7 @@ onBeforeUnmount(() => {
     <div ref="root" class="time-ruler" :class="{ seekable: playback }" aria-label="Time in seconds"
         @pointerdown="beginSeek" @pointermove="moveSeek" @pointerup="endSeek"
         @pointercancel="cancelSeek" @lostpointercapture="cancelSeek"
-        :title="playback ? 'Click or drag to seek. Space: play/pause.' : undefined">
+        :data-status-hint="playback ? 'Click/drag seek · Space ▶/Ⅱ' : undefined">
         <RulerGraduations :ticks="ticks" />
         <div v-if="playback && executionMarker >= 0 && executionMarker <= width && executionMarker !== marker"
             class="playhead-marker execution-marker" :style="{ left: `${executionMarker}px` }"
@@ -128,7 +128,7 @@ onBeforeUnmount(() => {
         <div v-if="playback && requestedMarker >= 0 && requestedMarker <= width" class="requested-marker"
             :style="{ left: `${requestedMarker}px` }" aria-label="Requested playhead position" />
         <div v-if="playback && startMarker >= 0 && startMarker <= width" class="start-marker"
-            :style="{ left: `${startMarker}px` }" role="img" :aria-label="startLabel" :title="startLabel" />
+            :style="{ left: `${startMarker}px` }" role="img" :aria-label="startLabel" :data-status-hint="`Start ${displayedStart} smp`" />
     </div>
 </template>
 

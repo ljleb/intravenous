@@ -23,8 +23,9 @@ const active = computed(() => props.port.binding !== "none"
     <div
         class="port-row"
         :data-direction="port.direction"
+        :data-kind="port.kind"
         :data-active="active"
-        :title="`${port.name} • ${portDescription(port)}`"
+        :data-status-hint="`${port.name} · ${portDescription(port)}`" :aria-description="portDescription(port)"
     >
         <span class="port-icon" :class="{ mirrored: port.direction === 'output' }" v-html="arrowIcon" />
         <span class="port-name">{{ port.name }}</span>
@@ -65,12 +66,14 @@ const active = computed(() => props.port.binding !== "none"
 }
 
 .port-row[data-direction="input"] .port-icon {
-    color: var(--vscode-terminal-ansiYellow);
+    color: var(--iv-sample-input);
 }
 
 .port-row[data-direction="output"] .port-icon {
-    color: var(--vscode-terminal-ansiBlue);
+    color: var(--iv-sample-output);
 }
+.port-row[data-kind="event"][data-direction="input"] .port-icon { color: var(--iv-event-input); }
+.port-row[data-kind="event"][data-direction="output"] .port-icon { color: var(--iv-event-output); }
 
 .port-row[data-active="true"] .port-icon {
     opacity: 0.95;

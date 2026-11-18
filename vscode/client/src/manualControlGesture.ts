@@ -1,9 +1,10 @@
 import type { ManualControlAction, ManualControlDescriptor, ManualControlId, ManualControlInteractionState, ManualControlLiveValue } from "./manualControls";
 import { manualControlKey, manualControlName } from "./manualControls";
 import { addressKey, type NodeAddress } from "./graphScope";
+import { rightClickHint } from "./statusBarText";
 
 export type ManualControlLimits = { min?: number; max?: number; defaultValue?: number; scrubSpeed?: number };
-export type ManualControlHint = { text: string; tooltip: string };
+export type ManualControlHint = { text: string };
 type Hover = { control: ManualControlId; descriptor: ManualControlDescriptor; limits: ManualControlLimits };
 export type ManualValueEntry = Hover & {
     id: string; draft: string; error: string;
@@ -16,10 +17,14 @@ type Gesture = {
         plateau: number; limits: ManualControlLimits;
         anchorPosition: number; anchorValue: number; anchorPlateau: number };
 };
-const plateauHalfWidth = 6; // Extra pixels on either side of the exact default.
+const plateauHalfWidth = 12; // Extra pixels on either side of the exact default.
 const clamp = (value: number, limits: ManualControlLimits) =>
     Math.max(limits.min ?? -Infinity, Math.min(limits.max ?? Infinity, value));
 const displayValue = (value: number) => Number(value.toPrecision(6)).toString();
+export function manualKnobStatus(name: string, value: number, canReset: boolean): string {
+    return `${name} ${displayValue(value)} · Drag/↑↓ · Ctrl ¼× · ${rightClickHint} value`
+        + (canReset ? " · Dbl-click reset" : "");
+}
 // Owned by the webview root, never by a presentation widget. Components can
 // disappear while these window-level pointer and keyboard gestures continue.
 export class ManualControlGestures {
@@ -278,22 +283,18 @@ export class ManualControlGestures {
         return true;
     }
     hint(): ManualControlHint | null {
-        if (this.entry) return { text: `${manualControlName(this.entry.control)}: Enter accept · Esc cancel`,
-            tooltip: "Type an exact value. Enter accepts; Escape or clicking outside cancels. Drag snapping does not affect numeric entry." };
+        if (this.entry) return { text: `${manualControlName(this.entry.control)} · `
+            + (this.entry.error ? `${this.entry.error} · Esc cancel` : "Enter apply · Esc cancel") };
         if (this.active?.pointer) return {
             text: `${manualControlName(this.active.control)} ${displayValue(this.displayValue(this.active.control, this.active.value))}`
                 + (this.outputInverted(this.active.control, this.active.value) ? " · inverted" : "")
-                + ` · ${displayValue(2 ** this.active.pointer.speed)}×`,
-            tooltip: "Drag up to increase or down to decrease. Scroll down for finer control; scroll up for faster control."
-                + " Each wheel step halves or doubles sensitivity. Release to finish; Escape releases the pointer.",
+                + ` · ${displayValue(2 ** this.active.pointer.speed)}× · Wheel ↑×2 ↓½ · Esc release`,
         };
         if (!this.hoverDetails?.descriptor.available || !this.hoverDetails.descriptor.enabled) return null;
         const reset = this.hoverDetails.limits.defaultValue !== undefined;
-        return { text: `${manualControlName(this.hoverDetails.control)}: drag · Ctrl-drag ¼×${reset ? " · double-click reset" : ""} · right-click value`,
-            tooltip: "Drag up/down to adjust. While dragging, use the wheel to change sensitivity. Right-click for numeric entry."
-                + " Ctrl-click starts at 0.25× sensitivity."
-                + (reset ? " Double-click to reset to the declared default." : "") + " Arrow keys adjust the focused knob."
-                + (this.hoverDetails.control.outputName !== undefined ? " The invert button reverses output polarity without changing magnitude." : "") };
+        const { control, descriptor } = this.hoverDetails;
+        const value = this.state(control)?.value ?? this.liveValue(control) ?? descriptor.value;
+        return { text: manualKnobStatus(manualControlName(control), this.displayValue(control, value), reset) };
     }
     pointerControl(): ManualControlId | null { return this.active?.pointer ? this.active.control : null; }
     pointerId(): number | null { return this.active?.pointer?.id ?? null; }

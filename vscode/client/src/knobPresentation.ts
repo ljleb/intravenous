@@ -16,3 +16,9 @@ export function knobFraction(value: number, { min, max, defaultValue = 0 }: Manu
         return 1 - 2 * Math.atan(Math.max(0, max - value) / Math.max(Math.abs(max - defaultValue), 1)) / Math.PI;
     return .5 + Math.atan((value - defaultValue) / Math.max(Math.abs(defaultValue), 1)) / Math.PI;
 }
+
+export function knobMagnitude(value: number, { min, max, defaultValue = 0 }: ManualControlLimits): number {
+    const offset = value - defaultValue;
+    if (offset === 0 || (offset < 0 ? min !== undefined : max !== undefined)) return 0;
+    return Math.min(4, Math.log10(1 + Math.abs(offset) / Math.max(Math.abs(defaultValue), 1)));
+}

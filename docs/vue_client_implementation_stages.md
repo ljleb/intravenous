@@ -3744,3 +3744,34 @@ snapshot-correct, pin-safe eviction/reconstruction and relative cache priority
 soon after the active Tick coverage restoration and output-gain cleanup; the
 shared-storage implementation record carries its verification requirements.
 No differentiated eviction implementation or measurement is claimed here.
+
+### Status bar hints
+
+The graph editor and source inspection view share one VS Code status item
+for hints. The item follows pointer hover, keyboard focus, and active
+knob, automation point, or ruler drags. Build and compilation details
+appear in their own status items and in the output channel. Source checks
+cover the tooltip migration. Build and UI checks remain owner-run.
+
+### First pass on knob and port visuals
+
+`KnobFace.vue` draws the default pin and separate markers for each finite
+bound on the same arc. The exact default gets 24 pixels of extra drag travel.
+Four bars show logarithmic distance from the default on an unbounded side.
+A larger face and a value appear above the knob after a short hover or when
+a drag starts. The lane uses the status bar for its numeric readout.
+
+`NodePortRow.vue` shares the knob, circle, and label layout between direct
+and folded rows. The last visible row anchors the scrollable continuation.
+The input row accepts compatible cable drops and draws the preview to its
+port circle. Wires between visible unselected ports are faint. Labels and
+knob faces cover the wires beneath them.
+
+This pass tries orange and purple for Event inputs and outputs, with a
+distinct port shape and dotted cables. The palette, magnitude bars, and
+temporary preview are open for owner feedback.
+
+The wire mask now follows the width of the label text. Wires remain visible
+over the rest of the label background. Knobs and ports share a static
+outline with two distinct controls. At minimum lane height, the compact
+handle fits inside its lane and opens the full-size folded rows.

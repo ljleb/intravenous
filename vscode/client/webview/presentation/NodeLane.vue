@@ -15,6 +15,9 @@ const inputs = computed(() => node.value.ports.filter((port) => port.direction =
 const outputs = computed(() => node.value.ports.filter((port) => port.direction === "output"));
 const inputSummary = computed(() => inputs.value.map((port) => `${port.name}: ${portDescription(port)}`).join('\n'));
 const outputSummary = computed(() => outputs.value.map((port) => `${port.name}: ${portDescription(port)}`).join('\n'));
+const laneStatus = computed(() => node.value.loadState === "waitingForDefinition" ? "Waiting for the node definition"
+    : node.value.loadState === "waitingForGraph" ? "Waiting for graph realization"
+        : node.value.errorMessage || node.value.definitionId);
 </script>
 
 <template>
@@ -22,18 +25,16 @@ const outputSummary = computed(() => outputs.value.map((port) => `${port.name}: 
         <header class="lane-label">
             <div class="lane-heading">
                 <span class="lane-name" :class="{ failed: node.loadState === 'failed' }"
-                    :title="node.loadState === 'waitingForDefinition' ? 'Waiting for the node definition'
-                        : node.loadState === 'waitingForGraph' ? 'Waiting for graph realization'
-                        : node.errorMessage || node.definitionId">
+                    :data-status-hint="laneStatus" :aria-description="laneStatus">
                     {{ nodeDisplayName(node) }}
                 </span>
-                <button v-if="lane" type="button" class="copy-debug" title="Copy node debug details"
+                <button v-if="lane" type="button" class="copy-debug" data-status-hint="Copy node debug details"
                     aria-label="Copy node debug details" @click="lane.copyDebugDetails()">⧉</button>
             </div>
             <NodePorts v-if="node.address" />
             <div v-else class="port-summary">
-                <span :title="inputSummary" :aria-label="`${inputs.length} inputs`">→ {{ inputs.length }}</span>
-                <span :title="outputSummary" :aria-label="`${outputs.length} outputs`">{{ outputs.length }} →</span>
+                <span :aria-label="`${inputs.length} inputs`" :aria-description="inputSummary">→ {{ inputs.length }}</span>
+                <span :aria-label="`${outputs.length} outputs`" :aria-description="outputSummary">{{ outputs.length }} →</span>
             </div>
         </header>
         <div class="lane-content" :class="{ 'meter-content': !$slots.default }"><slot><LiveOutputMeters :mode="mode" /></slot></div>
@@ -49,9 +50,12 @@ const outputSummary = computed(() => outputs.value.map((port) => `${port.name}: 
 /* Header geometry follows its available space, independently of the
    presentation's editable/mini/nano content contract. */
 @container node-lane (max-height: 56px) {
-    .lane-label { flex-direction: row; align-items: center; gap: 4px; padding-top: 0; padding-bottom: 0; }
-    .lane-heading { flex: 1; min-width: 0; align-items: center; }
-    .lane-label :deep(.node-ports) { margin-top: 0; flex: 0 0 62px; height: 22px; }
+    .lane-label { flex-direction: row; align-items: center; gap: 4px; padding: 0 4px; }
+    .lane-heading { flex: 1; min-width: 0; overflow: hidden; align-items: center; }
+    .lane-label :deep(.node-ports) {
+        --port-slot-height: min(22px, 100cqh);
+        margin-top: 0; flex: 0 1 130px; min-width: 0; min-height: 0; height: var(--port-slot-height);
+    }
     .port-summary { display: none; }
 }
 .lane-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: min(calc(100cqh - 4px), var(--vscode-font-size, 13px)); line-height: 1; }

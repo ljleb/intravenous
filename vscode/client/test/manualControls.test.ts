@@ -287,16 +287,16 @@ test("default snapping adds travel without losing nearby values, even when sensi
     gestures.scrub(control, { ...descriptor, value: -2 }, 1, 0, 1, { defaultValue: 0 });
     gestures.move(1, 2); // Reach the default from below.
     assert.equal(gestures.state(control)?.value, 0);
-    gestures.move(1, 8); // Halfway through the extra twelve pixels.
+    gestures.move(1, 14); // Halfway through the extra twenty-four pixels.
     assert.equal(gestures.state(control)?.value, 0);
     gestures.changeSensitivity(100); // Halve the sensitivity without resetting progress.
-    gestures.move(1, 14);
+    gestures.move(1, 26);
     assert.equal(gestures.state(control)?.value, 0);
-    gestures.move(1, 15);
+    gestures.move(1, 27);
     assert.equal(gestures.state(control)?.value, .5);
-    gestures.move(1, 14.01);
+    gestures.move(1, 26.01);
     assert.ok(Math.abs(gestures.state(control)!.value - .005) < 1e-12);
-    gestures.move(1, 14);
+    gestures.move(1, 26);
     assert.equal(gestures.state(control)?.value, 0);
     gestures.move(1, 2); // Returning across the same plateau consumes the same distance.
     assert.equal(gestures.state(control)?.value, 0);
@@ -322,9 +322,9 @@ test("output gain scrubbing reaches exact zero independently of pointer event co
         return gestures;
     };
     const single = make();
-    single.moveBy(1, -106); // Six pixels leave the default plateau, then 100 scale the value to zero.
+    single.moveBy(1, -112); // Twelve pixels leave the default plateau, then 100 scale the value to zero.
     const repeated = make();
-    for (let i = 0; i < 106; ++i) repeated.moveBy(1, -1);
+    for (let i = 0; i < 112; ++i) repeated.moveBy(1, -1);
     assert.equal(single.state(gain)?.value, 0);
     assert.equal(repeated.state(gain)?.value, 0);
     repeated.moveBy(1, .01);
@@ -443,7 +443,7 @@ test("reset uses the declared default and can reanchor an ongoing drag", () => {
     gestures.move(1, 5);
     gestures.resetHovered();
     assert.equal(gestures.state(control)?.value, 7);
-    gestures.move(1, 12); // Seven pixels from the reset, including six at the default.
+    gestures.move(1, 18); // Thirteen pixels from the reset, including twelve at the default.
     assert.equal(gestures.state(control)?.value, 8);
     gestures.release(1);
 });
@@ -452,7 +452,7 @@ test("interaction hints describe the current gesture and clear with its hover", 
     const gestures = new ManualControlGestures(() => {}, () => "drag", () => {});
     assert.equal(gestures.hint(), null);
     gestures.hover(control, descriptor, { defaultValue: 440 });
-    assert.match(gestures.hint()!.text, /double-click reset/);
+    assert.match(gestures.hint()!.text, /Drag\/↑↓.*🖱︎R value.*Dbl-click reset/);
     gestures.scrub(control, descriptor, 1, 0, 1);
     gestures.changeSensitivity(100);
     assert.match(gestures.hint()!.text, /0.5×/);
