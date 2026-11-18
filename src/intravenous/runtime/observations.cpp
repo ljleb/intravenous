@@ -97,7 +97,7 @@ void Observations::handle_protocol(ObservationProtocolRequest& request)
                 || interest.source.member.empty() || interest.source.member.size() > 256
                 || interest.operation.empty() || interest.operation.size() > 128)
                 throw std::invalid_argument("invalid or duplicate observation interest");
-            if (interest.window && (interest.source.kind != ObservationSourceKind::output
+            if (interest.window && (interest.source.kind == ObservationSourceKind::state_field
                 || !interest.window->length || interest.window->length > static_cast<std::uint64_t>(INT64_MAX)
                 || !interest.window->points || interest.window->points > maximum_observation_window_points))
                 throw std::invalid_argument("invalid observation window");

@@ -10,6 +10,10 @@ test("timeline wheel modifiers implement the requested bindings", () => {
     assert.equal(timelineWheelAction({ ...plain, altKey: true }), "verticalZoom");
     assert.equal(timelineWheelAction({ ...plain, shiftKey: true }), "horizontalScroll");
     assert.equal(timelineWheelAction({ ...plain, ctrlKey: true }), "horizontalZoom");
+    const altShift = { ...plain, altKey: true, shiftKey: true };
+    assert.equal(timelineWheelAction(altShift), "verticalZoom");
+    assert.equal(timelineWheelAction(altShift, true), "laneValueZoom");
+    assert.equal(timelineWheelAction({ ...altShift, ctrlKey: true }, true), "horizontalZoom");
     assert.equal(wheelPixels(2, 0, 400), 2);
     assert.equal(wheelPixels(2, 1, 400), 32);
     assert.equal(wheelPixels(2, 2, 400), 800);
@@ -97,19 +101,19 @@ test("vertical middle zoom uses horizontal motion and the supplied vertical anch
     assert.equal(moveMiddleDrag(view, drag, 4, 100, 180, 80), view);
     assert.equal(moveMiddleDrag(view, drag, 0, 150, 180, 80), null);
     for (const dx of [-50, 50]) {
-        assert.deepEqual(moveMiddleDrag(view, drag, 4, 100 + dx, 180, 80), zoomTimelineVertically(view, 80, -dx * 3));
+        assert.deepEqual(moveMiddleDrag(view, drag, 4, 100 + dx, 180, 80), zoomTimelineVertically(view, 80, dx * 3));
     }
     const first = moveMiddleDrag(view, drag, 4, 150, 120, 80)!;
     const second = moveMiddleDrag(first, { ...drag, x: 150, y: 120 }, 4, 175, 140, 140);
-    assert.deepEqual(second, zoomTimelineVertically(first, 140, -75));
+    assert.deepEqual(second, zoomTimelineVertically(first, 140, 75));
 });
 
 test("vertical middle zoom can reverse immediately after hitting the scale limit", () => {
     const view = { ...initialTimelineViewport, laneHeight: minimumLaneHeight };
     const drag: MiddleDrag = { pointerId: 1, x: 300, y: 100, action: "verticalZoom" };
-    const clamped = moveMiddleDrag(view, drag, 4, 100, 100, 80)!;
+    const clamped = moveMiddleDrag(view, drag, 4, 500, 100, 80)!;
     assert.equal(clamped.laneHeight, minimumLaneHeight);
-    const reversed = moveMiddleDrag(clamped, { ...drag, x: 100 }, 4, 101, 100, 80)!;
+    const reversed = moveMiddleDrag(clamped, { ...drag, x: 500 }, 4, 499, 100, 80)!;
     assert.ok(reversed.laneHeight > minimumLaneHeight);
 });
 
@@ -127,16 +131,18 @@ test("the locked zoom cursor wraps in both directions while zoom follows the ori
     assert.deepEqual(repeated.screens, { x: 3, y: -4 });
     assert.equal(zoomAnchorHint("horizontalZoom", repeated.screens), "Time anchor · 3 screens right");
     assert.equal(zoomAnchorHint("verticalZoom", repeated.screens), "Lane anchor · 4 screens above");
+    assert.equal(zoomAnchorHint("valueZoom", repeated.screens), "Value anchor · 4 screens above");
     const opposite = wrapTimelineCursor(cursor, { x: -410, y: 305 }, bounds);
     assert.deepEqual(opposite.virtual, { x: -115, y: 368 });
     assert.equal(zoomAnchorHint("horizontalZoom", opposite.screens), "Time anchor · 2 screens left");
     assert.equal(zoomAnchorHint("verticalZoom", opposite.screens), "Lane anchor · 3 screens below");
     assert.equal(zoomAnchorHint("verticalZoom", wrapped.screens), "Lane anchor · 1 screen above");
     assert.equal(zoomAnchorHint("horizontalZoom", { x: 0, y: 2 }), "Time anchor · in view");
+    assert.equal(zoomAnchorHint("valueZoom", { x: 4, y: 0 }), "Value anchor · in view");
 
     const anchorX = repeated.virtual.x - bounds.left, anchorY = repeated.virtual.y - bounds.top;
     assert.deepEqual(zoomMiddleDrag(view, "horizontalZoom", movement, anchorX), zoomTimelineHorizontally(view, anchorX, -15));
-    assert.deepEqual(zoomMiddleDrag(view, "verticalZoom", movement, anchorY), zoomTimelineVertically(view, anchorY, -30));
+    assert.deepEqual(zoomMiddleDrag(view, "verticalZoom", movement, anchorY), zoomTimelineVertically(view, anchorY, 30));
     assert.equal(zoomMiddleDrag(view, "horizontalZoom", { x: 10, y: 0 }, anchorX), view);
     assert.equal(zoomMiddleDrag(view, "verticalZoom", { x: 0, y: -5 }, anchorY), view);
 });

@@ -21,11 +21,10 @@ realtime state from the Vue client. It complements
   otherwise unnecessary computation, select output materialization, or prepare
   temporary observation storage; it must not alter output values, authored
   retention, connection semantics, or the interpretation of `Node::State`.
-- **Outputs are the initial observable port endpoints.** All inputs remain visible,
-  discoverable, and connectable through ordinary graph metadata, but *input value*
-  observation is explicitly deferred. A later input view must define what the
-  receiving node actually sees after fan-in and conversion; it must not silently
-  substitute one connected source.
+- An input observation reads the effective value at the receiving port after
+  fan-in, conversion, timing, and manual or neutral fallback. A public module
+  input is observed before module-internal routing or conversion.
+  [Previous observation scope](historical/input_observation_and_disabled_knobs_before_2026-11-18.md#observation-scope-and-background-queries).
 - Selected **Tick `Node::State` fields** may be observed if supported by the global
   field-type codec/capture registry. **Tock `Node::State` field observation is
   explicitly outside the initial scope**, notwithstanding common authored
@@ -229,7 +228,7 @@ requirements, so an edit does not drop live probes; see
 
 ### Background window queries
 
-A range observation names one output, a finite global timeline window or exact
+A range observation names one port, a finite global timeline window or exact
 requested positions, an operation, and a bounded resolution/quality request.
 For `tock/ephemeral`, its demand is intersected with exact `IndexCoverage` and
 batched through the existing reverse-coverage/evaluation transaction. Any needed
@@ -244,8 +243,30 @@ completion and atomic publication retain their existing full-output-coverage
 contract. No observation subsystem duplicates persisted records or invents a
 partially committed persistent output.
 
-An output's **inputs** may participate in reverse coverage as ordinary internal
-dependencies. This is not input-port observation by the Vue client.
+A range observation on an input demands the input's resolved binding through the
+same evaluation transaction. Coverage observations preserve Region ranges and
+uncovered positions. Sequential observations use a coherent retained or
+replayable binding and apply the same fallback as the receiver. When covered
+data is unavailable, leave the affected values unavailable.
+
+A presentation can call `usePortObservation` with a reactive request that has a
+`source`, an `operation`, and a `window` for a range query. Set `source.kind` to
+`input` to read the receiving port. For a multi-channel port, specify a
+`source.channel`. Each presentation owns its subscriptions and releases them
+when its Vue scope ends.
+
+Sequential Sample inputs can report live values where the Tick callback receives
+the binding. Windows can read concrete random-access bindings and replay-backed
+Sequential bindings.
+
+Public Coverage inputs remain structural aliases in `NodeBundle`. The
+compiler retains their resolved sources, channel projections, and read delays
+in `PublicCoverageInputView`. A window query requests the source data through
+the existing background transaction and projects it at the public port. The
+projection preserves Region identity and precedes routing to internal consumers.
+The view adds no scheduled callback or playback storage. An unconnected port
+returns an empty window. A route with no recorded or replayable source reports
+that the data are unavailable.
 
 ## 4. Viewport resolution and truthful results
 
@@ -326,7 +347,7 @@ an implementation choice.
 
 `Observations` owns the per-client desired sets and their aggregation.
 `ProjectGraph` retains the last **accepted aggregate executable requirements**
-for compilation. These identify semantic sources (`NodeAddress` and an output,
+for compilation. These identify semantic sources (`NodeAddress` and an input, output,
 channel, or supported Tick `State` field) and the capture operations needed,
 not client subscriptions or generation-local indices. Non-executable window
 queries, client delivery cadence, and purely presentational resolution settings
@@ -490,6 +511,6 @@ output (e.g. `Sample` level), and one bounded persisted or sparse Tock output
 window, while validating safe capture lifetimes, ordered generations,
 background priority, truthful coverage, and batched multi-client delivery.
 
-Defer field-level serializer overrides, Tock `State` observation, input value
-observation, arbitrary authored observation callbacks, elaborate derived caches,
-and broad custom spectrum/event operation catalogs until demonstrated needs.
+Defer field-level serializer overrides, Tock `State` observation, arbitrary
+authored observation callbacks, elaborate derived caches, and broad custom
+spectrum or event operation catalogs until demonstrated needs.

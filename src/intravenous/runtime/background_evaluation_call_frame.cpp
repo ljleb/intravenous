@@ -186,21 +186,30 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
     std::vector<GlobalIndexRange> event_output_ranges{};
     bool rejected_write = false;
 
-    static Sample read_sample(void const* opaque, GlobalIndex index,
-                              std::size_t channel) noexcept
+    std::optional<Sample> find_sample(GlobalIndex index, std::size_t channel) const noexcept
     {
-        auto const& self = *static_cast<BindingAdapter const*>(opaque);
-        for (auto const& route : self.sample_reads) {
+        for (auto const& route : sample_reads) {
             if (route.logical_channel != channel)
                 continue;
             auto const source_index = index.retreated_by(route.read_latency);
             if (route.view.coverage().contains(source_index)) {
-                return route.view.at(source_index, route.storage_channel);
+                for (auto const& region : route.view.regions) {
+                    if (auto const* bytes = region.value_storage(source_index, route.storage_channel)) {
+                        Sample value;
+                        std::memcpy(&value, bytes, sizeof(value));
+                        return value;
+                    }
+                }
             }
         }
-        IV_ASSERT(false,
-                  "background sample binding has no selected readable route");
-        return {};
+        return std::nullopt;
+    }
+
+    static Sample read_sample(void const* opaque, GlobalIndex index, std::size_t channel) noexcept
+    {
+        auto const value = static_cast<BindingAdapter const*>(opaque)->find_sample(index, channel);
+        IV_ASSERT(value.has_value(), "background sample binding has no selected readable route");
+        return value.value_or(Sample{});
     }
 
     static void write_sample(void* opaque, GlobalIndex index,
@@ -503,6 +512,17 @@ IndexCoverage known_absent_replay_positions(GlobalIndexRange region,
     if (!upstream || !(missing & *upstream).empty()) throw std::runtime_error(unavailable);
     return missing;
 }
+
+void combine_manual_sample(graph_jit::SequentialInputCombineFunction combine,
+    graph_jit::BackgroundPortIndex port, Sample& value, Sample const& manual)
+{
+    if (!combine) {
+        value = value + manual;
+    } else if (!combine(port, reinterpret_cast<std::byte*>(&value),
+                   reinterpret_cast<std::byte const*>(&manual), sizeof(Sample))) {
+        throw std::runtime_error("Sequential replay rejected its manual contribution");
+    }
+}
 } // namespace
 
 void BackgroundEvaluationCallFrame::prepare_replay(void* opaque)
@@ -550,12 +570,7 @@ void BackgroundEvaluationCallFrame::prepare_replay(void* opaque)
                 auto const index = region.begin.advanced_by(offset);
                 for (std::size_t channel = 0; channel < channel_count(raw.layout); ++channel) {
                     auto& target = raw.at(index, channel);
-                    if (replay.combine_sequential_input) {
-                        if (!replay.combine_sequential_input(replay.sample_input_ports[input],
-                                reinterpret_cast<std::byte*>(&target),
-                                reinterpret_cast<std::byte const*>(&*manual), sizeof(Sample)))
-                            throw std::runtime_error("Sequential replay rejected its manual contribution");
-                    } else target = target + *manual;
+                    combine_manual_sample(replay.combine_sequential_input, replay.sample_input_ports[input], target, *manual);
                 }
             }
         }
@@ -1571,6 +1586,22 @@ RandomAccessContinuousInputPort BackgroundEvaluationCallFrame::discovery_continu
         .coverage_value = &adapter.logical_coverage,
         .geometry = plan_->ports[input].continuous_geometry,
         .prepared_coverage_value = adapter.coverage};
+}
+
+std::optional<Sample> BackgroundEvaluationCallFrame::observe_sequential_sample_input(
+    graph_jit::BackgroundPortIndex input, GlobalIndex position, std::size_t channel) const
+{
+    auto const slot = *plan_->runtime.port_bindings[input];
+    auto const& adapter = *binding_adapters_[slot];
+    auto const& port = plan_->ports[input];
+    std::optional<Sample> value;
+    if (adapter.coverage->contains(position))
+        value = adapter.find_sample(position, channel);
+    else if (!selection_.binding_upstream_coverage[slot].contains(position))
+        value = port.sample_fallback_value;
+    if (value && port.sample_manual_contribution)
+        combine_manual_sample(selection_.combine_sequential_input, input, *value, *port.sample_manual_contribution);
+    return value;
 }
 
 RandomAccessEventInputPort BackgroundEvaluationCallFrame::discovery_event_input(

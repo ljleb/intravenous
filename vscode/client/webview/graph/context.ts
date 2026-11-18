@@ -6,6 +6,8 @@ import type { PortConnectionDrag } from "../../src/portConnectionGesture";
 import type { CurveAxes, CurveDragKind } from "../../src/automationCurveEditing";
 import type { AutomationBoundSide } from "../../src/automationCurveGeometry";
 
+export type CursorWarpAnchor = { screenOrigin: Point; scale: number };
+
 type GraphEditorContext = {
     layout: Ref<GraphLayout>;
     save: () => void;
@@ -16,7 +18,9 @@ type GraphEditorContext = {
     selectLane: (address: NodeAddress, modifiers?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => void;
     portsChanged: () => void;
     elementAtPointer: () => Element | null;
-    beginPointerLockExit: (origin: Point) => void;
+    beginPointerLockExit: (origin: Point, warp?: CursorWarpAnchor & { destination: Point; trace?: boolean }) => void;
+    takeMiddleCursorTrace: () => ((detail: string) => void) | null;
+    reportCursorReturnSkipped: (detail: string) => void;
     setTimelineZoomHint: (hint: string | null) => void;
     connectionDrag: Ref<PortConnectionDrag | null>;
     hoveredPortGroup: Ref<{ nodeKey: string; direction: "input" | "output" } | null>;

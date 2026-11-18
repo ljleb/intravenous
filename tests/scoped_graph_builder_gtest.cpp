@@ -22,6 +22,29 @@
 namespace {
 using Pass = iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>;
 
+template<auto Production, iv::OutputRealization Realization, iv::ChannelTypeId Channels = iv::ChannelTypeId::mono>
+struct PublicOutputSource {
+    static constexpr bool sequential =
+        std::is_same_v<std::remove_cv_t<decltype(Production)>, std::remove_cv_t<decltype(iv::OutputProduction::sequential)>>;
+
+    static constexpr auto outputs() {
+        return std::array{iv::output<iv::Sample>("value", Production, Realization,
+            {.channel_layout = {.channel_type = Channels, .sample_layout = iv::SampleStreamLayout::interleaved}})};
+    }
+    void tick_block(iv::TickBlockContext<PublicOutputSource> const&) const requires (sequential) {}
+    void tock_coverage(iv::TockCoverageContext<PublicOutputSource>&) const requires (!sequential) {}
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<PublicOutputSource>&) const requires (!sequential) {}
+};
+
+struct BufferedEventRegion {
+    static constexpr auto outputs() {
+        return std::array{iv::event_output("events", iv::EventTypeId::trigger,
+            iv::OutputProduction::region, iv::OutputRealization::buffered)};
+    }
+    void tock_coverage(iv::TockCoverageContext<BufferedEventRegion>&) const {}
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<BufferedEventRegion>&) const {}
+};
+
 // Every component a snapshot must preserve exactly.
 struct GraphShape {
     std::size_t bundles = 0;
@@ -66,6 +89,60 @@ iv::ConfiguredGraph make_frozen_pass()
     return std::move(graph).finish();
 }
 } // namespace
+
+TEST(ScopedGraphBuilder, PublicSampleOutputsInferProductionAndRealizationAcrossDeclarations)
+{
+    using namespace iv;
+    GraphBuilder root;
+    auto region = details::configure_concrete_node<PublicOutputSource<OutputProduction::region, OutputRealization::buffered>>(root);
+    auto other_region = details::configure_concrete_node<PublicOutputSource<OutputProduction::region, OutputRealization::buffered>>(root);
+    auto stereo_region = details::configure_concrete_node<
+        PublicOutputSource<OutputProduction::region, OutputRealization::buffered, ChannelTypeId::stereo>>(root);
+    auto coverage = details::configure_concrete_node<PublicOutputSource<OutputProduction::coverage, OutputRealization::computed>>(root);
+    auto sequential = details::configure_concrete_node<PublicOutputSource<OutputProduction::sequential, OutputRealization::buffered>>(root);
+
+    root.outputs("coverage"_P = coverage, "region"_P = region);
+    root.outputs({NamedRef{"named-coverage", coverage[0]}, NamedRef{"named-region", region[0]}});
+    root.outputs("single-stereo"_P[stereo::left] = stereo_region[0].select_channel(0));
+    root.outputs("single-stereo"_P[stereo::right] = stereo_region[0].select_channel(1));
+    root.outputs("both-buffered"_P[stereo::left] = region, "both-buffered"_P[stereo::right] = other_region);
+    root.outputs("with-computed"_P[stereo::left] = region, "with-computed"_P[stereo::right] = coverage);
+    root.outputs("with-sequential"_P[stereo::left] = region, "with-sequential"_P[stereo::right] = sequential);
+    auto const graph = std::move(root).finish();
+    auto const outputs = graph.public_ports.sample_outputs(graph.node_bundles);
+
+    auto expect = [&](std::string_view name, OutputProductionKind production, OutputRealization realization) {
+        auto const found = std::ranges::find(outputs, name, &ContinuousOutputConfig::name);
+        ASSERT_NE(found, outputs.end()) << name;
+        EXPECT_EQ(output_production(*found), production) << name;
+        EXPECT_EQ(found->realization, realization) << name;
+    };
+    expect("coverage", OutputProductionKind::coverage, OutputRealization::computed);
+    expect("region", OutputProductionKind::region, OutputRealization::buffered);
+    expect("named-coverage", OutputProductionKind::coverage, OutputRealization::computed);
+    expect("named-region", OutputProductionKind::region, OutputRealization::buffered);
+    expect("single-stereo", OutputProductionKind::region, OutputRealization::buffered);
+    expect("both-buffered", OutputProductionKind::coverage, OutputRealization::buffered);
+    expect("with-computed", OutputProductionKind::coverage, OutputRealization::computed);
+    expect("with-sequential", OutputProductionKind::sequential, OutputRealization::buffered);
+}
+
+TEST(ScopedGraphBuilder, PublicEventOutputKeepsItsSourceProductionAndRealization)
+{
+    using namespace iv;
+    GraphBuilder root;
+    auto source = details::configure_concrete_node<BufferedEventRegion>(root);
+    auto module = root.subgraph([&](SubgraphBuilder& boundary) {
+        boundary.event_outputs("forwarded"_F = source.event_port());
+    }, "event export");
+    root.outputs("exported"_F = module.event_port());
+    auto const graph = std::move(root).finish();
+    auto const outputs = graph.public_ports.event_outputs(graph.node_bundles);
+    ASSERT_EQ(outputs.size(), 1u);
+    EXPECT_EQ(outputs.front().name, "exported");
+    EXPECT_EQ(outputs.front().production, OutputProductionKind::region);
+    EXPECT_EQ(outputs.front().realization, OutputRealization::buffered);
+}
 
 TEST(ScopedGraphBuilder, RefsFromDifferentViewsOfOneSessionAreCompatible)
 {

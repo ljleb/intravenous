@@ -46,10 +46,14 @@ test("scrub speed is fixed by the declaration and can be explicitly overridden",
 });
 
 test("the magnitude cue distinguishes extremes on an unbounded side", () => {
+    assert.equal(knobMagnitude(9, {}), 0);
+    assert.ok(knobMagnitude(10, {}) > 0);
+    assert.equal(knobMagnitude(99, {}), 1);
+    assert.equal(knobMagnitude(99999, {}), 4);
     assert.ok(knobMagnitude(10000, {}) > knobMagnitude(100, {}));
     assert.equal(knobMagnitude(-100, {}), knobMagnitude(100, {}));
     assert.equal(knobMagnitude(0, { min: 0, defaultValue: 1 }), 0);
     assert.equal(knobMagnitude(1, { min: 0, defaultValue: 1 }), 0);
-    assert.ok(knobMagnitude(10000, { min: 0, defaultValue: 1 }) > 3);
+    assert.equal(knobMagnitude(10000, { min: 0, defaultValue: 1 }), 3);
     assert.equal(knobMagnitude(100, { min: 0, max: 200 }), 0);
 });

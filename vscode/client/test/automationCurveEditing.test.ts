@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { AutomationCurveEditing, automationCycleSeconds, automationWindow, curvePointAt, readAutomationCurve, type CurveAxes } from "../src/automationCurveEditing";
 import { automationSampleOffset, automationValueAtFraction, automationValueFraction, automationValueGuides,
     panAutomationValueAxis, zoomAutomationValueAxis } from "../src/automationCurveGeometry";
-import type { GraphScope, GraphScopeNode, NodeAddress, Point } from "../src/graphScope";
+import { readLayout, type GraphScope, type GraphScopeNode, type NodeAddress, type Point } from "../src/graphScope";
 import { KnobPointerLock } from "../src/knobPointerLock";
 import { knobFraction, valueScaleFraction } from "../src/knobPresentation";
 import { serializeNodeEvent, type NodeEvent } from "../src/nodeEvents";
+import { wrapTimelineCursor } from "../src/timelineViewport";
 import { automationTimelineTicks, timelineTicks } from "../webview/timeline/geometry";
 
 const target: NodeAddress = { instanceId: "curve" };
@@ -107,6 +108,70 @@ test("lane value zoom holds the value at the cursor in both display modes", () =
     assert.equal(automationValueAtFraction(0, zoomedOut), 0);
     assert.equal(automationValueAtFraction(1, zoomedOut), .25);
 });
+
+test("curved value zoom can display a wider range without losing its finite bounds", () => {
+    const anchor = .625;
+    const axis = { pan: 1 };
+    const value = automationValueAtFraction(anchor, axis);
+    const zoomedOut = zoomAutomationValueAxis(axis, 1 / 256, anchor);
+    assert.equal(zoomedOut.zoom.factor, 1 / 256);
+    assert.ok(Math.abs(automationValueFraction(value, zoomedOut) - anchor) < 1e-10);
+    assert.ok(Math.abs(automationValueAtFraction(.25, zoomedOut) - automationValueAtFraction(.75, zoomedOut)) > 500);
+    assert.deepEqual(readLayout({ automationValueZooms: { curve: zoomedOut.zoom } }).automationValueZooms,
+        { curve: zoomedOut.zoom });
+
+    const lowerBound = { min: 2 };
+    const upperBound = { max: -2 };
+    assert.equal(automationValueAtFraction(0, { ...lowerBound, ...zoomAutomationValueAxis(lowerBound, .01, .5) }), 2);
+    assert.equal(automationValueAtFraction(1, { ...upperBound, ...zoomAutomationValueAxis(upperBound, .01, .5) }), -2);
+    assert.equal(zoomAutomationValueAxis({ min: 2, max: 4 }, .01, .5).zoom.factor, 1);
+});
+
+test("lane value zoom uses a vertical anchor beyond the wrapped lane edge", () => {
+    const curved = { zoom: { factor: 8, center: .5 } };
+    const cropped = { ...curved, display: "cropped" as const };
+    for (const axis of [curved, cropped]) {
+        const beyond = zoomAutomationValueAxis(axis, 2, 1.5);
+        const value = automationValueAtFraction(1.5, axis);
+        assert.ok(Math.abs(automationValueFraction(value, { ...axis, ...beyond }) - 1.5) < 1e-10);
+        assert.notDeepEqual(beyond, zoomAutomationValueAxis(axis, 2, 1));
+    }
+});
+
+test("curved lane zoom stays continuous through successive vertical cursor wraps", () => {
+    const lane = { left: 0, top: 0, width: 200, height: 100 };
+    const cursor = { x: 0, y: 50 };
+    const axis = { zoom: { factor: .5, center: .5 } };
+    const zoomAtTravel = (y: number) => {
+        const position = wrapTimelineCursor(cursor, { x: 0, y }, lane);
+        return { position, view: zoomAutomationValueAxis(axis, 1.01, 1 - position.virtual.y / lane.height) };
+    };
+    for (const edge of [-150, -50, 50, 150]) {
+        const before = zoomAtTravel(edge - .01);
+        const after = zoomAtTravel(edge + .01);
+        assert.equal(after.position.screens.y, before.position.screens.y + 1);
+        assert.ok(before.position.visible.y - after.position.visible.y > 99);
+        assert.ok(before.view.pan > after.view.pan);
+        assert.ok(before.view.pan - after.view.pan < .001);
+    }
+    assert.ok(zoomAtTravel(-200).view.pan > zoomAtTravel(-100).view.pan);
+    assert.ok(zoomAtTravel(200).view.pan < zoomAtTravel(100).view.pan);
+});
+
+test("crossing the default curved zoom gives the same view in one or two steps", () => {
+    const axis = { pan: 1, zoom: { factor: .5, center: .5 } };
+    for (const anchor of [-1.5, -.01, .625, .99, 2.5]) {
+        const direct = zoomAutomationValueAxis(axis, 4, anchor);
+        const atDefault = zoomAutomationValueAxis(axis, 2, anchor);
+        assert.deepEqual(direct, zoomAutomationValueAxis(atDefault, 2, anchor));
+        assert.deepEqual(atDefault, zoomAutomationValueAxis(direct, .5, anchor));
+        const restored = zoomAutomationValueAxis(direct, .25, anchor);
+        assert.equal(restored.zoom.factor, axis.zoom.factor);
+        assert.equal(restored.zoom.center, axis.zoom.center);
+        assert.ok(Math.abs(restored.pan - axis.pan) < 1e-12);
+    }
+});
+
 test("coalescing keeps the latest point while a message runs, and release flushes it before history closes", async () => {
     let release!: () => void;
     const first = new Promise<void>((resolve) => { release = resolve; });

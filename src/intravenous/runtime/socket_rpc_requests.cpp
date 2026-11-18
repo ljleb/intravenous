@@ -492,11 +492,13 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
             for (auto const& item : interests) {
                 auto const& source = item.at("source");
                 auto const kind = source.at("kind").get<std::string>();
-                if (kind != "output" && kind != "stateField") throw std::invalid_argument("invalid observation source kind");
+                if (kind != "output" && kind != "input" && kind != "stateField")
+                    throw std::invalid_argument("invalid observation source kind");
                 ObservationInterest interest{
                     .id = parse_string_param(item, "id"),
                     .source = {.node = parse_node_address_json(source.at("node"), ProjectConnectionJsonNames::socket_rpc),
-                        .kind = kind == "output" ? ObservationSourceKind::output : ObservationSourceKind::state_field,
+                        .kind = kind == "output" ? ObservationSourceKind::output
+                            : kind == "input" ? ObservationSourceKind::input : ObservationSourceKind::state_field,
                         .member = parse_string_param(source, "member")},
                     .operation = parse_string_param(item, "operation"),
                 };
@@ -518,7 +520,7 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
                         || !window.at("points").is_number_unsigned())
                         throw std::invalid_argument("invalid observation window range");
                     auto points = window.at("points").get<std::uint64_t>();
-                    if (!points || points > maximum_observation_window_points || interest.source.kind != ObservationSourceKind::output)
+                    if (!points || points > maximum_observation_window_points || interest.source.kind == ObservationSourceKind::state_field)
                         throw std::invalid_argument("invalid observation window points or source");
                     interest.window = ObservationWindow{GlobalIndex::from_signed(begin), length, static_cast<std::size_t>(points)};
                 }

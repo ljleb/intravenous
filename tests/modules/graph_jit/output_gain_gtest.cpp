@@ -34,7 +34,7 @@ std::shared_ptr<ObservationWindowQuery> query_window(GraphExecutor& executor,
 {
     auto query = std::make_shared<ObservationWindowQuery>();
     query->configured_generation = graph.configured_generation.value_or(graph.project_generation);
-    query->output = port;
+    query->port = port;
     query->operation = &observation_details::sample_operations.back();
     query->window = {index(begin), 4, 4};
     ObservationCollectRequest collection{.windows = {query}};

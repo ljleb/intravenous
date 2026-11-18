@@ -61,6 +61,31 @@ test("displaced moves are dropped and the first real movement passes and ends th
     assert.equal(delivered.length, 0);
 });
 
+test("a changed absolute position settles the guard even when relative deltas stay zero", () => {
+    const { guard, redirect } = harness();
+    guard.begin({ x: 57, y: 175 });
+    const pointer = event("pointermove", { pointerType: "mouse" });
+    const mouse = event("mousemove");
+    const real = event("pointermove", { pointerType: "mouse", clientY: 221 });
+    redirect.handle(pointer); redirect.handle(mouse); redirect.handle(real);
+    assert.ok(pointer.stopped && mouse.stopped);
+    assert.ok(!real.stopped);
+    assert.equal(guard.origin(), null);
+});
+
+test("when the old target is gone the release can still reach the drag owner", () => {
+    const guard = new PointerLockExitGuard();
+    guard.begin({ x: 57, y: 175 });
+    const redirect = new PointerLockExitRedirect(guard, {
+        locked: () => false, elementAt: () => null, copy: () => { throw new Error("no target"); },
+    });
+    const release = event("pointerup", { pointerType: "mouse", button: 1 });
+    const press = event("pointerdown", { pointerType: "mouse", button: 1 });
+    redirect.handle(release); redirect.handle(press);
+    assert.ok(!release.stopped && !release.prevented);
+    assert.ok(press.stopped && press.prevented);
+});
+
 test("touch and pen input is never redirected and leaves the mouse guard active", () => {
     const { guard, redirect, delivered } = harness();
     guard.begin({ x: 57, y: 175 });

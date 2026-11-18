@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -95,6 +96,8 @@ public:
         graph_jit::BackgroundPortIndex) const;
     [[nodiscard]] RandomAccessEventInputPort discovery_event_input(
         graph_jit::BackgroundPortIndex) const;
+    [[nodiscard]] std::optional<Sample> observe_sequential_sample_input(
+        graph_jit::BackgroundPortIndex, GlobalIndex, std::size_t channel) const;
 
     // Replay binding arrays have their final addresses at construction; seal()
     // populates them with isolated transaction-local backing derived from the

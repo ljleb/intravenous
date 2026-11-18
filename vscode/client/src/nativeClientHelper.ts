@@ -9,7 +9,7 @@ const stableRunMs = 30000;
 const readyTimeoutMs = 10000;
 
 type RunningHelper = { child: ChildProcess; socket: Duplex | null; rpc: JsonRpcSocketClient | null;
-    readyTimer?: NodeJS.Timeout; readyAt?: number; cursorWarp: boolean };
+    readyTimer?: NodeJS.Timeout; readyAt?: number; cursorWarp: boolean; cursorWarpResult: boolean };
 
 // The local extension host owns this process. Each launch has its own
 // inherited connection and requests from that connection are never replayed.
@@ -35,7 +35,7 @@ export class NativeClientHelper {
             return;
         }
         const socket = child.stdio[3] instanceof Duplex ? child.stdio[3] : null;
-        const run: RunningHelper = { child, socket, rpc: null, cursorWarp: false };
+        const run: RunningHelper = { child, socket, rpc: null, cursorWarp: false, cursorWarpResult: false };
         this.running = run;
         let failure = "";
         child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
@@ -64,6 +64,7 @@ export class NativeClientHelper {
             clearTimeout(run.readyTimer);
             run.readyAt = Date.now();
             run.cursorWarp = params.cursorWarp === true;
+            run.cursorWarpResult = params.cursorWarpResult === true;
             if (!run.cursorWarp) {
                 const reason = typeof params.cursorWarpUnavailableReason === "string" ? params.cursorWarpUnavailableReason
                     : "The native helper reported no cursor warp support for the current display.";
@@ -74,23 +75,33 @@ export class NativeClientHelper {
         void run.rpc.connect().catch((error: Error) => stop(error.message));
     }
 
-    warpCursor(request: CursorWarp): void {
+    warpCursor(request: CursorWarp, hideCursor = false, completed?: () => void): void {
         const run = this.running;
         const now = Date.now();
         if (!request) return;
-        const trace = (detail: string) => { if (request.trace === true) this.log(`Automation cursor trace. ${detail}`); };
+        const trace = (detail: string) => { if (request.trace === true) this.log(`Cursor return trace. ${detail}`); };
+        const skipped = (detail: string) => this.log(`Cursor return skipped. ${detail}`);
         if (!run?.cursorWarp || !run.rpc || !run.socket?.writable || run.socket.writableNeedDrain) {
-            trace("The helper is not ready for cursor return.");
+            if (run?.readyAt === undefined || run.cursorWarp || request.trace)
+                skipped("The helper is not ready for cursor return.");
             return;
         }
-        const { originX, originY, deltaX, deltaY, expiresAt } = request;
+        const { originX, originY, screenOrigin, deltaX, deltaY, expiresAt } = request;
         if (![originX, originY, deltaX, deltaY, expiresAt].every(Number.isSafeInteger) || expiresAt <= now || expiresAt > now + 100
+            || (screenOrigin !== undefined && (!Number.isSafeInteger(screenOrigin?.x) || !Number.isSafeInteger(screenOrigin?.y)))
             || Math.abs(deltaX) > 32767 || Math.abs(deltaY) > 32767) {
-            trace(`The native request expired or its coordinates were invalid. Remaining time: ${expiresAt - now} ms.`);
+            skipped(`The native request expired or its coordinates were invalid. Remaining time: ${expiresAt - now} ms.`);
             return;
         }
         trace("Request dispatched to the native helper.");
-        run.rpc.notify("native.warpCursor", { originX, originY, deltaX, deltaY, expiresAt, ...(request.trace === true ? { trace: true } : {}) });
+        const params = { originX, originY, deltaX, deltaY, expiresAt,
+            ...(screenOrigin && { screenOrigin: { x: screenOrigin.x, y: screenOrigin.y } }),
+            ...(hideCursor && { hideCursor: true }),
+            ...(request.trace === true ? { trace: true } : {}) };
+        if (!completed || !run.cursorWarpResult) { run.rpc.notify("native.warpCursor", params); return; }
+        void run.rpc.request<{ moved: boolean }>("native.warpCursor", params).then((result) => {
+            if (result?.moved && this.running === run && Date.now() < expiresAt) completed();
+        }).catch((error) => skipped(`The helper could not confirm cursor return. ${String(error)}`));
     }
 
     private closeConnection(run: RunningHelper): void {

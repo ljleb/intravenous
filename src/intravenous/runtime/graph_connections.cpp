@@ -541,6 +541,25 @@ std::vector<SampleOutputChannelId> resolve_project_sample_output(
     return result;
 }
 
+std::vector<SampleInputChannelId> resolve_project_sample_input(
+    ConfiguredGraph const& graph,
+    std::unordered_map<std::string, NodeInstancePlacement> const& placements,
+    NodeAddress const& address, std::string const& port,
+    std::optional<std::size_t> channel)
+{
+    std::vector<SampleInputChannelId> result;
+    auto const paths = resolve_node_address(graph, placements, address);
+    auto collect = [&](std::size_t index) {
+        ProjectPortMatcher const matcher{.name = port, .channel = index};
+        for (auto const& cursor : paths)
+            for (auto const& input : sample_inputs_for_cursor(graph, cursor, matcher))
+                append_unique(result, std::get<SampleInputChannelId>(input.target));
+    };
+    if (channel) collect(*channel);
+    else for (std::size_t index = 0; index < maximum_supported_channel_count; ++index) collect(index);
+    return result;
+}
+
 void validate_project_connection(ProjectConnection const& connection)
 {
     validate_connection_impl(connection);

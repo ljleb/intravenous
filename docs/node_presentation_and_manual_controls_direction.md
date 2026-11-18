@@ -115,8 +115,10 @@ The owner specified these viewport interactions on 2026-11-12:
 Middle-button movement ends on release or cancellation. Viewport navigation
 does not modify graph nodes or port data. Zoom preserves the position under the
 pointer where the scroll bounds permit it.
-The middle-button press selects the zoom axis. With Alt, drag right to zoom
-in vertically or left to zoom out at the cursor's current height. With Ctrl,
+The middle-button press selects the zoom axis. With Alt, drag left to zoom
+in vertically or right to zoom out at the cursor's current height. See the
+[previous direction](historical/vue_middle_vertical_zoom_before_left_to_zoom_in_2026-11-18.md).
+With Ctrl,
 drag up to zoom in horizontally or down to zoom out at the cursor's current
 horizontal position. Movement along the anchor axis alone leaves the view
 unchanged. Ctrl takes precedence when both Ctrl and Alt are held.
@@ -136,6 +138,9 @@ The earlier gestures used the press position as the anchor for
 [horizontal zoom](./historical/vue_middle_zoom_before_live_horizontal_anchor.md)
 and [vertical zoom](./historical/vue_middle_zoom_before_live_vertical_anchor.md).
 [Earlier lane panning](./historical/vue_shift_middle_lane_pan_before_combined_navigation_2026-11-18.md)
+
+When the native helper supports cursor placement, releasing a middle-button
+drag leaves the system cursor at the last displayed position.
 
 A timeline is a reusable client display feature that a presentation can use
 when appropriate. It is not required for every node. The default lane must
@@ -597,25 +602,25 @@ is not a reason to create a separate runtime storage architecture.
 
 ### Temporary connected-input override
 
-_Settled by the repository owner on 2026-11-14._
+_Updated by the repository owner on 2026-11-18. See the
+[previous override rules](historical/input_observation_and_disabled_knobs_before_2026-11-18.md#connected-input-override-and-observation-status)._
 
-During a live Sequential knob interaction, the manual value replaces the selected input's incoming signal,
-including when its settled participation policy is disconnected-only. The knob
-retains its independent manual value; it does not have to follow the connected
-signal. Releasing the mouse closes the undo gesture. While that client's pointer
-remains over the knob, retain the dynamic code and temporary override. Leaving
-the knob requests settled code immediately; the authored connection resumes when
-that replacement activates. Neither the authored wiring nor the durable
-participation policy changes. Hover alone prepares code and never activates an
-override. This hover-leave policy was accepted on 2026-11-14; the
-[earlier settling policy](./historical/manual_control_debounce_before_hover_settling_2026-11-14.md)
-is preserved for provenance.
+Hover prepares code for a temporary override without activating it. A drag makes
+the manual value replace the incoming signal at that input, even when its stored
+knob is disabled. Release saves the value and closes the undo gesture. The
+override stays active while that client hovers over the knob. On hover leave, the
+settled code resumes when its generation activates. The authored wiring and the
+stored enable setting survive the entire interaction.
 
-Represent the override as an internal Tick/ephemeral producer at the selected
-public input. Preserve module-internal conversion, fanout, and authored temporal
-cuts. Input history records the values actually consumed, including manual
-values that remain in the history window after the gesture ends. A recording
-node can explicitly persist the gestures when desired.
+A disabled knob stays dim while the pointer prepares an override. Light the
+knob during the drag. After release, keep a distinct highlight until the
+pointer leaves and the editor releases the override.
+
+A Sequential override enters at the selected input as a Tick/ephemeral
+contribution. A Coverage override supplies a full-coverage contribution at that
+input until the override ends. Preserve module-internal conversion, fanout, and
+authored temporal cuts. Input history records the values the receiver consumed.
+A recording node can persist those values.
 
 Reuse existing input-owned storage where possible. Shared producer storage
 cannot be overwritten to override only one consumer. Compatible code variants
@@ -949,14 +954,10 @@ current UI interaction.
 
 ## Live observation is outside Front 14
 
-Front 14 did not implement the observation API. The current normative direction is
-[Vue Output Observation And Query Direction](./vue_output_observation_direction.md):
-output-first type-registered operations, reflected supported Tick `State` fields,
-selective live probes, sparse/persisted Tock output queries, and the planned
-`Observations` application module for batched subscriptions/results. Input values
-and Tock `State` diagnostics are explicitly outside the initial scope. Concrete
-Vue and transport interfaces still follow real client requirements. Manual controls
-do not depend on implementing observations first.
+Front 14 did not implement the observation API. The
+[observation direction](./vue_output_observation_direction.md) describes
+operations for inputs, outputs, and supported Tick `State` fields.
+Manual controls work independently of observation.
 
 ## Implementation order
 

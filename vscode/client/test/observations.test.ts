@@ -31,12 +31,51 @@ test("observations use exact activation IDs and ignore other scopes", () => {
     values.clear();
     assert.equal(values.values.size, 0);
 });
-test("observation source identity includes channels and state versus output", () => {
+test("observation source identity distinguishes channels, inputs, outputs, and state", () => {
     const source = { node: { instanceId: "n", path: [] }, kind: "output" as const, member: "value" };
     assert.notEqual(observationSourceKey(source), observationSourceKey({ ...source, channel: 0 }));
     assert.notEqual(observationSourceKey(source), observationSourceKey({ ...source, kind: "stateField" }));
+    assert.notEqual(observationSourceKey(source), observationSourceKey({ ...source, kind: "input" }));
 });
 
+test("input observations use explicit interests alongside automatic output meters", { timeout: 5000 }, async () => {
+    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    type Reconcile = Extract<import("../src/observations").ObservationHostRequest, { type: "observationReconcile" }>;
+    let publish: (request: Reconcile) => void;
+    const scope = new PresentationObservations((request) => {
+        const channels = [{ index: 0, name: "center" }];
+        const nodeIndex = 0;
+        queueMicrotask(() => scope.receive({ type: "observationResponse", requestId: request.requestId,
+            result: request.type === "observationDescribe" ? { capabilities: [
+                { nodeIndex, kind: "input", member: "gain", operations: ["value"], channels },
+                { nodeIndex, kind: "input", member: "gain", delivery: "window", operations: ["waveform"], channels },
+                { nodeIndex, kind: "output", member: "audio", operations: ["level"], channels },
+            ] } : { revision: "1" } }));
+        if (request.type === "observationReconcile") publish(request);
+    });
+    const nextRequest = () => new Promise<Reconcile>((resolve) => { publish = resolve; });
+    const node = { instanceId: "n" };
+    const source = { kind: "input" as const, node, member: "gain" };
+    const live = scope.portObservationId(), range = scope.portObservationId();
+    const window = { begin: "0", length: "64", points: 8 };
+    try {
+        const installed = nextRequest();
+        scope.node(Symbol("lane"), node, true);
+        scope.observePort(live, { source, operation: "value" });
+        scope.observePort(range, { source, operation: "waveform", window });
+        const interests = (await installed).interests;
+        assert.deepEqual(interests.slice(0, 2), [
+            { id: live, source, operation: "value" },
+            { id: range, source, operation: "waveform", window },
+        ]);
+        assert.deepEqual(interests.slice(2).map((interest) => interest.source.kind), ["output"]);
+
+        const removed = nextRequest();
+        scope.observePort(live, undefined);
+        scope.observePort(range, undefined);
+        assert.deepEqual((await removed).interests.map((interest) => interest.source.kind), ["output"]);
+    } finally { scope.dispose(); }
+});
 
 test("viewport observations clone reactive addresses and survive presentation changes", async () => {
     const { PresentationObservations } = await import("../webview/presentation/observationContext");

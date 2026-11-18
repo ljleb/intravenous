@@ -8,10 +8,12 @@ import type { PlaybackDragPhase, PlaybackSnapshot } from "./playback";
 
 export type CursorWarp = {
     originX: number; originY: number;
+    screenOrigin?: { x: number; y: number };
     deltaX: number; deltaY: number;
     expiresAt: number;
     trace?: boolean;
 };
+export type CursorReturnGesture = "automation" | "middleButton";
 
 export type GraphEditorState = {
     sessionStatus: LiveGraphSessionStatus;
@@ -29,7 +31,8 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | NodeEventResponse
     | { type: "manualControlState"; interactions: ManualControlInteractionState[]; live: ManualControlLiveValue[] }
     | { type: "graphWindowFocus"; focused: boolean }
-    | { type: "traceNextAutomationCursorReturn" }
+    | { type: "traceNextCursorReturn"; gesture: CursorReturnGesture }
+    | { type: "cursorReturnCompleted"; requestId: number }
     | { type: "graphAction"; action: "addNode" | "editNode" | "createPackage"; instanceId?: string };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "playbackToggle" }
@@ -38,8 +41,9 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | ObservationHostRequest
     | NodeEventHostRequest
     | { type: "graphInteractionHint"; hint: string | null }
-    | { type: "warpCursorAfterPointDrag"; warp: CursorWarp }
-    | { type: "automationCursorTrace"; detail: string }
+    | { type: "warpCursorAfterPointDrag" | "warpCursorAfterMiddleDrag"; warp: CursorWarp; requestId: number }
+    | { type: "cursorReturnSkipped"; detail: string }
+    | { type: "cursorReturnTrace"; gesture: CursorReturnGesture; detail: string }
     | { type: "manualControlAction"; action: ManualControlAction }
     | { type: "deleteSelectedLanes"; instanceIds: string[] }
     | { type: "setManualInputEnabled"; target: NodeAddress; inputName: string; enabled: boolean }

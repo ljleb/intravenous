@@ -135,4 +135,10 @@ public:
     NodeAddress const& address, std::string const& port,
     std::optional<std::size_t> channel = std::nullopt);
 
+[[nodiscard]] std::vector<SampleInputChannelId> resolve_project_sample_input(
+    ConfiguredGraph const& graph,
+    std::unordered_map<std::string, NodeInstancePlacement> const& placements,
+    NodeAddress const& address, std::string const& port,
+    std::optional<std::size_t> channel = std::nullopt);
+
 } // namespace iv

@@ -608,10 +608,23 @@ std::optional<NodeBundleHandle> coverage_manual_source(ConfiguredGraph const& gr
 
 std::expected<std::vector<RoutedSampleConnection>, std::string>
 build_structural_sample_routes(ConfiguredGraph const& graph,
-    std::vector<ManualSampleRoutePlan>& manual_routes)
+    std::vector<ManualSampleRoutePlan>& manual_routes,
+    bool public_coverage_inputs = false)
 {
     auto const authored = graph.connections.configured_sample_connections();
     auto const root_boundary = graph.public_ports.boundary_handle();
+    auto is_coverage_source = [](ConfiguredSampleConnection const& connection, ConfiguredManualControl const& control) {
+        return control.coverage_source && std::ranges::all_of(connection.source_channels, [&](auto const& source) {
+            return source.channel.bundle == *control.coverage_source;
+        });
+    };
+    auto replaces_source = [&](SampleInputChannelId target, ConfiguredSampleConnection const& connection, bool coverage_only) {
+        return std::ranges::any_of(graph.manual_controls, [&](auto const& control) {
+            return control.override_connections && (!coverage_only || control.coverage_source)
+                && control.input.node_bundle_handle == target.bundle && control.input.port_index == target.port
+                && !is_coverage_source(connection, control);
+        });
+    };
 
     std::vector<std::optional<NodeBundleHandle>> boundary_owner(
         graph.node_bundles.size());
@@ -654,6 +667,9 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
 
     auto is_terminal_target = [&](SampleInputChannelId target) {
         auto const& bundle = graph.node_bundles.bundle(target.bundle);
+        if (public_coverage_inputs)
+            return bundle.is_subgraph() && input_access(graph.node_bundles.resolve_sample_input(
+                {target.bundle, PortKind::sample, target.port}).config) == InputAccessKind::coverage;
         return bundle.is_concrete() || target.bundle == root_boundary;
     };
 
@@ -665,11 +681,24 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
         if (!boundary_controls.emplace(std::pair{control.input.node_bundle_handle, control.input.port_index}, index).second)
             return std::unexpected("GraphJit manual controls contain two values for one module input");
     }
-    std::map<std::pair<NodeBundleHandle, std::size_t>, bool> connected_module_inputs;
-    for (auto const& connection : authored) for (auto const target : connection.target_channels) {
-        auto expanded = expand_target(expand_target, target);
-        if (!expanded) return std::unexpected(std::move(expanded.error()));
-        for (auto const channel : *expanded) connected_module_inputs[{channel.bundle, channel.port}] = true;
+    struct IncomingSample {
+        ConfiguredSampleConnection const* connection;
+        std::size_t target_channel;
+    };
+    std::map<std::tuple<NodeBundleHandle, std::size_t, std::size_t>, std::vector<IncomingSample>> incoming_by_channel;
+    std::vector<std::vector<bool>> connected_module_inputs(graph.node_bundles.size());
+    for (auto const& connection : authored) {
+        for (std::size_t target_index = 0; target_index < connection.target_channels.size(); ++target_index) {
+            auto expanded = expand_target(expand_target, connection.target_channels[target_index]);
+            if (!expanded) return std::unexpected(std::move(expanded.error()));
+            for (auto const channel : *expanded) {
+                if (graph.node_bundles.bundle(channel.bundle).is_concrete()) continue;
+                auto& ports = connected_module_inputs[channel.bundle];
+                if (ports.size() <= channel.port) ports.resize(channel.port + 1);
+                ports[channel.port] = true;
+                incoming_by_channel[{channel.bundle, channel.port, channel.channel}].push_back({&connection, target_index});
+            }
+        }
     }
     auto manual_source = [&](SampleOutputChannelId source) -> std::optional<std::size_t> {
         if (source.bundle >= boundary_owner.size() || !boundary_owner[source.bundle]) return std::nullopt;
@@ -750,26 +779,14 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
                 "GraphJit structural sample source has no executable producer");
         }
 
-        std::vector<std::pair<ConfiguredSampleConnection const*, std::size_t>> incoming;
-        for (auto const& connection : authored) {
-            for (std::size_t target_channel = 0;
-                 target_channel < connection.target_channels.size();
-                 ++target_channel) {
-                auto expanded = expand_target(
-                    expand_target, connection.target_channels[target_channel]);
-                if (!expanded) {
-                    pop();
-                    return std::unexpected(std::move(expanded.error()));
-                }
-                if (!std::ranges::contains(*expanded, upstream_target)) continue;
-                incoming.emplace_back(&connection, target_channel);
-            }
-        }
+        auto const found = incoming_by_channel.find({upstream_target.bundle, upstream_target.port, upstream_target.channel});
+        auto const& connected_ports = connected_module_inputs[upstream_target.bundle];
+        auto const connected = upstream_target.port < connected_ports.size() && connected_ports[upstream_target.port];
         ResolvedSampleChannel result;
         result.crossed_structure = true;
         auto const control_index = manual_source(output);
         if (control_index && (graph.manual_controls[*control_index].override_connections
-            || !connected_module_inputs.contains({upstream_target.bundle, upstream_target.port})
+            || !connected
             || graph.manual_controls[*control_index].participation == ManualControlParticipation::participate_with_connections)) {
             result.contributions.push_back({.source_terms = {{output, 1.0f}}});
         }
@@ -777,12 +794,19 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
             pop();
             return result;
         }
-        if (incoming.empty()) {
+        if (found == incoming_by_channel.end()) {
             pop();
             if (!result.contributions.empty()) return result;
+            // A module can expose an optional Coverage input. Its internal
+            // consumers receive no Regions when the public input has no source.
+            if (bundle.is_boundary() && input_access(graph.node_bundles.resolve_sample_input(
+                    {upstream_target.bundle, PortKind::sample, upstream_target.port}).config)
+                    == InputAccessKind::coverage)
+                return result;
             return std::unexpected("GraphJit structural sample boundary route has no source");
         }
-        for (auto const& [connection, target_channel] : incoming) {
+        for (auto const& [connection, target_channel] : found->second) {
+            if (replaces_source(upstream_target, *connection, true)) continue;
             for (std::size_t source_channel = 0;
                  source_channel < connection->source_channels.size();
                  ++source_channel) {
@@ -832,9 +856,7 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
             // public input. The fallback sees coverage metadata without
             // replacing the original Region views or reading their samples.
             for (auto const& control : graph.manual_controls) {
-                if (!control.coverage_source || std::ranges::all_of(connection.source_channels, [&](auto const& source) {
-                    return source.channel.bundle == *control.coverage_source;
-                })) continue;
+                if (!control.coverage_source || control.override_connections || is_coverage_source(connection, control)) continue;
                 auto const match = std::ranges::find_if(*expanded, [&](auto channel) {
                     return channel.bundle == control.input.node_bundle_handle && channel.port == control.input.port_index;
                 });
@@ -846,14 +868,11 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
             // Keep the authored connections in ConfiguredGraph so restoring
             // the connection requires no durable project edit.
             std::erase_if(*expanded, [&](SampleInputChannelId channel) {
-                return std::ranges::any_of(graph.manual_controls, [&](auto const& control) {
-                    return control.override_connections
-                        && control.input.node_bundle_handle == channel.bundle
-                        && control.input.port_index == channel.port;
-                });
+                return replaces_source(channel, connection, false);
             });
             target_crossed_structure = target_crossed_structure
-                || expanded->size() != 1 || expanded->front() != target;
+                || expanded->size() != 1 || expanded->front() != target
+                || (public_coverage_inputs && !is_terminal_target(target));
             has_terminal_target = has_terminal_target
                 || std::ranges::any_of(*expanded, is_terminal_target);
             expanded_targets.push_back(std::move(*expanded));
@@ -6657,6 +6676,88 @@ sequential_connection_coverage(
     return result;
 }
 
+void plan_public_coverage_inputs(ConfiguredGraph const& graph, ResolvedPortRealization const& realization,
+    ConnectionAnalysisPlan& connections)
+{
+    auto& background = connections.background;
+    for (NodeBundleHandle bundle = 0; bundle < graph.node_bundles.size(); ++bundle) {
+        auto const& node = graph.node_bundles.bundle(bundle);
+        if (!node.is_subgraph()) continue;
+        for (std::size_t port = 0; port < node.sample_input_count(); ++port) {
+            NodeBundlePortId const id{bundle, PortKind::sample, port};
+            auto const config = graph.node_bundles.resolve_sample_input(id).config;
+            auto const& resolved = realization.input(bundle, port);
+            if (input_access(config) == InputAccessKind::coverage && resolved.value_type == ContinuousValueTypeId::sample) {
+                background.public_coverage_inputs.push_back({.port = id, .layout = config.channel_layout,
+                    .pace_exponent = resolved.absolute_pace.exponent(), .ordering = resolved.ordering});
+            }
+        }
+    }
+    if (background.public_coverage_inputs.empty()) return;
+
+    std::vector<ManualSampleRoutePlan> unused_sequential_manual_routes;
+    auto routed = build_structural_sample_routes(graph, unused_sequential_manual_routes, true);
+    if (!routed) {
+        for (auto& input : background.public_coverage_inputs) input.reconstructible = false;
+        return;
+    }
+    std::map<std::pair<NodeBundleHandle, std::size_t>, std::vector<RoutedSampleConnection>> by_input;
+    for (auto& entry : *routed) {
+        auto const target = entry.connection.target_channels.front();
+        by_input[{target.bundle, target.port}].push_back(std::move(entry));
+    }
+    // Normalize the same routes with the same channel rules as a concrete
+    // consumer. This inventory is private to the read and owns no schedule.
+    ConnectionAnalysisPlan read_analysis{.boundary_bundle = connections.boundary_bundle, .nodes = connections.nodes};
+    std::map<std::pair<NodeBundleHandle, std::size_t>, BackgroundPortIndex> readable_outputs;
+    for (auto const output : background.requestable_outputs) {
+        auto const id = background.ports[output].configured_port;
+        if (id.port_kind == PortKind::sample) readable_outputs.emplace(std::pair{id.node_bundle_handle, id.port_index}, output);
+    }
+    for (auto& input : background.public_coverage_inputs) {
+        auto const routes = by_input.find({input.port.node_bundle_handle, input.port.port_index});
+        if (routes == by_input.end()) continue;
+        read_analysis.sample_connections.clear();
+        read_analysis.dependencies.clear();
+        if (!inventory_sample_connections(graph, realization, read_analysis, routes->second)
+            || !normalize_sample_target_projections(graph, read_analysis)
+            || !validate_detach_delivery_mechanisms(read_analysis)) {
+            input.reconstructible = false;
+            continue;
+        }
+        for (auto const& connection : read_analysis.sample_connections) {
+            std::vector<PublicCoverageInputView::Source> sources;
+            for (auto const& timing : connection.source_channel_timings) {
+                auto const found = readable_outputs.find({timing.source.bundle, timing.source.port});
+                if (found == readable_outputs.end()) {
+                    input.reconstructible = false;
+                    break;
+                }
+                sources.push_back({found->second, timing.source.channel, timing.read_latency});
+            }
+            if (!input.reconstructible) break;
+            if (connection.projection_contributions.empty()) {
+                SampleProjectionPlan channels{.source_type = connection.source_type, .target_type = connection.target_type};
+                for (auto const channel : connection.target_channels) channels.target_channels.push_back(channel.channel);
+                input.projections.push_back({std::move(sources), std::move(channels)});
+                continue;
+            }
+            for (auto const& projection : connection.projection_contributions) {
+                auto& result = input.projections.emplace_back();
+                for (auto const source : projection.source_channel_indices) result.sources.push_back(sources[source]);
+                result.channels = {
+                    .source_type = projection.source_type,
+                    .target_type = projection.target_type,
+                    .target_channels = projection.target_channels,
+                    .transform_source_channel_count = projection.transform.source_channel_count,
+                    .transform_target_channel_count = projection.transform.target_channel_count,
+                    .transform_coefficients = projection.transform.coefficients,
+                };
+            }
+        }
+    }
+}
+
 std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_plan(
     ConfiguredGraph const& graph,
     ResolvedPortRealization const& port_realization,
@@ -6688,6 +6789,9 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     for (NodeBundleHandle bundle = 0;
          bundle < graph.node_bundles.size(); ++bundle) {
         auto const& node_bundle = graph.node_bundles.bundle(bundle);
+        // Only concrete producers own recorded Tick storage. A structural
+        // export can describe the same source with a different channel layout.
+        if (!node_bundle.is_concrete()) continue;
         for (std::size_t port = 0;
              port < node_bundle.sample_output_count(); ++port) {
             auto const config = graph.node_bundles.resolve_sample_output(
@@ -6792,6 +6896,7 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
             !populated) {
             return std::unexpected(std::move(populated.error()));
         }
+        plan_public_coverage_inputs(graph, port_realization, plan);
     }
     if (auto acyclic = validate_explicit_graph_is_acyclic(graph, plan); !acyclic) {
         return std::unexpected(std::move(acyclic.error()));

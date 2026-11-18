@@ -1513,13 +1513,25 @@ class BackgroundEvaluationTransaction::Impl {
         }
 
         graph_->background_operations.evaluate(&frame.call());
+        // Evaluation normally runs input materializations before invoking the
+        // receiver. An observation can demand its input alone.
+        if (auto const input = inputs_.projection.sample_input) {
+            auto const& binding = plan.runtime.bindings[*plan.runtime.port_bindings[*input]];
+            for (graph_jit::BackgroundRuntimeOperationIndex index = 0; index < plan.runtime.operations.size(); ++index) {
+                auto const& operation = plan.runtime.operations[index];
+                if (operation.kind != graph_jit::BackgroundRuntimeOperationKind::sample_materialization
+                    || !std::ranges::contains(binding.storage, plan.storage.sample_materializations[operation.operation].output)
+                    || realization->operation_executed(index)) continue;
+                if (auto executed = realization->execute_operation(index); !executed)
+                    return std::unexpected(std::move(executed.error()));
+            }
+        }
         if (auto complete = frame.validate_evaluation(); !complete) {
             return std::unexpected(std::move(complete.error()));
         }
-
         if (inputs_.projection.project)
             inputs_.projection.project(inputs_.projection.data, plan, *prepared_, *realization,
-                candidate ? candidate->target_version() : base.version());
+                frame, candidate ? candidate->target_version() : base.version());
 
         std::unique_ptr<TickMaterializationSnapshot> tick_materialization;
         if (materializations_) {

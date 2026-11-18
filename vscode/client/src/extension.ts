@@ -2,6 +2,7 @@ import "reflect-metadata";
 
 import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import * as vscode from "vscode";
 import { container } from "tsyringe";
 
@@ -22,36 +23,61 @@ function configureXWaylandRelaunch(context: vscode.ExtensionContext, localDeskto
     const enabled = () => configuration().get<boolean>(key, false);
     const wayland = process.env.XDG_SESSION_TYPE === "wayland"
         || (!process.env.XDG_SESSION_TYPE && !!process.env.WAYLAND_DISPLAY);
-    const applicable = localDesktop && process.platform === "linux" && wayland;
     let pending: ChildProcess | null = null;
     let attempted = false;
     let preparing = false;
     const cancel = () => {
-        pending?.kill();
+        const worker = pending;
         pending = null;
+        worker?.kill();
     };
-    async function relaunchIfEnabled() {
-        if (attempted || preparing || !enabled()) return;
+    async function relaunchIfEnabled(trigger: "activation" | "settings change" | "command") {
+        if (!enabled()) {
+            if (trigger === "command") log("XWayland restart skipped. The setting is still off after the command enabled it.");
+            return;
+        }
+        if (preparing || pending) {
+            if (trigger === "command") log(pending ? `XWayland restart launcher ${pending.pid} is waiting for the editor to quit.`
+                : "An XWayland restart check is already in progress.");
+            return;
+        }
+        if (attempted && trigger !== "command") return;
         attempted = true;
-        if (!applicable) {
-            log("Automatic XWayland restart skipped. The extension host did not detect a local Linux Wayland session.");
+        const sessionType = process.env.XDG_SESSION_TYPE || "unset";
+        log(`Checking XWayland restart on ${trigger}. Local desktop: ${localDesktop}. Platform: ${process.platform}. `
+            + `XDG_SESSION_TYPE: ${JSON.stringify(sessionType)}. WAYLAND_DISPLAY: ${process.env.WAYLAND_DISPLAY ? "set" : "unset"}.`);
+        if (!localDesktop || process.platform !== "linux") {
+            log("Automatic XWayland restart skipped. It requires a local Linux desktop.");
             return;
         }
         preparing = true;
         try {
-            const plan = readVSCodeXWaylandRelaunch(undefined, log);
+            const plan = readVSCodeXWaylandRelaunch(undefined, log, wayland);
             if (!plan) return;
             if (process.env.INTRAVENOUS_XWAYLAND_RELAUNCH === "1") {
                 log("Automatic XWayland restart stopped. The relaunched desktop process has no --ozone-platform flag.");
                 return;
             }
-            const worker = await prepareVSCodeRelaunch(context.asAbsolutePath("dist/vscodeRelaunchWorker.js"), plan);
-            if (!enabled()) { worker?.kill(); return; }
+            const logFile = join(context.logUri.fsPath, "xwayland-restart.log");
+            const worker = await prepareVSCodeRelaunch(context.asAbsolutePath("dist/vscodeRelaunchWorker.js"), plan, { logFile, report: log });
+            if (!enabled()) {
+                worker?.kill();
+                log("XWayland restart cancelled because the setting was turned off.");
+                return;
+            }
+            if (!worker) {
+                log(`An XWayland restart launcher from another window is already waiting for editor PID ${plan.pid}.`);
+                return;
+            }
             pending = worker;
-            if (!pending) return;
-            attempted = true;
-            log("Requesting a normal VS Code quit. The launcher will reopen the editor through XWayland.");
+            worker.once("exit", (code, signal) => {
+                if (pending !== worker) return;
+                pending = null;
+                log(`XWayland restart launcher exited while the extension host was still running (code ${code}, signal ${signal}).`);
+            });
+            log(`XWayland restart launcher ${worker.pid} is ready. Requesting a normal VS Code quit for editor PID ${plan.pid}.`);
             await vscode.commands.executeCommand("workbench.action.quit");
+            log("The VS Code quit command returned. The launcher is waiting for the editor process to exit.");
         } catch (error) {
             cancel();
             log(`Intravenous could not arrange an XWayland restart. ${error instanceof Error ? error.message : String(error)}`);
@@ -61,14 +87,23 @@ function configureXWaylandRelaunch(context: vscode.ExtensionContext, localDeskto
     }
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
         if (!event.affectsConfiguration(`intravenous.${key}`)) return;
-        if (!enabled()) { attempted = false; cancel(); }
-        else void relaunchIfEnabled();
+        if (!enabled()) {
+            if (pending) log("XWayland restart cancelled because the setting was turned off.");
+            attempted = false;
+            cancel();
+        } else void relaunchIfEnabled("settings change");
     }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.enableXWaylandRelaunch", async () => {
-        await configuration().update(key, true, vscode.ConfigurationTarget.Global);
-        await relaunchIfEnabled();
+        log("XWayland restart command invoked. Enabling the setting in User Settings.");
+        try {
+            await configuration().update(key, true, vscode.ConfigurationTarget.Global);
+        } catch (error) {
+            log(`Could not enable automatic XWayland restart. ${error instanceof Error ? error.message : String(error)}`);
+            throw error;
+        }
+        await relaunchIfEnabled("command");
     }));
-    void relaunchIfEnabled();
+    void relaunchIfEnabled("activation");
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -124,7 +159,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             catch (error) { void vscode.window.showErrorMessage(`Cannot change playback: ${error.message}`); }
         }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.openGraphEditor", () => graphEditor.open()));
-    context.subscriptions.push(vscode.commands.registerCommand("intravenous.traceAutomationCursorReturn", () => graphEditor.traceNextAutomationCursorReturn()));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.traceAutomationCursorReturn", () => graphEditor.traceNextCursorReturn("automation")));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.traceMiddleButtonCursorReturn", () => graphEditor.traceNextCursorReturn("middleButton")));
     const graphActions: GraphEditorAction[] = ["addNode", "editNode", "deleteNode", "openNodeSource", "createPackage", "deleteConnection", "undo", "redo"];
     for (const action of graphActions) {
         context.subscriptions.push(vscode.commands.registerCommand(`intravenous.${action}`, async () => {

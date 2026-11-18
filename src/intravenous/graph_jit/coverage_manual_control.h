@@ -22,6 +22,10 @@ inline std::size_t declare_coverage_manual(void const*, NodeStateStructures cons
 
 inline auto expand_coverage_manual_controls(ConfiguredGraph& graph)
 {
+    std::erase_if(graph.manual_controls, [&](auto const& control) {
+        return !control.output && !control.enabled && !control.override_connections
+            && supports_coverage_manual_control(graph.node_bundles.resolve_sample_input(control.input).config);
+    });
     std::vector<CoverageManualSource> sources;
     auto const original = graph.connections.configured_sample_connections();
     std::vector<ConfiguredSampleConnection> connections(original.begin(), original.end());
@@ -49,7 +53,6 @@ inline auto expand_coverage_manual_controls(ConfiguredGraph& graph)
         node.operations.runtime.has_propagate_reverse_coverage = true;
         auto const bundle = graph.node_bundles.append_concrete(std::move(node));
         control.coverage_source = bundle;
-        control.override_connections = false;
         sources.push_back({bundle, std::move(value)});
 
         ConfiguredSampleConnection connection{

@@ -18,7 +18,7 @@ namespace iv {
 
 inline constexpr std::size_t maximum_live_observation_probes = 256;
 
-enum class ObservationSourceKind : std::uint8_t { output, state_field };
+enum class ObservationSourceKind : std::uint8_t { output, input, state_field };
 struct ObservationSource {
     NodeAddress node{};
     ObservationSourceKind kind = ObservationSourceKind::output;
@@ -104,7 +104,8 @@ struct ObservationWindowResult {
 // never interrupts an in-progress transaction or destroys borrowed storage.
 struct ObservationWindowQuery {
     std::uint64_t configured_generation = 0;
-    NodeBundlePortId output{};
+    NodeBundlePortId port{};
+    ObservationSourceKind kind = ObservationSourceKind::output;
     std::size_t channel = 0;
     ObservationOperation const* operation = nullptr;
     ObservationWindow window{};

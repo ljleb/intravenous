@@ -2,24 +2,30 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { spawn, type ChildProcess } from "node:child_process";
-import { PassThrough } from "node:stream";
+import { Duplex } from "node:stream";
 import { NativeClientHelper } from "../src/nativeClientHelper";
 import type { CursorWarp } from "../src/graphEditorProtocol";
 
 function fakeChild() {
     const events = new EventEmitter();
-    const connection = new PassThrough();
-    const messages: Array<{ method: string; params: unknown }> = [];
+    const messages: Array<{ method: string; params: unknown; id?: number }> = [];
     const signals: string[] = [];
-    connection.on("data", (bytes) => { messages.push(JSON.parse(String(bytes))); });
+    const connection = new Duplex({
+        read() {},
+        write(bytes, _encoding, callback) {
+            messages.push(JSON.parse(String(bytes)));
+            callback();
+        },
+    });
+    const receive = (message: object) => connection.emit("data", JSON.stringify(message) + "\n");
     const child = Object.assign(events, {
         stdio: [null, null, null, connection],
         kill: (signal: string) => { signals.push(signal); return true; },
     }) as unknown as ChildProcess;
-    return { child, connection, messages, signals,
-        ready: (cursorWarp = true, cursorWarpUnavailableReason?: string) => connection.write(JSON.stringify({
-            method: "native.ready", params: { cursorWarp, cursorWarpUnavailableReason },
-        }) + "\n"),
+    return { child, connection, messages, signals, receive,
+        ready: (cursorWarp = true, cursorWarpUnavailableReason?: string, cursorWarpResult = false) => receive({
+            method: "native.ready", params: { cursorWarp, cursorWarpUnavailableReason, cursorWarpResult },
+        }),
         crash: () => events.emit("close", 1, null) };
 }
 
@@ -101,20 +107,53 @@ test("unavailable cursor return logs the native capability reason once per launc
     assert.deepEqual(warpMessages(run), []);
 });
 
-test("cursor return traces readiness and preserves the trace flag on the native request", (t) => {
+test("cursor return preserves both coordinate pairs and can request a hidden cursor", (t) => {
     t.mock.timers.enable({ apis: ["Date"], now: 1000 });
     const run = fakeChild();
     const messages: string[] = [];
     const helper = new NativeClientHelper(() => run.child, (message) => messages.push(message));
     t.after(() => helper.dispose());
     helper.start();
-    const request = { ...cursorWarp(), trace: true };
+    const request = { ...cursorWarp(), originX: 7055, originY: 913, screenOrigin: { x: 4899, y: 634 }, trace: true };
     helper.warpCursor(request);
     assert.match(messages[0], /not ready/);
     run.ready();
     helper.warpCursor(request);
     assert.match(messages[1], /dispatched/);
-    assert.deepEqual(warpMessages(run).map(({ params }) => params), [request]);
+    helper.warpCursor({ ...request, screenOrigin: { x: 4899.5, y: 634 } });
+    assert.match(messages[2], /coordinates were invalid/);
+    helper.warpCursor({ ...request, expiresAt: Date.now(), trace: false });
+    assert.match(messages[3], /^Cursor return skipped.*expired/);
+    helper.warpCursor(request, true);
+    assert.deepEqual(warpMessages(run).map(({ params }) => params), [request, { ...request, hideCursor: true }]);
+});
+
+test("cursor return only confirms a move accepted by the helper before expiry", async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: 1000 });
+    const run = fakeChild();
+    const helper = new NativeClientHelper(() => run.child, () => {});
+    t.after(() => helper.dispose());
+    helper.start();
+    run.ready(true, undefined, true);
+    let completed = 0;
+    const confirm = () => { ++completed; };
+    const reply = async (moved: boolean) => {
+        const id = warpMessages(run).at(-1)?.id;
+        assert.equal(typeof id, "number");
+        run.receive({ id, result: { moved } });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+    };
+
+    helper.warpCursor(cursorWarp(), true, confirm);
+    await reply(false);
+    assert.equal(completed, 0);
+    helper.warpCursor(cursorWarp(), true, confirm);
+    await reply(true);
+    assert.equal(completed, 1);
+    helper.warpCursor(cursorWarp(), true, confirm);
+    t.mock.timers.tick(101);
+    await reply(true);
+    assert.equal(completed, 1);
 });
 
 test("disposal closes the inherited connection so the child can exit on EOF", { timeout: 3000 }, async (t) => {

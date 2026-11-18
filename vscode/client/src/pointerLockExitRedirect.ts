@@ -41,6 +41,7 @@ export class PointerLockExitRedirect {
         const origin = this.guard.origin();
         const action = this.guard.classify({
             type: event.type, movementX: event.movementX, movementY: event.movementY,
+            position: { x: event.clientX, y: event.clientY },
             pointerType: "pointerType" in event ? (event as PointerEvent).pointerType : undefined,
             firesTouchEvents: (event as { sourceCapabilities?: { firesTouchEvents?: boolean } | null })
                 .sourceCapabilities?.firesTouchEvents,
@@ -48,10 +49,12 @@ export class PointerLockExitRedirect {
         if (action === "pass" || !origin) return;
         this.env.trace?.(action, event);
         if (action === "settle") return;
+        const target = action === "retarget" ? this.env.elementAt(origin) : null;
+        // Global drag owners still need the release if the old hit target
+        // disappeared, for example when its popover closed during unlock.
+        if (action === "retarget" && !target && (event.type === "pointerup" || event.type === "mouseup")) return;
         event.stopImmediatePropagation();
         if (event.cancelable) event.preventDefault();
-        if (action === "drop") return;
-        const target = this.env.elementAt(origin);
         if (!target) return;
         const copy = this.env.copy(event, relocatedPointerInit(event, origin));
         this.replayed.add(copy);

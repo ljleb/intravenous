@@ -3,9 +3,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { automationWindow, curvePointAt, type CurveAxes, type CurveDragKind } from "../../src/automationCurveEditing";
 import { automationBoundLimits, automationDisplayBounds, canPanAutomationValueAxis, automationSampleOffset, automationValueFraction, automationValueGuides, clampAutomationValue,
     compareAutomationTime, defaultAutomationBounds, enabledAutomationBounds, panAutomationValueAxis, panCurvedAutomationValueZoom,
-    zoomAutomationValueAxis, type AutomationBoundSide, type AutomationPoint, type AutomationValueDisplay,
+    zoomAutomationValueAxis, type AutomationBoundSide, type AutomationPoint, type AutomationPointPosition, type AutomationValueAxis, type AutomationValueDisplay,
     type AutomationValueRuler, type AutomationValueZoom, type CurveInterpolation, type CurvePath } from "../../src/automationCurveGeometry";
-import { addressKey } from "../../src/graphScope";
+import { addressKey, type NodeAddress } from "../../src/graphScope";
 import { middleDragZoomFactor } from "../../src/timelineViewport";
 import { knobScrubSpeed } from "../../src/knobPresentation";
 import { rightClickHint } from "../../src/statusBarText";
@@ -84,11 +84,11 @@ const ticks = computed(() => axes.value ? automationTimelineTicks({
     beginSeconds: axes.value.begin, endSeconds: axes.value.end, spanSeconds: axes.value.spanSeconds,
 }, width.value, curve.value?.sampleRate) : []);
 const x = (offset: number) => axes.value ? offset / axes.value.spanSeconds * width.value : 0;
-const pointX = (point: AutomationPoint) => x(curve.value?.sampleRate && axes.value && point.sampleIndex !== undefined
+const pointX = (point: AutomationPointPosition) => x(curve.value?.sampleRate && axes.value && point.sampleIndex !== undefined
     ? automationSampleOffset(point.sampleIndex, axes.value.begin, curve.value.sampleRate)
     : point.seconds - (axes.value?.begin ?? 0));
 const y = (value: number) => (1 - automationValueFraction(value, axes.value ?? {})) * height.value;
-const eventValue = (point: AutomationPoint) => clampAutomationValue(point.value, eventBounds.value);
+const eventValue = (point: AutomationPointPosition) => clampAutomationValue(point.value, eventBounds.value);
 const markerY = (point: AutomationPoint) => Math.max(2, Math.min(height.value - 2, y(eventValue(point))));
 const valueGuides = computed(() => axes.value ? automationValueGuides(axes.value, height.value, axes.value.ruler) : []);
 const valueLabelInset = computed(() => hideLabels.value || !valueGuides.value.length ? 0
@@ -255,6 +255,32 @@ function pointerAxes(): CurveAxes | null {
     const rect = surface.value.getBoundingClientRect();
     return { ...axes.value, left: rect.left, top: rect.top, width: rect.width, height: rect.height };
 }
+function pointCursorPosition(control: SVGElement, target: NodeAddress, id: number) {
+    const svg = surface.value;
+    if (!svg || !editable.value) return null;
+    if (control.isConnected) {
+        const rect = control.getBoundingClientRect();
+        const x = (rect.left + rect.right) / 2, y = (rect.top + rect.bottom) / 2;
+        if (document.elementFromPoint(x, y)?.closest(".curve-point") === control) return { x, y };
+    }
+    // A point can leave the visible list and get a new marker when it returns.
+    // Use its current position when the element from the press is gone.
+    const point = edits.drafts(target).find((point) => point.id === id) ?? curve.value?.points.find((point) => point.id === id);
+    if (!point || !axes.value) return null;
+    const rect = svg.getBoundingClientRect();
+    const timeline = svg.closest(".timeline-scope");
+    const viewport = timeline?.getBoundingClientRect();
+    const rulerBottom = timeline?.querySelector(":scope > .timeline-heading")?.getBoundingClientRect().bottom;
+    const left = Math.max(0, rect.left, viewport?.left ?? 0), right = Math.min(window.innerWidth, rect.right, viewport?.right ?? Infinity);
+    const top = Math.max(0, rect.top, viewport?.top ?? 0, rulerBottom ?? 0), bottom = Math.min(window.innerHeight, rect.bottom, viewport?.bottom ?? Infinity);
+    if (right - left < 4 || bottom - top < 4) return null;
+    const pointLeft = rect.left + pointX(point) * rect.width / width.value;
+    const pointTop = rect.top + y(eventValue(point)) * rect.height / height.value;
+    if (!Number.isFinite(pointLeft) || !Number.isFinite(pointTop)) return null;
+    const x = Math.max(left + 2, Math.min(right - 2, pointLeft));
+    const yPosition = Math.max(top + 2, Math.min(bottom - 2, pointTop));
+    return svg.contains(document.elementFromPoint(x, yPosition)) ? { x, y: yPosition } : null;
+}
 function start(event: PointerEvent, id: number, kind: CurveDragKind = "point") {
     if (!editable.value || event.button !== 0) return;
     if (event.shiftKey) {
@@ -262,15 +288,11 @@ function start(event: PointerEvent, id: number, kind: CurveDragKind = "point") {
         return;
     }
     const axes = pointerAxes();
-    if (axes && node.value.address) {
+    const target = node.value.address;
+    if (axes && target) {
         const control = event.currentTarget as SVGElement;
         control.focus({ preventScroll: true });
-        editor?.startAutomation(event, node.value.address, id, axes, kind, kind === "point" ? () => {
-            if (!control.isConnected) return null;
-            const rect = control.getBoundingClientRect();
-            const x = (rect.left + rect.right) / 2, y = (rect.top + rect.bottom) / 2;
-            return document.elementFromPoint(x, y)?.closest(".curve-point") === control ? { x, y } : null;
-        } : undefined);
+        editor?.startAutomation(event, target, id, axes, kind, kind === "point" ? () => pointCursorPosition(control, target, id) : undefined);
     }
 }
 function preparePointClick(event: PointerEvent, pointId: number) {
@@ -373,10 +395,20 @@ function setValueView(nodeKey: string, pan: number, zoom?: AutomationValueZoom) 
     else delete automationValueZooms[nodeKey];
     editor.layout.value = { ...editor.layout.value, automationValuePans, automationValueZooms };
 }
+function valueNavigationTarget() {
+    const axis = axes.value, nodeKey = key.value, element = surface.value;
+    if (!editor || nodeKey === null || !axis || !element || edits.pointerId() !== null || marquee.value) return;
+    return { axis, nodeKey, element };
+}
+function zoomValueAt(axis: AutomationValueAxis, element: SVGSVGElement, factor: number, cursorY: number) {
+    const rect = element.getBoundingClientRect();
+    if (rect.height > 0) return zoomAutomationValueAxis(axis, factor, 1 - (cursorY - rect.top) / rect.height);
+}
 const valueNavigation: LaneValueNavigation = {
     begin(mode) {
-        const axis = axes.value, nodeKey = key.value, element = surface.value;
-        if (!editor || nodeKey === null || !axis || !element || edits.pointerId() !== null || marquee.value) return null;
+        const target = valueNavigationTarget();
+        if (!target) return null;
+        const { axis, nodeKey, element } = target;
         if (mode === "pan" && !canPanAutomationValueAxis(axis)) return null;
         const initialPan = valuePan.value;
         const initialZoom = valueZoom.value ?? { factor: 1, center: .5 };
@@ -387,10 +419,9 @@ const valueNavigation: LaneValueNavigation = {
                 const current = { ...axis, pan, zoom };
                 let nextPan = pan, nextZoom = zoom;
                 if (mode === "zoom" && delta.x) {
-                    const rect = element.getBoundingClientRect();
-                    if (rect.height <= 0) return;
-                    const anchor = 1 - (cursor.y - rect.top) / rect.height;
-                    ({ pan: nextPan, zoom: nextZoom } = zoomAutomationValueAxis(current, middleDragZoomFactor(delta.x), anchor));
+                    const next = zoomValueAt(current, element, middleDragZoomFactor(delta.x), cursor.y);
+                    if (!next) return;
+                    ({ pan: nextPan, zoom: nextZoom } = next);
                 } else if (mode === "pan" && delta.y) {
                     if (axis.display !== "cropped" && zoom.factor > 1)
                         nextZoom = panCurvedAutomationValueZoom(zoom, delta.y, laneHeight);
@@ -403,6 +434,15 @@ const valueNavigation: LaneValueNavigation = {
             },
             changed() { return pan !== initialPan || zoom.factor !== initialZoom.factor || zoom.center !== initialZoom.center; },
         };
+    },
+    zoom(factor, cursorY) {
+        const target = valueNavigationTarget();
+        if (!target) return false;
+        const { axis, nodeKey, element } = target;
+        const next = zoomValueAt(axis, element, factor, cursorY);
+        if (!next || next.zoom.factor === (axis.zoom?.factor ?? 1)) return false;
+        setValueView(nodeKey, next.pan, next.zoom);
+        return true;
     },
     reset() {
         if (editor && key.value !== null && (valuePan.value || valueZoom.value) && edits.pointerId() === null) {
@@ -546,7 +586,7 @@ onBeforeUnmount(() => {
     stroke: var(--vscode-focusBorder); stroke-width: 1; }
 .automation-curve { user-select: none; -webkit-user-select: none; }
 .automation-curve:focus { outline: none; }
-.curve-point { cursor: grab; }
+.curve-point { cursor: default; }
 .curve-tension { cursor: ew-resize; }
 .curve-point:focus, .curve-tension:focus { outline: none; }
 .control-target { fill: transparent; }

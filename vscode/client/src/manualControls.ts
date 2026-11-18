@@ -13,6 +13,10 @@ export type ManualControlDescriptor = {
     live?: boolean;
     liveValue?: number;
 };
+export function canEditManualControl(control: ManualControlId,
+    descriptor: ManualControlDescriptor | undefined): descriptor is ManualControlDescriptor {
+    return !!descriptor?.available && (descriptor.enabled || control.inputName !== undefined);
+}
 // The latest value of a gesture this view does not own, for display only.
 export type ManualControlLiveValue = { control: ManualControlId; value: number };
 export type ManualControlAction =
@@ -90,7 +94,7 @@ export class ManualControlInteractions {
         const key = this.key(owner, action.interactionId);
         if (action.action === "begin") {
             const descriptor = resolveManualControl(this.scope, action.control);
-            if (!descriptor?.available || !descriptor.enabled) throw new Error("The control is unavailable");
+            if (!canEditManualControl(action.control, descriptor)) throw new Error("The control is unavailable");
             if (this.entries.has(key) && !["failed", "settled"].includes(this.entries.get(key)!.phase))
                 throw new Error("This manual interaction is already active");
             if ([...this.entries.values()].some((entry) => entry.phase !== "failed" && entry.phase !== "settled"
@@ -194,7 +198,7 @@ export class ManualControlInteractions {
         if (!control && this.hovered?.owner !== owner) return;
         if (control) {
             const descriptor = resolveManualControl(this.scope, control);
-            if (!descriptor?.available || !descriptor.enabled) return;
+            if (!canEditManualControl(control, descriptor)) return;
             if (this.hovered?.owner === owner && manualControlKey(this.hovered.control) === manualControlKey(control)) return;
             this.hovered = { owner, control };
         } else this.hovered = null;
@@ -245,11 +249,11 @@ export class ManualControlInteractions {
                 this.changed();
                 continue;
             }
-            if ((!descriptor?.available || !descriptor.enabled) && entry.phase !== "failed") {
+            if (!canEditManualControl(entry.control, descriptor) && entry.phase !== "failed") {
                 this.queue(() => this.fail(entry, new Error("The manual input was removed or became incompatible")));
             }
         }
-        if (this.hovered && !resolveManualControl(scope, this.hovered.control)?.available)
+        if (this.hovered && !canEditManualControl(this.hovered.control, resolveManualControl(scope, this.hovered.control)))
             this.hover(this.hovered.owner, null);
     }
     releaseOwner(owner: string): void {

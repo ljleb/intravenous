@@ -84,6 +84,7 @@ struct ConfiguredManualControl {
     bool requires_preparation = false;
     // The compiler's Coverage fallback producer for this input, if any.
     std::optional<NodeBundleHandle> coverage_source{};
+    bool enabled = true;
 
     bool operator==(ConfiguredManualControl const&) const = default;
 };

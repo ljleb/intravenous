@@ -135,10 +135,11 @@ test("typed node messages pin the revision before reading receiver support and r
     ]);
 });
 
-test("node gesture requests supply root paths and preserve explicit selector paths", async () => {
+test("open node gestures use their target and interaction ID across project revisions", async () => {
     const calls: unknown[] = [];
     const client = { request: async (method, params) => { calls.push({ method, params }); } } as unknown as JsonRpcSocketClient;
-    const rpc = new WorkspaceRpc(client, () => 23);
+    let revision = 23;
+    const rpc = new WorkspaceRpc(client, () => revision);
     for (const target of [
         { instanceId: "curve" },
         { instanceId: "curve", path: [] },
@@ -146,15 +147,18 @@ test("node gesture requests supply root paths and preserve explicit selector pat
     ]) {
         calls.length = 0;
         const original = structuredClone(target);
+        revision = 23;
         await rpc.nodeEventGesture(target, "drag", true);
+        revision = 24;
         await rpc.dispatchNodeEvent(target, { eventType: { nominalId: "point", definitionFingerprint: "v0" }, payload: {} }, 24, "drag");
+        revision = 25;
         await rpc.nodeEventGesture(target, "drag", false);
         const wireTarget = { ...target, path: target.path ?? [] };
         assert.deepEqual(calls, [
             { method: "nodeMessages.beginGesture", params: { target: wireTarget, interactionId: "drag", expectedRevision: 23 } },
             { method: "nodeMessages.dispatch", params: { target: wireTarget, eventTypeNominalId: "point", eventTypeDefinitionFingerprint: "v0",
-                payload: {}, interactionId: "drag", expectedRevision: 24 } },
-            { method: "nodeMessages.endGesture", params: { target: wireTarget, interactionId: "drag", expectedRevision: 23 } },
+                payload: {}, interactionId: "drag" } },
+            { method: "nodeMessages.endGesture", params: { target: wireTarget, interactionId: "drag" } },
         ]);
         assert.deepEqual(target, original);
     }

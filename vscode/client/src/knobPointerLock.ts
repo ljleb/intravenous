@@ -75,9 +75,10 @@ export class KnobPointerLock<Delta = number> {
         this.session.pending = false;
         this.failed(message);
     }
-    move(delta: Delta): boolean {
+    move(delta: Delta, held?: { buttons: number; mask: number }): boolean {
         if (!this.session?.granted || this.exiting || !this.host.locked()) return false;
-        this.moved(this.session.pointerId, delta);
+        if (held && !(held.buttons & held.mask)) this.cancel();
+        else this.moved(this.session.pointerId, delta);
         return true;
     }
     status() {
@@ -88,19 +89,32 @@ export class KnobPointerLock<Delta = number> {
     release(pointerId: number, point: Point): void {
         const session = this.session;
         if (!session || session.pointerId !== pointerId) return;
-        const position = session.granted || this.host.locked() ? session.origin : point;
+        // The browser can report a locked element before delivering the
+        // change event. Release in that interval also restores the origin.
+        const locked = this.host.locked();
+        const origin = session.granted || (locked && this.requesting?.session === session) ? session.origin : null;
         this.session = null;
-        this.finished(pointerId, position, session.granted ? session.origin : null);
-        this.exit();
+        try {
+            this.finished(pointerId, origin ?? point, origin);
+        } finally {
+            this.exit();
+        }
     }
     cancel(): void {
         const session = this.session;
         this.session = null;
-        if (session) this.finished(session.pointerId, null, session.granted ? session.origin : null);
-        this.exit();
+        try {
+            if (session) {
+                const ownsLock = session.granted || (this.host.locked() && this.requesting?.session === session);
+                this.finished(session.pointerId, null, ownsLock ? session.origin : null);
+            }
+        } finally {
+            this.exit();
+        }
     }
     private exit(): void {
         if (this.exiting || !this.host.locked()) return;
+        this.requesting = null;
         this.exiting = true;
         this.host.exit();
     }

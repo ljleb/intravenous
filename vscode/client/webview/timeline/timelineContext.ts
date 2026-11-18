@@ -7,7 +7,11 @@ export function provideTimelineWindow(window: Readonly<Ref<PresentationTimeWindo
 export function useTimelineWindow(): Readonly<Ref<PresentationTimeWindow>> | null { return inject(timeWindowKey, null); }
 
 export type LaneValueGesture = { move: (delta: Point, cursor: Point) => void; changed: () => boolean };
-export type LaneValueNavigation = { begin: (mode: "pan" | "zoom") => LaneValueGesture | null; reset: () => void };
+export type LaneValueNavigation = {
+    begin: (mode: "pan" | "zoom") => LaneValueGesture | null;
+    zoom: (factor: number, cursorY: number) => boolean;
+    reset: () => void;
+};
 type TimelineNavigation = {
     wheel: (event: WheelEvent) => void;
     beginMiddleDrag: (event: PointerEvent) => void;

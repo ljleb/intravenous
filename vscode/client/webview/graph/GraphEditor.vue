@@ -8,7 +8,7 @@ import type { AutomationBoundSide } from "../../src/automationCurveGeometry";
 import { webviewApi } from "../host";
 import PresentationHost from "../presentation/PresentationHost.vue";
 import type { SemanticNode } from "../presentation/semanticNode";
-import { provideGraphEditor } from "./context";
+import { provideGraphEditor, type CursorWarpAnchor } from "./context";
 import NodeEditor from "./NodeEditor.vue";
 import { fixedConnectionPorts, type GraphConnectionEnd, type GraphPortEndpoint } from "../../src/graphConnectionEditing";
 import { beginPortConnection, canDropPortConnection, finishPortConnection, movePortConnection, type PortConnectionDrag } from "../../src/portConnectionGesture";
@@ -18,7 +18,7 @@ import { ManualControlGestures } from "../../src/manualControlGesture";
 import { knobScrubSpeed } from "../../src/knobPresentation";
 import { provideManualControls } from "../presentation/manualControlContext";
 import ManualValuePopover from "../presentation/ManualValuePopover.vue";
-import { manualControlKey, resolveManualControl } from "../../src/manualControls";
+import { canEditManualControl, manualControlKey, resolveManualControl } from "../../src/manualControls";
 import { KnobPointerLock } from "../../src/knobPointerLock";
 import { KnobClicks } from "../../src/knobClicks";
 import { PointerLockExitGuard } from "../../src/pointerLockExitGuard";
@@ -54,15 +54,41 @@ const timelineZoomHint = ref<string | null>(null);
 let lastInteractionHint: string | null | undefined;
 let pointerLockError = "";
 let automationPointerId: number | null = null;
-type PointDragWarp = { screenOrigin: Point; scale: number; initialCenter: Point | null; visiblePointCenter: () => Point | null; trace: boolean };
+type PointDragWarp = CursorWarpAnchor & { initialCenter: Point | null; destination: () => Point | null; trace: boolean; moved: boolean };
+type PendingCursorWarp = CursorWarpAnchor & { lockOrigin: Point; expiresAt: number; destination: () => Point | null; trace?: boolean } & (
+    { type: "warpCursorAfterPointDrag"; initialCenter: Point | null }
+    | { type: "warpCursorAfterMiddleDrag"; initialCenter?: never });
 let pointDragWarp: PointDragWarp | null = null;
-let warpAfterUnlock: (PointDragWarp & { lockOrigin: Point; expiresAt: number }) | null = null;
+let warpAfterUnlock: PendingCursorWarp | null = null;
+let cursorWarpTimeout: ReturnType<typeof setTimeout> | undefined;
+let nextCursorReturnId = 0;
+let pendingCursorReturnId: number | null = null;
 let traceNextPointDrag = false;
+let traceNextMiddleDrag = false;
 let tracePointDrag = false;
-function traceAutomationCursor(detail: string) { webviewApi.postMessage({ type: "automationCursorTrace", detail }); }
-function cancelPendingPointWarp(reason: string) {
-    if (warpAfterUnlock?.trace) traceAutomationCursor(`Pending warp cancelled. ${reason}`);
+function traceAutomationCursor(detail: string) { webviewApi.postMessage({ type: "cursorReturnTrace", gesture: "automation", detail }); }
+function traceMiddleCursor(detail: string) { webviewApi.postMessage({ type: "cursorReturnTrace", gesture: "middleButton", detail }); }
+function takeMiddleCursorTrace() {
+    if (!traceNextMiddleDrag) return null;
+    traceNextMiddleDrag = false;
+    return traceMiddleCursor;
+}
+function reportCursorReturnSkipped(detail: string) { webviewApi.postMessage({ type: "cursorReturnSkipped", detail }); }
+function clearPendingCursorWarp() {
+    clearTimeout(cursorWarpTimeout);
+    cursorWarpTimeout = undefined;
     warpAfterUnlock = null;
+}
+function cancelPendingCursorWarp(reason: string) {
+    if (warpAfterUnlock) reportCursorReturnSkipped(reason);
+    clearPendingCursorWarp();
+}
+function queueCursorWarp(warp: PendingCursorWarp) {
+    cancelPendingCursorWarp("Another drag released the cursor.");
+    warpAfterUnlock = warp;
+    cursorWarpTimeout = setTimeout(() => {
+        if (warpAfterUnlock === warp) cancelPendingCursorWarp("The browser did not finish releasing pointer lock in time.");
+    }, Math.max(0, warp.expiresAt - Date.now()));
 }
 const knobClicks = new KnobClicks();
 const manualGestures = new ManualControlGestures(
@@ -76,8 +102,10 @@ const pointerLock = new KnobPointerLock<Point>({
     exit: () => document.exitPointerLock(),
     locked: () => !!surface.value && document.pointerLockElement === surface.value,
 }, (id, delta) => {
-    if (id === automationPointerId) automation.edits.moveBy(id, delta);
-    else {
+    if (id === automationPointerId) {
+        if (pointDragWarp && (delta.x || delta.y)) pointDragWarp.moved = true;
+        automation.edits.moveBy(id, delta);
+    } else {
         knobClicks.move(delta.x, delta.y);
         manualGestures.moveBy(id, -delta.y);
     }
@@ -85,9 +113,12 @@ const pointerLock = new KnobPointerLock<Point>({
     if (lockOrigin) beginPointerLockExit(lockOrigin);
     if (id === automationPointerId) {
         automationPointerId = null;
-        if (point && lockOrigin && pointDragWarp) {
-            warpAfterUnlock = { ...pointDragWarp, lockOrigin, expiresAt: Date.now() + 100 };
+        if (point && lockOrigin && pointDragWarp && (pointDragWarp.moved || pointDragWarp.trace)) {
+            queueCursorWarp({ ...pointDragWarp, type: "warpCursorAfterPointDrag", lockOrigin, expiresAt: Date.now() + 100 });
             if (tracePointDrag) traceAutomationCursor("Released. Waiting for the browser to restore the cursor.");
+        } else if (pointDragWarp?.moved) {
+            reportCursorReturnSkipped(point ? `The point drag used pointer capture. ${pointerLockError}`
+                : "The point drag ended before a normal release.");
         } else if (tracePointDrag) traceAutomationCursor(`No warp scheduled. Release: ${!!point}. Pointer lock: ${!!lockOrigin}. ${pointerLockError}`);
         tracePointDrag = false;
         pointDragWarp = null;
@@ -125,7 +156,7 @@ function startAutomation(event: PointerEvent, target: NodeAddress, pointId: numb
     }
     if (mouse && visiblePointCenter) pointDragWarp = {
         screenOrigin: { x: event.screenX, y: event.screenY }, scale: window.devicePixelRatio, initialCenter: initialCenter ?? null,
-        visiblePointCenter, trace: tracePointDrag,
+        destination: visiblePointCenter, trace: tracePointDrag, moved: false,
     };
     captureAutomationPointer(event, element, origin, mouse);
 }
@@ -193,6 +224,8 @@ function moveCapturedControl(event: PointerEvent) {
         event.preventDefault(); event.stopImmediatePropagation();
         if (document.pointerLockElement === surface.value) return;
         if (!(event.buttons & 1)) { releaseCapturedControl(event); return; }
+        const origin = pointerLock.status().origin;
+        if (pointDragWarp && (event.clientX !== origin?.x || event.clientY !== origin?.y)) pointDragWarp.moved = true;
         automation.edits.move(event.pointerId, { x: event.clientX, y: event.clientY });
         return;
     }
@@ -232,30 +265,44 @@ function controlLockChanged() {
     pointerLock.changed();
     const warp = warpAfterUnlock;
     if (warp && document.pointerLockElement === null) void nextTick(() => {
-        const trace = (detail: string) => { if (warp.trace) traceAutomationCursor(detail); };
-        if (warpAfterUnlock !== warp) { trace("Pending warp was cancelled before the graph finished rendering."); return; }
-        warpAfterUnlock = null;
+        const trace = warp.trace ? (warp.type === "warpCursorAfterMiddleDrag" ? traceMiddleCursor : traceAutomationCursor) : undefined;
+        if (warpAfterUnlock !== warp) return;
+        clearPendingCursorWarp();
+        trace?.("The browser reported that pointer lock ended.");
         // Chromium can briefly blur the webview while restoring the cursor.
         // The extension host checks the actual VS Code window and panel focus.
         if (Date.now() >= warp.expiresAt || document.pointerLockElement) {
-            trace(`Unlock gate rejected the warp. Remaining time: ${warp.expiresAt - Date.now()} ms. Focused: ${document.hasFocus()}. Locked: ${!!document.pointerLockElement}.`);
+            reportCursorReturnSkipped(document.pointerLockElement ? "Another gesture acquired pointer lock."
+                : "The cursor return request expired before the graph finished rendering.");
             return;
         }
-        const center = warp.visiblePointCenter();
-        if (!center || (center.x === warp.initialCenter?.x && center.y === warp.initialCenter?.y)) {
-            trace(center ? "The point stayed in place." : "The point is no longer visible at release.");
+        const center = warp.destination();
+        if (!center) {
+            reportCursorReturnSkipped("The point is no longer visible at release.");
+            return;
+        }
+        if (center.x === warp.initialCenter?.x && center.y === warp.initialCenter?.y) {
+            trace?.("The point stayed in place.");
             return;
         }
         const request = {
             originX: Math.round(warp.screenOrigin.x * warp.scale),
             originY: Math.round(warp.screenOrigin.y * warp.scale),
+            // Window zoom can affect the viewport scale without changing screenX/Y.
+            screenOrigin: { x: Math.round(warp.screenOrigin.x), y: Math.round(warp.screenOrigin.y) },
             deltaX: Math.round((center.x - warp.lockOrigin.x) * warp.scale),
             deltaY: Math.round((center.y - warp.lockOrigin.y) * warp.scale),
             expiresAt: warp.expiresAt,
             ...(warp.trace ? { trace: true } : {}),
         };
-        trace(`Release destination. ${JSON.stringify({ center, lockOrigin: warp.lockOrigin, request })}`);
-        webviewApi.postMessage({ type: "warpCursorAfterPointDrag", warp: request });
+        trace?.(`Release destination. ${JSON.stringify({ center, lockOrigin: warp.lockOrigin, request })}`);
+        if (!request.deltaX && !request.deltaY) {
+            trace?.("The destination rounds to the press position. No cursor move needed.");
+            return;
+        }
+        const requestId = ++nextCursorReturnId;
+        pendingCursorReturnId = requestId;
+        webviewApi.postMessage({ type: warp.type, warp: request, requestId });
     });
     if (pointerLock.status().granted && document.pointerLockElement === surface.value) {
         // Capture is only a fallback while the lock is pending. A successful
@@ -273,7 +320,8 @@ function wheelControl(event: WheelEvent) {
     event.preventDefault(); event.stopImmediatePropagation();
 }
 function clickOutsideManual(event: PointerEvent) {
-    cancelPendingPointWarp("A new pointer press arrived.");
+    pendingCursorReturnId = null;
+    cancelPendingCursorWarp("A new pointer press arrived.");
     const target = event.target instanceof Element ? event.target : null;
     if (target?.closest(".manual-value-popover")) return;
     manualGestures.cancelEntry();
@@ -281,7 +329,8 @@ function clickOutsideManual(event: PointerEvent) {
     if (!target?.closest(".manual-input") && automationPointerId === null) { pointerLock.cancel(); manualGestures.finish(); }
 }
 function blurPointerControls() {
-    cancelPendingPointWarp("The editor released its pointer controls.");
+    pendingCursorReturnId = null;
+    cancelPendingCursorWarp("The editor released its pointer controls.");
     knobClicks.cancel(); pointerLock.cancel(); manualGestures.finish(); manualGestures.cancelEntry(); manualGestures.hover(null);
     // Positions after focus returns come from real movement. The cleared knob
     // hover must be entered again by the next move, even within the same knob.
@@ -300,7 +349,12 @@ const pointerLockExitTypes = [
     "mouseover", "mouseout", "mouseenter", "mouseleave",
     "pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick", "auxclick", "contextmenu",
 ];
-function beginPointerLockExit(origin: Point) { pointerLockExit.begin(origin); }
+function beginPointerLockExit(origin: Point, warp?: CursorWarpAnchor & { destination: Point; trace?: boolean }) {
+    pendingCursorReturnId = null;
+    pointerLockExit.begin(origin);
+    if (warp) queueCursorWarp({ ...warp, type: "warpCursorAfterMiddleDrag", lockOrigin: origin,
+        expiresAt: Date.now() + 100, destination: () => warp.destination });
+}
 const pointerLockExitRedirect = new PointerLockExitRedirect(pointerLockExit, {
     locked: () => !!document.pointerLockElement,
     elementAt: (point) => document.elementFromPoint(point.x, point.y),
@@ -375,7 +429,7 @@ const dropPreviewWires = computed(() => {
         path: connectionWirePath(wire.anchor, target) })) : [];
 });
 function save() { webviewApi.postMessage({ type: "saveGraphLayout", layout: readLayout(layout.value) }); }
-provideGraphEditor({ layout, save, beginPointerLockExit,
+provideGraphEditor({ layout, save, beginPointerLockExit, takeMiddleCursorTrace, reportCursorReturnSkipped,
     setTimelineZoomHint: (hint) => { timelineZoomHint.value = hint; },
     copyNodeDebugDetails: (address) => webviewApi.postMessage({ type: "copyNodeDebugDetails", nodeKey: addressKey(address) }),
     scope: computed(() => state.value.scope), shiftHeld: computed(() => hoverShift.value.held),
@@ -679,7 +733,20 @@ function createPackage() {
     creatingPackage.value = false;
 }
 function receive(event: MessageEvent<GraphEditorHostMessage>) {
-    if (event.data?.type === "traceNextAutomationCursorReturn") { traceNextPointDrag = true; return; }
+    if (event.data?.type === "cursorReturnCompleted") {
+        if (event.data.requestId === pendingCursorReturnId) {
+            pendingCursorReturnId = null;
+            // The X11 cursor has moved. The original press is no longer a safe
+            // place to redirect events while the renderer catches up.
+            pointerLockExit.end();
+        }
+        return;
+    }
+    if (event.data?.type === "traceNextCursorReturn") {
+        if (event.data.gesture === "middleButton") traceNextMiddleDrag = true;
+        else traceNextPointDrag = true;
+        return;
+    }
     if (event.data?.type === "playbackUpdate") {
         playback.receive(event.data.snapshot, event.data.requestedPosition);
         return;
@@ -716,8 +783,8 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     if (state.value.sessionStatus === "running") observations.refresh();
     else observations.disconnect();
     const entry = manualGestures.numericEntry();
-    const entryControl = entry && resolveManualControl(state.value.scope, entry.control);
-    if (entry && (!entryControl?.available || !entryControl.enabled)) manualGestures.cancelEntry();
+    if (entry && !canEditManualControl(entry.control, resolveManualControl(state.value.scope, entry.control)))
+        manualGestures.cancelEntry();
     if (state.value.sessionStatus !== "running") manualGestures.disconnected();
     cancelConnection(); // A new authoritative scope can change port identities.
     if (selectedLanes.value.size) {

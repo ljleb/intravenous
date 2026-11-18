@@ -17,6 +17,7 @@
 
 namespace iv {
 class BackgroundStorageRealization;
+class BackgroundEvaluationCallFrame;
 
 // Raised only for an error that invalidates the executable for every
 // playback demand. Ordinary data, allocation and deadline failures do not
@@ -29,7 +30,8 @@ struct BackgroundTransactionProjection {
     void* data = nullptr;
     void (*project)(void*, graph_jit::BackgroundEvaluationPlan const&,
         PreparedCoveragePropagation const&, BackgroundStorageRealization const&,
-        PersistedDataVersion) = nullptr;
+        BackgroundEvaluationCallFrame const&, PersistedDataVersion) = nullptr;
+    std::optional<graph_jit::BackgroundPortIndex> sample_input{};
 };
 
 // Generation-local destination metadata aligned with one independently pinned

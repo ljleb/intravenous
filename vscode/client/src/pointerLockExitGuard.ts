@@ -29,6 +29,7 @@ const actions = new Set([
 
 export type GhostEvent = {
     type: string; movementX?: number; movementY?: number;
+    position?: Point;
     // Set for pointer events; "mouse" is the only displaced input.
     pointerType?: string;
     // Set for compatibility mouse events that a touch produced.
@@ -37,11 +38,18 @@ export type GhostEvent = {
 
 export class PointerLockExitGuard {
     private lockOrigin: Point | null = null;
+    private displacedPosition: Point | undefined;
 
     // A granted pointer lock ended for a drag that began at `origin`.
-    begin(origin: Point): void { this.lockOrigin = { ...origin }; }
+    begin(origin: Point): void {
+        this.lockOrigin = { ...origin };
+        this.displacedPosition = undefined;
+    }
     // Focus moved elsewhere; positions from a later return are real.
-    end(): void { this.lockOrigin = null; }
+    end(): void {
+        this.lockOrigin = null;
+        this.displacedPosition = undefined;
+    }
     origin(): Point | null { return this.lockOrigin; }
 
     // Classifies one unlocked window event. Locked events are never passed
@@ -51,9 +59,19 @@ export class PointerLockExitGuard {
         // Touch and pen report where they are, and do not end the mouse's guard.
         if ((event.pointerType && event.pointerType !== "mouse") || event.firesTouchEvents) return "pass";
         if (moves.has(event.type)) {
-            if (!event.movementX && !event.movementY) return "drop";
-            this.lockOrigin = null;
-            return "settle";
+            const { position } = event;
+            const displaced = this.displacedPosition;
+            // Pointer and mouse events can describe the same restoration
+            // move. Some hosts then continue reporting zero relative deltas
+            // even as the absolute cursor position changes.
+            if (event.movementX || event.movementY || (position && displaced
+                && (Math.abs(position.x - displaced.x) >= 1 || Math.abs(position.y - displaced.y) >= 1))) {
+                this.end();
+                return "settle";
+            }
+            if (!displaced && position && (position.x !== this.lockOrigin.x || position.y !== this.lockOrigin.y))
+                this.displacedPosition = position;
+            return "drop";
         }
         if (boundaries.has(event.type)) return "drop";
         if (actions.has(event.type)) return "retarget";

@@ -89,15 +89,16 @@ export class WorkspaceRpc {
     dispatchNodeEvent(target: NodeAddress, event: SerializedNodeEvent, expectedRevision: number, interactionId?: string): Promise<{
         ok: boolean; diagnostics: Array<{ target: NodeAddress; message: string }>; sessionRevision?: number;
     }> {
-        return this.client.request("nodeMessages.dispatch", this.mutationParams({ target: { ...target, path: target.path ?? [] },
+        return this.client.request("nodeMessages.dispatch", { target: { ...target, path: target.path ?? [] },
             eventTypeNominalId: event.eventType.nominalId,
             eventTypeDefinitionFingerprint: event.eventType.definitionFingerprint,
-            payload: event.payload, ...(interactionId ? { interactionId } : {}) }, expectedRevision));
+            payload: event.payload, ...(interactionId ? { interactionId } : { expectedRevision }) });
     }
 
     nodeEventGesture(target: NodeAddress, interactionId: string, begin: boolean): Promise<void> {
+        const params = { target: { ...target, path: target.path ?? [] }, interactionId };
         return this.client.request(`nodeMessages.${begin ? "beginGesture" : "endGesture"}`,
-            this.mutationParams({ target: { ...target, path: target.path ?? [] }, interactionId }));
+            begin ? this.mutationParams(params) : params);
     }
 
     getAudioDevices(): Promise<AudioDevicesSnapshot> {

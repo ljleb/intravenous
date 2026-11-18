@@ -12,6 +12,7 @@
 namespace iv {
 struct PackageRevision;
 struct ReflectedNodeTickContext;
+struct ContinuousInputPortBinding;
 }
 
 namespace iv::graph_jit {
@@ -71,7 +72,8 @@ using RegionSpecializationManualControlsFunction = void (*)(
     std::uint64_t slice_index_bits,
     std::size_t slice_count,
     std::uint64_t enclosing_index_bits,
-    std::size_t enclosing_count) noexcept;
+    std::size_t enclosing_count,
+    ContinuousInputPortBinding const* inputs) noexcept;
 
 // begin_bases holds, for every Sequential begin index of every step in
 // request order, the generation pace cursor that index advances from.

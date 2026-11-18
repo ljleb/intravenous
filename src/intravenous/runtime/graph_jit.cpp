@@ -2237,9 +2237,20 @@ public:
             region_specializations_,
             timings,
             request.definitions->package_revisions);
+        // Keep the independent knob value in request.graph. Disabled
+        // Sequential inputs use their neutral value in settled executables.
+        for (auto& control : resolved_graph.manual_controls) {
+            if (control.output || control.enabled || control.override_connections) continue;
+            auto const& input = resolved_graph.node_bundles.resolve_sample_input(control.input).config;
+            if (!supports_coverage_manual_control(input)) {
+                control.settled_value = sequential_input_metadata<Sample>(sequential_input_properties(input)).neutral_value;
+                control.participation = ManualControlParticipation::disconnected_only;
+            }
+        }
         resolved_graph = graph_jit::detail::resolve_module_inputs(resolved_graph);
         auto const coverage_controls = graph_jit::detail::expand_coverage_manual_controls(resolved_graph);
         std::vector<ContinuousInputConfig> module_input_configs;
+        std::vector<std::pair<NodeBundlePortId, NodeBundlePortId>> resolved_sample_input_views;
         module_input_configs.reserve(resolved_graph.node_bundles.size() - request.graph->node_bundles.size());
         for (NodeBundleHandle bundle = request.graph->node_bundles.size();
              bundle < resolved_graph.node_bundles.size(); ++bundle) {
@@ -2247,8 +2258,10 @@ public:
             auto const source = stage.resolved_module_input();
             if (!source) continue;
             auto const operations = graph_jit::detail::module_input_resolution_operations();
-            if (source->port_kind == PortKind::sample)
+            if (source->port_kind == PortKind::sample) {
                 module_input_configs.push_back(stage.sample_input_descriptor(0).config);
+                resolved_sample_input_views.emplace_back(*source, NodeBundlePortId{bundle, PortKind::sample, 0});
+            }
             implementations.push_back(graph_jit::NodeImplementation{
                 .node_bundle = bundle,
                 .resolved_module_input = source,
@@ -2493,6 +2506,7 @@ public:
                 .configured_graph = request.graph,
                 .output_gain_views = {output_gains.outputs.begin(), output_gains.outputs.end()},
                 .background_output_gain_views = {output_gains.background_outputs.begin(), output_gains.background_outputs.end()},
+                .resolved_sample_input_views = std::move(resolved_sample_input_views),
                 .package_revisions = std::move(package_revisions),
                 .port_realization = std::move(lowering->port_realization),
                 .node_layout = std::move(lowering->node_layout),

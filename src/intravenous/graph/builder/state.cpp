@@ -9,6 +9,23 @@
 
 namespace iv {
 namespace {
+OutputProductionKind combined_output_production(OutputProductionKind first, OutputProductionKind next)
+{
+  return first == OutputProductionKind::sequential || next == OutputProductionKind::sequential
+    ? OutputProductionKind::sequential : OutputProductionKind::coverage;
+}
+
+NodeBundlePortId sample_contributor(GraphBuilderNodeBundles const& bundles, SampleOutputChannelId channel)
+{
+  while (bundles.bundle(channel.bundle).is_tiled()) {
+    auto const members = bundles.bundle(channel.bundle).tiled_members();
+    if (channel.channel >= members.size()) details::error("tiled sample output channel is out of bounds");
+    channel.bundle = members[channel.channel];
+    channel.channel = 0;
+  }
+  return {channel.bundle, PortKind::sample, channel.port};
+}
+
 std::vector<EventOutputRefConfig> make_event_output_configs(
     std::span<EventOutputRequest const> refs) {
   std::vector<EventOutputRefConfig> configs;
@@ -163,6 +180,7 @@ void GraphBuilderPublicPorts::define_sample_outputs(
     GraphBuilderState& builder, GraphBuilderNodeBundles& bundles,
     GraphBuilderIdentity const& identity, std::span<OutputRefConfig const> refs) {
   _last_sample_output_port_indices.clear();
+  auto& boundary = bundles.bundle(_boundary);
   bool require_names = refs.size() > 1;
   for (size_t i = 0; i < refs.size(); ++i) {
     auto const& ref = refs[i].ref; auto const& config = refs[i].config;
@@ -173,12 +191,40 @@ void GraphBuilderPublicPorts::define_sample_outputs(
       ? std::find_if(_sample_output_members.begin(), _sample_output_members.end(), [&](auto const& m) {
           auto const& n = refs[i].public_member; return m.family_name == n.family_name && m.channel_type == n.channel_type && m.channel_index == n.channel_index && m.whole_stream == n.whole_stream; })
       : _sample_output_members.end();
-    size_t output = existing == _sample_output_members.end()
-      ? bundles.bundle(_boundary).boundary_sample_outputs().size()
+    bool const new_output = existing == _sample_output_members.end();
+    size_t output = new_output
+      ? _sample_output_members.size()
       : static_cast<size_t>(existing - _sample_output_members.begin());
-    if (existing == _sample_output_members.end()) {
-      IV_ASSERT(bundles.bundle(_boundary).append_boundary_sample_output(config) == output, "public output metadata mismatch");
+    auto inferred = new_output ? config : boundary.boundary_ports().sample_output(output);
+    auto single = new_output ? std::optional<NodeBundlePortId>{} : _sample_output_single_contributors[output];
+    bool has_contributor = !new_output;
+    for (auto const channel : ref.channels()) {
+      auto const contributor = sample_contributor(bundles, channel);
+      if (single == contributor) continue;
+      auto source = bundles.resolve_sample_output(contributor).config;
+      if (!has_contributor) {
+        inferred.production = std::move(source.production);
+        inferred.realization = source.realization;
+        single = contributor;
+        has_contributor = true;
+        continue;
+      }
+      auto const type_domain = continuous_value_type_domain(inferred) & continuous_value_type_domain(source);
+      auto const production = combined_output_production(output_production(inferred), output_production(source));
+      if (production == OutputProductionKind::sequential)
+        inferred.production = default_sequential_output_properties(type_domain);
+      else
+        inferred.production = default_coverage_output_properties(type_domain);
+      if (source.realization == OutputRealization::computed) inferred.realization = OutputRealization::computed;
+      single.reset();
+    }
+    if (new_output) {
+      IV_ASSERT(boundary.append_boundary_sample_output(std::move(inferred)) == output, "public output metadata mismatch");
       _sample_output_members.push_back(refs[i].public_member); _sample_output_source_infos.emplace_back();
+      _sample_output_single_contributors.push_back(single);
+    } else {
+      boundary.set_boundary_sample_output(output, std::move(inferred));
+      _sample_output_single_contributors[output] = single;
     }
     NodeBundlePortId const target{_boundary, PortKind::sample, output};
     if (refs[i].target_channel_index) {
@@ -257,6 +303,19 @@ void GraphBuilderPublicPorts::define_event_outputs(
           "event output");
     auto config = refs[i].config;
     config.type = ref.type;
+    auto const sources = ref.sources();
+    if (!sources.empty()) {
+      auto const first = sources.front();
+      auto const first_config = bundles.resolve_event_output({first.bundle, PortKind::event, first.port}).config;
+      config.production = first_config.production;
+      config.realization = first_config.realization;
+      for (auto const source : sources.subspan(1)) {
+        if (source == first) continue;
+        auto const next = bundles.resolve_event_output({source.bundle, PortKind::event, source.port}).config;
+        config.production = combined_output_production(config.production, next.production);
+        if (next.realization == OutputRealization::computed) config.realization = OutputRealization::computed;
+      }
+    }
     auto output = boundary.append_boundary_event_output(std::move(config));
     builder.record_configured_event_connection(
         {_boundary, PortKind::event, output}, ref);
@@ -468,21 +527,9 @@ void GraphBuilderState::scope_outputs(
       continue;
     }
     auto source = lift_named_sample(ref);
-    auto logical = _node_bundles.sample_output_port_for_channels(
-        source.channel_type, source.channels());
-    auto config = logical ? _node_bundles.resolve_sample_output(*logical).config
-                          : ContinuousOutputConfig{
-                              .channel_layout = {.channel_type = source.channel_type,
-                                  .sample_layout = SampleStreamLayout::planar},
-                              .production = default_sequential_output_properties(
-                                  ContinuousValueTypeSet::audio_capable())};
-    config.name = std::string(ref.name);
-    set_continuous_channel_layout(config, {
-        .channel_type = config.channel_layout.channel_type,
-        .sample_layout = SampleStreamLayout::planar,
-    });
     samples.push_back({
-        .ref = source, .config = std::move(config),
+        .ref = source, .config = {.name = std::string(ref.name),
+            .channel_layout = {.channel_type = source.channel_type, .sample_layout = SampleStreamLayout::planar}},
         .public_member = {.family_name = std::string(ref.name),
             .channel_type = source.channel_type, .whole_stream = true}});
     kinds.push_back(PortKind::sample);

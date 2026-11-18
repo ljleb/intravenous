@@ -248,6 +248,10 @@ mapping may account for the bounds, but bounds must not silently change the
 orientation endpoints or compress the displayed arc. Preserve useful
 magnitude differentiation for unbounded controls.
 
+Draw a short radial bar at each bounded end, using the same style as the
+default-value marker. At each unbounded end, cut two short gaps into the track.
+Keep the same end positions for every knob size.
+
 When a knob declares a default value, use a dim fill from its default marker
 to the current pointer. Follow the available arc in both the dial and its
 preview. At the default angle, omit the fill.
@@ -432,14 +436,56 @@ affect only the lane view.
 
 **Alt+Shift+middle-button drag** across an automation lane changes its value
 zoom. Horizontal motion changes the scale around the value at the pointer's
-height. **Shift+middle-button double-click** resets both value pan and zoom.
+height. **Alt+Shift+scroll** over the lane also zooms its value axis around
+the pointer's height. **Shift+middle-button double-click** resets both value
+pan and zoom.
+In Curved display, zoom-out widens the arctangent scale when at least one
+end is unbounded. A single finite bound stays at its lane edge. With two
+finite bounds, zoom-out stops when the full range fits.
+The value anchor continues in the same direction when the pointer wraps.
+The status bar shows how many screens above or below the visible lane the
+anchor has moved.
 
 When bounds are supplied by signals, show their observed value curves and use
 the minimum of the visible lower bound and the maximum of the visible upper
 bound to limit panning. This requires suitable node inputs and windowed
 observation of the values they receive. The current automation module stores
-its bounds in its construction arguments. The observation API currently
-offers output windows and state-field readings.
+its bounds in its construction arguments. Input window observation can read
+concrete and public Coverage inputs.
+
+### Automation signal inputs and optional transforms
+
+_Future direction, recorded on 2026-11-18._
+
+Expose `min`, `max`, `scale`, and `offset` as ordinary connectable inputs on
+`iv.builtin.automation.curve`. Apply the observed bounds to point events
+before interpolation so clamping preserves smooth segments. Apply scale and
+then offset to sampled values so other curves can modulate both. In the absence
+of a scale or offset contribution, use an identity transform. Preserve the
+curve's sparse intervals and decide how overlapping control Regions combine
+as part of the input design.
+
+Allow an optional `NodeRef` constructor argument to supply a subgraph that
+transforms the curve's authored point events before sampling. A second optional
+`NodeRef` can supply a subgraph that processes sampled values. The presentation
+can draw the original and transformed curves in the same lane. Implementation
+must preserve the original curve and make both sampled signals observable.
+The arguments must follow the
+[builder ownership rules](./configuration_expression_language_direction.md#implemented-decisions-and-remaining-dependency).
+
+_Implementation friction, 2026-11-18._ `build_structural_sample_routes` follows a
+public Coverage input to its incoming connections. When a leaf reads the public
+input and the input has no source, the planner can reject the graph. A curve
+with four optional inputs needs to compile with no connections or manual values.
+First allow structural routing to represent an uncovered public Coverage
+input. Then wire the four inputs without adding a synthetic source for each
+disconnected port. The bounds change must also preserve saved
+`AutomationCurve` values and respect the existing rules for editing points.
+
+_Implementation update, 2026-11-18._ An unconnected public Coverage input can
+now route as empty, including when an internal leaf consumes the port. The
+compiler retains the public route for window queries. Wiring the four
+automation inputs and migrating the saved bounds remain separate work.
 
 ### Automation clip ruler and sample-accurate editing
 

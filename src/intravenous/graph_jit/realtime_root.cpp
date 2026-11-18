@@ -209,6 +209,8 @@ struct RootPrimitive {
     std::vector<std::size_t> manual_controls{};
     // Only inputs whose sources may be absent need a resolution pass.
     std::vector<std::size_t> coverage_inputs{};
+    struct InputObservation { std::size_t slot, port, channel; };
+    std::vector<InputObservation> input_observations{};
     std::vector<std::size_t> live_coverage_outputs{};
     std::vector<SequentialCoverageProjection> live_event_inputs{};
     // Compact realtime output binding and semantic output-coverage index.
@@ -1344,19 +1346,15 @@ struct ObservationCaptureTimer {
     }
 };
 
-void capture_observation_output(RootFrame& frame, std::size_t primitive,
+void capture_sample_observation(RootFrame& frame, std::size_t slot,
+    ReflectedContinuousInputPortBinding const& binding, std::span<std::size_t const> selected,
     GlobalIndex index, std::size_t block_size) noexcept
 {
     if (!frame.invocation || !frame.invocation->observations) return;
     ObservationCaptureTimer timer{*frame.invocation->observations};
-    auto const slot = *frame.plan.observation_slots[primitive];
     auto& observation = frame.invocation->observations->values[slot];
     if (!observation.operation || !observation.operation->capture_block) return;
-    auto const& node = frame.plan.primitives[primitive];
-    auto const& binding = *reinterpret_cast<ReflectedContinuousInputPortBinding const*>(
-        frame.scratch + node.sample_inputs_offset);
     std::array<ObservationChannelView, maximum_supported_channel_count> channels{};
-    auto const& selected = frame.plan.observation_channels[primitive];
     auto const count = selected.empty() ? channel_count(binding.storage.channel_layout) : selected.size();
     for (std::size_t channel = 0; channel < count; ++channel) {
         auto const& source = binding.storage.channels[selected.empty() ? channel : selected[channel]];
@@ -1369,6 +1367,23 @@ void capture_observation_output(RootFrame& frame, std::size_t primitive,
         .sequential_begin_index = binding.sequential_begin_index - binding.read_latency,
         .value_count = projection.value_count,
     });
+}
+
+void capture_observation_output(RootFrame& frame, std::size_t primitive,
+    GlobalIndex index, std::size_t block_size) noexcept
+{
+    auto const& node = frame.plan.primitives[primitive];
+    auto const& binding = *reinterpret_cast<ReflectedContinuousInputPortBinding const*>(
+        frame.scratch + node.sample_inputs_offset);
+    capture_sample_observation(frame, *frame.plan.observation_slots[primitive],
+        binding, frame.plan.observation_channels[primitive], index, block_size);
+}
+
+void capture_input_observations(RootFrame& frame, RootPrimitive const& primitive,
+    ReflectedContinuousInputPortBinding const* bindings, GlobalIndex index, std::size_t count) noexcept
+{
+    for (auto const& probe : primitive.input_observations)
+        capture_sample_observation(frame, probe.slot, bindings[probe.port], std::span{&probe.channel, 1}, index, count);
 }
 
 void capture_observation_state(RootFrame& frame, std::size_t probe) noexcept
@@ -2067,8 +2082,10 @@ ReflectedNodeTickContext const& prepare_invocation(
                 ? prefix
                 : frame.sequential_pace_cursors[update.cursor] + prefix);
     }
-    return *reinterpret_cast<ReflectedNodeTickContext const*>(
+    auto const& context = *reinterpret_cast<ReflectedNodeTickContext const*>(
         frame.scratch + primitive.context_offset);
+    capture_input_observations(frame, primitive, context.continuous_input_bindings.data(), callback_index, callback_size);
+    return context;
 }
 
 PrimitiveActivityDecision decide_primitive_activity(
@@ -2539,7 +2556,8 @@ void stage_specialized_manual_controls(
     std::uint64_t slice_index_bits,
     std::size_t slice_count,
     std::uint64_t enclosing_index_bits,
-    std::size_t enclosing_count) noexcept
+    std::size_t enclosing_count,
+    ReflectedContinuousInputPortBinding const* inputs) noexcept
 {
     auto& root_frame = *static_cast<RootFrame*>(frame);
     stage_sequential_sample_resolution(root_frame, primitive_index,
@@ -2553,6 +2571,8 @@ void stage_specialized_manual_controls(
         enclosing_count);
     stage_live_output_coverage(root_frame, primitive_index,
         GlobalIndex::from_bits(slice_index_bits), slice_count);
+    capture_input_observations(root_frame, root_frame.plan.primitives[primitive_index],
+        inputs, GlobalIndex::from_bits(slice_index_bits), slice_count);
 }
 
 // One region's complete invocation through its compiled specialization. The
@@ -4542,7 +4562,7 @@ private:
                 !valid) {
                 return valid;
             }
-            auto const& primitive = plan_.primitives[step.configuration_index];
+            auto& primitive = plan_.primitives[step.configuration_index];
 
             // The primitive's State view completes its context.
             auto const& state = primitive_storage[step.storage_index];
@@ -4573,6 +4593,20 @@ private:
             if (input_.observations) {
                 for (std::size_t slot = 0; slot < input_.observations->probes.size(); ++slot) {
                     auto const& probe = input_.observations->probes[slot];
+                    if (probe.available && probe.kind == ObservationSourceKind::input) {
+                        NodeBundlePortId const source{probe.bundle, PortKind::sample, probe.port};
+                        auto const bundle = lowering_.imports.primitive_callbacks[step.configuration_index].bundle;
+                        auto const origin = input_.graph.node_bundles.bundle(bundle).resolved_module_input();
+                        if (bundle != source.node_bundle_handle && origin != source) continue;
+                        auto const input = origin ? 0 : source.port_index;
+                        auto const& bindings = plan_.sample_ports.primitives[step.configuration_index].inputs;
+                        if (input >= bindings.size() || bindings[input].random_access
+                            || probe.channels.size() != 1
+                            || probe.channels.front() >= channel_count(bindings[input].channel_layout))
+                            return invalid("observation does not select a Sequential Sample input channel");
+                        primitive.input_observations.push_back({slot, input, probe.channels.front()});
+                        continue;
+                    }
                     if (!probe.available || probe.kind != ObservationSourceKind::state_field
                         || probe.bundle != lowering_.imports.primitive_callbacks[step.configuration_index].bundle) continue;
                     if (!state.has_state || probe.state_field_offset > state.state_size
@@ -5129,7 +5163,7 @@ private:
                 .code_key = implementation->code_key,
                 .provider_version = implementation->provider_version,
                 .stages_manual_controls =
-                    primitive_stages_manual_controls(primitive),
+                    primitive_stages_manual_controls(primitive) || !primitive.input_observations.empty(),
             };
             auto const& sample = plan_.sample_ports.primitives[index];
             for (std::size_t input = 0; input < sample.inputs.size(); ++input) {

@@ -57,6 +57,26 @@ test("manual gestures coalesce while begin is pending and finish with the latest
     assert.equal(manager.states("panel")[0].value, 440);
 });
 
+test("a disabled input knob can prepare, scrub, and release without enabling it", async () => {
+    const { manager, calls } = harness();
+    const graph = scope();
+    const disabled = graph.nodes[0].sampleInputs[0].manualControl!;
+    disabled.enabled = false;
+    manager.reconcile(graph);
+    const gestures = new ManualControlGestures((action) => manager.action("panel", action), () => "drag", () => {});
+    gestures.hover(control);
+    await manager.settled();
+    gestures.scrub(control, disabled, 7, 100, 2);
+    gestures.move(7, 120, 20, 20000);
+    gestures.release(7);
+    await manager.settled();
+    gestures.hover(null);
+    await manager.settled();
+    assert.deepEqual(calls.map(({ action, value }) => [action, value]),
+        [["hover", undefined], ["begin", 480], ["end", 480], ["hover", undefined]]);
+    assert.equal(resolveManualControl(graph, control)?.enabled, false);
+});
+
 test("an acknowledged gesture streams every update at once, even behind a pending reply", async () => {
     const hover = deferred();
     const { manager, calls } = harness({ hoverManualControl: async () => { calls.push({ action: "hover" }); await hover.promise; } });
@@ -451,14 +471,40 @@ test("reset uses the declared default and can reanchor an ongoing drag", () => {
 test("interaction hints describe the current gesture and clear with its hover", () => {
     const gestures = new ManualControlGestures(() => {}, () => "drag", () => {});
     assert.equal(gestures.hint(), null);
-    gestures.hover(control, descriptor, { defaultValue: 440 });
-    assert.match(gestures.hint()!.text, /Drag\/↑↓.*🖱︎R value.*Dbl-click reset/);
+    gestures.hover(control, descriptor, { defaultValue: 440 }, "Sequential input");
+    assert.match(gestures.hint()!.text, /^Sequential input.*↑↓.*🖱︎R value.*Dbl-click reset/);
+    gestures.refresh(control, { ...descriptor, value: 450 }, { defaultValue: 440 });
+    assert.match(gestures.hint()!.text, /^Sequential input · frequency 450/);
     gestures.scrub(control, descriptor, 1, 0, 1);
     gestures.changeSensitivity(100);
     assert.match(gestures.hint()!.text, /0.5×/);
     gestures.release(1);
     gestures.hover(null);
     assert.equal(gestures.hint(), null);
+});
+
+test("a disabled knob distinguishes predictive hover, active drag and held override", () => {
+    let nextId = 0;
+    const gestures = new ManualControlGestures(() => {}, () => `drag:${++nextId}`, () => {});
+    const disabled = { ...descriptor, enabled: false, participates: false };
+    assert.equal(gestures.activity(control), "idle");
+    gestures.hover(control, disabled);
+    assert.equal(gestures.activity(control), "hover");
+    gestures.scrub(control, disabled, 1, 0, 1);
+    assert.equal(gestures.activity(control), "active");
+    gestures.release(1);
+    assert.equal(gestures.activity(control), "retained");
+    gestures.receive([{ interactionId: "drag:1", control, value: 440, phase: "settled" }]);
+    assert.equal(gestures.activity(control), "retained");
+    gestures.unhover(control);
+    assert.equal(gestures.activity(control), "idle");
+    gestures.hover(control, disabled);
+    assert.equal(gestures.activity(control), "hover");
+    gestures.scrub(control, disabled, 1, 0, 1);
+    gestures.release(1);
+    gestures.receive([{ interactionId: "drag:2", control, value: 440, phase: "failed" }]);
+    assert.equal(gestures.activity(control), "hover");
+    assert.equal(disabled.enabled, false);
 });
 
 test("release keeps the final displayed value while older acknowledgements arrive", () => {

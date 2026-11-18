@@ -1,6 +1,7 @@
 import type { ManualControlDescriptor } from "./manualControls";
 import type { ContinuousValueAlternative } from "./graphModel";
-import type { AutomationValueDisplay, AutomationValueRuler, AutomationValueZoom } from "./automationCurveGeometry";
+import { maximumAutomationValueZoom, minimumAutomationValueZoom,
+    type AutomationValueDisplay, type AutomationValueRuler, type AutomationValueZoom } from "./automationCurveGeometry";
 import { readTimelineViewport, type TimelineViewport } from "./timelineViewport";
 
 export type NodeAddress = { instanceId: string; path?: Array<Record<string, unknown>> };
@@ -117,10 +118,11 @@ export function readLayout(value: unknown): GraphLayout {
     const panEntries = Object.entries(layout?.automationValuePans ?? {}).filter(([, pan]) => Number.isFinite(pan) && pan !== 0);
     const displays = new Map(displayEntries);
     const zoomEntries = Object.entries(layout?.automationValueZooms ?? {}).filter(([key, zoom]) => zoom
-        && Number.isFinite(zoom.factor) && zoom.factor >= 2 ** -20 && zoom.factor <= 2 ** 20 && zoom.factor !== 1
+        && Number.isFinite(zoom.factor) && zoom.factor >= minimumAutomationValueZoom
+        && zoom.factor <= maximumAutomationValueZoom && zoom.factor !== 1
         && Number.isFinite(zoom.center)
-        && (displays.has(key) ? zoom.center === .5
-            : zoom.factor > 1 && zoom.center >= .5 / zoom.factor && zoom.center <= 1 - .5 / zoom.factor));
+        && (displays.has(key) || zoom.factor < 1 ? zoom.center === .5
+            : zoom.center >= .5 / zoom.factor && zoom.center <= 1 - .5 / zoom.factor));
     return {
         positions,
         ...(Object.keys(automationBounds).length ? { automationBounds } : {}),

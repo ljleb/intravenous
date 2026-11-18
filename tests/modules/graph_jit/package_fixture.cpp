@@ -7428,6 +7428,54 @@ void coverage_manual_window_module(iv::GraphBuilder& graph) {
 }
 IV_MODULE("iv.test.replay.coverage_manual_window", coverage_manual_window_module);
 
+struct StereoBoundaryCoverageSource {
+    static constexpr auto outputs() {
+        return std::array{iv::output<iv::Sample>("stereo", iv::OutputProduction::region,
+            iv::OutputRealization::computed, {.channel_layout = {.channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::planar}})};
+    }
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<StereoBoundaryCoverageSource>& ctx) const {
+        auto output = ctx.output<"stereo">();
+        output.publish(SingleRegionSampleSource::region());
+        output.change(SingleRegionSampleSource::region());
+    }
+    void tock_coverage(iv::TockCoverageContext<StereoBoundaryCoverageSource>& ctx) const {
+        auto output = ctx.output<"stereo">().region();
+        for (auto window : output.prepared_windows()) {
+            for (std::size_t i = 0; i < window.frame_count(); ++i) {
+                auto const sample = static_cast<float>(output.range().begin.forward_distance_to(window.range().begin) + i);
+                window.value(i, 0) = iv::Sample{4 + sample};
+                window.value(i, 1) = iv::Sample{104 + sample};
+            }
+        }
+    }
+};
+IV_NODE("iv.test.replay.stereo_boundary_source", StereoBoundaryCoverageSource);
+
+void stereo_coverage_boundary_module(iv::GraphBuilder& graph) {
+    auto source = graph.node<"iv.test.replay.stereo_boundary_source">();
+    auto module = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+        auto input = boundary.input<"coverage", iv::stereo>(iv::InputAccess::coverage);
+        auto window = graph.node<"iv.test.replay.window">(std::int64_t{18}, std::uint64_t{8});
+        window(input);
+        boundary.outputs(window);
+    }, "stereo-coverage-window");
+    module(source);
+    graph.outputs();
+}
+IV_MODULE("iv.test.replay.stereo_coverage_boundary", stereo_coverage_boundary_module);
+
+void unused_coverage_input_module(iv::GraphBuilder& graph) {
+    auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto module = graph.subgraph([](iv::SubgraphBuilder& boundary) {
+        (void)boundary.input<"coverage", iv::Sample>(iv::InputAccess::coverage);
+        boundary.outputs();
+    }, "unused-coverage-input");
+    module(source);
+    graph.outputs();
+}
+IV_MODULE("iv.test.replay.unused_coverage_input", unused_coverage_input_module);
+
 void replay_sequential_resolution_module(iv::GraphBuilder& graph) {
     // The source covers only [20, 24), with values 4, 5, 6 and 7.
     auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
@@ -7780,7 +7828,9 @@ struct CompleteTickRegionSink {
 };
 IV_NODE("iv.test.computed.complete_tick_sink", CompleteTickRegionSink);
 void complete_tick_input_module(iv::GraphBuilder& graph) {
-    auto source = graph.node<"iv.test.computed.buffered_for_tick">();
+    auto source = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+        boundary.outputs(graph.node<"iv.test.computed.buffered_for_tick">());
+    }, "buffered-region-export");
     auto sink = graph.node<"iv.test.computed.complete_tick_sink">();
     sink(source);
     graph.outputs();

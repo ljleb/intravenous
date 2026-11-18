@@ -143,6 +143,7 @@ public:
   constexpr std::vector<EventOutputConfig> boundary_event_outputs() const;
   constexpr size_t append_boundary_sample_input(ContinuousInputConfig);
   constexpr size_t append_boundary_sample_output(ContinuousOutputConfig);
+  constexpr void set_boundary_sample_output(size_t, ContinuousOutputConfig);
   constexpr size_t append_boundary_event_input(EventInputConfig);
   constexpr size_t append_boundary_event_output(EventOutputConfig);
   constexpr void clear_boundary_event_outputs();
@@ -615,6 +616,19 @@ constexpr size_t NodeBundle::append_boundary_sample_output(
   auto const index = boundary->ports.sample_output_count();
   boundary->ports.output_configs.push_back(make_output_config(config));
   return index;
+}
+
+constexpr void NodeBundle::set_boundary_sample_output(size_t index, ContinuousOutputConfig config) {
+  auto* boundary = _payload ? std::get_if<BoundaryNodeBundle>(&*_payload) : nullptr;
+  if (!boundary) details::error("NodeBundle is not a boundary");
+  for (auto& output : boundary->ports.output_configs) {
+    if (!is_continuous(output)) continue;
+    if (index-- == 0) {
+      output = make_output_config(std::move(config));
+      return;
+    }
+  }
+  details::error("sample output index is out of bounds");
 }
 
 constexpr std::vector<ContinuousInputConfig>

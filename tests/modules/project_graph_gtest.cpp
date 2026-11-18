@@ -1461,7 +1461,7 @@ struct ProjectGraphManualControlSchedulingFixture : ::testing::Test {
         ASSERT_NO_THROW(response.build());
     }
 
-    std::vector<iv::ManualControlId> realize_controls(std::size_t count)
+    std::vector<iv::ManualControlId> realize_controls(std::size_t count, bool enabled = true)
     {
         publish_definitions_snapshot(project_graph, 
             iv::NodeDefinitionsSnapshotChanged{
@@ -1481,7 +1481,7 @@ struct ProjectGraphManualControlSchedulingFixture : ::testing::Test {
                 .node = {.instance_id = instance_id},
                 .port_name = "gain",
             });
-            request.manual_controls.push_back({.id = result.back()});
+            request.manual_controls.push_back({.id = result.back(), .enabled = enabled});
         }
 
         iv::ProjectAckBuilder builder;
@@ -3192,6 +3192,30 @@ TEST_F(ProjectGraphManualControlSchedulingFixture,
     EXPECT_TRUE(probe.stages().empty());
 }
 
+TEST_F(ProjectGraphManualControlSchedulingFixture, DisabledInputKeepsItsOverrideUntilHoverLeave)
+{
+    auto const controls = realize_controls(1, false);
+    auto const& control = controls.front();
+    hover("ui", control);
+    ASSERT_TRUE(probe.wait_for_control_status("prepared"));
+    EXPECT_TRUE(probe.stages().empty());
+
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "drag"};
+    begin(gesture, control, .25f);
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    EXPECT_EQ(probe.stages().back().dynamic_inputs, controls);
+    end(gesture, .5f);
+    ASSERT_TRUE(probe.wait_for_control_status("prepared", 2));
+    EXPECT_EQ(probe.stages().size(), 1u);
+    ASSERT_EQ(project_graph.manual_controls().size(), 1u);
+    EXPECT_FALSE(project_graph.manual_controls()[0].enabled);
+    EXPECT_FLOAT_EQ(project_graph.manual_controls()[0].stored_value.value, .5f);
+
+    hover("ui", std::nullopt);
+    ASSERT_TRUE(probe.wait_for_stages(2));
+    EXPECT_TRUE(probe.stages().back().dynamic_inputs.empty());
+}
+
 TEST_F(ProjectGraphManualControlSchedulingFixture,
        AnotherClientsHoverDoesNotRetainAReleasedOverride)
 {
@@ -3967,7 +3991,8 @@ TEST_F(ProjectGraphFixture, DisabledModuleManualValueUsesNeutralAndKeepsItsStore
     ASSERT_TRUE(generation);
     auto input = std::ranges::find(generation->graph->manual_controls, id, &iv::ConfiguredManualControl::id);
     ASSERT_NE(input, generation->graph->manual_controls.end());
-    EXPECT_EQ(input->settled_value, iv::Sample{0});
+    EXPECT_EQ(input->settled_value, iv::Sample{.75f});
+    EXPECT_FALSE(input->enabled);
     auto scope = read_graph_scope(project_graph);
     auto const& control = scope_node(scope, "module").at("sampleInputs").at(0).at("manualControl");
     EXPECT_EQ(control.at("value"), .75f);

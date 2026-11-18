@@ -166,8 +166,9 @@ export class WorkspaceSession {
         const protocol = await rpc.getNodeEventProtocol();
         if (this.rpc !== rpc) throw new Error("The Intravenous session changed before event dispatch");
         validateNodeEventTarget(protocol, target, event);
-        // A concurrent revision rejects this mutation. Never retry a semantic
-        // event against another graph: its target or meaning can have changed.
+        // Standalone edits still use the revision from before the protocol
+        // read. An open gesture instead uses the server's conflict check for
+        // its target and history group. Never retry a rejected event.
         const result = await rpc.dispatchNodeEvent(target, event, revision, interactionId);
         if (!result.ok || result.diagnostics.length)
             throw new Error(result.diagnostics.map((entry) => entry.message).join("\n") || "Node event was not accepted");

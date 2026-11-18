@@ -669,6 +669,26 @@ struct CoverageAccumulatorCounts {
     std::size_t input_requirement_count = 0;
 };
 
+// A public Coverage input can be read without scheduling a consumer or
+// allocating any playback storage. Sources refer to existing background outputs.
+struct PublicCoverageInputView {
+    struct Source {
+        BackgroundPortIndex output = 0;
+        std::size_t channel = 0;
+        std::size_t read_latency = 0;
+    };
+    struct Projection {
+        std::vector<Source> sources{};
+        SampleProjectionPlan channels{};
+    };
+    NodeBundlePortId port{};
+    ChannelLayout layout{};
+    std::int32_t pace_exponent = 0;
+    CoverageOrdering ordering = CoverageOrdering::unspecified;
+    bool reconstructible = true;
+    std::vector<Projection> projections{};
+};
+
 // Immutable topology and fixed-layout metadata retained by CompiledGraph. No
 // mutable coverage, data, validity, or transaction state belongs here.
 struct BackgroundEvaluationPlan {
@@ -684,6 +704,7 @@ struct BackgroundEvaluationPlan {
     std::vector<std::optional<BackgroundNodeIndex>> bundle_to_background_node{};
     std::vector<BackgroundPortPlan> ports{};
     std::vector<BackgroundConnectionPlan> connections{};
+    std::vector<PublicCoverageInputView> public_coverage_inputs{};
     // Logical callback/coverage ports above remain whole ports. These
     // partitions are the finer correctness unit used by storage planning.
     // Storage coalescing may combine subsets only after their full requirements

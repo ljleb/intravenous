@@ -7,7 +7,7 @@ import KnobFace from "./KnobFace.vue";
 const props = defineProps<{ name: string; showName?: boolean; direction?: "input" | "output";
     portCutout?: boolean }>();
 const control = useManualInput(() => props.name, () => props.direction ?? "input");
-const { value, available, limits, state, descriptor } = control;
+const { value, available, limits, state, descriptor, activity } = control;
 const increment = computed(() => knobScrubSpeed(limits.value) * 2);
 const knob = ref<HTMLButtonElement | null>(null);
 const hovered = ref(false);
@@ -39,11 +39,11 @@ onBeforeUnmount(() => { clearTimeout(previewTimer); control.hover(false); });
 const logicalValue = computed(() => value.value === undefined ? "" : Number(value.value.toPrecision(6)).toString());
 const knobHint = computed(() => {
     const port = knobPortStatus(control.port.value);
-    if (descriptor.value?.available && !descriptor.value.enabled)
-        return [props.name, port, "Manual value disabled"].filter(Boolean).join(" · ");
-    return available.value && value.value !== undefined
-        ? manualKnobStatus(props.name, value.value, limits.value.defaultValue !== undefined, port)
-        : [props.name, port, "Unavailable"].filter(Boolean).join(" · ");
+    if (!available.value || value.value === undefined)
+        return [props.name, port, "Unavailable"].filter(Boolean).join(" · ");
+    const hint = manualKnobStatus(props.name, value.value, limits.value.defaultValue !== undefined, port);
+    if (activity.value === "retained") return `${hint} · Override held`;
+    return descriptor.value?.enabled || activity.value === "active" ? hint : `${hint} · Manual value off`;
 });
 function step(direction: number) {
     if (!available.value) return;
@@ -52,8 +52,9 @@ function step(direction: number) {
 </script>
 
 <template>
-    <div class="manual-input" :class="{ inactive: !descriptor?.participates, active: control.dragging.value }"
+    <div class="manual-input" :class="{ inactive: !descriptor?.participates }"
         :data-direction="direction ?? 'input'"
+        :data-activity="activity"
         :data-manual-control="control.key.value"
         :data-status-hint="knobHint"
         @pointerdown.stop @click.stop @contextmenu="control.numeric"
@@ -67,7 +68,7 @@ function step(direction: number) {
         </button>
         <button ref="knob" type="button" class="manual-knob" role="slider" :aria-label="name"
             :aria-valuenow="value" :aria-valuemin="limits.min" :aria-valuemax="limits.max"
-            :aria-disabled="!available" :disabled="!available"
+            :aria-disabled="!available" :disabled="!available" :data-status-hint="knobHint"
             @focus="control.hover(true)" @blur="control.hover(false)"
             @iv-hoverenter="hovered = true" @iv-hoverleave="hovered = false"
             @pointerdown="control.scrub" @dblclick.stop.prevent @contextmenu="control.numeric"
@@ -87,7 +88,8 @@ function step(direction: number) {
         <span v-if="state?.error" class="manual-error" :data-status-hint="state.error"
             role="img" :aria-label="`Manual control error. ${state.error}`">!</span>
         <Teleport to="body">
-            <div v-if="preview" class="knob-preview" :data-direction="direction ?? 'input'" :style="preview" aria-hidden="true">
+            <div v-if="preview" class="knob-preview" :class="{ inactive: !descriptor?.participates }"
+                :data-direction="direction ?? 'input'" :data-activity="activity" :style="preview" aria-hidden="true">
                 <KnobFace :value="value ?? limits.defaultValue ?? 0" :limits="limits" />
                 <span>{{ direction === 'output' && control.inverted.value ? '−' : '' }}{{ logicalValue }}</span>
             </div>
@@ -110,9 +112,17 @@ function step(direction: number) {
 .manual-input[data-hovered] .manual-knob:not(:disabled) :deep(.knob-body) { fill: color-mix(in srgb, currentColor 9%, var(--vscode-editor-background)); stroke-opacity: .9; }
 .manual-input[data-hovered] :deep(.knob-track) { opacity: .55; }
 .manual-input[data-hovered] :deep(.knob-indicator) { opacity: 1; }
-.manual-input.active .manual-knob :deep(.knob-body) { fill: color-mix(in srgb, currentColor 20%, var(--vscode-editor-background)); stroke-opacity: 1; }
-.manual-input.active :deep(.knob-track) { opacity: .9; }
-.manual-input.active :deep(.knob-indicator) { opacity: 1; }
+.inactive:is([data-activity="idle"], [data-activity="hover"]) .manual-knob,
+.knob-preview.inactive:is([data-activity="idle"], [data-activity="hover"]) svg { opacity: .42; }
+.manual-input[data-activity="retained"] .manual-knob :deep(.knob-body),
+.knob-preview[data-activity="retained"] :deep(.knob-body) {
+    fill: color-mix(in srgb, currentColor 13%, var(--vscode-editor-background)); stroke-opacity: 1; }
+[data-activity="retained"] :deep(.knob-track) { opacity: .72; }
+.manual-input[data-activity="active"] .manual-knob :deep(.knob-body),
+.knob-preview[data-activity="active"] :deep(.knob-body) {
+    fill: color-mix(in srgb, currentColor 20%, var(--vscode-editor-background)); stroke-opacity: 1; }
+[data-activity="active"] :deep(.knob-track) { opacity: .9; }
+[data-activity="active"] :deep(.knob-indicator), [data-activity="retained"] :deep(.knob-indicator) { opacity: 1; }
 .manual-knob:focus { outline: none; box-shadow: none; }
 .manual-knob:focus-visible { box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 45%, transparent); }
 .manual-knob:disabled { cursor: default; opacity: .4; }

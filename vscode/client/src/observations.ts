@@ -2,7 +2,7 @@ import type { NodeAddress } from "./graphScope";
 
 export type ObservationSource = {
     node: NodeAddress;
-    kind: "output" | "stateField";
+    kind: "output" | "input" | "stateField";
     member: string;
     channel?: number;
 };

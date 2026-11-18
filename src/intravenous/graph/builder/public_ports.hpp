@@ -89,6 +89,8 @@ private:
   std::vector<std::vector<SourceInfo>> _sample_input_source_infos{};
   std::vector<std::vector<SourceInfo>> _event_input_source_infos{};
   std::vector<PublicSamplePortMember> _sample_output_members{};
+  // Channel declarations for the same port can arrive in separate calls.
+  std::vector<std::optional<NodeBundlePortId>> _sample_output_single_contributors{};
   std::vector<size_t> _last_sample_output_port_indices{};
   std::vector<std::vector<SourceInfo>> _sample_output_source_infos{};
   std::vector<std::vector<SourceInfo>> _event_output_source_infos{};

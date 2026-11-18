@@ -9,12 +9,15 @@ function harness(delayedExit = false) {
     let requests = 0;
     const moves: Array<[number, number]> = [];
     const ends: Array<[number, Point | null]> = [];
+    const lockOrigins: Array<Point | null> = [];
     const errors: string[] = [];
     const owner = new KnobPointerLock({
         request: () => { ++requests; }, exit: () => { ++exits; if (!delayedExit) locked = false; }, locked: () => locked,
-    }, (id, delta) => moves.push([id, delta]), (id, point) => ends.push([id, point]), (error) => errors.push(error));
-    return { owner, moves, ends, errors, exits: () => exits, requests: () => requests,
-        lock: (value: boolean) => { locked = value; owner.changed(); } };
+    }, (id, delta) => moves.push([id, delta]), (id, point, origin) => {
+        ends.push([id, point]); lockOrigins.push(origin);
+    }, (error) => errors.push(error));
+    return { owner, moves, ends, lockOrigins, errors, exits: () => exits, requests: () => requests,
+        lock: (value: boolean, announce = true) => { locked = value; if (announce) owner.changed(); } };
 }
 
 test("locked knob movement is relative and release restores its original hover position", () => {
@@ -44,12 +47,53 @@ test("a lock granted after mouse release is exited without restarting the gestur
     assert.equal(owner.move(100), false);
 });
 
+test("release after the browser grants lock but before its change event restores the cursor and allows another drag", () => {
+    const { owner, ends, lockOrigins, lock, exits, requests, moves } = harness(true);
+    const origin = { x: 20, y: 30 };
+    owner.start(1, origin);
+    lock(true, false);
+    owner.release(1, { x: 40, y: 50 });
+    assert.deepEqual(ends, [[1, origin]]);
+    assert.deepEqual(lockOrigins, [origin]);
+    assert.equal(exits(), 1);
+
+    owner.start(2, { x: 25, y: 35 });
+    lock(false);
+    assert.equal(requests(), 2);
+    lock(true);
+    assert.equal(owner.move(16), true);
+    assert.deepEqual(moves, [[2, 16]]);
+});
+
 test("focus loss ends the drag without retaining hover and always releases the pointer", () => {
     const { owner, ends, lock, exits } = harness();
     owner.start(1, { x: 20, y: 30 }); lock(true);
     owner.cancel(); owner.cancel();
     assert.deepEqual(ends, [[1, null]]);
     assert.equal(exits(), 1);
+});
+
+test("locked motion with the middle button up recovers a missed release", () => {
+    const { owner, ends, moves, lock, lockOrigins, exits } = harness();
+    const origin = { x: 20, y: 30 };
+    owner.start(7, origin); lock(true);
+    assert.equal(owner.move(5, { buttons: 4, mask: 4 }), true);
+    assert.equal(owner.move(8, { buttons: 1, mask: 4 }), true);
+    owner.release(7, origin);
+    assert.deepEqual(moves, [[7, 5]]);
+    assert.deepEqual(ends, [[7, null]]);
+    assert.deepEqual(lockOrigins, [origin]);
+    assert.equal(exits(), 1);
+});
+
+test("a failing finish callback still exits pointer lock", () => {
+    let locked = false;
+    const owner = new KnobPointerLock({
+        request: () => {}, exit: () => { locked = false; }, locked: () => locked,
+    }, () => {}, () => { throw new Error("save failed"); }, () => {});
+    owner.start(1, { x: 20, y: 30 }); locked = true; owner.changed();
+    assert.throws(() => owner.release(1, { x: 22, y: 32 }), /save failed/);
+    assert.equal(locked, false);
 });
 
 test("an external unlock finishes once, and a denied request keeps bounded dragging available", () => {

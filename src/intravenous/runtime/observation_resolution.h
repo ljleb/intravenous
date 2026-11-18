@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/runtime/graph_connections.h>
+#include <intravenous/runtime/graph_jit.h>
 #include <intravenous/graph_jit/port_realization.h>
 #include <intravenous/runtime/observation_types.h>
 #include <intravenous/runtime/project_node_path_resolver.h>
@@ -8,13 +9,63 @@
 #include <algorithm>
 
 namespace iv {
+inline bool input_has_tick_binding(ConfiguredGraph const& graph, NodeBundleHandle handle)
+{
+    auto const& bundle = graph.node_bundles.bundle(handle);
+    return bundle.is_subgraph() || (bundle.is_concrete()
+        && graph.node_bundles.materialize_concrete_description(handle).operations.runtime.tick_block);
+}
+
+inline std::optional<graph_jit::BackgroundPortIndex> observation_input_window_port(
+    CompiledGraph const& graph, NodeBundlePortId input)
+{
+    for (auto const& [source, view] : graph.resolved_sample_input_views)
+        if (source == input) { input = view; break; }
+    auto const& plan = graph.background_evaluation_plan;
+    auto const port = std::ranges::find_if(plan.ports, [&](auto const& candidate) {
+        return candidate.direction == graph_jit::PortDirection::input && candidate.configured_port == input;
+    });
+    if (port == plan.ports.end() || port->continuous_geometry.value_type != ContinuousValueTypeId::sample
+        || (!port->random_access_input && !port->replay_sequential_input)) return std::nullopt;
+    auto const index = static_cast<graph_jit::BackgroundPortIndex>(port - plan.ports.begin());
+    if (index >= plan.runtime.port_bindings.size() || !plan.runtime.port_bindings[index]) return std::nullopt;
+    return index;
+}
+
+inline graph_jit::PublicCoverageInputView const* observation_public_coverage_input(
+    CompiledGraph const& graph, NodeBundlePortId input)
+{
+    auto const& views = graph.background_evaluation_plan.public_coverage_inputs;
+    auto const found = std::ranges::find(views, input, &graph_jit::PublicCoverageInputView::port);
+    return found == views.end() ? nullptr : &*found;
+}
+
 inline bool resolve_observation_window_source(
     ConfiguredGraph const& graph,
     std::unordered_map<std::string, NodeInstancePlacement> const& placements,
     ObservationSource const& source, std::string_view operation_id,
     ObservationWindowQuery& query,
-    graph_jit::ResolvedPortRealization const* realization = nullptr)
+    graph_jit::ResolvedPortRealization const* realization = nullptr,
+    CompiledGraph const* compiled = nullptr)
 {
+    if (source.kind == ObservationSourceKind::input) {
+        if (!compiled) return false;
+        auto const channels = resolve_project_sample_input(graph, placements, source.node, source.member, source.channel);
+        if (channels.size() != 1) return false;
+        auto const selected = channels.front();
+        NodeBundlePortId const port{selected.bundle, PortKind::sample, selected.port};
+        auto const* public_input = observation_public_coverage_input(*compiled, port);
+        if (!observation_input_window_port(*compiled, port) && (!public_input || !public_input->reconstructible))
+            return false;
+        auto const& operations = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations;
+        auto const operation = std::ranges::find(operations, operation_id, &ObservationOperation::id);
+        if (operation == operations.end() || !operation->capture_point || !operation->project) return false;
+        query.port = port;
+        query.kind = source.kind;
+        query.channel = selected.channel;
+        query.operation = &*operation;
+        return true;
+    }
     if (source.kind != ObservationSourceKind::output) return false;
     auto channels = resolve_project_sample_output(graph, placements, source.node, source.member, source.channel);
     if (channels.size() != 1) return false;
@@ -37,7 +88,8 @@ inline bool resolve_observation_window_source(
     auto const& operations = continuous_value_type_info(*type).observation_operations;
     auto operation = std::ranges::find(operations, operation_id, &ObservationOperation::id);
     if (operation == operations.end() || !operation->capture_point || !operation->project) return false;
-    query.output = {selected.bundle, PortKind::sample, selected.port};
+    query.port = {selected.bundle, PortKind::sample, selected.port};
+    query.kind = source.kind;
     query.channel = selected.channel;
     query.operation = &*operation;
     return true;
@@ -93,6 +145,35 @@ inline CompiledObservationPlan resolve_observation_requirements(
                         for (auto const& channel : channels) probe.channels.push_back(channel.channel);
                         probe.available = true;
                     }
+                }
+            }
+        } else if (probe.kind == ObservationSourceKind::input) {
+            auto const channels = resolve_project_sample_input(graph, placements,
+                requirement.source.node, requirement.source.member, requirement.source.channel);
+            if (channels.size() == 1) {
+                auto const source = channels.front();
+                auto const input = graph.node_bundles.resolve_sample_input(
+                    {source.bundle, PortKind::sample, source.port}).config;
+                auto type = continuous_value_type_domain(input).sole_type();
+                if (!type && !port_realization && !attempted_resolution) {
+                    attempted_resolution = true;
+                    if (auto resolved = graph_jit::resolve_port_realization(graph)) {
+                        inferred_ports.emplace(std::move(*resolved));
+                        port_realization = &*inferred_ports;
+                    }
+                }
+                if (!type && port_realization)
+                    type = port_realization->input(source.bundle, source.port).value_type;
+                auto const& operations = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations;
+                auto const operation = std::ranges::find(operations, requirement.operation, &ObservationOperation::id);
+                if (type == ContinuousValueTypeId::sample && is_sequential(input)
+                    && input_has_tick_binding(graph, source.bundle)
+                    && operation != operations.end() && operation->capture_block) {
+                    probe.operation = &*operation;
+                    probe.bundle = source.bundle;
+                    probe.port = source.port;
+                    probe.channels = {source.channel};
+                    probe.available = true;
                 }
             }
         } else {

@@ -3,7 +3,7 @@ import * as vscode from "vscode";
 import { GraphLayoutStore } from "./graphLayoutStore";
 import { addressKey, readLayout, type GraphScope } from "./graphScope";
 import { nodeDebugDetails } from "./nodeDebugDetails";
-import type { GraphEditorAction, GraphEditorState, GraphEditorWebviewMessage } from "./graphEditorProtocol";
+import type { CursorReturnGesture, GraphEditorAction, GraphEditorState, GraphEditorWebviewMessage } from "./graphEditorProtocol";
 import type { WorkspaceSession } from "./workspaceSession";
 import { rightClickHint, statusBarText } from "./statusBarText";
 import { isNodeEventRequest, isNodeEventGestureRequest, replyToNodeEvent, replyToNodeEventGesture } from "./nodeEventMessaging";
@@ -115,19 +115,22 @@ export class GraphEditorProvider implements vscode.Disposable {
         if (value !== undefined) await this.seekPlayback(playbackSeekPosition(value, state.sampleRate));
     }
 
-    async traceNextAutomationCursorReturn(): Promise<void> {
-        const panel = this.lastActivePanel && this.ready.has(this.lastActivePanel) ? this.lastActivePanel : [...this.ready][0];
+    async traceNextCursorReturn(gesture: CursorReturnGesture): Promise<void> {
+        const label = gesture === "middleButton" ? "Middle-button" : "Automation";
+        const panel = [...this.ready].find((panel) => panel.active)
+            ?? (this.lastActivePanel && this.ready.has(this.lastActivePanel) ? this.lastActivePanel : [...this.ready][0]);
         if (!panel) {
-            void vscode.window.showInformationMessage("Open the Intravenous graph editor before tracing an automation drag.");
+            void vscode.window.showInformationMessage("Open the Intravenous graph editor before tracing a drag.");
             return;
         }
         panel.reveal(panel.viewColumn, false);
-        if (!await panel.webview.postMessage({ type: "traceNextAutomationCursorReturn" })) {
-            this.log("Automation cursor trace could not reach the graph editor.");
+        if (!await panel.webview.postMessage({ type: "traceNextCursorReturn", gesture })) {
+            this.log(`${label} cursor trace could not reach the graph editor.`);
             return;
         }
-        this.log("Automation cursor trace armed. Drag one automation point, then check the Intravenous output channel.");
-        vscode.window.setStatusBarMessage("Automation cursor trace armed for the next point drag", 4500);
+        const instruction = gesture === "middleButton" ? "Pan once with the middle button" : "Drag one automation point";
+        this.log(`${label} cursor trace armed. ${instruction}, then check the Intravenous output channel.`);
+        vscode.window.setStatusBarMessage(`${label} cursor trace armed`, 4500);
     }
 
     constructor(private readonly extensionUri: vscode.Uri,
@@ -168,7 +171,7 @@ export class GraphEditorProvider implements vscode.Disposable {
             return;
         }
         const panel = [...this.panels].find((candidate) => candidate.active);
-        const hint = this.inspectionHint ?? (panel ? this.interactionHints.get(panel) : undefined);
+        const hint = (panel ? this.interactionHints.get(panel) : undefined) ?? this.inspectionHint;
         if (!hint && !panel) {
             this.interactionStatus.hide();
             return;
@@ -301,15 +304,25 @@ export class GraphEditorProvider implements vscode.Disposable {
                         ? this.session.nodeEvents.begin(owner, target, id) : this.session.nodeEvents.end(owner, target, id));
                 if (this.panels.has(panel)) void panel.webview.postMessage(response);
                 if (response.error) void vscode.window.showErrorMessage(`Cannot send node event: ${response.error}`);
-            } else if (message?.type === "automationCursorTrace" && typeof message.detail === "string") {
-                this.log(`Automation cursor trace. ${message.detail}`);
-            } else if (message?.type === "warpCursorAfterPointDrag") {
+            } else if (message?.type === "cursorReturnTrace" && typeof message.detail === "string") {
+                const label = message.gesture === "middleButton" ? "Middle-button" : "Automation";
+                this.log(`${label} cursor trace. ${message.detail}`);
+            } else if (message?.type === "cursorReturnSkipped" && typeof message.detail === "string") {
+                this.log(`Cursor return skipped. ${message.detail}`);
+            } else if (message?.type === "warpCursorAfterPointDrag" || message?.type === "warpCursorAfterMiddleDrag") {
+                if (message.warp?.trace && message.type === "warpCursorAfterMiddleDrag") {
+                    this.log(`Middle-button cursor trace. Extension received the request. Panel active: ${panel.active}. `
+                        + `Window focused: ${vscode.window.state.focused}. Native helper available: ${!!this.nativeHelper}.`);
+                }
                 const skipped = !panel.active || !vscode.window.state.focused ? "graph editor lost focus"
-                    : !vscode.workspace.getConfiguration("intravenous").get("warpCursorAfterPointDrag", true) ? "cursor return is disabled"
+                    : message.type === "warpCursorAfterPointDrag"
+                        && !vscode.workspace.getConfiguration("intravenous").get("warpCursorAfterPointDrag", true) ? "cursor return is disabled"
                     : !this.nativeHelper ? "no local native helper" : null;
                 if (skipped) {
-                    if (message.warp?.trace) this.log(`Automation cursor trace. Extension skipped the request: ${skipped}.`);
-                } else this.nativeHelper?.warpCursor(message.warp);
+                    if (message.warp?.trace || skipped === "graph editor lost focus") this.log(`Cursor return skipped. ${skipped}.`);
+                } else this.nativeHelper?.warpCursor(message.warp, message.type === "warpCursorAfterMiddleDrag", () => {
+                    if (this.panels.has(panel)) void panel.webview.postMessage({ type: "cursorReturnCompleted", requestId: message.requestId });
+                });
             } else if (message?.type === "playbackToggle" || message?.type === "playbackSeek" || message?.type === "playbackDrag") {
                 try {
                     if (message.type === "playbackDrag") {

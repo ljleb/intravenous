@@ -1,12 +1,13 @@
 import type { ManualControlAction, ManualControlDescriptor, ManualControlId, ManualControlInteractionState, ManualControlLiveValue } from "./manualControls";
-import { manualControlKey, manualControlName } from "./manualControls";
+import { manualControlKey, canEditManualControl, manualControlName } from "./manualControls";
 import { addressKey, type NodeAddress } from "./graphScope";
 import { rightClickHint } from "./statusBarText";
 import { ScrubSensitivity } from "./scrubSensitivity";
 
 export type ManualControlLimits = { min?: number; max?: number; defaultValue?: number; scrubSpeed?: number };
 export type ManualControlHint = { text: string };
-type Hover = { control: ManualControlId; descriptor: ManualControlDescriptor; limits: ManualControlLimits };
+export type KnobActivity = "idle" | "hover" | "active" | "retained";
+type Hover = { control: ManualControlId; descriptor: ManualControlDescriptor; limits: ManualControlLimits; portStatus?: string };
 export type ManualValueEntry = Hover & {
     id: string; draft: string; error: string;
     anchor: { left: number; top: number; bottom: number };
@@ -21,7 +22,7 @@ const clamp = (value: number, limits: ManualControlLimits) =>
     Math.max(limits.min ?? -Infinity, Math.min(limits.max ?? Infinity, value));
 const displayValue = (value: number) => Number(value.toPrecision(6)).toString();
 export function manualKnobStatus(name: string, value: number, canReset: boolean, port = ""): string {
-    return `${name} ${displayValue(value)}${port ? ` · ${port}` : ""} · Drag/↑↓ · Ctrl ¼× · ${rightClickHint} value`
+    return `${port ? `${port} · ` : ""}${name} ${displayValue(value)} · ↑↓ · ${rightClickHint} value`
         + (canReset ? " · Dbl-click reset" : "");
 }
 // Owned by the webview root, never by a presentation widget. Components can
@@ -30,6 +31,7 @@ export class ManualControlGestures {
     private active: Gesture | null = null;
     private hovered: ManualControlId | null = null;
     private hoverDetails: Hover | null = null;
+    private retainedInteraction: string | null = null;
     private entry: ManualValueEntry | null = null;
     private remote: ManualControlInteractionState[] = [];
     private live: ManualControlLiveValue[] = [];
@@ -54,6 +56,14 @@ export class ManualControlGestures {
     // This view's own gesture state takes precedence through state().
     liveValue(control: ManualControlId): number | undefined {
         return this.live.find((entry) => manualControlKey(entry.control) === manualControlKey(control))?.value;
+    }
+    activity(control: ManualControlId): KnobActivity {
+        const key = manualControlKey(control);
+        if (this.active && manualControlKey(this.active.control) === key) return "active";
+        const hovered = this.hovered && manualControlKey(this.hovered) === key;
+        if (hovered && this.retainedInteraction) return "retained";
+        if (this.liveValue(control) !== undefined) return "active";
+        return hovered ? "hover" : "idle";
     }
     displayValue(control: ManualControlId, value: number): number {
         return control.outputName === undefined ? value : Math.abs(value);
@@ -88,6 +98,8 @@ export class ManualControlGestures {
         }
         if (this.active && states.some((entry) => entry.interactionId === this.active?.interactionId && entry.phase === "failed"))
             this.active = null;
+        if (states.some((entry) => entry.interactionId === this.retainedInteraction && entry.phase === "failed"))
+            this.retainedInteraction = null;
         for (const entry of [...states, ...live]) {
             const key = manualControlKey(entry.control);
             if ((this.active && manualControlKey(this.active.control) === key) || this.ending.has(key)) continue;
@@ -95,16 +107,21 @@ export class ManualControlGestures {
         }
         this.changed();
     }
-    hover(control: ManualControlId | null, descriptor?: ManualControlDescriptor, limits: ManualControlLimits = {}): void {
+    hover(control: ManualControlId | null, descriptor?: ManualControlDescriptor, limits: ManualControlLimits = {},
+        portStatus?: string): void {
         // Pointer lock and focus changes can synthesize boundary events for
         // other knobs. They cannot transfer ownership of a held drag.
         if (this.active?.pointer && (!control
             || manualControlKey(control) !== manualControlKey(this.active.control))) return;
         if (control && descriptor) this.rememberOutputInversion(control,
             this.state(control)?.value ?? this.liveValue(control) ?? descriptor.value);
-        this.hoverDetails = control && descriptor ? { control, descriptor, limits } : null;
         const same = this.hovered && control && manualControlKey(this.hovered) === manualControlKey(control);
-        if (!same && (this.hovered || control)) this.send({ action: "hover", control });
+        this.hoverDetails = control && descriptor ? { control, descriptor, limits,
+            portStatus: portStatus ?? (same ? this.hoverDetails?.portStatus : undefined) } : null;
+        if (!same) {
+            this.retainedInteraction = null;
+            if (this.hovered || control) this.send({ action: "hover", control });
+        }
         this.hovered = control;
         this.changed();
     }
@@ -120,7 +137,7 @@ export class ManualControlGestures {
             this.rememberOutputInversion(control, this.state(control)?.value ?? this.liveValue(control) ?? descriptor.value);
         let changed = false;
         if (this.hoverDetails && manualControlKey(this.hoverDetails.control) === key) {
-            this.hoverDetails = { control, descriptor, limits }; changed = true;
+            this.hoverDetails = { ...this.hoverDetails, descriptor, limits }; changed = true;
         }
         if (this.entry && manualControlKey(this.entry.control) === key) {
             this.entry.descriptor = descriptor; this.entry.limits = limits; changed = true;
@@ -138,7 +155,8 @@ export class ManualControlGestures {
         if (this.active && manualControlKey(this.active.control) === manualControlKey(control)) return;
         this.finish();
         const value = this.state(control)?.value ?? descriptor.value;
-        if (!Number.isFinite(value) || !descriptor.available || !descriptor.enabled) return;
+        if (!Number.isFinite(value) || !canEditManualControl(control, descriptor)) return;
+        this.retainedInteraction = null;
         this.ending.delete(manualControlKey(control));
         this.rememberOutputInversion(control, value);
         this.active = { interactionId: this.newId(), control, value };
@@ -215,7 +233,7 @@ export class ManualControlGestures {
     openEntry(control: ManualControlId, descriptor: ManualControlDescriptor, limits: ManualControlLimits,
         anchor: ManualValueEntry["anchor"]): void {
         this.finish();
-        if (!descriptor.available || !descriptor.enabled) return;
+        if (!canEditManualControl(control, descriptor)) return;
         this.entry = { id: this.newId(), control, descriptor, limits, anchor,
             draft: String(this.displayValue(control, this.state(control)?.value ?? descriptor.value)), error: "" };
         this.changed();
@@ -253,7 +271,7 @@ export class ManualControlGestures {
             return true;
         }
         const hover = this.hoverDetails;
-        if (!hover || !hover.descriptor.available || !hover.descriptor.enabled
+        if (!hover || !canEditManualControl(hover.control, hover.descriptor)
             || hover.limits.defaultValue === undefined) return false;
         const value = clamp(hover.limits.defaultValue, hover.limits);
         if (this.displayValue(hover.control, this.state(hover.control)?.value ?? hover.descriptor.value) === value) return true;
@@ -263,7 +281,7 @@ export class ManualControlGestures {
         return true;
     }
     invertOutput(control: ManualControlId, descriptor: ManualControlDescriptor): boolean {
-        if (control.outputName === undefined || !descriptor.available || !descriptor.enabled || this.active?.pointer) return false;
+        if (control.outputName === undefined || !canEditManualControl(control, descriptor) || this.active?.pointer) return false;
         this.cancelEntry();
         this.finish();
         const value = this.state(control)?.value ?? this.liveValue(control) ?? descriptor.value;
@@ -286,11 +304,11 @@ export class ManualControlGestures {
                 + (this.outputInverted(this.active.control, this.active.value) ? " · inverted" : "")
                 + ` · ${this.active.pointer.sensitivity.hint()} · Esc release`,
         };
-        if (!this.hoverDetails?.descriptor.available || !this.hoverDetails.descriptor.enabled) return null;
+        if (!this.hoverDetails || !canEditManualControl(this.hoverDetails.control, this.hoverDetails.descriptor)) return null;
         const reset = this.hoverDetails.limits.defaultValue !== undefined;
-        const { control, descriptor } = this.hoverDetails;
+        const { control, descriptor, portStatus } = this.hoverDetails;
         const value = this.state(control)?.value ?? this.liveValue(control) ?? descriptor.value;
-        return { text: manualKnobStatus(manualControlName(control), this.displayValue(control, value), reset) };
+        return { text: manualKnobStatus(manualControlName(control), this.displayValue(control, value), reset, portStatus) };
     }
     pointerControl(): ManualControlId | null { return this.active?.pointer ? this.active.control : null; }
     pointerId(): number | null { return this.active?.pointer?.id ?? null; }
@@ -299,11 +317,17 @@ export class ManualControlGestures {
         const active = this.active;
         if (!active || (control && manualControlKey(control) !== manualControlKey(active.control))) return;
         this.active = null;
-        this.ending.set(manualControlKey(active.control), {
+        const key = manualControlKey(active.control);
+        if (active.control.inputName !== undefined && this.hovered && manualControlKey(this.hovered) === key)
+            this.retainedInteraction = active.interactionId;
+        this.ending.set(key, {
             interactionId: active.interactionId, control: active.control, value: active.value, phase: "ending",
         });
         this.send({ action: "end", interactionId: active.interactionId, value: active.value });
         this.changed();
     }
-    disconnected(): void { this.active = null; this.hovered = null; this.hoverDetails = null; this.entry = null; this.remote = []; this.live = []; this.ending.clear(); this.changed(); }
+    disconnected(): void {
+        this.active = null; this.hovered = null; this.hoverDetails = null; this.retainedInteraction = null;
+        this.entry = null; this.remote = []; this.live = []; this.ending.clear(); this.changed();
+    }
 }

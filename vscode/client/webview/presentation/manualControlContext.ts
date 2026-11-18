@@ -1,6 +1,7 @@
 import { computed, inject, provide, toValue, watch, type InjectionKey, type MaybeRefOrGetter, type Ref } from "vue";
 import { ManualControlGestures, type ManualControlLimits } from "../../src/manualControlGesture";
-import { manualControlKey, type ManualControlId, type ManualControlDescriptor } from "../../src/manualControls";
+import { canEditManualControl, manualControlKey, type ManualControlId, type ManualControlDescriptor } from "../../src/manualControls";
+import { knobPortStatus } from "../../src/knobPresentation";
 import { useNode } from "./nodeContext";
 
 type Context = { gestures: ManualControlGestures; version: Ref<number>;
@@ -22,6 +23,10 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: M
         && entry.kind === "continuous" && entry.name === toValue(inputName)));
     const descriptor = computed(() => port.value?.kind === "continuous" ? port.value.manualControl : undefined);
     const state = computed(() => { void context?.version.value; return id.value ? context?.gestures.state(id.value) : undefined; });
+    const activity = computed(() => {
+        void context?.version.value;
+        return id.value ? context?.gestures.activity(id.value) ?? "idle" : "idle";
+    });
     const dragging = computed(() => {
         void context?.version.value;
         const pointerControl = context?.gestures.pointerControl();
@@ -47,17 +52,18 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: M
             defaultValue: metadata?.defaultValue === undefined ? 0 : finite(metadata?.defaultValue),
             scrubSpeed: finite(metadata?.scrubSpeed) };
     });
-    const available = computed(() => !!context && !!descriptor.value?.available && !!descriptor.value.enabled
+    const available = computed(() => !!context && !!id.value && canEditManualControl(id.value, descriptor.value)
         && typeof value.value === "number" && Number.isFinite(value.value));
     watch([descriptor, limits], () => {
         if (context && id.value && descriptor.value) context.gestures.refresh(id.value, descriptor.value, limits.value);
     });
     return {
-        value, available, limits, state, descriptor, dragging, inverted, port,
+        value, available, limits, state, descriptor, activity, dragging, inverted, port,
         key: computed(() => id.value ? manualControlKey(id.value) : ""),
         hover(hovered: boolean) {
             if (!context || !id.value) return;
-            if (hovered && available.value && descriptor.value) context.gestures.hover(id.value, descriptor.value, limits.value);
+            if (hovered && available.value && descriptor.value)
+                context.gestures.hover(id.value, descriptor.value, limits.value, knobPortStatus(port.value));
             else context.gestures.unhover(id.value);
         },
         edit() { if (id.value && descriptor.value) context?.gestures.edit(id.value, descriptor.value); },

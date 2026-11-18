@@ -142,6 +142,23 @@ event_outputs()
 It does not need to contain a `GraphBuilder&`. Its work is `BuilderSession* +
 ScopeHandle -> manipulate that scope's boundary`.
 
+### Public output production and buffering
+
+The builder derives a public output's production and buffering from its
+contributors. These rules apply to both `outputs()` overloads and to
+`event_outputs()`. Count channels from the same logical source port as one
+contributor. Apply the rules to all declarations that supply the public port,
+including channel declarations made in separate calls.
+
+- If any contributor is Sequential, the public output is Sequential.
+- If one Region output supplies the port, the public output is Region.
+- In every other case, the public output is Coverage.
+
+A public output is buffered when every contributor is buffered. Otherwise it is
+computed. A direct export can share source storage. Channel assembly or
+conversion can prepare a derived buffer when a consumer needs it.
+[Output capability contract](./output_capabilities_and_background_demand.md#2-computed-and-buffered-are-connection-capabilities).
+
 ## Dynamic construction scope versus interface scope
 
 Two notions that are currently easy to conflate must remain distinct.

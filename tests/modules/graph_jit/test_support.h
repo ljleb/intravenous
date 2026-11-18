@@ -456,7 +456,8 @@ protected:
     }
 
     iv::GraphJitCompileResult compile_with_manual_input(
-        std::string_view module_id, std::uint64_t generation, std::string_view name, iv::Sample value)
+        std::string_view module_id, std::uint64_t generation, std::string_view name, iv::Sample value,
+        bool override_connections = false)
     {
         auto configured = std::make_shared<iv::ConfiguredGraph>(*configured_module_graph(*revision, module_id));
         for (iv::NodeBundleHandle bundle = 0; bundle < configured->node_bundles.size(); ++bundle) {
@@ -468,6 +469,7 @@ protected:
                 configured->manual_controls.push_back({
                     .id = {.node = {.instance_id = "manual-input"}, .port_name = std::string(name)},
                     .input = input, .settled_value = value,
+                    .override_connections = override_connections, .enabled = !override_connections,
                 });
             }
         }

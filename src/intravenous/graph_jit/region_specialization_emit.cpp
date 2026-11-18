@@ -268,7 +268,7 @@ emit_region_specialization(
         false);
     auto* manual_controls_type = llvm::FunctionType::get(
         llvm::Type::getVoidTy(context),
-        {pointer, i64, i64, i64, i64, i64},
+        {pointer, i64, i64, i64, i64, i64, pointer},
         false);
     auto* mark_sample_type = llvm::FunctionType::get(
         llvm::Type::getVoidTy(context), {pointer, i64}, false);
@@ -728,7 +728,8 @@ emit_region_specialization(
                  slice,
                  count,
                  root_index,
-                 block_size});
+                 block_size,
+                 local.inputs});
             manual_controls_call->setDoesNotThrow();
         }
         if (step.resolves_module_input) {

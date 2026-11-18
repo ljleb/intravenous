@@ -446,8 +446,11 @@ lane changes described below still require compilation, tests, and UI checks.
   movement mode. No clip-editing, node-reordering, or connection gestures were
   added.
 - Ctrl and Alt middle drags use pointer lock to draw a cursor that wraps within
-  the timeline viewport. Release restores the system cursor to the press
-  position. If the browser denies pointer lock, the drag uses pointer capture.
+  the timeline viewport. The native helper places the system cursor at the last
+  wrapped position after release. If the helper lacks cursor placement support,
+  the browser restores the cursor to the press position. If the browser denies
+  pointer lock, the drag uses pointer capture.
+  [Earlier release behavior](./historical/vue_middle_drag_before_wrapped_cursor_release_2026-11-18.md).
 - Plain and Shift middle drags use the same pointer lock. Plain panning wraps
   within the viewport. Shift panning wraps within the visible lane when the
   lane handles vertical panning.
@@ -2562,6 +2565,11 @@ Owner verification from `vscode/client`: `npm test` and `npm run typecheck`.
 Then resume the accepted construction-data read model and grouped point gestures
 before registering the interactive automation presentation.
 
+The open gesture now identifies updates and the closing request by their
+target and gesture ID. A revision change alone does not stop an open gesture.
+The server still ends a gesture when another edit conflicts with it. Standalone
+messages and requests to open a gesture still check the project session revision.
+
 ### Accepted point data and message-gesture history, 2026-11-14
 
 The owner reports passing npm tests and typecheck for typed frontend dispatch.
@@ -3898,10 +3906,16 @@ it. If the local extension host or native helper lacks platform or display
 support, the Intravenous output channel reports the problem at startup.
 Run **Intravenous: Trace Next Automation Cursor Return** and drag one point
 to log the release coordinates and each decision that can prevent a warp.
-The X11 helper logs the cursor position it observes and checks the result
-of traced warps.
-The helper also reports the first failed cursor-window check in the output
-channel. On Wayland sessions, this message explains the XWayland launch mode.
+Run **Intravenous: Trace Next Middle-Button Cursor Return** and pan once to
+log pointer lock, the wrapped release position, and the X11 result.
+If XFixes is available, the helper hides the system cursor while it moves the
+cursor to the wrapped position. Some XWayland servers require this step.
+The middle-button trace checks the X11 position again after 35 ms.
+The X11 helper checks the result of each cursor move. The output channel
+reports failed requests and explains why they stop. If the dragged automation
+point leaves the visible lane, the editor sends the cursor to the nearest
+visible edge of the lane. It leaves the point at its edited position.
+[Earlier diagnostics](./historical/vue_cursor_return_before_release_diagnostics_2026-11-18.md).
 
 **Intravenous: Enable Automatic XWayland Restart** sets
 `intravenous.autoRelaunchWithXWayland` in User Settings. The setting defaults to
@@ -3911,6 +3925,10 @@ explicit `--ozone-platform` flag, the extension requests the normal VS Code
 quit action. A short-lived launcher waits for that process to exit and starts
 the same editor with `--ozone-platform=x11`. An explicit graphics backend is
 preserved. The normal quit action applies to the entire editor instance.
+
+The Intravenous output channel records each restart check and why it stops.
+It also gives the path to `xwayland-restart.log`. The launcher uses that file
+to record whether the editor exits and whether the replacement starts.
 
 Knob hover hints use port metadata from the project graph scope. An input
 shows its Sequential, Region, or Coverage access. An output shows its

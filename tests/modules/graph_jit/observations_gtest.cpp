@@ -42,6 +42,43 @@ TEST_F(GraphJitRuntimeFixture, LiveOutputObservationUsesTheProducedWindowWithout
     EXPECT_FALSE(executor.background_execution_failures().any());
 }
 
+TEST_F(GraphJitRuntimeFixture, LiveInputObservationReadsTheEffectiveValueAfterOverride)
+{
+    for (bool override_connections : {false, true}) {
+        auto graph = std::make_shared<ConfiguredGraph>(
+            *configured_module_graph(*revision, "iv.test.graph_jit.state_context.transient_sample_module"));
+        auto const bundles = concrete_bundles(*graph);
+        ASSERT_GE(bundles.size(), 2u);
+        if (override_connections) {
+            graph->manual_controls.push_back({
+                .id = {.node = {.instance_id = "sink"}, .port_name = "in"},
+                .input = {bundles[1], PortKind::sample, 0},
+                .settled_value = .25f,
+                .override_connections = true, .enabled = false,
+            });
+        }
+        auto const& operation = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations.front();
+        auto compiled = jit->compile(GraphJitCompileRequest{
+            .project_generation = 740, .graph = graph, .definitions = definitions,
+            .observations = {.revision = 31, .probes = {{.id = 41, .operation = &operation,
+                .kind = ObservationSourceKind::input, .bundle = bundles[1], .port = 0,
+                .channels = {0}, .available = true}}},
+        });
+        ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+        GraphExecutor executor(resources);
+        ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
+        ASSERT_TRUE(executor.activate_pending(index(3)));
+        executor.tick_block(index(3), 32);
+        auto const* frame = executor.collect_observations();
+        ASSERT_NE(frame, nullptr);
+        ASSERT_EQ(frame->count, 1u);
+        ASSERT_TRUE(frame->values[0].value.captured);
+        auto const level = frame->values[0].value.load<observation_details::SampleLevelState>();
+        EXPECT_EQ(level.samples, 32u);
+        EXPECT_DOUBLE_EQ(level.peak, override_connections ? .25 : 34.0);
+    }
+}
+
 TEST_F(GraphJitRuntimeFixture, ObservationSinkWithBackgroundDeliveryImportsItsSequentialInitializer)
 {
     auto graph = configured_module_graph(*revision,
@@ -285,6 +322,164 @@ TEST_F(GraphJitRuntimeFixture, StereoObservationResolvesExplicitChannelSelectors
     EXPECT_EQ(resolved.probes[2].channels, std::vector<std::size_t>{1});
     EXPECT_EQ(resolved.probes[2].operation->id, "value");
 }
+TEST_F(GraphJitRuntimeFixture, BackgroundInputWaveformsUseCoverageRegionsAndSequentialFallback)
+{
+    struct Case {
+        std::string_view module, control, observed_input;
+        std::int64_t begin;
+        std::vector<GlobalIndexRange> regions;
+        std::array<float, 8> values;
+        bool override_connections = false;
+        bool public_input = false;
+    };
+    for (auto const& test : {
+             Case{"iv.test.replay.coverage_manual_window", "in", "in", 18,
+                 {range(18, 20), range(20, 24), range(24, 26)}, {.25f, .25f, 4, 5, 6, 7, .25f, .25f}},
+             Case{"iv.test.replay.coverage_manual_window", "coverage", "in", 18,
+                 {range(18, 26)}, {.25f, .25f, .25f, .25f, .25f, .25f, .25f, .25f}, true},
+             Case{"iv.test.replay.coverage_manual_window", "coverage", "coverage", 18,
+                 {range(18, 20), range(20, 24), range(24, 26)}, {.25f, .25f, 4, 5, 6, 7, .25f, .25f}, false, true},
+             Case{"iv.test.automation.transformed_sparse_curve", "gain", "gain", 0,
+                 {range(0, 8)}, {0, .5f, 1, 1.5f, .25f, .25f, .25f, .25f}},
+         }) {
+        SCOPED_TRACE(::testing::Message{} << test.module << " control=" << test.control
+            << " observed input=" << test.observed_input << " public=" << test.public_input);
+        auto compiled = compile_with_manual_input(test.module, 741, test.control, .25f, test.override_connections);
+        ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+        auto const& graph = *compiled.compiled_graph;
+        auto const& plan = graph.background_evaluation_plan;
+        NodeBundlePortId selected;
+        if (test.public_input) {
+            auto const port = std::ranges::find_if(plan.public_coverage_inputs, [&](auto const& input) {
+                return graph.configured_graph->node_bundles.resolve_sample_input(input.port).config.name
+                    == test.observed_input;
+            });
+            ASSERT_NE(port, plan.public_coverage_inputs.end());
+            ASSERT_TRUE(port->reconstructible);
+            selected = port->port;
+        } else {
+            auto const port = std::ranges::find_if(plan.ports, [&](auto const& port) {
+                return port.direction == graph_jit::PortDirection::input && port.name == test.observed_input
+                    && port.configured_port.node_bundle_handle < graph.configured_graph->node_bundles.size();
+            });
+            ASSERT_NE(port, plan.ports.end());
+            selected = port->configured_port;
+            ASSERT_TRUE(observation_input_window_port(graph, selected));
+        }
+        auto const operations = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations;
+        auto const operation = std::ranges::find(operations, "waveform", &ObservationOperation::id);
+        ASSERT_NE(operation, operations.end());
+        auto query = std::make_shared<ObservationWindowQuery>();
+        query->configured_generation = graph.configured_generation.value_or(graph.project_generation);
+        query->kind = ObservationSourceKind::input;
+        query->port = selected;
+        query->operation = &*operation;
+        query->window = {index(test.begin), 8, 8};
+
+        GraphExecutor executor(resources);
+        ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        bool activated = false;
+        while (!(activated = executor.activate_pending(index(test.begin))) && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        ASSERT_TRUE(activated);
+        ObservationCollectRequest collection{.windows = {query}};
+        executor.handle_observation_collect(collection);
+        while (!query->complete.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        ASSERT_TRUE(query->complete.load(std::memory_order_acquire));
+        ASSERT_EQ(query->result.status, ObservationWindowResult::Status::ready) << query->result.error;
+        ASSERT_EQ(query->result.regions.size(), test.regions.size());
+        std::size_t value_index = 0;
+        for (auto const expected : test.regions) {
+            auto const observed = std::ranges::find_if(query->result.regions,
+                [&](auto const& region) { return region.range == expected; });
+            ASSERT_NE(observed, query->result.regions.end());
+            for (auto const& [position, value] : observed->values) {
+                ASSERT_LT(value_index, test.values.size());
+                EXPECT_EQ(position, index(test.begin + static_cast<std::int64_t>(value_index)));
+                ASSERT_TRUE(value.captured);
+                EXPECT_FLOAT_EQ(value.load<float>(), test.values[value_index++]);
+            }
+        }
+        EXPECT_EQ(value_index, test.values.size());
+    }
+}
+
+TEST_F(GraphJitRuntimeFixture, PublicCoverageObservationReadsBeforeInternalDownmixAndAllowsDisconnection)
+{
+    auto original = configured_module_graph(*revision, "iv.test.replay.stereo_coverage_boundary");
+    auto const bundles = original->node_bundles.size();
+    NodeBundleHandle boundary = 0;
+    while (boundary < bundles && !original->node_bundles.bundle(boundary).is_subgraph()) ++boundary;
+    ASSERT_LT(boundary, bundles);
+    for (bool connected : {true, false}) {
+        SCOPED_TRACE(connected);
+        auto configured = std::make_shared<ConfiguredGraph>(*original);
+        if (!connected) {
+            auto const old = configured->connections.configured_sample_connections();
+            std::vector<ConfiguredSampleConnection> connections;
+            for (auto const& connection : old) {
+                if (connection.target_channels.front().bundle != boundary) connections.push_back(connection);
+            }
+            configured->connections = GraphBuilderConnections::from_configured_connections(
+                connections, configured->connections.configured_event_connections());
+        }
+        auto compiled = compile_graph(configured, 744);
+        ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+        auto const& graph = *compiled.compiled_graph;
+        auto const& plan = graph.background_evaluation_plan;
+        ASSERT_EQ(plan.public_coverage_inputs.size(), 1u);
+        auto const& input = plan.public_coverage_inputs.front();
+        EXPECT_TRUE(input.reconstructible);
+        EXPECT_EQ(input.projections.empty(), !connected);
+        EXPECT_EQ(plan.ports.end(), std::ranges::find(plan.ports, input.port, &graph_jit::BackgroundPortPlan::configured_port));
+
+        std::unordered_map<std::string, NodeInstancePlacement> placements{{"module", {.root = boundary}}};
+        auto query = std::make_shared<ObservationWindowQuery>();
+        ASSERT_TRUE(resolve_observation_window_source(*configured, placements,
+            {.node = {.instance_id = "module"}, .kind = ObservationSourceKind::input, .member = "coverage", .channel = 1},
+            "waveform", *query, &graph.port_realization, &graph));
+        query->configured_generation = graph.configured_generation.value_or(graph.project_generation);
+        query->window = {index(18), 8, 8};
+        GraphExecutor executor(resources);
+        ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!executor.activate_pending(index(18)) && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        ObservationCollectRequest collection{.windows = {query}};
+        executor.handle_observation_collect(collection);
+        while (!query->complete.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        ASSERT_TRUE(query->complete.load(std::memory_order_acquire));
+        ASSERT_EQ(query->result.status, ObservationWindowResult::Status::ready) << query->result.error;
+        if (!connected) {
+            EXPECT_TRUE(query->result.regions.empty());
+            continue;
+        }
+        ASSERT_EQ(query->result.regions.size(), 1u);
+        auto const& region = query->result.regions.front();
+        EXPECT_EQ(region.range, range(20, 24));
+        ASSERT_EQ(region.values.size(), 4u);
+        for (std::size_t i = 0; i < region.values.size(); ++i) {
+            EXPECT_EQ(region.values[i].first, index(20 + static_cast<std::int64_t>(i)));
+            ASSERT_TRUE(region.values[i].second.captured);
+            EXPECT_FLOAT_EQ(region.values[i].second.load<float>(), 104 + static_cast<float>(i));
+        }
+    }
+}
+
+TEST_F(GraphJitRuntimeFixture, PublicCoverageObservationDoesNotRequireReplayOfAnUnusedSource)
+{
+    auto compiled = compile("iv.test.replay.unused_coverage_input", 745);
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& plan = compiled.compiled_graph->background_evaluation_plan;
+    ASSERT_EQ(plan.public_coverage_inputs.size(), 1u);
+    EXPECT_FALSE(plan.public_coverage_inputs.front().reconstructible);
+    EXPECT_TRUE(plan.ports.empty());
+    EXPECT_TRUE(plan.runtime.bindings.empty());
+}
+
 TEST_F(GraphJitRuntimeFixture, BackgroundWaveformQueriesProjectSparseComputedOutputsBeforeStorageExpires)
 {
     auto compiled = compile("iv.test.automation.transformed_sparse_curve", 731);
@@ -306,7 +501,7 @@ TEST_F(GraphJitRuntimeFixture, BackgroundWaveformQueriesProjectSparseComputedOut
     ASSERT_NE(operation, operations.end());
     auto query = std::make_shared<ObservationWindowQuery>();
     query->configured_generation = graph.configured_generation.value_or(graph.project_generation);
-    query->output = port->configured_port;
+    query->port = port->configured_port;
     query->operation = &*operation;
     query->window = {index(0), 8, 8};
     {
@@ -334,7 +529,7 @@ TEST_F(GraphJitRuntimeFixture, BackgroundWaveformQueriesProjectSparseComputedOut
 
         auto distant = std::make_shared<ObservationWindowQuery>();
         distant->configured_generation = query->configured_generation;
-        distant->output = query->output;
+        distant->port = query->port;
         distant->operation = query->operation;
         distant->window = {index(0), std::uint64_t{1} << 40, 512};
         ASSERT_TRUE(submit(distant));
@@ -363,7 +558,7 @@ TEST_F(GraphJitRuntimeFixture, BackgroundWaveformReadsPublishedTickRecordingWith
     executor.tick_block(index(0), 32);
     auto query = std::make_shared<ObservationWindowQuery>();
     query->configured_generation = graph.configured_generation.value_or(graph.project_generation);
-    query->output = port->configured_port;
+    query->port = port->configured_port;
     query->operation = &observation_details::sample_operations.back();
     query->window = {index(4), 4, 4};
     ObservationCollectRequest collection{.windows = {query}};

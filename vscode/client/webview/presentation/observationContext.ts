@@ -1,10 +1,11 @@
-import { inject, provide, ref, type InjectionKey } from "vue";
+import { computed, inject, onScopeDispose, provide, ref, watch, type InjectionKey } from "vue";
 import type { NodeAddress } from "../../src/graphScope";
 import { addressKey } from "../../src/graphScope";
 import { ObservationValues, observationSourceKey, type ObservationCapability, type ObservationHostRequest,
     type ObservationInterest, type ObservationResponse, type ObservationSource, type ObservationUpdate, type MeterMode, type ObservationWindow, sameObservationWindow } from "../../src/observations";
 
 type NodeInterest = { node: NodeAddress; visible: boolean; window?: ObservationWindow };
+export type PortObservation = Omit<ObservationInterest, "id">;
 export type PresentedObservation = ObservationCapability & { source: ObservationSource; id: string; operation: string; channelName?: string };
 type Capability = PresentedObservation;
 export class PresentationObservations {
@@ -13,6 +14,8 @@ export class PresentationObservations {
     readonly values = new ObservationValues();
     readonly error = ref("");
     private nodes = new Map<symbol, NodeInterest>();
+    private explicit = new Map<string, PortObservation>();
+    private nextExplicitId = 0;
     private visible = true;
     private pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
     private timer: ReturnType<typeof setTimeout> | undefined;
@@ -72,6 +75,18 @@ export class PresentationObservations {
         this.schedule();
     }
     remove(owner: symbol): void { this.nodes.delete(owner); this.schedule(); }
+    portObservationId(): string { return `port:${++this.nextExplicitId}`; }
+    observePort(id: string, next: PortObservation | undefined): void {
+        const previous = this.explicit.get(id);
+        if (previous && next && observationSourceKey(previous.source) === observationSourceKey(next.source)
+            && previous.operation === next.operation && sameObservationWindow(previous.window, next.window)) return;
+        if (next) this.explicit.set(id, next);
+        else if (!this.explicit.delete(id)) return;
+        this.values.values.delete(id);
+        this.values.windows.delete(id);
+        ++this.version.value;
+        this.schedule();
+    }
     setVisible(visible: boolean): void {
         if (this.visible === visible) return;
         this.visible = visible;
@@ -91,16 +106,25 @@ export class PresentationObservations {
     private async discover(): Promise<void> {
         const epoch = this.epoch;
         const unique = new Map<string, NodeAddress>();
-        if (this.visible) for (const entry of this.nodes.values())
-            if (entry.visible) unique.set(addressKey(entry.node), entry.node);
+        if (this.visible) {
+            for (const entry of this.nodes.values())
+                if (entry.visible) unique.set(addressKey(entry.node), entry.node);
+        }
+        // Explicit readers can receive an unavailable or pending result from
+        // the backend even when discovery does not advertise a capability.
+        const explicit: ObservationInterest[] = this.visible
+            ? Array.from(this.explicit, ([id, interest]) => ({ ...interest, id })).slice(0, 64)
+            : [];
         const nodes = [...unique.values()].slice(0, 64);
         try {
             const response = nodes.length ? await this.request({ type: "observationDescribe", nodes }) as { capabilities: ObservationCapability[] }
                 : { capabilities: [] };
             if (epoch !== this.epoch || this.disposed) return;
             const capabilities: Capability[] = [];
+            const budget = 64 - explicit.length;
             const stateNodes = new Set<number>();
             for (const capability of response.capabilities) {
+                if (!budget || capability.kind === "input") continue;
                 const node = nodes[capability.nodeIndex];
                 if (!node) continue;
                 // All output meters and one supported numeric State field per
@@ -111,7 +135,7 @@ export class PresentationObservations {
                 const channels = capability.kind === "output" ? capability.channels ?? [] : [undefined];
                 // Keep every channel of an advertised port together at the
                 // viewport budget boundary; never show half a stereo pair.
-                if (channels.length > 64 - capabilities.length) continue;
+                if (channels.length > budget - capabilities.length) continue;
                 for (const channel of channels) {
                     const source: ObservationSource = { node, kind: capability.kind, member: capability.member,
                         ...(channel ? { channel: channel.index } : {}) };
@@ -120,11 +144,11 @@ export class PresentationObservations {
                     if (!capability.operations.includes(operation)) continue;
                     const id = this.id(source, operation, capability);
                     capabilities.push({ ...capability, source, id, operation, channelName: channel?.name });
-                    if (capabilities.length === 64) break;
+                    if (capabilities.length === budget) break;
                 }
-                if (capabilities.length === 64) break;
+                if (capabilities.length === budget) break;
             }
-            this.install(capabilities);
+            this.install(capabilities, explicit);
             await this.reconcile(this.desired);
         } catch (error) { if (!this.disposed) this.error.value = String(error); }
     }
@@ -150,8 +174,8 @@ export class PresentationObservations {
         this.preferences?.save(Object.fromEntries(this.modes));
         ++this.version.value;
     }
-    private install(capabilities: Capability[]): void {
-        const activeIds = new Set(capabilities.map((entry) => entry.id));
+    private install(capabilities: Capability[], explicit: ObservationInterest[]): void {
+        const activeIds = new Set([...capabilities, ...explicit].map((entry) => entry.id));
         for (const id of this.values.values.keys()) if (!activeIds.has(id)) this.values.values.delete(id);
         // Retain a small recent identity cache across presentation remounts.
         if (this.sourceIds.size > 4096) for (const [key, id] of this.sourceIds)
@@ -162,7 +186,7 @@ export class PresentationObservations {
             for (const key of this.modes.keys()) if (!active.has(key)) this.modes.delete(key);
         }
         this.capabilities.value = capabilities;
-        this.desired = capabilities.flatMap<ObservationInterest>((capability) => {
+        this.desired = [...explicit, ...capabilities.flatMap<ObservationInterest>((capability) => {
             if (capability.delivery === "window") {
                 const node = [...this.nodes.values()].find((node) => node.visible
                     && addressKey(node.node) === addressKey(capability.source.node) && node.window);
@@ -170,7 +194,7 @@ export class PresentationObservations {
                     operation: capability.operation, window: node.window }] : [];
             }
             return [{ id: capability.id, source: capability.source, operation: capability.operation }];
-        });
+        })];
         this.values.expectWindows(this.desired);
         ++this.version.value;
     }
@@ -206,3 +230,37 @@ export class PresentationObservations {
 const key: InjectionKey<PresentationObservations> = Symbol("iv.observations");
 export function provideObservations(value: PresentationObservations): void { provide(key, value); }
 export function useObservations(): PresentationObservations | null { return inject(key, null); }
+
+export function usePortObservation(request: () => PortObservation | undefined) {
+    const observations = useObservations();
+    const id = ref<string>();
+    if (observations) {
+        watch(request, (next, previous) => {
+            if (id.value && (!next || !previous || observationSourceKey(next.source) !== observationSourceKey(previous.source)
+                || next.operation !== previous.operation)) {
+                observations.observePort(id.value, undefined);
+                id.value = undefined;
+            }
+            if (next) {
+                id.value ??= observations.portObservationId();
+                observations.observePort(id.value, next);
+            }
+        }, { immediate: true, flush: "sync" });
+        onScopeDispose(() => { if (id.value) observations.observePort(id.value, undefined); });
+    }
+    return {
+        window: computed(() => {
+            const wanted = request()?.window;
+            if (!observations || !id.value || !wanted) return undefined;
+            void observations.version.value;
+            const result = observations.values.windows.get(id.value);
+            return sameObservationWindow(result?.window, wanted) ? result : undefined;
+        }),
+        value: computed(() => {
+            const wanted = request();
+            if (!observations || !id.value || !wanted || wanted.window) return undefined;
+            void observations.version.value;
+            return observations.values.values.get(id.value);
+        }),
+    };
+}

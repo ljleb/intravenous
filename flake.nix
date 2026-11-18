@@ -31,6 +31,7 @@
             freetype
             libGL
             libx11.dev
+            libxfixes.dev
             libxrandr.dev
             libxinerama.dev
             libxext.dev
