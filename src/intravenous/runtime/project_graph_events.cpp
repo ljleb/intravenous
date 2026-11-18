@@ -10,9 +10,14 @@ GraphJitCompileResult ignore_graph_jit_request(ProjectGraphGraphJitRequest const
 }
 
 ProjectGraphGraphExecutorResult ignore_graph_executor_request(
-    std::shared_ptr<CompiledGraph const> const&)
+    ProjectGraphGraphExecutorRequest const&)
 {
     return {};
+}
+
+std::optional<FailedExecutionGeneration> ignore_execution_recovery()
+{
+    return std::nullopt;
 }
 
 void ignore_graph_executor_controls_request(
@@ -38,6 +43,10 @@ IV_DEFINE_SINGLETON_EVENT(
     ProjectGraphGraphExecutorRequestedEvent,
     iv_runtime_project_graph_graph_executor_requested_event,
     &ignore_graph_executor_request)
+IV_DEFINE_SINGLETON_EVENT(
+    ProjectGraphExecutionRecoveryEvent,
+    iv_runtime_project_graph_execution_recovery_event,
+    &ignore_execution_recovery)
 IV_DEFINE_SINGLETON_EVENT(
     ProjectGraphGraphExecutorControlsRequestedEvent,
     iv_runtime_project_graph_graph_executor_controls_requested_event,

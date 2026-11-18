@@ -329,3 +329,7 @@ Preserved before the owner separated configuration commitment from DSP readiness
   preserves the staged-index documentation's paused neutral/empty delivery,
   seek relocation, single-range capture and underrun wording. The current
   requirements are in [Project Playback And Presentation Grids](../project_playback_and_presentation_grids_direction.md).
+
+- [Ordered cutovers before failed-generation recovery](./ordered_cutovers_before_failed_generation_recovery_2026-11-17.md)
+  preserves the unconditional acceptance guarantee before the terminal
+  pre-activation failure exception.

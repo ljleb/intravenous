@@ -186,6 +186,7 @@ class RuntimeExecutionService {
 
     SystemAudioDevices* devices_ = nullptr;
     GraphExecutor* executor_ = nullptr;
+    ProjectGraph* project_graph_ = nullptr;
     Observations* observations_ = nullptr;
     std::function<void()> request_shutdown_{};
     std::atomic<Failure> failure_ = Failure::none;
@@ -217,10 +218,12 @@ public:
     RuntimeExecutionService(
         SystemAudioDevices& devices,
         GraphExecutor& executor,
+        ProjectGraph& project_graph,
         Observations& observations,
         std::function<void()> request_shutdown)
         : devices_(&devices)
         , executor_(&executor)
+        , project_graph_(&project_graph)
         , observations_(&observations)
         , request_shutdown_(std::move(request_shutdown))
     {
@@ -235,6 +238,7 @@ public:
             std::uint64_t reported_underruns = 0;
             auto next_underrun_report = std::chrono::steady_clock::now();
             while (!stop.stop_requested()) {
+                if (executor_->has_failed_pending_generation()) project_graph_->request_execution_recovery();
                 observations_->collect();
                 auto const now = std::chrono::steady_clock::now();
                 if (now >= next_underrun_report) {
@@ -452,6 +456,7 @@ int run_server_mode(int argc, char** argv)
     RuntimeExecutionService runtime_execution_service(
         system_audio_devices,
         graph_executor,
+        project_graph,
         observations,
         shutdown);
 

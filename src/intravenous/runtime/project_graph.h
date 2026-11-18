@@ -212,10 +212,12 @@ class ProjectGraph {
         std::shared_ptr<ControlCompileTrace> trace{};
     };
     std::optional<GraphCompileRequest> pending_graph_compile_{};
+    bool execution_recovery_requested_ = false;
     std::uint64_t latest_graph_compile_request_ = 0;
     bool compile_inflight_ = false;
     void schedule_graph_compile_locked(std::shared_ptr<ControlCompileTrace> trace = {});
     void compile_graph(GraphCompileRequest request, std::stop_token stop);
+    void recover_failed_execution(std::stop_token stop);
     struct ControlCompileTrace {
         ProjectControlCompileStatus status{};
         std::chrono::steady_clock::time_point requested_at{};
@@ -373,6 +375,7 @@ public:
     explicit ProjectGraph(std::size_t sample_rate = 48000);
     ~ProjectGraph();
     void stop_compilation();
+    void request_execution_recovery();
     [[nodiscard]] bool wait_for_compilation(std::chrono::milliseconds timeout = std::chrono::seconds(30));
     ProjectGraph(ProjectGraph const&) = delete;
     ProjectGraph& operator=(ProjectGraph const&) = delete;

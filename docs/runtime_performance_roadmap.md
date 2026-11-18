@@ -94,9 +94,10 @@ The governing performance invariant is:
    A steady-only allocation extent is now implemented: background `NodeStorage`
    instances omit the transition suffix even though they retain the canonical layout.
    The predecessor comes from the ordered executable chain owned by `ProjectGraph` and
-   accepted by `GraphExecutor`. Once A to B is accepted, a later B to C request cannot
-   replace it with A to C. `GraphExecutor` validates that each submitted predecessor is
-   the accepted chain tail and preserves every accepted cutover in order. A
+   accepted by `GraphExecutor`. `GraphExecutor` validates each submitted predecessor
+   against that tail and preserves the ordering of viable cutovers. Terminal
+   pre-activation failure uses the documented
+   [generation recovery path](./project_graph_application_architecture.md#recovery-from-terminal-preparation-failure). A
    finalized steady `NodeLayout` can now
    be extended through `NodeLayoutTransitionBuilder`, which preserves all prefix
    offsets and admits only a transition suffix. The representative project-rate direct-

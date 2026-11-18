@@ -13,6 +13,10 @@ IV_SUBSCRIBE_SINGLETON_BRIDGE(
     &GraphExecutor::handle_project_graph_transaction)
 IV_SUBSCRIBE_SINGLETON_BRIDGE(
     project_graph_graph_executor_bridge,
+    iv_runtime_project_graph_execution_recovery_event,
+    &GraphExecutor::reject_failed_pending_generation)
+IV_SUBSCRIBE_SINGLETON_BRIDGE(
+    project_graph_graph_executor_bridge,
     iv_runtime_project_graph_graph_executor_controls_requested_event,
     &GraphExecutor::handle_project_graph_controls)
 } // namespace iv

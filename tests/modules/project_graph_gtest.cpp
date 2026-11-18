@@ -1050,6 +1050,7 @@ struct ManualControlCompileRecord {
     bool has_predecessor = false;
     std::vector<iv::ConfiguredManualControl> controls{};
     std::uint64_t observation_revision = 0;
+    std::shared_ptr<iv::CompiledGraph const> predecessor{};
 };
 
 struct ManualControlTargetRecord {
@@ -1067,6 +1068,7 @@ class ManualControlSchedulerProbe {
     std::vector<ManualControlTargetRecord> targets_{};
     std::vector<ManualControlCompileRecord> structural_stages_{};
     std::vector<iv::ProjectControlCompileStatus> control_statuses_{};
+    std::optional<iv::FailedExecutionGeneration> recovery_{};
     bool dynamic_controls_need_storage_ = false;
     bool block_next_compilation_ = false;
     bool compilation_is_blocked_ = false;
@@ -1099,6 +1101,7 @@ public:
                 .controls = request.successor.graph ? request.successor.graph->manual_controls
                     : std::vector<iv::ConfiguredManualControl>{},
                 .observation_revision = request.successor.observations.revision,
+                .predecessor = request.predecessor,
             });
             needs_storage = dynamic_controls_need_storage_ && !inputs.empty();
             auto const block = std::exchange(block_next_compilation_, false);
@@ -1235,6 +1238,18 @@ public:
         release_blocked_compilation_ = false;
     }
 
+    void reject_execution(iv::FailedExecutionGeneration recovery)
+    {
+        std::scoped_lock lock(mutex_);
+        recovery_ = std::move(recovery);
+    }
+
+    std::optional<iv::FailedExecutionGeneration> take_execution_recovery()
+    {
+        std::scoped_lock lock(mutex_);
+        return std::exchange(recovery_, std::nullopt);
+    }
+
     void release_blocked_compilation()
     {
         {
@@ -1326,9 +1341,14 @@ iv::GraphJitCompileResult probe_manual_control_compile(
 }
 
 iv::ProjectGraphGraphExecutorResult probe_structural_graph_acceptance(
-    std::shared_ptr<iv::CompiledGraph const> const& graph)
+    iv::ProjectGraphGraphExecutorRequest const& request)
 {
-    return active_manual_control_scheduler_probe->accept_structural_graph(graph);
+    return active_manual_control_scheduler_probe->accept_structural_graph(request.graph);
+}
+
+std::optional<iv::FailedExecutionGeneration> probe_execution_recovery()
+{
+    return active_manual_control_scheduler_probe->take_execution_recovery();
 }
 
 void probe_graph_executor_controls(
@@ -1354,6 +1374,7 @@ class ScopedManualControlSchedulerEvents {
     iv::ProjectGraphGraphJitRequestedEvent previous_graph_jit_{};
     iv::ProjectGraphGraphExecutorRequestedEvent previous_graph_executor_{};
     iv::ProjectGraphGraphExecutorControlsRequestedEvent previous_controls_{};
+    iv::ProjectGraphExecutionRecoveryEvent previous_recovery_{};
 
 public:
     explicit ScopedManualControlSchedulerEvents(
@@ -1367,6 +1388,8 @@ public:
         , previous_controls_(std::exchange(
               iv::iv_runtime_project_graph_graph_executor_controls_requested_event,
               &probe_graph_executor_controls))
+        , previous_recovery_(std::exchange(iv::iv_runtime_project_graph_execution_recovery_event,
+              &probe_execution_recovery))
     {
         if (std::exchange(active_manual_control_scheduler_probe, &probe)) {
             throw std::logic_error(
@@ -1383,6 +1406,7 @@ public:
             previous_graph_executor_;
         iv::iv_runtime_project_graph_graph_executor_controls_requested_event =
             previous_controls_;
+        iv::iv_runtime_project_graph_execution_recovery_event = previous_recovery_;
     }
 };
 
@@ -4235,6 +4259,94 @@ TEST_F(ProjectGraphManualControlSchedulingFixture, ConfigurationCommitsAndCoales
     EXPECT_TRUE(ready->graph_executor_accepted);
     // The blocked result and intermediate queued edit never stage.
     EXPECT_EQ(probe.structural_stage_count(), baseline + 1);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, RecompilesAcceptedSuccessorsBeforeEditsArrivingDuringRecovery)
+{
+    (void)realize_controls(1);
+    auto const first = project_graph.current_generation();
+    auto add = [&](std::string const& id) {
+        iv::ProjectStringBuilder response;
+        in_event_source([&] { project_graph.handle_project_create_node_instance({
+            .instance_id = id, .definition_id = manual_control_leaf_definition_id}, response); });
+        EXPECT_EQ(response.build(), id);
+    };
+    add("recovery:failed");
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    auto const failed = project_graph.current_generation();
+    add("recovery:third");
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    auto const third = project_graph.current_generation();
+    add("recovery:fourth");
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    auto const fourth = project_graph.current_generation();
+    ASSERT_TRUE(first->compiled_graph && failed->compiled_graph && third->compiled_graph && fourth->compiled_graph);
+
+    auto recompile = [](iv::ProjectGraphGeneration const& generation) -> iv::GraphJitCompileRequest {
+        return {.project_generation = generation.generation, .graph = generation.compiled_graph->configured_graph,
+            .definitions = generation.definitions, .observations = generation.compiled_graph->observations,
+            .configured_generation = generation.configured_generation};
+    };
+    auto const before = probe.compilations().size();
+    probe.reject_execution({.failed = failed->compiled_graph, .predecessor = first->compiled_graph,
+        .successors = {recompile(*third), recompile(*fourth)}, .message = "cannot initialize"});
+    probe.block_next_compilation();
+    project_graph.request_execution_recovery();
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    EXPECT_EQ(project_graph.current_generation()->graph, fourth->graph);
+    auto edit = std::async(std::launch::async, [&] { add("recovery:fifth"); });
+    auto const edit_status = edit.wait_for(std::chrono::seconds(2));
+    if (edit_status != std::future_status::ready) probe.release_blocked_compilation();
+    ASSERT_EQ(edit_status, std::future_status::ready);
+    ASSERT_NO_THROW(edit.get());
+    auto const fifth = project_graph.current_generation();
+    EXPECT_TRUE(fifth->placements.contains("recovery:failed"));
+    EXPECT_TRUE(fifth->placements.contains("recovery:fifth"));
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+
+    auto const compilations = probe.compilations();
+    ASSERT_EQ(compilations.size(), before + 3);
+    EXPECT_EQ(compilations[before].project_generation, third->generation);
+    EXPECT_EQ(compilations[before].predecessor, first->compiled_graph);
+    EXPECT_EQ(compilations[before + 1].project_generation, fourth->generation);
+    ASSERT_TRUE(compilations[before + 1].predecessor);
+    EXPECT_EQ(compilations[before + 1].predecessor->project_generation, third->generation);
+    EXPECT_NE(compilations[before + 1].predecessor, third->compiled_graph);
+    EXPECT_EQ(compilations[before + 2].project_generation, fifth->generation);
+    ASSERT_TRUE(compilations[before + 2].predecessor);
+    EXPECT_EQ(compilations[before + 2].predecessor->project_generation, fourth->generation);
+    EXPECT_NE(compilations[before + 2].predecessor, fourth->compiled_graph);
+    EXPECT_EQ(project_graph.current_generation()->graph, fifth->graph);
+    EXPECT_TRUE(project_graph.current_generation()->graph_executor_accepted);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, RejectionWithoutASuccessorPreservesTheConfiguredEdit)
+{
+    (void)realize_controls(1);
+    auto const first = project_graph.current_generation();
+    iv::ProjectStringBuilder response;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "keep:failed-edit", .definition_id = manual_control_leaf_definition_id}, response); });
+    ASSERT_EQ(response.build(), "keep:failed-edit");
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    auto const failed = project_graph.current_generation();
+    ASSERT_TRUE(first->compiled_graph && failed->compiled_graph);
+    probe.reject_execution({.failed = failed->compiled_graph, .predecessor = first->compiled_graph,
+        .message = "cannot initialize"});
+    project_graph.request_execution_recovery();
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    EXPECT_EQ(project_graph.current_generation()->graph, failed->graph);
+    EXPECT_EQ(project_graph.current_generation()->execution_phase, "failed");
+    EXPECT_FALSE(project_graph.current_generation()->graph_executor_accepted);
+
+    iv::ProjectStringBuilder following;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "keep:following-edit", .definition_id = manual_control_leaf_definition_id}, following); });
+    ASSERT_EQ(following.build(), "keep:following-edit");
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    EXPECT_EQ(probe.compilations().back().predecessor, first->compiled_graph);
+    EXPECT_TRUE(project_graph.current_generation()->placements.contains("keep:failed-edit"));
 }
 
 TEST_F(ProjectGraphManualControlSchedulingFixture, UnrelatedDefinitionPublicationKeepsTheConfiguredAndExecutableGeneration)

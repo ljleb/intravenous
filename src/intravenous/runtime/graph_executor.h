@@ -65,6 +65,23 @@ struct ProjectGraphGraphExecutorResult {
     GraphExecutorPreparedGeneration prepared{};
 };
 
+struct ProjectGraphGraphExecutorRequest {
+    std::shared_ptr<CompiledGraph const> graph{};
+    std::shared_ptr<NodeDefinitionsSnapshot const> definitions{};
+};
+
+struct FailedExecutionGeneration {
+    std::shared_ptr<CompiledGraph const> failed{};
+    std::shared_ptr<CompiledGraph const> predecessor{};
+    std::vector<GraphJitCompileRequest> successors{};
+    std::string message{};
+    std::move_only_function<void()> publish_rebuilt_suffix{};
+
+    void publish() {
+        if (auto complete = std::exchange(publish_rebuilt_suffix, {})) complete();
+    }
+};
+
 struct ProjectGraphManualControlTarget {
     std::uint64_t project_generation = 0;
     ManualControlId id{};
@@ -234,7 +251,12 @@ class GraphExecutor {
         BackgroundGeneration background;
         std::unique_ptr<RealtimePersistedState> initial_persisted_state{};
         RealtimePersistedStateMailbox prepared_initial_states{};
-        std::atomic<bool> initial_selection_adopted{false};
+        enum class Activation : std::uint8_t { pending, activating, active, failed };
+        static_assert(std::atomic<Activation>::is_always_lock_free);
+        std::atomic<Activation> activation{Activation::pending};
+        std::string preparation_error{};
+        bool preparation_retry_reported = false;
+        std::shared_ptr<NodeDefinitionsSnapshot const> definitions_for_pending_recompile{};
         ExecutionGeneration* preparation_predecessor = nullptr;
         std::optional<NodeStorage::Migration> realtime_migration{};
         std::optional<BackgroundCoverageState::Migration>
@@ -294,6 +316,7 @@ class GraphExecutor {
             reclaim_snapshots,
             prepare_background_migration,
             set_tick_materialization_demand,
+            retire_pending_generations,
         };
 
         struct Command {
@@ -302,6 +325,8 @@ class GraphExecutor {
             ExecutionGeneration* migration_source = nullptr;
             ExecutionGeneration* demand_target = nullptr;
             IndexCoverage materialization_demand{};
+            std::unique_ptr<ExecutionGeneration> retiring{};
+            bool retire_initial = false;
             Command* next = nullptr;
             std::mutex mutex{};
             std::condition_variable completed{};
@@ -333,6 +358,7 @@ class GraphExecutor {
         [[nodiscard]] ExecutionGeneration& generation();
         [[nodiscard]] bool advance_generation();
         [[nodiscard]] Result prepare_playback(ExecutionGeneration& target);
+        [[nodiscard]] Result prepare_pending_playback(ExecutionGeneration& target);
         [[nodiscard]] Result process_available_work();
         [[nodiscard]] Result process_available_work_safely() noexcept;
         void enqueue(Command& command);
@@ -354,6 +380,7 @@ class GraphExecutor {
             ExecutionGeneration& target,
             ExecutionGeneration& source);
         void queue_initial_playback(ExecutionGeneration& target);
+        void retire_pending_generations(std::unique_ptr<ExecutionGeneration> suffix, bool initial);
         void set_tick_materialization_demand(
             ExecutionGeneration& target,
             IndexCoverage demand);
@@ -406,12 +433,15 @@ class GraphExecutor {
     // never changes this owner, so reading it does not inspect audio-thread
     // state. ProjectGraph serializes accepted_graph() with stage().
     std::shared_ptr<CompiledGraph const> accepted_tail_graph_{};
+    // Only the control path changes this under accepted_chain_guard_.
+    bool rebuilding_pending_suffix_ = false;
     // Cold submission may overlap an audio callback. The control path waits;
     // realtime only tries once and defers activation when submission owns the
     // guard. No audio callback blocks on cold generation construction.
     std::atomic_flag accepted_chain_guard_ = ATOMIC_FLAG_INIT;
     std::atomic<std::uint64_t> published_active_generation_{0};
     std::atomic<bool> published_has_active_generation_{false};
+    std::atomic<bool> failed_pending_generation_{false};
     // Held by cold preparation through publication/discard. Realtime and live
     // target updates never take it. It pins the accepted tail while preparing
     // migration data without holding the audio activation guard.
@@ -505,10 +535,12 @@ public:
     GraphExecutor& operator=(GraphExecutor&&) = delete;
 
     // Builds one complete execution generation and appends it after the
-    // accepted chain tail. A compiled cutover must name that exact tail. Once
-    // accepted, the generation cannot be replaced by a later submission.
+    // accepted chain tail. A compiled cutover must name that exact tail.
+    // A terminal pre-activation failure can detach the pending suffix for
+    // recompilation. Ordinary submissions preserve all accepted links.
     GraphExecutorPreparedGeneration prepare(
-        std::shared_ptr<CompiledGraph const> compiled_graph);
+        std::shared_ptr<CompiledGraph const> compiled_graph,
+        std::shared_ptr<NodeDefinitionsSnapshot const> definitions = {});
     GraphExecutorStageResult stage(
         std::shared_ptr<CompiledGraph const> compiled_graph);
 
@@ -533,7 +565,12 @@ public:
         Sample value);
 
     ProjectGraphGraphExecutorResult handle_project_graph_transaction(
-        std::shared_ptr<CompiledGraph const> const& compiled_graph);
+        ProjectGraphGraphExecutorRequest const& request);
+
+    [[nodiscard]] bool has_failed_pending_generation() const noexcept {
+        return failed_pending_generation_.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] std::optional<FailedExecutionGeneration> reject_failed_pending_generation();
 
     void handle_execution_read(GraphExecutorExecutionReadRequest& request) const {
         if (published_has_active_generation_.load(std::memory_order_acquire))

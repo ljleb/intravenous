@@ -12,10 +12,19 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 
 namespace iv {
 class BackgroundStorageRealization;
+
+// Raised only for an error that invalidates the executable for every
+// playback demand. Ordinary data, allocation and deadline failures do not
+// carry this guarantee.
+class TerminalBackgroundPreparationError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 struct BackgroundTransactionProjection {
     void* data = nullptr;
     void (*project)(void*, graph_jit::BackgroundEvaluationPlan const&,
@@ -65,10 +74,12 @@ struct BackgroundTransactionInputs {
 enum class BackgroundEvaluationStatus : std::uint8_t {
     committed,
     stale_base,
+    terminal_preparation_error,
 };
 
 struct BackgroundEvaluationResult {
     BackgroundEvaluationStatus status = BackgroundEvaluationStatus::committed;
+    std::string preparation_error{};
     CoveragePropagationResult coverage{};
     // Set only when this transaction published a successor retained-data root.
     std::optional<PersistedDataVersion> published_data{};

@@ -28,8 +28,8 @@ using ProjectGraphSourceIntrospectionRequestedEvent =
 using ProjectGraphGraphJitRequestedEvent =
     GraphJitCompileResult (*)(ProjectGraphGraphJitRequest const&);
 using ProjectGraphGraphExecutorRequestedEvent =
-    ProjectGraphGraphExecutorResult (*)(
-        std::shared_ptr<CompiledGraph const> const&);
+    ProjectGraphGraphExecutorResult (*)(ProjectGraphGraphExecutorRequest const&);
+using ProjectGraphExecutionRecoveryEvent = std::optional<FailedExecutionGeneration> (*)();
 using ProjectGraphGraphExecutorControlsRequestedEvent =
     void (*)(ProjectGraphGraphExecutorControlsRequest&);
 using ProjectGraphNodeInstancesReadEvent = void (*)(NodeInstancesProjectGraphRead&);
@@ -55,6 +55,9 @@ IV_DECLARE_SINGLETON_EVENT(
 IV_DECLARE_SINGLETON_EVENT(
     ProjectGraphGraphExecutorRequestedEvent,
     iv_runtime_project_graph_graph_executor_requested_event);
+IV_DECLARE_SINGLETON_EVENT(
+    ProjectGraphExecutionRecoveryEvent,
+    iv_runtime_project_graph_execution_recovery_event);
 IV_DECLARE_SINGLETON_EVENT(
     ProjectGraphGraphExecutorControlsRequestedEvent,
     iv_runtime_project_graph_graph_executor_controls_requested_event);

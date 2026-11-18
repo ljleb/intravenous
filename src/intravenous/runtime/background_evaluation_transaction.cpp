@@ -1635,6 +1635,13 @@ public:
             if (!result) discard_prepared();
             release_reader();
             return result;
+        } catch (TerminalBackgroundPreparationError const& error) {
+            discard_prepared();
+            release_reader();
+            if (!inputs_.reconstruction) return BackgroundEvaluationResult{
+                .status = BackgroundEvaluationStatus::terminal_preparation_error,
+                .preparation_error = error.what()};
+            return std::unexpected(error.what());
         } catch (std::exception const& error) {
             discard_prepared();
             release_reader();

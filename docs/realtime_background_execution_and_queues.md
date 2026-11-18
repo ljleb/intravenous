@@ -564,16 +564,19 @@ halves, generation-specific routes/endpoints, pre-sized work descriptors, migrat
 metadata, reserve requirements and any storage needed for allocation-free publication.
 Only then can the pointer become the pending generation.
 
-Preparing background-storage migration is itself submitted synchronously to the
-background actor. The staging caller may own the not-yet-published successor object, but
-it never inspects or prepares migration from actor-owned predecessor `NodeStorage`
-concurrently with evaluation. Any preparation failure is therefore still reported and
-the successor discarded before realtime can publish the cutover.
+The staging caller submits background-storage migration preparation synchronously
+to the background actor. The actor prepares migration against its predecessor's
+storage. Failure in this step discards the successor before acceptance.
 
-An accepted generation is not active merely because preparation completed. However,
-acceptance commits its place in the transition chain. A later accepted generation is
-attached after it and cannot replace it. A generation that fails preparation is not
-accepted and can be reclaimed off realtime.
+Acceptance places a pending generation in the ordered chain. The background actor
+may still need to prepare its first immutable playback selection. A terminal error
+while preparing it can claim the pending generation for rejection before realtime
+claims it for activation. Realtime keeps using the last active realization while
+the cold path detaches the failed generation and its pending successors. The
+background actor removes their preparation requests and destroys their private
+state after in-flight work returns. Their queues never acquire the meaning of
+closed queues from an actual cutover. See
+[recovery from terminal preparation failure](./project_graph_application_architecture.md#recovery-from-terminal-preparation-failure).
 
 The older replaceable-pending rule is preserved in
 [Front 8 Replaceable Pending Transition False Start](./historical/front_8_replaceable_pending_transition_false_start_2026-11-01.md).

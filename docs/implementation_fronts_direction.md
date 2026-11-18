@@ -1055,6 +1055,10 @@ retry result because realtime activation moved while compilation ran. Failure be
 acceptance leaves the accepted tail unchanged. Failure during an accepted cutover is
 fatal.
 
+The 2026-11-17 [terminal preparation failure exception](./project_graph_application_architecture.md#recovery-from-terminal-preparation-failure)
+supersedes this checkpoint's unconditional acceptance guarantee. The original
+ordering still applies to actual cutovers.
+
 Application-produced cutovers name the accepted predecessor's steady realization. If
 that predecessor is still in its transition realization, the next accepted cutover
 waits in the ordered chain until steady state is active. The executor does not accept a

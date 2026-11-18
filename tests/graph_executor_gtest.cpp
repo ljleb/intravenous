@@ -278,6 +278,12 @@ void wait_for_initial_playback(iv::graph_jit::BackgroundEvaluationCall*)
         allow_initial_playback.wait(false, std::memory_order_acquire);
 }
 
+void fail_initial_playback(iv::graph_jit::BackgroundEvaluationCall* call)
+{
+    wait_for_initial_playback(call);
+    throw iv::TerminalBackgroundPreparationError("executable cannot prepare");
+}
+
 void propagate_region_shape(
     iv::graph_jit::BackgroundEvaluationCall* batch)
 {
@@ -1327,6 +1333,104 @@ TEST_F(GraphExecutorFixture, PendingPreparationKeepsThePreviousGraphPlayingUntil
     EXPECT_EQ(first_tick.calls, 1u);
 }
 
+TEST_F(GraphExecutorFixture, TerminalPreparationDetachesOnlyTheUnactivatedSuffix)
+{
+    iv::GraphExecutor executor;
+    initial_playback_started = false;
+    allow_initial_playback = false;
+    struct ReleaseOnExit {
+        ~ReleaseOnExit() {
+            allow_initial_playback.store(true, std::memory_order_release);
+            allow_initial_playback.notify_all();
+        }
+    } release;
+    auto wait = [](auto ready) {
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!ready() && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+        return ready();
+    };
+    auto first = compiled_graph(1, &observe_first);
+    ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+    auto failed = std::const_pointer_cast<iv::CompiledGraph>(compiled_graph(
+        2, &observe_second, iv::NodeLayoutBuilder(64).build(), &fail_initial_playback));
+    failed->background_evaluation_plan.requires_live_tick_coverage = true;
+    ASSERT_EQ(stage_graph(executor, failed), iv::GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(wait([] { return initial_playback_started.load(std::memory_order_acquire); }));
+    EXPECT_FALSE(executor.reject_failed_pending_generation());
+    EXPECT_FALSE(executor.activate_pending(index(64)));
+    executor.tick_block(index(64), 64);
+    EXPECT_EQ(first_tick.calls, 1u);
+    allow_initial_playback.store(true, std::memory_order_release);
+    allow_initial_playback.notify_all();
+    ASSERT_TRUE(wait([&] { return executor.has_failed_pending_generation(); }));
+
+    auto queued = [](std::uint64_t number) {
+        auto graph = std::const_pointer_cast<iv::CompiledGraph>(compiled_graph(
+            number, &observe_second, iv::NodeLayoutBuilder(64).build(), &no_op_background_evaluate));
+        graph->background_evaluation_plan.requires_live_tick_coverage = true;
+        graph->configured_graph = std::make_shared<iv::ConfiguredGraph>();
+        return graph;
+    };
+    auto third = queued(3);
+    auto fourth = queued(4);
+    ASSERT_EQ(stage_graph(executor, third), iv::GraphExecutorStageResult::accepted);
+    auto const old_third = executor.accepted_graph();
+    ASSERT_EQ(stage_graph(executor, fourth), iv::GraphExecutorStageResult::accepted);
+    auto recovery = executor.reject_failed_pending_generation();
+    ASSERT_TRUE(recovery);
+    EXPECT_EQ(recovery->failed->project_generation, 2u);
+    EXPECT_EQ(recovery->message, "executable cannot prepare");
+    EXPECT_EQ(recovery->predecessor, first);
+    EXPECT_EQ(executor.accepted_graph(), first);
+    EXPECT_EQ(executor.active_generation(), 1u);
+    EXPECT_FALSE(executor.pending_generation());
+    EXPECT_FALSE(executor.background_execution_failures().any());
+    ASSERT_EQ(recovery->successors.size(), 2u);
+    EXPECT_EQ(recovery->successors[0].graph, third->configured_graph);
+    EXPECT_EQ(recovery->successors[1].graph, fourth->configured_graph);
+    EXPECT_THROW((void)executor.stage(old_third), std::invalid_argument);
+
+    ASSERT_EQ(stage_graph(executor, third), iv::GraphExecutorStageResult::accepted);
+    auto const rebuilt_third = executor.accepted_graph();
+    EXPECT_FALSE(executor.activate_pending(index(128)));
+    ASSERT_EQ(stage_graph(executor, fourth), iv::GraphExecutorStageResult::accepted);
+    EXPECT_EQ(executor.accepted_graph()->cutover->predecessor.lock(), rebuilt_third);
+    recovery->publish();
+    auto activate = [&](std::uint64_t generation, std::int64_t sample) {
+        return wait([&] {
+            if (executor.active_generation() == generation) return true;
+            (void)executor.activate_pending(index(sample));
+            return executor.active_generation() == generation;
+        });
+    };
+    ASSERT_TRUE(activate(3, 128));
+    ASSERT_TRUE(activate(4, 192));
+}
+
+TEST_F(GraphExecutorFixture, FailedFirstGenerationCanBeRetiredWithNoSuccessor)
+{
+    iv::GraphExecutor executor;
+    auto failed = std::const_pointer_cast<iv::CompiledGraph>(compiled_graph(1, &observe_first));
+    failed->background_evaluation_plan.requires_live_tick_coverage = true;
+    ASSERT_EQ(stage_graph(executor, failed), iv::GraphExecutorStageResult::accepted);
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!executor.has_failed_pending_generation() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    ASSERT_TRUE(executor.has_failed_pending_generation());
+    auto recovery = executor.reject_failed_pending_generation();
+    ASSERT_TRUE(recovery);
+    EXPECT_EQ(recovery->failed, failed);
+    EXPECT_FALSE(recovery->predecessor);
+    EXPECT_TRUE(recovery->successors.empty());
+    EXPECT_FALSE(executor.accepted_graph());
+    EXPECT_FALSE(executor.active_generation());
+    EXPECT_FALSE(executor.background_execution_failures().any());
+    ASSERT_EQ(stage_graph(executor, compiled_graph(2, &observe_second)), iv::GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+    EXPECT_EQ(executor.active_generation(), 2u);
+}
+
 TEST_F(GraphExecutorFixture, PrivateBackgroundPreparationDoesNotPublishSuccessorData)
 {
     auto graph = persisted_tock_graph();
@@ -1660,12 +1764,12 @@ TEST_F(GraphExecutorFixture, ProjectGraphSubmissionMustAdvanceTheAcceptedTail)
     iv::GraphExecutor executor;
     auto first = compiled_graph(1, &observe_first);
 
-    auto accepted = in_event_source([&] { return executor.handle_project_graph_transaction(first); });
+    auto accepted = in_event_source([&] { return executor.handle_project_graph_transaction({.graph = first}); });
     EXPECT_TRUE(accepted.attempted);
     ASSERT_TRUE(accepted.prepared);
     EXPECT_FALSE(executor.pending_generation());
     EXPECT_EQ(std::move(accepted.prepared).publish(), iv::GraphExecutorStageResult::accepted);
-    auto stale = in_event_source([&] { return executor.handle_project_graph_transaction(first); });
+    auto stale = in_event_source([&] { return executor.handle_project_graph_transaction({.graph = first}); });
     EXPECT_TRUE(stale.attempted);
     EXPECT_FALSE(stale.prepared);
     EXPECT_EQ(executor.pending_generation(), 1u);

@@ -301,6 +301,11 @@ promise that a request can become ready. A producer may predictably underrun
 when configured to record into an expensive dependent computation; this is
 not a semantic exception that authorizes substitute values.
 
+A terminal error while preparing a pending executable generation follows the
+[ordered cutover recovery contract](./project_graph_application_architecture.md#recovery-from-terminal-preparation-failure).
+Playback underruns and retryable preparation failures leave the generation
+eligible for activation.
+
 ## Future isolated background Sequential rendering (distinct from playback)
 
 A future facility may instantiate a **copy of the reachable Sequential subgraph**

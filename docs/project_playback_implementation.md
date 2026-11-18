@@ -335,3 +335,24 @@ Recovery within the running session would require rejecting that cutover
 and recompiling later work against the last active generation, with the
 acceptance and migration rules updated together. Decide this before making
 failed accepted generations replaceable.
+
+### Terminal preparation recovery implementation
+
+The owner confirmed the playback tests pass before this recovery work. The
+owner also approved [rejecting terminally failed pending executables and rebuilding
+their successors](./project_graph_application_architecture.md#recovery-from-terminal-preparation-failure).
+
+`GraphExecutor` uses `ExecutionGeneration::activation` to arbitrate between
+activation and private preparation failure. Immutable background plan errors
+and `TerminalBackgroundPreparationError` can reject a pending executable.
+Ordinary preparation errors remain eligible for another attempt. `ProjectGraph`
+recompiles the pending suffix on its serialized compiler worker and retains
+committed configurations and edits. The background owner cancels preparation
+references and releases the rejected `ExecutionGeneration` objects. Full
+definition snapshots live on pending generations for recompilation and are
+released on the background path after activation.
+
+Source regressions exercise a terminal error raised by a running preparation
+callback, ordered recompilation after rejection, a new edit during recompilation,
+and failures with no pending successor. Recovery builds and test runs remain
+pending owner verification.

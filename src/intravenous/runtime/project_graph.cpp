@@ -239,6 +239,7 @@ void ProjectGraph::stop_compilation()
     {
         std::scoped_lock lock(mutex_);
         pending_graph_compile_.reset();
+        execution_recovery_requested_ = false;
         pending_control_compile_.reset();
         inflight_control_compile_.reset();
         compile_inflight_ = false;
@@ -251,7 +252,7 @@ bool ProjectGraph::wait_for_compilation(std::chrono::milliseconds timeout)
 {
     std::unique_lock lock(mutex_);
     return control_compile_changed_.wait_for(lock, timeout, [&] {
-        return !pending_graph_compile_ && !compile_inflight_ && !restore_live_targets_
+        return !pending_graph_compile_ && !execution_recovery_requested_ && !compile_inflight_ && !restore_live_targets_
             && !pending_control_compile_ && !inflight_control_compile_;
     });
 }
@@ -689,7 +690,8 @@ void ProjectGraph::compile_graph(GraphCompileRequest request, std::stop_token st
             ProjectGraphGraphExecutorResult execution;
             if (compiled.compiled_graph)
                 execution = IV_INVOKE_SINGLETON_EVENT(iv_runtime_project_graph_graph_executor_requested_event,
-                    compiled.compiled_graph);
+                    ProjectGraphGraphExecutorRequest{.graph = compiled.compiled_graph,
+                        .definitions = request.generation->definitions});
             std::scoped_lock lock(mutex_);
             if (!current()) {
                 queue_control_compile_status_locked(request.trace, "superseded");
@@ -791,6 +793,116 @@ void ProjectGraph::compile_graph(GraphCompileRequest request, std::stop_token st
     }
 }
 
+void ProjectGraph::request_execution_recovery()
+{
+    {
+        std::scoped_lock lock(mutex_);
+        if (compile_worker_.get_stop_token().stop_requested() || execution_recovery_requested_) return;
+        execution_recovery_requested_ = true;
+    }
+    control_compile_changed_.notify_all();
+}
+
+void ProjectGraph::recover_failed_execution(std::stop_token stop)
+{
+    std::optional<FailedExecutionGeneration> recovery;
+    struct PublishRebuiltSuffix {
+        std::optional<FailedExecutionGeneration>& recovery;
+        ~PublishRebuiltSuffix() { if (recovery) recovery->publish(); }
+    } publish{recovery};
+    IV_EVENT_SOURCE(ProjectGraph, "reject pending execution generation") {
+        recovery = IV_INVOKE_SINGLETON_EVENT(iv_runtime_project_graph_execution_recovery_event);
+        if (!recovery) return;
+        auto const failed = recovery->failed->project_generation;
+        ProjectGraphPublication publication{
+            .graph_changed = true,
+            .execution_failure = ProjectStatusNotification{
+                .level = "error", .code = "graphPreparationFailed",
+                .message = "Execution generation " + std::to_string(failed)
+                    + " could not prepare: " + recovery->message},
+        };
+        {
+            std::scoped_lock lock(mutex_);
+            accepted_execution_graph_ = recovery->predecessor;
+            staged_control_graph_ = recovery->predecessor;
+            ready_control_code_.reset();
+            cancel_pending_control_compile_locked();
+            restore_live_targets_ = false;
+            if (current_generation_ && current_generation_->generation == failed) {
+                auto state = std::make_shared<ProjectGraphGeneration>(*current_generation_);
+                state->graph_executor_accepted = false;
+                state->compiled_graph.reset();
+                state->execution_phase = "failed";
+                state->execution_message = recovery->message;
+                current_generation_ = std::move(state);
+            } else if (current_generation_ && std::ranges::contains(recovery->successors,
+                           current_generation_->generation, &GraphJitCompileRequest::project_generation)) {
+                auto state = std::make_shared<ProjectGraphGeneration>(*current_generation_);
+                state->graph_executor_accepted = false;
+                state->compiled_graph.reset();
+                state->execution_phase = "compiling";
+                current_generation_ = std::move(state);
+            }
+        }
+        IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_execution_published_event, publication);
+    }
+
+    auto predecessor = std::move(recovery->predecessor);
+    for (auto const& request : recovery->successors) {
+        if (stop.stop_requested()) return;
+        IV_EVENT_SOURCE(ProjectGraph, "recompile pending execution generation") {
+            GraphJitCompileResult compiled;
+            std::string failure;
+            try {
+                compiled = IV_INVOKE_SINGLETON_EVENT(iv_runtime_project_graph_graph_jit_requested_event,
+                    ProjectGraphGraphJitRequest{.successor = request, .predecessor = predecessor,
+                        .initial_generation = !predecessor});
+                if (!compiled.compiled_graph) {
+                    failure = compiled.diagnostics.empty() ? "GraphJit did not produce an executable graph"
+                        : compiled.diagnostics.front().message;
+                } else {
+                    auto execution = IV_INVOKE_SINGLETON_EVENT(iv_runtime_project_graph_graph_executor_requested_event,
+                        ProjectGraphGraphExecutorRequest{.graph = compiled.compiled_graph,
+                            .definitions = request.definitions});
+                    if (stop.stop_requested()) return;
+                    if (!execution.prepared
+                        || std::move(execution.prepared).publish() != GraphExecutorStageResult::accepted) {
+                        failure = "GraphExecutor did not accept the rebased cutover";
+                    }
+                }
+            } catch (std::exception const& error) {
+                failure = error.what();
+            }
+            ProjectGraphPublication publication{.graph_changed = true};
+            {
+                std::scoped_lock lock(mutex_);
+                if (failure.empty()) {
+                    predecessor = compiled.compiled_graph;
+                    accepted_execution_graph_ = predecessor;
+                    staged_control_graph_ = predecessor;
+                }
+                if (current_generation_ && current_generation_->generation == request.project_generation) {
+                    auto state = std::make_shared<ProjectGraphGeneration>(*current_generation_);
+                    state->compiled_graph = failure.empty() ? compiled.compiled_graph : nullptr;
+                    state->graph_jit_attempted = compiled.attempted;
+                    state->graph_jit_diagnostics = std::move(compiled.diagnostics);
+                    state->graph_jit_timings = std::move(compiled.timings);
+                    state->graph_executor_accepted = failure.empty();
+                    state->execution_phase = failure.empty() ? "staged" : "failed";
+                    state->execution_message = failure;
+                    current_generation_ = std::move(state);
+                    restore_live_targets_ = failure.empty();
+                }
+            }
+            if (!failure.empty()) publication.execution_failure = ProjectStatusNotification{
+                .level = "error", .code = "graphRebaseFailed",
+                .message = "Execution generation " + std::to_string(request.project_generation)
+                    + " could not be rebuilt: " + failure};
+            IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_execution_published_event, publication);
+        }
+    }
+}
+
 void ProjectGraph::compile_worker(std::stop_token stop)
 {
     while (!stop.stop_requested()) {
@@ -823,6 +935,7 @@ void ProjectGraph::compile_worker(std::stop_token stop)
         control_compile_changed_.notify_all();
         std::optional<ControlCompileRequest> request;
         std::optional<GraphCompileRequest> graph_request;
+        bool recover_execution = false;
         {
             std::unique_lock lock(mutex_);
             // A previous iteration has completed publication, optional storage
@@ -830,11 +943,14 @@ void ProjectGraph::compile_worker(std::stop_token stop)
             compile_inflight_ = false;
             control_compile_changed_.notify_all();
             control_compile_changed_.wait(lock, [&] {
-                return stop.stop_requested() || pending_graph_compile_.has_value()
+                return stop.stop_requested() || execution_recovery_requested_ || pending_graph_compile_.has_value()
                     || pending_control_compile_.has_value() || !control_compile_notifications_.empty();
             });
             if (stop.stop_requested()) return;
-            if (pending_graph_compile_) {
+            if (execution_recovery_requested_) {
+                recover_execution = std::exchange(execution_recovery_requested_, false);
+                compile_inflight_ = true;
+            } else if (pending_graph_compile_) {
                 graph_request = std::exchange(pending_graph_compile_, std::nullopt);
                 compile_inflight_ = true;
             } else if (pending_control_compile_) {
@@ -856,6 +972,14 @@ void ProjectGraph::compile_worker(std::stop_token stop)
         // Requests queue notifications; this independent cause publishes them
         // after releasing the graph lock, without re-entering an RPC cause.
         publish_control_compile_status();
+        if (recover_execution) {
+            try { recover_failed_execution(stop); }
+            catch (std::exception const& error) {
+                try { diagnostic_stream() << "execution generation recovery: " << error.what() << '\n';
+                    flush_diagnostic_stream(); } catch (...) {}
+            }
+            continue;
+        }
         if (graph_request) {
             try { compile_graph(std::move(*graph_request), stop); }
             catch (std::exception const& error) {

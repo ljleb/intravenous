@@ -209,12 +209,10 @@ Its root-build procedure is always batched:
    the next ordered activatable successor.
 
 `ProjectGraph` advances its executable predecessor only after `GraphExecutor` accepts
-the complete generation. If it requests A to B and later requests B to C,
-`GraphExecutor` preserves both transitions and activates A to B before B to C. An
-accepted transition is not replaceable by a later request. Failure before acceptance
-leaves the accepted chain tail unchanged. Failure while performing an accepted
-cutover is a fatal runtime error because continuing would violate the application
-transaction that `ProjectGraph` already completed.
+the complete generation. `GraphExecutor` activates viable accepted transitions
+in order. A newer request queues after the accepted tail. Failure before acceptance
+leaves that tail unchanged. A failure during an actual cutover or afterward follows
+the active-execution failure contract.
 
 The `ProjectGraphGraphExecutorRequestedEvent` result distinguishes an unbound bridge
 from an accepted generation. `GraphExecutor` treats a stale generation submitted by
@@ -223,9 +221,36 @@ retryable project transaction.
 
 Each application-produced cutover is compiled from the accepted predecessor's steady
 realization. If that predecessor is still running its transition root, the successor
-remains queued until the predecessor reaches steady state. This makes acceptance
-durable: a transition-phase expiry cannot invalidate an accepted cutover or require
-recompilation.
+remains queued until the predecessor reaches steady state. Transition expiry
+leaves the compiled cutover valid.
+
+#### Recovery from terminal preparation failure
+
+An explicitly terminal error during private preparation can reject an executable
+generation before any realtime activation. A deadline miss, missing preparation,
+or retryable error leaves the pending generation eligible. Activation and rejection
+claim the generation exclusively. Rejection keeps the desired configuration and
+undo history and reports an execution diagnostic for the failed generation.
+
+If A is active and B fails, `GraphExecutor` detaches B and its pending successors
+from the accepted chain. The background owner finishes or invalidates outstanding
+private preparation and retires those executable objects. The accepted predecessor
+in `GraphExecutor` and `ProjectGraph` returns to A, or to the empty graph before the
+first successful activation. The active graph can continue to render and publish
+recordings while recovery runs.
+
+`ProjectGraph` recompiles the surviving pending configurations in order on its
+compiler worker. C is rebuilt against A and D against the rebuilt C. Each request
+uses its retained configured graph, definition snapshot and observation plan.
+GraphJit and the executor regenerate the predecessor-dependent cutover program,
+realtime storage migration, and background coverage migration. A successor that
+cannot compile receives its own execution diagnostic and later work uses the last
+viable predecessor. Newly configured edits can commit during recovery. Their queued
+execution compilation follows the accepted suffix being rebuilt. Realtime can
+activate the rebuilt chain after the compiler worker finishes publishing the suffix.
+
+Only actual activations enter the execution-generation history. The unconditional
+acceptance guarantee is [preserved historically](./historical/ordered_cutovers_before_failed_generation_recovery_2026-11-17.md).
 
 `GraphExecutor` is one child in the application-event propagation tree. Internal actor
 preparation and handoffs are implementation, not additional app-module propagation.
