@@ -25,7 +25,7 @@ const hasKnob = (port: SemanticPort) => port.kind === "continuous"
 const panel = ref<HTMLElement | null>(null);
 const portArea = ref<HTMLElement | null>(null);
 const portAreaHeight = ref(22);
-const knobSize = computed(() => portAreaHeight.value < 28 ? 22 : 28);
+const knobSize = computed(() => portAreaHeight.value < 31 ? 24 : 31);
 const portHeight = (port: SemanticPort) => hasKnob(port) ? knobSize.value : 22;
 let portAreaObserver: ResizeObserver | null = null;
 const expanded = ref<SemanticPortDirection | null>(null);

@@ -157,6 +157,7 @@ test("a connection chooser separates wires at one physical port without selectin
     assert.equal(new Set(wires.map((wire) => wire.source.id)).size, 2);
     for (const wire of wires) {
         assert.equal(wire.source.id, connectionEndKey(wire.connectionIds[0], port));
+        assert.equal(wire.emphasized, false);
     }
     assert.deepEqual(selectedLaneConnections(graph, null, ordinary), []);
     assert.equal(JSON.stringify(graph), original);
@@ -182,6 +183,7 @@ test("chooser attachments retain selected-lane wires and use the same geometry f
     const ordinary = anchors([]); // Every physical port is at the same screen height.
     const opened = selectedLaneConnections(graph, addressKey({ instanceId: "c" }), ordinary, revealed);
     assert.deepEqual(opened.flatMap((wire) => wire.connectionIds).sort(), ["external", "selected", "self"]);
+    assert.deepEqual(opened.filter((wire) => wire.emphasized).flatMap((wire) => wire.connectionIds), ["selected"]);
     const self = opened.find((wire) => wire.connectionIds.includes("self"))!;
     const external = opened.find((wire) => wire.connectionIds.includes("external"))!;
     assert.notEqual(self.key, external.key);

@@ -74,8 +74,8 @@ export function selectedLaneConnections(scope: GraphScope, selected: string | nu
             for (const input of inputs) {
                 const source = output.anchor;
                 const target = input.anchor;
-                const emphasized = output.selected || input.selected || output.revealed || input.revealed;
-                if (!emphasized && (!context || source.y < context.top || source.y > context.bottom
+                const emphasized = output.selected || input.selected;
+                if (!emphasized && !output.revealed && !input.revealed && (!context || source.y < context.top || source.y > context.bottom
                     || target.y < context.top || target.y > context.bottom)) continue;
                 const key = JSON.stringify([source.id, target.id]);
                 const existing = wires.get(key);

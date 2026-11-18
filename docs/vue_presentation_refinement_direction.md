@@ -353,6 +353,12 @@ while retaining their underlying authored identities and unmergeable endpoints.
 That future capability should inform cable presentation without blocking
 near-term legibility improvements.
 
+### Cable opacity near labels
+
+Keep cables at a steady low opacity when neither endpoint belongs to the
+selected lane. When either endpoint is selected, raise the cable opacity
+away from text. Fade it back to the low opacity as it approaches a label.
+
 ### Port color variants (mapping still to be selected)
 
 Explore a second hue for each port direction: **orange alongside the existing

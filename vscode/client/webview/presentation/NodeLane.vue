@@ -54,7 +54,7 @@ const laneStatus = computed(() => node.value.loadState === "waitingForDefinition
     .lane-heading { flex: 1; min-width: 0; overflow: hidden; align-items: center; }
     .lane-label :deep(.node-ports) {
         --port-slot-height: min(22px, 100cqh);
-        margin-top: 0; flex: 0 1 130px; min-width: 0; min-height: 0; height: var(--port-slot-height);
+        margin-top: 0; flex: 0 1 130px; min-width: 0; min-height: 0; height: min(24px, 100cqh);
     }
     .port-summary { display: none; }
 }

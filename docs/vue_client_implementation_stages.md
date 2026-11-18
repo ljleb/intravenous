@@ -3788,3 +3788,9 @@ The owner chose the compact cutout style after the
 [A/B comparison](./historical/vue_knob_style_comparison.md). The timeline
 no longer shows the style toggle. `KnobFace.vue` shades the area between
 the default marker and the current pointer on the dial and in its preview.
+
+`GraphEditor.vue` now keeps unselected cables faint through label areas.
+Selected cables fade to the same faint level near the visible text and
+brighten away from it. The dial boxes measure 24 pixels in compact rows and
+31 pixels in taller rows. At minimum lane height, ports still use the
+folded slot.

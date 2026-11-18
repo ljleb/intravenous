@@ -32,6 +32,9 @@ import { connectionEndKey, connectionWirePath, portEndpointKey, portSlotKey, sel
 
 type HoveredPortGroup = { nodeKey: string; direction: "input" | "output" };
 type PreviewAnchor = PortWireAnchor & { direction: "input" | "output" };
+type WireOcclusions = { labels: DOMRect[]; knobs: DOMRect[] };
+
+const wireOpacity = { faint: .19, emphasized: .72 };
 
 const state = shallowRef<GraphEditorState>({ sessionStatus: "starting", scope: null, layout: readLayout(null), definitions: [], error: "" });
 const playback = providePlayback();
@@ -199,9 +202,19 @@ const previewColorColumns = shallowRef<PortColorColumns[]>([]);
 let sourceGroupToLeave: HoveredPortGroup | null = null;
 const selectedLane = ref<string | null>(null);
 const selectedWires = shallowRef<SelectedLaneWire[]>([]);
+const movingWireId = computed(() => connectionDrag.value?.edit?.connection.id);
+const wireLayers = computed(() => {
+    const layers: Record<keyof typeof wireOpacity, { wire: SelectedLaneWire; index: number }[]> = { faint: [], emphasized: [] };
+    const moving = movingWireId.value;
+    selectedWires.value.forEach((wire, index) => {
+        const layer = wire.emphasized && (moving === undefined || !wire.connectionIds.includes(moving)) ? "emphasized" : "faint";
+        layers[layer].push({ wire, index });
+    });
+    return layers;
+});
 const dragAnchors = shallowRef<PreviewAnchor[]>([]);
 const wireClips = shallowRef<Array<{ x: number; y: number; width: number; height: number }>>([]);
-const wireOcclusions = shallowRef<DOMRect[]>([]);
+const wireOcclusions = shallowRef<WireOcclusions>({ labels: [], knobs: [] });
 let wireFrame = 0;
 let disposed = false;
 let wireResizeObserver: ResizeObserver | null = null;
@@ -260,23 +273,29 @@ function measureWireAnchor(element: HTMLElement, id: string, direction: "input" 
     }
     return point;
 }
-function measureWireOcclusions(top: number, bottom: number): DOMRect[] {
+function measureWireOcclusions(top: number, bottom: number): WireOcclusions {
     const range = document.createRange();
-    const occlusions: DOMRect[] = [];
+    const occlusions: WireOcclusions = { labels: [], knobs: [] };
     for (const element of document.querySelectorAll(".lane-name, .direct-port-name, .port-entry .port-name, .manual-knob")) {
+        if (element.closest(".port-panel.positioning")) continue;
         const bounds = element.getBoundingClientRect();
         const popup = element.closest(".expansion-body")?.getBoundingClientRect();
         const clipTop = popup?.top ?? top;
         const clipBottom = popup?.bottom ?? bottom;
         if (!bounds.width || !bounds.height || bounds.bottom < clipTop || bounds.top > clipBottom) continue;
         // The label can fill a grid column while its text occupies only a few pixels.
-        range.selectNodeContents(element);
-        const content = element.matches(".manual-knob") ? bounds : range.getBoundingClientRect();
+        const isKnob = element.matches(".manual-knob");
+        let content = bounds;
+        if (!isKnob) {
+            range.selectNodeContents(element);
+            content = range.getBoundingClientRect();
+        }
         const left = Math.max(bounds.left, content.left, popup?.left ?? bounds.left);
         const right = Math.min(bounds.right, content.right, popup?.right ?? bounds.right);
         const upper = Math.max(bounds.top, content.top, clipTop);
         const lower = Math.min(bounds.bottom, content.bottom, clipBottom);
-        if (right > left && lower > upper) occlusions.push(new DOMRect(left, upper, right - left, lower - upper));
+        if (right > left && lower > upper)
+            occlusions[isKnob ? "knobs" : "labels"].push(new DOMRect(left, upper, right - left, lower - upper));
     }
     return occlusions;
 }
@@ -653,10 +672,21 @@ onBeforeUnmount(() => {
                 <clipPath id="selected-wire-clip" clipPathUnits="userSpaceOnUse">
                     <rect v-for="(clip, index) in wireClips" :key="index" :x="clip.x" :y="clip.y" :width="clip.width" :height="clip.height" />
                 </clipPath>
-                <mask id="wire-label-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="100%" height="100%">
+                <mask id="wire-knob-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="100%" height="100%">
                     <rect width="100%" height="100%" fill="white" />
-                    <rect v-for="(label, index) in wireOcclusions" :key="index"
-                        :x="label.x" :y="label.y - 1" :width="label.width" :height="label.height + 2" fill="black" />
+                    <rect v-for="(knob, index) in wireOcclusions.knobs" :key="index"
+                        :x="knob.x" :y="knob.y - 1" :width="knob.width" :height="knob.height + 2" fill="black" />
+                </mask>
+                <filter id="wire-label-blur" filterUnits="userSpaceOnUse" x="0" y="0" width="100%" height="100%">
+                    <feGaussianBlur stdDeviation="2" />
+                </filter>
+                <mask id="wire-label-fade" maskUnits="userSpaceOnUse" x="0" y="0" width="100%" height="100%">
+                    <rect width="100%" height="100%" fill="white" />
+                    <g v-if="wireOcclusions.labels.length" filter="url(#wire-label-blur)" fill="black"
+                        :opacity="1 - wireOpacity.faint / wireOpacity.emphasized">
+                        <rect v-for="(label, index) in wireOcclusions.labels" :key="index"
+                            :x="label.x - 4" :y="label.y - 4" :width="label.width + 8" :height="label.height + 8" />
+                    </g>
                 </mask>
                 <linearGradient v-for="(wire, index) in selectedWires" :id="`selected-wire-${index}`" :key="wire.key"
                     gradientUnits="userSpaceOnUse" :x1="wire.source.x" :y1="wire.source.y" :x2="wire.target.x" :y2="wire.target.y">
@@ -674,17 +704,22 @@ onBeforeUnmount(() => {
                     <stop offset="1" :style="{ stopColor: wireColor(wire.target.direction, connectionDrag?.port.kind) }" />
                 </linearGradient>
             </defs>
-            <g clip-path="url(#selected-wire-clip)" mask="url(#wire-label-mask)">
-                <path v-for="(wire, index) in selectedWires" :key="wire.key" class="selected-wire"
-                    :class="{ context: !wire.emphasized, event: wire.kind === 'event', pending: !wire.applied,
-                        moving: connectionDrag?.edit && wire.connectionIds.includes(connectionDrag.edit.connection.id) }"
-                    :d="selectedLaneWirePath(wire)" :stroke="`url(#selected-wire-${index})`" />
-            </g>
-            <g mask="url(#wire-label-mask)">
-                <path v-for="(wire, index) in dropPreviewWires" :key="`drop-${wire.anchor.id}`" class="drop-preview-wire"
-                    :d="wire.path" :stroke="`url(#drop-preview-wire-${index})`" />
-                <path v-for="(wire, index) in previewWires" :key="wire.anchor.id" class="preview-wire"
-                    :d="wire.path" :stroke="`url(#preview-wire-${index})`" />
+            <g mask="url(#wire-knob-mask)">
+                <g clip-path="url(#selected-wire-clip)">
+                    <g v-for="(wires, layer) in wireLayers" :key="layer"
+                        :mask="layer === 'emphasized' ? 'url(#wire-label-fade)' : undefined">
+                        <path v-for="{ wire, index } in wires" :key="wire.key" class="selected-wire"
+                            :class="{ event: wire.kind === 'event', pending: !wire.applied }"
+                            :d="selectedLaneWirePath(wire)" :stroke="`url(#selected-wire-${index})`"
+                            :stroke-opacity="wireOpacity[layer]" />
+                    </g>
+                </g>
+                <g mask="url(#wire-label-fade)">
+                    <path v-for="(wire, index) in dropPreviewWires" :key="`drop-${wire.anchor.id}`" class="drop-preview-wire"
+                        :d="wire.path" :stroke="`url(#drop-preview-wire-${index})`" />
+                    <path v-for="(wire, index) in previewWires" :key="wire.anchor.id" class="preview-wire"
+                        :d="wire.path" :stroke="`url(#preview-wire-${index})`" />
+                </g>
             </g>
         </svg>
     </main>
@@ -699,11 +734,9 @@ onBeforeUnmount(() => {
 .connection-wire { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 30; }
 .preview-wire { fill: none; stroke-width: 2; }
 .drop-preview-wire { fill: none; stroke-width: 2; stroke-opacity: .4; }
-.selected-wire { fill: none; stroke-width: 1.5; stroke-opacity: .72; }
-.selected-wire.context { stroke-opacity: .19; }
+.selected-wire { fill: none; stroke-width: 1.5; }
 .selected-wire.event { stroke-dasharray: 1 3; stroke-linecap: round; }
 .selected-wire.pending { stroke-dasharray: 5 4; }
-.selected-wire.moving { stroke-opacity: .2; }
 .package-dialog-backdrop { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; background: #0005; }
 .package-dialog { padding: 16px; display: flex; flex-wrap: wrap; gap: 8px; background: var(--vscode-editorWidget-background); color: var(--vscode-foreground); border: 1px solid var(--vscode-panel-border); }
 .package-dialog label { flex-basis: 100%; display: grid; gap: 5px; }
