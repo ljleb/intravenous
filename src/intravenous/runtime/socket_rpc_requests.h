@@ -3,6 +3,7 @@
 #include <intravenous/runtime/node_message_gesture.h>
 
 #include <intravenous/runtime/project_edit.h>
+#include <intravenous/runtime/project_playback.h>
 
 #include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/runtime/project_connection_types.h>
@@ -112,6 +113,10 @@ struct GetPlaybackRequest {};
 struct TogglePlaybackRequest {};
 struct SetPlaybackRunningRequest { bool running = true; };
 struct SeekPlaybackRequest { GlobalIndex position{}; };
+struct DragPlaybackRequest {
+    GlobalIndex position{};
+    ProjectPlaybackDrag drag{};
+};
 struct SetProjectToolchainRequest { ProjectToolchainSettings settings{}; };
 struct SetAudioDevicesRequest {
     std::optional<std::string> output_device_id {};
@@ -166,6 +171,7 @@ using SocketRpcRequestPayload = std::variant<
     TogglePlaybackRequest,
     SetPlaybackRunningRequest,
     SeekPlaybackRequest,
+    DragPlaybackRequest,
     SetProjectToolchainRequest,
     SetAudioDevicesRequest,
     SaveProjectRequest,

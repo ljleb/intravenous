@@ -518,6 +518,8 @@ public:
             request.accepted_command = playback_.toggle();
         else if (request.operation == ProjectPlaybackOperation::seek)
             request.accepted_command = seek_playback(request.position);
+        else if (request.operation == ProjectPlaybackOperation::drag)
+            request.accepted_command = playback_.drag(request.drag, request.position);
         request.snapshot = playback_snapshot();
     }
     // Device-clock entry. Applies session commands and activation at this

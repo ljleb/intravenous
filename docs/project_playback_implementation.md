@@ -356,3 +356,50 @@ Source regressions exercise a terminal error raised by a running preparation
 callback, ordered recompilation after rejection, a new edit during recompilation,
 and failures with no pending successor. Recovery builds and test runs remain
 pending owner verification.
+
+### Return to the selected start and ruler dragging
+
+The owner confirmed that playback works in the editor and that recovery tests
+pass. New sessions now start paused at zero. `ProjectPlayback` retains the last
+selected start while running. An explicit seek sets that start in either
+transport mode. A pause returns to the start when its held data are ready.
+During preparation, `GraphExecutor::render_block()` can continue at the
+applied position. Returning to the start preserves foreground Tick history
+and does not audition the Event at that position. `TimeRuler.vue` captures
+the pointer and sends a single seek for a click. A drag sends its first
+position, coalesces moves to one per animation frame, and sends the final
+position at release. The ruler, automation curves, and waveform views
+display the pointer position during a drag. Live meters and controls stay clear.
+
+`playback.drag` puts drag commands in the same queue as seek, play, and
+pause commands. `ProjectPlayback` keeps the mode to restore and reserves a
+queue slot for release. When the drag position needs preparation,
+`GraphExecutor::render_block()` can hold the last applied position before
+applying the request. The editor accepts Space with focus on the ruler or
+blank graph surface, even when no lane is selected.
+
+`ProjectPlaybackSnapshot` publishes the selected start and the next
+foreground Tick index with the project playhead. The ruler shows the
+selected start as a triangle. The faint cursor follows the foreground Tick
+index on the ruler, automation curves, and waveform views.
+
+Regressions cover startup, running seeks, return to the start, drag command
+ordering, drag release, and Event audition at a held position. Builds and
+UI checks remain owner-run.
+
+The owner also requested bounded delivery of crossed Events during a drag.
+`TickPlaybackSelection` gives `SequentialEventSlot::populate()` a held
+position and an audition flag. At that boundary the intermediate positions
+and drag direction are already gone. `GraphExecutor` prepares one positional
+demand for both Sample and Event inputs. Expanding that demand to the whole
+drag span would materialize Sample data across it and could delay the applied
+playback window, even when the span has few Events. The current drag uses the
+existing Event delivery rules at applied positions.
+
+To preserve crossed Events, retain the ordered drag segments through command
+coalescing and give the background actor an Event-only demand. It can prepare
+an ordered, bounded set of occurrences before the Tick boundary. The receiving
+Sequential binding needs the source identities and a local delivery position.
+The drag contract still needs a policy for direction changes and for segments
+that exceed the Event budget. These decisions affect the playback command,
+the background readiness record, and the bound on Event delivery at Tick.

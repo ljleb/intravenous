@@ -5,7 +5,7 @@ import type { GraphLayout, GraphScope } from "./graphScope";
 import type { LiveGraphSessionStatus } from "./liveGraphProtocol";
 import type { GraphConnectionEdit, GraphPortEndpoint } from "./graphConnectionEditing";
 import type { NodeEventHostRequest, NodeEventResponse } from "./nodeEventMessaging";
-import type { PlaybackSnapshot } from "./playback";
+import type { PlaybackDragPhase, PlaybackSnapshot } from "./playback";
 
 export type GraphEditorState = {
     sessionStatus: LiveGraphSessionStatus;
@@ -27,6 +27,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
 export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "playbackToggle" }
     | { type: "playbackSeek"; position: string }
+    | { type: "playbackDrag"; phase: PlaybackDragPhase; position: string }
     | ObservationHostRequest
     | NodeEventHostRequest
     | { type: "graphInteractionHint"; hint: ManualControlHint | null }

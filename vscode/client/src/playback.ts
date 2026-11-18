@@ -1,5 +1,7 @@
 export type PlaybackSnapshot = {
     position: string;
+    startPosition?: string;
+    executionIndex?: string;
     running: boolean;
     sampleRate: number;
     appliedCommand: string;
@@ -8,6 +10,8 @@ export type PlaybackSnapshot = {
 };
 
 export type PlaybackSeek = { position: string; acceptedCommand?: string };
+export type PlaybackDragPhase = "begin" | "move" | "end";
+export type PlaybackDrag = { phase: PlaybackDragPhase; dragId: string };
 
 export function isPendingPlaybackSeek(seek: PlaybackSeek, snapshot: PlaybackSnapshot | null): boolean {
     return seek.acceptedCommand === undefined || snapshot === null
@@ -36,20 +40,37 @@ export function playbackSeekPosition(text: string, sampleRate: number): string {
 // Keep exact backend positions intact. Animation adds only a small local
 // offset and never crosses a pause/seek segment or runs indefinitely if updates
 // stop. The displayed time estimates execution, not speaker presentation time.
+const extrapolationLimitMs = 250;
+
 export class PlaybackDisplay {
     private selected: PlaybackSnapshot | null = null;
     private receivedAt = 0;
     private advancing = false;
+    private executionAdvancing = false;
     update(snapshot: PlaybackSnapshot | null, now: number): void {
         this.advancing = snapshot?.running === true && (snapshot.segment !== this.selected?.segment
             || snapshot.position !== this.selected?.position);
+        const executionIndex = snapshot?.executionIndex;
+        const previousExecutionIndex = this.selected?.executionIndex;
+        this.executionAdvancing = executionIndex !== undefined && (snapshot?.running ? this.advancing
+            : previousExecutionIndex !== undefined && executionIndex !== previousExecutionIndex);
         this.selected = snapshot;
         this.receivedAt = now;
     }
+    isAnimating(now: number): boolean {
+        return (this.advancing || this.executionAdvancing) && now - this.receivedAt < extrapolationLimitMs;
+    }
     position(now: number): bigint | null {
+        return this.displayPosition(this.selected?.position, this.advancing, now);
+    }
+    executionIndex(now: number): bigint | null {
+        return this.displayPosition(this.selected?.executionIndex, this.executionAdvancing, now);
+    }
+    private displayPosition(position: string | undefined, advancing: boolean, now: number): bigint | null {
         const state = this.selected;
-        if (!state) return null;
-        const advance = this.advancing ? Math.max(0, Math.min(250, now - this.receivedAt)) * state.sampleRate / 1000 : 0;
-        return BigInt.asIntN(64, BigInt(state.position) + BigInt(Math.floor(advance)));
+        if (!state || position === undefined) return null;
+        const elapsed = Math.max(0, Math.min(extrapolationLimitMs, now - this.receivedAt));
+        const advance = advancing ? elapsed * state.sampleRate / 1000 : 0;
+        return BigInt.asIntN(64, BigInt(position) + BigInt(Math.floor(advance)));
     }
 }

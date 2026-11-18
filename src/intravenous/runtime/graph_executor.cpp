@@ -2268,11 +2268,11 @@ std::optional<std::array<GraphExecutor::PlaybackDemand, 2>> GraphExecutor::read_
 
 void GraphExecutor::render_block(std::size_t frames, double sample_rate)
 {
-    auto const applied = playback_.current_block(sample_rate);
     auto const candidate = playback_.begin_block(sample_rate);
+    auto const applied = playback_.current_block(sample_rate);
     bool const pending = applied.state.applied_command != candidate.state.applied_command;
     auto demand = [&](auto const& block) -> PlaybackDemand {
-        return {block.state.position, {block.execution_index, frames}, !block.state.running};
+        return {block.state.position, {block.state.execution_index, frames}, !block.state.running};
     };
     auto const applied_demand = demand(applied);
     auto const candidate_demand = pending ? demand(candidate) : PlaybackDemand{};
@@ -2289,11 +2289,8 @@ void GraphExecutor::render_block(std::size_t frames, double sample_rate)
         can_apply = pending && playback_ready(*generation.graph, *persisted, candidate_demand);
     }
     auto const& selected = can_apply ? candidate : applied;
-    auto const waiting_to_hold = pending && applied.state.running && !candidate.state.running
-        && !candidate.audition;
-    auto const can_execute = can_apply || (!waiting_to_hold
-        && playback_ready(*generation.graph, *persisted, applied_demand));
-    execute_tick_block(generation, *persisted, selected.execution_index, frames, selected.selection(), can_execute);
+    auto const can_execute = can_apply || playback_ready(*generation.graph, *persisted, applied_demand);
+    execute_tick_block(generation, *persisted, selected.state.execution_index, frames, selected.selection(), can_execute);
     if (can_execute) playback_.end_block(selected, frames);
 }
 

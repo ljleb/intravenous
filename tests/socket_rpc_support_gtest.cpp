@@ -139,6 +139,14 @@ TEST(SocketRpcRequestParser, PlaybackControlsPreserveExactIndicesWithoutProjectR
     auto seek = iv::parse_socket_rpc_request(R"({"jsonrpc":"2.0","id":4,"method":"playback.seek","params":{"position":"-9223372036854775808"}})");
     ASSERT_NE(std::get_if<iv::SeekPlaybackRequest>(&seek.payload), nullptr);
     EXPECT_EQ(std::get<iv::SeekPlaybackRequest>(seek.payload).position.signed_value(), std::numeric_limits<std::int64_t>::min());
+    auto drag = iv::parse_socket_rpc_request(R"({"jsonrpc":"2.0","id":5,"method":"playback.drag","params":{"position":"-30","phase":"end","dragId":"18446744073709551615"}})");
+    auto const* release = std::get_if<iv::DragPlaybackRequest>(&drag.payload);
+    ASSERT_NE(release, nullptr);
+    EXPECT_EQ(release->position.signed_value(), -30);
+    EXPECT_EQ(release->drag.phase, iv::ProjectPlaybackDragPhase::end);
+    EXPECT_EQ(release->drag.id, std::numeric_limits<std::uint64_t>::max());
+    EXPECT_THROW((void)iv::parse_socket_rpc_request(R"({"jsonrpc":"2.0","id":1,"method":"playback.drag","params":{"position":"0","phase":"cancel","dragId":"1"}})"), std::exception);
+    EXPECT_THROW((void)iv::parse_socket_rpc_request(R"({"jsonrpc":"2.0","id":1,"method":"playback.drag","params":{"position":"0","phase":"begin","dragId":"-1"}})"), std::exception);
     for (auto position : {"17", "\"1.5\"", "\"9223372036854775808\"", "\"5x\""}) {
         auto request = std::string(R"({"jsonrpc":"2.0","id":1,"method":"playback.seek","params":{"position":)") + position + "}}";
         EXPECT_THROW((void)iv::parse_socket_rpc_request(request), std::exception);
@@ -153,12 +161,12 @@ TEST(SocketRpcPlayback, RoutesAuthorizeControlsWithoutCreatingProjectMutations)
     auto playback_scope = iv::socket_rpc_graph_executor_bridge::bind(server, executor);
     iv::SocketRpcRouteRegistry routes;
     std::uint64_t last_accepted = 0;
-    for (auto method : {"playback.get", "playback.toggle", "playback.setRunning", "playback.seek"}) {
+    for (auto method : {"playback.get", "playback.toggle", "playback.setRunning", "playback.seek", "playback.drag"}) {
         SCOPED_TRACE(method);
         std::string capability;
         std::optional<bool> mutating;
         auto request = iv::parse_socket_rpc_request(Json{{"jsonrpc", "2.0"}, {"id", 1}, {"method", method},
-            {"params", {{"position", "-123"}, {"running", false}}}}.dump());
+            {"params", {{"position", "-123"}, {"running", false}, {"phase", "begin"}, {"dragId", "1"}}}}.dump());
         iv::SocketRpcRouteResult result;
         IV_EVENT_SOURCE(iv::SocketRpcServer, method) {
             result = routes.dispatch(request, {.client_id = "client", .authorize = [&](auto const& requested) {
@@ -174,8 +182,10 @@ TEST(SocketRpcPlayback, RoutesAuthorizeControlsWithoutCreatingProjectMutations)
         ASSERT_TRUE(response.contains("result")) << response;
         auto const& snapshot = response.at("result");
         EXPECT_EQ(snapshot.at("position"), "0");
+        EXPECT_EQ(snapshot.at("startPosition"), "0");
+        EXPECT_EQ(snapshot.at("executionIndex"), "0");
         EXPECT_EQ(snapshot.at("appliedCommand"), "0");
-        EXPECT_EQ(snapshot.at("running"), true);
+        EXPECT_EQ(snapshot.at("running"), false);
         if (reading) EXPECT_FALSE(snapshot.contains("acceptedCommand"));
         else EXPECT_EQ(snapshot.at("acceptedCommand"), std::to_string(++last_accepted));
     }

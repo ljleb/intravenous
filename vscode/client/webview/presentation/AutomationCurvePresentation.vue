@@ -5,6 +5,7 @@ import { useAutomationEditing } from "./automationEditingContext";
 import type { AutomationPoint, CurveInterpolation } from "../../src/automationCurveGeometry";
 import { useNode } from "./nodeContext";
 import { useTimelineWindow } from "../timeline/timelineContext";
+import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
 import NodeLane from "./NodeLane.vue";
 import type { NodeDisplayMode } from "./displayMode";
 
@@ -97,6 +98,7 @@ onBeforeUnmount(() => { observer?.disconnect(); window.removeEventListener("poin
             :aria-label="`${node.displayName || 'Automation curve'}${editable ? '; double-click to add a point' : '; read-only'}`" @dblclick="add">
             <title>{{ error || (editable ? 'Double-click to add a point or edit a point’s segment. Drag a point to move it. Right-click a point to remove it.' : 'Automation curve') }}</title>
             <path :d="path" class="curve-line" />
+            <TimelinePlayhead />
             <circle v-for="point in editable ? view?.points ?? [] : []" :key="point.id" :cx="x(point.seconds)" :cy="y(point.value)"
                 r="5" class="curve-point" role="button" :aria-label="`Point at ${point.seconds} seconds: ${point.value}`"
                 @pointerdown="start($event, point.id)" @dblclick.stop="editSegment($event, point)" @contextmenu="remove($event, point.id)">

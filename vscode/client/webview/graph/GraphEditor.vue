@@ -428,6 +428,15 @@ function pointerLeftWindow(event: PointerEvent) {
     if (!event.relatedTarget && (event.clientX <= 0 || event.clientY <= 0
         || event.clientX >= window.innerWidth || event.clientY >= window.innerHeight)) pointerCancelled(event);
 }
+function focusSurfaceFromPointer(event: PointerEvent) {
+    if (event.target instanceof Element
+        && !event.target.closest("input, textarea, select, button, a, summary, [contenteditable], [tabindex]:not(.graph-editor)")) {
+        surface.value?.focus({ preventScroll: true });
+    }
+}
+function focusIdleSurface() {
+    if (document.hasFocus() && document.activeElement === document.body) surface.value?.focus({ preventScroll: true });
+}
 function keyDown(event: KeyboardEvent) {
     const editingText = event.target instanceof Element
         && !!event.target.closest("input, textarea, select, [contenteditable]:not([contenteditable=false]), [role=textbox]");
@@ -540,6 +549,7 @@ onMounted(() => {
     window.addEventListener("pointerdown", clickOutsideManual, true);
     window.addEventListener("wheel", wheelManual, { capture: true, passive: false });
     window.addEventListener("focus", focusManualHint);
+    window.addEventListener("focus", focusIdleSurface);
     window.addEventListener("pointerdown", observePointerShift, true);
     window.addEventListener("pointerup", releaseConnection, true);
     window.addEventListener("pointercancel", pointerCancelled, true);
@@ -550,6 +560,7 @@ onMounted(() => {
     window.addEventListener("scroll", scheduleWireUpdate, true);
     wireResizeObserver = new ResizeObserver(scheduleWireUpdate);
     if (surface.value) wireResizeObserver.observe(surface.value);
+    focusIdleSurface();
     webviewApi.postMessage({ type: "graphReady" });
 });
 onBeforeUnmount(() => {
@@ -574,6 +585,7 @@ onBeforeUnmount(() => {
     window.removeEventListener("pointerdown", clickOutsideManual, true);
     window.removeEventListener("wheel", wheelManual, true);
     window.removeEventListener("focus", focusManualHint);
+    window.removeEventListener("focus", focusIdleSurface);
     window.removeEventListener("pointerdown", observePointerShift, true);
     window.removeEventListener("pointerup", releaseConnection, true);
     window.removeEventListener("pointercancel", pointerCancelled, true);
@@ -585,7 +597,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-    <main ref="surface" class="graph-editor" tabindex="-1" @lostpointercapture="pointerCancelled">
+    <main ref="surface" class="graph-editor" tabindex="0" @pointerdown.capture="focusSurfaceFromPointer"
+        @lostpointercapture="pointerCancelled">
         <div v-if="state.sessionStatus !== 'running'" class="status" role="status">
             {{ state.sessionStatus === 'starting' ? 'Starting Intravenous…' : 'Restarting Intravenous…' }}
         </div>

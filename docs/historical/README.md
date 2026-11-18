@@ -333,3 +333,9 @@ Preserved before the owner separated configuration commitment from DSP readiness
 - [Ordered cutovers before failed-generation recovery](./ordered_cutovers_before_failed_generation_recovery_2026-11-17.md)
   preserves the unconditional acceptance guarantee before the terminal
   pre-activation failure exception.
+
+- [Playback before return to the selected start](./playback_before_return_to_start_2026-11-17.md)
+  preserves running startup and pause-in-place semantics.
+
+- [Ruler dragging before temporary pause](./playback_before_drag_pause_2026-11-17.md)
+  preserves the earlier drag behavior and the timing of seek requests.

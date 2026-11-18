@@ -48,8 +48,6 @@ const timeWindow = computed(() => ({ beginSeconds: viewport.value.beginSeconds,
     endSeconds: viewport.value.beginSeconds + Math.max(1, timeWidth.value) * viewport.value.secondsPerPixel,
     sampleRate: scope.value.sampleRate }));
 provideTimelineWindow(timeWindow);
-const playheadX = computed(() => playbackSeconds.value === null ? -1
-    : (playbackSeconds.value - viewport.value.beginSeconds) / viewport.value.secondsPerPixel);
 const pan = shallowRef<MiddlePan | null>(null);
 let panMoved = false;
 let observer: ResizeObserver | null = null;
@@ -152,7 +150,7 @@ onBeforeUnmount(() => {
         @pointerup="endPan" @pointercancel="endPan" @lostpointercapture="endPan"
         @mousedown="preventMiddleDefault" @auxclick="preventMiddleDefault">
         <header class="timeline-heading">
-            <div class="node-column playback-position" title="Space: play/pause. Click the ruler to seek.">
+            <div class="node-column playback-position" title="Space: play/pause. Click or drag the ruler to seek.">
                 <template v-if="playbackSeconds !== null">
                     {{ playback.state.value?.running ? '▷' : 'Ⅱ' }} {{ playbackSeconds.toFixed(3) }} s
                     <small>{{ playback.position.value?.toString() }} smp</small>
@@ -161,8 +159,6 @@ onBeforeUnmount(() => {
             <div ref="timeRegion" class="time-region"><TimeRuler :window="timeWindow" :sample-rate="scope.sampleRate" playback style="height: 100%" /></div>
         </header>
         <div class="lanes">
-            <div v-if="playheadX >= 0 && playheadX <= timeWidth" class="playhead-line"
-                :style="{ left: `calc(var(--node-label-width) + ${playheadX}px)` }" />
             <section v-for="{ child, semantic } in children" :key="addressKey(child.address)"
                 class="lane" :class="{ selected: selectedLane === addressKey(child.address) }"
                 :style="{ height: `${laneHeight}px` }" :aria-label="nodeDisplayName(semantic)" tabindex="0"
@@ -201,7 +197,6 @@ onBeforeUnmount(() => {
 .timeline-heading { box-sizing: border-box; position: sticky; top: 0; z-index: 1; background: var(--vscode-editor-background); flex: 0 0 var(--timeline-header-height); border-bottom: 1px solid var(--vscode-panel-border); }
 .node-column { box-sizing: border-box; min-width: 0; padding: 8px 12px; border-right: 1px solid var(--vscode-panel-border); }
 .lanes { flex: 0 0 auto; min-height: 0; position: relative; }
-.playhead-line { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--vscode-debugIcon-startForeground, #89d185); opacity: .65; pointer-events: none; z-index: 1; }
 .playback-position { overflow: hidden; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .playback-position small { opacity: .6; margin-left: 6px; }
 .lane { box-sizing: border-box; border-bottom: 1px solid var(--vscode-panel-border); }

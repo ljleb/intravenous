@@ -493,6 +493,7 @@ TEST(SystemAudioDevices, PlaybackUnderrunDropsTheDevicesCurrentInputSlice)
         std::this_thread::yield();
     ASSERT_TRUE(activated);
     render_probe_calls.store(0, std::memory_order_relaxed);
+    (void)executor.set_playback_running(true);
     devices.attach_graph_executor(executor);
     auto const before_recovery = request_output_block(output, 2 * block);
     auto const position_after_failure = executor.playback_snapshot().position;

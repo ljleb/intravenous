@@ -4,6 +4,7 @@ import { ControlCompilationProgress, type ControlCompileStatus } from "./control
 import type { NodeAddress } from "./graphScope";
 import { validateNodeEventTarget, type SerializedNodeEvent } from "./nodeEvents";
 import { NodeEventInteractions } from "./nodeEventInteractions";
+import type { PlaybackDrag, PlaybackSnapshot } from "./playback";
 import * as vscode from "vscode";
 import * as childProcess from "child_process";
 import * as crypto from "crypto";
@@ -99,16 +100,17 @@ type GraphNodesUpdatedNotification = {
 };
 
 export class WorkspaceSession {
-    async readPlayback(): Promise<import("./playback").PlaybackSnapshot | null> {
+    async readPlayback(): Promise<PlaybackSnapshot | null> {
         const rpc = this.rpc;
         if (!rpc || this.graphSessionStatus !== "running") return null;
         const state = await rpc.getPlayback();
         return this.rpc === rpc && this.graphSessionStatus === "running" ? state : null;
     }
-    async playbackCommand(position?: string): Promise<import("./playback").PlaybackSnapshot | null> {
+    async playbackCommand(position?: string, drag?: PlaybackDrag): Promise<PlaybackSnapshot | null> {
         const rpc = this.rpc;
         if (!rpc || this.graphSessionStatus !== "running") throw new Error("The Intravenous server is unavailable");
-        const snapshot = await (position === undefined ? rpc.togglePlayback() : rpc.seekPlayback(position));
+        const snapshot = await (position === undefined ? rpc.togglePlayback()
+            : drag ? rpc.dragPlayback(position, drag) : rpc.seekPlayback(position));
         return this.rpc === rpc && this.graphSessionStatus === "running" ? snapshot : null;
     }
     private readonly observationChanges = new vscode.EventEmitter<ObservationUpdate>();

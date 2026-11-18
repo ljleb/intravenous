@@ -66,13 +66,21 @@ node-visible time, and it continues contiguously across global-coordinate
 jumps. The physical audio-device clock is likewise not another project
 cursor. See [Global Indexing](./global_indexing.md#sequential-execution-order).
 
+Each new project session opens paused with its applied playhead and selected
+start at sample index zero. Every explicit seek sets the selected start when
+applied, including seeks during playback. Running Tick blocks advance the
+playhead independently of the remembered start. Play/Pause returns to that
+start when stopping, and the next Play begins there. The selected start
+belongs to the shared session. The previous startup and pause behavior is
+[preserved historically](./historical/playback_before_return_to_start_2026-11-17.md).
+
 The following is the semantic command table (the command becomes effective at
 a Tick boundary, possibly after preparation):
 
 | Action | Applied playhead | Next `ctx.index` |
 | --- | --- | --- |
 | Running Tick block | Advances with executed block | Advances with executed block, aligned |
-| Pause | Holds the selected position | Continues advancing on executed blocks |
+| Pause | Returns to the last selected start and holds there | Continues advancing on executed blocks |
 | Seek while paused | Changes to the destination | Unchanged by the seek |
 | Remain paused | Holds destination | Continues advancing on executed blocks |
 | Resume/start | Advances from held position | Relocates to held position, then advances |
@@ -246,8 +254,9 @@ separate from ordinary replay and does not change these rules.
 
 A seek is a **requested** destination until its required background data are
 ready. A running seek retains execution at the old applied position while its
-destination is prepared. A resume remains paused until the required starting
-window is ready. A paused seek can likewise retain the previous applied
+destination is prepared. A return to the selected start likewise keeps the
+applied selection while its held position prepares. A resume remains paused
+until the required starting window is ready. A paused seek can retain the previous applied
 position until its requested destination and its once-only Event audition can
 be applied coherently. Only application of the new position changes the
 selection consumed by the graph. Superseded pending cursor requests need not
@@ -261,6 +270,22 @@ Applied position and running state come from coherent backend snapshots.
 The applied cursor, not the requested ghost position, identifies which data
 were actually selected for execution. No project edit or graph rebuild is
 created by merely seeking or drawing a ghost cursor.
+
+A click on the project time ruler seeks in the current transport mode. When a
+drag starts, playback pauses and the displayed playhead follows the pointer.
+The graph holds the last applied position until the drag position is ready.
+Releasing the pointer selects the release position as the new start. Playback
+resumes from that position if it was running when the drag began. A play or
+pause command during the drag sets the state to restore on release.
+
+Inside lanes, the playhead is drawn on surfaces with a project time axis, such
+as an automation curve or a waveform. Controls and live meters keep a clear
+view of their own content.
+
+The project ruler marks the selected start when that position is in view.
+A faint cursor tracks the foreground Tick coordinate on the ruler and on
+lane surfaces with a project time axis. The faint cursor appears when it
+differs from the displayed project playhead.
 
 The background scheduler should preserve demand for the **currently applied**
 position/window while preparing a different pending destination. Forward

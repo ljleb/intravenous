@@ -576,13 +576,28 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
             throw std::invalid_argument("playback.setRunning requires boolean param 'running'");
         return parsed(SetPlaybackRunningRequest{params.at("running").get<bool>()});
     }
-    if (method == "playback.seek") {
-        auto text = parse_string_param(params, "position");
+    if (method == "playback.seek" || method == "playback.drag") {
+        auto const text = parse_string_param(params, "position");
         std::int64_t position = 0;
-        auto converted = std::from_chars(text.data(), text.data() + text.size(), position);
+        auto const converted = std::from_chars(text.data(), text.data() + text.size(), position);
         if (converted.ec != std::errc{} || converted.ptr != text.data() + text.size())
-            throw std::invalid_argument("playback.seek requires a signed decimal sample index string");
-        return parsed(SeekPlaybackRequest{GlobalIndex::from_signed(position)});
+            throw std::invalid_argument(method + " requires a signed decimal sample index string");
+        auto const index = GlobalIndex::from_signed(position);
+        if (method == "playback.seek") return parsed(SeekPlaybackRequest{index});
+
+        auto const phase_name = parse_string_param(params, "phase");
+        ProjectPlaybackDragPhase phase;
+        if (phase_name == "begin") phase = ProjectPlaybackDragPhase::begin;
+        else if (phase_name == "move") phase = ProjectPlaybackDragPhase::move;
+        else if (phase_name == "end") phase = ProjectPlaybackDragPhase::end;
+        else throw std::invalid_argument("playback.drag requires 'begin', 'move', or 'end' for 'phase'");
+
+        auto const drag_id = parse_string_param(params, "dragId");
+        std::uint64_t id = 0;
+        auto const id_result = std::from_chars(drag_id.data(), drag_id.data() + drag_id.size(), id);
+        if (id_result.ec != std::errc{} || id_result.ptr != drag_id.data() + drag_id.size())
+            throw std::invalid_argument("playback.drag requires an unsigned decimal 'dragId' string");
+        return parsed(DragPlaybackRequest{index, {phase, id}});
     }
     if (method == "audioDevices.set") {
         return parsed(SetAudioDevicesRequest{

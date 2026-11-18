@@ -7,7 +7,8 @@ import type { GraphEditorAction, GraphEditorState, GraphEditorWebviewMessage } f
 import type { WorkspaceSession } from "./workspaceSession";
 import type { ManualControlHint } from "./manualControlGesture";
 import { isNodeEventRequest, isNodeEventGestureRequest, replyToNodeEvent, replyToNodeEventGesture } from "./nodeEventMessaging";
-import { isPendingPlaybackSeek, playbackSeekPosition, type PlaybackSeek, type PlaybackSnapshot } from "./playback";
+import { isPendingPlaybackSeek, playbackSeekPosition, type PlaybackDrag, type PlaybackDragPhase,
+    type PlaybackSeek, type PlaybackSnapshot } from "./playback";
 
 export class GraphEditorProvider implements vscode.Disposable {
     private readonly panels = new Set<vscode.WebviewPanel>();
@@ -33,6 +34,7 @@ export class GraphEditorProvider implements vscode.Disposable {
     private layoutError = "";
     private playbackReading = false;
     private pendingSeek: PlaybackSeek | null = null;
+    private playbackDrag: { panel: vscode.WebviewPanel; dragId: string; position: string } | null = null;
     private playbackSnapshot: PlaybackSnapshot | null = null;
     private readonly playbackTimer = setInterval(() => { void this.refreshPlayback(); }, 50);
 
@@ -44,12 +46,12 @@ export class GraphEditorProvider implements vscode.Disposable {
         });
     }
 
-    private async seekPlayback(position: string): Promise<void> {
+    private async seekPlayback(position: string, drag?: PlaybackDrag): Promise<void> {
         const request: PlaybackSeek = { position };
         this.pendingSeek = request;
         this.postPlayback();
         try {
-            const accepted = await this.session.playbackCommand(position);
+            const accepted = await this.session.playbackCommand(position, drag);
             if (this.pendingSeek !== request) return;
             if (accepted?.acceptedCommand === undefined) this.pendingSeek = null;
             else request.acceptedCommand = accepted.acceptedCommand;
@@ -57,6 +59,32 @@ export class GraphEditorProvider implements vscode.Disposable {
             if (this.pendingSeek === request) this.pendingSeek = null;
             throw error;
         } finally { this.postPlayback(); }
+    }
+
+    private async dragPlayback(panel: vscode.WebviewPanel, phase: PlaybackDragPhase, position: string): Promise<void> {
+        if (phase === "begin") {
+            if (!panel.visible) return;
+            this.finishPlaybackDrag();
+            this.playbackDrag = { panel, dragId: crypto.randomBytes(8).readBigUInt64BE().toString(), position };
+        }
+        const drag = this.playbackDrag;
+        if (drag?.panel !== panel) return;
+        drag.position = position;
+        if (phase === "end") this.playbackDrag = null;
+        try { await this.seekPlayback(position, { phase, dragId: drag.dragId }); }
+        catch (error) {
+            if (phase === "begin" && this.playbackDrag === drag) this.playbackDrag = null;
+            throw error;
+        }
+    }
+
+    private finishPlaybackDrag(panel = this.playbackDrag?.panel): void {
+        const drag = this.playbackDrag;
+        if (drag && drag.panel === panel) {
+            void this.dragPlayback(drag.panel, "end", drag.position).catch((error) => {
+                void vscode.window.showErrorMessage(`Cannot finish playback drag: ${error.message}`);
+            });
+        }
     }
 
     private async refreshPlayback(): Promise<void> {
@@ -106,7 +134,10 @@ export class GraphEditorProvider implements vscode.Disposable {
             }
         });
         this.windowFocusChanged = vscode.window.onDidChangeWindowState(({ focused }) => {
-            if (!focused) this.interactionHints.clear();
+            if (!focused) {
+                this.interactionHints.clear();
+                this.finishPlaybackDrag();
+            }
             this.updateInteractionStatus();
             for (const panel of this.ready) void panel.webview.postMessage({ type: "graphWindowFocus", focused });
         });
@@ -118,7 +149,7 @@ export class GraphEditorProvider implements vscode.Disposable {
         if (!hint) {
             if (panel && vscode.window.state.focused) {
                 this.interactionStatus.text = "Space: Play/Pause";
-                this.interactionStatus.tooltip = "Click the ruler to seek. Intravenous: Seek Playback accepts samples or seconds.";
+                this.interactionStatus.tooltip = "Click or drag the ruler to seek. Intravenous: Seek Playback accepts samples or seconds.";
                 this.interactionStatus.command = "intravenous.togglePlayback";
                 this.interactionStatus.show();
             } else this.interactionStatus.hide();
@@ -212,6 +243,7 @@ export class GraphEditorProvider implements vscode.Disposable {
         const viewState = panel.onDidChangeViewState(() => {
             void panel.webview.postMessage({ type: "observationVisibility", visible: panel.visible });
             if (!panel.visible) {
+                this.finishPlaybackDrag(panel);
                 const owner = this.controlOwners.get(panel);
                 if (owner) void this.session.reconcileObservations(owner, []).catch(() => {});
             }
@@ -242,9 +274,11 @@ export class GraphEditorProvider implements vscode.Disposable {
                         ? this.session.nodeEvents.begin(owner, target, id) : this.session.nodeEvents.end(owner, target, id));
                 if (this.panels.has(panel)) void panel.webview.postMessage(response);
                 if (response.error) void vscode.window.showErrorMessage(`Cannot send node event: ${response.error}`);
-            } else if (message?.type === "playbackToggle" || message?.type === "playbackSeek") {
+            } else if (message?.type === "playbackToggle" || message?.type === "playbackSeek" || message?.type === "playbackDrag") {
                 try {
-                    if (message.type === "playbackSeek") await this.seekPlayback(playbackSeekPosition(message.position, 1));
+                    if (message.type === "playbackDrag") {
+                        await this.dragPlayback(panel, message.phase, playbackSeekPosition(message.position, 1));
+                    } else if (message.type === "playbackSeek") await this.seekPlayback(playbackSeekPosition(message.position, 1));
                     else await this.session.playbackCommand();
                 }
                 catch (error) { void vscode.window.showErrorMessage(`Cannot change playback: ${error.message}`); }
@@ -254,6 +288,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                 this.interactionHints.delete(panel);
                 this.updateInteractionStatus();
                 if (this.ready.has(panel)) {
+                    this.finishPlaybackDrag(panel);
                     const owner = this.controlOwners.get(panel);
                     if (owner) { this.session.manualControls.releaseOwner(owner); this.session.nodeEvents.releaseOwner(owner); }
                 }
@@ -333,6 +368,7 @@ export class GraphEditorProvider implements vscode.Disposable {
             }
         });
         panel.onDidDispose(() => {
+            this.finishPlaybackDrag(panel);
             const owner = this.controlOwners.get(panel);
             if (owner) {
                 this.session.manualControls.releaseOwner(owner); this.session.nodeEvents.releaseOwner(owner);

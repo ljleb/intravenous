@@ -6,7 +6,8 @@ import { WorkspaceRpc } from "../src/workspaceRpc";
 import type { JsonRpcSocketClient } from "../src/rpcClient";
 
 const state = (changes: Partial<PlaybackSnapshot> = {}): PlaybackSnapshot => ({
-    position: "48000", sampleRate: 48000, running: true, appliedCommand: "1", segment: "1", ...changes,
+    position: "48000", startPosition: "48000", executionIndex: "48000",
+    sampleRate: 48000, running: true, appliedCommand: "1", segment: "1", ...changes,
 });
 test("seek retains exact sample indices and quantizes seconds at the project rate", () => {
     assert.equal(playbackSeekPosition("-9223372036854775808", 48000), "-9223372036854775808");
@@ -43,6 +44,25 @@ test("repeated running snapshots hold the applied cursor during an underrun", ()
     assert.equal(display.position(75), 48000n);
     display.update(state({ position: "48064" }), 100);
     assert.equal(display.position(125), 49264n);
+});
+test("foreground animation follows Tick progress while the project playhead is held", () => {
+    const display = new PlaybackDisplay();
+    display.update(state(), 0);
+    assert.equal(display.executionIndex(25), display.position(25));
+
+    const paused = state({ running: false, executionIndex: "50400", segment: "2" });
+    display.update(paused, 50);
+    assert.equal(display.position(75), 48000n);
+    assert.equal(display.executionIndex(75), 51600n);
+    assert.equal(display.isAnimating(75), true);
+    assert.equal(display.executionIndex(1000), 62400n);
+    assert.equal(display.isAnimating(1000), false);
+
+    display.update(paused, 100);
+    assert.equal(display.executionIndex(125), 50400n);
+    assert.equal(display.isAnimating(125), false);
+    display.update(state({ executionIndex: undefined }), 150);
+    assert.equal(display.executionIndex(175), null);
 });
 test("requested cursor waits for its exact accepted command or a superseding one", () => {
     const seek = { position: "-300", acceptedCommand: "9007199254740993" };

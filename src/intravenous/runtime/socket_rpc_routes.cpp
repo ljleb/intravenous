@@ -59,6 +59,8 @@ std::string playback_result(int id, ProjectPlaybackRequest request)
     auto const& state = *request.snapshot;
     Json result{
         {"position", std::to_string(state.position.signed_value())},
+        {"startPosition", std::to_string(state.start_position.signed_value())},
+        {"executionIndex", std::to_string(state.execution_index.signed_value())},
         {"running", state.running},
         {"sampleRate", state.sample_rate},
         {"appliedCommand", std::to_string(state.applied_command)},
@@ -135,6 +137,11 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
     impl_->add<SeekPlaybackRequest>("playback.seek", "project.write", false, false,
         [](auto const& request, int id, Context const&) {
             return playback_result(id, {.operation = ProjectPlaybackOperation::seek, .position = request.position});
+        });
+    impl_->add<DragPlaybackRequest>("playback.drag", "project.write", false, false,
+        [](auto const& request, int id, Context const&) {
+            return playback_result(id, {.operation = ProjectPlaybackOperation::drag,
+                .position = request.position, .drag = request.drag});
         });
     impl_->add<GraphQueryBySpansRequest>(
         "graph.queryBySpans", "project.read", false, false,

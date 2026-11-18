@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount } from "vue";
 import { addressKey } from "../../src/graphScope";
 import { sampleWaveform } from "../../src/sampleWaveform";
+import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
 import { useNode } from "./nodeContext";
 import { useObservations } from "./observationContext";
 const props = defineProps<{ bounds?: { min: number; max: number }; mode?: string }>();
@@ -41,6 +42,7 @@ onBeforeUnmount(() => observations?.hint(owner, null));
                     :x="region.x" y="4" :width="region.width" height="92" class="coverage" />
                 <path v-for="(path, i) in output.geometry.paths" :key="`path-${i}`" :d="path"
                     fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" vector-effect="non-scaling-stroke" />
+                <TimelinePlayhead :sample-window="output.result?.window" />
             </svg>
             <span class="label">{{ output.member }}<template v-if="output.channels && output.channels.length > 1"> · {{ output.channelName }}</template></span>
         </div>

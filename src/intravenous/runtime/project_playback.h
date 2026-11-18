@@ -15,7 +15,9 @@ namespace iv {
 
 struct ProjectPlaybackSnapshot {
     GlobalIndex position{};
-    bool running = true;
+    GlobalIndex start_position{};
+    GlobalIndex execution_index{};
+    bool running = false;
     std::uint64_t applied_command = 0;
     std::uint64_t segment = 0;
     double sample_rate = 48000;
@@ -26,11 +28,18 @@ struct TickPlaybackSelection {
     bool audition = false;
 };
 
-enum class ProjectPlaybackOperation { read, set_running, toggle, seek };
+enum class ProjectPlaybackOperation { read, set_running, toggle, seek, drag };
+enum class ProjectPlaybackDragPhase { begin, move, end };
+struct ProjectPlaybackDrag {
+    ProjectPlaybackDragPhase phase = ProjectPlaybackDragPhase::begin;
+    std::uint64_t id = 0;
+};
+
 struct ProjectPlaybackRequest {
     ProjectPlaybackOperation operation = ProjectPlaybackOperation::read;
     GlobalIndex position{};
     bool running = true;
+    ProjectPlaybackDrag drag{};
     std::optional<std::uint64_t> accepted_command{};
     std::optional<ProjectPlaybackSnapshot> snapshot{};
 };
@@ -41,31 +50,35 @@ struct ProjectPlaybackRequest {
 class ProjectPlayback {
     struct Command {
         std::uint64_t sequence = 0;
+        ProjectPlaybackOperation operation = ProjectPlaybackOperation::read;
         GlobalIndex position{};
-        bool seek = false;
         bool running = true;
-        bool toggle = false;
+        ProjectPlaybackDragPhase drag_phase = ProjectPlaybackDragPhase::begin;
     };
     static constexpr std::size_t command_capacity = 256;
     std::array<Command, command_capacity> commands_{};
     std::mutex command_mutex_{};
+    std::optional<std::uint64_t> submitted_drag_{};
     std::atomic<std::uint64_t> written_{0}, consumed_{0};
-    GlobalIndex execution_index_{};
     ProjectPlaybackSnapshot state_{};
     ProjectPlaybackSnapshot pending_{};
-    bool pending_seek_ = false;
+    std::optional<GlobalIndex> pending_position_{};
+    bool pending_audition_ = false;
+    // Present while the audio side is processing a drag, even before its first position applies.
+    std::optional<bool> drag_resume_running_{};
     std::atomic<std::uint64_t> publication_{0};
-    std::atomic<std::uint64_t> position_{0}, applied_{0}, segment_{0};
-    std::atomic<bool> running_{true};
+    std::atomic<std::uint64_t> position_{0}, start_position_{0}, execution_index_{0}, applied_{0}, segment_{0};
+    std::atomic<bool> running_{false};
     std::atomic<double> sample_rate_{48000};
 
-    std::uint64_t submit(Command command)
+    std::uint64_t enqueue(Command command, bool reserve_drag_end)
     {
-        std::lock_guard lock{command_mutex_};
         auto const written = written_.load(std::memory_order_relaxed);
-        if (written == std::numeric_limits<std::uint64_t>::max())
+        auto const last_sequence = std::numeric_limits<std::uint64_t>::max() - (reserve_drag_end ? 1 : 0);
+        if (written >= last_sequence)
             throw std::overflow_error("playback command sequence is exhausted");
-        if (written - consumed_.load(std::memory_order_acquire) >= command_capacity)
+        auto const capacity = reserve_drag_end ? command_capacity - 1 : command_capacity;
+        if (written - consumed_.load(std::memory_order_acquire) >= capacity)
             throw std::runtime_error("playback command queue is full");
         command.sequence = written + 1;
         commands_[written % command_capacity] = command;
@@ -73,10 +86,26 @@ class ProjectPlayback {
         return command.sequence;
     }
 
+    std::uint64_t submit(Command command)
+    {
+        std::lock_guard lock{command_mutex_};
+        return enqueue(command, submitted_drag_.has_value());
+    }
+
+    void select_position(GlobalIndex position) noexcept
+    {
+        pending_position_ = position;
+        pending_.start_position = position;
+        pending_audition_ = !pending_.running;
+        ++pending_.segment;
+    }
+
     void publish() noexcept
     {
         publication_.fetch_add(1, std::memory_order_acq_rel);
         position_.store(state_.position.bits(), std::memory_order_relaxed);
+        start_position_.store(state_.start_position.bits(), std::memory_order_relaxed);
+        execution_index_.store(state_.execution_index.bits(), std::memory_order_relaxed);
         running_.store(state_.running, std::memory_order_relaxed);
         applied_.store(state_.applied_command, std::memory_order_relaxed);
         segment_.store(state_.segment, std::memory_order_relaxed);
@@ -89,13 +118,30 @@ public:
     static_assert(std::atomic<bool>::is_always_lock_free);
     static_assert(std::atomic<double>::is_always_lock_free);
 
-    [[nodiscard]] std::uint64_t set_running(bool running) { return submit({.running = running}); }
-    [[nodiscard]] std::uint64_t toggle() { return submit({.toggle = true}); }
-    [[nodiscard]] std::uint64_t seek(GlobalIndex position) { return submit({.position = position, .seek = true}); }
+    [[nodiscard]] std::uint64_t set_running(bool running)
+    {
+        return submit({.operation = ProjectPlaybackOperation::set_running, .running = running});
+    }
+    [[nodiscard]] std::uint64_t toggle() { return submit({.operation = ProjectPlaybackOperation::toggle}); }
+    [[nodiscard]] std::uint64_t seek(GlobalIndex position)
+    {
+        return submit({.operation = ProjectPlaybackOperation::seek, .position = position});
+    }
+    [[nodiscard]] std::optional<std::uint64_t> drag(ProjectPlaybackDrag drag, GlobalIndex position)
+    {
+        std::lock_guard lock{command_mutex_};
+        if (drag.phase != ProjectPlaybackDragPhase::begin && submitted_drag_ != drag.id) return {};
+        auto const ending = drag.phase == ProjectPlaybackDragPhase::end;
+        // A drag that has started always has room to release, even when moves fill the queue.
+        auto const sequence = enqueue({.operation = ProjectPlaybackOperation::drag, .position = position,
+            .drag_phase = drag.phase}, !ending);
+        if (ending) submitted_drag_.reset();
+        else submitted_drag_ = drag.id;
+        return sequence;
+    }
 
     struct Block {
         ProjectPlaybackSnapshot state;
-        GlobalIndex execution_index;
         bool audition = false;
 
         [[nodiscard]] TickPlaybackSelection selection() const noexcept
@@ -108,23 +154,54 @@ public:
     {
         auto state = state_;
         state.sample_rate = sample_rate;
-        return {state, execution_index_};
+        // Once begin_block has seen a drag, hold the last applied position
+        // while the drag destination is being prepared.
+        if (drag_resume_running_) state.running = false;
+        return {state};
     }
 
     [[nodiscard]] Block begin_block(double sample_rate) noexcept
     {
         auto consumed = consumed_.load(std::memory_order_relaxed);
         auto const written = written_.load(std::memory_order_acquire);
-        if (pending_.applied_command == state_.applied_command) pending_ = state_;
+        if (pending_.applied_command == state_.applied_command) {
+            pending_ = state_;
+            pending_position_.reset();
+            pending_audition_ = false;
+        }
         while (consumed != written) {
             auto const& command = commands_[consumed % command_capacity];
-            if (command.seek) {
-                pending_.position = command.position;
-                pending_seek_ = true;
-                ++pending_.segment;
-            } else if (command.toggle || command.running != pending_.running) {
-                pending_.running = command.toggle ? !pending_.running : command.running;
-                ++pending_.segment;
+            switch (command.operation) {
+            case ProjectPlaybackOperation::seek:
+                select_position(command.position);
+                break;
+            case ProjectPlaybackOperation::drag:
+                if (command.drag_phase == ProjectPlaybackDragPhase::begin) {
+                    if (!drag_resume_running_) drag_resume_running_ = pending_.running;
+                    pending_.running = false;
+                } else if (command.drag_phase == ProjectPlaybackDragPhase::end) {
+                    pending_.running = *drag_resume_running_;
+                    drag_resume_running_.reset();
+                    // Releasing a paused drag at an already selected position preserves its audition.
+                    if (!pending_.running && command.position == pending_.start_position) break;
+                }
+                select_position(command.position);
+                break;
+            case ProjectPlaybackOperation::set_running:
+            case ProjectPlaybackOperation::toggle: {
+                auto& running = drag_resume_running_ ? *drag_resume_running_ : pending_.running;
+                auto const wanted = command.operation == ProjectPlaybackOperation::toggle ? !running : command.running;
+                if (running == wanted) break;
+                running = wanted;
+                if (!drag_resume_running_) {
+                    pending_position_ = pending_.start_position;
+                    pending_audition_ = false;
+                    ++pending_.segment;
+                }
+                break;
+            }
+            case ProjectPlaybackOperation::read:
+                break;
             }
             pending_.applied_command = command.sequence;
             ++consumed;
@@ -132,17 +209,16 @@ public:
         consumed_.store(consumed, std::memory_order_release);
         auto state = pending_;
         state.sample_rate = sample_rate;
-        if (!pending_seek_) state.position = state_.position;
-        return {state, state.running ? state.position : execution_index_,
-            pending_seek_ && !state.running};
+        state.position = pending_position_.value_or(state_.position);
+        state.execution_index = state.running ? state.position : state_.execution_index;
+        return {state, pending_audition_};
     }
 
     void end_block(Block const& executed, std::size_t frames) noexcept
     {
-        if (executed.state.applied_command == pending_.applied_command) pending_seek_ = false;
         state_ = executed.state;
-        execution_index_ = executed.execution_index.advanced_by(frames);
-        if (state_.running) state_.position = execution_index_;
+        state_.execution_index = state_.execution_index.advanced_by(frames);
+        if (state_.running) state_.position = state_.execution_index;
         publish();
     }
 
@@ -153,6 +229,8 @@ public:
             if (before & 1) continue;
             ProjectPlaybackSnapshot result{
                 .position = GlobalIndex::from_bits(position_.load(std::memory_order_relaxed)),
+                .start_position = GlobalIndex::from_bits(start_position_.load(std::memory_order_relaxed)),
+                .execution_index = GlobalIndex::from_bits(execution_index_.load(std::memory_order_relaxed)),
                 .running = running_.load(std::memory_order_relaxed),
                 .applied_command = applied_.load(std::memory_order_relaxed),
                 .segment = segment_.load(std::memory_order_relaxed),
