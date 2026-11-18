@@ -401,17 +401,17 @@ interpreter: point IDs, outgoing `empty`/`hold`/automatic `bezier` segments,
 tension, stable equal-index order, and sparse coverage do not change.
 Refine the Vue curve editor's gestures as follows:
 
-- **Left-click and drag a point** to select/manipulate that existing point.
-  A plain left click on a point must not create or delete another point.
-- **Shift+click a point deletes it**, consistent with the existing Shift
-  gesture for removing port connections. This is the immediate deletion
-  gesture; do not retain right-click-to-delete as the primary action.
-- **Right-click an existing point** opens a context menu for its outgoing
-  curve type (`empty`, `hold`, `bezier`), tension, and **Delete point**.
-- **Left-click empty curve space** adds a point at that position. Point
-  hit-testing takes precedence over creation. The owner selected this gesture
-  on 2026-11-18, replacing
-  [right-click creation](./historical/vue_automation_right_click_creation_2026-11-18.md).
+- **Left-click and drag a point** to move it. Grabbing an unselected point
+  leaves the current selection alone. Grabbing a selected point moves the
+  selected points together.
+- **Left-drag empty space** to select the points inside the rectangle. Ctrl
+  toggles those points and Shift adds them.
+- **Shift+click a point** deletes it.
+- **Right-click an existing point** opens the segment menu for its outgoing
+  curve type, tension, and **Delete point**.
+- **Right-click empty space** adds a point. Point hit testing takes precedence.
+  The [previous gestures](historical/vue_lane_and_point_selection_before_2026-11-18.md)
+  remain available for context.
 - Provide a **tension handle near each applicable control point**, manipulable
   without entering a separate form. Display and edit the same `[0,1]` tension
   parameter used by the backend, keeping exact linear interpolation at `0` and
@@ -421,6 +421,25 @@ Point edits continue through typed node messages, draft reconciliation and one
 undoable gesture per completed manipulation. The handle, menu, and drag
 interactions must remain coherent across presentation remounts and accepted
 backend revisions; no direct mutation of DSP storage from Vue.
+
+### Value display and panning (2026-11-18)
+
+The Scale panel selects Curved or Cropped display. Curved keeps the original
+mapping, including the arctangent where an end is unbounded. Cropped uses a
+linear window that clips values outside it. Enabled bounds limit the window's
+travel. A range narrower than the window fits in the lane. Display and panning
+affect only the lane view.
+
+**Alt+Shift+middle-button drag** across an automation lane changes its value
+zoom. Horizontal motion changes the scale around the value at the pointer's
+height. **Shift+middle-button double-click** resets both value pan and zoom.
+
+When bounds are supplied by signals, show their observed value curves and use
+the minimum of the visible lower bound and the maximum of the visible upper
+bound to limit panning. This requires suitable node inputs and windowed
+observation of the values they receive. The current automation module stores
+its bounds in its construction arguments. The observation API currently
+offers output windows and state-field readings.
 
 ### Automation clip ruler and sample-accurate editing
 

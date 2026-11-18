@@ -1283,6 +1283,12 @@ BackgroundStorageRealization::BackgroundStorageRealization(
                 created->event_read = created->owned_event->read_view();
                 created->event_write = created->owned_event->write_view();
             }
+        } else if (planned.kind == PortKind::sample && planned.output_port && created->coverage->empty()
+            && plan.ports[*planned.output_port].output_production != OutputProductionKind::sequential) {
+            created->sample_read = BackgroundSampleReadView{
+                .coverage_value = created->coverage, .geometry = planned.continuous_geometry,
+                .layout = planned.sample_layout, .channels = planned.sample_channels,
+            };
         } else if (uses_output_cache(plan, planned, selection_.cache_computed_outputs)
             && selection_.published) {
             if (planned.kind == PortKind::sample) {

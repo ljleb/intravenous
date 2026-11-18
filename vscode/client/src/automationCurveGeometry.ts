@@ -5,7 +5,9 @@ export type AutomationPointPosition = { id: number; seconds: number; value: numb
 export type AutomationPoint = AutomationPointPosition & { interpolation: CurveInterpolation; tension: number };
 export type AutomationCurve = { points: AutomationPoint[]; cycleSeconds: number; sampleRate?: number; bounds?: AutomationBoundSettings };
 export type AutomationValueBounds = { min?: number; max?: number };
-export type AutomationValueAxis = AutomationValueBounds & { pan?: number };
+export type AutomationValueDisplay = "curved" | "cropped";
+export type AutomationValueZoom = { factor: number; center: number };
+export type AutomationValueAxis = AutomationValueBounds & { pan?: number; display?: AutomationValueDisplay; zoom?: AutomationValueZoom };
 export type AutomationBoundSide = "min" | "max";
 export type AutomationBound = { value: number; enabled: boolean };
 export type AutomationBoundSettings = Record<AutomationBoundSide, AutomationBound>;
@@ -82,29 +84,100 @@ function oneSidedScale(bound: number, pan: number): number {
     return Math.max(1, Math.abs(bound)) * Math.exp(clampOneSidedPan(pan));
 }
 
+function croppedValueWindow(axis: AutomationValueAxis) {
+    const { min, max, pan = 0, zoom } = axis;
+    const range = min !== undefined && max !== undefined ? max - min : Infinity;
+    const precision = Math.abs(clampAutomationValue(pan, axis)) * 2 ** -23;
+    const half = Math.max(precision, Math.min(1, range > 0 ? range / 2 : 1) / (zoom?.factor ?? 1));
+    if (range <= 2 * half)
+        return { center: min! + range / 2, span: range || 2 * half };
+    const center = clampAutomationValue(pan, {
+        min: min === undefined ? undefined : min + half,
+        max: max === undefined ? undefined : max - half,
+    });
+    return { center, span: 2 * half };
+}
+
+export function canPanAutomationValueAxis(axis: AutomationValueAxis): boolean {
+    if (axis.display !== "cropped" && (axis.zoom?.factor ?? 1) > 1) return true;
+    if (axis.min === undefined || axis.max === undefined) return true;
+    return axis.display === "cropped" && axis.max - axis.min > croppedValueWindow(axis).span;
+}
+
 export function panAutomationValueAxis(axis: AutomationValueAxis, dy: number, height: number): number {
     const pan = axis.pan ?? 0;
-    if (!dy || !(height > 0) || axis.min !== undefined && axis.max !== undefined) return pan;
+    if (!dy || !(height > 0) || !canPanAutomationValueAxis(axis)) return pan;
+    if (axis.display === "cropped") {
+        const { center, span } = croppedValueWindow(axis);
+        const next = center + span * dy / height;
+        return Number.isFinite(Math.fround(next)) ? croppedValueWindow({ ...axis, pan: next }).center : center;
+    }
     const next = pan + Math.PI * dy / height;
     if (!Number.isFinite(next)) return pan;
     return axis.min === undefined && axis.max === undefined ? next : clampOneSidedPan(next);
 }
 
-export function automationValueFraction(value: number, { min, max, pan = 0 }: AutomationValueAxis): number {
-    if (!pan || min !== undefined && max !== undefined) return valueScaleFraction(value, { min, max });
-    if (min !== undefined) return 2 * Math.atan((value - min) / oneSidedScale(min, pan)) / Math.PI;
-    if (max !== undefined) return 1 - 2 * Math.atan((max - value) / oneSidedScale(max, -pan)) / Math.PI;
-    return valueScaleFraction(value - pan, {});
+function curvedZoomCenter(center: number, factor: number): number {
+    const half = .5 / factor;
+    return Math.min(1 - half, Math.max(half, center));
 }
 
-export function automationValueAtFraction(fraction: number, { min, max, pan = 0 }: AutomationValueAxis): number {
+export function panCurvedAutomationValueZoom(zoom: AutomationValueZoom, dy: number, height: number): AutomationValueZoom {
+    return { factor: zoom.factor, center: curvedZoomCenter(zoom.center + dy / (height * zoom.factor), zoom.factor) };
+}
+
+export function zoomAutomationValueAxis(axis: AutomationValueAxis, multiplier: number, anchor: number):
+    { pan: number; zoom: AutomationValueZoom } {
+    const pan = axis.pan ?? 0;
+    const zoom = axis.zoom ?? { factor: 1, center: .5 };
+    const range = axis.min !== undefined && axis.max !== undefined ? axis.max - axis.min : Infinity;
+    const minimum = axis.display === "cropped" ? Math.max(2 ** -20, range > 0 ? Math.min(1, 2 / range) : 0) : 1;
+    const factor = Math.max(minimum, Math.min(2 ** 20, zoom.factor * multiplier));
+    const fraction = Math.min(1, Math.max(0, anchor));
+    if (factor === zoom.factor) return { pan, zoom };
+    if (axis.display === "cropped") {
+        const change = { factor, center: .5 };
+        const value = automationValueAtFraction(fraction, axis);
+        const { span } = croppedValueWindow({ ...axis, zoom: change });
+        const center = croppedValueWindow({ ...axis, zoom: change, pan: value - (fraction - .5) * span }).center;
+        return { pan: center, zoom: change };
+    }
+    const center = curvedZoomCenter(zoom.center + (fraction - .5) * (1 / zoom.factor - 1 / factor), factor);
+    return { pan, zoom: { factor, center } };
+}
+
+export function automationValueFraction(value: number, axis: AutomationValueAxis): number {
+    const { min, max, pan = 0, zoom } = axis;
+    if (axis.display === "cropped") {
+        const { center, span } = croppedValueWindow(axis);
+        return .5 + (value - center) / span;
+    }
+    let fraction: number;
+    if (!pan || min !== undefined && max !== undefined) fraction = valueScaleFraction(value, { min, max });
+    else if (min !== undefined) fraction = 2 * Math.atan((value - min) / oneSidedScale(min, pan)) / Math.PI;
+    else if (max !== undefined) fraction = 1 - 2 * Math.atan((max - value) / oneSidedScale(max, -pan)) / Math.PI;
+    else fraction = valueScaleFraction(value - pan, {});
+    return zoom ? .5 + (fraction - zoom.center) * zoom.factor : fraction;
+}
+
+export function automationValueAtFraction(fraction: number, axis: AutomationValueAxis): number {
+    const { min, max, pan = 0, zoom } = axis;
+    if (axis.display === "cropped") {
+        const { center, span } = croppedValueWindow(axis);
+        return center + (fraction - .5) * span;
+    }
+    if (zoom) fraction = zoom.center + (fraction - .5) / zoom.factor;
     if (min !== undefined && max !== undefined) return min + fraction * (max - min);
     if (min !== undefined) return min + Math.tan(fraction * Math.PI / 2) * oneSidedScale(min, pan);
     if (max !== undefined) return max + Math.tan((fraction - 1) * Math.PI / 2) * oneSidedScale(max, -pan);
     return pan + Math.tan((fraction - .5) * Math.PI);
 }
 
-export function automationUnitsPerPixel({ min, max, pan = 0 }: AutomationValueAxis, height: number): number {
+export function automationUnitsPerPixel(axis: AutomationValueAxis, height: number): number {
+    const { min, max, pan = 0 } = axis;
+    if (axis.display === "cropped") return croppedValueWindow(axis).span / height;
+    if (axis.zoom && axis.zoom.factor > 1)
+        return automationValueAtFraction(.5 + .5 / height, axis) - automationValueAtFraction(.5 - .5 / height, axis);
     if (min !== undefined && max !== undefined) return (max - min) / height;
     const scale = min !== undefined ? oneSidedScale(min, pan) / 2 : max !== undefined ? oneSidedScale(max, -pan) / 2 : 1;
     return Math.PI * scale / height;

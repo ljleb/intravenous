@@ -181,29 +181,6 @@ bool module_handler_address_is_selected(
             handler.address.path.back());
 }
 
-bool manual_control_participates(
-    ConfiguredGraph const& graph,
-    ManualControlId const& id)
-{
-    return std::ranges::any_of(
-        graph.manual_controls,
-        [&](ConfiguredManualControl const& configured) {
-            if (configured.id != id) return false;
-            if (configured.output) return true;
-            if (configured.participation
-                == ManualControlParticipation::participate_with_connections) {
-                return true;
-            }
-            auto const channels = graph.node_bundles.sample_input_channels(
-                configured.input);
-            return std::ranges::none_of(
-                channels,
-                [&](SampleInputChannelId channel) {
-                    return graph.connections.sample_input_is_connected(channel);
-                });
-        });
-}
-
 bool manual_control_is_available(
     ConfiguredGraph const& graph,
     ManualControlId const& id)
@@ -368,7 +345,8 @@ void ProjectGraph::schedule_control_compile_locked(
     for (auto& configured : graph->manual_controls) {
         configured.dynamic = std::ranges::contains(
             dynamic_inputs, configured.id);
-        configured.override_connections = configured.dynamic && configured.id.kind == ManualControlKind::input;
+        configured.override_connections = configured.dynamic && configured.id.kind == ManualControlKind::input
+            && !configured.requires_preparation;
         if (auto const* durable = find_manual_control_locked(configured.id); durable && durable->enabled) {
             configured.settled_value = durable->stored_value;
             configured.participation = durable->participation;
@@ -433,7 +411,8 @@ bool ProjectGraph::control_configuration_matches_locked(ConfiguredGraph const& c
         auto const dynamic = std::ranges::contains(inputs, control.id);
         if (code.id != control.id || code.input != control.input || code.output != control.output
             || code.dynamic != dynamic
-            || code.override_connections != (dynamic && control.id.kind == ManualControlKind::input)) return false;
+            || code.override_connections != (dynamic && control.id.kind == ManualControlKind::input
+                && !control.requires_preparation)) return false;
         if (dynamic && !control.requires_preparation) continue;
         auto const saved = std::ranges::find(manual_controls_, control.id, &ProjectManualControl::id);
         auto value = saved != manual_controls_.end() && saved->enabled ? saved->stored_value : control.settled_value;
@@ -601,7 +580,8 @@ void ProjectGraph::schedule_graph_compile_locked(std::shared_ptr<ControlCompileT
         if (auto const* saved = find_manual_control_locked(control.id); saved && saved->enabled)
             control.settled_value = saved->stored_value;
         control.dynamic = std::ranges::contains(inputs, control.id);
-        control.override_connections = control.dynamic && control.id.kind == ManualControlKind::input;
+        control.override_connections = control.dynamic && control.id.kind == ManualControlKind::input
+            && !control.requires_preparation;
         if (control.requires_preparation) {
             std::scoped_lock live(live_mutex_);
             for (auto const& entry : live_interactions_) if (entry.control == control.id) control.settled_value = entry.value;
@@ -1465,7 +1445,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     for (auto const& [instance_id, placement] : generation->placements) {
         auto const interface = read_node_instance_interface(finished_graph.node_bundles, placement.root);
         for (auto const& port : interface.sample_inputs) {
-            if (!port.manual_default) continue;
+            if (!port.manual_default || port.access == InputAccessKind::coverage) continue;
             ManualControlId id{.node = NodeAddress{.instance_id = instance_id}, .port_name = port.name};
             if (explicit_root_controls[instance_id].contains(port.name)) continue;
             effective_controls.push_back({.id = std::move(id), .stored_value = *port.manual_default});
@@ -1548,24 +1528,27 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
                 });
                 continue;
             }
-            if (!is_sequential(*found)) {
+            const bool coverage_control = supports_coverage_manual_control(*found);
+            if (!coverage_control && !manual_control_default_value(*found)) {
                 if (!control.enabled) continue;
                 generation->manual_control_diagnostics.push_back({
                     .id = control.id,
-                    .message = "manual controls require a Sequential Sample input",
+                    .message = "manual controls require a Sequential or windowed Coverage Sample input",
                 });
                 continue;
             }
             auto const port = static_cast<std::size_t>(
                 std::distance(sample_inputs.begin(), found));
-            auto const fallback = manual_control_default_value(*found);
-            if (!control.enabled && !fallback) continue;
+            if (coverage_control && !control.enabled) continue;
+            auto const settled = control.enabled ? control.stored_value
+                : sequential_input_metadata<Sample>(sequential_input_properties(*found)).neutral_value;
             finished_graph.manual_controls.push_back(ConfiguredManualControl{
                 .id = control.id,
                 .input = NodeBundlePortId{bundle, PortKind::sample, port},
                 .concrete_selection_index = selection_index,
-                .settled_value = control.enabled ? control.stored_value : *fallback,
+                .settled_value = settled,
                 .participation = control.enabled ? control.participation : ManualControlParticipation::disconnected_only,
+                .requires_preparation = coverage_control,
             });
         }
     }
@@ -1657,7 +1640,8 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         for (auto& configured : finished_graph.manual_controls) {
             configured.dynamic = std::ranges::contains(
                 next_dynamic_inputs, configured.id);
-            configured.override_connections = configured.dynamic && configured.id.kind == ManualControlKind::input;
+            configured.override_connections = configured.dynamic && configured.id.kind == ManualControlKind::input
+                && !configured.requires_preparation;
         }
     }
     generation->graph = std::make_shared<ConfiguredGraph const>(
@@ -3532,7 +3516,8 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                 ManualControlId id{.node = node.address, .port_name = port.name};
                 auto const* saved = find_manual_control_locked(id);
                 bool const available = node.load_state == ProjectGraphScopeNodeState::ready
-                    && generation && generation->graph && manual_control_is_available(*generation->graph, id);
+                    && generation && generation->graph && (port.access == InputAccessKind::coverage
+                        || manual_control_is_available(*generation->graph, id));
                 std::optional<Sample> live_value;
                 {
                     std::scoped_lock live(live_mutex_);
@@ -3542,9 +3527,11 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                     }
                 }
                 node.manual_controls.push_back({
-                    .control = saved ? *saved : ProjectManualControl{.id = id, .stored_value = *port.manual_default},
+                    .control = saved ? *saved : ProjectManualControl{.id = id, .stored_value = *port.manual_default,
+                        .enabled = port.access != InputAccessKind::coverage},
                     .available = available,
-                    .participates = available && (!saved || saved->enabled) && manual_control_participates(*generation->graph, id),
+                    .participates = available && (saved ? saved->enabled : port.access != InputAccessKind::coverage)
+                        && manual_control_is_available(*generation->graph, id),
                     .live_value = live_value,
                 });
             }

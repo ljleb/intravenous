@@ -329,6 +329,9 @@ The previous open questions and unaccepted recommendations are preserved in
 
 ### Final absence policy accepted, 2026-11-15
 
+The [2026-11-18 instance knob decision](automation_and_suspendable_coverage_direction.md#4-absence-and-sequential-fallback)
+supersedes the port-level knob and fallback rules in this checkpoint.
+
 Region/Coverage inputs retain sparse, separately identifiable supplied Regions;
 out-of-Region reads are invalid. They have no manual knob, fallback configuration,
 `uncovered_value()` or fallback `read()` interface. Sequential inputs alone

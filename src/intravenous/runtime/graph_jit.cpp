@@ -3,6 +3,7 @@
 #include <intravenous/graph_jit/lowering.h>
 #include <intravenous/graph_jit/module_input_resolution.h>
 #include <intravenous/graph_jit/output_gain.h>
+#include <intravenous/graph_jit/coverage_manual_control.h>
 #include <intravenous/graph_jit/observation_runtime.h>
 #include <intravenous/graph_jit/package_callback_abi.h>
 #include <intravenous/graph_jit/realtime_root.h>
@@ -2237,6 +2238,7 @@ public:
             timings,
             request.definitions->package_revisions);
         resolved_graph = graph_jit::detail::resolve_module_inputs(resolved_graph);
+        auto const coverage_controls = graph_jit::detail::expand_coverage_manual_controls(resolved_graph);
         std::vector<ContinuousInputConfig> module_input_configs;
         module_input_configs.reserve(resolved_graph.node_bundles.size() - request.graph->node_bundles.size());
         for (NodeBundleHandle bundle = request.graph->node_bundles.size();
@@ -2276,10 +2278,34 @@ public:
                 .propagate_reverse_coverage_batch = &reverse_output_gain_batch,
             };
             implementations.push_back(graph_jit::NodeImplementation{
-                .node_bundle = stage.bundle, .native_background_gain = true,
+                .node_bundle = stage.bundle, .native_background_node = true,
                 .configuration_identity = stage.configuration,
                 .replay_mode = TickReplayMode::disabled,
                 .node_data = stage.configuration.get(), .declare_node = &declare_output_gain,
+                .tock_coverage = imported.callback(operations.tock_coverage),
+                .tock_coverage_batch = imported.callback(operations.tock_coverage_batch),
+                .propagate_forward_coverage = imported.callback(operations.propagate_forward_coverage),
+                .propagate_forward_coverage_batch = imported.callback(operations.propagate_forward_coverage_batch),
+                .propagate_reverse_coverage = imported.callback(operations.propagate_reverse_coverage),
+                .propagate_reverse_coverage_batch = imported.callback(operations.propagate_reverse_coverage_batch),
+                .native_operations = operations,
+            });
+        }
+        for (auto const& stage : coverage_controls) {
+            using namespace graph_jit::detail;
+            iv::details::NodeCompilerOperations operations{
+                .declare_node = &declare_coverage_manual,
+                .tock_coverage = &tock_coverage_manual,
+                .tock_coverage_batch = &tock_coverage_manual_batch,
+                .propagate_forward_coverage = &forward_coverage_manual,
+                .propagate_forward_coverage_batch = &forward_coverage_manual_batch,
+                .propagate_reverse_coverage = &reverse_coverage_manual,
+                .propagate_reverse_coverage_batch = &reverse_coverage_manual_batch,
+            };
+            implementations.push_back(graph_jit::NodeImplementation{
+                .node_bundle = stage.bundle, .native_background_node = true,
+                .configuration_identity = stage.value, .node_data = stage.value.get(),
+                .declare_node = operations.declare_node,
                 .tock_coverage = imported.callback(operations.tock_coverage),
                 .tock_coverage_batch = imported.callback(operations.tock_coverage_batch),
                 .propagate_forward_coverage = imported.callback(operations.propagate_forward_coverage),

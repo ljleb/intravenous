@@ -13,8 +13,8 @@
 
 namespace iv {
 
-// Controls whether a stored manual value contributes while an authored graph
-// connection also supplies the selected input.
+// The default resolves known gaps. The explicit additive policy remains
+// available for Sequential inputs that mix a manual and connected value.
 enum class ManualControlParticipation {
     disconnected_only,
     participate_with_connections,
@@ -43,7 +43,7 @@ struct ManualControlInteractionId {
 };
 
 // Project-owned scalar state. Input controls broadcast a Sample to the resolved
-// Sequential input. Output gains multiply each channel through its value type's
+// Sequential or Coverage input. Output gains multiply each channel through its value type's
 // explicit gain operation, independently of input participation policy.
 struct ProjectManualControl {
     ManualControlId id{};
@@ -54,6 +54,13 @@ struct ProjectManualControl {
 
     bool operator==(ProjectManualControl const&) const = default;
 };
+
+inline bool supports_coverage_manual_control(ContinuousInputConfig const& config)
+{
+    return input_access(config) == InputAccessKind::coverage
+        && config.content_access == InputContentAccess::windowed
+        && continuous_value_type_domain(config).sole_type() == ContinuousValueTypeId::sample;
+}
 
 // One ProjectGraph-specialization binding after NodeAddress and port-name
 // resolution. Several records can retain one ManualControlId when its semantic
@@ -75,6 +82,8 @@ struct ConfiguredManualControl {
     // Its value is frozen into a prepared graph, never copied from an atomic
     // live target into an already active background-dependent executable.
     bool requires_preparation = false;
+    // The compiler's Coverage fallback producer for this input, if any.
+    std::optional<NodeBundleHandle> coverage_source{};
 
     bool operator==(ConfiguredManualControl const&) const = default;
 };

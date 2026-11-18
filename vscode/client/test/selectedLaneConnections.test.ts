@@ -22,7 +22,7 @@ function connection(id: string, source: string, output: number, target: string, 
 function scope(connections: GraphScopeConnection[]): GraphScope {
     return { generation: 1, editable: true, nodes: [node("a"), node("b"), node("c")], connections };
 }
-const selected = addressKey({ instanceId: "a" });
+const selected = new Set([addressKey({ instanceId: "a" })]);
 function anchors(expanded: string[]) {
     return (port: GraphPortEndpoint) => {
         const group = portSlotKey(port.address, port.direction);
@@ -41,8 +41,15 @@ test("selected lane shows incoming and outgoing connections and excludes unrelat
     const wires = selectedLaneConnections(graph, selected, anchors([]));
     assert.equal(wires.length, 2);
     assert.deepEqual(wires.flatMap((wire) => wire.connectionIds).sort(), ["incoming", "outgoing"]);
-    assert.deepEqual(selectedLaneConnections(graph, null, anchors([])), []);
-    assert.deepEqual(selectedLaneConnections(graph, addressKey({ instanceId: "removed" }), anchors([])), []);
+    assert.deepEqual(selectedLaneConnections(graph, new Set(), anchors([])), []);
+    assert.deepEqual(selectedLaneConnections(graph, new Set([addressKey({ instanceId: "removed" })]), anchors([])), []);
+});
+
+test("each selected lane emphasizes its own connections without doubling a shared cable", () => {
+    const graph = scope([connection("a to b", "a", 0, "b", 0), connection("b to c", "b", 0, "c", 0)]);
+    const lanes = new Set([...selected, addressKey({ instanceId: "b" })]);
+    assert.deepEqual(selectedLaneConnections(graph, lanes, anchors([])).map((wire) => [wire.connectionIds[0], wire.emphasized]),
+        [["a to b", true], ["b to c", true]]);
 });
 
 test("viewport context keeps visible unrelated cables faint and selected cables emphasized", () => {
@@ -152,14 +159,14 @@ test("a connection chooser separates wires at one physical port without selectin
         portEndpointKey(endpoint) === portEndpointKey(port)
             ? { id: connectionEndKey(connectionId, endpoint), x: 40, y: connectionId === "first" ? 20 : 40 }
             : ordinary(endpoint);
-    const wires = selectedLaneConnections(graph, null, withChooser, revealed);
+    const wires = selectedLaneConnections(graph, new Set(), withChooser, revealed);
     assert.equal(wires.length, 2);
     assert.equal(new Set(wires.map((wire) => wire.source.id)).size, 2);
     for (const wire of wires) {
         assert.equal(wire.source.id, connectionEndKey(wire.connectionIds[0], port));
         assert.equal(wire.emphasized, false);
     }
-    assert.deepEqual(selectedLaneConnections(graph, null, ordinary), []);
+    assert.deepEqual(selectedLaneConnections(graph, new Set(), ordinary), []);
     assert.equal(JSON.stringify(graph), original);
 });
 
@@ -168,7 +175,7 @@ test("revealing one input end does not reveal the other inputs of a multi-ended 
         outputs: [{ instanceId: "a", port: {} }], inputs: [{ instanceId: "b", port: {} }],
     } }, connection("unrelated", "c", 0, "b", 2)]);
     const port: GraphPortEndpoint = { address: { instanceId: "b" }, direction: "input", kind: "sample", index: 1, name: "in1" };
-    const wires = selectedLaneConnections(graph, null, anchors([group("a", "output"), group("b", "input")]),
+    const wires = selectedLaneConnections(graph, new Set(), anchors([group("a", "output"), group("b", "input")]),
         [{ connectionId: "many", port }]);
     assert.equal(wires.length, 3);
     assert.ok(wires.every((wire) => wire.target.id === `port:${portEndpointKey(port)}`));
@@ -181,13 +188,13 @@ test("chooser attachments retain selected-lane wires and use the same geometry f
     const port: GraphPortEndpoint = { address: { instanceId: "a" }, direction: "output", kind: "sample", index: 0, name: "out0" };
     const revealed = ["self", "external"].map((connectionId) => ({ connectionId, port }));
     const ordinary = anchors([]); // Every physical port is at the same screen height.
-    const opened = selectedLaneConnections(graph, addressKey({ instanceId: "c" }), ordinary, revealed);
+    const opened = selectedLaneConnections(graph, new Set([addressKey({ instanceId: "c" })]), ordinary, revealed);
     assert.deepEqual(opened.flatMap((wire) => wire.connectionIds).sort(), ["external", "selected", "self"]);
     assert.deepEqual(opened.filter((wire) => wire.emphasized).flatMap((wire) => wire.connectionIds), ["selected"]);
     const self = opened.find((wire) => wire.connectionIds.includes("self"))!;
     const external = opened.find((wire) => wire.connectionIds.includes("external"))!;
     assert.notEqual(self.key, external.key);
     assert.equal(selectedLaneWirePath(self), selectedLaneWirePath(external));
-    const closed = selectedLaneConnections(graph, addressKey({ instanceId: "c" }), ordinary);
+    const closed = selectedLaneConnections(graph, new Set([addressKey({ instanceId: "c" })]), ordinary);
     assert.deepEqual(closed.flatMap((wire) => wire.connectionIds), ["selected"]);
 });

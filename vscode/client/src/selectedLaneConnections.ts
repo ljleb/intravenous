@@ -27,12 +27,13 @@ export function connectionEndKey(connectionId: string, port: GraphPortEndpoint):
 
 // A collapsed slot can represent several logical ports. Merge only the
 // drawing's visible endpoint pairs; preserve the underlying connection IDs.
-export function selectedLaneConnections(scope: GraphScope, selected: string | null,
+export function selectedLaneConnections(scope: GraphScope, selected: ReadonlySet<string>,
     anchorFor: (port: GraphPortEndpoint, connectionId: string) => PortWireAnchor | null,
     revealedEnds: readonly RevealedConnectionEnd[] = [],
     context?: { top: number; bottom: number }): SelectedLaneWire[] {
-    const node = scope.nodes.find((entry) => addressKey(entry.address) === selected);
-    if (!node && !revealedEnds.length && !context) return [];
+    const selectedInstances = new Set(scope.nodes.filter((node) => selected.has(addressKey(node.address)))
+        .map((node) => node.instance.instanceId));
+    if (!selectedInstances.size && !revealedEnds.length && !context) return [];
     const revealed = new Map<string, Set<string>>();
     for (const end of revealedEnds) {
         const ports = revealed.get(end.connectionId) ?? new Set<string>();
@@ -42,8 +43,8 @@ export function selectedLaneConnections(scope: GraphScope, selected: string | nu
     const wires = new Map<string, SelectedLaneWire>();
     for (const entry of scope.connections) {
         const { connection } = entry;
-        if (!context && !revealed.has(entry.id) && (!node || ![...connection.outputs, ...connection.inputs]
-            .some((matcher) => matcher.instanceId === node.instance.instanceId))) continue;
+        if (!context && !revealed.has(entry.id) && ![...connection.outputs, ...connection.inputs]
+            .some((matcher) => selectedInstances.has(matcher.instanceId))) continue;
         const resolve = (direction: "input" | "output") => {
             const matchers = direction === "input" ? connection.inputs : connection.outputs;
             const ports = new Map<string, GraphPortEndpoint>();
@@ -58,7 +59,7 @@ export function selectedLaneConnections(scope: GraphScope, selected: string | nu
             for (const port of ports.values()) {
                 const anchor = anchorFor(port, entry.id);
                 if (!anchor) continue;
-                const isSelected = addressKey(port.address) === selected;
+                const isSelected = selected.has(addressKey(port.address));
                 const isRevealed = revealed.get(entry.id)?.has(portEndpointKey(port)) ?? false;
                 const existing = visible.get(anchor.id);
                 if (existing) {

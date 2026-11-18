@@ -1,6 +1,6 @@
 import type { ObservationHostRequest, ObservationResponse, ObservationUpdate } from "./observations";
 import type { ManualControlAction, ManualControlInteractionState, ManualControlLiveValue } from "./manualControls";
-import type { GraphLayout, GraphScope } from "./graphScope";
+import type { GraphLayout, GraphScope, NodeAddress } from "./graphScope";
 import type { LiveGraphSessionStatus } from "./liveGraphProtocol";
 import type { GraphConnectionEdit, GraphPortEndpoint } from "./graphConnectionEditing";
 import type { NodeEventHostRequest, NodeEventResponse } from "./nodeEventMessaging";
@@ -41,6 +41,8 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "warpCursorAfterPointDrag"; warp: CursorWarp }
     | { type: "automationCursorTrace"; detail: string }
     | { type: "manualControlAction"; action: ManualControlAction }
+    | { type: "deleteSelectedLanes"; instanceIds: string[] }
+    | { type: "setManualInputEnabled"; target: NodeAddress; inputName: string; enabled: boolean }
     | { type: "projectHistory"; direction: "undo" | "redo" }
     | { type: "copyNodeDebugDetails"; nodeKey: string }
     | { type: "connectGraphPorts"; first: GraphPortEndpoint; second: GraphPortEndpoint }

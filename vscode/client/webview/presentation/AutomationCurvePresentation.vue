@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { automationWindow, curvePointAt, type CurveAxes, type CurveDragKind } from "../../src/automationCurveEditing";
-import { automationBoundLimits, automationDisplayBounds, automationSampleOffset, automationValueFraction, automationValueGuides, clampAutomationValue,
-    compareAutomationTime, defaultAutomationBounds, enabledAutomationBounds, panAutomationValueAxis, type AutomationBoundSide, type AutomationPoint,
-    type AutomationValueRuler, type CurveInterpolation, type CurvePath } from "../../src/automationCurveGeometry";
+import { automationBoundLimits, automationDisplayBounds, canPanAutomationValueAxis, automationSampleOffset, automationValueFraction, automationValueGuides, clampAutomationValue,
+    compareAutomationTime, defaultAutomationBounds, enabledAutomationBounds, panAutomationValueAxis, panCurvedAutomationValueZoom,
+    zoomAutomationValueAxis, type AutomationBoundSide, type AutomationPoint, type AutomationValueDisplay,
+    type AutomationValueRuler, type AutomationValueZoom, type CurveInterpolation, type CurvePath } from "../../src/automationCurveGeometry";
 import { addressKey } from "../../src/graphScope";
+import { middleDragZoomFactor } from "../../src/timelineViewport";
 import { knobScrubSpeed } from "../../src/knobPresentation";
 import { rightClickHint } from "../../src/statusBarText";
 import { useOptionalGraphEditor } from "../graph/context";
@@ -16,11 +18,15 @@ import { useTimelineNavigation, useTimelineWindow, type LaneValueNavigation } fr
 import NodeLane from "./NodeLane.vue";
 import KnobFace from "./KnobFace.vue";
 import { useAutomationEditing } from "./automationEditingContext";
-import type { NodeDisplayMode } from "./displayMode";
+import { nanoHeightPx, type NodeDisplayMode } from "./displayMode";
+import { useLane } from "./laneContext";
 import { useNode } from "./nodeContext";
 
 const props = defineProps<{ mode: NodeDisplayMode }>();
 const editable = computed(() => props.mode === "editable");
+const laneContext = useLane();
+const hideLabels = computed(() => props.mode === "nano"
+    || (props.mode === "compact" && (laneContext?.regionHeight.value ?? Infinity) <= nanoHeightPx));
 const node = useNode();
 const editor = useOptionalGraphEditor();
 const { edits, version } = useAutomationEditing();
@@ -51,7 +57,9 @@ const boundControls = computed(() => {
     }));
 });
 const ruler = computed(() => (key.value === null ? undefined : editor?.layout.value.automationRulers?.[key.value]) ?? "auto");
+const display = computed(() => (key.value === null ? undefined : editor?.layout.value.automationValueDisplays?.[key.value]) ?? "curved");
 const valuePan = computed(() => key.value === null ? 0 : editor?.layout.value.automationValuePans?.[key.value] ?? 0);
+const valueZoom = computed(() => key.value === null ? undefined : editor?.layout.value.automationValueZooms?.[key.value]);
 const axes = computed(() => {
     if (!curve.value || !node.value.address) return null;
     const { points } = curve.value;
@@ -62,8 +70,10 @@ const axes = computed(() => {
         : { beginSeconds: first - .5, endSeconds: first + .5 });
     const fixed = edits.axes(node.value.address);
     const spanSeconds = time?.value.spanSeconds ?? window.endSeconds - window.beginSeconds;
-    return { begin: window.beginSeconds, end: window.endSeconds, spanSeconds, min: fixed ? fixed.min : bounds.value.min,
-        max: fixed ? fixed.max : bounds.value.max, pan: valuePan.value, ruler: fixed ? fixed.ruler : ruler.value };
+    return { begin: window.beginSeconds, end: window.endSeconds, spanSeconds, min: fixed ? fixed.min : display.value === "cropped" ? eventBounds.value.min : bounds.value.min,
+        max: fixed ? fixed.max : display.value === "cropped" ? eventBounds.value.max : bounds.value.max,
+        pan: fixed ? fixed.pan : valuePan.value, zoom: fixed ? fixed.zoom : valueZoom.value,
+        display: fixed?.display ?? display.value, ruler: fixed ? fixed.ruler : ruler.value };
 });
 const view = computed(() => {
     void version.value;
@@ -81,13 +91,13 @@ const y = (value: number) => (1 - automationValueFraction(value, axes.value ?? {
 const eventValue = (point: AutomationPoint) => clampAutomationValue(point.value, eventBounds.value);
 const markerY = (point: AutomationPoint) => Math.max(2, Math.min(height.value - 2, y(eventValue(point))));
 const valueGuides = computed(() => axes.value ? automationValueGuides(axes.value, height.value, axes.value.ruler) : []);
-const valueLabelInset = computed(() => props.mode === "nano" || !valueGuides.value.length ? 0
+const valueLabelInset = computed(() => hideLabels.value || !valueGuides.value.length ? 0
     : 9 + 6 * Math.max(...valueGuides.value.map(({ value }) => String(value).length)));
 
 function segmentPath(segment: CurvePath): string {
     const a = x(segment.begin.seconds), b = x(segment.end.seconds);
     const start = `M${a},${y(segment.begin.value)}`;
-    if (axes.value?.min !== undefined && axes.value.max !== undefined) {
+    if (axes.value?.display === "cropped" || axes.value?.min !== undefined && axes.value.max !== undefined) {
         const offset = (b - a) / 3;
         return `${start} C${a + offset},${y(segment.first)} ${b - offset},${y(segment.second)} ${b},${y(segment.end.value)}`;
     }
@@ -115,10 +125,14 @@ function segmentPath(segment: CurvePath): string {
     return points.join(" ");
 }
 const path = computed(() => view.value?.paths.map(segmentPath).join(" ") ?? "");
-const markers = computed(() => editable.value ? view.value?.points ?? [] : []);
-const selectedId = computed(() => {
+const markers = computed(() => editable.value ? (view.value?.points ?? []).filter((point) => {
+    if (axes.value?.display !== "cropped" && !axes.value?.zoom) return true;
+    const position = y(eventValue(point));
+    return position >= 0 && position <= height.value;
+}) : []);
+const selectedIds = computed(() => {
     void version.value;
-    return node.value.address ? edits.selectedPoint(node.value.address) : undefined;
+    return node.value.address ? edits.selectedPoints(node.value.address) : new Set<number>();
 });
 const handles = computed(() => markers.value.filter((point, index, points) => point.interpolation === "bezier"
     && (!points[index + 1] || compareAutomationTime(point, points[index + 1]) !== 0)));
@@ -134,11 +148,15 @@ const popover = ref<HTMLElement | null>(null);
 const scaleButton = ref<HTMLButtonElement | null>(null);
 const selected = computed(() => curve.value?.points.find((point) => point.id === segmentMenu.value?.id) ?? null);
 let menuAnchor: SVGElement | null = null;
-let pointClick: { pointerId: number; x: number; y: number; pointId?: number } | null = null;
+let pointClick: { pointerId: number; x: number; y: number; pointId: number } | null = null;
+const marquee = ref<{ pointerId: number; x: number; y: number; currentX: number; currentY: number;
+    ctrlKey: boolean; metaKey: boolean; shiftKey: boolean } | null>(null);
+const selectionRect = computed(() => {
+    const drag = marquee.value;
+    return drag ? { x: Math.min(drag.x, drag.currentX), y: Math.min(drag.y, drag.currentY),
+        width: Math.abs(drag.x - drag.currentX), height: Math.abs(drag.y - drag.currentY) } : null;
+});
 
-function selectPoint(id: number) {
-    if (node.value.address) edits.select(node.value.address, id);
-}
 function menuPosition(x: number, y: number, width: number, height: number): PopoverPosition {
     return { left: Math.max(4, Math.min(window.innerWidth - width, x)),
         top: Math.max(4, Math.min(window.innerHeight - height, y)) };
@@ -147,7 +165,6 @@ function editSegment(event: MouseEvent | KeyboardEvent, point: AutomationPoint) 
     if (!editable.value) return;
     event.preventDefault();
     event.stopPropagation();
-    selectPoint(point.id);
     menuAnchor = event.currentTarget as SVGElement;
     const rect = menuAnchor.getBoundingClientRect();
     const x = event instanceof MouseEvent ? event.clientX : rect.right;
@@ -170,7 +187,13 @@ function outside(event: PointerEvent) {
     pointClick = null;
     if (!(event.target instanceof Element) || !event.target.closest(".automation-popover, .automation-scale-button")) closeMenus();
 }
-watch(editable, (enabled) => { if (!enabled) { pointClick = null; closeMenus(); } });
+watch(editable, (enabled) => {
+    if (enabled) return;
+    const pointerId = marquee.value?.pointerId;
+    marquee.value = null;
+    if (pointerId !== undefined && surface.value?.hasPointerCapture(pointerId)) surface.value.releasePointerCapture(pointerId);
+    closeMenus();
+});
 watch(selected, (point) => { if (!point) segmentMenu.value = null; });
 
 function showScale() {
@@ -198,6 +221,16 @@ function escapeScale() {
     if (edits.activeBound()) edits.abandon();
     closeMenus(true);
 }
+function changeDisplay(event: Event) {
+    if (!editor || key.value === null) return;
+    const mode = (event.target as HTMLSelectElement).value as AutomationValueDisplay;
+    const automationValueDisplays = { ...editor.layout.value.automationValueDisplays };
+    if (mode === "cropped") automationValueDisplays[key.value] = mode;
+    else delete automationValueDisplays[key.value];
+    editor.layout.value = { ...editor.layout.value, automationValueDisplays };
+    setValueView(key.value, 0);
+    editor.save();
+}
 function changeRuler(event: Event) {
     if (!editor || key.value === null) return;
     const value = (event.target as HTMLSelectElement).value as AutomationValueRuler;
@@ -212,7 +245,7 @@ const error = computed(() => {
     return node.value.address ? edits.error(node.value.address) || node.value.constructionError : "";
 });
 const curveStatus = computed(() => error.value || (editable.value && curve.value?.sampleRate
-    ? "Click Add point" : "Read-only curve"));
+    ? `${rightClickHint} Add point · Drag Select` : "Read-only curve"));
 function pointStatus(point: AutomationPoint) {
     const { id, sampleIndex, seconds, value } = point;
     return automationPointStatus({ id, sampleIndex, seconds, value }) + ` · ⇧Click Delete · ${rightClickHint} Segment`;
@@ -240,30 +273,69 @@ function start(event: PointerEvent, id: number, kind: CurveDragKind = "point") {
         } : undefined);
     }
 }
-function preparePointClick(event: PointerEvent, pointId?: number) {
-    if (!editable.value || event.button !== 0 || event.shiftKey !== (pointId !== undefined)) return;
+function preparePointClick(event: PointerEvent, pointId: number) {
     pointClick = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, pointId };
 }
-function cancelPointClick() { pointClick = null; }
-function applyPointClick(event: MouseEvent, pointId?: number) {
+function applyPointClick(event: MouseEvent, pointId: number) {
     const press = pointClick;
     pointClick = null;
-    // A click synthesized after pointer lock ends cannot edit the point
-    // underneath the restored cursor. The press must have chosen this action.
-    if (!press || press.pointId !== pointId || event.button !== 0 || event.shiftKey !== (pointId !== undefined)
+    if (!press || press.pointId !== pointId || event.button !== 0 || !event.shiftKey
         || (event instanceof PointerEvent && press.pointerId !== event.pointerId)
-        || Math.hypot(press.x - event.clientX, press.y - event.clientY) > 5 || !editable.value || !node.value.address) return;
-    if (pointId !== undefined) {
-        event.preventDefault();
-        removePoint(pointId);
-        return;
-    }
-    if (!curve.value?.sampleRate) return;
+        || Math.hypot(press.x - event.clientX, press.y - event.clientY) > 5) return;
+    event.preventDefault();
+    removePoint(pointId);
+}
+function addPoint(event: MouseEvent) {
+    if (!editable.value) return;
+    event.preventDefault();
+    const address = node.value.address;
     const axes = pointerAxes();
-    if (!axes) return;
+    if (!address || !axes || !curve.value?.sampleRate) return;
+    surface.value?.focus({ preventScroll: true });
+    void edits.add(address, curvePointAt(axes, { x: event.clientX, y: event.clientY }, curve.value.sampleRate));
+}
+function selectionPosition(event: PointerEvent) {
+    const rect = surface.value!.getBoundingClientRect();
+    return { x: Math.max(0, Math.min(width.value, (event.clientX - rect.left) / rect.width * width.value)),
+        y: Math.max(0, Math.min(height.value, (event.clientY - rect.top) / rect.height * height.value)) };
+}
+function beginSelection(event: PointerEvent) {
+    if (!editable.value || !surface.value || event.button !== 0 || edits.pointerId() !== null) return;
+    event.preventDefault();
+    const { x, y } = selectionPosition(event);
+    marquee.value = { pointerId: event.pointerId, x, y, currentX: x, currentY: y,
+        ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey };
+    surface.value.focus({ preventScroll: true });
+    surface.value.setPointerCapture(event.pointerId);
+}
+function moveSelection(event: PointerEvent) {
+    const drag = marquee.value;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const { x, y } = selectionPosition(event);
+    drag.currentX = x;
+    drag.currentY = y;
+}
+function finishSelection(event: PointerEvent) {
+    const drag = marquee.value;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    moveSelection(event);
+    const rect = selectionRect.value!;
+    marquee.value = null;
+    if (!node.value.address) return;
+    const ids = Math.hypot(rect.width, rect.height) < 3 ? [] : markers.value.filter((point) => {
+        const x = pointX(point), y = markerY(point);
+        return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
+    }).map((point) => point.id);
+    edits.selectPoints(node.value.address, ids, drag);
+}
+function cancelSelection(event: PointerEvent) {
+    pointClick = null;
+    if (marquee.value?.pointerId === event.pointerId) marquee.value = null;
+}
+function deleteSelected(event: KeyboardEvent) {
     event.preventDefault();
     event.stopPropagation();
-    void edits.add(node.value.address, curvePointAt(axes, press, curve.value.sampleRate));
+    if (editable.value && node.value.address && !event.repeat) void edits.removeSelection(node.value.address);
 }
 function removePoint(id: number) {
     if (!editable.value || !node.value.address) return;
@@ -272,8 +344,12 @@ function removePoint(id: number) {
 }
 function pointKey(event: KeyboardEvent, point: AutomationPoint) {
     if (event.key === "Delete") {
-        event.preventDefault();
-        removePoint(point.id);
+        if (selectedIds.value.has(point.id)) deleteSelected(event);
+        else {
+            event.preventDefault();
+            event.stopPropagation();
+            if (!event.repeat) removePoint(point.id);
+        }
     } else if (event.key === "Enter" || event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
         editSegment(event, point);
 }
@@ -287,35 +363,50 @@ function tensionKey(event: KeyboardEvent, point: AutomationPoint) {
 
 let observer: ResizeObserver | null = null;
 let unregisterValueNavigation: (() => void) | undefined;
-function canPanValues() {
-    const axis = axes.value;
-    return !!axis && edits.pointerId() === null && (axis.min === undefined || axis.max === undefined);
-}
-function setValuePan(nodeKey: string, pan: number) {
+function setValueView(nodeKey: string, pan: number, zoom?: AutomationValueZoom) {
     if (!editor) return;
     const automationValuePans = { ...editor.layout.value.automationValuePans };
+    const automationValueZooms = { ...editor.layout.value.automationValueZooms };
     if (pan) automationValuePans[nodeKey] = pan;
     else delete automationValuePans[nodeKey];
-    editor.layout.value = { ...editor.layout.value, automationValuePans };
+    if (zoom && zoom.factor !== 1) automationValueZooms[nodeKey] = zoom;
+    else delete automationValueZooms[nodeKey];
+    editor.layout.value = { ...editor.layout.value, automationValuePans, automationValueZooms };
 }
 const valueNavigation: LaneValueNavigation = {
-    begin() {
-        const axis = axes.value, nodeKey = key.value;
-        if (!editor || nodeKey === null || !axis || !canPanValues()) return null;
-        const initial = valuePan.value;
-        let pan = initial;
+    begin(mode) {
+        const axis = axes.value, nodeKey = key.value, element = surface.value;
+        if (!editor || nodeKey === null || !axis || !element || edits.pointerId() !== null || marquee.value) return null;
+        if (mode === "pan" && !canPanAutomationValueAxis(axis)) return null;
+        const initialPan = valuePan.value;
+        const initialZoom = valueZoom.value ?? { factor: 1, center: .5 };
+        let pan = initialPan, zoom = initialZoom;
         const laneHeight = height.value;
         return {
-            move(dy) {
-                const next = panAutomationValueAxis({ ...axis, pan }, dy, laneHeight);
-                if (next !== pan) setValuePan(nodeKey, pan = next);
+            move(delta, cursor) {
+                const current = { ...axis, pan, zoom };
+                let nextPan = pan, nextZoom = zoom;
+                if (mode === "zoom" && delta.x) {
+                    const rect = element.getBoundingClientRect();
+                    if (rect.height <= 0) return;
+                    const anchor = 1 - (cursor.y - rect.top) / rect.height;
+                    ({ pan: nextPan, zoom: nextZoom } = zoomAutomationValueAxis(current, middleDragZoomFactor(delta.x), anchor));
+                } else if (mode === "pan" && delta.y) {
+                    if (axis.display !== "cropped" && zoom.factor > 1)
+                        nextZoom = panCurvedAutomationValueZoom(zoom, delta.y, laneHeight);
+                    else nextPan = panAutomationValueAxis(current, delta.y, laneHeight);
+                }
+                if (nextPan === pan && nextZoom.factor === zoom.factor && nextZoom.center === zoom.center) return;
+                pan = nextPan;
+                zoom = nextZoom;
+                setValueView(nodeKey, pan, zoom);
             },
-            changed() { return pan !== initial; },
+            changed() { return pan !== initialPan || zoom.factor !== initialZoom.factor || zoom.center !== initialZoom.center; },
         };
     },
     reset() {
-        if (editor && key.value !== null && valuePan.value && canPanValues()) {
-            setValuePan(key.value, 0);
+        if (editor && key.value !== null && (valuePan.value || valueZoom.value) && edits.pointerId() === null) {
+            setValueView(key.value, 0);
             editor.save();
         }
     },
@@ -338,25 +429,28 @@ onBeforeUnmount(() => {
 
 <template>
     <NodeLane :mode="mode">
-        <div class="automation-surface" :data-mode="mode">
-            <RulerGraduations class="clip-ruler" :ticks="ticks" :label-inset="valueLabelInset" compact />
+        <div class="automation-surface">
+            <RulerGraduations class="clip-ruler" :ticks="ticks" :label-inset="valueLabelInset" :hide-labels="hideLabels" compact />
             <svg ref="surface" class="automation-curve" :viewBox="`0 0 ${width} ${height}`" preserveAspectRatio="none"
                 :aria-label="node.displayName || 'Automation curve'" :aria-description="curveStatus"
-                :data-status-hint="curveStatus" @pointerdown.self="preparePointClick($event)"
-                @pointercancel="cancelPointClick" @click.self="applyPointClick($event)">
+                :data-status-hint="curveStatus" :tabindex="editable ? 0 : undefined" :data-lane-item-editor="editable ? '' : undefined"
+                @pointerdown.self="beginSelection" @pointermove="moveSelection" @pointerup="finishSelection"
+                @pointercancel="cancelSelection" @lostpointercapture.self="cancelSelection"
+                @keydown.delete.self="deleteSelected" @contextmenu.self="addPoint">
                 <g class="value-guides" aria-hidden="true">
                     <g v-for="guide in valueGuides" :key="guide.value" :class="{ zero: guide.value === 0, unit: Math.abs(guide.value) === 1 }">
                         <line :x1="valueLabelInset" :x2="width" :y1="guide.y" :y2="guide.y" />
-                        <text v-if="mode !== 'nano'" x="4" :y="Math.min(height - 1, Math.max(8, guide.y + 3))">{{ guide.value }}</text>
+                        <text v-if="!hideLabels" x="4" :y="Math.min(height - 1, Math.max(8, guide.y + 3))">{{ guide.value }}</text>
                     </g>
                 </g>
                 <path :d="path" class="curve-line" />
                 <TimelinePlayhead />
+                <rect v-if="selectionRect" v-bind="selectionRect" class="point-selection" aria-hidden="true" />
                 <g v-for="point in handles" :key="`tension-${point.id}`" class="curve-tension"
                     :transform="`translate(${pointX(point)} ${handleY(point)})`"
                     role="slider" tabindex="0" aria-label="Bézier tension" :aria-valuemin="0" :aria-valuemax="1"
                     :aria-valuenow="point.tension" :data-status-hint="`Tension ${Number(point.tension.toFixed(2))} · ↔ Drag`"
-                    @pointerdown="start($event, point.id, 'tension')" @focus="selectPoint(point.id)" @click.stop
+                    @pointerdown="start($event, point.id, 'tension')" @click.stop
                     @keydown="tensionKey($event, point)" @contextmenu.stop="editSegment($event, point)">
                     <path class="tension-stem" :d="`M0 0 V${markerY(point) - handleY(point)}`" />
                     <circle class="control-target" r="6" />
@@ -365,15 +459,16 @@ onBeforeUnmount(() => {
                 </g>
                 <g v-for="point in markers" :key="point.id" class="curve-point"
                     :transform="`translate(${pointX(point)} ${markerY(point)})`" role="button" tabindex="0"
-                    :data-selected="selectedId === point.id || undefined"
+                    :data-selected="selectedIds.has(point.id) || undefined"
                     :data-limited="eventValue(point) !== point.value || undefined"
-                    :aria-label="`Point at ${point.sampleIndex ?? point.seconds} ${point.sampleIndex === undefined ? 'seconds' : 'samples'}, value ${point.value}`"
+                    :aria-label="`Point at ${point.sampleIndex ?? point.seconds} ${point.sampleIndex === undefined ? 'seconds' : 'samples'}, value ${point.value}${selectedIds.has(point.id) ? ', selected' : ''}`"
                     :data-status-hint="pointStatus(point)"
                     aria-description="Drag to move. Shift-click to delete. Right-click for segment options."
-                    @pointerdown="start($event, point.id)" @focus="selectPoint(point.id)"
+                    @pointerdown="start($event, point.id)"
                     @click.stop="applyPointClick($event, point.id)"
                     @keydown="pointKey($event, point)" @contextmenu.stop="editSegment($event, point)">
                     <circle class="control-target" r="8" />
+                    <circle v-if="selectedIds.has(point.id)" class="selected-point-ring" r="5.5" />
                     <circle class="point-marker" r="2.6" />
                 </g>
             </svg>
@@ -385,7 +480,7 @@ onBeforeUnmount(() => {
     <Teleport to="body">
         <div v-if="editable && segmentMenu && selected" ref="popover" class="automation-popover"
             :style="{ left: `${segmentMenu.left}px`, top: `${segmentMenu.top}px` }"
-            role="dialog" aria-label="Automation segment" @keydown.esc.stop="closeMenus(true)" @pointerdown.stop @wheel.stop>
+            role="dialog" aria-label="Automation segment" data-lane-item-editor @keydown.esc.stop="closeMenus(true)" @pointerdown.stop @wheel.stop>
             <label>Segment <select :value="selected.interpolation"
                 @change="changeSegment(selected, ($event.target as HTMLSelectElement).value as CurveInterpolation, selected.tension)">
                 <option value="empty">Empty</option><option value="hold">Hold</option><option value="bezier">Bézier</option>
@@ -400,6 +495,9 @@ onBeforeUnmount(() => {
             :style="{ left: `${scaleMenu.left}px`, top: `${scaleMenu.top}px` }"
             role="dialog" aria-label="Automation value scale" @keydown.esc.stop="escapeScale"
             @pointerdown.stop @wheel.stop>
+            <label>Display <select :value="display" @change="changeDisplay">
+                <option value="curved">Curved</option><option value="cropped">Cropped</option>
+            </select></label>
             <div v-for="bound in boundControls" :key="bound.side" class="automation-bound" :class="{ inactive: !bound.enabled }">
                 <span>{{ bound.name }}</span>
                 <div class="automation-bound-control">
@@ -434,9 +532,8 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.automation-surface { position: relative; width: 100%; height: 100%; min-height: 1px; color: var(--iv-knob-input); }
+.automation-surface { position: relative; width: 100%; height: 100%; min-height: 1px; color: var(--iv-sample-input); }
 .clip-ruler { opacity: .55; }
-.automation-surface[data-mode="nano"] :deep(.sample-label) { display: none; }
 .automation-curve { position: relative; display: block; width: 100%; height: 100%; overflow: hidden; touch-action: none; }
 .value-guides { pointer-events: none; }
 .value-guides line { stroke: var(--vscode-foreground); stroke-opacity: .08; }
@@ -445,18 +542,26 @@ onBeforeUnmount(() => {
 .value-guides text { fill: var(--vscode-descriptionForeground); opacity: .75; font-size: 9px;
     font-variant-numeric: tabular-nums; }
 .curve-line { fill: none; stroke: currentColor; stroke-width: 1.5; pointer-events: none; }
+.point-selection { pointer-events: none; fill: color-mix(in srgb, var(--vscode-focusBorder) 13%, transparent);
+    stroke: var(--vscode-focusBorder); stroke-width: 1; }
+.automation-curve { user-select: none; -webkit-user-select: none; }
+.automation-curve:focus { outline: none; }
 .curve-point { cursor: grab; }
 .curve-tension { cursor: ew-resize; }
 .curve-point:focus, .curve-tension:focus { outline: none; }
 .control-target { fill: transparent; }
+.selected-point-ring {
+    fill: var(--vscode-editor-background); stroke: var(--vscode-focusBorder);
+    stroke-width: 1.5px; pointer-events: none;
+}
 .point-marker, .tension-marker { fill: currentColor; pointer-events: none; }
 .curve-point[data-limited] .point-marker { fill-opacity: .6; }
-.curve-point:is(:focus-visible, :has([data-hovered]), [data-hovered], [data-selected], :active) .point-marker { r: 3.6px; }
+.curve-point:is(:has([data-hovered]), [data-hovered]) .point-marker { r: 3.3px; }
+.curve-point[data-selected] .point-marker { r: 3.2px; }
 .tension-stem { fill: none; stroke: currentColor; stroke-opacity: .22; pointer-events: none; }
 .curve-tension:is(:focus-visible, :has([data-hovered]), [data-hovered], :active) .tension-marker { fill-opacity: 1; }
-.curve-point:focus-visible .point-marker, .curve-tension:focus-visible .tension-marker {
-    stroke: var(--vscode-focusBorder, currentColor);
-    stroke-width: 1px;
+.curve-point:focus-visible:not([data-selected]) .point-marker, .curve-tension:focus-visible .tension-marker {
+    fill: var(--vscode-editor-foreground, currentColor);
 }
 .automation-scale-button {
     position: absolute; top: 2px; right: 4px; border: 1px solid transparent; padding: 1px 4px; border-radius: 3px;
@@ -481,7 +586,7 @@ onBeforeUnmount(() => {
 .automation-popover .delete-point:is(:hover, :focus-visible) { background: var(--vscode-toolbar-hoverBackground); }
 .automation-bound { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .automation-bound.inactive { color: var(--vscode-descriptionForeground); }
-.automation-bound-control { display: flex; align-items: center; --knob-toggle-accent: var(--iv-knob-input); }
+.automation-bound-control { display: flex; align-items: center; --knob-toggle-accent: var(--iv-sample-input); }
 .automation-bound-value { margin-right: 4px; font-variant-numeric: tabular-nums; }
 .automation-bound-knob {
     width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: transparent;

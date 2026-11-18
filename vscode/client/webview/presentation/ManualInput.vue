@@ -39,6 +39,8 @@ onBeforeUnmount(() => { clearTimeout(previewTimer); control.hover(false); });
 const logicalValue = computed(() => value.value === undefined ? "" : Number(value.value.toPrecision(6)).toString());
 const knobHint = computed(() => {
     const port = knobPortStatus(control.port.value);
+    if (descriptor.value?.available && !descriptor.value.enabled)
+        return [props.name, port, "Manual value disabled"].filter(Boolean).join(" · ");
     return available.value && value.value !== undefined
         ? manualKnobStatus(props.name, value.value, limits.value.defaultValue !== undefined, port)
         : [props.name, port, "Unavailable"].filter(Boolean).join(" · ");
@@ -57,6 +59,12 @@ function step(direction: number) {
         @pointerdown.stop @click.stop @contextmenu="control.numeric"
         @iv-hoverenter="control.hover(true)" @iv-hoverleave="control.hover(false)">
         <span v-if="showName" class="manual-name">{{ name }}</span>
+        <button v-if="direction !== 'output'" type="button" class="knob-side-toggle manual-input-toggle"
+            :aria-pressed="!!descriptor?.enabled" :disabled="!descriptor?.available || descriptor.live || control.dragging.value"
+            :aria-label="`${name} manual value`" :data-status-hint="descriptor?.enabled ? 'Disable manual value' : 'Enable manual value'"
+            @pointerdown.stop @click.stop="control.toggleEnabled" @contextmenu.stop.prevent>
+            <span aria-hidden="true">{{ descriptor?.enabled ? '●' : '○' }}</span>
+        </button>
         <button ref="knob" type="button" class="manual-knob" role="slider" :aria-label="name"
             :aria-valuenow="value" :aria-valuemin="limits.min" :aria-valuemax="limits.max"
             :aria-disabled="!available" :disabled="!available"
@@ -90,11 +98,14 @@ function step(direction: number) {
 <style scoped>
 .manual-input { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; min-width: 0; padding: 0 4px; }
 .manual-input[data-direction="output"] { position: relative; gap: 0; }
+.manual-input-toggle { --knob-toggle-accent: var(--iv-sample-input); margin-inline-start: 0;
+    margin-inline-end: calc(-1 * var(--output-polarity-inset, 2px)); }
+.manual-input-toggle[aria-pressed="true"] > span { color: var(--iv-sample-input); background: transparent; }
 .manual-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .manual-knob { display: block; width: var(--knob-size, 30px); height: var(--knob-size, 30px); padding: 0; border: 0; border-radius: 50%;
-    background: transparent; color: var(--iv-knob-input); cursor: ns-resize; touch-action: none; user-select: none; }
+    background: transparent; color: var(--iv-sample-input); cursor: ns-resize; touch-action: none; user-select: none; }
 .manual-knob svg { display: block; width: 100%; height: 100%; }
-.manual-input[data-direction="output"] .manual-knob, .knob-preview[data-direction="output"] { color: var(--iv-knob-output); }
+.manual-input[data-direction="output"] .manual-knob, .knob-preview[data-direction="output"] { color: var(--iv-sample-output); }
 .manual-knob { flex: 0 0 var(--knob-size, 30px); }
 .manual-input[data-hovered] .manual-knob:not(:disabled) :deep(.knob-body) { fill: color-mix(in srgb, currentColor 9%, var(--vscode-editor-background)); stroke-opacity: .9; }
 .manual-input[data-hovered] :deep(.knob-track) { opacity: .55; }
@@ -110,7 +121,7 @@ function step(direction: number) {
 .manual-input[data-direction="output"] .manual-error { position: absolute; top: 0; left: 0; font-size: 11px; line-height: 1; }
 .knob-preview { position: fixed; z-index: 35; transform: translateX(-50%); pointer-events: none;
     display: grid; justify-items: center; gap: 2px; padding: 4px 8px;
-    color: var(--iv-knob-input); background: var(--vscode-editorWidget-background);
+    color: var(--iv-sample-input); background: var(--vscode-editorWidget-background);
     border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 6px; }
 .knob-preview svg { width: 48px; height: 48px; }
 .knob-preview span { color: var(--vscode-foreground); font-variant-numeric: tabular-nums; font-size: 11px; }

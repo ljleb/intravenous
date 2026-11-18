@@ -7414,6 +7414,20 @@ struct ReplayWindow {
     }
 };
 IV_NODE("iv.test.replay.window", ReplayWindow);
+
+void coverage_manual_window_module(iv::GraphBuilder& graph) {
+    auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
+    auto module = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+        auto input = boundary.input<"coverage", iv::Sample>(iv::InputAccess::coverage);
+        auto window = graph.node<"iv.test.replay.window">(std::int64_t{18}, std::uint64_t{8});
+        window(input);
+        boundary.outputs(window);
+    }, "coverage-manual-window");
+    module(source);
+    graph.outputs();
+}
+IV_MODULE("iv.test.replay.coverage_manual_window", coverage_manual_window_module);
+
 void replay_sequential_resolution_module(iv::GraphBuilder& graph) {
     // The source covers only [20, 24), with values 4, 5, 6 and 7.
     auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
@@ -7450,8 +7464,7 @@ struct ReplayManualFallback {
     static constexpr auto inputs() {
         return std::array{iv::input<iv::Sample>("gain", {
             .default_value = 0.25f, .neutral_value = 0.125f,
-            .combine_values = &shifted_add,
-            .fallback = iv::SequentialFallback::manual_control})};
+            .combine_values = &shifted_add})};
     }
     static constexpr auto outputs() {
         return std::array{iv::output<iv::Sample>(!ModuleChild
@@ -7526,7 +7539,7 @@ struct DelayedSparseSampleProbe {
     struct State { std::uint64_t calls = 0; std::array<float, 2> values{}; };
     static constexpr auto inputs() {
         return std::array{iv::input<iv::Sample>("value", {
-            .default_value = 0.25f, .fallback = iv::SequentialFallback::manual_control}),
+            .default_value = 0.25f}),
             iv::input<iv::Sample>("alignment")};
     }
     void tick_block(iv::TickBlockContext<DelayedSparseSampleProbe> const& ctx) const {
@@ -7558,7 +7571,7 @@ void replay_module_manual_resolution(iv::GraphBuilder& graph) {
     direct(source);
     auto module = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
         auto input = boundary.input<"boundary-gain", iv::Sample>(iv::InputAccess::sequential, {
-            .default_value = 0.5f, .fallback = iv::SequentialFallback::manual_control});
+            .default_value = 0.5f});
         auto child = graph.node<"iv.test.replay.manual_union">();
         child(input);
         boundary.outputs(child);

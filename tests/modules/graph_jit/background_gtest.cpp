@@ -1987,7 +1987,7 @@ TEST_F(GraphJitRuntimeFixture, ReplayCoverageDistinguishesInputUnionFromFullAcro
 
 TEST_F(GraphJitRuntimeFixture, LiveInputUnionPreservesGapsForTheNextInputsManualFallback)
 {
-    auto compiled = compile("iv.test.replay.live_union_fallback", 3010);
+    auto compiled = compile_with_manual_input("iv.test.replay.live_union_fallback", 3010, "gain", .25f);
     ASSERT_TRUE(compiled.succeeded())
         << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
     auto const& graph = *compiled.compiled_graph;
@@ -2035,7 +2035,7 @@ TEST_F(GraphJitRuntimeFixture, HeldSampleAndEmptyEventContributeLiveCoverage)
     };
     for (auto const fixture : {Fixture{"iv.test.replay.live_union_fallback", 20, 6.f},
             Fixture{"iv.test.replay.live_event_union_fallback", 31, 4.f}}) {
-        auto compiled = compile(fixture.module, 3012);
+        auto compiled = compile_with_manual_input(fixture.module, 3012, "gain", .25f);
         ASSERT_TRUE(compiled.succeeded())
             << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
         auto const& graph = *compiled.compiled_graph;
@@ -2081,7 +2081,7 @@ TEST_F(GraphJitRuntimeFixture, HeldSampleAndEmptyEventContributeLiveCoverage)
 
 TEST_F(GraphJitRuntimeFixture, DelayedSparseSampleUsesPhysicalCoverageAcrossSeeks)
 {
-    auto compiled = compile("iv.test.replay.delayed_sparse_coverage", 3011);
+    auto compiled = compile_with_manual_input("iv.test.replay.delayed_sparse_coverage", 3011, "value", .25f);
     ASSERT_TRUE(compiled.succeeded())
         << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
     auto const& graph = *compiled.compiled_graph;

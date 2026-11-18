@@ -78,8 +78,8 @@ TEST_F(GraphJitRuntimeFixture, TransformedCurvePointsDetermineCoverageBeforeSequ
 {
     for (bool empty : {false, true}) {
         SCOPED_TRACE(empty);
-        auto compiled = compile(empty ? "iv.test.automation.empty_sparse_curve"
-            : "iv.test.automation.transformed_sparse_curve", 711 + empty);
+        auto compiled = compile_with_manual_input(empty ? "iv.test.automation.empty_sparse_curve"
+            : "iv.test.automation.transformed_sparse_curve", 711 + empty, "gain", .25f);
         ASSERT_TRUE(compiled.succeeded())
             << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
         auto const& graph = *compiled.compiled_graph;
@@ -130,6 +130,66 @@ TEST_F(GraphJitRuntimeFixture, TransformedCurvePointsDetermineCoverageBeforeSequ
         std::array<float, 8> const expected{1, 1.5f, 2, 2.5f, 1.25f, 1.25f, 1.25f, 1.25f};
         for (std::size_t i = 0; i < expected.size(); ++i)
             EXPECT_FLOAT_EQ(values->at(index(static_cast<std::int64_t>(i)), 0).value, empty ? 1.25f : expected[i]) << i;
+    }
+}
+
+TEST_F(GraphJitRuntimeFixture, CoverageManualInputAddsDataOnlyInGaps)
+{
+    struct Demand { char const* input; std::int64_t begin, end; };
+    for (auto const [input, begin, end] : {Demand{"", 18, 26}, Demand{"in", 18, 26},
+             Demand{"coverage", 18, 26}, Demand{"in", 20, 24}, Demand{"in", 24, 26}}) {
+        SCOPED_TRACE(::testing::Message{} << input << " [" << begin << ", " << end << ")");
+        bool const enabled = *input != '\0';
+        auto const fixture = "iv.test.replay.coverage_manual_window";
+        auto compiled = enabled ? compile_with_manual_input(fixture, 718, input, .25f)
+                                : compile(fixture, 718);
+        ASSERT_TRUE(compiled.succeeded())
+            << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+        auto const& graph = *compiled.compiled_graph;
+        auto const& plan = graph.background_evaluation_plan;
+        auto const window = std::ranges::find(plan.ports, std::string{"window"}, &iv::graph_jit::BackgroundPortPlan::name);
+        ASSERT_NE(window, plan.ports.end());
+        auto const window_port = static_cast<iv::graph_jit::BackgroundPortIndex>(window - plan.ports.begin());
+        auto const storage = std::ranges::find(plan.storage.ports, std::optional{window_port}, &iv::graph_jit::PortStoragePlan::output_port);
+        ASSERT_NE(storage, plan.storage.ports.end());
+        iv::PersistedDataStore data;
+        auto reader = data.register_reader();
+        auto states = graph.tock_state_layout.create_storage(resources);
+        states.initialize();
+        iv::BackgroundCoverageState coverage(plan.accumulators.output_change_count);
+        iv::BackgroundPropagationWorkspace propagation(plan, graph.specialization.sample_rate);
+        iv::CoveragePropagationRequest roots;
+        for (std::size_t node = 0; node < plan.nodes.size(); ++node) roots.locally_changed_nodes.push_back(node);
+        roots.output_demands.push_back({.port = window_port, .required = iv::IndexCoverage{range(begin, end)}});
+        iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data,
+            {.semantic_version = 1, .roots = std::move(roots)}};
+        auto result = transaction.execute();
+        ASSERT_TRUE(result.has_value()) << result.error();
+        ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
+        auto const target = std::ranges::find_if(plan.ports, [&](auto const& port) {
+            return port.node == window->node && port.direction == iv::graph_jit::PortDirection::input;
+        });
+        ASSERT_NE(target, plan.ports.end());
+        auto const manual = std::ranges::find(plan.ports, std::string{"manual"}, &iv::graph_jit::BackgroundPortPlan::name);
+        if (enabled) {
+            ASSERT_NE(manual, plan.ports.end());
+            auto const manual_port = static_cast<iv::graph_jit::BackgroundPortIndex>(manual - plan.ports.begin());
+            auto const changed = std::ranges::find(result->coverage.output_changes, manual_port, &iv::PropagatedOutputChange::port);
+            ASSERT_NE(changed, result->coverage.output_changes.end());
+            EXPECT_TRUE(changed->coverage.contains(index(18)));
+            EXPECT_FALSE(changed->coverage.contains(index(20)));
+            EXPECT_TRUE(changed->coverage.contains(index(25)));
+        } else EXPECT_EQ(manual, plan.ports.end());
+        auto const handle = data.resolve_output(iv::persisted_output_id(plan,
+            static_cast<iv::graph_jit::PortStorageIndex>(storage - plan.storage.ports.begin()), graph.project_generation));
+        auto pinned = reader.pin();
+        float const gap = enabled ? .25f : 0.f;
+        std::array<float, 8> const expected{gap, gap, 4, 5, 6, 7, gap, gap};
+        for (auto i = begin; i < end; ++i) {
+            auto const* values = pinned->find_sample_region(handle, index(i));
+            ASSERT_NE(values, nullptr) << i;
+            EXPECT_FLOAT_EQ(values->at(index(i), 0).value, expected[static_cast<std::size_t>(i - 18)]) << i;
+        }
     }
 }
 
@@ -288,31 +348,15 @@ TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPoi
 TEST(AutomationCurveBounds, ReenablingTheMinimumKeepsTheMaximum)
 {
     using namespace iv::automation;
-    std::vector<Point> const points{{.id = 1, .value = -2}, {.id = 2, .value = 4}};
-    ValueBounds settings{.min = {.value = .75f, .enabled = false}, .max = {.value = 1, .enabled = true}};
-    nlohmann::ordered_json arguments;
-    iv::NodeMessageContextOperations operations{
-        .context = &arguments,
-        .replace = +[](void* data, iv::NodeAddress const&, std::string, std::string replacement) {
-            *static_cast<nlohmann::ordered_json*>(data) = nlohmann::ordered_json::parse(replacement);
-        },
-    };
-    iv::NodeAddress const address{.instance_id = "curve"};
-    iv::ModuleMessageContext<AutomationCurve> context(operations, address, nullptr);
-    AutomationCurve(points, settings).on_message(context, SetBound{BoundSide::max, {.value = .5f, .enabled = true}});
-    EXPECT_EQ(arguments[1]["min"]["value"], .75);
-    EXPECT_EQ(arguments[1]["min"]["enabled"], false);
-    EXPECT_EQ(arguments[1]["max"]["value"], .5);
+    ValueBounds const settings{.min = {.value = .75f, .enabled = false}, .max = {.value = 1, .enabled = true}};
+    auto const lowered = settings.with_bound(BoundSide::max, {.value = .5f, .enabled = true});
+    EXPECT_EQ(lowered.min, settings.min);
+    EXPECT_EQ(lowered.max.value, .5f);
 
-    settings.max.value = .5f;
-    auto reenabled = settings.min;
-    reenabled.enabled = true;
-    AutomationCurve(points, settings).on_message(context, SetBound{BoundSide::min, reenabled});
-    EXPECT_EQ(arguments[1]["min"]["value"], .5);
-    EXPECT_EQ(arguments[1]["min"]["enabled"], true);
-    EXPECT_EQ(arguments[1]["max"]["value"], .5);
-    EXPECT_EQ(arguments[0][0]["value"], -2);
-    EXPECT_EQ(arguments[0][1]["value"], 4);
+    auto const reenabled = lowered.with_bound(BoundSide::min, {.value = lowered.min.value, .enabled = true});
+    EXPECT_EQ(reenabled.min.value, .5f);
+    EXPECT_TRUE(reenabled.min.enabled);
+    EXPECT_EQ(reenabled.max, lowered.max);
 }
 
 } // namespace iv::test::graph_jit_tests

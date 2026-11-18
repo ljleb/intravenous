@@ -89,12 +89,14 @@ test("manual control mutations use fresh revisions and live updates are revision
     rpc.updateManualControl("drag", .3);
     await rpc.endManualControl("drag", .4);
     await rpc.hoverManualControl(null);
+    await rpc.setManualInputEnabled(control, .4, false, "disconnectedOnly", 7);
     assert.deepEqual(calls, [
         { method: "manualControls.hover", params: control },
         { method: "manualControls.begin", params: { interactionId: "drag", ...control, value: .2, expectedRevision: 2 } },
         { notification: "manualControls.update", params: { interactionId: "drag", value: .3 } },
         { method: "manualControls.end", params: { interactionId: "drag", value: .4, expectedRevision: 3 } },
         { method: "manualControls.hover", params: {} },
+        { method: "manualControls.upsert", params: { ...control, value: .4, enabled: false, participation: "disconnectedOnly", expectedRevision: 7 } },
     ]);
 });
 

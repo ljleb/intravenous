@@ -68,7 +68,14 @@ const emit = defineEmits<{
     --cutout-center: calc(var(--socket-tuck) - var(--knob-size) / 2);
     --cutout-radius: calc(var(--knob-size) * .3984375 + 1.5px);
 }
-.with-knob .port-knob { position: relative; z-index: 1; }
+.control-row[data-direction="input"].with-knob {
+    --input-toggle-space: calc(var(--output-polarity-width, 12px) - var(--output-polarity-inset, 2px));
+    grid-template-columns: calc(var(--knob-size) + var(--input-toggle-space)) 24px minmax(0, 1fr);
+}
+.with-knob .port-knob { position: relative; z-index: 1; gap: 0; }
+[data-direction="input"].with-knob .port-overflow-indicator {
+    margin-left: calc(var(--input-toggle-space) + var(--knob-size) / 2 - 7px);
+}
 .with-knob .port-handle { left: -4px; overflow: visible; }
 .with-knob .port-handle::after { content: ""; position: absolute; inset: 0; z-index: 2; }
 .with-knob .port-circle {

@@ -29,6 +29,7 @@ import { useAutomationEditing } from "../presentation/automationEditingContext";
 import { automationPointStatus, useElementStatusHint } from "../statusHints";
 import { projectHistoryShortcut } from "../../src/projectHistoryShortcut";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
+import { updateSelection } from "../../src/selection";
 import { connectionEndKey, connectionWirePath, portEndpointKey, portSlotKey, selectedLaneConnections, selectedLaneWirePath,
     type PortWireAnchor, type RevealedConnectionEnd, type SelectedLaneWire } from "../../src/selectedLaneConnections";
 
@@ -144,7 +145,10 @@ function captureAutomationPointer(event: PointerEvent, element: HTMLElement, ori
     element.setPointerCapture(event.pointerId);
     pointerLock.start(event.pointerId, origin, mouse);
 }
-provideManualControls({ gestures: manualGestures, version: manualVersion, startKnob: (event, control, descriptor, limits) => {
+provideManualControls({ gestures: manualGestures, version: manualVersion, setEnabled: (control, enabled) => {
+    if (control.inputName !== undefined)
+        webviewApi.postMessage({ type: "setManualInputEnabled", target: control.node, inputName: control.inputName, enabled });
+}, startKnob: (event, control, descriptor, limits) => {
     if (manualGestures.pointerControl() || automationPointerId !== null) return;
     surface.value?.focus({ preventScroll: true });
     manualGestures.hover(control, descriptor, limits);
@@ -320,7 +324,7 @@ const dropPreviewAnchor = shallowRef<PreviewAnchor | null>(null);
 const hoveredPortGroup = shallowRef<HoveredPortGroup | null>(null);
 const previewColorColumns = shallowRef<PortColorColumns[]>([]);
 let sourceGroupToLeave: HoveredPortGroup | null = null;
-const selectedLane = ref<string | null>(null);
+const selectedLanes = shallowRef<ReadonlySet<string>>(new Set());
 const selectedWires = shallowRef<SelectedLaneWire[]>([]);
 const movingWireId = computed(() => connectionDrag.value?.edit?.connection.id);
 const wireLayers = computed(() => {
@@ -376,7 +380,9 @@ provideGraphEditor({ layout, save, beginPointerLockExit,
     copyNodeDebugDetails: (address) => webviewApi.postMessage({ type: "copyNodeDebugDetails", nodeKey: addressKey(address) }),
     scope: computed(() => state.value.scope), shiftHeld: computed(() => hoverShift.value.held),
     connectionDrag, hoveredPortGroup, startConnection, cancelConnection, startAutomation, startAutomationBound,
-    selectedLane, selectLane: (address) => { selectedLane.value = addressKey(address); }, portsChanged: scheduleWireUpdate,
+    selectedLanes, selectLane: (address, modifiers) => {
+        selectedLanes.value = updateSelection(selectedLanes.value, [addressKey(address)], modifiers);
+    }, portsChanged: scheduleWireUpdate,
     elementAtPointer: () => {
         const element = trustedHover.elementAtPointer();
         return element instanceof Element ? element : null;
@@ -482,7 +488,7 @@ function updateWires() {
     const viewport = (timeline ?? surface.value).getBoundingClientRect();
     const heading = timeline?.querySelector(".timeline-heading")?.getBoundingClientRect();
     const top = heading ? Math.max(viewport.top, heading.bottom) : viewport.top;
-    selectedWires.value = selectedLaneConnections(scope, selectedLane.value, anchorFor, revealedEnds, { top, bottom: viewport.bottom });
+    selectedWires.value = selectedLaneConnections(scope, selectedLanes.value, anchorFor, revealedEnds, { top, bottom: viewport.bottom });
     wireOcclusions.value = measureWireOcclusions(top, viewport.bottom);
     const drag = connectionDrag.value;
     connectionStartAnchor.value = drag && !drag.edit ? anchorFor(drag.port, "") : null;
@@ -507,7 +513,7 @@ function scheduleWireUpdate() {
         wireFrame = requestAnimationFrame(() => { wireFrame = 0; if (!disposed) updateWires(); });
     });
 }
-watch([selectedLane, () => state.value.scope, () => layout.value.timeline.laneHeight], scheduleWireUpdate, { flush: "post" });
+watch([selectedLanes, () => state.value.scope, () => layout.value.timeline.laneHeight], scheduleWireUpdate, { flush: "post" });
 function startConnection(event: PointerEvent, port: GraphPortEndpoint, edit?: GraphConnectionEnd) {
     if (!surface.value || !state.value.scope?.editable || connectionDrag.value) return;
     const handle = event.currentTarget;
@@ -622,6 +628,17 @@ function keyDown(event: KeyboardEvent) {
         if (!event.repeat) webviewApi.postMessage({ type: "playbackToggle" });
         return;
     }
+    if (event.key === "Delete" && !event.defaultPrevented && !editingText
+        && !(event.target instanceof Element && event.target.closest("[data-lane-item-editor]"))
+        && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+        const instanceIds = state.value.scope?.nodes
+            .filter((node) => selectedLanes.value.has(addressKey(node.address))).map((node) => node.instance.instanceId) ?? [];
+        if (instanceIds.length) {
+            event.preventDefault();
+            if (!event.repeat) webviewApi.postMessage({ type: "deleteSelectedLanes", instanceIds });
+        }
+        return;
+    }
     const history = projectHistoryShortcut(event, editingText);
     if (history) {
         event.preventDefault();
@@ -703,8 +720,11 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     if (entry && (!entryControl?.available || !entryControl.enabled)) manualGestures.cancelEntry();
     if (state.value.sessionStatus !== "running") manualGestures.disconnected();
     cancelConnection(); // A new authoritative scope can change port identities.
-    if (selectedLane.value && state.value.scope
-        && !state.value.scope.nodes.some((node) => addressKey(node.address) === selectedLane.value)) selectedLane.value = null;
+    if (selectedLanes.value.size) {
+        const addresses = new Set(state.value.scope?.nodes.map((node) => addressKey(node.address)));
+        const remaining = new Set([...selectedLanes.value].filter((key) => addresses.has(key)));
+        if (remaining.size !== selectedLanes.value.size) selectedLanes.value = remaining;
+    }
     if (editing.value && !state.value.scope?.nodes.some((entry) => entry.instance.instanceId === editing.value)) {
         editing.value = null;
     }

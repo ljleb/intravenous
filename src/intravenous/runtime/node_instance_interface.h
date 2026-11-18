@@ -2,6 +2,7 @@
 
 #include <intravenous/graph/builder/node_bundles.hpp>
 #include <intravenous/continuous_value.h>
+#include <intravenous/node/manual_control.h>
 #include <intravenous/ports.h>
 
 #include <algorithm>
@@ -19,8 +20,7 @@ struct NodeInstancePortInfo {
     std::optional<ChannelTypeId> channel_type{};
     std::optional<EventTypeId> event_type{};
     std::vector<ContinuousValueIntrospectionMetadata> value_types{};
-    // Present only for the scalar Sample Sequential input supported by the
-    // manual-control backend. Other continuous types are not numeric knobs.
+    // The initial knob value for eligible Sample inputs.
     std::optional<Sample> manual_default{};
     std::optional<InputAccessKind> access{};
     std::optional<OutputProductionKind> production{};
@@ -67,7 +67,8 @@ inline NodeInstanceInterface read_node_instance_interface(
             .value_types = std::visit([](auto const& access) {
                 return continuous_introspection_metadata(access.value_metadata);
             }, config.access),
-            .manual_default = manual_owner ? manual_control_default_value(config) : std::nullopt,
+            .manual_default = supports_coverage_manual_control(config) ? std::optional{Sample{0}}
+                : manual_owner ? manual_control_default_value(config) : std::nullopt,
             .access = input_access(config),
         });
     }

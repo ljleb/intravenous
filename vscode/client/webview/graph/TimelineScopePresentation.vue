@@ -7,7 +7,7 @@ import { semanticNodeFromScopeChild } from "../presentation/semanticNode";
 import PresentationHost from "../presentation/PresentationHost.vue";
 import { nodeDisplayName } from "../presentation/nodeSummary";
 import TimeRuler from "../timeline/TimeRuler.vue";
-import { provideTimelineNavigation, provideTimelineWindow, type LaneValueNavigation, type LaneValuePan } from "../timeline/timelineContext";
+import { provideTimelineNavigation, provideTimelineWindow, type LaneValueGesture, type LaneValueNavigation } from "../timeline/timelineContext";
 import { initialTimelineViewport, isMiddleDoubleClick, middleClickMode, moveMiddleDrag, panTimeline, resetTimelineZoom, timelineMiddleDragAction,
     timelineWheelAction, wheelPixels, wrapTimelineCursor, zoomAnchorHint, zoomMiddleDrag, zoomTimelineHorizontally, zoomTimelineVertically,
     type MiddleClick, type MiddleDrag, type TimelineZoomAction, type TimelineViewport } from "../../src/timelineViewport";
@@ -22,26 +22,25 @@ const scope = computed(() => node.value.scope!);
 const children = computed(() => scope.value.nodes.map((child) => ({
     child, semantic: semanticNodeFromScopeChild(child, scope.value),
 })));
-const { layout, save, copyNodeDebugDetails, selectedLane, selectLane, beginPointerLockExit, setTimelineZoomHint } = useGraphEditor();
-function clickedLane(event: MouseEvent, address: NodeAddress) {
-    if (event.button !== 0 || event.defaultPrevented) return;
-    if (event.target instanceof Element
-        && event.target.closest("button, input, textarea, select, a, [role='button'], [contenteditable='true']")) return;
-    selectLane(address);
+const { layout, save, copyNodeDebugDetails, selectedLanes, selectLane, beginPointerLockExit, setTimelineZoomHint } = useGraphEditor();
+function activateLane(event: PointerEvent, address: NodeAddress) {
+    if (event.button === 0 || event.button === 2) selectLane(address, event);
 }
 const viewport = computed({ get: () => layout.value.timeline,
     set: (value) => { layout.value.timeline = value; } });
 const laneHeight = computed(() => viewport.value.laneHeight);
 const headerHeight = 36;
-const selectedLaneIndex = computed(() => scope.value.nodes.findIndex((child) => addressKey(child.address) === selectedLane.value));
 const scrollbarStyle = computed(() => {
     const contentHeight = headerHeight + scope.value.nodes.length * laneHeight.value;
-    const begin = headerHeight + selectedLaneIndex.value * laneHeight.value;
-    return {
-        "--timeline-header-height": `${headerHeight}px`,
-        "--lane-selection-start": `${100 * begin / contentHeight}%`,
-        "--lane-selection-end": `${100 * (begin + laneHeight.value) / contentHeight}%`,
-    };
+    const accent = "var(--vscode-editorOverviewRuler-selectionHighlightForeground, var(--vscode-focusBorder))";
+    const marks = scope.value.nodes.flatMap((child, index) => {
+        if (!selectedLanes.value.has(addressKey(child.address))) return [];
+        const start = 100 * (headerHeight + index * laneHeight.value) / contentHeight;
+        const end = 100 * (headerHeight + (index + 1) * laneHeight.value) / contentHeight;
+        return [`transparent ${start}%`, `${accent} ${start}% ${end}%`, `transparent ${end}%`];
+    });
+    return { "--timeline-header-height": `${headerHeight}px`,
+        "--lane-selection-markers": marks.length ? `linear-gradient(to bottom, ${marks.join(", ")})` : "none" };
 });
 const root = ref<HTMLElement | null>(null);
 const timeRegion = ref<HTMLElement | null>(null);
@@ -59,7 +58,7 @@ provideTimelineNavigation({ wheel, beginMiddleDrag, registerValueNavigation(elem
 } });
 const middleDrag = shallowRef<MiddleDrag | null>(null);
 const wrappedCursor = shallowRef<Point | null>(null);
-let laneValuePan: { lane: Element; pan: LaneValuePan } | null = null;
+let laneValueGesture: { lane: Element; mode: "pan" | "zoom"; gesture: LaneValueGesture } | null = null;
 let lockedTravel: Point = { x: 0, y: 0 };
 let middlePress: MiddleClick | null = null;
 let lastMiddleClick: MiddleClick | null = null;
@@ -137,17 +136,19 @@ function beginMiddleDrag(event: PointerEvent) {
     if (targetTimeline && targetTimeline !== surface) return;
     event.preventDefault();
     event.stopPropagation();
-    middleDrag.value = { pointerId: event.pointerId, x: event.clientX, y: event.clientY,
-        action: timelineMiddleDragAction(event) };
-    const mode = middleClickMode(event);
-    const lane = mode === "lane" && event.target instanceof Element ? event.target.closest(".lane") : null;
-    middlePress = { x: event.clientX, y: event.clientY, at: performance.now(), mode, lane };
-    const pan = lane ? valuePanTargets.get(lane)?.begin() : null;
-    if (lane && pan) laneValuePan = { lane, pan };
+    const lane = event.shiftKey && event.target instanceof Element ? event.target.closest(".lane") : null;
+    const navigation = lane && valuePanTargets.get(lane);
+    const mode = middleClickMode(event, !!navigation);
+    middlePress = { x: event.clientX, y: event.clientY, at: performance.now(), mode, lane: mode === "lane" ? lane : null };
+    const laneMode = event.altKey ? "zoom" : "pan";
+    const gesture = mode === "lane" && navigation ? navigation.begin(laneMode) : null;
+    if (lane && gesture) laneValueGesture = { lane, mode: laneMode, gesture };
+    const action = laneValueGesture ? "pan" : timelineMiddleDragAction(event);
+    middleDrag.value = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, action };
     middleDragMoved = false;
     surface.setPointerCapture(event.pointerId);
-    const { action } = middleDrag.value;
-    if (action !== "pan") setTimelineZoomHint(zoomAnchorHint(action, { x: 0, y: 0 }));
+    if (laneValueGesture?.mode === "zoom") setTimelineZoomHint("Value zoom");
+    else if (action !== "pan") setTimelineZoomHint(zoomAnchorHint(action, { x: 0, y: 0 }));
     if (event.pointerType === "mouse" && !document.pointerLockElement)
         middlePointerLock.start(event.pointerId, { x: event.clientX, y: event.clientY });
 }
@@ -157,12 +158,13 @@ function updateMiddleDrag(event: PointerEvent) {
     if (event.clientX !== drag.x || event.clientY !== drag.y) cancelMiddleClick();
     const { action } = drag;
     const anchor = action === "pan" ? 0 : zoomAnchor(action, event.clientX, event.clientY);
-    const moved = moveMiddleDrag(viewport.value, drag, event.buttons, event.clientX, event.clientY, anchor, laneValuePan !== null);
+    const moved = moveMiddleDrag(viewport.value, drag, event.buttons, event.clientX, event.clientY, anchor, laneValueGesture !== null);
     if (!moved) { endMiddleDrag(); return; }
     if (event.clientX === drag.x && event.clientY === drag.y) return;
     middleDrag.value = { ...drag, x: event.clientX, y: event.clientY };
-    applyMiddleDrag(moved);
-    laneValuePan?.pan.move(event.clientY - drag.y);
+    if (laneValueGesture?.mode !== "zoom") applyMiddleDrag(moved);
+    laneValueGesture?.gesture.move({ x: event.clientX - drag.x, y: event.clientY - drag.y },
+        { x: event.clientX, y: event.clientY });
 }
 function wrappedPosition(point: Point, travel: Point) {
     const surface = root.value!;
@@ -171,9 +173,9 @@ function wrappedPosition(point: Point, travel: Point) {
     const top = Math.max(0, rect.top + surface.clientTop);
     const right = Math.min(window.innerWidth, rect.left + surface.clientLeft + surface.clientWidth);
     const bottom = Math.min(window.innerHeight, rect.top + surface.clientTop + surface.clientHeight);
-    if (laneValuePan) {
+    if (laneValueGesture) {
         // The sticky ruler covers part of a lane that has scrolled past it.
-        const lane = laneValuePan.lane.getBoundingClientRect();
+        const lane = laneValueGesture.lane.getBoundingClientRect();
         const laneLeft = Math.max(left, lane.left);
         const laneTop = Math.max(top, rect.top + surface.clientTop + headerHeight, lane.top);
         const laneRight = Math.min(right, lane.right);
@@ -188,10 +190,19 @@ function moveLockedMiddleDrag(id: number, delta: Point) {
     if (!drag || drag.pointerId !== id || !root.value || !(delta.x || delta.y)) return;
     cancelMiddleClick();
     const { action } = drag;
+    if (laneValueGesture?.mode === "zoom") {
+        lockedTravel.x += delta.x;
+        lockedTravel.y += delta.y;
+        const { visible, virtual } = wrappedPosition(drag, lockedTravel);
+        wrappedCursor.value = visible;
+        laneValueGesture.gesture.move(delta, virtual);
+        return;
+    }
     if (action === "pan") {
-        wrappedCursor.value = wrappedPosition(wrappedCursor.value ?? drag, delta).visible;
-        applyMiddleDrag(panTimeline(viewport.value, delta, laneValuePan !== null));
-        laneValuePan?.pan.move(delta.y);
+        const { visible } = wrappedPosition(wrappedCursor.value ?? drag, delta);
+        wrappedCursor.value = visible;
+        applyMiddleDrag(panTimeline(viewport.value, delta, laneValueGesture !== null));
+        laneValueGesture?.gesture.move(delta, visible);
         return;
     }
     lockedTravel.x += delta.x;
@@ -246,9 +257,9 @@ function finishMiddleDrag(pointerId: number) {
     if (middlePress) cancelMiddleClick();
     middleDrag.value = null;
     wrappedCursor.value = null;
-    if (drag.action !== "pan") setTimelineZoomHint(null);
-    const laneChanged = laneValuePan?.pan.changed();
-    laneValuePan = null;
+    if (drag.action !== "pan" || laneValueGesture?.mode === "zoom") setTimelineZoomHint(null);
+    const laneChanged = laneValueGesture?.gesture.changed();
+    laneValueGesture = null;
     if (root.value?.hasPointerCapture(pointerId)) root.value.releasePointerCapture(pointerId);
     if (!middleDragMoved && !laneChanged) return;
     clearTimeout(saveTimer);
@@ -300,8 +311,8 @@ onBeforeUnmount(() => {
 
 <template>
     <section ref="root" class="timeline-scope"
-        :data-middle-drag="middleDrag?.action" aria-label="Project timeline"
-        :style="scrollbarStyle" :data-has-selection="selectedLaneIndex >= 0"
+        :data-middle-drag="middleDrag && (laneValueGesture?.mode === 'zoom' ? 'valueZoom' : middleDrag.action)" aria-label="Project timeline"
+        :style="scrollbarStyle" :data-has-selection="selectedLanes.size > 0"
         @wheel="wheel" @scroll="scrolled" @pointerdown.capture="beginMiddleDrag" @pointermove="updateMiddleDrag"
         @pointerup="endMiddleDrag" @pointercancel="cancelCapturedMiddleDrag" @lostpointercapture="cancelCapturedMiddleDrag"
         @mousedown="preventMiddleDefault" @auxclick="preventMiddleDefault">
@@ -316,10 +327,10 @@ onBeforeUnmount(() => {
         </header>
         <div class="lanes">
             <section v-for="{ child, semantic } in children" :key="addressKey(child.address)"
-                class="lane" :class="{ selected: selectedLane === addressKey(child.address) }"
-                :style="{ height: `${laneHeight}px` }" :aria-label="nodeDisplayName(semantic)" tabindex="0"
-                :aria-current="selectedLane === addressKey(child.address) ? 'true' : undefined"
-                @click="clickedLane($event, child.address)" @keydown.enter.self="selectLane(child.address)">
+                class="lane" :class="{ selected: selectedLanes.has(addressKey(child.address)) }"
+                :style="{ height: `${laneHeight}px` }" tabindex="0"
+                :aria-label="nodeDisplayName(semantic) + (selectedLanes.has(addressKey(child.address)) ? ', selected' : '')"
+                @pointerdown.capture="activateLane($event, child.address)" @keydown.enter.self="selectLane(child.address, $event)">
                 <PresentationHost :node="semantic" :region-height="laneHeight - 1" lane
                     @copy-debug-details="copyNodeDebugDetails(child.address)" />
             </section>
@@ -343,11 +354,7 @@ onBeforeUnmount(() => {
 /* Paint the overview marker in the native track. It adds no hit target and
    leaves thumb dragging, track clicks and wheel scrolling to the browser. */
 .timeline-scope[data-has-selection="true"]::-webkit-scrollbar-track:vertical {
-    background-image: linear-gradient(to bottom,
-        transparent min(var(--lane-selection-start), calc(100% - 2px)),
-        var(--vscode-editorOverviewRuler-selectionHighlightForeground, var(--vscode-focusBorder)) min(var(--lane-selection-start), calc(100% - 2px)),
-        var(--vscode-editorOverviewRuler-selectionHighlightForeground, var(--vscode-focusBorder)) max(var(--lane-selection-end), calc(var(--lane-selection-start) + 2px)),
-        transparent max(var(--lane-selection-end), calc(var(--lane-selection-start) + 2px)));
+    background-image: var(--lane-selection-markers);
     background-size: 3px 100%; background-position: right; background-repeat: no-repeat;
 }
 .timeline-scope::-webkit-scrollbar-thumb { background-color: var(--vscode-scrollbarSlider-background); border-radius: 0; }
@@ -357,7 +364,7 @@ onBeforeUnmount(() => {
 .timeline-scope::-webkit-scrollbar-corner { background: transparent; }
 .timeline-scope[data-middle-drag="pan"] { cursor: grabbing; }
 .timeline-scope[data-middle-drag="horizontalZoom"] { cursor: ns-resize; }
-.timeline-scope[data-middle-drag="verticalZoom"] { cursor: ew-resize; }
+.timeline-scope:is([data-middle-drag="verticalZoom"], [data-middle-drag="valueZoom"]) { cursor: ew-resize; }
 .wrapped-cursor {
     position: fixed; z-index: 1000; width: 20px; height: 20px; transform: translate(-50%, -50%);
     pointer-events: none; fill: none; stroke: var(--vscode-editor-foreground); stroke-width: 1.5;
@@ -370,9 +377,14 @@ onBeforeUnmount(() => {
 .lanes { flex: 0 0 auto; min-height: 0; position: relative; }
 .playback-position { overflow: hidden; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--iv-lane-title-color); }
 .playback-position small { color: var(--iv-port-label-base); margin-left: 6px; }
-.lane { box-sizing: border-box; border-bottom: 1px solid var(--vscode-panel-border); }
-.lane.selected { --iv-lane-title-color: var(--vscode-list-inactiveSelectionForeground, var(--vscode-foreground));
-    background: var(--vscode-list-inactiveSelectionBackground); outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
-.lane:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.lane { position: relative; box-sizing: border-box; border-bottom: 1px solid var(--vscode-panel-border); }
+.lane:focus-visible { outline: none; }
+.lane.selected::after, .lane:focus-visible::after {
+    content: ""; position: absolute; z-index: 0; pointer-events: none;
+    inset-inline-start: calc(var(--node-label-width) - 1px); inset-block: 0; width: 2px;
+    background: var(--vscode-tab-activeBorderTop, var(--vscode-tab-activeBorder,
+        var(--vscode-panelTitle-activeBorder, var(--vscode-focusBorder))));
+}
+.lane:focus-visible:not(.selected)::after { background: var(--vscode-focusBorder); }
 .empty { padding: 12px; }
 </style>

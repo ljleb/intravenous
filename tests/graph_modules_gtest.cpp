@@ -426,7 +426,7 @@ TEST(GraphModules, PublicInputAccessSurvivesSubgraphsAndArchiveRoundTrips)
 {
     GraphBuilder graph;
     (void)graph.input<"sequential", Sample>(InputAccess::sequential, {
-        .default_value = Sample{0.25f}, .fallback = SequentialFallback::manual_control,
+        .default_value = Sample{0.25f},
         .scrub_speed = Sample{0.375f}});
     (void)graph.input<"region", stereo>(InputAccess::region);
     (void)graph.input<"coverage", Sample>(InputAccess::coverage, {
@@ -437,7 +437,7 @@ TEST(GraphModules, PublicInputAccessSurvivesSubgraphsAndArchiveRoundTrips)
     (void)graph.event_input(EventTypeId::trigger, InputAccess::coverage);
     auto child = graph.subgraph([](SubgraphBuilder& boundary) {
         (void)boundary.input<"sequential", Sample>({
-            .default_value = Sample{0.5f}, .fallback = SequentialFallback::manual_control,
+            .default_value = Sample{0.5f},
             .scrub_speed = Sample{0.125f}});
         (void)boundary.input<"region", stereo>(InputAccess::region);
         (void)boundary.input<FFTBlock>(InputAccess::coverage);
@@ -460,7 +460,6 @@ TEST(GraphModules, PublicInputAccessSurvivesSubgraphsAndArchiveRoundTrips)
         EXPECT_EQ(inputs[1].channel_layout.channel_type, ChannelTypeId::stereo);
         auto const metadata = sequential_input_metadata<Sample>(
             sequential_input_properties(inputs[0]));
-        EXPECT_EQ(metadata.fallback, SequentialFallback::manual_control);
         EXPECT_FLOAT_EQ(metadata.default_value.value, 0.25f);
         ASSERT_TRUE(metadata.scrub_speed.has_value());
         EXPECT_FLOAT_EQ(metadata.scrub_speed->value, 0.375f);

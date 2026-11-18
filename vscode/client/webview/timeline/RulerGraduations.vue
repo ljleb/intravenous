@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import type { RulerTick } from "./geometry";
-defineProps<{ ticks: RulerTick[]; compact?: boolean; labelInset?: number }>();
+defineProps<{ ticks: RulerTick[]; compact?: boolean; labelInset?: number; hideLabels?: boolean }>();
 </script>
 
 <template>
     <div class="ruler-graduations" :class="{ compact }" aria-hidden="true">
         <div v-for="tick in ticks" :key="tick.x" class="ruler-tick" :class="{ minor: tick.minor }"
             :style="{ left: `${tick.x}px`, '--label-offset': `${Math.max(0, (labelInset ?? 0) - tick.x)}px` }">
-            <span v-if="!tick.minor" :class="{ edge: compact && tick === ticks[ticks.length - 1] }">{{ tick.label }}</span>
-            <span v-if="tick.sampleLabel" class="sample-label">{{ tick.sampleLabel }}</span>
+            <template v-if="!hideLabels">
+                <span v-if="!tick.minor" :class="{ edge: compact && tick === ticks[ticks.length - 1] }">{{ tick.label }}</span>
+                <span v-if="tick.sampleLabel" class="sample-label">{{ tick.sampleLabel }}</span>
+            </template>
         </div>
     </div>
 </template>

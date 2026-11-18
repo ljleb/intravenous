@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { AutomationCurveEditing, automationCycleSeconds, automationWindow, curvePointAt, readAutomationCurve, type CurveAxes } from "../src/automationCurveEditing";
 import { automationSampleOffset, automationValueAtFraction, automationValueFraction, automationValueGuides,
-    panAutomationValueAxis } from "../src/automationCurveGeometry";
+    panAutomationValueAxis, zoomAutomationValueAxis } from "../src/automationCurveGeometry";
 import type { GraphScope, GraphScopeNode, NodeAddress, Point } from "../src/graphScope";
 import { KnobPointerLock } from "../src/knobPointerLock";
 import { knobFraction, valueScaleFraction } from "../src/knobPresentation";
@@ -36,11 +36,77 @@ test("point drags retain the grab offset and a click without movement makes no s
     const h = harness(async () => { ++sent; });
     assert.equal(h.edits.begin(target, 1, 7, axes, { x: 12, y: 53 }), true);
     h.edits.move(7, { x: 12, y: 53 });
+    assert.equal(h.edits.selectedPoints(target).size, 0);
     await h.edits.finish();
     assert.equal(sent, 0);
     assert.equal(h.edits.pointerId(), null);
 });
 
+test("rectangle selection toggles and unions points, then moves a selected group with one gesture", async () => {
+    const moves: unknown[] = [];
+    const h = harness(async (event) => { moves.push(serializeNodeEvent(event).payload); });
+    h.edits.selectPoints(target, [1]);
+    h.edits.selectPoints(target, [1, 2], { ctrlKey: true });
+    assert.deepEqual([...h.edits.selectedPoints(target)], [2]);
+    h.edits.selectPoints(target, [1], { shiftKey: true });
+    assert.equal(h.edits.begin(target, 1, 7, axes, { x: 10, y: 50 }), true);
+    h.edits.move(7, { x: 20, y: 20 });
+    const points = h.edits.drafts(target);
+    assert.deepEqual(points.map(({ id, sampleIndex }) => [id, sampleIndex]), [[1, 96000n], [2, 288000n]]);
+    assert.ok(points[0].value > .5);
+    assert.ok(Math.abs(points[1].value - points[0].value - .5) < 1e-6);
+    h.runTimer();
+    assert.deepEqual(moves, []);
+    await h.edits.finish();
+    assert.deepEqual(moves, [
+        { id: 1, seconds: 0, sample_index: "96000", value: points[0].value },
+        { id: 2, seconds: 0, sample_index: "288000", value: points[1].value },
+    ]);
+    assert.equal(h.closed(), 1);
+});
+
+test("dragging an unselected control point preserves a separate selection", async () => {
+    const moves: number[] = [];
+    const h = harness(async (event) => { moves.push((serializeNodeEvent(event).payload as { id: number }).id); });
+    h.edits.selectPoints(target, [2]);
+    assert.equal(h.edits.begin(target, 1, 7, axes, { x: 10, y: 50 }), true);
+    h.edits.move(7, { x: 20, y: 50 });
+    assert.deepEqual([...h.edits.selectedPoints(target)], [2]);
+    assert.deepEqual(h.edits.drafts(target).map((point) => point.id), [1]);
+    await h.edits.finish();
+    assert.deepEqual(moves, [1]);
+    assert.deepEqual([...h.edits.selectedPoints(target)], [2]);
+});
+
+test("cropped values remain linear and the window stops at the enabled bounds", () => {
+    const axis = { min: -4, max: 8, pan: 2, display: "cropped" } as const;
+    assert.equal(automationValueFraction(1, axis), 0);
+    assert.equal(automationValueFraction(3, axis), 1);
+    assert.equal(automationValueFraction(4, axis), 1.5);
+    assert.equal(automationValueAtFraction(.25, axis), 1.5);
+    assert.equal(panAutomationValueAxis(axis, 400, 100), 7);
+    assert.equal(panAutomationValueAxis(axis, -400, 100), -3);
+    assert.equal(automationValueAtFraction(1, { ...axis, min: 7.5 }), 8);
+});
+
+test("lane value zoom holds the value at the cursor in both display modes", () => {
+    const cursor = .75;
+    for (const display of ["curved", "cropped"] as const) {
+        const axis = { display, pan: .25 };
+        const value = automationValueAtFraction(cursor, axis);
+        const zoomed = { ...axis, ...zoomAutomationValueAxis(axis, 4, cursor) };
+        assert.ok(Math.abs(automationValueFraction(value, zoomed) - cursor) < 1e-9);
+        assert.ok(automationValueAtFraction(1, zoomed) < automationValueAtFraction(1, axis));
+    }
+    const bounded = { display: "cropped", min: 0, max: .25 } as const;
+    const zoomed = { ...bounded, ...zoomAutomationValueAxis(bounded, 4, 0) };
+    assert.equal(automationValueAtFraction(0, zoomed), 0);
+    assert.equal(automationValueAtFraction(1, zoomed), .0625);
+    const zoomedOut = { ...bounded, ...zoomAutomationValueAxis(bounded, .25, 0) };
+    assert.equal(zoomedOut.zoom.factor, 1);
+    assert.equal(automationValueAtFraction(0, zoomedOut), 0);
+    assert.equal(automationValueAtFraction(1, zoomedOut), .25);
+});
 test("coalescing keeps the latest point while a message runs, and release flushes it before history closes", async () => {
     let release!: () => void;
     const first = new Promise<void>((resolve) => { release = resolve; });

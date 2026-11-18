@@ -575,32 +575,22 @@ Presentations simply rebind to the newly published compatible realization.
 
 ## Persistent manual controls
 
-An eligible sequential input may have persistent project-owned manual-control
-state.
+An eligible Sample input has an instance-owned manual value and an enable
+toggle. A connected contribution takes precedence wherever it is covered.
+Where coverage is known absent, an enabled knob supplies its stored value.
+A disabled Sequential knob uses the port's declared neutral value. A disabled
+windowed Coverage knob leaves the position uncovered. Region inputs and
+complete-buffer Coverage inputs have no manual knob.
 
-The state contains at least a stored manual value plus the input's manual
-participation policy. The intended behavior is:
+Sequential knobs start enabled at the authored default. Coverage knobs start
+disabled at zero, preserving sparse behavior for projects without an explicit
+saved control. Toggling or connecting a port preserves its stored value. The
+toggle and value belong to the same durable project record. An existing
+explicit participate-with-connections policy still permits additive Sequential
+composition.
 
-```text
-eligible sequential input
-    has persistent manual-control value
-
-no external source + manual mode enabled
-    manual value participates
-
-external source present + disconnected-only mode
-    manual value remains visible/editable/persisted
-    manual source does not participate
-
-external source present + participate-with-connections mode
-    manual source participates according to the input's defined
-    composition/fan-in semantics
-```
-
-Connecting an external source does not erase the manual value. Disconnecting it
-does not recreate a default from scratch. The stored value survives ordinary
-connection edits and belongs in durable project state/JSONL once that persistence
-surface is implemented.
+See the [superseded input rules](historical/coverage_before_instance_knob_fallback_2026-11-18.md)
+for the previous port-level fallback policy.
 
 The live scalar may reside in `NodeStorage`; one scalar per eligible/manual control
 is not a reason to create a separate runtime storage architecture.
@@ -609,8 +599,7 @@ is not a reason to create a separate runtime storage architecture.
 
 _Settled by the repository owner on 2026-11-14._
 
-Only Sequential inputs receive tweakable manual controls. During a live
-interaction, the manual value replaces the selected input's incoming signal,
+During a live Sequential knob interaction, the manual value replaces the selected input's incoming signal,
 including when its settled participation policy is disconnected-only. The knob
 retains its independent manual value; it does not have to follow the connected
 signal. Releasing the mouse closes the undo gesture. While that client's pointer
@@ -1041,8 +1030,8 @@ its internal routing and channel conversions. It is not a replacement for the
 values of whichever internal leaf inputs happen to consume it. Internal fanout,
 projection, conversions, and detach operations retain their semantics.
 
-An eligible input's authored default is an implicit manual value until a user
-changes it. Hover and an unchanged gesture do not create persisted overrides or
+A Sequential input's authored default is an implicit manual value until a user
+changes it. A Coverage input has no implicit manual contribution. Hover and an unchanged gesture do not create persisted overrides or
 undo entries. Undoing the first changed gesture can restore absence of an
 override, allowing the authored default to apply again. Runtime control bindings
 can exist for such implicit defaults without requiring saved project records.
@@ -1066,15 +1055,18 @@ lane interface. They do not claim that the current client implements them._
   at the cursor's current height.
 - Ctrl + middle-button drag uses vertical mouse movement for horizontal zoom,
   with the same effect as Ctrl + wheel.
-- Support multiple selected lanes. Ctrl-click toggles a lane in the selection.
-  Shift-click extends the selection across a range of lanes.
+- Interacting with a lane selects it. Ctrl-click toggles it, and Shift-click
+  adds it. A small indicator at the header/content boundary marks selection.
+  The previous selection rules are [preserved here](historical/vue_lane_and_point_selection_before_2026-11-18.md).
 - Shift + Up moves the selected lanes up within their current parent subgraph.
   Shift + Down moves them down. Preserve the selected lanes' relative order.
   A lane cannot leave its parent through either action. Selected lanes already
   stacked against the relevant boundary stay there. Do not wrap them around or
   swap their order.
-- Delete removes the selected node or nodes without a confirmation dialog.
-  Ctrl + Z restores the deletion through project history. As a general policy,
+- Delete removes selected lanes through an undoable project edit. A focused
+  lane editor that manages a collection owns Delete for its own items, including
+  when its selection is empty. Native text editing owns Delete within its
+  controls. This policy applies to all lane editors. As a general policy,
   avoid confirmation dialogs for ordinary reversible project edits.
 
 ### Node creation and names

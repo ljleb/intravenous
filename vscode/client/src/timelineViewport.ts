@@ -53,10 +53,11 @@ export function zoomTimelineVertically(view: TimelineViewport, pointerY: number,
 
 export type MiddleDrag = { pointerId: number; x: number; y: number; action: "pan" | TimelineZoomAction };
 export type MiddleClick = Point & { at: number; mode: TimelineZoomAction | "lane" | "view"; lane: Element | null };
-export function middleClickMode(modifiers: ZoomModifiers & { shiftKey: boolean }): MiddleClick["mode"] {
+export function middleClickMode(modifiers: ZoomModifiers & { shiftKey: boolean }, laneValueNavigation = false): MiddleClick["mode"] {
     if (modifiers.ctrlKey) return "verticalZoom";
+    if (modifiers.shiftKey && (!modifiers.altKey || laneValueNavigation)) return "lane";
     if (modifiers.altKey) return "horizontalZoom";
-    return modifiers.shiftKey ? "lane" : "view";
+    return "view";
 }
 export function isMiddleDoubleClick(first: MiddleClick | null, second: MiddleClick): boolean {
     return first !== null && first.mode === second.mode && first.lane === second.lane
@@ -74,6 +75,9 @@ export function timelineMiddleDragAction(modifiers: ZoomModifiers): MiddleDrag["
     return timelineZoomAction(modifiers) ?? "pan";
 }
 const middleDragZoomSensitivity = 3;
+export function middleDragZoomFactor(delta: number): number {
+    return Math.exp(clamp(delta * middleDragZoomSensitivity * .001, -20, 20));
+}
 export function zoomMiddleDrag(view: TimelineViewport, action: TimelineZoomAction, delta: Point, anchor: number): TimelineViewport {
     return action === "verticalZoom"
         ? delta.x ? zoomTimelineVertically(view, anchor, -delta.x * middleDragZoomSensitivity) : view

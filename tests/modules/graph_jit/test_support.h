@@ -454,6 +454,26 @@ protected:
         return compile_graph(
             configured_module_graph(*revision, module_id), generation);
     }
+
+    iv::GraphJitCompileResult compile_with_manual_input(
+        std::string_view module_id, std::uint64_t generation, std::string_view name, iv::Sample value)
+    {
+        auto configured = std::make_shared<iv::ConfiguredGraph>(*configured_module_graph(*revision, module_id));
+        for (iv::NodeBundleHandle bundle = 0; bundle < configured->node_bundles.size(); ++bundle) {
+            auto const& node = configured->node_bundles.bundle(bundle);
+            if (!node.is_concrete() && !node.is_subgraph()) continue;
+            for (std::size_t port = 0; port < node.sample_input_count(); ++port) {
+                iv::NodeBundlePortId const input{bundle, iv::PortKind::sample, port};
+                if (configured->node_bundles.resolve_sample_input(input).config.name != name) continue;
+                configured->manual_controls.push_back({
+                    .id = {.node = {.instance_id = "manual-input"}, .port_name = std::string(name)},
+                    .input = input, .settled_value = value,
+                });
+            }
+        }
+        EXPECT_EQ(configured->manual_controls.size(), 1u);
+        return compile_graph(std::move(configured), generation);
+    }
 };
 
 // The State of the one node whose State has the mirror's size.

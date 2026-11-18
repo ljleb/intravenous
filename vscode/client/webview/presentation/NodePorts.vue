@@ -552,7 +552,7 @@ onBeforeUnmount(() => {
 .port-row .port-entry { flex: 1; min-width: 0; width: auto; }
 .port-row.with-knob { --chooser-columns: 24px calc(38px + var(--output-polarity-width) - var(--output-polarity-inset)) minmax(0, 1fr);
     display: grid; grid-template-columns: var(--chooser-columns); }
-.port-row.with-knob[data-direction="input"] { --chooser-columns: 36px 24px minmax(0, 1fr); }
+.port-row.with-knob[data-direction="input"] { --chooser-columns: calc(37px + var(--output-polarity-width)) 24px minmax(0, 1fr); }
 .with-knob > .port-entry { grid-column: 1 / -1; grid-row: 1; display: grid;
     grid-template-columns: var(--chooser-columns); gap: 0; width: 100%; box-sizing: border-box; padding-inline: 0 5px; }
 .with-knob > .port-entry .port-circle { grid-column: 1; }
@@ -560,6 +560,7 @@ onBeforeUnmount(() => {
 .with-knob > .port-entry .port-name { grid-column: 3; }
 .with-knob > .manual-input { grid-column: 2; grid-row: 1; z-index: 1; }
 .with-knob[data-direction="input"] > .manual-input { grid-column: 1; }
+.with-knob[data-direction="input"] > .manual-input { gap: 0; }
 .port-entry { display: flex; flex-shrink: 0; gap: 10px; align-items: center; width: 100%; padding: 5px; border: 0; background: transparent; color: inherit; text-align: left; cursor: crosshair; touch-action: none; }
 .port-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--iv-port-label-base); }
 .port-entry[data-hovered] { background: var(--vscode-list-hoverBackground); }

@@ -1006,16 +1006,21 @@ class BackgroundEvaluationTransaction::Impl {
                  plan.storage.sample_materializations) {
                 auto const target =
                     selection.storage_coverage[materialization.output];
+                if (target.empty()) continue;
                 for (std::size_t source = 0;
                      source < materialization.inputs.size(); ++source) {
-                    auto& selected =
-                        selection
-                            .storage_coverage[materialization.inputs[source]];
-                    auto expanded =
-                        selected |
-                        shifted_back(
-                            target,
-                            materialization.source_read_latencies[source]);
+                    auto const input = materialization.inputs[source];
+                    auto required = shifted_back(target, materialization.source_read_latencies[source]);
+                    // Each projection can cover a different part of the target.
+                    // An authored random-access producer can only write windows
+                    // within its own published Regions.
+                    if (auto const output = plan.storage.ports[input].output_port;
+                        output && plan.ports[*output].output_production != OutputProductionKind::sequential) {
+                        if (auto const coverage = plan.ports[*output].accumulators.output_change)
+                            required = required & prepared_->output_coverages()[*coverage];
+                    }
+                    auto& selected = selection.storage_coverage[input];
+                    auto expanded = selected | required;
                     if (expanded != selected) {
                         selected = std::move(expanded);
                         changed = true;

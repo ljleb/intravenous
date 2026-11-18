@@ -4,6 +4,7 @@ import { manualControlKey, type ManualControlId, type ManualControlDescriptor } 
 import { useNode } from "./nodeContext";
 
 type Context = { gestures: ManualControlGestures; version: Ref<number>;
+    setEnabled: (control: ManualControlId, enabled: boolean) => void;
     startKnob: (event: PointerEvent, control: ManualControlId, descriptor: ManualControlDescriptor, limits: ManualControlLimits) => void };
 const key: InjectionKey<Context> = Symbol("iv.manualControls");
 export function provideManualControls(context: Context): void { provide(key, context); }
@@ -72,6 +73,10 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: M
             context.gestures.invertOutput(id.value, descriptor.value);
         },
         finish() { if (id.value) context?.gestures.finish(id.value); },
+        toggleEnabled() {
+            if (id.value?.inputName !== undefined && descriptor.value?.available && !descriptor.value.live && !dragging.value)
+                context?.setEnabled(id.value, !descriptor.value.enabled);
+        },
         numeric(event: MouseEvent) {
             event.preventDefault(); event.stopPropagation();
             if (!id.value || !descriptor.value || !context || !available.value) return;

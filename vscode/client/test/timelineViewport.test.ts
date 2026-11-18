@@ -147,6 +147,8 @@ test("middle double-click modifiers reset the selected axis at the click anchor"
     assert.equal(middleClickMode({ ...plain, shiftKey: true }), "lane");
     assert.equal(middleClickMode({ ...plain, ctrlKey: true }), "verticalZoom");
     assert.equal(middleClickMode({ ...plain, altKey: true }), "horizontalZoom");
+    assert.equal(middleClickMode({ ...plain, altKey: true, shiftKey: true }, true), "lane");
+    assert.equal(middleClickMode({ ...plain, altKey: true, shiftKey: true }), "horizontalZoom");
     const first = { x: 100, y: 120, at: 10, mode: "verticalZoom" as const, lane: null };
     assert.equal(isMiddleDoubleClick(first, { ...first, at: 300, x: 103 }), true);
     assert.equal(isMiddleDoubleClick(first, { ...first, at: 500 }), false);

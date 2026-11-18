@@ -175,25 +175,26 @@ planning first.
 
 ## 4. Absence and Sequential fallback
 
-_Settled by the repository owner on 2026-11-15. This replaces the earlier
-Region/Coverage fallback and resolved-read proposals, preserved
-[historically](./historical/automation_random_access_fallback_before_sequential_resolution_2026-11-15.md)._
+_Updated by the repository owner on 2026-11-18. The
+[earlier input rules](historical/coverage_before_instance_knob_fallback_2026-11-18.md)
+remain available for context._
 
-Region and Coverage inputs preserve the sparsity and identity of their provided
-Regions. `region()` / `regions()` exposes actual selected data; `coverage()`
-is the positional union of those Regions. Overlaps and duplicate Regions
-retain their independent contributions. Reading outside the provided ranges
-is invalid. There is no manual knob, neutral substitution, fallback
-configuration, `uncovered_value()` or fallback `read()` interface for these inputs.
-An actual zero and the absence of a value remain distinguishable.
+Region and Coverage inputs preserve the sparsity and identity of supplied
+Regions. `region()` and `regions()` expose those Regions. `coverage()` is their
+positional union. Overlaps and duplicate Regions retain independent
+contributions. Reading outside supplied ranges is invalid.
 
-Sequential inputs provide a value at every position they process. Where upstream
-coverage is absent, the input applies its declared fallback policy: its neutral
-value or its persistent manual-control value. The ordinary Sequential accessor
-returns the resolved stream; node authors do not implement fallback tests.
-The default policy remains neutral, preserving existing input behavior. A
-Sequential Sample input can opt into manual fallback. Existing non-Sample
-neutral rules remain unchanged where no manual-control representation exists.
+An enabled knob on a windowed Coverage Sample input supplies a computed
+constant Region over each gap in its connected coverage. The input receives
+those Regions along with the original connected Regions. When the knob is
+disabled, gaps remain uncovered. A disconnected enabled knob covers the full
+sample-index circle, with samples computed only for demanded windows. Region
+and complete-buffer inputs have no knob.
+
+Sequential inputs provide a value at every position they process. They use
+an enabled knob's stored value in known gaps and the declared neutral value
+when the knob is disabled. The stored value and its enable state belong to the
+node instance. Non-Sample Sequential inputs keep their existing neutral rules.
 
 **Sequential inputs resolve absence; computed Tick values and output coverage
 remain distinct.** Each Sequential input supplies a resolved stream: it combines
@@ -240,9 +241,10 @@ Public module inputs retain Sequential, Region and Coverage access contracts.
 A module's public Sequential input resolves fallback **before** internal
 routing/conversions/fan-out; flattening does not move that boundary to leaf
 inputs. The resolved internal Sequential stream is covered as a live signal.
-Random Access module inputs preserve sparse Region/Coverage identity, and
-expose no manual fallback. The planner must not expose data outside its
-explicitly selected Regions and prepared windows. See
+Public Coverage inputs supply enabled manual Regions at the boundary,
+before internal routing and conversion. Region inputs preserve the identity
+of their supplied Region. The planner exposes data within selected Regions
+and prepared windows. See
 [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md).
 
 ## 5. Keep forward and reverse coverage semantics; allow suspension

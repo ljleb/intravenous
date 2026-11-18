@@ -182,7 +182,7 @@ TEST(ModuleLoaderPackages, BuiltinPackageUsesExecutableOwnedArtifactRoot)
     EXPECT_EQ(std::ranges::count_if(loaded.module_message_handlers, [](auto const& handler) {
         return std::string_view(static_cast<char const*>(handler.definition_id.data), handler.definition_id.size)
             == "iv.builtin.automation.curve";
-    }), 4);
+    }), 5);
 }
 
 TEST(ModuleLoaderFailures, BuiltinPackageWithoutExecutableArtifactRootFails)

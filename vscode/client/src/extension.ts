@@ -19,9 +19,10 @@ import { prepareVSCodeRelaunch, readVSCodeXWaylandRelaunch } from "./vscodeRelau
 function configureXWaylandRelaunch(context: vscode.ExtensionContext, localDesktop: boolean, log: (message: string) => void): void {
     const key = "autoRelaunchWithXWayland";
     const configuration = () => vscode.workspace.getConfiguration("intravenous");
-    const enabled = () => configuration().inspect<boolean>(key)?.globalValue === true;
-    const applicable = localDesktop && process.platform === "linux" && process.env.XDG_SESSION_TYPE === "wayland"
-        && process.env.INTRAVENOUS_XWAYLAND_RELAUNCH !== "1";
+    const enabled = () => configuration().get<boolean>(key, false);
+    const wayland = process.env.XDG_SESSION_TYPE === "wayland"
+        || (!process.env.XDG_SESSION_TYPE && !!process.env.WAYLAND_DISPLAY);
+    const applicable = localDesktop && process.platform === "linux" && wayland;
     let pending: ChildProcess | null = null;
     let attempted = false;
     let preparing = false;
@@ -30,12 +31,20 @@ function configureXWaylandRelaunch(context: vscode.ExtensionContext, localDeskto
         pending = null;
     };
     async function relaunchIfEnabled() {
-        if (!applicable || attempted || preparing || !enabled()) return;
+        if (attempted || preparing || !enabled()) return;
         attempted = true;
+        if (!applicable) {
+            log("Automatic XWayland restart skipped. The extension host did not detect a local Linux Wayland session.");
+            return;
+        }
         preparing = true;
         try {
-            const plan = readVSCodeXWaylandRelaunch();
+            const plan = readVSCodeXWaylandRelaunch(undefined, log);
             if (!plan) return;
+            if (process.env.INTRAVENOUS_XWAYLAND_RELAUNCH === "1") {
+                log("Automatic XWayland restart stopped. The relaunched desktop process has no --ozone-platform flag.");
+                return;
+            }
             const worker = await prepareVSCodeRelaunch(context.asAbsolutePath("dist/vscodeRelaunchWorker.js"), plan);
             if (!enabled()) { worker?.kill(); return; }
             pending = worker;

@@ -3953,7 +3953,7 @@ TEST_F(ProjectGraphFixture, ReturningToImplicitDefaultRemovesTheUninterruptedGes
     EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(undo); }), std::runtime_error);
 }
 
-TEST_F(ProjectGraphFixture, DisabledModuleManualValueKeepsTheAuthoredDefaultAndItsStoredOverride)
+TEST_F(ProjectGraphFixture, DisabledModuleManualValueUsesNeutralAndKeepsItsStoredOverride)
 {
     publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1)});
     iv::ProjectAckBuilder load;

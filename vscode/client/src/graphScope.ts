@@ -1,6 +1,6 @@
 import type { ManualControlDescriptor } from "./manualControls";
 import type { ContinuousValueAlternative } from "./graphModel";
-import type { AutomationValueRuler } from "./automationCurveGeometry";
+import type { AutomationValueDisplay, AutomationValueRuler, AutomationValueZoom } from "./automationCurveGeometry";
 import { readTimelineViewport, type TimelineViewport } from "./timelineViewport";
 
 export type NodeAddress = { instanceId: string; path?: Array<Record<string, unknown>> };
@@ -72,7 +72,9 @@ export type GraphLayout = {
     timeline: TimelineViewport;
     automationBounds?: Record<string, { min?: number; max?: number }>;
     automationRulers?: Record<string, AutomationValueRuler>;
+    automationValueDisplays?: Record<string, AutomationValueDisplay>;
     automationValuePans?: Record<string, number>;
+    automationValueZooms?: Record<string, AutomationValueZoom>;
 };
 export const nodeWidth = 300;
 export const nodeHeight = 320;
@@ -111,12 +113,21 @@ export function readLayout(value: unknown): GraphLayout {
     const rulerEntries = Object.entries(layout?.automationRulers ?? {}).filter(([, ruler]) => (
         ruler === "whole" || ruler === "half" || ruler === "off"
     ));
+    const displayEntries = Object.entries(layout?.automationValueDisplays ?? {}).filter(([, mode]) => mode === "cropped");
     const panEntries = Object.entries(layout?.automationValuePans ?? {}).filter(([, pan]) => Number.isFinite(pan) && pan !== 0);
+    const displays = new Map(displayEntries);
+    const zoomEntries = Object.entries(layout?.automationValueZooms ?? {}).filter(([key, zoom]) => zoom
+        && Number.isFinite(zoom.factor) && zoom.factor >= 2 ** -20 && zoom.factor <= 2 ** 20 && zoom.factor !== 1
+        && Number.isFinite(zoom.center)
+        && (displays.has(key) ? zoom.center === .5
+            : zoom.factor > 1 && zoom.center >= .5 / zoom.factor && zoom.center <= 1 - .5 / zoom.factor));
     return {
         positions,
         ...(Object.keys(automationBounds).length ? { automationBounds } : {}),
         ...(rulerEntries.length ? { automationRulers: Object.fromEntries(rulerEntries) } : {}),
+        ...(displayEntries.length ? { automationValueDisplays: Object.fromEntries(displayEntries) } : {}),
         ...(panEntries.length ? { automationValuePans: Object.fromEntries(panEntries) } : {}),
+        ...(zoomEntries.length ? { automationValueZooms: Object.fromEntries(zoomEntries) } : {}),
         timeline: readTimelineViewport(layout?.timeline),
         viewport: finitePoint(view) && Number.isFinite(view.scale) && view.scale >= 0.1 && view.scale <= 2
             ? { x: view.x, y: view.y, scale: view.scale }

@@ -53,6 +53,8 @@ struct ValueBound {
     constexpr bool operator==(ValueBound const&) const = default;
 };
 
+enum class BoundSide : std::uint8_t { min, max };
+
 struct ValueBounds {
     ValueBound min{};
     ValueBound max{.value = 1};
@@ -62,6 +64,26 @@ struct ValueBounds {
         if (!std::isfinite(min.value) || !std::isfinite(max.value)
             || (min.enabled && max.enabled && min.value > max.value))
             throw std::invalid_argument("invalid automation value bounds");
+    }
+    [[nodiscard]] ValueBounds with_bound(BoundSide side, ValueBound bound) const {
+        if (!std::isfinite(bound.value))
+            throw std::invalid_argument("invalid automation bound value");
+        auto bounds = *this;
+        switch (side) {
+        case BoundSide::min:
+            bounds.min = bound;
+            if (bounds.min.enabled && bounds.max.enabled)
+                bounds.min.value = std::min(bounds.min.value, bounds.max.value);
+            break;
+        case BoundSide::max:
+            bounds.max = bound;
+            if (bounds.max.enabled && bounds.min.enabled)
+                bounds.max.value = std::max(bounds.max.value, bounds.min.value);
+            break;
+        default:
+            throw std::invalid_argument("invalid automation bound side");
+        }
+        return bounds;
     }
     [[nodiscard]] float clamp(float value) const noexcept {
         if (min.enabled) value = std::max(min.value, value);
@@ -75,7 +97,6 @@ struct AddPoint { Point point; };
 struct RemovePoint { std::uint32_t id = 0; };
 struct MovePoint { std::uint32_t id = 0; double seconds = 0; float value = 0; SampleIndex sample_index{}; };
 struct SetSegment { std::uint32_t id = 0; CurveInterpolation interpolation = CurveInterpolation::bezier; float tension = 1; };
-enum class BoundSide : std::uint8_t { min, max };
 struct SetBound { BoundSide side = BoundSide::min; ValueBound bound{}; };
 
 inline void validate_point(Point const& point) {
@@ -401,23 +422,7 @@ public:
         replace_points(ctx, points);
     }
     void on_message(ModuleMessageContext<AutomationCurve>& ctx, SetBound const& event) const {
-        if (!std::isfinite(event.bound.value))
-            throw std::invalid_argument("invalid automation bound value");
-        auto bounds = bounds_;
-        switch (event.side) {
-        case BoundSide::min:
-            bounds.min = event.bound;
-            if (bounds.min.enabled && bounds.max.enabled)
-                bounds.min.value = std::min(bounds.min.value, bounds.max.value);
-            break;
-        case BoundSide::max:
-            bounds.max = event.bound;
-            if (bounds.max.enabled && bounds.min.enabled)
-                bounds.max.value = std::max(bounds.max.value, bounds.min.value);
-            break;
-        default:
-            throw std::invalid_argument("invalid automation bound side");
-        }
+        auto const bounds = bounds_.with_bound(event.side, event.bound);
         ctx.replace<"iv.builtin.automation.curve">(points_, bounds);
     }
 };

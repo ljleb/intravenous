@@ -358,6 +358,14 @@ export class GraphEditorProvider implements vscode.Disposable {
                     });
                     void vscode.window.showErrorMessage(`Cannot edit manual input: ${error.message}`);
                 }
+            } else if (message?.type === "deleteSelectedLanes") {
+                try {
+                    await this.session.deleteGraphNodes(message.instanceIds);
+                    await this.refresh();
+                } catch (error) { void vscode.window.showErrorMessage(`Cannot delete lanes: ${error.message}`); }
+            } else if (message?.type === "setManualInputEnabled") {
+                try { await this.session.setManualInputEnabled(message.target, message.inputName, message.enabled); }
+                catch (error) { void vscode.window.showErrorMessage(`Cannot change manual input: ${error.message}`); }
             } else if (message?.type === "projectHistory") {
                 try {
                     await this.session.projectHistory(message.direction);

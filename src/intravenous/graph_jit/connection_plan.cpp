@@ -599,6 +599,13 @@ std::expected<ChannelTypeId, std::string> channel_type_with_count(
         + std::to_string(count) + " channels");
 }
 
+std::optional<NodeBundleHandle> coverage_manual_source(ConfiguredGraph const& graph, NodeBundleHandle source)
+{
+    auto const control = std::ranges::find(graph.manual_controls, std::optional{source},
+        &ConfiguredManualControl::coverage_source);
+    return control == graph.manual_controls.end() ? std::nullopt : control->coverage_source;
+}
+
 std::expected<std::vector<RoutedSampleConnection>, std::string>
 build_structural_sample_routes(ConfiguredGraph const& graph,
     std::vector<ManualSampleRoutePlan>& manual_routes)
@@ -653,6 +660,7 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
     std::map<std::pair<NodeBundleHandle, std::size_t>, std::size_t> boundary_controls;
     for (std::size_t index = 0; index < graph.manual_controls.size(); ++index) {
         auto const& control = graph.manual_controls[index];
+        if (control.coverage_source) continue;
         if (!graph.node_bundles.bundle(control.input.node_bundle_handle).is_subgraph()) continue;
         if (!boundary_controls.emplace(std::pair{control.input.node_bundle_handle, control.input.port_index}, index).second)
             return std::unexpected("GraphJit manual controls contain two values for one module input");
@@ -820,6 +828,20 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
         for (auto const target : connection.target_channels) {
             auto expanded = expand_target(expand_target, target);
             if (!expanded) return std::unexpected(std::move(expanded.error()));
+            // Mirror the connected source route before it reaches the
+            // public input. The fallback sees coverage metadata without
+            // replacing the original Region views or reading their samples.
+            for (auto const& control : graph.manual_controls) {
+                if (!control.coverage_source || std::ranges::all_of(connection.source_channels, [&](auto const& source) {
+                    return source.channel.bundle == *control.coverage_source;
+                })) continue;
+                auto const match = std::ranges::find_if(*expanded, [&](auto channel) {
+                    return channel.bundle == control.input.node_bundle_handle && channel.port == control.input.port_index;
+                });
+                if (match != expanded->end()) expanded->push_back({*control.coverage_source, 0, match->channel});
+                else if (target.bundle == control.input.node_bundle_handle && target.port == control.input.port_index)
+                    expanded->push_back({*control.coverage_source, 0, target.channel});
+            }
             // A live manual producer replaces this input's authored source.
             // Keep the authored connections in ConfiguredGraph so restoring
             // the connection requires no durable project edit.
@@ -936,7 +958,12 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
                 "GraphJit structural sample route resolved to no producer channels");
         }
         std::vector<float> complete_transform;
+        std::map<std::optional<NodeBundleHandle>, std::vector<std::size_t>> source_groups;
         if (!has_routed_detach) {
+            // A projection intersects its source coverages. Separate the
+            // manual projections so each contributes its own Regions.
+            for (std::size_t source = 0; source < base_sources.size(); ++source)
+                source_groups[coverage_manual_source(graph, base_sources[source].bundle)].push_back(source);
             complete_transform.assign(
                 connection.target_channels.size() * base_sources.size(), 0.0f);
             for (std::size_t target = 0;
@@ -995,10 +1022,10 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
         for (auto const& group : groups) {
             auto target_type = channel_type_with_count(group.channels.size());
             if (!target_type) return std::unexpected(std::move(target_type.error()));
-            auto make_base_connection = [&] {
+            auto make_base_connection = [&](std::span<SampleOutputChannelId const> channels) {
                 std::vector<ConfiguredSampleConnectionSource> sources;
-                sources.reserve(base_sources.size());
-                for (auto const source : base_sources)
+                sources.reserve(channels.size());
+                for (auto const source : channels)
                     sources.push_back({.channel = source});
                 return ConfiguredSampleConnection{
                     // The explicit transform/contributions map a list of
@@ -1070,31 +1097,31 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
                     }
                 }
                 routes.push_back(RoutedSampleConnection{
-                    .connection = make_base_connection(),
+                    .connection = make_base_connection(base_sources),
                     .contributions = std::move(contributions),
                     .authored_connection_index = connection_index,
                 });
                 continue;
             }
-            SampleChannelTransformPlan transform{
-                .source_channel_count = base_sources.size(),
-                .target_channel_count = group.channels.size(),
-            };
-            transform.coefficients.reserve(
-                base_sources.size() * group.channels.size());
-            for (auto const row : group.semantic_rows) {
-                auto const begin = complete_transform.begin()
-                    + static_cast<std::ptrdiff_t>(row * base_sources.size());
-                transform.coefficients.insert(
-                    transform.coefficients.end(),
-                    begin,
-                    begin + static_cast<std::ptrdiff_t>(base_sources.size()));
+            for (auto const& [manual, source_indices] : source_groups) {
+                std::vector<SampleOutputChannelId> projected_sources;
+                projected_sources.reserve(source_indices.size());
+                SampleChannelTransformPlan transform{
+                    .source_channel_count = source_indices.size(),
+                    .target_channel_count = group.channels.size(),
+                };
+                for (auto const source : source_indices) projected_sources.push_back(base_sources[source]);
+                for (auto const row : group.semantic_rows)
+                    for (auto const source : source_indices)
+                        transform.coefficients.push_back(complete_transform[row * base_sources.size() + source]);
+                if (manual && std::ranges::all_of(transform.coefficients, [](float coefficient) { return coefficient == 0; }))
+                    continue;
+                routes.push_back(RoutedSampleConnection{
+                    .connection = make_base_connection(projected_sources),
+                    .transform = std::move(transform),
+                    .authored_connection_index = connection_index,
+                });
             }
-            routes.push_back(RoutedSampleConnection{
-                .connection = make_base_connection(),
-                .transform = std::move(transform),
-                .authored_connection_index = connection_index,
-            });
         }
     }
     return routes;
@@ -1426,6 +1453,7 @@ std::expected<void, std::string> normalize_sample_target_projections(
 
         auto const target_channel_total = canonical_targets.size();
         std::vector<bool> claimed(target_channel_total, false);
+        std::vector<bool> authored_claimed(target_channel_total, false);
 
         auto const& first = plan.sample_connections[first_index];
         auto target_history = first.target_history;
@@ -1470,6 +1498,9 @@ std::expected<void, std::string> normalize_sample_target_projections(
 
         for (auto const connection_index : group_indices) {
             auto const& connection = plan.sample_connections[connection_index];
+            bool const manual = std::ranges::all_of(connection.source_channels, [&](auto source) {
+                return coverage_manual_source(graph, source.bundle).has_value();
+            });
             if (connection.target_layout != target.channel_layout
                 || connection.geometry != first.geometry
                 || connection.absolute_pace_exponent
@@ -1534,10 +1565,11 @@ std::expected<void, std::string> normalize_sample_target_projections(
                 }
                 auto const target_index = static_cast<std::size_t>(
                     std::distance(canonical_targets.begin(), found));
-                if (claimed[target_index]) {
+                if (!manual && authored_claimed[target_index]) {
                     return std::unexpected(
                         "GraphJit sample target channel has more than one source");
                 }
+                if (!manual) authored_claimed[target_index] = true;
                 claimed[target_index] = true;
                 contribution.target_channels.push_back(target_index);
             }
@@ -3189,10 +3221,9 @@ std::expected<void, std::string> populate_background_topology(
                     if (connected && control != graph.manual_controls.end()
                         && control->participation == ManualControlParticipation::participate_with_connections
                         && !control->override_connections) manual_contribution = control->settled_value;
-                    if (!connected || (!manual_contribution && metadata.fallback == SequentialFallback::manual_control)) {
-                        fallback = metadata.default_value;
-                        if (control != graph.manual_controls.end()) fallback = control->settled_value;
-                    }
+                    if (control != graph.manual_controls.end() && !manual_contribution)
+                        fallback = control->settled_value;
+                    else if (!connected) fallback = metadata.default_value;
                 }
                 sequential_history =
                     realization.input(

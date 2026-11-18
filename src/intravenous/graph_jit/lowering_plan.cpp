@@ -234,7 +234,7 @@ std::expected<GraphAnalysis, std::string> analyze_graph(
         auto const has_tick = !implementation->tick_block.empty();
         auto const has_tock = !implementation->tock_coverage.empty();
         auto const intrinsic = implementation->resolved_module_input.has_value()
-            || implementation->observation_slot.has_value() || implementation->native_background_gain;
+            || implementation->observation_slot.has_value() || implementation->native_background_node;
         if ((!intrinsic && !implementation->package) || has_tick == has_tock
             || !implementation->declare_node || (!intrinsic && !implementation->node_data)) {
             return std::unexpected(
@@ -2647,7 +2647,7 @@ std::expected<PackageImportPlan, std::string> plan_package_imports(
     for (std::size_t i = 0; i < analysis.primitives.size(); ++i) {
         auto const& primitive = analysis.primitives[i];
         auto const& implementation = *primitive.implementation;
-        if (implementation.resolved_module_input || implementation.observation_slot || implementation.native_background_gain) {
+        if (implementation.resolved_module_input || implementation.observation_slot || implementation.native_background_node) {
             auto add = [&](std::string const& symbol, CallbackImportAbi abi) {
                 if (symbol.empty()) return;
                 if (!std::ranges::any_of(plan.compiler_callbacks,
@@ -3483,6 +3483,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
             });
     }
     for (auto const& configured : input.graph.manual_controls) {
+        if (configured.coverage_source) continue;
         if (input.graph.node_bundles.bundle(configured.input.node_bundle_handle).is_subgraph()) continue;
         auto const primitive = primitive_index_for_bundle(
             configured.input.node_bundle_handle);
@@ -3518,9 +3519,6 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         }
         auto const connected = has_authored_connection(*primitive, port);
         auto const fallback_only = connected
-            && sequential_input_metadata<Sample>(
-                sequential_input_properties(input_config)).fallback
-                    == SequentialFallback::manual_control
             && !configured.override_connections
             && configured.participation != ManualControlParticipation::participate_with_connections;
         auto const participates = !connected || (fallback_only && binding.resolves_coverage)
@@ -3922,19 +3920,6 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         if (!neutral) return std::unexpected(std::move(neutral.error()));
         binding.neutral_value = std::move(*neutral);
         binding.fallback_value = binding.neutral_value;
-        if (binding.geometry.value_type == ContinuousValueTypeId::sample) {
-            auto config = input.graph.node_bundles.resolve_sample_input(connection.target_port).config;
-            auto const& metadata = sequential_input_metadata<Sample>(sequential_input_properties(config));
-            if (metadata.fallback == SequentialFallback::manual_control)
-                std::memcpy(binding.fallback_value.data(), &metadata.default_value, sizeof(Sample));
-            if (binding.manual_control) {
-                auto const& control = plan.manual_controls[*binding.manual_control];
-                // An explicit manual source is added after resolution. Do not
-                // also substitute it as the gap's fallback and count it twice.
-                if (control.participates && !control.fallback_only)
-                    binding.fallback_value = binding.neutral_value;
-            }
-        }
         auto position = execution_position_for_bundle(connection.target_port.node_bundle_handle);
         if (!position) return std::unexpected(std::move(position.error()));
         auto requested = request_input_timeline(*primitive,

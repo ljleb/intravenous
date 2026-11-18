@@ -11,11 +11,19 @@ export type VSCodeRelaunch = {
     env: NodeJS.ProcessEnv;
 };
 
+function ozonePlatformSwitch(args: readonly string[]): string | undefined {
+    const index = args.findIndex((arg) => arg === "--" || arg === "--ozone-platform" || arg.startsWith("--ozone-platform="));
+    const arg = args[index];
+    if (!arg || arg === "--") return undefined;
+    return arg === "--ozone-platform" && args[index + 1] && !args[index + 1].startsWith("--")
+        ? `${arg}=${args[index + 1]}` : arg;
+}
+
 export function xWaylandArguments(args: readonly string[]): string[] | null {
+    if (ozonePlatformSwitch(args)) return null;
     const separator = args.indexOf("--");
     const end = separator === -1 ? args.length : separator;
     const switches = args.slice(0, end);
-    if (switches.some((arg) => arg === "--ozone-platform" || arg.startsWith("--ozone-platform="))) return null;
     return [...switches, "--ozone-platform=x11", ...args.slice(end)];
 }
 
@@ -31,7 +39,8 @@ export function processStartTime(pid: number): string | null {
     }
 }
 
-export function readVSCodeXWaylandRelaunch(pid = Number(process.env.VSCODE_PID)): VSCodeRelaunch | null {
+export function readVSCodeXWaylandRelaunch(pid = Number(process.env.VSCODE_PID),
+    report?: (message: string) => void): VSCodeRelaunch | null {
     if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid)
         throw new Error("Cannot identify the local VS Code desktop process");
     const started = processStartTime(pid);
@@ -42,7 +51,10 @@ export function readVSCodeXWaylandRelaunch(pid = Number(process.env.VSCODE_PID))
         || originalArgs.some((arg) => arg.startsWith("--type=")))
         throw new Error("Cannot verify the local VS Code desktop process");
     const args = xWaylandArguments(originalArgs);
-    if (!args) return null;
+    if (!args) {
+        report?.(`Automatic XWayland restart skipped. The desktop process already has ${ozonePlatformSwitch(originalArgs)}.`);
+        return null;
+    }
     const env = Object.fromEntries(readFileSync(`${path}/environ`, "utf8").split("\0").flatMap((entry) => {
         const equals = entry.indexOf("=");
         return equals <= 0 ? [] : [[entry.slice(0, equals), entry.slice(equals + 1)]];

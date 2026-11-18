@@ -3,6 +3,7 @@ import { AddPoint, MovePoint, RemovePoint, SetBound, SetSegment } from "./genera
 import type { NodeEvent } from "./nodeEvents";
 import type { NodeEventGesture } from "./nodeEventMessaging";
 import { ScrubSensitivity } from "./scrubSensitivity";
+import { updateSelection } from "./selection";
 import { knobScrubSpeed } from "./knobPresentation";
 
 import { automationBoundLimits, automationCycleSeconds, automationSampleIndex, automationUnitsPerPixel, automationValueAtFraction,
@@ -17,6 +18,7 @@ export type CurveDragKind = "point" | "tension";
 type Transport = { send(target: NodeAddress, event: NodeEvent): Promise<void>; gesture(target: NodeAddress): NodeEventGesture };
 type Timers = { set(callback: () => void): unknown; clear(handle: unknown): void };
 type Drag = { key: string; target: NodeAddress; pointerId: number; axes: CurveAxes; valueBounds: AutomationValueBounds; desired: AutomationPointPosition;
+    companions: readonly AutomationPointPosition[]; authoredBounds: AutomationValueBounds; anchorValue: number;
     kind: CurveDragKind; initial: AutomationPointPosition; grab?: ScreenPoint; sampleRate?: number;
     lastPosition?: ScreenPoint; sensitivity?: ScrubSensitivity;
     detents: readonly number[]; plateau: number; anchorPlateau: number;
@@ -90,7 +92,7 @@ export class AutomationCurveEditing {
     private active: Drag | null = null;
     private boundDrag: BoundDrag | null = null;
     private readonly pendingBounds = new Map<string, { settings: AutomationBoundSettings; revision?: number }>();
-    private selection: { key: string; id: number } | null = null;
+    private readonly selection = new Map<string, ReadonlySet<number>>();
     constructor(private readonly transport: Transport, private readonly changed: () => void,
         private readonly timers: Timers = { set: (callback) => setTimeout(callback, 80), clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>) }) {}
     reconcile(scope: GraphScope | null): void {
@@ -115,8 +117,11 @@ export class AutomationCurveEditing {
             if (!next.has(key) || (pending.revision !== undefined && this.readRevision >= pending.revision)) this.pendingBounds.delete(key);
         }
         if (this.boundDrag && !next.has(this.boundDrag.key)) this.boundDrag = null;
-        const selected = this.selection;
-        if (selected && !next.get(selected.key)?.points.some((point) => point.id === selected.id)) this.selection = null;
+        for (const [key, ids] of this.selection) {
+            const kept = new Set(next.get(key)?.points.filter((point) => ids.has(point.id)).map((point) => point.id));
+            if (kept.size) this.selection.set(key, kept);
+            else this.selection.delete(key);
+        }
         if (this.active && (!next.has(this.active.key)
             || !next.get(this.active.key)!.points.some((point) => point.id === this.active!.desired.id))) {
             this.abandon();
@@ -141,17 +146,18 @@ export class AutomationCurveEditing {
         const key = addressKey(target);
         const points = new Map<number, AutomationPointPosition>();
         for (const entry of this.ending.get(key)?.values() ?? []) points.set(entry.point.id, entry.point);
-        if (this.active?.key === key) points.set(this.active.desired.id, this.active.desired);
+        if (this.active?.key === key) for (const point of this.movedPoints(this.active, this.active.desired)) points.set(point.id, point);
         return [...points.values()];
     }
     error(target: NodeAddress): string { return this.errors.get(addressKey(target)) ?? ""; }
-    selectedPoint(target: NodeAddress): number | undefined {
-        return this.selection?.key === addressKey(target) ? this.selection.id : undefined;
+    selectedPoints(target: NodeAddress): ReadonlySet<number> {
+        return this.selection.get(addressKey(target)) ?? new Set();
     }
-    select(target: NodeAddress, id: number): void {
+    selectPoints(target: NodeAddress, ids: Iterable<number>, modifiers?: Parameters<typeof updateSelection>[2]): void {
         const key = addressKey(target);
-        if (this.selection?.key === key && this.selection.id === id) return;
-        this.selection = { key, id };
+        const selected = updateSelection(this.selectedPoints(target), ids, modifiers);
+        if (selected.size) this.selection.set(key, selected);
+        else this.selection.delete(key);
         this.changed();
     }
     axes(target: NodeAddress): CurveAxes | null {
@@ -198,12 +204,22 @@ export class AutomationCurveEditing {
         const initial: AutomationPointPosition = { id, seconds: visible.seconds, value: visible.value, sampleIndex: visible.sampleIndex,
             ...(kind === "tension" || visible !== point && visible.tension !== undefined ? { tension: visible.tension ?? point.tension } : {}) };
         this.errors.delete(key);
-        this.selection = { key, id };
-        const valueBounds = enabledAutomationBounds(curve.bounds);
+        const authoredBounds = enabledAutomationBounds(curve.bounds);
+        const anchorValue = clampAutomationValue(initial.value, authoredBounds);
+        const selected = this.selectedPoints(target);
+        const companions = kind === "point" && selected.size > 1 && selected.has(id)
+            ? curve.points.filter((entry) => entry.id !== id && selected.has(entry.id))
+                .map((entry) => this.ending.get(key)?.get(entry.id)?.point ?? entry) : [];
+        const valueBounds = { ...authoredBounds };
+        for (const companion of companions) {
+            const offset = clampAutomationValue(companion.value, authoredBounds) - anchorValue;
+            if (authoredBounds.min !== undefined) valueBounds.min = Math.max(valueBounds.min!, authoredBounds.min - offset);
+            if (authoredBounds.max !== undefined) valueBounds.max = Math.min(valueBounds.max!, authoredBounds.max - offset);
+        }
         const detents = kind === "point" && position ? automationValueGuides(axes, axes.height, axes.ruler)
             .map(({ value }) => value).filter((value) => value > (valueBounds.min ?? -Infinity) && value < (valueBounds.max ?? Infinity)) : [];
         this.active = { key, target: structuredClone(target), pointerId, axes: { ...axes }, desired: initial, initial,
-            kind, valueBounds, sampleRate: curve.sampleRate, grab: position ? { ...position } : undefined,
+            kind, valueBounds, authoredBounds, anchorValue, companions, sampleRate: curve.sampleRate, grab: position ? { ...position } : undefined,
             lastPosition: position ? { ...position } : undefined,
             sensitivity: kind === "point" && position
                 ? new ScrubSensitivity(automationUnitsPerPixel(axes, axes.height), -position.y, clampAutomationValue(initial.value, valueBounds)) : undefined,
@@ -278,7 +294,7 @@ export class AutomationCurveEditing {
             if (!Number.isFinite(authoredValue) || (sampleIndex === drag.desired.sampleIndex && authoredValue === drag.desired.value)) return;
             drag.desired = { ...initial, sampleIndex, seconds: Number(sampleIndex) / sampleRate, value: authoredValue };
         }
-        if (drag.timer === undefined && !drag.pending) drag.timer = this.timers.set(() => {
+        if (!drag.companions.length && drag.timer === undefined && !drag.pending) drag.timer = this.timers.set(() => {
             drag.timer = undefined;
             void this.flush(drag).catch(() => {});
         });
@@ -329,15 +345,33 @@ export class AutomationCurveEditing {
             this.changed();
         }
     }
+    private movedPoints(drag: Drag, anchor: AutomationPointPosition): AutomationPointPosition[] {
+        if (!drag.companions.length) return [anchor];
+        const timeDelta = anchor.sampleIndex! - drag.initial.sampleIndex!;
+        const valueDelta = anchor.value - drag.anchorValue;
+        return [anchor, ...drag.companions.map((point) => {
+            if (anchor === drag.initial) return point;
+            const sampleIndex = BigInt.asIntN(64, point.sampleIndex! + timeDelta);
+            const initial = clampAutomationValue(point.value, drag.authoredBounds);
+            const value = Math.fround(clampAutomationValue(initial + valueDelta, drag.authoredBounds));
+            return { ...point, sampleIndex, seconds: Number(sampleIndex) / drag.sampleRate!, value };
+        })];
+    }
     private flush(drag: Drag): Promise<void> {
         if (drag.pending) return drag.pending;
         drag.pending = (async () => {
             while (this.active === drag && (drag.sent?.sampleIndex !== drag.desired.sampleIndex
                 || drag.sent?.value !== drag.desired.value || drag.sent?.tension !== drag.desired.tension)) {
                 const point = { ...drag.desired };
-                const event = drag.kind === "tension" ? SetSegment({ id: point.id, interpolation: "bezier", tension: point.tension! })
-                    : MovePoint({ id: point.id, seconds: 0, sample_index: point.sampleIndex!.toString(), value: point.value });
-                await drag.gesture.send(event);
+                if (drag.kind === "tension") {
+                    await drag.gesture.send(SetSegment({ id: point.id, interpolation: "bezier", tension: point.tension! }));
+                } else {
+                    for (const moved of this.movedPoints(drag, point)) {
+                        if (this.active !== drag) break;
+                        await drag.gesture.send(MovePoint({ id: moved.id, seconds: 0,
+                            sample_index: moved.sampleIndex!.toString(), value: moved.value }));
+                    }
+                }
                 drag.sent = point;
             }
         })().catch(async (error) => {
@@ -368,7 +402,8 @@ export class AutomationCurveEditing {
             if (this.active === drag && revision !== undefined && this.readRevision < revision) {
                 let entries = this.ending.get(drag.key);
                 if (!entries) this.ending.set(drag.key, entries = new Map());
-                entries.set(drag.desired.id, { point: { ...drag.desired }, revision, axes: drag.axes });
+                for (const point of this.movedPoints(drag, drag.desired))
+                    entries.set(point.id, { point, revision, axes: drag.axes });
             }
         }).catch((error) => {
             this.errors.set(drag.key, error instanceof Error ? error.message : String(error));
@@ -393,7 +428,7 @@ export class AutomationCurveEditing {
     disconnected(): void {
         if (this.active?.timer !== undefined) this.timers.clear(this.active.timer);
         this.boundDrag = null; this.pendingBounds.clear();
-        this.active = null; this.selection = null; this.curves.clear(); this.errors.clear(); this.ending.clear(); this.readRevision = 0; this.changed();
+        this.active = null; this.selection.clear(); this.curves.clear(); this.errors.clear(); this.ending.clear(); this.readRevision = 0; this.changed();
     }
     async add(target: NodeAddress, position: { seconds: number; value: number; sampleIndex?: bigint }): Promise<void> {
         const curve = this.curves.get(addressKey(target));
@@ -412,6 +447,23 @@ export class AutomationCurveEditing {
         await this.send(target, SetSegment({ id, interpolation, tension }));
     }
     async remove(target: NodeAddress, id: number): Promise<void> { await this.send(target, RemovePoint({ id })); }
+    async removeSelection(target: NodeAddress): Promise<void> {
+        const ids = this.selectedPoints(target);
+        if (!ids.size || this.active) return;
+        const gesture = this.transport.gesture(target);
+        const key = addressKey(target);
+        this.errors.delete(key);
+        try {
+            for (const id of ids) await gesture.send(RemovePoint({ id }));
+        } catch (error) {
+            this.errors.set(key, error instanceof Error ? error.message : String(error));
+        } finally {
+            await gesture.finish().catch((error) => {
+                this.errors.set(key, error instanceof Error ? error.message : String(error));
+            });
+            this.changed();
+        }
+    }
     private async send(target: NodeAddress, event: NodeEvent): Promise<void> {
         const key = addressKey(target); this.errors.delete(key);
         try { await this.transport.send(target, event); }

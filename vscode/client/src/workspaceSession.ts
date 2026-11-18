@@ -1,5 +1,5 @@
 import type { ObservationInterest, ObservationUpdate } from "./observations";
-import { ManualControlInteractions } from "./manualControls";
+import { ManualControlInteractions, resolveManualControl } from "./manualControls";
 import { ControlCompilationProgress, type ControlCompileStatus } from "./controlCompilation";
 import type { NodeAddress } from "./graphScope";
 import { validateNodeEventTarget, type SerializedNodeEvent } from "./nodeEvents";
@@ -142,6 +142,19 @@ export class WorkspaceSession {
     async readGraphScope() {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
         return this.rpc.getGraphScope();
+    }
+
+    async setManualInputEnabled(node: NodeAddress, inputName: string, enabled: boolean): Promise<void> {
+        const rpc = this.rpc;
+        if (!rpc || this.graphSessionStatus !== "running") throw new Error("The Intravenous server is unavailable");
+        await this.manualControls.settled();
+        const scope = await rpc.getGraphScope();
+        if (rpc !== this.rpc) throw new Error("The Intravenous session changed before editing the input");
+        const control = { node, inputName };
+        const descriptor = resolveManualControl(scope, control);
+        if (!descriptor?.available || descriptor.live) throw new Error("The manual input is unavailable");
+        if (descriptor.enabled === enabled) return;
+        await rpc.setManualInputEnabled(control, descriptor.value, enabled, descriptor.participation, scope.sessionRevision);
     }
 
     async sendNodeEvent(target: NodeAddress, event: SerializedNodeEvent, interactionId?: string): Promise<number> {
