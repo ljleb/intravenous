@@ -1,4 +1,6 @@
-export type RulerTick = { x: number; label: string };
+import { automationSampleIndex, automationSampleOffset } from "../../src/automationCurveGeometry";
+
+export type RulerTick = { x: number; label: string; sampleLabel?: string; minor?: boolean };
 
 // Shared numeric graduation geometry. The domain owns its units and labels;
 // timeline and meter renderers share tick placement and visual presentation.
@@ -28,4 +30,25 @@ export type TimelineWindow = { beginSeconds: number; endSeconds: number };
 export function timelineTicks(window: TimelineWindow, width: number) {
     return numericTicks(window.beginSeconds, window.endSeconds, width, (value) => `${value} s`)
         .map(({ value, ...tick }) => ({ ...tick, seconds: value }));
+}
+
+export function automationTimelineTicks(window: TimelineWindow & { spanSeconds?: number }, width: number, rate?: number): RulerTick[] {
+    const major = timelineTicks(window, width);
+    const span = window.spanSeconds ?? window.endSeconds - window.beginSeconds;
+    if (!rate || !(span > 0 && width > 0)) return major;
+    const ticks: RulerTick[] = major.map(({ x, label, seconds }) => {
+        const index = automationSampleIndex(seconds, rate);
+        return { x, label, sampleLabel: index === undefined ? undefined : `${index} smp` };
+    });
+    const spacing = width / (span * rate);
+    const first = automationSampleIndex(window.beginSeconds, rate);
+    if (first === undefined || !Number.isFinite(spacing) || spacing < 6) return ticks;
+    const x = automationSampleOffset(first, window.beginSeconds, rate) / span * width;
+    const count = Math.min(1000, Math.max(0, Math.floor((width - x) / spacing) + 1));
+    for (let i = 0; i < count; ++i) {
+        const position = x + i * spacing;
+        if (position >= 0 && !major.some((tick) => Math.abs(tick.x - position) < 1))
+            ticks.push({ x: position, label: "", minor: true });
+    }
+    return ticks.sort((a, b) => a.x - b.x);
 }

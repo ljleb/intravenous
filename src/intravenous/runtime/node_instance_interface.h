@@ -22,6 +22,9 @@ struct NodeInstancePortInfo {
     // Present only for the scalar Sample Sequential input supported by the
     // manual-control backend. Other continuous types are not numeric knobs.
     std::optional<Sample> manual_default{};
+    std::optional<InputAccessKind> access{};
+    std::optional<OutputProductionKind> production{};
+    std::optional<OutputRealization> realization{};
 };
 
 inline std::optional<Sample> manual_control_default_value(ContinuousInputConfig const& config)
@@ -65,6 +68,7 @@ inline NodeInstanceInterface read_node_instance_interface(
                 return continuous_introspection_metadata(access.value_metadata);
             }, config.access),
             .manual_default = manual_owner ? manual_control_default_value(config) : std::nullopt,
+            .access = input_access(config),
         });
     }
     for (std::size_t index = 0; index < bundle.sample_output_count(); ++index) {
@@ -75,15 +79,18 @@ inline NodeInstanceInterface read_node_instance_interface(
             .value_types = std::visit([](auto const& production) {
                 return continuous_introspection_metadata(production.value_metadata);
             }, config.production),
+            .production = output_production(config), .realization = config.realization,
         });
     }
     for (std::size_t index = 0; index < bundle.event_input_count(); ++index) {
         auto const config = bundles.resolve_event_input({root, PortKind::event, index}).config;
-        result.event_inputs.push_back({.name = config.name, .index = index, .event_type = config.type});
+        result.event_inputs.push_back({.name = config.name, .index = index, .event_type = config.type,
+            .access = input_access(config)});
     }
     for (std::size_t index = 0; index < bundle.event_output_count(); ++index) {
         auto const config = bundles.resolve_event_output({root, PortKind::event, index}).config;
-        result.event_outputs.push_back({.name = config.name, .index = index, .event_type = config.type});
+        result.event_outputs.push_back({.name = config.name, .index = index, .event_type = config.type,
+            .production = output_production(config), .realization = config.realization});
     }
     result.has_children = bundle.is_subgraph();
     return result;

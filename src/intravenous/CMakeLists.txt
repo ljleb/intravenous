@@ -560,6 +560,15 @@ add_executable(intravenous
     runtime/app.cpp
 )
 
+add_executable(intravenous-client-helper client_native_helper.cpp)
+target_link_libraries(intravenous-client-helper PRIVATE nlohmann_json::nlohmann_json)
+find_package(X11 QUIET)
+if(X11_FOUND)
+    target_link_libraries(intravenous-client-helper PRIVATE X11::X11)
+    target_compile_definitions(intravenous-client-helper PRIVATE IV_CLIENT_HELPER_X11)
+endif()
+add_dependencies(intravenous intravenous-client-helper)
+
 iv_apply_common_cxx_settings(intravenous PRIVATE)
 target_compile_definitions(intravenous PRIVATE
     IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER="${IV_APPLICATION_ENVIRONMENT_LAUNCHER}"

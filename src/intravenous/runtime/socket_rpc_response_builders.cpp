@@ -448,8 +448,19 @@ Json graph_scope_ports_json(std::vector<NodeInstancePortInfo> const& ports,
     std::span<ProjectGraphScopeManualControl const> controls = {}, ManualControlKind kind = ManualControlKind::input)
 {
     auto json = Json::array();
+    auto const shape_name = [](auto shape) -> std::string_view {
+        switch (shape) {
+        case decltype(shape)::sequential: return "sequential";
+        case decltype(shape)::region: return "region";
+        case decltype(shape)::coverage: return "coverage";
+        }
+        throw std::logic_error("unknown graph scope port shape");
+    };
     for (auto const& port : ports) {
         Json entry{{"name", port.name}, {"index", port.index}};
+        if (port.access) entry["access"] = shape_name(*port.access);
+        if (port.production) entry["production"] = shape_name(*port.production);
+        if (port.realization) entry["realization"] = *port.realization == OutputRealization::buffered ? "buffered" : "computed";
         if (port.channel_type) {
             entry["channelType"] = std::string(channel_type_info(*port.channel_type).wire_name);
             entry["valueTypes"] = continuous_value_types_json(port.value_types);

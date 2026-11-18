@@ -7337,7 +7337,8 @@ void automation_window_module(iv::GraphBuilder& graph) {
     // the curve sorts it before PointSource, which rejects unsorted points.
     auto curve = graph.node<"iv.builtin.automation.curve">(
         std::vector<iv::automation::Point>{{3, 36000, 0, iv::CurveInterpolation::bezier, 0},
-            {1, 0, 0, iv::CurveInterpolation::bezier, 0}, {2, 4.0 / 88200, 1, iv::CurveInterpolation::bezier, 0}});
+            {1, 0, 0, iv::CurveInterpolation::bezier, 0}, {2, 4.0 / 88200, 1, iv::CurveInterpolation::bezier, 0}},
+        iv::automation::ValueBounds{.min = {.value = .25f, .enabled = true}, .max = {.value = .75f, .enabled = true}});
     auto window = graph.node<"iv.test.automation.window">();
     window(curve);
     auto live = graph.node<"iv.test.graph_jit.state_context.manual_control_slice_probe">();

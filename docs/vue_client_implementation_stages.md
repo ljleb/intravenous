@@ -445,6 +445,12 @@ lane changes described below still require compilation, tests, and UI checks.
   A quick middle click neither changes the viewport nor enables a persistent
   movement mode. No clip-editing, node-reordering, or connection gestures were
   added.
+- Ctrl and Alt middle drags use pointer lock to draw a cursor that wraps within
+  the timeline viewport. Release restores the system cursor to the press
+  position. If the browser denies pointer lock, the drag uses pointer capture.
+- Plain and Shift middle drags use the same pointer lock. Plain panning wraps
+  within the viewport. Shift panning wraps within the visible lane when the
+  lane handles vertical panning.
 - Horizontal position/scale, lane height, and vertical scroll position are saved
   in the existing frontend layout file under `timeline`. Navigation neither
   modifies project intent nor requests graph compilation. The earlier unbound
@@ -3845,3 +3851,67 @@ horizontal movement and anchors at the cursor's current height. Ctrl uses
 vertical movement and anchors at the cursor's current horizontal position.
 Port popovers forward the same gestures to the timeline. Each pixel of drag
 applies three times the zoom of a pixel of wheel input.
+
+### Automation clip editing, 2026-11-18
+
+`AutomationCurvePresentation.vue` uses the timeline's ruler ticks and adds
+sample subdivisions when they fit. Its point markers use separate hit areas.
+Shift-click removes a point. Right-click opens the segment menu on a point
+or adds a point in empty space. The handle beside a Bézier point edits its
+tension in one typed gesture. Nano and mini show the curve and its gaps.
+
+`GraphEditor.vue` requests pointer lock for mouse drags on both curve points
+and tension handles. Tension uses horizontal movement. If the webview denies
+the lock, the drag continues with pointer capture.
+
+`AutomationCurveEditing` drafts and sends exact signed sample indices.
+`automation::Point` stores these indices as decimal strings in
+`sample_index`. `automation::PointSource` also reads older points that use
+`seconds`. It combines both sets at the project sample rate. The graph
+layout stores optional value bounds per node address. Those bounds control
+the vertical scale in every mode.
+
+The top-ruler Event Coverage input and its snap-source selection remain
+pending. [Automation and graph-authored snapping](./vue_presentation_refinement_direction.md#5-automation-editing-and-graph-authored-snapping)
+
+The owner later chose left-click creation in empty space and added Delete
+point to the segment menu. The Scale panel contains the value snapping
+selector. [Current automation gestures](./vue_presentation_refinement_direction.md#5-automation-editing-and-graph-authored-snapping)
+
+### Native client helper, 2026-11-18
+
+The local Linux extension host starts `intravenous-client-helper` on
+activation. The helper uses an inherited connection, as the client-owned
+project server does. Closing the connection stops the helper. A Linux
+parent-death signal also stops it if the host dies during a display call.
+The extension restarts a lost helper with backoff and cancels retries on
+shutdown.
+
+The application setting `intravenous.warpCursorAfterPointDrag` enables the
+X11 prototype. The editor sends a short-lived request after pointer lock
+ends. The helper checks the restored pointer position before moving it.
+Requests expire and do not cross helper restarts. Native Wayland windows
+are outside the prototype.
+
+Cursor return is now enabled by default. An explicit `false` setting disables
+it. If the local extension host or native helper lacks platform or display
+support, the Intravenous output channel reports the problem at startup.
+Run **Intravenous: Trace Next Automation Cursor Return** and drag one point
+to log the release coordinates and each decision that can prevent a warp.
+The X11 helper logs the cursor position it observes and checks the result
+of traced warps.
+The helper also reports the first failed cursor-window check in the output
+channel. On Wayland sessions, this message explains the XWayland launch mode.
+
+**Intravenous: Enable Automatic XWayland Restart** sets
+`intravenous.autoRelaunchWithXWayland` in User Settings. The setting defaults to
+off. On a local Linux Wayland session, the extension checks the desktop
+process at activation and when the setting is enabled. If the process has no
+explicit `--ozone-platform` flag, the extension requests the normal VS Code
+quit action. A short-lived launcher waits for that process to exit and starts
+the same editor with `--ozone-platform=x11`. An explicit graphics backend is
+preserved. The normal quit action applies to the entire editor instance.
+
+Knob hover hints use port metadata from the project graph scope. An input
+shows its Sequential, Region, or Coverage access. An output shows its
+production shape and its computed or buffered realization.

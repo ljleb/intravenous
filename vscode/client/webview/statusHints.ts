@@ -50,9 +50,8 @@ export function useElementStatusHint() {
     };
 }
 
-export function automationPointStatus(point: AutomationPointPosition, sampleRate?: number | null): string {
-    const samples = sampleRate ? point.seconds * sampleRate : NaN;
-    const index = Math.sign(samples) * Math.floor(Math.abs(samples) + .5);
-    const time = Number.isSafeInteger(index) ? `${index} smp` : `${Number(point.seconds.toPrecision(6))} s`;
-    return `${time} · Value ${Number(point.value.toPrecision(6))}`;
+export function automationPointStatus(point: AutomationPointPosition): string {
+    const time = point.sampleIndex !== undefined ? `${point.sampleIndex} smp` : `${Number(point.seconds.toPrecision(6))} s`;
+    return `${time} · Value ${Number(point.value.toPrecision(6))}`
+        + (point.tension === undefined ? "" : ` · Tension ${Number(point.tension.toFixed(2))}`);
 }

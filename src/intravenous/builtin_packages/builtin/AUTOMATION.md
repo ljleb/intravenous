@@ -22,10 +22,13 @@ void build(iv::GraphBuilder& graph) {
 IV_MODULE("my.automation", build);
 ```
 
-Each point stores a unique ID, a position in seconds, a Sample value, an outgoing
-segment policy, and tension. Times are signed coordinates on the cyclic timeline.
-The source rounds seconds to sample indices and rejects indices outside
-`[-2^63, 2^63)`. Equal sample indices use ascending persistent point IDs.
+Each point stores a unique ID, a time, a Sample value, an outgoing segment
+policy, and tension. The editor writes the time in `sample_index` as a signed
+decimal string. For example, at 48 kHz, `.sample_index = "48000"` means one second
+after index zero in a project configuration expression. When `sample_index`
+is empty or omitted, the source rounds `seconds` at the project's sample rate,
+as in the C++ example above. The source accepts indices in `[-2^63, 2^63)`.
+Equal sample indices use ascending persistent point IDs.
 
 A point's outgoing segment continues toward the next point, including across
 the cyclic seam. `empty` produces no coverage. `hold` produces the point's value.
@@ -57,14 +60,35 @@ Sequential destinations resolve uncovered positions with their declared neutral
 or manual fallback. Region and Coverage destinations retain the gaps. Pending
 background data never count as a gap.
 
-The Vue presentation creates an empty point list for a new curve. Double-click
-empty space to add a point. Drag a point to move it. Double-click a point to edit
-its outgoing segment and tension. Right-click a point to remove it. Point drags
-send coalesced `MovePoint` messages and form one undo operation per gesture.
-`AddPoint`, `RemovePoint`, `MovePoint`, and `SetSegment` replace the module's
-construction arguments. Project persistence and history retain their accepted
-values. The editor displays those construction values, including real gaps and
-the same automatic interpolation convention as the interpreter.
+The Vue presentation creates an empty point list for a new curve. The clip ruler
+shows seconds and sample positions. Zoom in to see individual sample marks.
 
-The former guide is preserved in
-[historical documentation](../../../../docs/historical/automation_builtin_before_sparse_segments_2026-11-15.md).
+- Click empty space to add a point at the nearest sample.
+- Click a point to select it. Drag it to move it between samples.
+- Shift-click a point to remove it.
+- Right-click a point to set its outgoing segment or choose Delete point.
+- Drag the diamond beside a Bézier point left or right to adjust its tension.
+
+Open `Scale` to set the Minimum and Maximum knobs. The button beside each
+knob enables that bound. Each enabled bound limits the other knob. If you
+enable a bound after the opposite knob has passed it, the bound you just
+enabled moves to the opposite knob's value.
+
+The project saves the bounds with the automation curve. The point source
+applies the bounds to point events before interpolation. Each stored point
+keeps its original value when you change a bound. Dragging a point brings it
+inside the enabled bounds, even if you only move it in time. A new point
+starts inside the bounds. Two distinct enabled bounds give a linear scale.
+One enabled bound or no enabled bounds give the same curved scale as the
+knobs. Choose Value snapping in the same panel to set the point guides.
+Projects with older display-only bounds start with both audio bounds disabled.
+
+Point and tension drags each form one undo operation.
+Bound drags also form one undo operation. `AddPoint`, `RemovePoint`, `MovePoint`,
+`SetSegment`, and `SetBound` replace the module's construction arguments.
+Project persistence and history retain their accepted values. All lane
+heights display the same curve shape and gaps. Zoom to
+`editable` height to display its editing controls.
+
+See the [earlier seconds-only editor](../../../../docs/historical/automation_builtin_before_sample_editing_2026-11-18.md)
+and the [guide before sparse segments](../../../../docs/historical/automation_builtin_before_sparse_segments_2026-11-15.md).

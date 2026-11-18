@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { GraphLayoutStore } from "../src/graphLayoutStore";
-import { readLayout } from "../src/graphScope";
+import { addressKey, placeNodes, readLayout } from "../src/graphScope";
 
 test("graph layout saves serialize, survive a new store, and leave project intent untouched", async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "iv-graph-layout-"));
@@ -14,10 +14,17 @@ test("graph layout saves serialize, survive a new store, and leave project inten
         const store = new GraphLayoutStore(directory);
         assert.deepEqual(await store.load(), readLayout(null));
         const first = readLayout({ positions: { node: { x: 2, y: 3 } } });
+        const key = addressKey({ instanceId: "curve" });
         const last = readLayout({ positions: { node: { x: 200, y: -300 } }, viewport: { x: 10, y: 20, scale: 0.5 },
+            automationBounds: { [key]: { min: -2 }, inverted: { min: 1, max: 0 } },
+            automationRulers: { [key]: "half", invalid: "degrees", default: "auto" },
+            automationValuePans: { [key]: -2.5, invalid: Infinity, default: 0 },
             timeline: { beginSeconds: -5, secondsPerPixel: 0.02, laneHeight: 640, scrollTop: 123 } });
         await Promise.all([store.save(first), store.save(last)]);
         assert.deepEqual(await new GraphLayoutStore(directory).load(), last);
+        assert.deepEqual(placeNodes([], last).automationBounds, { [key]: { min: -2 } });
+        assert.deepEqual(placeNodes([], last).automationRulers, { [key]: "half" });
+        assert.deepEqual(placeNodes([], last).automationValuePans, { [key]: -2.5 });
         assert.equal(await fs.readFile(project, "utf8"), "project intent\n");
         assert.deepEqual(await fs.readdir(path.dirname(store.filePath)), ["graph-layout.json"]);
     } finally { await fs.rm(directory, { recursive: true, force: true }); }

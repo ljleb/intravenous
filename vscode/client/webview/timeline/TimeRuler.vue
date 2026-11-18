@@ -136,7 +136,7 @@ onBeforeUnmount(() => {
 .time-ruler { position: relative; min-width: 0; overflow: hidden; }
 .seekable { cursor: ew-resize; touch-action: none; user-select: none; }
 .playhead-marker { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--vscode-debugIcon-startForeground, #89d185); pointer-events: none; }
-.execution-marker { background: var(--vscode-foreground); opacity: .24; }
+.execution-marker { background: var(--iv-ruler-tick); }
 .requested-marker { position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--vscode-focusBorder, #569cd6); pointer-events: none; }
 .start-marker {
     position: absolute; bottom: 0; margin-left: -5px;

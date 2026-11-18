@@ -1,8 +1,11 @@
 import type { ManualControlDescriptor } from "./manualControls";
 import type { ContinuousValueAlternative } from "./graphModel";
+import type { AutomationValueRuler } from "./automationCurveGeometry";
 import { readTimelineViewport, type TimelineViewport } from "./timelineViewport";
 
 export type NodeAddress = { instanceId: string; path?: Array<Record<string, unknown>> };
+export type PortShape = "sequential" | "region" | "coverage";
+export type PortRealization = "buffered" | "computed";
 export type GraphScopePort = {
     name: string;
     index: number;
@@ -10,6 +13,9 @@ export type GraphScopePort = {
     eventType?: string;
     valueTypes?: ContinuousValueAlternative[];
     manualControl?: ManualControlDescriptor;
+    access?: PortShape;
+    production?: PortShape;
+    realization?: PortRealization;
 };
 export type GraphScopeNode = {
     loadState: "waitingForDefinition" | "waitingForGraph" | "ready" | "failed";
@@ -64,6 +70,9 @@ export type GraphLayout = {
     positions: Record<string, Point>;
     viewport: Point & { scale: number };
     timeline: TimelineViewport;
+    automationBounds?: Record<string, { min?: number; max?: number }>;
+    automationRulers?: Record<string, AutomationValueRuler>;
+    automationValuePans?: Record<string, number>;
 };
 export const nodeWidth = 300;
 export const nodeHeight = 320;
@@ -91,8 +100,23 @@ export function readLayout(value: unknown): GraphLayout {
         if (finitePoint(point)) positions[key] = { x: point.x, y: point.y };
     }
     const view = layout?.viewport;
+    const automationBounds: NonNullable<GraphLayout["automationBounds"]> = {};
+    for (const [key, bounds] of Object.entries(layout?.automationBounds ?? {})) {
+        if (!bounds || typeof bounds !== "object") continue;
+        const min = Number.isFinite(bounds.min) && Number.isFinite(Math.fround(bounds.min!)) ? bounds.min : undefined;
+        const max = Number.isFinite(bounds.max) && Number.isFinite(Math.fround(bounds.max!)) ? bounds.max : undefined;
+        if (min === undefined && max === undefined || min !== undefined && max !== undefined && min >= max) continue;
+        automationBounds[key] = { ...(min !== undefined ? { min } : {}), ...(max !== undefined ? { max } : {}) };
+    }
+    const rulerEntries = Object.entries(layout?.automationRulers ?? {}).filter(([, ruler]) => (
+        ruler === "whole" || ruler === "half" || ruler === "off"
+    ));
+    const panEntries = Object.entries(layout?.automationValuePans ?? {}).filter(([, pan]) => Number.isFinite(pan) && pan !== 0);
     return {
         positions,
+        ...(Object.keys(automationBounds).length ? { automationBounds } : {}),
+        ...(rulerEntries.length ? { automationRulers: Object.fromEntries(rulerEntries) } : {}),
+        ...(panEntries.length ? { automationValuePans: Object.fromEntries(panEntries) } : {}),
         timeline: readTimelineViewport(layout?.timeline),
         viewport: finitePoint(view) && Number.isFinite(view.scale) && view.scale >= 0.1 && view.scale <= 2
             ? { x: view.x, y: view.y, scale: view.scale }
@@ -119,7 +143,7 @@ export function placeNodes(nodes: readonly GraphScopeNode[], saved: GraphLayout)
         positions[key] = point;
         occupied.push(point);
     }
-    return { positions, viewport: { ...saved.viewport }, timeline: { ...saved.timeline } };
+    return { ...saved, positions, viewport: { ...saved.viewport }, timeline: { ...saved.timeline } };
 }
 
 export function zoomAt(viewport: GraphLayout["viewport"], cursor: Point, scale: number): GraphLayout["viewport"] {

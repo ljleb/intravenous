@@ -9,11 +9,14 @@
       "y": 55.60603393490126
     }
   },
+  "automationValuePans": {
+    "[\"c583a6a6-4cc6-47a0-9f35-f61c45ed5d05\",[]]": -0.0335656833295013
+  },
   "timeline": {
-    "beginSeconds": -31.790142814067273,
-    "secondsPerPixel": 0.07841819748328518,
-    "laneHeight": 203.0467548797319,
-    "scrollTop": 0
+    "beginSeconds": -4.795436053952661,
+    "secondsPerPixel": 0.012459685639231334,
+    "laneHeight": 441.82179408958655,
+    "scrollTop": 309.7221984863281
   },
   "viewport": {
     "x": 215.10152954825116,

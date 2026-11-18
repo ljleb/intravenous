@@ -407,9 +407,11 @@ Refine the Vue curve editor's gestures as follows:
   gesture for removing port connections. This is the immediate deletion
   gesture; do not retain right-click-to-delete as the primary action.
 - **Right-click an existing point** opens a context menu for its outgoing
-  curve type (`empty`, `hold`, `bezier`) and relevant segment options.
-- **Right-click empty curve space** adds a point at that position, replacing
-  double-click-to-add. Point hit-testing takes precedence over creation.
+  curve type (`empty`, `hold`, `bezier`), tension, and **Delete point**.
+- **Left-click empty curve space** adds a point at that position. Point
+  hit-testing takes precedence over creation. The owner selected this gesture
+  on 2026-11-18, replacing
+  [right-click creation](./historical/vue_automation_right_click_creation_2026-11-18.md).
 - Provide a **tension handle near each applicable control point**, manipulable
   without entering a separate form. Display and edit the same `[0,1]` tension
   parameter used by the backend, keeping exact linear interpolation at `0` and
@@ -465,20 +467,33 @@ make the point marker larger.
 
 ### Explicit value bounds and lane zoom categories
 
-Let the automation curve presentation specify an optional **minimum** and
-optional **maximum** value, independently. These are stable presentation/value
-mapping controls, not a curve-fitting algorithm driven by the highest or
-lowest point. When **both** finite bounds are supplied, the clip maps value
-height **linearly** between them. With **at most one** bound, use a monotone,
-invertible **curved** value mapping consistent with the familiar unbounded or
-one-sided knob behavior. Its visible orientation and range should not jump
-when a point is dragged, created, deleted, or given a new value; editing points
-must never automatically rescale the vertical domain to fit them. Do not add
-a second vertical zoom gesture inside the automation presentation: use the
-existing lane-level vertical zoom only. Keep actual authored `Sample` values
-independent of the display transform, even when outside the visible bounds.
-The bounds and their ownership must survive presentation remount and project
-reload without altering the DSP curve's interpolation or sparse coverage.
+The Scale panel exposes separate **Minimum** and **Maximum** knobs for the
+bounds saved by `AutomationCurve`. Each knob has an enable button in the same
+position as the output knob's polarity button. Bound knobs have no connection
+ports. An enabled minimum limits the maximum knob from below. An enabled
+maximum limits the minimum knob from above. If a disabled bound's stored value
+crosses the enabled opposite side, enabling it moves that bound to the opposite
+side's value. The opposite bound keeps its value. The knobs preview locally
+while dragged and commit on release.
+
+The drawn curve uses the bounded values emitted by `PointSource`. With two
+distinct enabled bounds, map the value height linearly between them. With one
+or no enabled bounds, use the curved mapping from the one-sided or unbounded
+knob. If both bounds are equal, show the constant value with room around it.
+Shift and middle-drag pans the value scale when at most one bound is enabled.
+The same gesture pans the timeline horizontally.
+With neither bound, shift the center of the arctangent scale. With one bound,
+keep that edge fixed and change the distance from it to the midpoint. The
+graph layout saves the lane's pan. Shift and a double middle click restores
+its default mapping.
+Changing bounds preserves existing authored `Sample` values. The first actual
+movement of a point drag brings the dragged point inside the enabled bounds,
+including a horizontal drag. Add new points inside the enabled bounds. Point
+edits never rescale the vertical axis to fit the points. Use the existing
+lane-level vertical zoom. Save bound settings in the project with the automation
+module so they survive presentation remount and project reload.
+[Earlier point drag behavior](./historical/automation_point_drag_before_bound_limits_2026-11-18.md)
+[Earlier display-only bounds](./historical/automation_display_only_bounds_2026-11-18.md)
 
 Honor the lane's existing **`nano`**, **`mini`**, and **`editable`** vertical
 zoom categories. Both `nano` and `mini` display the curve shape scaled to the

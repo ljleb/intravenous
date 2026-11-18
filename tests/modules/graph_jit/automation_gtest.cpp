@@ -1,5 +1,6 @@
 #include "test_support.h"
 
+#include <intravenous/basic_nodes/automation.h>
 #include <chrono>
 #include <thread>
 
@@ -68,8 +69,9 @@ TEST_F(GraphJitRuntimeFixture, SparseTockPointsComputeOnlyTheRequestedCurveWindo
     auto const* region = pinned->find_sample_region(handle, index(2));
     ASSERT_NE(region, nullptr);
     EXPECT_EQ(region->range, range(2, 4));
+    // The event source limits the endpoints to .25 and .75 before interpolation.
     EXPECT_FLOAT_EQ(static_cast<float>(region->at(index(2), 0)), .5f);
-    EXPECT_FLOAT_EQ(static_cast<float>(region->at(index(3), 0)), .75f);
+    EXPECT_FLOAT_EQ(static_cast<float>(region->at(index(3), 0)), .625f);
 }
 
 TEST_F(GraphJitRuntimeFixture, TransformedCurvePointsDetermineCoverageBeforeSequentialManualFallback)
@@ -161,6 +163,31 @@ TEST_F(GraphJitRuntimeFixture, AutomationFeedsAModuleInputAcrossRollingPlaybackW
     EXPECT_FALSE(executor.background_execution_failures().any());
 }
 
+TEST(AutomationPointSource, MergesExactSampleIndicesWithLegacySecondsAcrossTheSignedSeam)
+{
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(iv::details::iv_builder_session_create(), iv::details::iv_builder_session_destroy);
+    iv::GraphBuilder graph(session.get());
+    using iv::automation::Point;
+    using iv::automation::SampleIndex;
+    auto const rate = 48000u;
+    auto const inputs = std::array{
+        Point{.id = 3, .seconds = 0.0},
+        Point{.id = 1, .sample_index = SampleIndex{"-9223372036854775808"}},
+        Point{.id = 2, .sample_index = SampleIndex{"9223372036854775807"}},
+    };
+    iv::automation::PointSource source(graph.immutable_array<Point>(inputs));
+    EXPECT_EQ(iv::automation::point_index(inputs[1], rate).signed_value(), std::numeric_limits<std::int64_t>::min());
+    EXPECT_EQ(iv::automation::point_index(inputs[2], rate).signed_value(), std::numeric_limits<std::int64_t>::max());
+    auto const coverage = source.range(rate);
+    for (auto const& point : inputs) EXPECT_TRUE(coverage.contains(iv::automation::point_index(point, rate)));
+    EXPECT_FALSE(coverage.contains(index(-1)));
+
+    iv::automation::PointSource adjacent(graph.immutable_array<Point>(std::span(inputs).subspan(1)));
+    EXPECT_EQ(adjacent.range(rate), (iv::GlobalIndexRange{iv::automation::point_index(inputs[2], rate), 2}));
+}
+
 TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPointLists)
 {
     using Session = std::unique_ptr<iv::details::BuilderSession,
@@ -186,7 +213,7 @@ TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPoi
         (void)iv::details::take_built_graph(session.get());
     }
     session.reset();
-    ASSERT_EQ(handlers.size(), 4u);
+    ASSERT_EQ(handlers.size(), 5u);
     struct Capture {
         std::string definition;
         std::string arguments;
@@ -213,35 +240,79 @@ TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPoi
         EXPECT_EQ(capture.definition, "iv.builtin.automation.curve");
         return nlohmann::ordered_json::parse(capture.arguments);
     };
-    auto added = invoke("AddPoint", {{"point", {{"id", 4}, {"seconds", 1.0}, {"value", .25}, {"interpolation", "hold"}, {"tension", 1.0}}}});
+    auto added = invoke("AddPoint", {{"point", {{"id", 4}, {"seconds", 1.0}, {"value", -2.0}, {"interpolation", "hold"}, {"tension", 1.0}}}});
     ASSERT_TRUE(added.is_array());
-    // The point list is the only construction argument.
-    ASSERT_EQ(added.size(), 1u);
+    ASSERT_EQ(added.size(), 2u);
     ASSERT_EQ(added[0].size(), 4u);
+    EXPECT_EQ(added[1]["min"]["value"], .25);
+    EXPECT_EQ(added[1]["max"]["value"], .75);
     // The stored list is sorted; the handler appends without sorting.
     EXPECT_EQ(added[0][0]["id"], 1);
     EXPECT_EQ(added[0][2]["id"], 3);
     EXPECT_EQ(added[0][3]["id"], 4);
+    EXPECT_EQ(added[0][3]["value"], .25);
     EXPECT_EQ(added[0][3]["interpolation"], "hold");
+    auto const exact = invoke("AddPoint", {{"point", {{"id", 4}, {"value", .25}, {"sample_index", "9007199254740993"}}}});
+    EXPECT_EQ(exact[0][3]["sample_index"], "9007199254740993");
     auto edited = invoke("SetSegment", {{"id", 2}, {"interpolation", "empty"}, {"tension", .5}});
     EXPECT_EQ(edited[0][1]["interpolation"], "empty");
     EXPECT_EQ(edited[0][1]["tension"], .5);
+    EXPECT_EQ(edited[0][1]["value"], 1);
     EXPECT_THROW(invoke("SetSegment", {{"id", 2}, {"interpolation", "bezier"}, {"tension", 2.0}}), std::invalid_argument);
     auto removed = invoke("RemovePoint", {{"id", 2}});
     ASSERT_TRUE(removed.is_array());
-    ASSERT_EQ(removed.size(), 1u);
+    ASSERT_EQ(removed.size(), 2u);
     ASSERT_EQ(removed[0].size(), 2u);
     EXPECT_EQ(removed[0][0]["id"], 1);
     EXPECT_EQ(removed[0][1]["id"], 3);
-    auto moved = invoke("MovePoint", {{"id", 2}, {"seconds", 1.0}, {"value", .75}});
+    auto moved = invoke("MovePoint", {{"id", 2}, {"seconds", 1.0}, {"value", 2.0}});
     ASSERT_TRUE(moved.is_array());
     ASSERT_EQ(moved[0].size(), 3u);
     EXPECT_EQ(moved[0][1]["id"], 2);
     EXPECT_EQ(moved[0][1]["seconds"], 1.0);
+    EXPECT_EQ(moved[0][0]["value"], 0);
     EXPECT_EQ(moved[0][1]["value"], .75);
     EXPECT_EQ(moved[0][1]["interpolation"], "bezier");
     EXPECT_EQ(moved[0][1]["tension"], 0);
+    auto const exact_move = invoke("MovePoint", {{"id", 2}, {"sample_index", "-9007199254740993"}, {"value", .75}});
+    EXPECT_EQ(exact_move[0][1]["sample_index"], "-9007199254740993");
+    auto bounded = invoke("SetBound", {{"side", "min"}, {"bound", {{"value", .9}, {"enabled", true}}}});
+    EXPECT_EQ(bounded[0][0]["value"], 0);
+    EXPECT_EQ(bounded[0][1]["value"], 1);
+    EXPECT_EQ(bounded[1]["min"]["value"], .75);
+    EXPECT_EQ(bounded[1]["max"]["value"], .75);
+    EXPECT_THROW((void)iv::automation::SampleIndex("9223372036854775808"), std::invalid_argument);
     EXPECT_THROW(invoke("RemovePoint", {{"id", 99}}), std::invalid_argument);
+}
+
+TEST(AutomationCurveBounds, ReenablingTheMinimumKeepsTheMaximum)
+{
+    using namespace iv::automation;
+    std::vector<Point> const points{{.id = 1, .value = -2}, {.id = 2, .value = 4}};
+    ValueBounds settings{.min = {.value = .75f, .enabled = false}, .max = {.value = 1, .enabled = true}};
+    nlohmann::ordered_json arguments;
+    iv::NodeMessageContextOperations operations{
+        .context = &arguments,
+        .replace = +[](void* data, iv::NodeAddress const&, std::string, std::string replacement) {
+            *static_cast<nlohmann::ordered_json*>(data) = nlohmann::ordered_json::parse(replacement);
+        },
+    };
+    iv::NodeAddress const address{.instance_id = "curve"};
+    iv::ModuleMessageContext<AutomationCurve> context(operations, address, nullptr);
+    AutomationCurve(points, settings).on_message(context, SetBound{BoundSide::max, {.value = .5f, .enabled = true}});
+    EXPECT_EQ(arguments[1]["min"]["value"], .75);
+    EXPECT_EQ(arguments[1]["min"]["enabled"], false);
+    EXPECT_EQ(arguments[1]["max"]["value"], .5);
+
+    settings.max.value = .5f;
+    auto reenabled = settings.min;
+    reenabled.enabled = true;
+    AutomationCurve(points, settings).on_message(context, SetBound{BoundSide::min, reenabled});
+    EXPECT_EQ(arguments[1]["min"]["value"], .5);
+    EXPECT_EQ(arguments[1]["min"]["enabled"], true);
+    EXPECT_EQ(arguments[1]["max"]["value"], .5);
+    EXPECT_EQ(arguments[0][0]["value"], -2);
+    EXPECT_EQ(arguments[0][1]["value"], 4);
 }
 
 } // namespace iv::test::graph_jit_tests

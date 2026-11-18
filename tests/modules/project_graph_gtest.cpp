@@ -2439,12 +2439,17 @@ TEST_F(ProjectGraphFixture, GraphScopeListsInstancesWithRealizedPortsAndConnecti
     auto const& source = scope_node(scope, "instance:source");
     EXPECT_EQ(source.at("address").at("instanceId"), "instance:source");
     EXPECT_TRUE(source.at("instance").at("realized").get<bool>());
+    ASSERT_FALSE(source.at("sampleInputs").empty());
+    EXPECT_EQ(source.at("sampleInputs")[0].at("access"), "sequential");
+    EXPECT_FALSE(source.at("sampleInputs")[0].contains("realization"));
     auto const outputs = source.at("sampleOutputs");
     ASSERT_FALSE(outputs.empty());
     bool has_main_output = false;
     for (auto const& port : outputs) {
         if (port.at("name") == "main" && port.contains("channelType")) {
             has_main_output = true;
+            EXPECT_EQ(port.at("production"), "sequential");
+            EXPECT_EQ(port.at("realization"), "computed");
             ASSERT_FALSE(port.at("valueTypes").empty());
             EXPECT_TRUE(port.at("valueTypes")[0].contains("type"));
         }

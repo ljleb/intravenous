@@ -44,6 +44,18 @@
                     "type": "string",
                     "default": "",
                     "description": "Absolute path to the directory that directly contains the intravenous executable. INTRAVENOUS_DIR takes precedence when set."
+                },
+                "intravenous.warpCursorAfterPointDrag": {
+                    "type": "boolean",
+                    "default": true,
+                    "scope": "application",
+                    "description": "Move the system cursor to the automation point after a locked drag when the local X11 display supports it."
+                },
+                "intravenous.autoRelaunchWithXWayland": {
+                    "type": "boolean",
+                    "default": false,
+                    "scope": "application",
+                    "description": "On a local Linux Wayland session, restart the entire editor through XWayland when the Intravenous extension starts or this setting is enabled. Applies only when the editor was launched without an explicit --ozone-platform flag."
                 }
             }
         },
@@ -68,6 +80,8 @@
         "commands": [
             { "command": "intravenous.togglePlayback", "title": "Intravenous: Play/Pause" },
             { "command": "intravenous.seekPlayback", "title": "Intravenous: Seek Playback" },
+            { "command": "intravenous.traceAutomationCursorReturn", "title": "Intravenous: Trace Next Automation Cursor Return" },
+            { "command": "intravenous.enableXWaylandRelaunch", "title": "Intravenous: Enable Automatic XWayland Restart" },
             { "command": "intravenous.undo", "title": "Intravenous: Undo Project Edit" },
             { "command": "intravenous.redo", "title": "Intravenous: Redo Project Edit" },
             {

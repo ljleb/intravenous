@@ -88,9 +88,9 @@ of tangents through the gap.
 ### Vue point editing and source-driven snapping (owner refinement, 2026-11-16)
 
 The backend segment and tension definitions above are unchanged. The Vue editor
-must eventually expose tension via a handle near each point; its interaction
-semantics, right-click outgoing segment menu, right-click empty-space addition,
-left-click manipulation, and **Shift+click point deletion** are defined in
+exposes tension via a handle near each point. Click empty space to add a point
+and drag a point to move it. Shift-click a point to delete it. The context
+menu offers segment options and **Delete point**. See
 [Vue Lane And Automation Interaction Direction](./vue_presentation_refinement_direction.md#5-automation-editing-and-graph-authored-snapping).
 That document makes snapping automation points to a **cover chosen from the
 top-ruler header's connected event Coverage input** an explicit intended
@@ -108,13 +108,23 @@ and [point marker](./vue_presentation_refinement_direction.md#small-filled-contr
 sections. The graph-selected snap grid is additional to mandatory sample
 alignment, not its replacement.
 
-The curve presentation additionally has independently optional value bounds:
-with two bounds use a linear value axis; with one or none use the same kind
-of curved value mapping as an unbounded knob. Editing points never rescales
-that axis automatically. In lane `nano` zoom show only exact covered/empty
-time intervals; in `mini` show the curve read-only; expose point/tension
-editing only at `editable` zoom. See
-[Vue Presentation Refinement](./vue_presentation_refinement_direction.md#explicit-value-bounds-and-lane-zoom-categories).
+`AutomationCurve` stores independent minimum and maximum settings alongside
+the authored point list. Each setting consists of a finite value and an enabled
+flag. `PointSource` limits the value in each `CurvePointEvent` to the enabled
+bounds before the interpreter computes the curve. The stored points retain the
+original values. Their event positions, outgoing segment policy, tension, and
+sparse coverage retain the same rules. When enabled bounds meet, all emitted
+point values equal that bound. When a bound edit crosses the enabled opposite
+side, `SetBound` limits the edited value and preserves the opposite setting.
+`AddPoint` and `MovePoint` limit the edited point to the enabled bounds and
+preserve every other point. Existing out-of-range values survive project
+load, bound changes, and changes to segment type or tension.
+[Earlier display-only bounds](./historical/automation_display_only_bounds_2026-11-18.md)
+
+The presentation uses the enabled bounds for its vertical axis. Point edits
+never rescale it automatically. Both `nano` and `mini` show the curve and its
+gaps read-only. Point and tension editing are available at `editable` zoom.
+[Vue Presentation Refinement](./vue_presentation_refinement_direction.md#explicit-value-bounds-and-lane-zoom-categories)
 
 ## 3. Event types and explicitly meaningful conversions
 

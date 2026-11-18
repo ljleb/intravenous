@@ -8,29 +8,30 @@ import { defineNodeEvent, encodeNodeEventValue, serializeNodeEvent, validateNode
 import { generateNodeEventBindings } from "../src/generateNodeEventBindings";
 
 const target = { instanceId: "curve" };
-const event = serializeNodeEvent(MovePoint({ id: 4, seconds: 2, value: .5 }));
+const event = serializeNodeEvent(MovePoint({ id: 4, seconds: 0, value: .5, sample_index: "96000" }));
 const pointSchema: NodeEventValueSchema = { kind: "aggregate", fields: [
     { name: "id", value: { kind: "unsignedInteger", bitWidth: 32 } },
     { name: "seconds", value: { kind: "floatingPoint", bitWidth: 64 } },
     { name: "value", value: { kind: "floatingPoint", bitWidth: 32 } },
+    { name: "sample_index", value: { kind: "convertedScalar" } },
 ] };
 const protocol = (): NodeEventProtocol => ({ formatVersion: 0, definitions: [],
     eventTypes: [{ ...event.eventType, displayName: "diagnostic spelling can change", payload: pointSchema }],
     receivers: [{ address: target, supportedEventTypes: [event.eventType] }] });
 
 test("typed automation events snapshot their payload and cannot be forged as a raw JSON event", () => {
-    const point = { id: 4, seconds: 2, value: .5, interpolation: "bezier" as const, tension: 1 };
+    const point = { id: 4, seconds: 0, value: .5, interpolation: "bezier" as const, tension: 1, sample_index: "96000" };
     const typed = AddPoint({ point });
     point.value = .9;
     const first = serializeNodeEvent(typed);
-    assert.deepEqual(first.payload, { point: { id: 4, seconds: 2, value: .5, interpolation: "bezier", tension: 1 } });
+    assert.deepEqual(first.payload, { point: { ...point, value: .5 } });
     (first.payload as { point: { value: number } }).point.value = 1;
-    assert.deepEqual(serializeNodeEvent(typed).payload, { point: { id: 4, seconds: 2, value: .5, interpolation: "bezier", tension: 1 } });
+    assert.deepEqual(serializeNodeEvent(typed).payload, { point: { ...point, value: .5 } });
     assert.throws(() => serializeNodeEvent({} as NodeEvent), /typed event/);
     // These calls must remain type errors even though the wire payload is JSON.
     const typeErrorsOnly = () => {
         // @ts-expect-error payload fields use the compiler's declared types
-        MovePoint({ id: "four", seconds: 2, value: .5 });
+        MovePoint({ id: "four", seconds: 0, value: .5, sample_index: "96000" });
         // @ts-expect-error typed event values carry a factory-only brand
         const raw: NodeEvent = { id: 4, seconds: 2, value: .5 };
         return raw;
@@ -40,11 +41,11 @@ test("typed automation events snapshot their payload and cannot be forged as a r
 
 test("codecs reject invalid numeric values, missing fields, and fixed sequence lengths", () => {
     for (const value of [-1, 2 ** 32, NaN, Infinity])
-        assert.throws(() => MovePoint({ id: value, seconds: 2, value: .5 }));
-    assert.throws(() => MovePoint({ id: 4, seconds: Infinity, value: .5 }), /finite/);
-    assert.throws(() => MovePoint({ id: 4, seconds: 2, value: 1e100 }), /floating-point range/);
+        assert.throws(() => MovePoint({ id: value, seconds: 0, value: .5, sample_index: "96000" }));
+    assert.throws(() => MovePoint({ id: 4, seconds: Infinity, value: .5, sample_index: "96000" }), /finite/);
+    assert.throws(() => MovePoint({ id: 4, seconds: 0, value: 1e100, sample_index: "96000" }), /floating-point range/);
     assert.throws(() => encodeNodeEventValue(pointSchema, { id: 4, seconds: 2 }), /payload.value/);
-    assert.throws(() => encodeNodeEventValue(pointSchema, { id: 4, seconds: 2, value: .5, surprise: true }), /unknown field/);
+    assert.throws(() => encodeNodeEventValue(pointSchema, { ...event.payload as object, surprise: true }), /unknown field/);
     assert.throws(() => encodeNodeEventValue({ kind: "unsignedInteger", bitWidth: 64 }, 2 ** 53), /exactly representable/);
     assert.throws(() => encodeNodeEventValue({ kind: "sequence", fixedElementCount: 2,
         element: { kind: "boolean" } }, [true]), /fixed sequence length/);

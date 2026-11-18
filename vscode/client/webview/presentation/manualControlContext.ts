@@ -52,7 +52,7 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: M
         if (context && id.value && descriptor.value) context.gestures.refresh(id.value, descriptor.value, limits.value);
     });
     return {
-        value, available, limits, state, descriptor, dragging, inverted,
+        value, available, limits, state, descriptor, dragging, inverted, port,
         key: computed(() => id.value ? manualControlKey(id.value) : ""),
         hover(hovered: boolean) {
             if (!context || !id.value) return;

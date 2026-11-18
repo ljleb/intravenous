@@ -5,7 +5,7 @@ import { serializeNodeEvent } from "../src/nodeEvents";
 import { MovePoint } from "../src/generated/automationEvents";
 
 const target = { instanceId: "curve" };
-const event = serializeNodeEvent(MovePoint({ id: 1, seconds: 1, value: .5 }));
+const event = serializeNodeEvent(MovePoint({ id: 1, seconds: 0, value: .5, sample_index: "48000" }));
 function deferred() {
     let resolve!: () => void;
     const promise = new Promise<void>((done) => { resolve = done; });

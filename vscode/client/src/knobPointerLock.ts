@@ -5,12 +5,12 @@ type Session = { pointerId: number; origin: Point; pending: boolean; granted: bo
 
 // The webview owns the DOM listeners; this owner keeps asynchronous lock
 // acquisition tied to one drag, including release before acquisition finishes.
-export class KnobPointerLock {
+export class KnobPointerLock<Delta = number> {
     private session: Session | null = null;
     private requesting: { session: Session } | null = null;
     private exiting = false;
     constructor(private readonly host: Host,
-        private readonly moved: (pointerId: number, delta: number) => void,
+        private readonly moved: (pointerId: number, delta: Delta) => void,
         // lockOrigin is set when a granted pointer lock ends with the drag: the
         // visible cursor returns there, whatever position the host reports next.
         private readonly finished: (pointerId: number, point: Point | null, lockOrigin: Point | null) => void,
@@ -75,7 +75,7 @@ export class KnobPointerLock {
         this.session.pending = false;
         this.failed(message);
     }
-    move(delta: number): boolean {
+    move(delta: Delta): boolean {
         if (!this.session?.granted || this.exiting || !this.host.locked()) return false;
         this.moved(this.session.pointerId, delta);
         return true;

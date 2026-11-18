@@ -1,8 +1,10 @@
 import { inject, provide, type InjectionKey, type Ref } from "vue";
-import type { GraphLayout, NodeAddress } from "../../src/graphScope";
+import type { GraphLayout, NodeAddress, Point } from "../../src/graphScope";
 import type { GraphScope } from "../../src/graphScope";
 import type { GraphConnectionEnd, GraphPortEndpoint } from "../../src/graphConnectionEditing";
 import type { PortConnectionDrag } from "../../src/portConnectionGesture";
+import type { CurveAxes, CurveDragKind } from "../../src/automationCurveEditing";
+import type { AutomationBoundSide } from "../../src/automationCurveGeometry";
 
 type GraphEditorContext = {
     layout: Ref<GraphLayout>;
@@ -14,10 +16,15 @@ type GraphEditorContext = {
     selectLane: (address: NodeAddress) => void;
     portsChanged: () => void;
     elementAtPointer: () => Element | null;
+    beginPointerLockExit: (origin: Point) => void;
+    setTimelineZoomHint: (hint: string | null) => void;
     connectionDrag: Ref<PortConnectionDrag | null>;
     hoveredPortGroup: Ref<{ nodeKey: string; direction: "input" | "output" } | null>;
     startConnection: (event: PointerEvent, port: GraphPortEndpoint, edit?: GraphConnectionEnd) => void;
     cancelConnection: () => void;
+    startAutomation: (event: PointerEvent, target: NodeAddress, pointId: number, axes: CurveAxes, kind: CurveDragKind,
+        visiblePointCenter?: () => Point | null) => void;
+    startAutomationBound: (event: PointerEvent, target: NodeAddress, side: AutomationBoundSide) => void;
 };
 const key: InjectionKey<GraphEditorContext> = Symbol("graphEditor");
 export function provideGraphEditor(context: GraphEditorContext) { provide(key, context); }

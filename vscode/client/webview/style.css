@@ -1,15 +1,24 @@
 :root {
     color-scheme: light dark;
-    --iv-sample-input: var(--vscode-terminal-ansiYellow, #d8ba69);
-    --iv-sample-output: var(--vscode-terminal-ansiBlue, #6b9dde);
-    --iv-event-input: color-mix(in srgb, var(--iv-sample-input) 42%, #ff883d);
-    --iv-event-output: color-mix(in srgb, var(--iv-sample-output) 42%, #bd75f4);
+    --iv-input-accent: var(--vscode-terminal-ansiYellow, #d8ba69);
+    --iv-output-accent: var(--vscode-terminal-ansiBlue, #6b9dde);
+    --iv-port-neutral: var(--vscode-editor-foreground, #ccc);
+    --iv-event-input-accent: color-mix(in srgb, var(--iv-input-accent) 42%, #ff883d);
+    --iv-event-output-accent: color-mix(in srgb, var(--iv-output-accent) 42%, #bd75f4);
+    --iv-sample-input: color-mix(in oklab, var(--iv-port-neutral) 68%, var(--iv-input-accent));
+    --iv-sample-output: color-mix(in oklab, var(--iv-port-neutral) 68%, var(--iv-output-accent));
+    --iv-event-input: color-mix(in oklab, var(--iv-port-neutral) 60%, var(--iv-event-input-accent));
+    --iv-event-output: color-mix(in oklab, var(--iv-port-neutral) 60%, var(--iv-event-output-accent));
+    --iv-knob-input: var(--iv-sample-input);
+    --iv-knob-output: var(--iv-sample-output);
+    --iv-ruler-tick: var(--vscode-panel-border);
+    --iv-lane-ruler-tick: color-mix(in srgb, var(--vscode-foreground) 18%, transparent);
 }
 
 @supports (color: rgb(from red r g b)) {
     :root {
-        --iv-event-input: rgb(from var(--iv-sample-input) r calc(g - 56) b);
-        --iv-event-output: rgb(from var(--iv-sample-output) calc(r + 56) g b);
+        --iv-event-input-accent: rgb(from var(--iv-input-accent) r calc(g - 56) b);
+        --iv-event-output-accent: rgb(from var(--iv-output-accent) calc(r + 56) g b);
     }
 }
 
@@ -33,6 +42,24 @@ body:is(.vscode-high-contrast, .vscode-high-contrast-light) {
     --iv-port-label-base: var(--vscode-foreground);
     --iv-port-label-accent: 0%;
 }
+
+[data-automation-drag], [data-automation-drag] * {
+    cursor: none !important;
+}
+
+.knob-side-toggle {
+    --toggle-accent: var(--knob-toggle-accent, var(--iv-knob-output));
+    display: grid; place-items: center; flex: 0 0 var(--output-polarity-width, 12px);
+    width: var(--output-polarity-width, 12px); height: 20px; margin-inline-start: calc(-1 * var(--output-polarity-inset, 2px));
+    padding: 0; border: 0; border-radius: 3px; background: transparent; cursor: pointer;
+    color: color-mix(in srgb, var(--vscode-descriptionForeground) 55%, var(--vscode-editor-background));
+    font: 600 12px / 1 var(--vscode-editor-font-family, monospace);
+}
+.knob-side-toggle > span { display: grid; place-items: center; width: 100%; height: 12px; border-radius: 3px; }
+.knob-side-toggle[data-hovered]:not(:disabled) { color: var(--toggle-accent); }
+.knob-side-toggle[aria-pressed="true"] > span { color: var(--vscode-editor-background); background: var(--toggle-accent); }
+.knob-side-toggle:disabled { opacity: .4; cursor: default; }
+.knob-side-toggle:focus-visible { outline: 1px solid var(--toggle-accent); outline-offset: 1px; }
 
 .live-graph {
     display: flex;

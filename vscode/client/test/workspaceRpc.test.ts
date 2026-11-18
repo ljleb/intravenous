@@ -110,7 +110,7 @@ test("audio output diagnostics read the existing audioDevices endpoint without a
 test("typed node messages pin the revision before reading receiver support and retain exact event identity", async () => {
     const { MovePoint } = await import("../src/generated/automationEvents");
     const { serializeNodeEvent } = await import("../src/nodeEvents");
-    const event = serializeNodeEvent(MovePoint({ id: 4, seconds: 2, value: .5 }));
+    const event = serializeNodeEvent(MovePoint({ id: 4, seconds: 0, value: .5, sample_index: "96000" }));
     const calls: unknown[] = [];
     let revision = 17;
     const client = { request: async (method, params) => {
@@ -128,7 +128,7 @@ test("typed node messages pin the revision before reading receiver support and r
             target: { instanceId: "curve", path: [] },
             eventTypeNominalId: event.eventType.nominalId,
             eventTypeDefinitionFingerprint: event.eventType.definitionFingerprint,
-            payload: { id: 4, seconds: 2, value: .5 }, expectedRevision: 17,
+            payload: { id: 4, seconds: 0, value: .5, sample_index: "96000" }, expectedRevision: 17,
         } },
     ]);
 });

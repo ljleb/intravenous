@@ -14,7 +14,7 @@ import { resolveScopePorts } from "../../src/graphScope";
 
 export type SemanticPortDirection = "input" | "output";
 
-type SemanticPortFields = {
+type SemanticPortFields = Pick<GraphScopePort, "access" | "production" | "realization"> & {
     direction: SemanticPortDirection;
     index: number;
     name: string;
@@ -81,6 +81,7 @@ export function semanticNodeFromScopeChild(child: GraphScopeNode, scope: GraphSc
         });
         const base: SemanticPortFields = {
             index: entry.index, name: entry.name, direction,
+            access: entry.access, production: entry.production, realization: entry.realization,
             connectivity: connected ? "connected" : "disconnected", binding: "interface",
         };
         return kind === "continuous"

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useManualInput } from "./manualControlContext";
-import { knobScrubSpeed } from "../../src/knobPresentation";
+import { knobPortStatus, knobScrubSpeed } from "../../src/knobPresentation";
 import { manualKnobStatus } from "../../src/manualControlGesture";
 import KnobFace from "./KnobFace.vue";
 const props = defineProps<{ name: string; showName?: boolean; direction?: "input" | "output";
@@ -37,9 +37,12 @@ watch(() => preview.value !== null, (visible, _, onCleanup) => {
 });
 onBeforeUnmount(() => { clearTimeout(previewTimer); control.hover(false); });
 const logicalValue = computed(() => value.value === undefined ? "" : Number(value.value.toPrecision(6)).toString());
-const knobHint = computed(() => available.value && value.value !== undefined
-    ? manualKnobStatus(props.name, value.value, limits.value.defaultValue !== undefined)
-    : `${props.name} · Unavailable`);
+const knobHint = computed(() => {
+    const port = knobPortStatus(control.port.value);
+    return available.value && value.value !== undefined
+        ? manualKnobStatus(props.name, value.value, limits.value.defaultValue !== undefined, port)
+        : [props.name, port, "Unavailable"].filter(Boolean).join(" · ");
+});
 function step(direction: number) {
     if (!available.value) return;
     control.edit(); control.update((value.value ?? 0) + direction * increment.value); control.finish();
@@ -64,8 +67,8 @@ function step(direction: number) {
             @keydown.right.stop.prevent="step(1)" @keydown.up.stop.prevent="step(1)">
             <KnobFace :value="value ?? limits.defaultValue ?? 0" :limits="limits" :port-cutout="portCutout" />
         </button>
-        <button v-if="direction === 'output'" type="button" class="output-invert"
-            :class="{ inverted: control.inverted.value }" :aria-pressed="control.inverted.value"
+        <button v-if="direction === 'output'" type="button" class="knob-side-toggle"
+            :aria-pressed="control.inverted.value"
             :disabled="!available" :aria-label="`${name}: invert output polarity`"
             :data-status-hint="control.inverted.value ? 'Restore polarity' : 'Invert polarity'"
             aria-description="Changes the sign and keeps the magnitude"
@@ -89,19 +92,9 @@ function step(direction: number) {
 .manual-input[data-direction="output"] { position: relative; gap: 0; }
 .manual-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .manual-knob { display: block; width: var(--knob-size, 30px); height: var(--knob-size, 30px); padding: 0; border: 0; border-radius: 50%;
-    background: transparent; color: var(--vscode-terminal-ansiYellow); cursor: ns-resize; touch-action: none; user-select: none; }
+    background: transparent; color: var(--iv-knob-input); cursor: ns-resize; touch-action: none; user-select: none; }
 .manual-knob svg { display: block; width: 100%; height: 100%; }
-.manual-input[data-direction="output"] .manual-knob, .knob-preview[data-direction="output"] { color: var(--vscode-terminal-ansiBlue); }
-.output-invert { display: grid; place-items: center; flex: 0 0 var(--output-polarity-width, 12px);
-    width: var(--output-polarity-width, 12px); height: 20px; margin-inline-start: calc(-1 * var(--output-polarity-inset, 2px));
-    padding: 0; border: 0; border-radius: 3px; background: transparent; cursor: pointer;
-    color: color-mix(in srgb, var(--vscode-descriptionForeground) 55%, var(--vscode-editor-background));
-    font: 600 12px / 1 var(--vscode-editor-font-family, monospace); }
-.output-invert > span { display: grid; place-items: center; width: 100%; height: 12px; border-radius: 3px; }
-.output-invert[data-hovered]:not(:disabled) { color: var(--vscode-terminal-ansiBlue); }
-.output-invert.inverted > span { color: var(--vscode-editor-background); background: var(--vscode-terminal-ansiBlue); }
-.output-invert:disabled { opacity: .4; cursor: default; }
-.output-invert:focus-visible { outline: 1px solid var(--vscode-terminal-ansiBlue); outline-offset: 1px; }
+.manual-input[data-direction="output"] .manual-knob, .knob-preview[data-direction="output"] { color: var(--iv-knob-output); }
 .manual-knob { flex: 0 0 var(--knob-size, 30px); }
 .manual-input[data-hovered] .manual-knob:not(:disabled) :deep(.knob-body) { fill: color-mix(in srgb, currentColor 9%, var(--vscode-editor-background)); stroke-opacity: .9; }
 .manual-input[data-hovered] :deep(.knob-track) { opacity: .55; }
@@ -117,7 +110,7 @@ function step(direction: number) {
 .manual-input[data-direction="output"] .manual-error { position: absolute; top: 0; left: 0; font-size: 11px; line-height: 1; }
 .knob-preview { position: fixed; z-index: 35; transform: translateX(-50%); pointer-events: none;
     display: grid; justify-items: center; gap: 2px; padding: 4px 8px;
-    color: var(--vscode-terminal-ansiYellow); background: var(--vscode-editorWidget-background);
+    color: var(--iv-knob-input); background: var(--vscode-editorWidget-background);
     border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 6px; }
 .knob-preview svg { width: 48px; height: 48px; }
 .knob-preview span { color: var(--vscode-foreground); font-variant-numeric: tabular-nums; font-size: 11px; }

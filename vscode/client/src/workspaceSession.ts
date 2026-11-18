@@ -33,16 +33,11 @@ import { Duplex } from "stream";
 import { JsonRpcSocketClient } from "./rpcClient";
 import { connectionEndMutation, connectionFromPorts, type GraphConnectionEdit, type GraphPortEndpoint } from "./graphConnectionEditing";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
-import { autoDetectedServerDirectoriesForWorkspaceRoot } from "./serverBinaryPaths";
+import { resolveIntravenousBinary } from "./serverBinaryPaths";
 import { WorkspaceNotificationRouter } from "./workspaceNotifications";
 import { WorkspaceRpc } from "./workspaceRpc";
 import { audioOutputDiagnostic } from "./audioOutputDiagnostic";
 import { statusBarText } from "./statusBarText";
-
-declare const __INTRAVENOUS_DEFAULT_DIR__: string;
-
-const packagedDefaultServerDir = typeof __INTRAVENOUS_DEFAULT_DIR__ === "string"
-    ? __INTRAVENOUS_DEFAULT_DIR__ : "";
 
 type LiveGraphProviderLike = {
     setSessionStatus(status: LiveGraphSessionStatus): void;
@@ -437,60 +432,6 @@ export class WorkspaceSession {
         });
     }
 
-    private resolveServerBinary(): { source: string; path: string } {
-        const envDir = process.env.INTRAVENOUS_DIR;
-        if (envDir && envDir.length > 0) {
-            if (!path.isAbsolute(envDir)) {
-                throw new Error(`INTRAVENOUS_DIR must be absolute: ${envDir}`);
-            }
-            return {
-                source: "INTRAVENOUS_DIR",
-                path: path.join(envDir, "intravenous"),
-            };
-        }
-
-        // A build-and-install script packages the matching server path into
-        // the extension. It must win over an old workspace setting left by a
-        // previous Debug installation.
-        if (packagedDefaultServerDir) {
-            return {
-                source: "client build default",
-                path: path.join(packagedDefaultServerDir, "intravenous"),
-            };
-        }
-
-        const configured = vscode.workspace
-            .getConfiguration("intravenous", this.workspaceFolder.uri)
-            .get<string>("intravenousDir");
-        if (configured) {
-            if (!path.isAbsolute(configured)) {
-                throw new Error(`intravenous.intravenousDir must be absolute: ${configured}`);
-            }
-            return {
-                source: "intravenous.intravenousDir",
-                path: path.join(configured, "intravenous"),
-            };
-        }
-
-        for (const candidate of this.autoDetectedServerDirectories()) {
-            if (this.binaryExists(candidate)) {
-                return {
-                    source: candidate.source,
-                    path: path.join(candidate.directory, "intravenous"),
-                };
-            }
-        }
-
-        throw new Error(
-            "Intravenous executable directory is not configured. " +
-            "Set INTRAVENOUS_DIR or intravenous.intravenousDir, " +
-            "or build the repo so the client can auto-detect build/src/intravenous.");
-    }
-
-    private autoDetectedServerDirectories(): Array<{ source: string; directory: string }> {
-        return autoDetectedServerDirectoriesForWorkspaceRoot(this.workspaceRoot());
-    }
-
     private parseIvModuleInstances(payload: unknown): IvModuleInstanceInfo[] {
         if (!Array.isArray(payload)) {
             return [];
@@ -802,15 +743,6 @@ export class WorkspaceSession {
         return payload.map((span) => this.parseSourceSpan(span)).filter((span): span is SourceSpan => span !== null);
     }
 
-    private binaryExists(candidate: { directory: string }): boolean {
-        try {
-            const stat = fs.statSync(path.join(candidate.directory, "intravenous"));
-            return stat.isFile();
-        } catch {
-            return false;
-        }
-    }
-
     workspaceRoot(): string {
         return this.workspaceFolder.uri.fsPath;
     }
@@ -824,7 +756,8 @@ export class WorkspaceSession {
     }
 
     private serverBinaryPath(): string {
-        const resolved = this.resolveServerBinary();
+        const configuredDir = vscode.workspace.getConfiguration("intravenous", this.workspaceFolder.uri).get<string>("intravenousDir");
+        const resolved = resolveIntravenousBinary("intravenous", this.workspaceRoot(), configuredDir);
         let stat: fs.Stats;
         try {
             stat = fs.statSync(resolved.path);

@@ -4,7 +4,7 @@ import { MovePoint } from "../src/generated/automationEvents";
 import { isNodeEventRequest, NodeEventMessaging, replyToNodeEvent, type NodeEventRequest } from "../src/nodeEventMessaging";
 import type { NodeEvent } from "../src/nodeEvents";
 
-const event = () => MovePoint({ id: 4, seconds: 2, value: .5 });
+const event = () => MovePoint({ id: 4, seconds: 0, value: .5, sample_index: "96000" });
 
 test("node event completions survive presentation replacement and correlate out-of-order replies", async () => {
     const requests: NodeEventRequest[] = [];
@@ -26,7 +26,7 @@ test("node event completions survive presentation replacement and correlate out-
     connection.receive(await replyToNodeEvent(requests[1], async () => { throw new Error("receiver removed"); }));
     connection.receive(await replyToNodeEvent(requests[0], async (address, sent) => {
         assert.equal(address.instanceId, "curve");
-        assert.deepEqual(sent.payload, { id: 4, seconds: 2, value: .5 });
+        assert.deepEqual(sent.payload, { id: 4, seconds: 0, value: .5, sample_index: "96000" });
     }));
     await first; await failure;
 });

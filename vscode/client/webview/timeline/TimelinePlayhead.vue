@@ -35,5 +35,5 @@ const executionX = computed(() => markerX(playback.executionIndex.value));
 
 <style scoped>
 .timeline-playhead { stroke: var(--vscode-debugIcon-startForeground, #89d185); stroke-opacity: .65; pointer-events: none; }
-.execution-playhead { stroke: var(--vscode-foreground); stroke-opacity: .24; }
+.execution-playhead { stroke: var(--iv-lane-ruler-tick); stroke-opacity: 1; }
 </style>

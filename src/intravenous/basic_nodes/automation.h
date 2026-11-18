@@ -4,28 +4,79 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <span>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 namespace iv::automation {
+// Configuration reads a signed decimal string. Keep the scalar pointer-free
+// so Point remains safe in the graph-owned ImmutableArray.
+class SampleIndex {
+    std::array<char, 20> text_{};
+    std::int64_t value_ = 0;
+    std::uint8_t size_ = 0;
+public:
+    SampleIndex() = default;
+    explicit SampleIndex(std::string_view text) {
+        if (text.empty()) return;
+        if (text.size() > text_.size()) throw std::invalid_argument("invalid automation sample index");
+        auto const [end, error] = std::from_chars(text.data(), text.data() + text.size(), value_);
+        if (error != std::errc{} || end != text.data() + text.size())
+            throw std::invalid_argument("invalid automation sample index");
+        auto const result = std::to_chars(text_.data(), text_.data() + text_.size(), value_);
+        size_ = static_cast<std::uint8_t>(result.ptr - text_.data());
+    }
+    explicit operator std::string_view() const noexcept { return {text_.data(), size_}; }
+    [[nodiscard]] bool present() const noexcept { return size_ != 0; }
+    [[nodiscard]] GlobalIndex index() const noexcept { return GlobalIndex::from_signed(value_); }
+    constexpr bool operator==(SampleIndex const&) const = default;
+};
+
 struct Point {
     std::uint32_t id = 0;
     double seconds = 0;
     float value = 0;
     CurveInterpolation interpolation = CurveInterpolation::bezier;
     float tension = 1;
+    SampleIndex sample_index{};
     constexpr bool operator==(Point const&) const = default;
+};
+
+struct ValueBound {
+    float value = 0;
+    bool enabled = false;
+    constexpr bool operator==(ValueBound const&) const = default;
+};
+
+struct ValueBounds {
+    ValueBound min{};
+    ValueBound max{.value = 1};
+    constexpr bool operator==(ValueBounds const&) const = default;
+
+    void validate() const {
+        if (!std::isfinite(min.value) || !std::isfinite(max.value)
+            || (min.enabled && max.enabled && min.value > max.value))
+            throw std::invalid_argument("invalid automation value bounds");
+    }
+    [[nodiscard]] float clamp(float value) const noexcept {
+        if (min.enabled) value = std::max(min.value, value);
+        if (max.enabled) value = std::min(max.value, value);
+        return value;
+    }
 };
 
 // Semantic events are reusable types, separate from the receiving node.
 struct AddPoint { Point point; };
 struct RemovePoint { std::uint32_t id = 0; };
-struct MovePoint { std::uint32_t id = 0; double seconds = 0; float value = 0; };
+struct MovePoint { std::uint32_t id = 0; double seconds = 0; float value = 0; SampleIndex sample_index{}; };
 struct SetSegment { std::uint32_t id = 0; CurveInterpolation interpolation = CurveInterpolation::bezier; float tension = 1; };
+enum class BoundSide : std::uint8_t { min, max };
+struct SetBound { BoundSide side = BoundSide::min; ValueBound bound{}; };
 
 inline void validate_point(Point const& point) {
     if (!std::isfinite(point.seconds) || !std::isfinite(point.value)
@@ -45,16 +96,25 @@ inline void validate_point(Point const& point) {
     return GlobalIndex::from_signed(static_cast<std::int64_t>(frames));
 }
 
+[[nodiscard]] inline GlobalIndex point_index(Point const& point, std::size_t rate) {
+    return point.sample_index.present() ? point.sample_index.index() : point_index(point.seconds, rate);
+}
+
+inline bool point_time_less(Point const& left, Point const& right) {
+    if (left.sample_index.present() != right.sample_index.present()) return !left.sample_index.present();
+    if (left.sample_index.present())
+        return left.sample_index.index().signed_value() < right.sample_index.index().signed_value();
+    return left.seconds < right.seconds;
+}
+
 struct PointSource {
     ImmutableArray<Point> points;
-    explicit PointSource(ImmutableArray<Point> points_) : points(points_) {
-        auto previous = -std::numeric_limits<double>::infinity();
-        for (auto const& point : points) {
-            validate_point(point);
-            if (point.seconds < previous)
-                throw std::invalid_argument("automation source points must be valid and sorted by time");
-            previous = point.seconds;
-        }
+    ValueBounds bounds;
+    explicit PointSource(ImmutableArray<Point> points_, ValueBounds bounds_ = {}) : points(points_), bounds(bounds_) {
+        bounds.validate();
+        for (auto const& point : points) validate_point(point);
+        if (!std::ranges::is_sorted(points, point_time_less))
+            throw std::invalid_argument("automation source points must be sorted within each time representation");
     }
 
     static constexpr auto outputs() {
@@ -68,21 +128,37 @@ struct PointSource {
         // A Region output has one nonempty logical range even when its event
         // group has no events. This storage range never defines curve coverage.
         if (points.empty()) return {GlobalIndex::from_bits(0), 1};
-        auto const first = point_index(points.values().front().seconds, rate);
-        auto previous = point_index(points.values().back().seconds, rate);
+        // Old seconds and exact sample indices can coexist in a project.
+        // Merge their sorted positions once the sampling rate is known.
+        auto const split = std::ranges::partition_point(points, [](Point const& point) { return !point.sample_index.present(); });
+        auto legacy = points.begin(), exact = split;
+        auto const end = points.end();
+        auto next = [&] {
+            if (exact == end || (legacy != split && point_index(*legacy, rate).signed_value() <= exact->sample_index.index().signed_value()))
+                return point_index(*legacy++, rate);
+            return (exact++)->sample_index.index();
+        };
+        auto const first = next();
+        auto previous = point_index(points.values().back(), rate);
+        if (split != points.begin()) {
+            auto const last_legacy = point_index(*(split - 1), rate);
+            if (last_legacy.signed_value() > previous.signed_value()) previous = last_legacy;
+        }
         if (first == previous) return {first, 1};
         // Exclude the largest gap. The remaining finite Region contains every
         // event, including when the closest points straddle a storage seam.
         GlobalIndexRange result;
         std::uint64_t largest_gap = 0;
-        for (auto const& point : points) {
-            auto const current = point_index(point.seconds, rate);
+        auto current = first;
+        for (;;) {
             auto const gap = previous.forward_distance_to(current);
             if (gap > largest_gap) {
                 largest_gap = gap;
                 result = {current, current.forward_distance_to(previous) + 1};
             }
             previous = current;
+            if (legacy == split && exact == end) break;
+            current = next();
         }
         if (result.empty()) throw std::length_error("automation point storage occupies the entire timeline");
         return result;
@@ -98,7 +174,7 @@ struct PointSource {
         struct Entry { GlobalIndex time; Point const* point; };
         std::vector<Entry> ordered;
         for (auto const& point : points) {
-            auto const time = point_index(point.seconds, ctx.sample_rate);
+            auto const time = point_index(point, ctx.sample_rate);
             if (ctx.output<"points">().requested_coverage().contains(time)) ordered.push_back({time, &point});
         }
         std::ranges::sort(ordered, [&](auto const& left, auto const& right) {
@@ -107,7 +183,7 @@ struct PointSource {
             return a != b ? a < b : left.point->id < right.point->id;
         });
         for (auto const& entry : ordered) output.write({.time = entry.time,
-            .value = CurvePointEvent{Sample{entry.point->value}, entry.point->interpolation, entry.point->tension}});
+            .value = CurvePointEvent{Sample{bounds.clamp(entry.point->value)}, entry.point->interpolation, entry.point->tension}});
     }
 };
 
@@ -257,8 +333,16 @@ struct Curve {
 // The module is the editable semantic node. Its two leaves retain fixed schemas.
 class AutomationCurve {
     std::vector<Point> points_;
+    ValueBounds bounds_;
+
+    void replace_points(ModuleMessageContext<AutomationCurve>& ctx, std::vector<Point> const& points) const {
+        if (bounds_ == ValueBounds{}) ctx.replace<"iv.builtin.automation.curve">(points);
+        else ctx.replace<"iv.builtin.automation.curve">(points, bounds_);
+    }
 public:
-    explicit AutomationCurve(std::vector<Point> points) : points_(std::move(points)) {
+    explicit AutomationCurve(std::vector<Point> points, ValueBounds bounds = {})
+        : points_(std::move(points)), bounds_(bounds) {
+        bounds_.validate();
         for (auto const& point : points_) {
             validate_point(point);
         }
@@ -268,11 +352,13 @@ public:
         if (std::adjacent_find(ids.begin(), ids.end()) != ids.end())
             throw std::invalid_argument("automation point IDs must be unique");
         std::ranges::sort(points_, [](Point const& left, Point const& right) {
-            return left.seconds != right.seconds ? left.seconds < right.seconds : left.id < right.id;
+            if (point_time_less(left, right)) return true;
+            if (point_time_less(right, left)) return false;
+            return left.id < right.id;
         });
     }
     void build_graph(GraphBuilder& g) const {
-        auto points = g.node<"iv.builtin.automation.point_source">(g.immutable_array<Point>(points_));
+        auto points = g.node<"iv.builtin.automation.point_source">(g.immutable_array<Point>(points_), bounds_);
         auto curve = g.node<"iv.builtin.automation.interpreter">();
 
         curve("points"_F = points);
@@ -280,16 +366,19 @@ public:
         g.outputs("value"_P = curve);
     }
     void on_message(ModuleMessageContext<AutomationCurve>& ctx, AddPoint const& event) const {
+        auto point = event.point;
+        validate_point(point);
+        point.value = bounds_.clamp(point.value);
         auto points = points_;
-        points.push_back(event.point);
-        ctx.replace<"iv.builtin.automation.curve">(points);
+        points.push_back(point);
+        replace_points(ctx, points);
     }
     void on_message(ModuleMessageContext<AutomationCurve>& ctx, RemovePoint const& event) const {
         auto points = points_;
         auto const found = std::ranges::find(points, event.id, &Point::id);
         if (found == points.end()) throw std::invalid_argument("automation point does not exist");
         points.erase(found);
-        ctx.replace<"iv.builtin.automation.curve">(points);
+        replace_points(ctx, points);
     }
     void on_message(ModuleMessageContext<AutomationCurve>& ctx, SetSegment const& event) const {
         auto points = points_;
@@ -298,15 +387,38 @@ public:
         found->interpolation = event.interpolation;
         found->tension = event.tension;
         validate_point(*found);
-        ctx.replace<"iv.builtin.automation.curve">(points);
+        replace_points(ctx, points);
     }
     void on_message(ModuleMessageContext<AutomationCurve>& ctx, MovePoint const& event) const {
         auto points = points_;
         auto const found = std::ranges::find(points, event.id, &Point::id);
         if (found == points.end()) throw std::invalid_argument("automation point does not exist");
         found->seconds = event.seconds;
+        found->sample_index = event.sample_index;
         found->value = event.value;
-        ctx.replace<"iv.builtin.automation.curve">(points);
+        validate_point(*found);
+        found->value = bounds_.clamp(found->value);
+        replace_points(ctx, points);
+    }
+    void on_message(ModuleMessageContext<AutomationCurve>& ctx, SetBound const& event) const {
+        if (!std::isfinite(event.bound.value))
+            throw std::invalid_argument("invalid automation bound value");
+        auto bounds = bounds_;
+        switch (event.side) {
+        case BoundSide::min:
+            bounds.min = event.bound;
+            if (bounds.min.enabled && bounds.max.enabled)
+                bounds.min.value = std::min(bounds.min.value, bounds.max.value);
+            break;
+        case BoundSide::max:
+            bounds.max = event.bound;
+            if (bounds.max.enabled && bounds.min.enabled)
+                bounds.max.value = std::max(bounds.max.value, bounds.min.value);
+            break;
+        default:
+            throw std::invalid_argument("invalid automation bound side");
+        }
+        ctx.replace<"iv.builtin.automation.curve">(points_, bounds);
     }
 };
 } // namespace iv::automation

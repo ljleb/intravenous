@@ -1,5 +1,7 @@
 import "reflect-metadata";
 
+import type { ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
 import * as vscode from "vscode";
 import { container } from "tsyringe";
 
@@ -10,7 +12,55 @@ import { timestampOutput } from "./outputLog";
 import { GraphEditorProvider } from "./graphEditorProvider";
 import type { GraphEditorAction } from "./graphEditorProtocol";
 import { knobPointerLockVersionWarning } from "./editorCompatibility";
+import { NativeClientHelper } from "./nativeClientHelper";
+import { resolveIntravenousBinary } from "./serverBinaryPaths";
+import { prepareVSCodeRelaunch, readVSCodeXWaylandRelaunch } from "./vscodeRelaunch";
 
+function configureXWaylandRelaunch(context: vscode.ExtensionContext, localDesktop: boolean, log: (message: string) => void): void {
+    const key = "autoRelaunchWithXWayland";
+    const configuration = () => vscode.workspace.getConfiguration("intravenous");
+    const enabled = () => configuration().inspect<boolean>(key)?.globalValue === true;
+    const applicable = localDesktop && process.platform === "linux" && process.env.XDG_SESSION_TYPE === "wayland"
+        && process.env.INTRAVENOUS_XWAYLAND_RELAUNCH !== "1";
+    let pending: ChildProcess | null = null;
+    let attempted = false;
+    let preparing = false;
+    const cancel = () => {
+        pending?.kill();
+        pending = null;
+    };
+    async function relaunchIfEnabled() {
+        if (!applicable || attempted || preparing || !enabled()) return;
+        attempted = true;
+        preparing = true;
+        try {
+            const plan = readVSCodeXWaylandRelaunch();
+            if (!plan) return;
+            const worker = await prepareVSCodeRelaunch(context.asAbsolutePath("dist/vscodeRelaunchWorker.js"), plan);
+            if (!enabled()) { worker?.kill(); return; }
+            pending = worker;
+            if (!pending) return;
+            attempted = true;
+            log("Requesting a normal VS Code quit. The launcher will reopen the editor through XWayland.");
+            await vscode.commands.executeCommand("workbench.action.quit");
+        } catch (error) {
+            cancel();
+            log(`Intravenous could not arrange an XWayland restart. ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+            preparing = false;
+        }
+    }
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
+        if (!event.affectsConfiguration(`intravenous.${key}`)) return;
+        if (!enabled()) { attempted = false; cancel(); }
+        else void relaunchIfEnabled();
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.enableXWaylandRelaunch", async () => {
+        await configuration().update(key, true, vscode.ConfigurationTarget.Global);
+        await relaunchIfEnabled();
+    }));
+    void relaunchIfEnabled();
+}
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const outputChannel = timestampOutput(vscode.window.createOutputChannel("Intravenous"));
@@ -27,6 +77,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }));
 
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    const localDesktop = vscode.env.uiKind === vscode.UIKind.Desktop
+        && (!vscode.env.remoteName || context.extension.extensionKind === vscode.ExtensionKind.UI);
+    configureXWaylandRelaunch(context, localDesktop, (message) => outputChannel.appendLine(message));
+    let nativeHelper: NativeClientHelper | undefined;
+    if (process.platform === "linux" && localDesktop) {
+        const name = "intravenous-client-helper";
+        const packaged = context.asAbsolutePath(`dist/${name}`);
+        nativeHelper = new NativeClientHelper(() => {
+            if (existsSync(packaged)) return NativeClientHelper.launch(packaged);
+            const configured = vscode.workspace.getConfiguration("intravenous", workspaceFolder?.uri).get<string>("intravenousDir");
+            const binary = resolveIntravenousBinary(name, workspaceFolder?.uri.fsPath, configured);
+            return NativeClientHelper.launch(binary.path);
+        }, (message) => outputChannel.appendLine(message));
+        context.subscriptions.push(nativeHelper);
+        nativeHelper.start();
+    } else if (vscode.workspace.getConfiguration("intravenous").get("warpCursorAfterPointDrag", true)) {
+        outputChannel.appendLine("Automation cursor return is unavailable. It requires a local Linux desktop extension host with X11 support.");
+    }
     if (!workspaceFolder) {
         return;
     }
@@ -38,7 +106,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         highlighter,
     );
 
-    const graphEditor = new GraphEditorProvider(context.extensionUri, session);
+    const graphEditor = new GraphEditorProvider(context.extensionUri, session, nativeHelper, (message) => outputChannel.appendLine(message));
     provider.setInteractionHintHandler((hint) => graphEditor.setInspectionHint(hint));
     context.subscriptions.push(graphEditor);
     for (const seek of [false, true]) context.subscriptions.push(vscode.commands.registerCommand(
@@ -47,6 +115,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             catch (error) { void vscode.window.showErrorMessage(`Cannot change playback: ${error.message}`); }
         }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.openGraphEditor", () => graphEditor.open()));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.traceAutomationCursorReturn", () => graphEditor.traceNextAutomationCursorReturn()));
     const graphActions: GraphEditorAction[] = ["addNode", "editNode", "deleteNode", "openNodeSource", "createPackage", "deleteConnection", "undo", "redo"];
     for (const action of graphActions) {
         context.subscriptions.push(vscode.commands.registerCommand(`intravenous.${action}`, async () => {

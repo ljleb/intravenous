@@ -9,6 +9,7 @@ import { rightClickHint, statusBarText } from "./statusBarText";
 import { isNodeEventRequest, isNodeEventGestureRequest, replyToNodeEvent, replyToNodeEventGesture } from "./nodeEventMessaging";
 import { isPendingPlaybackSeek, playbackSeekPosition, type PlaybackDrag, type PlaybackDragPhase,
     type PlaybackSeek, type PlaybackSnapshot } from "./playback";
+import type { NativeClientHelper } from "./nativeClientHelper";
 
 export class GraphEditorProvider implements vscode.Disposable {
     private readonly panels = new Set<vscode.WebviewPanel>();
@@ -114,8 +115,24 @@ export class GraphEditorProvider implements vscode.Disposable {
         if (value !== undefined) await this.seekPlayback(playbackSeekPosition(value, state.sampleRate));
     }
 
+    async traceNextAutomationCursorReturn(): Promise<void> {
+        const panel = this.lastActivePanel && this.ready.has(this.lastActivePanel) ? this.lastActivePanel : [...this.ready][0];
+        if (!panel) {
+            void vscode.window.showInformationMessage("Open the Intravenous graph editor before tracing an automation drag.");
+            return;
+        }
+        panel.reveal(panel.viewColumn, false);
+        if (!await panel.webview.postMessage({ type: "traceNextAutomationCursorReturn" })) {
+            this.log("Automation cursor trace could not reach the graph editor.");
+            return;
+        }
+        this.log("Automation cursor trace armed. Drag one automation point, then check the Intravenous output channel.");
+        vscode.window.setStatusBarMessage("Automation cursor trace armed for the next point drag", 4500);
+    }
+
     constructor(private readonly extensionUri: vscode.Uri,
-        private readonly session: WorkspaceSession) {
+        private readonly session: WorkspaceSession, private readonly nativeHelper?: NativeClientHelper,
+        private readonly log: (message: string) => void = () => {}) {
         this.store = new GraphLayoutStore(session.workspaceRoot());
         this.layoutLoaded = this.store.load().then((layout) => { this.state.layout = layout; })
             .catch((error) => {
@@ -284,6 +301,15 @@ export class GraphEditorProvider implements vscode.Disposable {
                         ? this.session.nodeEvents.begin(owner, target, id) : this.session.nodeEvents.end(owner, target, id));
                 if (this.panels.has(panel)) void panel.webview.postMessage(response);
                 if (response.error) void vscode.window.showErrorMessage(`Cannot send node event: ${response.error}`);
+            } else if (message?.type === "automationCursorTrace" && typeof message.detail === "string") {
+                this.log(`Automation cursor trace. ${message.detail}`);
+            } else if (message?.type === "warpCursorAfterPointDrag") {
+                const skipped = !panel.active || !vscode.window.state.focused ? "graph editor lost focus"
+                    : !vscode.workspace.getConfiguration("intravenous").get("warpCursorAfterPointDrag", true) ? "cursor return is disabled"
+                    : !this.nativeHelper ? "no local native helper" : null;
+                if (skipped) {
+                    if (message.warp?.trace) this.log(`Automation cursor trace. Extension skipped the request: ${skipped}.`);
+                } else this.nativeHelper?.warpCursor(message.warp);
             } else if (message?.type === "playbackToggle" || message?.type === "playbackSeek" || message?.type === "playbackDrag") {
                 try {
                     if (message.type === "playbackDrag") {

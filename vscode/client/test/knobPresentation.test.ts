@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { knobFraction, knobMagnitude, knobScrubSpeed } from "../src/knobPresentation";
+import { knobFraction, knobMagnitude, knobPortStatus, knobScrubSpeed } from "../src/knobPresentation";
+
+test("knob port descriptions distinguish input access from output production and storage", () => {
+    assert.equal(knobPortStatus({ access: "sequential" }), "Sequential input");
+    assert.equal(knobPortStatus({ access: "region" }), "Region input");
+    assert.equal(knobPortStatus({ production: "coverage", realization: "computed" }), "Coverage output · computed");
+    assert.equal(knobPortStatus({ production: "sequential", realization: "buffered" }), "Sequential output · buffered");
+    assert.equal(knobPortStatus({}), "");
+});
 
 test("one-sided bounds occupy the corresponding end of a stable knob arc", () => {
     const lower = { min: 10, defaultValue: 30 };

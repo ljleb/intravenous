@@ -103,9 +103,14 @@ The owner specified these viewport interactions on 2026-11-12:
 | Shift + scroll | Horizontal scroll |
 | Ctrl + scroll | Horizontal zoom |
 | Hold the middle mouse button and move | Simultaneous horizontal and vertical scroll |
+| Shift + middle-button drag | Pan the graph horizontally and pan the lane value axis vertically where supported. Otherwise pan the graph on both axes |
 | Alt + middle-button drag | Vertical zoom from horizontal mouse movement |
 | Ctrl + middle-button drag | Horizontal zoom from vertical mouse movement |
-| Quick middle click | No special action; never enter a persistent movement mode |
+| Single quick middle click | Keep the current view |
+| Double middle click | Reset the graph viewport |
+| Shift + double middle click | Reset the lane view where supported |
+| Ctrl + double middle click | Reset vertical zoom |
+| Alt + double middle click | Reset horizontal zoom |
 
 Middle-button movement ends on release or cancellation. Viewport navigation
 does not modify graph nodes or port data. Zoom preserves the position under the
@@ -115,9 +120,22 @@ in vertically or left to zoom out at the cursor's current height. With Ctrl,
 drag up to zoom in horizontally or down to zoom out at the cursor's current
 horizontal position. Movement along the anchor axis alone leaves the view
 unchanged. Ctrl takes precedence when both Ctrl and Alt are held.
+During either modified middle drag, the displayed cursor wraps at the graph
+viewport edges. The zoom anchor follows the accumulated mouse travel from the
+start of the drag and may lie beyond the visible viewport. The status bar
+shows the Time anchor or Lane anchor with the number of screens to that side
+of the current viewport. Any drag movement
+cancels the double-click sequence. An axis-only reset preserves the position
+under the pointer where scroll bounds allow.
+[Earlier anchor behavior](./historical/vue_middle_zoom_before_continuous_wrapping_2026-11-18.md)
+
+Pan drags also wrap the displayed cursor at the graph viewport edges. When a
+lane handles the Shift gesture, the cursor wraps at the visible lane edges
+below the sticky ruler. Panning uses the actual mouse travel across each wrap.
 The earlier gestures used the press position as the anchor for
 [horizontal zoom](./historical/vue_middle_zoom_before_live_horizontal_anchor.md)
 and [vertical zoom](./historical/vue_middle_zoom_before_live_vertical_anchor.md).
+[Earlier lane panning](./historical/vue_shift_middle_lane_pan_before_combined_navigation_2026-11-18.md)
 
 A timeline is a reusable client display feature that a presentation can use
 when appropriate. It is not required for every node. The default lane must

@@ -13,8 +13,8 @@ const webviewConfigFile = path.join(__dirname, "vite.webview.config.mts");
 // The extension host is a Node bundle. The webview is a separate Vue
 // application built by Vite into dist/webview (see vite.webview.config.mts).
 const context = await esbuild.context({
-    entryPoints: [path.join(__dirname, "src", "extension.ts")],
-    outfile: path.join(outdir, "extension.js"),
+    entryPoints: ["extension", "vscodeRelaunchWorker"].map((name) => path.join(__dirname, "src", `${name}.ts`)),
+    outdir,
     bundle: true,
     platform: "node",
     format: "cjs",

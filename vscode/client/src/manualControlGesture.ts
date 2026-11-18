@@ -2,6 +2,7 @@ import type { ManualControlAction, ManualControlDescriptor, ManualControlId, Man
 import { manualControlKey, manualControlName } from "./manualControls";
 import { addressKey, type NodeAddress } from "./graphScope";
 import { rightClickHint } from "./statusBarText";
+import { ScrubSensitivity } from "./scrubSensitivity";
 
 export type ManualControlLimits = { min?: number; max?: number; defaultValue?: number; scrubSpeed?: number };
 export type ManualControlHint = { text: string };
@@ -13,16 +14,14 @@ export type ManualValueEntry = Hover & {
 
 type Gesture = {
     interactionId: string; control: ManualControlId; value: number;
-    pointer?: { id: number; position: number; initialScale: number; speed: number;
-        plateau: number; limits: ManualControlLimits;
-        anchorPosition: number; anchorValue: number; anchorPlateau: number };
+    pointer?: { id: number; position: number; sensitivity: ScrubSensitivity;
+        plateau: number; limits: ManualControlLimits; anchorPlateau: number };
 };
-const plateauHalfWidth = 12; // Extra pixels on either side of the exact default.
 const clamp = (value: number, limits: ManualControlLimits) =>
     Math.max(limits.min ?? -Infinity, Math.min(limits.max ?? Infinity, value));
 const displayValue = (value: number) => Number(value.toPrecision(6)).toString();
-export function manualKnobStatus(name: string, value: number, canReset: boolean): string {
-    return `${name} ${displayValue(value)} · Drag/↑↓ · Ctrl ¼× · ${rightClickHint} value`
+export function manualKnobStatus(name: string, value: number, canReset: boolean, port = ""): string {
+    return `${name} ${displayValue(value)}${port ? ` · ${port}` : ""} · Drag/↑↓ · Ctrl ¼× · ${rightClickHint} value`
         + (canReset ? " · Dbl-click reset" : "");
 }
 // Owned by the webview root, never by a presentation widget. Components can
@@ -152,8 +151,8 @@ export class ManualControlGestures {
         this.cancelEntry();
         this.edit(control, descriptor);
         if (!this.active || !Number.isFinite(unitsPerPixel) || unitsPerPixel <= 0) return false;
-        this.active.pointer = { id: pointerId, position, initialScale: unitsPerPixel, speed: precise ? -2 : 0, plateau: 0, limits,
-            anchorPosition: position, anchorValue: this.displayValue(control, this.active.value), anchorPlateau: 0 };
+        this.active.pointer = { id: pointerId, position, plateau: 0, limits, anchorPlateau: 0,
+            sensitivity: new ScrubSensitivity(unitsPerPixel, position, this.displayValue(control, this.active.value), precise) };
         this.changed();
         return true;
     }
@@ -169,22 +168,19 @@ export class ManualControlGestures {
         if (!pointer || pointer.id !== pointerId || !this.active) return;
         // Recompute from one anchor for this sensitivity instead of adding
         // rounded increments. Identical travel must not depend on event count.
-        const delta = position - pointer.anchorPosition;
+        const { sensitivity } = pointer;
+        const delta = position - sensitivity.anchorPosition;
         pointer.position = position;
         const limits = { ...pointer.limits, min: min ?? pointer.limits.min, max: max ?? pointer.limits.max };
-        const scale = pointer.initialScale * 2 ** pointer.speed;
         const before = this.displayValue(this.active.control, this.active.value);
         const target = limits.defaultValue;
-        let value = pointer.anchorValue + delta * scale;
+        let value = sensitivity.valueAt(position);
         if (target !== undefined && Number.isFinite(target) && clamp(target, limits) === target) {
             // Numeric values occupy their full range. Only the exact default
             // gets extra physical travel, retained across sensitivity changes.
-            const start = pointer.anchorValue < target ? (pointer.anchorValue - target) / scale - plateauHalfWidth
-                : pointer.anchorValue > target ? (pointer.anchorValue - target) / scale + plateauHalfWidth : pointer.anchorPlateau;
-            const end = start + delta;
-            value = end < -plateauHalfWidth ? target + (end + plateauHalfWidth) * scale
-                : end > plateauHalfWidth ? target + (end - plateauHalfWidth) * scale : target;
-            pointer.plateau = Math.max(-plateauHalfWidth, Math.min(plateauHalfWidth, end));
+            const snapped = sensitivity.valueAtDetent(target, delta, pointer.anchorPlateau);
+            value = snapped.value;
+            pointer.plateau = snapped.plateau;
         }
         const unclamped = value;
         value = clamp(value, limits);
@@ -197,19 +193,19 @@ export class ManualControlGestures {
         if (pointer?.id === pointerId) this.move(pointerId, pointer.position + delta);
     }
     changeSensitivity(delta: number): boolean {
-        const pointer = this.active?.pointer;
-        if (!pointer) return false;
-        if (!delta) return true;
-        this.anchorPointer();
-        pointer.speed = Math.max(-10, Math.min(10, pointer.speed - Math.sign(delta)));
-        this.changed();
+        const active = this.active;
+        const pointer = active?.pointer;
+        if (!active || !pointer) return false;
+        if (pointer.sensitivity.change(delta, pointer.position, this.displayValue(active.control, active.value))) {
+            pointer.anchorPlateau = pointer.plateau;
+            this.changed();
+        }
         return true;
     }
     private anchorPointer(): void {
         const pointer = this.active?.pointer;
         if (!pointer || !this.active) return;
-        pointer.anchorPosition = pointer.position;
-        pointer.anchorValue = this.displayValue(this.active.control, this.active.value);
+        pointer.sensitivity.anchorAt(pointer.position, this.displayValue(this.active.control, this.active.value));
         pointer.anchorPlateau = pointer.plateau;
     }
     isEditingNode(address: NodeAddress): boolean {
@@ -288,7 +284,7 @@ export class ManualControlGestures {
         if (this.active?.pointer) return {
             text: `${manualControlName(this.active.control)} ${displayValue(this.displayValue(this.active.control, this.active.value))}`
                 + (this.outputInverted(this.active.control, this.active.value) ? " · inverted" : "")
-                + ` · ${displayValue(2 ** this.active.pointer.speed)}× · Wheel ↑×2 ↓½ · Esc release`,
+                + ` · ${this.active.pointer.sensitivity.hint()} · Esc release`,
         };
         if (!this.hoverDetails?.descriptor.available || !this.hoverDetails.descriptor.enabled) return null;
         const reset = this.hoverDetails.limits.defaultValue !== undefined;
