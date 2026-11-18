@@ -3791,6 +3791,6 @@ the default marker and the current pointer on the dial and in its preview.
 
 `GraphEditor.vue` now keeps unselected cables faint through label areas.
 Selected cables fade to the same faint level near the visible text and
-brighten away from it. The dial boxes measure 24 pixels in compact rows and
-31 pixels in taller rows. At minimum lane height, ports still use the
-folded slot.
+brighten away from it. The dial boxes grow to 24 pixels in compact rows and
+31 pixels in taller rows when space allows. At minimum lane height, ports
+still use the folded slot.

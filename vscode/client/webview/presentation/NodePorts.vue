@@ -25,7 +25,12 @@ const hasKnob = (port: SemanticPort) => port.kind === "continuous"
 const panel = ref<HTMLElement | null>(null);
 const portArea = ref<HTMLElement | null>(null);
 const portAreaHeight = ref(22);
-const knobSize = computed(() => portAreaHeight.value < 31 ? 24 : 31);
+const knobSize = computed(() => {
+    const height = Math.floor(portAreaHeight.value);
+    if (height >= 28) return Math.min(height, 31);
+    // Keep the compact row visible at its previous 22px cutoff.
+    return height >= 22 ? Math.min(height, 24) : 24;
+});
 const portHeight = (port: SemanticPort) => hasKnob(port) ? knobSize.value : 22;
 let portAreaObserver: ResizeObserver | null = null;
 const expanded = ref<SemanticPortDirection | null>(null);
