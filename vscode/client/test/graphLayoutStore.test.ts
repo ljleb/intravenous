@@ -3,8 +3,11 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
+import { reactive } from "vue";
+import { readAutomationCurveView, zoomAutomationValueAxis } from "../src/automationCurveGeometry";
+import { saveGraphLayoutMessage } from "../src/graphEditorProtocol";
 import { GraphLayoutStore } from "../src/graphLayoutStore";
-import { addressKey, placeNodes, readLayout } from "../src/graphScope";
+import { addressKey, placeNodes, presentationStateKey, readLayout } from "../src/graphScope";
 
 test("graph layout saves serialize, survive a new store, and leave project intent untouched", async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "iv-graph-layout-"));
@@ -17,16 +20,61 @@ test("graph layout saves serialize, survive a new store, and leave project inten
         const key = addressKey({ instanceId: "curve" });
         const last = readLayout({ positions: { node: { x: 200, y: -300 } }, viewport: { x: 10, y: 20, scale: 0.5 },
             automationBounds: { [key]: { min: -2 }, inverted: { min: 1, max: 0 } },
-            automationRulers: { [key]: "half", invalid: "degrees", default: "auto" },
-            automationValuePans: { [key]: -2.5, invalid: Infinity, default: 0 },
             timeline: { beginSeconds: -5, secondsPerPixel: 0.02, laneHeight: 640, scrollTop: 123 } });
         await Promise.all([store.save(first), store.save(last)]);
         assert.deepEqual(await new GraphLayoutStore(directory).load(), last);
         assert.deepEqual(placeNodes([], last).automationBounds, { [key]: { min: -2 } });
-        assert.deepEqual(placeNodes([], last).automationRulers, { [key]: "half" });
-        assert.deepEqual(placeNodes([], last).automationValuePans, { [key]: -2.5 });
         assert.equal(await fs.readFile(project, "utf8"), "project intent\n");
         assert.deepEqual(await fs.readdir(path.dirname(store.filePath)), ["graph-layout.json"]);
+    } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test("the project layout round trips lane order and independent presentation states", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "iv-graph-layout-"));
+    try {
+        const store = new GraphLayoutStore(directory);
+        const layout = readLayout(null);
+        const address = { instanceId: "curve" };
+        const curve = presentationStateKey(address, "iv.builtin.automation.curve");
+        const custom = presentationStateKey(address, "example.custom");
+        const first = { ruler: "half", display: "cropped", pan: -2.5, zoom: { factor: 4, center: .5 } } as const;
+        const second = { cursor: [2, 4], layers: { points: true, preview: false } };
+        const order = [addressKey(address), addressKey({ instanceId: "another" })];
+        const presentationStates = { [curve]: first, [custom]: second };
+        await Promise.all([store.save(layout, { [curve]: first }, order), store.save(layout, { [custom]: second })]);
+        const reloaded = placeNodes([], await new GraphLayoutStore(directory).load());
+        assert.deepEqual(reloaded.presentationStates, presentationStates);
+        assert.deepEqual(reloaded.laneOrder, order);
+        const written = JSON.parse(await fs.readFile(store.filePath, "utf8"));
+        assert.deepEqual(written.presentationStates, presentationStates);
+        assert.deepEqual(written.laneOrder, order);
+        await store.save(layout, { [curve]: null });
+        assert.deepEqual((await store.load()).presentationStates, { [custom]: second });
+        assert.deepEqual((await store.load()).laneOrder, order);
+    } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test("zoom saves from the reactive graph layout survive the message channel and reload", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "iv-graph-layout-"));
+    try {
+        const store = new GraphLayoutStore(directory);
+        const address = { instanceId: "curve" };
+        const curve = presentationStateKey(address, "iv.builtin.automation.curve");
+        const custom = presentationStateKey(address, "example.custom");
+        const otherState = { layers: { points: true } };
+        await store.save(readLayout(null), { [curve]: { pan: 3 }, [custom]: otherState });
+
+        const layout = reactive(await store.load());
+        const beforeZoom = readAutomationCurveView(layout.presentationStates[curve]);
+        const afterZoom = readAutomationCurveView({ ...beforeZoom, ...zoomAutomationValueAxis(beforeZoom, 4, .625) });
+        assert.equal(afterZoom.zoom?.factor, 4);
+        layout.presentationStates[curve] = afterZoom;
+        const message = structuredClone(saveGraphLayoutMessage(layout, { [curve]: afterZoom }, false));
+        await store.save(readLayout(message.layout), message.presentationStates, message.laneOrder);
+
+        const reloaded = await new GraphLayoutStore(directory).load();
+        assert.deepEqual(readAutomationCurveView(reloaded.presentationStates[curve]), afterZoom);
+        assert.deepEqual(reloaded.presentationStates[custom], otherState);
     } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 

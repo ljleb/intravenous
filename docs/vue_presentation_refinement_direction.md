@@ -476,6 +476,16 @@ scale. Cropped uses a linear window and clips values outside it. Pan and zoom
 apply to the lane view independently of the `min` and `max` inputs.
 [Previous navigation rules](./historical/automation_navigation_before_independent_value_axis_2026-11-18.md).
 
+The editor saves the display mode, value ruler, pan, and zoom for each curve in
+the project's `.intravenous/graph-layout.json`.
+[Previous storage choice](./historical/lane_selection_and_automation_view_storage_before_2026-11-18.md#automation-view-storage).
+
+A custom presentation can register `serialize` and `restore` callbacks with
+`usePresentationState`. When the view changes, the presentation tells the host
+that state is ready to save. The graph editor calls `serialize` and stores the
+JSON object by node address and presentation ID. When the presentation opens,
+the host passes that object to `restore`.
+
 **Alt+Shift+middle-button drag** across an automation lane changes its value
 zoom. Horizontal motion changes the scale around the value at the pointer's
 height. Drag left to zoom in or right to zoom out, as with Alt+middle-button

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
 import { addressKey, type NodeAddress, type Point } from "../../src/graphScope";
+import { orderLanes, selectedLaneRuns } from "../../src/laneSelection";
 import { KnobPointerLock } from "../../src/knobPointerLock";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
 import { useNode } from "../presentation/nodeContext";
@@ -21,11 +22,11 @@ const playback = usePlayback();
 const backgroundPlayheadSeconds = computed(() => playback.backgroundPlayhead.value === null ? null
     : Number(playback.backgroundPlayhead.value) / (playback.state.value?.sampleRate ?? 48000));
 const scope = computed(() => node.value.scope!);
-const children = computed(() => scope.value.nodes.map((child) => ({
-    child, semantic: semanticNodeFromScopeChild(child, scope.value),
-})));
 const { layout, save, copyNodeDebugDetails, selectedLanes, selectLane, beginPointerLockExit, takeMiddleCursorTrace,
     reportCursorReturnSkipped, setTimelineZoomHint } = useGraphEditor();
+const children = computed(() => orderLanes(scope.value.nodes, layout.value.laneOrder).map((child) => ({
+    child, semantic: semanticNodeFromScopeChild(child, scope.value),
+})));
 function activateLane(event: PointerEvent, address: NodeAddress) {
     if (event.button === 0 || event.button === 2) selectLane(address, event);
 }
@@ -36,10 +37,9 @@ const headerHeight = 36;
 const scrollbarStyle = computed(() => {
     const contentHeight = headerHeight + scope.value.nodes.length * laneHeight.value;
     const accent = "var(--vscode-editorOverviewRuler-selectionHighlightForeground, var(--vscode-focusBorder))";
-    const marks = scope.value.nodes.flatMap((child, index) => {
-        if (!selectedLanes.value.has(addressKey(child.address))) return [];
-        const start = 100 * (headerHeight + index * laneHeight.value) / contentHeight;
-        const end = 100 * (headerHeight + (index + 1) * laneHeight.value) / contentHeight;
+    const marks = selectedLaneRuns(children.value.map(({ child }) => addressKey(child.address)), selectedLanes.value).flatMap((run) => {
+        const start = 100 * (headerHeight + run.begin * laneHeight.value) / contentHeight;
+        const end = 100 * (headerHeight + run.end * laneHeight.value) / contentHeight;
         return [`transparent ${start}%`, `${accent} ${start}% ${end}%`, `transparent ${end}%`];
     });
     return { "--timeline-header-height": `${headerHeight}px`,
@@ -503,5 +503,6 @@ onBeforeUnmount(() => {
         var(--vscode-panelTitle-activeBorder, var(--vscode-focusBorder))));
 }
 .lane:focus-visible:not(.selected)::after { background: var(--vscode-focusBorder); }
+.lane.selected:has(+ .lane.selected)::after { inset-block-end: -1px; }
 .empty { padding: 12px; }
 </style>

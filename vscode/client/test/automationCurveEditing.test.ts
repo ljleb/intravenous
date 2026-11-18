@@ -4,8 +4,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { AutomationCurveEditing, automationCycleSeconds, automationWindow, curvePointAt, readAutomationCurve, type CurveAxes } from "../src/automationCurveEditing";
 import { automationSampleOffset, automationValueAtFraction, automationValueFraction, automationValueGuides,
-    panAutomationValueAxis, zoomAutomationValueAxis } from "../src/automationCurveGeometry";
-import { readLayout, type GraphScope, type GraphScopeNode, type NodeAddress, type Point } from "../src/graphScope";
+    panAutomationValueAxis, readAutomationCurveView, zoomAutomationValueAxis } from "../src/automationCurveGeometry";
+import type { GraphScope, GraphScopeNode, NodeAddress, Point } from "../src/graphScope";
 import { KnobPointerLock } from "../src/knobPointerLock";
 import { knobFraction, valueScaleFraction } from "../src/knobPresentation";
 import { serializeNodeEvent, type NodeEvent } from "../src/nodeEvents";
@@ -113,8 +113,8 @@ test("curved value zoom can display a wider range and preserve the anchor", () =
     assert.equal(zoomedOut.zoom.factor, 1 / 256);
     assert.ok(Math.abs(automationValueFraction(value, zoomedOut) - anchor) < 1e-10);
     assert.ok(Math.abs(automationValueAtFraction(.25, zoomedOut) - automationValueAtFraction(.75, zoomedOut)) > 500);
-    assert.deepEqual(readLayout({ automationValueZooms: { curve: zoomedOut.zoom } }).automationValueZooms,
-        { curve: zoomedOut.zoom });
+    const persisted = JSON.parse(JSON.stringify(readAutomationCurveView({ zoom: zoomedOut.zoom })));
+    assert.deepEqual(readAutomationCurveView(persisted), { zoom: zoomedOut.zoom });
 });
 
 test("min and max clamp the preview independently of lane navigation", () => {

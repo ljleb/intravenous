@@ -424,8 +424,12 @@ export class GraphEditorProvider implements vscode.Disposable {
                 await this.layoutLoaded;
                 if (this.layoutError) return;
                 const next = readLayout(message.layout);
-                this.state.layout = { ...next, positions: { ...this.state.layout.positions, ...next.positions } };
-                try { await this.store.save(this.state.layout); }
+                this.state.layout = { ...next, positions: { ...this.state.layout.positions, ...next.positions },
+                    presentationStates: this.state.layout.presentationStates, laneOrder: this.state.layout.laneOrder };
+                try {
+                    const view = await this.store.save(this.state.layout, message.presentationStates, message.laneOrder);
+                    this.state.layout = { ...this.state.layout, ...view };
+                }
                 catch (error) {
                     void vscode.window.showErrorMessage(`Cannot save graph layout: ${error.message}`);
                 }

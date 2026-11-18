@@ -8,6 +8,9 @@ import type { SemanticNode } from "./semanticNode";
 import { provideLane } from "./laneContext";
 import { useNodeEventMessaging } from "./nodeEventContext";
 import type { NodeEvent } from "../../src/nodeEvents";
+import { presentationStateKey } from "../../src/graphScope";
+import { useOptionalGraphEditor } from "../graph/context";
+import { providePresentationState } from "./presentationStateContext";
 
 // Hosts one node: selects its presentation, provides its semantic node, and
 // supplies the one display mode that presentation receives.
@@ -30,6 +33,17 @@ const semanticNode = computed(() => {
 provideNode(semanticNode);
 
 const selection = computed(() => presentations.select(semanticNode.value.definitionId));
+const editor = useOptionalGraphEditor();
+const stateKey = computed(() => props.node.address ? presentationStateKey(props.node.address, selection.value.presentationId) : null);
+providePresentationState(({ serialize, restore }) => {
+    const key = stateKey.value;
+    restore(editor && key !== null ? editor.readPresentationState(key) : undefined);
+    if (!editor || key === null) return () => {};
+    return (saveNow = true) => {
+        editor.presentationStateChanged(key, serialize);
+        if (saveNow) editor.save();
+    };
+});
 
 const root = ref<HTMLElement | null>(null);
 const width = ref<number | null>(null);
@@ -70,7 +84,7 @@ onBeforeUnmount(() => {
         :data-presentation="selection.presentationId"
         :style="regionHeight === undefined ? undefined : { height: `${regionHeight}px`, overflow: 'hidden' }"
     >
-        <component :is="selection.component" :mode="mode" />
+        <component :is="selection.component" :key="stateKey ?? selection.presentationId" :mode="mode" />
     </div>
 </template>
 

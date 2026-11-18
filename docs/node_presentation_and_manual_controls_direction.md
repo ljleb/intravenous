@@ -1056,14 +1056,17 @@ lane interface. They do not claim that the current client implements them._
   at the cursor's current height.
 - Ctrl + middle-button drag uses vertical mouse movement for horizontal zoom,
   with the same effect as Ctrl + wheel.
-- Interacting with a lane selects it. Ctrl-click toggles it, and Shift-click
-  adds it. A small indicator at the header/content boundary marks selection.
-  The previous selection rules are [preserved here](historical/vue_lane_and_point_selection_before_2026-11-18.md).
+- Interacting with a lane selects it. Ctrl-click toggles it. Shift-click selects
+  the range from the last click without Shift to the clicked lane. Ctrl+Shift-click
+  adds that range to the selection. The selection indicator fills the height of
+  each selected lane and runs continuously through adjacent selected lanes.
+  [Previous selection rules](./historical/lane_selection_and_automation_view_storage_before_2026-11-18.md#lane-selection).
 - Shift + Up moves the selected lanes up within their current parent subgraph.
   Shift + Down moves them down. Preserve the selected lanes' relative order.
   A lane cannot leave its parent through either action. Selected lanes already
   stacked against the relevant boundary stay there. Do not wrap them around or
   swap their order.
+  Save the displayed order in `.intravenous/graph-layout.json`.
 - Delete removes selected lanes through an undoable project edit. A focused
   lane editor that manages a collection owns Delete for its own items, including
   when its selection is empty. Native text editing owns Delete within its

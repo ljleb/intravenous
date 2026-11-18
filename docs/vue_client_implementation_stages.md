@@ -563,6 +563,11 @@ Enter or Space selects a keyboard-focused lane. Port gestures and copy-debug
 controls do not change selection. Selection is local to each editor and survives
 scope revisions while its stable node address remains present.
 
+The 2026-11-18 lane controls add Shift-click range selection and Shift+Up or
+Shift+Down to move the selection. The project layout file stores the order.
+Enter selects a focused lane. Space controls playback.
+[Current lane operations](./node_presentation_and_manual_controls_direction.md#navigation-selection-and-lane-order)
+
 `selectedLaneConnections()` projects incoming and outgoing connections into
 visible endpoint pairs. A collapsed slot receives one wire per visible pair.
 Opening that slot uses the exposed port-row anchors, so the wire separates into

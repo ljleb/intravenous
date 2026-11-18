@@ -1,7 +1,6 @@
 import type { ManualControlDescriptor } from "./manualControls";
 import type { ContinuousValueAlternative } from "./graphModel";
-import { maximumAutomationValueZoom, minimumAutomationValueZoom,
-    type AutomationValueDisplay, type AutomationValueRuler, type AutomationValueZoom } from "./automationCurveGeometry";
+import type { JsonValue } from "./nodeEvents";
 import { readTimelineViewport, type TimelineViewport } from "./timelineViewport";
 
 export type NodeAddress = { instanceId: string; path?: Array<Record<string, unknown>> };
@@ -67,15 +66,17 @@ export type GraphScope = {
     connections: GraphScopeConnection[];
 };
 export type Point = { x: number; y: number };
-export type GraphLayout = {
+export type PresentationState = { [name: string]: JsonValue };
+export type PresentationStates = Record<string, PresentationState>;
+export type GraphViewState = {
+    presentationStates: PresentationStates;
+    laneOrder: string[];
+};
+export type GraphLayout = GraphViewState & {
     positions: Record<string, Point>;
     viewport: Point & { scale: number };
     timeline: TimelineViewport;
     automationBounds?: Record<string, { min?: number; max?: number }>;
-    automationRulers?: Record<string, AutomationValueRuler>;
-    automationValueDisplays?: Record<string, AutomationValueDisplay>;
-    automationValuePans?: Record<string, number>;
-    automationValueZooms?: Record<string, AutomationValueZoom>;
 };
 export const nodeWidth = 300;
 export const nodeHeight = 320;
@@ -89,6 +90,22 @@ export function nodeHeightFor(node: GraphScopeNode): number {
 // equivalent root addresses use the same persisted layout key.
 export function addressKey(address: NodeAddress): string {
     return JSON.stringify([address.instanceId, address.path ?? []]);
+}
+
+export function presentationStateKey(address: NodeAddress, presentationId: string): string {
+    return JSON.stringify([presentationId, address.instanceId, address.path ?? []]);
+}
+
+export function readPresentationStates(value: unknown): PresentationStates {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter(([, state]) => state && typeof state === "object" && !Array.isArray(state)));
+}
+
+export function readGraphViewState(value: unknown): GraphViewState {
+    const state = value as Partial<GraphViewState> | null;
+    const laneOrder = Array.isArray(state?.laneOrder)
+        ? [...new Set(state.laneOrder.filter((key) => typeof key === "string" && key.length))] : [];
+    return { laneOrder, presentationStates: readPresentationStates(state?.presentationStates) };
 }
 
 export function readLayout(value: unknown): GraphLayout {
@@ -111,25 +128,10 @@ export function readLayout(value: unknown): GraphLayout {
         if (min === undefined && max === undefined || min !== undefined && max !== undefined && min >= max) continue;
         automationBounds[key] = { ...(min !== undefined ? { min } : {}), ...(max !== undefined ? { max } : {}) };
     }
-    const rulerEntries = Object.entries(layout?.automationRulers ?? {}).filter(([, ruler]) => (
-        ruler === "whole" || ruler === "half" || ruler === "off"
-    ));
-    const displayEntries = Object.entries(layout?.automationValueDisplays ?? {}).filter(([, mode]) => mode === "cropped");
-    const panEntries = Object.entries(layout?.automationValuePans ?? {}).filter(([, pan]) => Number.isFinite(pan) && pan !== 0);
-    const displays = new Map(displayEntries);
-    const zoomEntries = Object.entries(layout?.automationValueZooms ?? {}).filter(([key, zoom]) => zoom
-        && Number.isFinite(zoom.factor) && zoom.factor >= minimumAutomationValueZoom
-        && zoom.factor <= maximumAutomationValueZoom && zoom.factor !== 1
-        && Number.isFinite(zoom.center)
-        && (displays.has(key) || zoom.factor < 1 ? zoom.center === .5
-            : zoom.center >= .5 / zoom.factor && zoom.center <= 1 - .5 / zoom.factor));
     return {
         positions,
         ...(Object.keys(automationBounds).length ? { automationBounds } : {}),
-        ...(rulerEntries.length ? { automationRulers: Object.fromEntries(rulerEntries) } : {}),
-        ...(displayEntries.length ? { automationValueDisplays: Object.fromEntries(displayEntries) } : {}),
-        ...(panEntries.length ? { automationValuePans: Object.fromEntries(panEntries) } : {}),
-        ...(zoomEntries.length ? { automationValueZooms: Object.fromEntries(zoomEntries) } : {}),
+        ...readGraphViewState(layout),
         timeline: readTimelineViewport(layout?.timeline),
         viewport: finitePoint(view) && Number.isFinite(view.scale) && view.scale >= 0.1 && view.scale <= 2
             ? { x: view.x, y: view.y, scale: view.scale }

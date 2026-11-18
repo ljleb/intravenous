@@ -46,11 +46,16 @@ TEST_F(GraphJitRuntimeFixture, SparseTockPointsComputeOnlyTheRequestedCurveWindo
     tock_states.initialize();
     iv::BackgroundCoverageState coverage(plan.accumulators.output_change_count);
     iv::BackgroundPropagationWorkspace propagation(plan, graph.specialization.sample_rate);
+    iv::CoveragePropagationRequest roots{
+        .locally_changed_nodes = {source->node, curve->node, window->node},
+        .output_demands = {{.port = window_port, .required = iv::IndexCoverage{range(2, 4)}}}};
+    for (auto const& port : plan.ports) {
+        if (port.name == "bound" && port.direction == iv::graph_jit::PortDirection::output)
+            roots.locally_changed_nodes.push_back(port.node);
+    }
     iv::BackgroundEvaluationTransaction transaction{
         graph, tock_states, coverage, propagation, data, materializations,
-        {.semantic_version = 1,
-         .roots = {.locally_changed_nodes = {source->node, curve->node, window->node},
-                   .output_demands = {{.port = window_port, .required = iv::IndexCoverage{range(2, 4)}}}}}};
+        {.semantic_version = 1, .roots = std::move(roots)}};
     auto result = transaction.execute();
     ASSERT_TRUE(result.has_value()) << result.error();
     ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);

@@ -2,9 +2,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
 import { automationTensionLimits, automationWindow, type CurveAxes, type CurveDragKind } from "../../src/automationCurveEditing";
 import { automationSampleOffset, automationValueFraction, automationValueGuides, clampAutomationValue,
-    compareAutomationTime, panAutomationValueAxis, panCurvedAutomationValueZoom,
+    compareAutomationTime, panAutomationValueAxis, panCurvedAutomationValueZoom, readAutomationCurveView,
     zoomAutomationValueAxis, type AutomationPoint, type AutomationPointPosition, type AutomationValueAxis, type AutomationValueDisplay,
-    type AutomationValueRuler, type AutomationValueZoom, type CurveInterpolation } from "../../src/automationCurveGeometry";
+    type AutomationCurveView, type AutomationValueRuler, type AutomationValueZoom, type CurveInterpolation } from "../../src/automationCurveGeometry";
 import { addressKey, type NodeAddress } from "../../src/graphScope";
 import { automationBoundTracks, sampleAutomationPreview, type AutomationBoundInput,
     type BoundSample } from "../../src/automationBoundInputs";
@@ -24,6 +24,7 @@ import { useAutomationEditing } from "./automationEditingContext";
 import { nanoHeightPx, type NodeDisplayMode } from "./displayMode";
 import { useLane } from "./laneContext";
 import { useNode } from "./nodeContext";
+import { usePresentationState } from "./presentationStateContext";
 
 const props = defineProps<{ mode: NodeDisplayMode }>();
 const editable = computed(() => props.mode === "editable");
@@ -103,10 +104,18 @@ const view = computed(() => {
 });
 const preview = computed(() => sampleAutomationPreview(view.value?.paths ?? [], lowerBound.value,
     upperBound.value, manualBounds.value, timelineWindow.value?.spanSeconds ?? 0, width.value));
-const ruler = computed(() => (key.value === null ? undefined : editor?.layout.value.automationRulers?.[key.value]) ?? "auto");
-const display = computed(() => (key.value === null ? undefined : editor?.layout.value.automationValueDisplays?.[key.value]) ?? "curved");
-const valuePan = computed(() => key.value === null ? 0 : editor?.layout.value.automationValuePans?.[key.value] ?? 0);
-const valueZoom = computed(() => key.value === null ? undefined : editor?.layout.value.automationValueZooms?.[key.value]);
+const curveView = ref<AutomationCurveView>({});
+const viewChanged = usePresentationState({
+    serialize() {
+        const state = readAutomationCurveView(curveView.value);
+        return Object.keys(state).length ? state : null;
+    },
+    restore(state) { curveView.value = readAutomationCurveView(state); },
+});
+const ruler = computed(() => curveView.value.ruler ?? "auto");
+const display = computed(() => curveView.value.display ?? "curved");
+const valuePan = computed(() => curveView.value.pan ?? 0);
+const valueZoom = computed(() => curveView.value.zoom);
 const axes = computed(() => {
     const window = timelineWindow.value;
     if (!window || !node.value.address) return null;
@@ -240,21 +249,12 @@ function showScale() {
 function changeDisplay(event: Event) {
     if (!editor || key.value === null) return;
     const mode = (event.target as HTMLSelectElement).value as AutomationValueDisplay;
-    const automationValueDisplays = { ...editor.layout.value.automationValueDisplays };
-    if (mode === "cropped") automationValueDisplays[key.value] = mode;
-    else delete automationValueDisplays[key.value];
-    editor.layout.value = { ...editor.layout.value, automationValueDisplays };
-    setValueView(key.value, 0);
-    editor.save();
+    updateCurveView({ display: mode, pan: undefined, zoom: undefined }, true);
 }
 function changeRuler(event: Event) {
     if (!editor || key.value === null) return;
     const value = (event.target as HTMLSelectElement).value as AutomationValueRuler;
-    const automationRulers = { ...editor.layout.value.automationRulers };
-    if (value === "auto") delete automationRulers[key.value];
-    else automationRulers[key.value] = value;
-    editor.layout.value = { ...editor.layout.value, automationRulers };
-    editor.save();
+    updateCurveView({ ruler: value }, true);
 }
 const error = computed(() => {
     void version.value;
@@ -397,20 +397,17 @@ function tensionKey(event: KeyboardEvent, point: AutomationPoint) {
 let observer: ResizeObserver | null = null;
 let intersection: IntersectionObserver | undefined;
 let unregisterValueNavigation: (() => void) | undefined;
-function setValueView(nodeKey: string, pan: number, zoom?: AutomationValueZoom) {
-    if (!editor) return;
-    const automationValuePans = { ...editor.layout.value.automationValuePans };
-    const automationValueZooms = { ...editor.layout.value.automationValueZooms };
-    if (pan) automationValuePans[nodeKey] = pan;
-    else delete automationValuePans[nodeKey];
-    if (zoom && zoom.factor !== 1) automationValueZooms[nodeKey] = zoom;
-    else delete automationValueZooms[nodeKey];
-    editor.layout.value = { ...editor.layout.value, automationValuePans, automationValueZooms };
+function updateCurveView(change: AutomationCurveView, saveNow = false) {
+    curveView.value = { ...curveView.value, ...change };
+    viewChanged(saveNow);
+}
+function setValueView(pan: number, zoom?: AutomationValueZoom) {
+    updateCurveView({ pan, zoom: zoom?.factor === 1 ? undefined : zoom });
 }
 function valueNavigationTarget() {
-    const axis = axes.value, nodeKey = key.value, element = surface.value;
-    if (!editor || nodeKey === null || !axis || !element || edits.pointerId() !== null || marquee.value) return;
-    return { axis, nodeKey, element };
+    const axis = axes.value, element = surface.value;
+    if (!editor || !axis || !element || edits.pointerId() !== null || marquee.value) return;
+    return { axis, element };
 }
 function zoomValueAt(axis: AutomationValueAxis, element: SVGSVGElement, factor: number, cursorY: number) {
     const rect = element.getBoundingClientRect();
@@ -420,7 +417,7 @@ const valueNavigation: LaneValueNavigation = {
     begin(mode) {
         const target = valueNavigationTarget();
         if (!target) return null;
-        const { axis, nodeKey, element } = target;
+        const { axis, element } = target;
         const initialPan = valuePan.value;
         const initialZoom = valueZoom.value ?? { factor: 1, center: .5 };
         let pan = initialPan, zoom = initialZoom;
@@ -433,7 +430,7 @@ const valueNavigation: LaneValueNavigation = {
             if (nextPan === pan && nextZoom.factor === zoom.factor && nextZoom.center === zoom.center) return;
             pan = nextPan;
             zoom = nextZoom;
-            setValueView(nodeKey, pan, zoom);
+            setValueView(pan, zoom);
         }
         if (mode === "zoom") return { ...gesture, mode, zoom(factor, cursorY) {
             const next = zoomValueAt({ ...axis, pan, zoom }, element, factor, cursorY);
@@ -448,16 +445,15 @@ const valueNavigation: LaneValueNavigation = {
     zoom(factor, cursorY) {
         const target = valueNavigationTarget();
         if (!target) return false;
-        const { axis, nodeKey, element } = target;
+        const { axis, element } = target;
         const next = zoomValueAt(axis, element, factor, cursorY);
         if (!next || next.zoom.factor === (axis.zoom?.factor ?? 1)) return false;
-        setValueView(nodeKey, next.pan, next.zoom);
+        setValueView(next.pan, next.zoom);
         return true;
     },
     reset() {
         if (editor && key.value !== null && (valuePan.value || valueZoom.value) && edits.pointerId() === null) {
-            setValueView(key.value, 0);
-            editor.save();
+            updateCurveView({ pan: undefined, zoom: undefined }, true);
         }
     },
 };

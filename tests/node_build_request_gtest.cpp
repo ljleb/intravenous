@@ -2529,8 +2529,13 @@ std::array<float, 8> compute_curve(
     }};
     iv::automation::Curve curve;
     auto const operations = iv::details::node_compiler_operations<iv::automation::Curve>();
+    iv::IndexCoverage const empty_bound{};
+    std::array<iv::RandomAccessContinuousInputPort, 2> const bounds{{
+        {.coverage_value = &empty_bound, .geometry = descriptor.geometry},
+        {.coverage_value = &empty_bound, .geometry = descriptor.geometry},
+    }};
     operations.tock_coverage(&curve, iv::ReflectedNodeTockCoverageContext{
-        .outputs = outputs, .event_inputs = inputs,
+        .inputs = bounds, .outputs = outputs, .event_inputs = inputs,
     });
     std::array<float, 8> values{};
     for (std::size_t i = 0; i < samples.size(); ++i) values[i] = static_cast<float>(samples[i]);

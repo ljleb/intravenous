@@ -1,6 +1,6 @@
 import type { ObservationHostRequest, ObservationResponse, ObservationUpdate } from "./observations";
 import type { ManualControlAction, ManualControlInteractionState, ManualControlLiveValue } from "./manualControls";
-import type { GraphLayout, GraphScope, NodeAddress } from "./graphScope";
+import { readLayout, type GraphLayout, type GraphScope, type GraphViewState, type NodeAddress, type PresentationState } from "./graphScope";
 import type { LiveGraphSessionStatus } from "./liveGraphProtocol";
 import type { GraphConnectionEdit, GraphPortEndpoint } from "./graphConnectionEditing";
 import type { NodeEventHostRequest, NodeEventResponse } from "./nodeEventMessaging";
@@ -15,6 +15,21 @@ export type CursorWarp = {
     trace?: boolean;
 };
 export type CursorReturnGesture = "automation" | "middleButton";
+
+type SaveGraphLayoutMessage = {
+    type: "saveGraphLayout";
+    layout: Omit<GraphLayout, keyof GraphViewState>;
+    presentationStates: Record<string, PresentationState | null>;
+    laneOrder?: string[];
+};
+
+export function saveGraphLayoutMessage(layout: GraphLayout, presentationStates: SaveGraphLayoutMessage["presentationStates"],
+    laneOrderChanged: boolean): SaveGraphLayoutMessage {
+    // Send only changed presentation states. Saved states can still contain
+    // reactive objects that the webview message channel cannot clone.
+    const { presentationStates: _storedStates, laneOrder, ...geometry } = readLayout(layout);
+    return { type: "saveGraphLayout", layout: geometry, presentationStates, ...(laneOrderChanged ? { laneOrder } : {}) };
+}
 
 export type GraphEditorState = {
     sessionStatus: LiveGraphSessionStatus;
@@ -56,4 +71,4 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "updateGraphNode"; instanceId: string; displayName: string; configurationSource: string;
         previousDisplayName: string; previousConfigurationSource: string }
     | { type: "createGraphPackage"; name: string }
-    | { type: "saveGraphLayout"; layout: GraphLayout };
+    | SaveGraphLayoutMessage;

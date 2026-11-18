@@ -17,6 +17,24 @@ export function clampAutomationValue(value: number, { min, max }: AutomationValu
 }
 
 export type AutomationValueRuler = "auto" | "whole" | "half" | "off";
+export type AutomationCurveView = AutomationValueAxis & { ruler?: AutomationValueRuler };
+
+export function readAutomationCurveView(value: unknown): AutomationCurveView {
+    if (!value || typeof value !== "object") return {};
+    const { ruler, display, pan, zoom } = value as AutomationCurveView;
+    const view: AutomationCurveView = {};
+    if (ruler === "whole" || ruler === "half" || ruler === "off") view.ruler = ruler;
+    if (display === "cropped") view.display = display;
+    if (Number.isFinite(pan) && pan !== 0) view.pan = pan;
+    if (zoom && Number.isFinite(zoom.factor) && zoom.factor >= minimumAutomationValueZoom
+        && zoom.factor <= maximumAutomationValueZoom && zoom.factor !== 1 && Number.isFinite(zoom.center)
+        && (view.display === "cropped" || zoom.factor < 1 ? zoom.center === .5
+            : zoom.center >= .5 / zoom.factor && zoom.center <= 1 - .5 / zoom.factor)) {
+        view.zoom = { factor: zoom.factor, center: zoom.center };
+    }
+    return view;
+}
+
 export type CurvePath = { begin: { seconds: number; value: number }; end: { seconds: number; value: number };
     first: number; second: number };
 

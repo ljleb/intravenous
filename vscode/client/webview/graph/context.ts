@@ -1,5 +1,5 @@
 import { inject, provide, type InjectionKey, type Ref } from "vue";
-import type { GraphLayout, NodeAddress, Point } from "../../src/graphScope";
+import type { GraphLayout, NodeAddress, Point, PresentationState } from "../../src/graphScope";
 import type { GraphScope } from "../../src/graphScope";
 import type { GraphConnectionEnd, GraphPortEndpoint } from "../../src/graphConnectionEditing";
 import type { PortConnectionDrag } from "../../src/portConnectionGesture";
@@ -10,6 +10,8 @@ export type CursorWarpAnchor = { screenOrigin: Point; scale: number };
 type GraphEditorContext = {
     layout: Ref<GraphLayout>;
     save: () => void;
+    readPresentationState: (key: string) => PresentationState | undefined;
+    presentationStateChanged: (key: string, serialize: () => PresentationState | null) => void;
     copyNodeDebugDetails: (address: NodeAddress) => void;
     scope: Readonly<Ref<GraphScope | null>>;
     shiftHeld: Readonly<Ref<boolean>>;
