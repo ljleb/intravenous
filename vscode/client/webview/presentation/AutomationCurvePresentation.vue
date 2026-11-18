@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
-import { automationWindow, type CurveAxes, type CurveDragKind } from "../../src/automationCurveEditing";
-import { automationBoundLimits, automationDisplayBounds, canPanAutomationValueAxis, automationSampleOffset, automationValueFraction, automationValueGuides, clampAutomationValue,
-    compareAutomationTime, defaultAutomationBounds, enabledAutomationBounds, panAutomationValueAxis, panCurvedAutomationValueZoom,
-    zoomAutomationValueAxis, type AutomationBoundSide, type AutomationPoint, type AutomationPointPosition, type AutomationValueAxis, type AutomationValueDisplay,
-    type AutomationValueRuler, type AutomationValueZoom, type CurveInterpolation, type CurvePath } from "../../src/automationCurveGeometry";
+import { automationTensionLimits, automationWindow, type CurveAxes, type CurveDragKind } from "../../src/automationCurveEditing";
+import { automationSampleOffset, automationValueFraction, automationValueGuides, clampAutomationValue,
+    compareAutomationTime, panAutomationValueAxis, panCurvedAutomationValueZoom,
+    zoomAutomationValueAxis, type AutomationPoint, type AutomationPointPosition, type AutomationValueAxis, type AutomationValueDisplay,
+    type AutomationValueRuler, type AutomationValueZoom, type CurveInterpolation } from "../../src/automationCurveGeometry";
 import { addressKey, type NodeAddress } from "../../src/graphScope";
-import { knobScrubSpeed } from "../../src/knobPresentation";
+import { automationBoundTracks, sampleAutomationPreview, type AutomationBoundInput,
+    type BoundSample } from "../../src/automationBoundInputs";
+import type { ObservationWindowResult } from "../../src/observations";
+import { sampleWindow } from "../../src/sampleWaveform";
+import { usePortObservation } from "./observationContext";
 import { rightClickHint } from "../../src/statusBarText";
 import { useOptionalGraphEditor } from "../graph/context";
 import { automationPointStatus } from "../statusHints";
@@ -38,46 +42,78 @@ const curve = computed(() => {
     void version.value;
     return node.value.address ? edits.view(node.value.address) : null;
 });
-const authoredBounds = computed(() => {
+const visible = ref(false);
+function boundPort(side: AutomationBoundInput) {
+    const port = node.value.ports.find((entry) => entry.name === side && entry.direction === "input");
+    return port?.kind === "continuous" ? port : undefined;
+}
+function manualBound(side: AutomationBoundInput) {
+    const port = boundPort(side);
+    const manual = port?.manualControl;
+    return port?.connectivity !== "connected" && manual
+        ? manual.liveValue ?? (manual.participates ? manual.value : undefined) : undefined;
+}
+const manualBounds = computed(() => ({ min: manualBound("min"), max: manualBound("max") }));
+const timelineWindow = computed<{ beginSeconds: number; endSeconds: number; spanSeconds: number } | null>((previous) => {
+    if (!curve.value) return null;
+    const timeline = time?.value;
+    const first = curve.value.points[0]?.seconds ?? 0;
+    const last = curve.value.points.at(-1)?.seconds ?? first;
+    const beginSeconds = timeline?.beginSeconds ?? (last > first ? first : first - .5);
+    const endSeconds = timeline?.endSeconds ?? (last > first ? last : first + .5);
+    const spanSeconds = timeline?.spanSeconds ?? (endSeconds - beginSeconds);
+    if (previous?.beginSeconds === beginSeconds && previous.endSeconds === endSeconds && previous.spanSeconds === spanSeconds)
+        return previous;
+    return { beginSeconds, endSeconds, spanSeconds };
+});
+const observationWindow = computed(() => {
+    const timeline = timelineWindow.value;
+    return visible.value && timeline && sampleWindow(timeline.beginSeconds, timeline.endSeconds, curve.value?.sampleRate, width.value)
+        || undefined;
+});
+function observeBound(side: AutomationBoundInput) {
+    const sourceKey = computed(() => boundPort(side)?.connectivity === "connected" && curve.value?.sampleRate && key.value
+        ? `${key.value}:${curve.value.sampleRate}` : null);
+    const observation = usePortObservation(() => {
+        const address = node.value.address, window = observationWindow.value;
+        if (address && window && sourceKey.value)
+            return { source: { node: address, kind: "input", member: side }, operation: "waveform", window };
+    });
+    const current = computed(() => {
+        const result = observation.window.value;
+        return result && !result.outdated && result.status !== "pending" ? result : undefined;
+    });
+    const retained = computed<{ key: string; result: ObservationWindowResult } | undefined>((previous) => {
+        const identity = sourceKey.value;
+        if (!identity) return;
+        if (current.value) return { key: identity, result: current.value };
+        return previous?.key === identity ? previous : undefined;
+    });
+    return computed(() => {
+        const origin = timelineWindow.value?.beginSeconds, rate = curve.value?.sampleRate;
+        return origin !== undefined && rate ? automationBoundTracks(retained.value?.result, origin, rate) : [];
+    });
+}
+const lowerBound = observeBound("min"), upperBound = observeBound("max");
+const view = computed(() => {
     void version.value;
-    return node.value.address ? edits.bounds(node.value.address) : undefined;
+    const timeline = timelineWindow.value, address = node.value.address;
+    return curve.value && timeline && address
+        ? automationWindow(curve.value, 0, timeline.spanSeconds, edits.drafts(address), timeline.beginSeconds) : null;
 });
-const boundsPending = computed(() => {
-    void version.value;
-    return !!node.value.address && edits.boundsPending(node.value.address);
-});
-const eventBounds = computed(() => enabledAutomationBounds(authoredBounds.value));
-const bounds = computed(() => automationDisplayBounds(eventBounds.value));
-const boundControls = computed(() => {
-    const settings = authoredBounds.value ?? defaultAutomationBounds;
-    return (["min", "max"] as const).map((side) => ({
-        side, name: side === "min" ? "Minimum" : "Maximum", ...settings[side],
-        limits: { ...automationBoundLimits(settings, side), defaultValue: defaultAutomationBounds[side].value },
-    }));
-});
+const preview = computed(() => sampleAutomationPreview(view.value?.paths ?? [], lowerBound.value,
+    upperBound.value, manualBounds.value, timelineWindow.value?.spanSeconds ?? 0, width.value));
 const ruler = computed(() => (key.value === null ? undefined : editor?.layout.value.automationRulers?.[key.value]) ?? "auto");
 const display = computed(() => (key.value === null ? undefined : editor?.layout.value.automationValueDisplays?.[key.value]) ?? "curved");
 const valuePan = computed(() => key.value === null ? 0 : editor?.layout.value.automationValuePans?.[key.value] ?? 0);
 const valueZoom = computed(() => key.value === null ? undefined : editor?.layout.value.automationValueZooms?.[key.value]);
 const axes = computed(() => {
-    if (!curve.value || !node.value.address) return null;
-    const { points } = curve.value;
-    const first = points[0]?.seconds ?? 0;
-    const last = points.at(-1)?.seconds ?? first;
-    const window = time?.value ?? (last > first
-        ? { beginSeconds: first, endSeconds: last }
-        : { beginSeconds: first - .5, endSeconds: first + .5 });
+    const window = timelineWindow.value;
+    if (!window || !node.value.address) return null;
     const fixed = edits.axes(node.value.address);
-    const spanSeconds = time?.value.spanSeconds ?? window.endSeconds - window.beginSeconds;
-    return { begin: window.beginSeconds, end: window.endSeconds, spanSeconds, min: fixed ? fixed.min : display.value === "cropped" ? eventBounds.value.min : bounds.value.min,
-        max: fixed ? fixed.max : display.value === "cropped" ? eventBounds.value.max : bounds.value.max,
+    return { begin: window.beginSeconds, end: window.endSeconds, spanSeconds: window.spanSeconds,
         pan: fixed ? fixed.pan : valuePan.value, zoom: fixed ? fixed.zoom : valueZoom.value,
         display: fixed?.display ?? display.value, ruler: fixed ? fixed.ruler : ruler.value };
-});
-const view = computed(() => {
-    void version.value;
-    return curve.value && axes.value && node.value.address
-        ? automationWindow(curve.value, 0, axes.value.spanSeconds, edits.drafts(node.value.address), axes.value.begin, eventBounds.value) : null;
 });
 const ticks = computed(() => axes.value ? automationTimelineTicks({
     beginSeconds: axes.value.begin, endSeconds: axes.value.end, spanSeconds: axes.value.spanSeconds,
@@ -87,8 +123,16 @@ const pointX = (point: AutomationPointPosition) => x(curve.value?.sampleRate && 
     ? automationSampleOffset(point.sampleIndex, axes.value.begin, curve.value.sampleRate)
     : point.seconds - (axes.value?.begin ?? 0));
 const y = (value: number) => (1 - automationValueFraction(value, axes.value ?? {})) * height.value;
-const eventValue = (point: AutomationPointPosition) => clampAutomationValue(point.value, eventBounds.value);
-const markerY = (point: AutomationPoint) => Math.max(2, Math.min(height.value - 2, y(eventValue(point))));
+function previewPath(tracks: BoundSample[][]): string {
+    return tracks.map((track) => track.map(({ seconds, value }, index) =>
+        `${index ? "L" : "M"}${x(seconds)},${y(value)}`).join(" ")).join(" ");
+}
+const hasOutputBounds = computed(() => preview.value.min.length > 0 || preview.value.max.length > 0);
+const minPath = computed(() => previewPath(preview.value.min));
+const maxPath = computed(() => previewPath(preview.value.max));
+const path = computed(() => previewPath(preview.value.authored));
+const outputPath = computed(() => hasOutputBounds.value ? previewPath(preview.value.output) : "");
+const markerY = (point: AutomationPoint) => Math.max(2, Math.min(height.value - 2, y(point.value)));
 const valueGuides = computed(() => axes.value ? automationValueGuides(axes.value, height.value, axes.value.ruler) : []);
 const valueLabelInset = computed(() => hideLabels.value || !valueGuides.value.length ? 0
     : 9 + 6 * Math.max(...valueGuides.value.map(({ value }) => String(value).length)));
@@ -105,40 +149,9 @@ const snapGuide = computed(() => {
     return { value: snap.value, y: guideY, x: Math.max(valueLabelInset.value, Math.min(width.value, pointX(snap.point))) };
 });
 
-function segmentPath(segment: CurvePath): string {
-    const a = x(segment.begin.seconds), b = x(segment.end.seconds);
-    const start = `M${a},${y(segment.begin.value)}`;
-    if (axes.value?.display === "cropped" || axes.value?.min !== undefined && axes.value.max !== undefined) {
-        const offset = (b - a) / 3;
-        return `${start} C${a + offset},${y(segment.first)} ${b - offset},${y(segment.second)} ${b},${y(segment.end.value)}`;
-    }
-    // Evaluate in Sample values before applying the nonlinear display scale.
-    const mapped = (t: number) => {
-        const u = 1 - t;
-        const value = u ** 3 * segment.begin.value + 3 * u ** 2 * t * segment.first
-            + 3 * u * t ** 2 * segment.second + t ** 3 * segment.end.value;
-        return y(value);
-    };
-    const points = [start];
-    function append(from: number, to: number, fromY: number, toY: number, depth: number) {
-        const span = to - from;
-        const middle = from + span / 2;
-        const middleY = mapped(middle);
-        const rise = toY - fromY;
-        if (depth < 12 && (Math.abs(middleY - (fromY + rise / 2)) > .35
-            || Math.abs(mapped(from + span / 4) - (fromY + rise / 4)) > .35
-            || Math.abs(mapped(from + 3 * span / 4) - (fromY + 3 * rise / 4)) > .35)) {
-            append(from, middle, fromY, middleY, depth + 1);
-            append(middle, to, middleY, toY, depth + 1);
-        } else points.push(`L${a + (b - a) * to},${toY}`);
-    }
-    append(0, 1, y(segment.begin.value), y(segment.end.value), 0);
-    return points.join(" ");
-}
-const path = computed(() => view.value?.paths.map(segmentPath).join(" ") ?? "");
 const markers = computed(() => editable.value ? (view.value?.points ?? []).filter((point) => {
     if (axes.value?.display !== "cropped" && !axes.value?.zoom) return true;
-    const position = y(eventValue(point));
+    const position = y(point.value);
     return position >= 0 && position <= height.value;
 }) : []);
 const selectedIds = computed(() => {
@@ -157,7 +170,14 @@ const segmentMenu = ref<({ id: number } & PopoverPosition) | null>(null);
 const scaleMenu = ref<PopoverPosition | null>(null);
 const popover = ref<HTMLElement | null>(null);
 const scaleButton = ref<HTMLButtonElement | null>(null);
-const selected = computed(() => curve.value?.points.find((point) => point.id === segmentMenu.value?.id) ?? null);
+const selected = computed(() => {
+    void version.value;
+    const point = curve.value?.points.find(({ id }) => id === segmentMenu.value?.id);
+    const target = node.value.address;
+    if (!point || !target) return null;
+    const draft = edits.drafts(target).find(({ id }) => id === point.id);
+    return draft ? { ...point, ...draft } : point;
+});
 let menuAnchor: SVGElement | null = null;
 const marquee = ref<{ pointerId: number; x: number; y: number; currentX: number; currentY: number;
     ctrlKey: boolean; metaKey: boolean; shiftKey: boolean } | null>(null);
@@ -193,6 +213,10 @@ function closeMenus(restoreFocus = false) {
     scaleMenu.value = null;
     menuAnchor = null;
 }
+function escapeSegment() {
+    if (edits.activePoint()?.id === segmentMenu.value?.id) edits.abandon();
+    closeMenus(true);
+}
 function outside(event: PointerEvent) {
     if (!(event.target instanceof Element) || !event.target.closest(".automation-popover, .automation-scale-button")) closeMenus();
 }
@@ -212,23 +236,6 @@ function showScale() {
     segmentMenu.value = null;
     scaleMenu.value = menuPosition(rect.right - 192, rect.bottom + 4, 204, 158);
     void nextTick(() => popover.value?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true }));
-}
-function startBound(event: PointerEvent, side: AutomationBoundSide) {
-    if (node.value.address) editor?.startAutomationBound(event, node.value.address, side);
-}
-function toggleBound(side: AutomationBoundSide) {
-    const bound = (authoredBounds.value ?? defaultAutomationBounds)[side];
-    if (node.value.address) void edits.setBound(node.value.address, side, { ...bound, enabled: !bound.enabled });
-}
-function stepBound(side: AutomationBoundSide, direction: number) {
-    const control = boundControls.value.find((entry) => entry.side === side);
-    if (node.value.address && control?.enabled) void edits.setBound(node.value.address, side, {
-        enabled: true, value: control.value + direction * 2 * knobScrubSpeed(control.limits),
-    });
-}
-function escapeScale() {
-    if (edits.activeBound()) edits.abandon();
-    closeMenus(true);
 }
 function changeDisplay(event: Event) {
     if (!editor || key.value === null) return;
@@ -285,7 +292,7 @@ function pointCursorPosition(control: SVGElement | null, target: NodeAddress, id
     const top = Math.max(0, rect.top, viewport?.top ?? 0, rulerBottom ?? 0), bottom = Math.min(window.innerHeight, rect.bottom, viewport?.bottom ?? Infinity);
     if (right - left < 4 || bottom - top < 4) return null;
     const pointLeft = rect.left + pointX(point) * rect.width / width.value;
-    const pointTop = rect.top + y(eventValue(point)) * rect.height / height.value;
+    const pointTop = rect.top + y(point.value) * rect.height / height.value;
     if (!Number.isFinite(pointLeft) || !Number.isFinite(pointTop)) return null;
     const x = Math.max(left + 2, Math.min(right - 2, pointLeft));
     const yPosition = Math.max(top + 2, Math.min(bottom - 2, pointTop));
@@ -296,10 +303,11 @@ function start(event: PointerEvent, id: number, kind: CurveDragKind = "point") {
     const axes = pointerAxes();
     const target = node.value.address;
     if (axes && target) {
-        const control = event.currentTarget as SVGElement;
-        control.setAttribute("data-pointer-focus", "");
+        const control = event.currentTarget as SVGElement | HTMLButtonElement;
+        if (control instanceof SVGElement) control.setAttribute("data-pointer-focus", "");
         control.focus({ preventScroll: true });
-        editor?.startAutomation(event, target, id, axes, kind, kind === "point" ? (pointId) => pointCursorPosition(control, target, pointId) : undefined);
+        editor?.startAutomation(event, target, id, axes, kind,
+            kind === "point" && control instanceof SVGElement ? (pointId) => pointCursorPosition(control, target, pointId) : undefined);
     }
 }
 function clearPointerFocusStyle(event: Event) {
@@ -372,15 +380,22 @@ function pointKey(event: KeyboardEvent, point: AutomationPoint) {
     } else if (event.key === "Enter" || event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
         editSegment(event, point);
 }
-function tensionKey(event: KeyboardEvent, point: AutomationPoint) {
+function adjustTension(event: KeyboardEvent, point: AutomationPoint): boolean {
     const adjustment = { ArrowLeft: -.05, ArrowDown: -.05, ArrowRight: .05, ArrowUp: .05 }[event.key];
-    if (adjustment === undefined) { pointKey(event, point); return; }
+    const value = event.key === "Home" ? 0 : event.key === "End" ? 1
+        : adjustment === undefined ? undefined : clampAutomationValue(point.tension + adjustment, automationTensionLimits);
+    if (value === undefined) return false;
     event.preventDefault();
     event.stopPropagation();
-    changeSegment(point, "bezier", Math.min(1, Math.max(0, point.tension + adjustment)));
+    if (value !== point.tension) changeSegment(point, "bezier", value);
+    return true;
+}
+function tensionKey(event: KeyboardEvent, point: AutomationPoint) {
+    if (!adjustTension(event, point)) pointKey(event, point);
 }
 
 let observer: ResizeObserver | null = null;
+let intersection: IntersectionObserver | undefined;
 let unregisterValueNavigation: (() => void) | undefined;
 function setValueView(nodeKey: string, pan: number, zoom?: AutomationValueZoom) {
     if (!editor) return;
@@ -406,7 +421,6 @@ const valueNavigation: LaneValueNavigation = {
         const target = valueNavigationTarget();
         if (!target) return null;
         const { axis, nodeKey, element } = target;
-        if (mode === "pan" && !canPanAutomationValueAxis(axis)) return null;
         const initialPan = valuePan.value;
         const initialZoom = valueZoom.value ?? { factor: 1, center: .5 };
         let pan = initialPan, zoom = initialZoom;
@@ -452,13 +466,18 @@ onMounted(() => {
     observer = new ResizeObserver(([entry]) => {
         if (entry) { width.value = Math.max(1, entry.contentRect.width); height.value = Math.max(1, entry.contentRect.height); }
     });
-    if (surface.value) observer.observe(surface.value);
+    if (surface.value) {
+        observer.observe(surface.value);
+        intersection = new IntersectionObserver(([entry]) => { visible.value = !!entry?.isIntersecting; });
+        intersection.observe(surface.value);
+    }
     const lane = surface.value?.closest(".lane");
     if (lane) unregisterValueNavigation = navigation?.registerValueNavigation(lane, valueNavigation);
 });
 onBeforeUnmount(() => {
     unregisterValueNavigation?.();
     observer?.disconnect();
+    intersection?.disconnect();
     window.removeEventListener("pointerdown", outside, true);
 });
 </script>
@@ -481,7 +500,12 @@ onBeforeUnmount(() => {
                         <text v-if="!hideLabels && guide.value !== snapGuide?.value" x="4" :y="valueLabelY(guide.y)">{{ guide.value }}</text>
                     </g>
                 </g>
-                <path :d="path" class="curve-line" />
+                <path :d="path" class="curve-line" :class="{ 'authored-curve': hasOutputBounds }" />
+                <path v-if="outputPath" :d="outputPath" class="curve-line" />
+                <g class="automation-bound-traces" aria-hidden="true">
+                    <path v-if="minPath" :d="minPath" />
+                    <path v-if="maxPath" :d="maxPath" class="upper-bound" />
+                </g>
                 <TimelinePlayhead />
                 <g v-if="snapGuide" class="value-snap-guide" aria-hidden="true">
                     <defs>
@@ -513,7 +537,6 @@ onBeforeUnmount(() => {
                 <g v-for="point in markers" :key="point.id" class="curve-point"
                     :transform="`translate(${pointX(point)} ${markerY(point)})`" role="button" tabindex="0"
                     :data-selected="selectedIds.has(point.id) || undefined"
-                    :data-limited="eventValue(point) !== point.value || undefined"
                     :aria-label="`Point at ${point.sampleIndex ?? point.seconds} ${point.sampleIndex === undefined ? 'seconds' : 'samples'}, value ${point.value}${selectedIds.has(point.id) ? ', selected' : ''}`"
                     :data-status-hint="pointStatus(point)" :data-status-shortcuts="pointShortcuts"
                     aria-description="Drag to place. Hold Shift to keep the point type. Shift-click to delete. Right-click for segment options."
@@ -527,50 +550,35 @@ onBeforeUnmount(() => {
             </svg>
             <button v-if="editable && editor && curve" ref="scaleButton" type="button" class="automation-scale-button"
                 aria-label="Automation value scale" aria-haspopup="dialog" :aria-expanded="!!scaleMenu"
-                data-status-hint="Set value bounds and snapping" @pointerdown.stop @click.stop="showScale">Scale</button>
+                data-status-hint="Set value display and snapping" @pointerdown.stop @click.stop="showScale">Scale</button>
         </div>
     </NodeLane>
     <Teleport to="body">
         <div v-if="editable && segmentMenu && selected" ref="popover" class="automation-popover"
             :style="{ left: `${segmentMenu.left}px`, top: `${segmentMenu.top}px` }"
-            role="dialog" aria-label="Automation segment" data-lane-item-editor @keydown.esc.stop="closeMenus(true)" @pointerdown.stop @wheel.stop>
+            role="dialog" aria-label="Automation segment" data-lane-item-editor @keydown.esc.stop="escapeSegment" @pointerdown.stop @wheel.stop>
             <label>Segment <select :value="selected.interpolation"
                 @change="changeSegment(selected, ($event.target as HTMLSelectElement).value as CurveInterpolation, selected.tension)">
                 <option value="empty">Empty</option><option value="hold">Hold</option><option value="bezier">Bézier</option>
             </select></label>
-            <label v-if="selected.interpolation === 'bezier'">Tension
-                <input type="number" min="0" max="1" step="any" :value="selected.tension"
-                    @change="changeSegment(selected, selected.interpolation, ($event.target as HTMLInputElement).valueAsNumber)" />
-            </label>
+            <div v-if="selected.interpolation === 'bezier'" class="automation-popover-control">
+                <span aria-hidden="true">Tension</span>
+                <button type="button" class="automation-knob" role="slider" aria-label="Bézier tension"
+                    :aria-valuemin="automationTensionLimits.min" :aria-valuemax="automationTensionLimits.max" :aria-valuenow="selected.tension"
+                    :data-status-hint="`Tension ${Number(selected.tension.toPrecision(6))}`" data-status-shortcuts="Drag"
+                    @pointerdown="start($event, selected.id, 'tensionKnob')" @keydown="adjustTension($event, selected)">
+                    <KnobFace :value="selected.tension" :limits="automationTensionLimits" />
+                </button>
+            </div>
             <button type="button" class="delete-point" @click="removePoint(selected.id)">Delete point</button>
         </div>
         <div v-if="editable && scaleMenu" ref="popover" class="automation-popover"
             :style="{ left: `${scaleMenu.left}px`, top: `${scaleMenu.top}px` }"
-            role="dialog" aria-label="Automation value scale" @keydown.esc.stop="escapeScale"
+            role="dialog" aria-label="Automation value scale" @keydown.esc.stop="closeMenus(true)"
             @pointerdown.stop @wheel.stop>
             <label>Display <select :value="display" @change="changeDisplay">
                 <option value="curved">Curved</option><option value="cropped">Cropped</option>
             </select></label>
-            <div v-for="bound in boundControls" :key="bound.side" class="automation-bound" :class="{ inactive: !bound.enabled }">
-                <span>{{ bound.name }}</span>
-                <div class="automation-bound-control">
-                    <span class="automation-bound-value">{{ Number(bound.value.toPrecision(6)) }}</span>
-                    <button type="button" class="automation-bound-knob" role="slider" :aria-label="bound.name"
-                        :aria-valuenow="bound.value" :aria-valuemin="bound.limits.min" :aria-valuemax="bound.limits.max"
-                        :disabled="!bound.enabled" :aria-disabled="!bound.enabled || boundsPending"
-                        :data-status-hint="`${bound.name} ${Number(bound.value.toPrecision(6))}`" data-status-shortcuts="Drag"
-                        @pointerdown="startBound($event, bound.side)"
-                        @keydown.up.stop.prevent="stepBound(bound.side, 1)" @keydown.right.stop.prevent="stepBound(bound.side, 1)"
-                        @keydown.down.stop.prevent="stepBound(bound.side, -1)" @keydown.left.stop.prevent="stepBound(bound.side, -1)">
-                        <KnobFace :value="bound.value" :limits="bound.limits" />
-                    </button>
-                    <button type="button" class="knob-side-toggle knob-enable-toggle" :aria-pressed="bound.enabled" :aria-disabled="boundsPending"
-                        :aria-label="`${bound.name} bound`" :data-status-hint="`${bound.enabled ? 'Disable' : 'Enable'} ${bound.name.toLowerCase()} bound`"
-                        @mousedown.left.prevent @click="toggleBound(bound.side)">
-                        <span aria-hidden="true">{{ bound.enabled ? '●' : '○' }}</span>
-                    </button>
-                </div>
-            </div>
             <label>Value snapping
                 <select :value="ruler" data-status-hint="Auto adds finer guides as you zoom in" @change="changeRuler">
                     <option value="auto">Auto</option>
@@ -597,6 +605,10 @@ onBeforeUnmount(() => {
 .value-snap-guide { pointer-events: none; color: var(--vscode-charts-blue, #3794ff); }
 .value-snap-guide stop { stop-color: currentColor; }
 .value-snap-guide text { fill: currentColor; font-weight: 600; }
+.automation-bound-traces { pointer-events: none; }
+.automation-bound-traces path { fill: none; stroke: var(--vscode-charts-blue, #3794ff); stroke-width: 1; opacity: .55; stroke-dasharray: 3 3; }
+.automation-bound-traces .upper-bound { stroke: var(--vscode-charts-orange, #d18616); }
+.authored-curve { opacity: .32; }
 .curve-line { fill: none; stroke: currentColor; stroke-width: 1.5; pointer-events: none; }
 .point-selection { pointer-events: none; fill: color-mix(in srgb, var(--vscode-focusBorder) 13%, transparent);
     stroke: var(--vscode-focusBorder); stroke-width: 1; }
@@ -611,7 +623,6 @@ onBeforeUnmount(() => {
     stroke-width: 1.5px; pointer-events: none;
 }
 .point-marker, .tension-marker { fill: currentColor; pointer-events: none; }
-.curve-point[data-limited] .point-marker { fill-opacity: .6; }
 .curve-point:is(:has([data-hovered]), [data-hovered]) .point-marker { r: 3.3px; }
 .curve-point[data-selected] .point-marker { r: 3.2px; }
 .tension-stem { fill: none; stroke: currentColor; stroke-opacity: .22; pointer-events: none; }
@@ -633,24 +644,20 @@ onBeforeUnmount(() => {
     color: var(--vscode-editorWidget-foreground); background: var(--vscode-editorWidget-background);
     border: 1px solid var(--vscode-widget-border); box-shadow: 0 2px 8px var(--vscode-widget-shadow);
 }
-.automation-popover label { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.automation-popover select, .automation-popover input {
+.automation-popover label, .automation-popover-control { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.automation-popover select {
     max-width: 100px; color: var(--vscode-input-foreground); background: var(--vscode-input-background);
     border: 1px solid var(--vscode-input-border); font: inherit;
 }
 .automation-popover .delete-point { justify-self: end; color: var(--vscode-errorForeground); background: transparent;
     border: 0; border-radius: 2px; font: inherit; padding: 3px 8px; cursor: pointer; }
 .automation-popover .delete-point:is(:hover, :focus-visible) { background: var(--vscode-toolbar-hoverBackground); }
-.automation-bound { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.automation-bound.inactive { color: var(--vscode-descriptionForeground); }
-.automation-bound-control { display: flex; align-items: center; --knob-toggle-accent: var(--iv-sample-input); }
-.automation-bound-value { margin-right: 4px; font-variant-numeric: tabular-nums; }
-.automation-bound-knob {
+.automation-knob {
     width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: transparent;
-    color: var(--knob-toggle-accent); cursor: ns-resize; touch-action: none;
+    color: var(--knob-toggle-accent, var(--iv-sample-input)); cursor: ns-resize; touch-action: none;
 }
-.automation-bound-knob svg { display: block; width: 100%; height: 100%; }
-.automation-bound-knob:disabled { cursor: default; opacity: .4; }
-.automation-bound-knob:focus-visible { outline: 1px solid var(--knob-toggle-accent); }
+.automation-knob svg { display: block; width: 100%; height: 100%; }
+.automation-knob:disabled { cursor: default; opacity: .4; }
+.automation-knob:focus-visible { outline: 1px solid currentColor; }
 .scale-error { color: var(--vscode-errorForeground); }
 </style>

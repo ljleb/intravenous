@@ -13,6 +13,11 @@
 #include <vector>
 
 namespace iv {
+struct ManualInputDefaults {
+    Sample value{};
+    bool enabled = false;
+};
+
 // An index counts ports of the same kind and direction, as in ProjectPortMatcher.
 struct NodeInstancePortInfo {
     std::string name{};
@@ -20,20 +25,25 @@ struct NodeInstancePortInfo {
     std::optional<ChannelTypeId> channel_type{};
     std::optional<EventTypeId> event_type{};
     std::vector<ContinuousValueIntrospectionMetadata> value_types{};
-    // The initial knob value for eligible Sample inputs.
-    std::optional<Sample> manual_default{};
+    std::optional<ManualInputDefaults> manual_defaults{};
     std::optional<InputAccessKind> access{};
     std::optional<OutputProductionKind> production{};
     std::optional<OutputRealization> realization{};
 };
 
-inline std::optional<Sample> manual_control_default_value(ContinuousInputConfig const& config)
+inline std::optional<ManualInputDefaults> manual_input_defaults(ContinuousInputConfig const& config)
 {
-    if (!is_sequential(config)) return std::nullopt;
-    auto const& metadata = sequential_input_properties(config).value_metadata;
-    if (metadata.size() != 1) return std::nullopt;
-    if (auto const* sample = std::get_if<ContinuousValueType<Sample>::SequentialInputMetadata>(&metadata.front()))
-        return sample->default_value;
+    using Type = ContinuousValueType<Sample>;
+    if (is_sequential(config)) {
+        auto const& metadata = sequential_input_properties(config).value_metadata;
+        if (metadata.size() == 1)
+            if (auto const* sample = std::get_if<Type::SequentialInputMetadata>(&metadata.front()))
+                return ManualInputDefaults{sample->default_value, sample->enabled_by_default};
+    } else if (supports_coverage_manual_control(config)) {
+        auto const& metadata = std::get<CoverageContinuousInputProperties>(config.access).value_metadata;
+        auto const& sample = std::get<Type::CoverageInputMetadata>(metadata.front());
+        return ManualInputDefaults{sample.default_value, sample.enabled_by_default};
+    }
     return std::nullopt;
 }
 
@@ -67,8 +77,8 @@ inline NodeInstanceInterface read_node_instance_interface(
             .value_types = std::visit([](auto const& access) {
                 return continuous_introspection_metadata(access.value_metadata);
             }, config.access),
-            .manual_default = supports_coverage_manual_control(config) ? std::optional{Sample{0}}
-                : manual_owner ? manual_control_default_value(config) : std::nullopt,
+            .manual_defaults = manual_owner || supports_coverage_manual_control(config)
+                ? manual_input_defaults(config) : std::nullopt,
             .access = input_access(config),
         });
     }

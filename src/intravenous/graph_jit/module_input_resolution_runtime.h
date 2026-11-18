@@ -23,6 +23,8 @@ auto module_input_options(ContinuousInputConfig const* config)
                 options.default_value = metadata->default_value;
             if constexpr (requires { options.neutral_value = metadata->neutral_value; })
                 options.neutral_value = metadata->neutral_value;
+            if constexpr (requires { options.enabled_by_default = metadata->enabled_by_default; })
+                options.enabled_by_default = metadata->enabled_by_default;
         }
     }
     return options;

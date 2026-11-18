@@ -3,6 +3,5 @@
   "MovePoint": "c:$@N@iv@N@automation@S@MovePoint",
   "PlacePoint": "c:$@N@iv@N@automation@S@PlacePoint",
   "RemovePoint": "c:$@N@iv@N@automation@S@RemovePoint",
-  "SetBound": "c:$@N@iv@N@automation@S@SetBound",
   "SetSegment": "c:$@N@iv@N@automation@S@SetSegment"
 }

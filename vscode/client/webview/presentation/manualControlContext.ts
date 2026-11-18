@@ -2,6 +2,7 @@ import { computed, inject, provide, toValue, watch, type InjectionKey, type Mayb
 import { ManualControlGestures, type ManualControlLimits } from "../../src/manualControlGesture";
 import { canEditManualControl, manualControlKey, type ManualControlId, type ManualControlDescriptor } from "../../src/manualControls";
 import { knobPortStatus } from "../../src/knobPresentation";
+import { oppositeAutomationBound, pairedAutomationBoundLimits } from "../../src/automationBoundInputs";
 import { useNode } from "./nodeContext";
 
 type Context = { gestures: ManualControlGestures; version: Ref<number>;
@@ -48,9 +49,12 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: M
         if (toValue(direction) === "output") return { defaultValue: 1, min: 0, max: undefined, scrubSpeed: undefined };
         const metadata = port.value?.kind === "continuous" ? port.value.valueTypes[0] : undefined;
         const finite = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) ? value : undefined;
+        const opposite = oppositeAutomationBound(node.value.definitionId, toValue(inputName));
+        const paired = opposite && node.value.ports.find((entry) => entry.name === opposite && entry.direction === "input");
+        const bounds = pairedAutomationBoundLimits(opposite, paired && paired.kind === "continuous" ? paired.manualControl : undefined);
         return { min: finite(metadata?.minValue), max: finite(metadata?.maxValue),
             defaultValue: metadata?.defaultValue === undefined ? 0 : finite(metadata?.defaultValue),
-            scrubSpeed: finite(metadata?.scrubSpeed) };
+            scrubSpeed: finite(metadata?.scrubSpeed), ...bounds };
     });
     const available = computed(() => !!context && !!id.value && canEditManualControl(id.value, descriptor.value)
         && typeof value.value === "number" && Number.isFinite(value.value));

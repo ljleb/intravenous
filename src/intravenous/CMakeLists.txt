@@ -560,6 +560,14 @@ add_executable(intravenous
     runtime/app.cpp
 )
 
+# miniaudio loads libpulse by name. Keep its library directory available
+# when the server runs outside the development shell.
+find_library(IV_PULSE_LIBRARY NAMES pulse libpulse.so.0)
+if(IV_PULSE_LIBRARY)
+    get_filename_component(iv_pulse_library_dir "${IV_PULSE_LIBRARY}" DIRECTORY)
+    set_property(TARGET intravenous APPEND PROPERTY BUILD_RPATH "${iv_pulse_library_dir}")
+endif()
+
 add_executable(intravenous-client-helper client_native_helper.cpp)
 target_link_libraries(intravenous-client-helper PRIVATE nlohmann_json::nlohmann_json)
 find_package(X11 QUIET)

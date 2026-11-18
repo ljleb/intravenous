@@ -4,7 +4,6 @@ import type { GraphScope } from "../../src/graphScope";
 import type { GraphConnectionEnd, GraphPortEndpoint } from "../../src/graphConnectionEditing";
 import type { PortConnectionDrag } from "../../src/portConnectionGesture";
 import type { CurveAxes, CurveDragKind } from "../../src/automationCurveEditing";
-import type { AutomationBoundSide } from "../../src/automationCurveGeometry";
 
 export type CursorWarpAnchor = { screenOrigin: Point; scale: number };
 
@@ -28,7 +27,6 @@ type GraphEditorContext = {
     cancelConnection: () => void;
     startAutomation: (event: PointerEvent, target: NodeAddress, pointId: number | null, axes: CurveAxes, kind: CurveDragKind,
         visiblePointCenter?: (id: number) => Point | null) => void;
-    startAutomationBound: (event: PointerEvent, target: NodeAddress, side: AutomationBoundSide) => void;
 };
 const key: InjectionKey<GraphEditorContext> = Symbol("graphEditor");
 export function provideGraphEditor(context: GraphEditorContext) { provide(key, context); }

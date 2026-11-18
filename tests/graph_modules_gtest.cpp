@@ -427,10 +427,10 @@ TEST(GraphModules, PublicInputAccessSurvivesSubgraphsAndArchiveRoundTrips)
     GraphBuilder graph;
     (void)graph.input<"sequential", Sample>(InputAccess::sequential, {
         .default_value = Sample{0.25f},
-        .scrub_speed = Sample{0.375f}});
+        .scrub_speed = Sample{0.375f}, .enabled_by_default = false});
     (void)graph.input<"region", stereo>(InputAccess::region);
     (void)graph.input<"coverage", Sample>(InputAccess::coverage, {
-        .channel_layout = mono_planar_channel_layout});
+        .channel_layout = mono_planar_channel_layout, .default_value = Sample{1}, .enabled_by_default = true});
     (void)graph.input<Sample>();
     (void)graph.event_input<"seq-events">(EventTypeId::trigger);
     (void)graph.event_input<"region-events">(EventTypeId::trigger, InputAccess::region);
@@ -461,6 +461,11 @@ TEST(GraphModules, PublicInputAccessSurvivesSubgraphsAndArchiveRoundTrips)
         auto const metadata = sequential_input_metadata<Sample>(
             sequential_input_properties(inputs[0]));
         EXPECT_FLOAT_EQ(metadata.default_value.value, 0.25f);
+        EXPECT_FALSE(metadata.enabled_by_default);
+        auto const& coverage = std::get<CoverageContinuousInputProperties>(inputs[2].access);
+        auto const& coverage_metadata = std::get<ContinuousValueType<Sample>::CoverageInputMetadata>(coverage.value_metadata.front());
+        EXPECT_FLOAT_EQ(coverage_metadata.default_value.value, 1.f);
+        EXPECT_TRUE(coverage_metadata.enabled_by_default);
         ASSERT_TRUE(metadata.scrub_speed.has_value());
         EXPECT_FLOAT_EQ(metadata.scrub_speed->value, 0.375f);
         EXPECT_FALSE(sequential_input_metadata<Sample>(sequential_input_properties(inputs[3])).scrub_speed.has_value());

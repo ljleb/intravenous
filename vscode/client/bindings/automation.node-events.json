@@ -20,10 +20,6 @@
           "nominalId": "c:$@N@iv@N@automation@S@RemovePoint"
         },
         {
-          "definitionFingerprint": "77f64ca4ec8576d4",
-          "nominalId": "c:$@N@iv@N@automation@S@SetBound"
-        },
-        {
           "definitionFingerprint": "e8fdd3f15690b14c",
           "nominalId": "c:$@N@iv@N@automation@S@SetSegment"
         }
@@ -304,55 +300,6 @@
             "value": {
               "bitWidth": 32,
               "kind": "unsignedInteger"
-            }
-          }
-        ],
-        "kind": "aggregate"
-      }
-    },
-    {
-      "definitionFingerprint": "77f64ca4ec8576d4",
-      "displayName": "iv::automation::SetBound",
-      "nominalId": "c:$@N@iv@N@automation@S@SetBound",
-      "payload": {
-        "fields": [
-          {
-            "name": "side",
-            "value": {
-              "bitWidth": 8,
-              "enumerators": [
-                {
-                  "name": "min",
-                  "value": "0"
-                },
-                {
-                  "name": "max",
-                  "value": "1"
-                }
-              ],
-              "kind": "enumeration",
-              "signed": false
-            }
-          },
-          {
-            "name": "bound",
-            "value": {
-              "fields": [
-                {
-                  "name": "value",
-                  "value": {
-                    "bitWidth": 32,
-                    "kind": "floatingPoint"
-                  }
-                },
-                {
-                  "name": "enabled",
-                  "value": {
-                    "kind": "boolean"
-                  }
-                }
-              ],
-              "kind": "aggregate"
             }
           }
         ],

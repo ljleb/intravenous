@@ -77,8 +77,11 @@ TEST(OutputGain, OneTransformFeedsAllConsumersAndItsIngressKeepsTheRawSource)
     EXPECT_EQ(graph.manual_controls[0].input.node_bundle_handle, stage);
     EXPECT_FALSE(graph.manual_controls[0].output);
     EXPECT_EQ(graph.manual_controls[0].settled_value, Sample{-2});
-    EXPECT_EQ(manual_control_default_value(graph.node_bundles.resolve_sample_input(
-        {stage, PortKind::sample, 1}).config), Sample{1});
+    auto const defaults = manual_input_defaults(graph.node_bundles.resolve_sample_input(
+        {stage, PortKind::sample, 1}).config);
+    ASSERT_TRUE(defaults.has_value());
+    EXPECT_EQ(defaults->value, Sample{1});
+    EXPECT_TRUE(defaults->enabled);
 }
 
 TEST(OutputGain, InteractiveUnityHasAControlButPreparationFreezesItsValue)

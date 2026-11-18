@@ -7331,14 +7331,36 @@ struct AutomationWindow {
     }
 };
 IV_NODE("iv.test.automation.window", AutomationWindow);
+struct AutomationBoundSignal {
+    iv::Sample value;
+    explicit AutomationBoundSignal(iv::Sample value_) : value(value_) {}
+    static constexpr auto outputs() {
+        return std::array{iv::output<iv::Sample>("bound", iv::OutputProduction::coverage,
+            iv::OutputRealization::computed, {.channel_layout = iv::mono_planar_channel_layout})};
+    }
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<AutomationBoundSignal>& ctx) const {
+        auto output = ctx.output<"bound">();
+        auto const range = iv::GlobalIndexRange{iv::GlobalIndex::from_bits(0), 5};
+        output.publish(std::array{range});
+        if (ctx.local_state_changed) output.change(range);
+    }
+    void tock_coverage(iv::TockCoverageContext<AutomationBoundSignal>& ctx) const {
+        for (auto region : ctx.output<"bound">().regions()) for (auto window : region.prepared_windows())
+            for (std::size_t i = 0; i < window.frame_count(); ++i) window.value(i) = value;
+    }
+};
+IV_NODE("iv.test.automation.bound_signal", AutomationBoundSignal);
 void automation_window_module(iv::GraphBuilder& graph) {
+    using namespace iv;
     // Ten hours of sparse coverage, but only three event records. None lies
     // inside the two-sample replay window. The list is deliberately unsorted:
     // the curve sorts it before PointSource, which rejects unsorted points.
     auto curve = graph.node<"iv.builtin.automation.curve">(
         std::vector<iv::automation::Point>{{3, 36000, 0, iv::CurveInterpolation::bezier, 0},
-            {1, 0, 0, iv::CurveInterpolation::bezier, 0}, {2, 4.0 / 88200, 1, iv::CurveInterpolation::bezier, 0}},
-        iv::automation::ValueBounds{.min = {.value = .25f, .enabled = true}, .max = {.value = .75f, .enabled = true}});
+            {1, 0, 0, iv::CurveInterpolation::bezier, 0}, {2, 4.0 / 88200, 1, iv::CurveInterpolation::bezier, 0}});
+    auto min = graph.node<"iv.test.automation.bound_signal">(iv::Sample{.25f});
+    auto max = graph.node<"iv.test.automation.bound_signal">(iv::Sample{.6f});
+    curve("min"_P = min, "max"_P = max);
     auto window = graph.node<"iv.test.automation.window">();
     window(curve);
     auto live = graph.node<"iv.test.graph_jit.state_context.manual_control_slice_probe">();

@@ -4,43 +4,18 @@ export type CurveInterpolation = "empty" | "hold" | "bezier";
 export type AutomationPointPosition = { id: number; seconds: number; value: number; sampleIndex?: bigint;
     tension?: number; interpolation?: CurveInterpolation; order?: number };
 export type AutomationPoint = AutomationPointPosition & { interpolation: CurveInterpolation; tension: number };
-export type AutomationCurve = { points: AutomationPoint[]; cycleSeconds: number; sampleRate?: number; bounds?: AutomationBoundSettings };
+export type AutomationCurve = { points: AutomationPoint[]; cycleSeconds: number; sampleRate?: number };
 export type AutomationValueBounds = { min?: number; max?: number };
 export type AutomationValueDisplay = "curved" | "cropped";
 export type AutomationValueZoom = { factor: number; center: number };
 export const minimumAutomationValueZoom = 2 ** -20;
 export const maximumAutomationValueZoom = 2 ** 20;
-export type AutomationValueAxis = AutomationValueBounds & { pan?: number; display?: AutomationValueDisplay; zoom?: AutomationValueZoom };
-export type AutomationBoundSide = "min" | "max";
-export type AutomationBound = { value: number; enabled: boolean };
-export type AutomationBoundSettings = Record<AutomationBoundSide, AutomationBound>;
-export const defaultAutomationBounds: AutomationBoundSettings = {
-    min: { value: 0, enabled: false },
-    max: { value: 1, enabled: false },
-};
-
-export function enabledAutomationBounds(settings?: AutomationBoundSettings): AutomationValueBounds {
-    return { min: settings?.min.enabled ? settings.min.value : undefined,
-        max: settings?.max.enabled ? settings.max.value : undefined };
-}
-
-export function automationBoundLimits(settings: AutomationBoundSettings, side: AutomationBoundSide): AutomationValueBounds {
-    return side === "min" ? { max: settings.max.enabled ? settings.max.value : undefined }
-        : { min: settings.min.enabled ? settings.min.value : undefined };
-}
-
+export type AutomationValueAxis = { pan?: number; display?: AutomationValueDisplay; zoom?: AutomationValueZoom };
 export function clampAutomationValue(value: number, { min, max }: AutomationValueBounds): number {
+    if (min !== undefined && max !== undefined && min > max) return (min + max) / 2;
     return Math.min(max ?? Infinity, Math.max(min ?? -Infinity, value));
 }
 
-export function automationDisplayBounds(bounds: AutomationValueBounds): AutomationValueBounds {
-    const { min, max } = bounds;
-    if (min === undefined || min !== max) return bounds;
-    // An equal pair produces a constant signal. Keep an editable value axis
-    // centred on it so raw values remain adjustable.
-    const radius = Math.max(1, Math.abs(min) * .1);
-    return { min: min - radius, max: min + radius };
-}
 export type AutomationValueRuler = "auto" | "whole" | "half" | "off";
 export type CurvePath = { begin: { seconds: number; value: number }; end: { seconds: number; value: number };
     first: number; second: number };
@@ -86,44 +61,21 @@ export function compareAutomationPoints(a: AutomationPointPosition, b: Automatio
     return compareAutomationTime(a, b) || (a.order ?? 0) - (b.order ?? 0) || a.id - b.id;
 }
 
-const clampOneSidedPan = (pan: number) => Math.max(-16, Math.min(16, pan));
-function oneSidedScale(bound: number, pan: number): number {
-    return Math.max(1, Math.abs(bound)) * Math.exp(clampOneSidedPan(pan));
-}
-
-function croppedValueWindow(axis: AutomationValueAxis) {
-    const { min, max, pan = 0, zoom } = axis;
-    const range = min !== undefined && max !== undefined ? max - min : Infinity;
-    const precision = Math.abs(clampAutomationValue(pan, axis)) * 2 ** -23;
-    const half = Math.max(precision, Math.min(1, range > 0 ? range / 2 : 1) / (zoom?.factor ?? 1));
-    if (range <= 2 * half)
-        return { center: min! + range / 2, span: range || 2 * half };
-    const center = clampAutomationValue(pan, {
-        min: min === undefined ? undefined : min + half,
-        max: max === undefined ? undefined : max - half,
-    });
-    return { center, span: 2 * half };
-}
-
-export function canPanAutomationValueAxis(axis: AutomationValueAxis): boolean {
-    if (axis.display !== "cropped" && (axis.zoom?.factor ?? 1) > 1) return true;
-    if (axis.min === undefined || axis.max === undefined) return true;
-    return axis.display === "cropped" && axis.max - axis.min > croppedValueWindow(axis).span;
+function croppedValueSpan({ pan = 0, zoom }: AutomationValueAxis): number {
+    const precision = Math.abs(pan) * 2 ** -23;
+    return 2 * Math.max(precision, 1 / (zoom?.factor ?? 1));
 }
 
 export function panAutomationValueAxis(axis: AutomationValueAxis, dy: number, height: number): number {
     const pan = axis.pan ?? 0;
-    if (!dy || !(height > 0) || !canPanAutomationValueAxis(axis)) return pan;
+    if (!dy || !(height > 0)) return pan;
     if (axis.display === "cropped") {
-        const { center, span } = croppedValueWindow(axis);
-        const next = center + span * dy / height;
-        return Number.isFinite(Math.fround(next)) ? croppedValueWindow({ ...axis, pan: next }).center : center;
+        const next = pan + croppedValueSpan(axis) * dy / height;
+        return Number.isFinite(Math.fround(next)) ? next : pan;
     }
-    const unbounded = axis.min === undefined && axis.max === undefined;
-    const scale = unbounded ? Math.min(1, axis.zoom?.factor ?? 1) : 1;
+    const scale = Math.min(1, axis.zoom?.factor ?? 1);
     const next = pan + Math.PI * dy / (height * scale);
-    if (!Number.isFinite(next)) return pan;
-    return unbounded ? next : clampOneSidedPan(next);
+    return Number.isFinite(next) ? next : pan;
 }
 
 function curvedZoomCenter(center: number, factor: number): number {
@@ -139,26 +91,21 @@ export function zoomAutomationValueAxis(axis: AutomationValueAxis, multiplier: n
     { pan: number; zoom: AutomationValueZoom } {
     const pan = axis.pan ?? 0;
     const zoom = axis.zoom ?? { factor: 1, center: .5 };
-    const range = axis.min !== undefined && axis.max !== undefined ? axis.max - axis.min : Infinity;
-    const minimum = axis.display === "cropped"
-        ? Math.max(minimumAutomationValueZoom, range > 0 ? Math.min(1, 2 / range) : 0)
-        : Number.isFinite(range) ? 1 : minimumAutomationValueZoom;
-    const factor = Math.max(minimum, Math.min(maximumAutomationValueZoom, zoom.factor * multiplier));
+    const factor = Math.max(minimumAutomationValueZoom, Math.min(maximumAutomationValueZoom, zoom.factor * multiplier));
     const fraction = Number.isFinite(anchor) ? anchor : .5;
     if (factor === zoom.factor) return { pan, zoom };
     if (axis.display === "cropped") {
         const value = automationValueAtFraction(fraction, axis);
         const change = { factor, center: .5 };
-        const { span } = croppedValueWindow({ ...axis, zoom: change });
-        const center = croppedValueWindow({ ...axis, zoom: change, pan: value - (fraction - .5) * span }).center;
-        return { pan: center, zoom: change };
+        const span = croppedValueSpan({ ...axis, zoom: change });
+        return { pan: value - (fraction - .5) * span, zoom: change };
     }
     // Below 1 the scale widens in value space. Above 1 the view crops the
     // curved scale in fraction space. Apply both changes when crossing 1.
     const offset = fraction - .5;
     const wideChange = 1 / Math.min(1, zoom.factor) - 1 / Math.min(1, factor);
     let nextPan = pan;
-    if (wideChange && axis.min === undefined && axis.max === undefined) {
+    if (wideChange) {
         // Continue the inverse curve along its tangent outside the middle
         // half, so the anchor remains finite and keeps moving through wraps.
         const inner = Math.min(.25, Math.max(-.25, offset));
@@ -173,45 +120,29 @@ export function zoomAutomationValueAxis(axis: AutomationValueAxis, multiplier: n
 }
 
 export function automationValueFraction(value: number, axis: AutomationValueAxis): number {
-    const { min, max, pan = 0, zoom } = axis;
-    if (axis.display === "cropped") {
-        const { center, span } = croppedValueWindow(axis);
-        return .5 + (value - center) / span;
-    }
+    const { pan = 0, zoom } = axis;
+    if (axis.display === "cropped") return .5 + (value - pan) / croppedValueSpan(axis);
     const scale = Math.min(1, zoom?.factor ?? 1);
-    let fraction: number;
-    if (min !== undefined && max !== undefined) fraction = valueScaleFraction(value, { min, max });
-    else if (min !== undefined) fraction = 2 * Math.atan((value - min) * scale / oneSidedScale(min, pan)) / Math.PI;
-    else if (max !== undefined) fraction = 1 - 2 * Math.atan((max - value) * scale / oneSidedScale(max, -pan)) / Math.PI;
-    else fraction = valueScaleFraction((value - pan) * scale, {});
+    const fraction = valueScaleFraction((value - pan) * scale, {});
     return zoom && zoom.factor > 1 ? .5 + (fraction - zoom.center) * zoom.factor : fraction;
 }
 
 export function automationValueAtFraction(fraction: number, axis: AutomationValueAxis): number {
-    const { min, max, pan = 0, zoom } = axis;
-    if (axis.display === "cropped") {
-        const { center, span } = croppedValueWindow(axis);
-        return center + (fraction - .5) * span;
-    }
+    const { pan = 0, zoom } = axis;
+    if (axis.display === "cropped") return pan + (fraction - .5) * croppedValueSpan(axis);
     if (zoom && zoom.factor > 1) fraction = zoom.center + (fraction - .5) / zoom.factor;
     const scale = Math.min(1, zoom?.factor ?? 1);
-    if (min !== undefined && max !== undefined) return min + fraction * (max - min);
-    if (min !== undefined) return min + Math.tan(fraction * Math.PI / 2) * oneSidedScale(min, pan) / scale;
-    if (max !== undefined) return max + Math.tan((fraction - 1) * Math.PI / 2) * oneSidedScale(max, -pan) / scale;
     return pan + Math.tan((fraction - .5) * Math.PI) / scale;
 }
 
 export function automationUnitsPerPixel(axis: AutomationValueAxis, height: number): number {
-    const { min, max, pan = 0 } = axis;
-    if (axis.display === "cropped") return croppedValueWindow(axis).span / height;
+    if (axis.display === "cropped") return croppedValueSpan(axis) / height;
     if (axis.zoom && axis.zoom.factor !== 1)
         return automationValueAtFraction(.5 + .5 / height, axis) - automationValueAtFraction(.5 - .5 / height, axis);
-    if (min !== undefined && max !== undefined) return (max - min) / height;
-    const scale = min !== undefined ? oneSidedScale(min, pan) / 2 : max !== undefined ? oneSidedScale(max, -pan) / 2 : 1;
-    return Math.PI * scale / height;
+    return Math.PI / height;
 }
 
-export function automationValueGuides(bounds: AutomationValueAxis, height: number,
+export function automationValueGuides(axis: AutomationValueAxis, height: number,
     ruler: AutomationValueRuler = "auto"): Array<{ value: number; y: number }> {
     if (ruler === "off" || !(height > 0) || !Number.isFinite(height)) return [];
     const guides: Array<{ value: number; y: number }> = [];
@@ -219,7 +150,7 @@ export function automationValueGuides(bounds: AutomationValueAxis, height: numbe
         const rounded = Math.fround(candidate);
         if (!Number.isFinite(rounded)) return;
         const value = rounded === 0 ? 0 : rounded;
-        const y = (1 - automationValueFraction(value, bounds)) * height;
+        const y = (1 - automationValueFraction(value, axis)) * height;
         if (!(y >= 0 && y <= height) || guides.some((guide) => Math.abs(guide.y - y) < spacing)) return;
         guides.push({ value, y });
     }
@@ -228,15 +159,15 @@ export function automationValueGuides(bounds: AutomationValueAxis, height: numbe
     for (const value of [0, -1, 1]) add(value, 10);
     const spacing = 18;
     const count = Math.min(100, Math.floor(height / spacing));
-    const values = [automationValueAtFraction(.5, bounds)];
+    const values = [automationValueAtFraction(.5, axis)];
     for (let i = 1; i <= count; ++i) {
         const offset = i / (2 * count + 1);
-        values.push(automationValueAtFraction(.5 - offset, bounds), automationValueAtFraction(.5 + offset, bounds));
+        values.push(automationValueAtFraction(.5 - offset, axis), automationValueAtFraction(.5 + offset, axis));
     }
     // Beyond one pixel of finest spacing, halving again has no visible benefit.
     // 2^-149 is the smallest positive float32 Sample.
     const smallestSample = 2 ** -149;
-    const smallestStep = ruler === "auto" ? automationUnitsPerPixel(bounds, height)
+    const smallestStep = ruler === "auto" ? automationUnitsPerPixel(axis, height)
         : ruler === "half" ? .5 : 1;
     for (let step = 1; step >= smallestSample; step /= 2) {
         for (const value of values) add(Math.round(value / step) * step, spacing);
@@ -248,8 +179,7 @@ export function automationValueGuides(bounds: AutomationValueAxis, height: numbe
 // Only the viewport and its neighboring point groups are visited. Extra end
 // groups supply tangents across the cyclic seam; drafts replace point identity.
 export function automationWindow(curve: AutomationCurve, begin: number, end: number,
-    drafts: readonly AutomationPointPosition[] = [], origin?: number,
-    bounds = enabledAutomationBounds(curve.bounds)) {
+    drafts: readonly AutomationPointPosition[] = [], origin?: number) {
     // The clip uses a local time coordinate so it can distinguish samples even
     // when adding one sample to an absolute seconds value would round away.
     const time = (point: AutomationPoint) => origin === undefined ? point.seconds
@@ -284,9 +214,7 @@ export function automationWindow(curve: AutomationCurve, begin: number, end: num
     }
     const points = [...selected.values()].sort(compareAutomationPoints);
     const groups: Array<{ first: AutomationPoint; last: AutomationPoint }> = [];
-    for (const authored of points) {
-        const value = clampAutomationValue(authored.value, bounds);
-        const point = value === authored.value ? authored : { ...authored, value };
+    for (const point of points) {
         const last = groups.at(-1);
         if (last && compareAutomationTime(last.first, point) === 0) last.last = point;
         else groups.push({ first: point, last: point });
@@ -360,7 +288,7 @@ export function automationWindow(curve: AutomationCurve, begin: number, end: num
     const vertices: Array<{ seconds: number; value: number }> = [];
     const first = valueAt(begin), last = valueAt(end);
     if (first !== undefined) vertices.push({ seconds: begin, value: first });
-    for (const point of visible) vertices.push({ seconds: time(point), value: clampAutomationValue(point.value, bounds) });
+    for (const point of visible) vertices.push({ seconds: time(point), value: point.value });
     if (last !== undefined) vertices.push({ seconds: end, value: last });
     return { points: visible, paths, vertices };
 }

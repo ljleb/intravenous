@@ -147,6 +147,10 @@ human co-author of information needed to make the architectural decision.
 
 ## 3. Feature implementation method
 
+The owner does not require backward compatibility. Update the affected source,
+fixtures, and project files in this repository as part of the feature. Add a
+migration or compatibility layer only when the owner explicitly requests it.
+
 ### 3.1 Select one complete, dependency-ready feature
 
 Before editing source:

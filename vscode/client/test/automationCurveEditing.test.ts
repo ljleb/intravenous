@@ -1,3 +1,5 @@
+import { automationBoundTracks, oppositeAutomationBound, pairedAutomationBoundLimits,
+    sampleAutomationPreview } from "../src/automationBoundInputs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { AutomationCurveEditing, automationCycleSeconds, automationWindow, curvePointAt, readAutomationCurve, type CurveAxes } from "../src/automationCurveEditing";
@@ -11,7 +13,8 @@ import { wrapTimelineCursor } from "../src/timelineViewport";
 import { automationTimelineTicks, timelineTicks } from "../webview/timeline/geometry";
 
 const target: NodeAddress = { instanceId: "curve" };
-const axes: CurveAxes = { left: 0, top: 0, width: 100, height: 100, begin: 0, end: 10, min: 0, max: 1 };
+const curvedAxes: CurveAxes = { left: 0, top: 0, width: 100, height: 100, begin: 0, end: 10 };
+const axes: CurveAxes = { ...curvedAxes, display: "cropped", pan: .5, zoom: { factor: 2, center: .5 } };
 const construction = { definitionId: "iv.builtin.automation.curve", arguments: [[
     { id: 1, seconds: 1, value: .5, interpolation: "bezier", tension: 0 },
     { id: 2, seconds: 5, value: 1, interpolation: "bezier", tension: 0 },
@@ -81,15 +84,14 @@ test("dragging an unselected control point preserves a separate selection", asyn
     assert.deepEqual([...h.edits.selectedPoints(target)], [2]);
 });
 
-test("cropped values remain linear and the window stops at the enabled bounds", () => {
-    const axis = { min: -4, max: 8, pan: 2, display: "cropped" } as const;
+test("cropped values remain linear as the window pans", () => {
+    const axis = { pan: 2, display: "cropped" } as const;
     assert.equal(automationValueFraction(1, axis), 0);
     assert.equal(automationValueFraction(3, axis), 1);
     assert.equal(automationValueFraction(4, axis), 1.5);
     assert.equal(automationValueAtFraction(.25, axis), 1.5);
-    assert.equal(panAutomationValueAxis(axis, 400, 100), 7);
-    assert.equal(panAutomationValueAxis(axis, -400, 100), -3);
-    assert.equal(automationValueAtFraction(1, { ...axis, min: 7.5 }), 8);
+    assert.equal(panAutomationValueAxis(axis, 400, 100), 10);
+    assert.equal(panAutomationValueAxis(axis, -400, 100), -6);
 });
 
 test("lane value zoom holds the value at the cursor in both display modes", () => {
@@ -101,17 +103,9 @@ test("lane value zoom holds the value at the cursor in both display modes", () =
         assert.ok(Math.abs(automationValueFraction(value, zoomed) - cursor) < 1e-9);
         assert.ok(automationValueAtFraction(1, zoomed) < automationValueAtFraction(1, axis));
     }
-    const bounded = { display: "cropped", min: 0, max: .25 } as const;
-    const zoomed = { ...bounded, ...zoomAutomationValueAxis(bounded, 4, 0) };
-    assert.equal(automationValueAtFraction(0, zoomed), 0);
-    assert.equal(automationValueAtFraction(1, zoomed), .0625);
-    const zoomedOut = { ...bounded, ...zoomAutomationValueAxis(bounded, .25, 0) };
-    assert.equal(zoomedOut.zoom.factor, 1);
-    assert.equal(automationValueAtFraction(0, zoomedOut), 0);
-    assert.equal(automationValueAtFraction(1, zoomedOut), .25);
 });
 
-test("curved value zoom can display a wider range without losing its finite bounds", () => {
+test("curved value zoom can display a wider range and preserve the anchor", () => {
     const anchor = .625;
     const axis = { pan: 1 };
     const value = automationValueAtFraction(anchor, axis);
@@ -121,12 +115,29 @@ test("curved value zoom can display a wider range without losing its finite boun
     assert.ok(Math.abs(automationValueAtFraction(.25, zoomedOut) - automationValueAtFraction(.75, zoomedOut)) > 500);
     assert.deepEqual(readLayout({ automationValueZooms: { curve: zoomedOut.zoom } }).automationValueZooms,
         { curve: zoomedOut.zoom });
+});
 
-    const lowerBound = { min: 2 };
-    const upperBound = { max: -2 };
-    assert.equal(automationValueAtFraction(0, { ...lowerBound, ...zoomAutomationValueAxis(lowerBound, .01, .5) }), 2);
-    assert.equal(automationValueAtFraction(1, { ...upperBound, ...zoomAutomationValueAxis(upperBound, .01, .5) }), -2);
-    assert.equal(zoomAutomationValueAxis({ min: 2, max: 4 }, .01, .5).zoom.factor, 1);
+test("min and max clamp the preview independently of lane navigation", () => {
+    const paths = [{ begin: { seconds: 0, value: -2 }, end: { seconds: 1, value: 4 }, first: 0, second: 2 }];
+    const cases = [
+        { bounds: {}, expected: [-2, 4] },
+        { bounds: { min: 0 }, expected: [0, 4] },
+        { bounds: { max: 1 }, expected: [-2, 1] },
+        { bounds: { min: 0, max: 1 }, expected: [0, 1] },
+    ];
+    for (const { bounds, expected } of cases) {
+        const preview = sampleAutomationPreview(paths, [], [], bounds, 1, 32);
+        const [authored] = preview.authored, [output] = preview.output;
+        assert.deepEqual([authored[0].value, authored.at(-1)?.value], [-2, 4]);
+        assert.deepEqual([output[0].value, output.at(-1)?.value], expected);
+        for (const display of ["curved", "cropped"] as const) {
+            const axis = { display, pan: .5 };
+            const combined = { ...axis, ...bounds };
+            assert.equal(automationValueFraction(4, combined), automationValueFraction(4, axis));
+            assert.equal(panAutomationValueAxis(combined, 150, 100), panAutomationValueAxis(axis, 150, 100));
+            assert.deepEqual(zoomAutomationValueAxis(combined, .25, .75), zoomAutomationValueAxis(axis, .25, .75));
+        }
+    }
 });
 
 test("lane value zoom uses a vertical anchor beyond the wrapped lane edge", () => {
@@ -615,110 +626,92 @@ test("automation labels share the timeline ticks and sample subdivisions follow 
     assert.ok(automationTimelineTicks({ beginSeconds: 0, endSeconds: 2 }, width, rate).every((tick) => !tick.minor));
 });
 
-test("optional automation bounds map independently and keep authored values outside the visible range", () => {
-    for (const bounds of [{}, { min: -2 }, { max: 4 }, { min: -2, max: 4 }]) {
-        for (const value of [-5, 0, 7]) {
-            const fraction = valueScaleFraction(value, bounds);
-            assert.ok(Math.abs(automationValueAtFraction(fraction, bounds) - value) < 1e-10);
-            if (fraction >= 0 && fraction <= 1) assert.equal(fraction, knobFraction(value, bounds));
-        }
-    }
-    assert.equal(valueScaleFraction(1, { min: -2, max: 4 }), .5);
-    assert.ok(valueScaleFraction(7, { max: 4 }) > 1);
-});
-
-test("value panning shifts the center and keeps a one-sided bound anchored", () => {
-    for (const bounds of [{}, { min: -2 }, { max: 4 }]) {
-        const pan = panAutomationValueAxis(bounds, 25, 100);
-        const axis = { ...bounds, pan };
-        assert.ok(automationValueAtFraction(.5, axis) > automationValueAtFraction(.5, bounds));
+test("value panning shifts the center in either display mode", () => {
+    for (const display of ["curved", "cropped"] as const) {
+        const pan = panAutomationValueAxis({ display }, 25, 100);
+        const axis = { ...curvedAxes, display, pan };
+        assert.equal(automationValueAtFraction(.5, axis), pan);
+        assert.ok(pan > 0);
         for (const fraction of [.01, .25, .5, .9, .99]) {
             const value = automationValueAtFraction(fraction, axis);
             assert.ok(Math.abs(automationValueFraction(value, axis) - fraction) < 1e-10);
         }
-        if (bounds.min !== undefined) assert.equal(automationValueFraction(bounds.min, axis), 0);
-        if (bounds.max !== undefined) assert.equal(automationValueFraction(bounds.max, axis), 1);
         const position = { x: 25, y: 25 };
-        const point = curvePointAt({ ...axes, min: undefined, max: undefined, ...axis }, position, 48000);
+        const point = curvePointAt(axis, position, 48000);
         assert.ok(Math.abs(automationValueFraction(point.value, axis) - .75) < 1e-10);
     }
-    assert.equal(panAutomationValueAxis({ min: -1, max: 1 }, 25, 100), 0);
 });
 
-test("the curve uses clamped points while stored values survive until dragged", async () => {
+test("output bounds leave interpolation and point edits in the authored domain", async () => {
     const points = [{ ...construction.arguments[0][0], value: -2 }, { ...construction.arguments[0][1], value: 4 }];
-    const settings = { min: { value: 0, enabled: true }, max: { value: 1, enabled: true } };
-    const bounded = { ...construction, arguments: [points, settings] };
+    const bounded = { ...construction, arguments: [points] };
     const curve = readAutomationCurve(bounded)!;
     assert.deepEqual(automationWindow(curve, 1, 5).points.map(({ value }) => value), [-2, 4]);
-    assert.equal(automationWindow(curve, 3, 4).vertices[0].value, .5);
+    assert.equal(automationWindow(curve, 4, 4.5).vertices[0].value, 2.5);
 
     const sent: unknown[] = [];
     const h = harness(async (event) => { sent.push(serializeNodeEvent(event).payload); });
     h.edits.reconcile(scope(2, bounded));
     assert.equal(h.edits.begin(target, 1, 7, axes, { x: 10, y: 100 }), true);
+    h.edits.moveBy(7, { x: 10, y: 0 });
+    assert.equal(h.edits.activePoint()?.value, -2);
     await h.edits.finish();
-    assert.deepEqual(sent, []);
-    assert.equal(h.edits.view(target)?.points[0].value, -2);
-
-    assert.equal(h.edits.begin(target, 1, 8, axes, { x: 10, y: 100 }), true);
-    h.edits.moveBy(8, { x: 10, y: 0 });
-    assert.equal(h.edits.activePoint()?.value, 0);
-    h.runTimer();
-    assert.deepEqual(sent, [{ id: 1, seconds: 0, sample_index: "96000", value: 0 }]);
-    h.edits.moveBy(8, { x: 0, y: 300 });
-    assert.equal(h.edits.activePoint()?.value, 0);
-    h.edits.moveBy(8, { x: 0, y: -1 });
-    assert.ok(h.edits.activePoint()!.value > 0);
-    h.edits.moveBy(8, { x: 0, y: -300 });
-    assert.equal(h.edits.activePoint()?.value, 1);
-    await h.edits.finish();
-    assert.deepEqual(sent[1], { id: 1, seconds: 0, sample_index: "96000", value: 1 });
-    assert.deepEqual(h.edits.bounds(target), settings);
-    assert.equal(h.edits.begin(target, null, 7, { ...axes, max: 10 }, { x: 20, y: 10 }), true);
-    await h.edits.finish();
-    assert.deepEqual(sent[2], { insert: true, segments: [], ordered_ids: [],
-        point: { id: 3, seconds: 0, sample_index: "96000", value: 1, interpolation: "bezier", tension: 0, order: 0 } });
+    assert.deepEqual(sent, [{ id: 1, seconds: 0, sample_index: "96000", value: -2 }]);
 });
 
-test("moving past a disabled bound and re-enabling it preserves the opposite knob", async () => {
-    const min = { value: .75, enabled: false };
-    const initial = { min, max: { value: 1, enabled: true } };
-    const withBounds = (bounds: typeof initial) => ({ ...construction, arguments: [construction.arguments[0], bounds] });
-    const sent: unknown[] = [];
-    const h = harness(async (event) => { sent.push(serializeNodeEvent(event).payload); }, 5);
-    h.edits.reconcile(scope(3, withBounds(initial)));
-    assert.equal(h.edits.beginBound(target, "min", 7, { x: 0, y: 0 }, false), false);
-    assert.equal(h.edits.beginBound(target, "max", 7, { x: 0, y: 0 }, false), true);
-    h.edits.moveBy(7, { x: 0, y: 80 });
-    const moved = h.edits.bounds(target)!;
-    assert.ok(moved.max.value < min.value);
-    assert.deepEqual(moved.min, min);
-    assert.deepEqual(sent, []);
-    await h.edits.finish();
-    assert.deepEqual(sent, [{ side: "max", bound: moved.max }]);
-    h.edits.reconcile(scope(4, withBounds(initial)));
-    assert.deepEqual(h.edits.bounds(target), moved);
-    h.edits.reconcile(scope(5, withBounds(moved)));
-    await h.edits.setBound(target, "min", { ...min, enabled: true });
-    const clamped = { value: moved.max.value, enabled: true };
-    assert.deepEqual(sent[1], { side: "min", bound: clamped });
-    assert.equal(h.closed(), 2);
-    h.edits.reconcile(scope(6, withBounds({ ...moved, min: clamped })));
-    assert.deepEqual(h.edits.bounds(target), { min: clamped, max: moved.max });
-    assert.equal(h.edits.beginBound(target, "min", 8, { x: 0, y: 0 }, false), true);
-    h.edits.moveBy(8, { x: 0, y: -80 });
-    assert.equal(h.edits.activeBound()?.value, moved.max.value);
-    h.edits.moveBy(8, { x: 0, y: 1 });
-    assert.ok(h.edits.activeBound()!.value < moved.max.value);
-    h.edits.abandon();
-    assert.equal(sent.length, 2);
+test("an automation input respects an enabled opposite knob", () => {
+    const opposite = oppositeAutomationBound(construction.definitionId, "min");
+    assert.equal(opposite, "max");
+    assert.deepEqual(pairedAutomationBoundLimits(opposite, { enabled: false, value: .5 }), {});
+    assert.deepEqual(pairedAutomationBoundLimits(opposite, { enabled: true, value: .5 }), { max: .5 });
+    assert.deepEqual(pairedAutomationBoundLimits("min", { enabled: true, value: .5, liveValue: .25 }), { min: .25 });
+    assert.equal(oppositeAutomationBound("iv.other", "min"), undefined);
+});
+
+test("bound tracks keep unavailable samples and separate Coverage Regions out of the preview", () => {
+    const tracks = automationBoundTracks({ id: "max", status: "ready", approximate: true,
+        window: { begin: "-2", length: "8", points: 8 }, regions: [
+            { begin: "-2", length: "5", points: [
+                { index: "18446744073709551614", available: true, value: { value: 0 } },
+                { index: "-1", available: true, value: { value: 2 } },
+                { index: "0", available: false },
+                { index: "1", available: true, value: { value: 4 } },
+            ] },
+            { begin: "4", length: "2", points: [{ index: "4", available: true, value: { value: 8 } }] },
+        ] }, -2, 1);
+    const preview = sampleAutomationPreview([], [], tracks, {}, 8, 16);
+    assert.deepEqual(preview.max.map((run) => [run[0].seconds, run.at(-1)?.seconds]), [[0, 2], [3, 5], [6, 8]]);
+    assert.equal(preview.max[0].find(({ seconds }) => seconds === .5)?.value, 1);
+    assert.equal(preview.max[1][0].value, 4);
+    assert.equal(preview.max[2][0].value, 8);
+});
+
+test("the automation preview combines bounds with the authored curve before projection", () => {
+    const tracks = automationBoundTracks({ id: "min", status: "ready", approximate: true,
+        window: { begin: "0", length: "8", points: 8 }, regions: [
+            { begin: "1", length: "3", points: [
+                { index: "1", available: true, value: { value: 10 } },
+                { index: "3", available: true, value: { value: 14 } },
+            ] },
+            { begin: "2", length: "1", points: [{ index: "2", available: true, value: { value: 30 } }] },
+        ] }, 0, 1);
+    const paths = [{ begin: { seconds: 0, value: 0 }, end: { seconds: 6, value: 6 }, first: 2, second: 4 }];
+    const preview = sampleAutomationPreview(paths, tracks, [], { max: 4 }, 8, 16);
+    assert.equal(preview.min[0][0].value, 10);
+    assert.equal(preview.min[0].find(({ seconds }) => seconds === 1.5)?.value, 11);
+    assert.equal(preview.min[1][0].value, 30);
+    assert.deepEqual(preview.output.map((run) => [run[0].seconds, run.at(-1)?.seconds]),
+        [[0, 1], [1, 2], [2, 3], [3, 4], [4, 6]]);
+    assert.equal(preview.output[1].find(({ seconds }) => seconds === 1.5)?.value, 7.5);
+    assert.equal(preview.output[2][0].value, 17);
+    assert.equal(preview.output[4].at(-1)?.value, 4);
+    assert.equal(preview.authored.length, 1);
+    assert.equal(preview.authored[0].at(-1)?.value, 6);
 });
 
 test("unbounded drags continue beyond their visible guides and approach the edge", async () => {
     const h = harness();
-    const unbounded = { ...axes, min: undefined, max: undefined };
-    assert.equal(h.edits.begin(target, 1, 7, unbounded, { x: 10, y: 35 }), true);
+    assert.equal(h.edits.begin(target, 1, 7, curvedAxes, { x: 10, y: 35 }), true);
     h.edits.move(7, { x: 10, y: -65 });
     const upper = h.edits.activePoint()!;
     assert.ok(upper.value > 1);
@@ -737,13 +730,14 @@ test("unbounded drags continue beyond their visible guides and approach the edge
     assert.equal(h.closed(), 1);
 });
 
-test("creation at an unbounded edge maps to its nearest pixel centre", () => {
+test("creation at a curved edge maps to its nearest pixel center", () => {
     assert.equal(curvePointAt(axes, { x: 10, y: -20 }).value, 1);
-    assert.equal(curvePointAt({ ...axes, max: undefined }, { x: 10, y: 110 }).value, 0);
-    const oneSided = { ...axes, min: undefined };
-    const created = curvePointAt(oneSided, { x: 10, y: 110 }).value;
-    assert.ok(Number.isFinite(created));
-    assert.ok(Math.abs(knobFraction(created, oneSided) - .005) < 1e-12);
+    assert.equal(curvePointAt(axes, { x: 10, y: 110 }).value, 0);
+    for (const [y, fraction] of [[-20, .995], [110, .005]]) {
+        const { value } = curvePointAt(curvedAxes, { x: 10, y });
+        assert.ok(Number.isFinite(value));
+        assert.ok(Math.abs(automationValueFraction(value, curvedAxes) - fraction) < 1e-12);
+    }
 });
 
 test("a horizontal drag preserves a point value close to the edge of an unbounded scale", async () => {
@@ -751,7 +745,7 @@ test("a horizontal drag preserves a point value close to the edge of an unbounde
     const existing = structuredClone(construction);
     existing.arguments[0][0].value = 100;
     h.edits.reconcile(scope(2, existing));
-    assert.equal(h.edits.begin(target, 1, 7, { ...axes, min: undefined, max: undefined }, { x: 10, y: 0 }), true);
+    assert.equal(h.edits.begin(target, 1, 7, curvedAxes, { x: 10, y: 0 }), true);
     h.edits.move(7, { x: 11, y: 0 });
     assert.equal(h.edits.activePoint()!.value, 100);
     await h.edits.finish();
@@ -760,8 +754,7 @@ test("a horizontal drag preserves a point value close to the edge of an unbounde
 test("locked point drags use relative travel in both axes, even beyond the visible lane", async () => {
     const h = harness();
     const origin = { x: 10, y: 50 };
-    const unbounded = { ...axes, min: undefined, max: undefined };
-    assert.equal(h.edits.begin(target, 1, 7, unbounded, origin), true);
+    assert.equal(h.edits.begin(target, 1, 7, curvedAxes, origin), true);
     let locked = false;
     let finished: Promise<void> | undefined;
     const mouse = new KnobPointerLock<Point>({
@@ -816,11 +809,29 @@ test("locked tension drags use only horizontal travel and preserve it on release
     assert.equal(locked, false);
 });
 
-test("configured display bounds never clamp the value authored by a point drag", async () => {
+test("the tension knob scrubs vertically and changes sensitivity without jumping", async () => {
+    const sent: unknown[] = [];
+    const h = harness(async (event) => { sent.push(serializeNodeEvent(event).payload); });
+    assert.equal(h.edits.begin(target, 1, 7, axes, { x: 10, y: 50 }, "tensionKnob"), true);
+    h.edits.moveBy(7, { x: 50, y: 0 });
+    assert.equal(h.edits.activePoint()?.tension, 0);
+    h.edits.moveBy(7, { x: 0, y: -50 });
+    assert.equal(h.edits.activePoint()?.tension, .25);
+    assert.equal(h.edits.changeSensitivity(-120), true);
+    assert.equal(h.edits.activePoint()?.tension, .25);
+    h.edits.moveBy(7, { x: 0, y: -100 });
+    assert.equal(h.edits.activePoint()?.tension, 1);
+    h.edits.moveBy(7, { x: 0, y: 25 });
+    assert.equal(h.edits.activePoint()?.tension, .75);
+    await h.edits.finish();
+    assert.deepEqual(sent, [{ id: 1, interpolation: "bezier", tension: .75 }]);
+    assert.equal(h.closed(), 1);
+});
+
+test("point drags can move past the visible value window", async () => {
     const h = harness();
-    for (const bounds of [{ min: 0 }, { max: 1 }, { min: 0, max: 1 }]) {
-        const origin = { x: 10, y: 50 };
-        assert.equal(h.edits.begin(target, 1, 7, { ...axes, min: undefined, max: undefined, ...bounds }, origin), true);
+    for (const axis of [axes, curvedAxes]) {
+        assert.equal(h.edits.begin(target, 1, 7, axis, { x: 10, y: 50 }), true);
         h.edits.moveBy(7, { x: 0, y: -200 });
         assert.ok(h.edits.activePoint()!.value > 1);
         h.edits.moveBy(7, { x: 0, y: 400 });
@@ -866,8 +877,8 @@ test("value guides use the curve scale, prioritize -1, 0, and 1, and thin crowde
     assert.ok([-1, 0, 1].every((value) => guides.some((guide) => guide.value === value)));
     assert.ok(guides.every(({ value, y }) => Number.isInteger(value) && y === (1 - valueScaleFraction(value, {})) * 240));
     assert.ok(automationValueGuides({}, 30).length < guides.length);
-    const bounded = automationValueGuides({ min: 11, max: 17 }, 160);
-    assert.ok(bounded.length > 1 && bounded.every(({ value }) => value >= 11 && value <= 17));
+    const cropped = automationValueGuides({ display: "cropped", pan: 14, zoom: { factor: 1 / 3, center: .5 } }, 160);
+    assert.ok(cropped.length > 1 && cropped.every(({ value }) => value >= 11 && value <= 17));
 });
 
 test("the value ruler keeps adding finer powers of two where the scale has space", () => {
@@ -878,7 +889,8 @@ test("the value ruler keeps adding finer powers of two where the scale has space
     assert.ok([.25, .5, .75, 1.5].every((value) => values(600).includes(value)));
     const zoomedIn = values(1600);
     assert.ok([.125, .0625].every((value) => zoomedIn.includes(value)));
-    assert.ok(automationValueGuides({ min: 0, max: .125 }, 480).some(({ value }) => value === 1 / 128));
+    const cropped = { display: "cropped", pan: .0625, zoom: { factor: 16, center: .5 } } as const;
+    assert.ok(automationValueGuides(cropped, 480).some(({ value }) => value === 1 / 128));
     assert.ok(values(600, "half").includes(1.5));
     assert.ok(values(600, "half").every((value) => Number.isInteger(value * 2)));
     assert.deepEqual(values(600, "off"), []);
@@ -904,8 +916,8 @@ test("point drags snap to fractional values only when the ruler displays them", 
 test("point drags snap to visible integers and retain their detent travel when sensitivity changes", async () => {
     const sent: unknown[] = [];
     const h = harness(async (event) => { sent.push(serializeNodeEvent(event).payload); });
-    const bounded = { ...axes, min: -2, max: 2 };
-    assert.equal(h.edits.begin(target, 1, 7, bounded, { x: 10, y: 50 }), true);
+    const wideView = { ...axes, pan: 0, zoom: { factor: .5, center: .5 } };
+    assert.equal(h.edits.begin(target, 1, 7, wideView, { x: 10, y: 50 }), true);
     h.edits.moveBy(7, { x: 0, y: -20 });
     assert.equal(h.edits.activePoint()?.value, 1);
     assert.equal(h.edits.activeSnap(target)?.value, 1);

@@ -13,8 +13,5 @@ export const PlacePoint = defineNodeEvent<PlacePointPayload>({"nominalId":"c:$@N
 export type RemovePointPayload = { readonly "id": number };
 export const RemovePoint = defineNodeEvent<RemovePointPayload>({"nominalId":"c:$@N@iv@N@automation@S@RemovePoint","definitionFingerprint":"c1b7cfa2c11beeb0"}, {"fields":[{"name":"id","value":{"bitWidth":32,"kind":"unsignedInteger"}}],"kind":"aggregate"});
 
-export type SetBoundPayload = { readonly "side": "min" | "max"; readonly "bound": { readonly "value": number; readonly "enabled": boolean } };
-export const SetBound = defineNodeEvent<SetBoundPayload>({"nominalId":"c:$@N@iv@N@automation@S@SetBound","definitionFingerprint":"77f64ca4ec8576d4"}, {"fields":[{"name":"side","value":{"bitWidth":8,"enumerators":[{"name":"min","value":"0"},{"name":"max","value":"1"}],"kind":"enumeration","signed":false}},{"name":"bound","value":{"fields":[{"name":"value","value":{"bitWidth":32,"kind":"floatingPoint"}},{"name":"enabled","value":{"kind":"boolean"}}],"kind":"aggregate"}}],"kind":"aggregate"});
-
 export type SetSegmentPayload = { readonly "id": number; readonly "interpolation": "empty" | "hold" | "bezier"; readonly "tension": number };
 export const SetSegment = defineNodeEvent<SetSegmentPayload>({"nominalId":"c:$@N@iv@N@automation@S@SetSegment","definitionFingerprint":"e8fdd3f15690b14c"}, {"fields":[{"name":"id","value":{"bitWidth":32,"kind":"unsignedInteger"}},{"name":"interpolation","value":{"bitWidth":8,"enumerators":[{"name":"empty","value":"0"},{"name":"hold","value":"1"},{"name":"bezier","value":"2"}],"kind":"enumeration","signed":false}},{"name":"tension","value":{"bitWidth":32,"kind":"floatingPoint"}}],"kind":"aggregate"});

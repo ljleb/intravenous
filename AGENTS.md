@@ -22,6 +22,13 @@ In particular:
 - write implementation tests after the feature's actual shape is known, then refactor
   the working bottom-up implementation without changing its semantics.
 
+## Backward compatibility
+
+Backward compatibility is out of scope unless the owner explicitly requests it.
+Update in-repository callers, fixtures, and project files directly when an API
+or format changes. Skip migration code and compatibility shims. The application
+has no external users, and compatibility adds ongoing cost.
+
 ## Communication and repository terminology
 
 When describing source code, use the repository's existing identifiers and terms.

@@ -190,6 +190,12 @@ value. A later ordinary drag starts at ×1 again. Keyboard steps also use the
 declared speed rather than recalculating sensitivity from the current value.
 Keep the modifier and the Ctrl-click shortcut discoverable in status information.
 
+Sample Sequential and Coverage inputs can declare `enabled_by_default`.
+Sequential knobs start enabled by default. Coverage knobs start disabled by
+default. An instance's saved setting takes precedence. `default_value` sets
+the initial number and the double-click reset value. Double-click changes the
+number and preserves the enabled state.
+
 ### Folded inputs extend the existing lane header
 
 When the available lane-header height requires folding inputs, the **last
@@ -418,7 +424,7 @@ Point IDs stay stable when points move. The project stores the chosen order at e
   toggles those points and Shift adds them.
 - **Shift+click a point** deletes it.
 - **Right-click an existing point** opens the segment menu for its outgoing
-  curve type, tension, and **Delete point**.
+  curve type, tension knob, and **Delete point**.
 - **Right-press empty space** adds a point at the nearest sample and starts
   placing it immediately. Point hit testing takes precedence. The first point
   on a blank curve is empty. Shift keeps the new point's initial type and tension.
@@ -428,6 +434,9 @@ Point IDs stay stable when points move. The project stores the chosen order at e
   without entering a separate form. Display and edit the same `[0,1]` tension
   parameter used by the backend, keeping exact linear interpolation at `0` and
   the automatic clamped curve at `1`. Do not introduce manual Bézier handles.
+
+Use knobs for numerical settings like tension that change continuously during
+a drag, including in menus and popovers.
 
 When adding a point in a gap, connect it to the nearer edge by sample distance
 along the index circle. At equal distances, connect it to the following edge.
@@ -462,11 +471,10 @@ backend revisions; no direct mutation of DSP storage from Vue.
 
 ### Value display and panning (2026-11-18)
 
-The Scale panel selects Curved or Cropped display. Curved keeps the original
-mapping, including the arctangent where an end is unbounded. Cropped uses a
-linear window that clips values outside it. Enabled bounds limit the window's
-travel. A range narrower than the window fits in the lane. Display and panning
-affect only the lane view.
+The Scale panel selects Curved or Cropped display. Curved uses an arctangent
+scale. Cropped uses a linear window and clips values outside it. Pan and zoom
+apply to the lane view independently of the `min` and `max` inputs.
+[Previous navigation rules](./historical/automation_navigation_before_independent_value_axis_2026-11-18.md).
 
 **Alt+Shift+middle-button drag** across an automation lane changes its value
 zoom. Horizontal motion changes the scale around the value at the pointer's
@@ -477,9 +485,7 @@ editor that supports this gesture.
 **Alt+Shift+scroll** over the lane also zooms its value axis around
 the pointer's height. **Shift+middle-button double-click** resets both value
 pan and zoom.
-In Curved display, zoom-out widens the arctangent scale when at least one
-end is unbounded. A single finite bound stays at its lane edge. With two
-finite bounds, zoom-out stops when the full range fits.
+In Curved display, zoom-out widens the arctangent scale.
 The value anchor continues in the same direction when the pointer wraps.
 The status bar shows how many screens above or below the visible lane the
 anchor has moved.
@@ -489,24 +495,22 @@ brightest under the point and fades horizontally. Brighten the matching value
 label on the left. Clear both highlights when the point leaves the snap or the
 drag ends.
 
-When bounds are supplied by signals, show their observed value curves and use
-the minimum of the visible lower bound and the maximum of the visible upper
-bound to limit panning. This requires suitable node inputs and windowed
-observation of the values they receive. The current automation module stores
-its bounds in its construction arguments. Input window observation can read
-concrete and public Coverage inputs.
+When signals supply bounds, observe the public `min` and `max` inputs over
+the visible window. Draw the bound traces, the authored curve, and the clamped
+output preview on the same value axis. The preview uses representative bound
+samples. Playback uses the exact bounds at each output sample.
 
 ### Automation signal inputs and optional transforms
 
-_Future direction, recorded on 2026-11-18._
+`iv.builtin.automation.curve` exposes `min` and `max` as Sample Coverage
+inputs. The sampler interpolates the authored curve, then applies the highest
+lower bound and the lowest upper bound at each output sample. If the bounds
+cross, the sample equals their midpoint.
+[Previous point clamping](./historical/automation_point_clamping_before_output_bounds_2026-11-18.md).
 
-Expose `min`, `max`, `scale`, and `offset` as ordinary connectable inputs on
-`iv.builtin.automation.curve`. Apply the observed bounds to point events
-before interpolation so clamping preserves smooth segments. Apply scale and
-then offset to sampled values so other curves can modulate both. In the absence
-of a scale or offset contribution, use an identity transform. Preserve the
-curve's sparse intervals and decide how overlapping control Regions combine
-as part of the input design.
+_Deferred._ Expose `scale` and `offset` as connectable inputs. Apply scale
+and then offset to sampled values. In the absence of a contribution, use an
+identity transform. Preserve gaps in the curve.
 
 Allow an optional `NodeRef` constructor argument to supply a subgraph that
 transforms the curve's authored point events before sampling. A second optional
@@ -516,19 +520,9 @@ must preserve the original curve and make both sampled signals observable.
 The arguments must follow the
 [builder ownership rules](./configuration_expression_language_direction.md#implemented-decisions-and-remaining-dependency).
 
-_Implementation friction, 2026-11-18._ `build_structural_sample_routes` follows a
-public Coverage input to its incoming connections. When a leaf reads the public
-input and the input has no source, the planner can reject the graph. A curve
-with four optional inputs needs to compile with no connections or manual values.
-First allow structural routing to represent an uncovered public Coverage
-input. Then wire the four inputs without adding a synthetic source for each
-disconnected port. The bounds change must also preserve saved
-`AutomationCurve` values and respect the existing rules for editing points.
-
-_Implementation update, 2026-11-18._ An unconnected public Coverage input can
-now route as empty, including when an internal leaf consumes the port. The
-compiler retains the public route for window queries. Wiring the four
-automation inputs and migrating the saved bounds remain separate work.
+An unconnected public Coverage input routes as empty. The compiler retains
+the public route for window queries.
+[Previous constructor bounds and routing work](./historical/automation_constructor_bounds_before_coverage_inputs_2026-11-18.md).
 
 ### Automation clip ruler and sample-accurate editing
 
@@ -575,34 +569,23 @@ make the point marker larger.
 
 ### Explicit value bounds and lane zoom categories
 
-The Scale panel exposes separate **Minimum** and **Maximum** knobs for the
-bounds saved by `AutomationCurve`. Each knob has an enable button in the same
-position as the output knob's polarity button. Bound knobs have no connection
-ports. An enabled minimum limits the maximum knob from below. An enabled
-maximum limits the minimum knob from above. If a disabled bound's stored value
-crosses the enabled opposite side, enabling it moves that bound to the opposite
-side's value. The opposite bound keeps its value. The knobs preview locally
-while dragged and commit on release.
+The lane header shows the connectable `min` and `max` knobs. Each knob has an
+enable button. Both knobs start disabled. Their reset values are 0 and 1.
+An enabled minimum limits the maximum knob from below, and an
+enabled maximum limits the minimum knob from above. If enabling a knob would
+cross the opposite side, move the knob being enabled to the opposite value.
+The project stores the manual input values and their enabled states.
 
-The drawn curve uses the bounded values emitted by `PointSource`. With two
-distinct enabled bounds, map the value height linearly between them. With one
-or no enabled bounds, use the curved mapping from the one-sided or unbounded
-knob. If both bounds are equal, show the constant value with room around it.
-Shift and middle-drag pans the value scale when at most one bound is enabled.
-The same gesture pans the timeline horizontally. The cursor wraps within the
-visible lane content to the right of the lane header.
-With neither bound, shift the center of the arctangent scale. With one bound,
-keep that edge fixed and change the distance from it to the midpoint. The
-graph layout saves the lane's pan. Shift and a double middle click restores
-its default mapping.
-Changing bounds preserves existing authored `Sample` values. The first actual
-movement of a point drag brings the dragged point inside the enabled bounds,
-including a horizontal drag. Add new points inside the enabled bounds. Point
-edits never rescale the vertical axis to fit the points. Use the existing
-lane-level vertical zoom. Save bound settings in the project with the automation
-module so they survive presentation remount and project reload.
-[Earlier point drag behavior](./historical/automation_point_drag_before_bound_limits_2026-11-18.md)
-[Earlier display-only bounds](./historical/automation_display_only_bounds_2026-11-18.md)
+The Scale panel controls display and snapping.
+
+Shift and middle-drag pans the value scale and moves the timeline horizontally.
+The cursor wraps inside the visible lane content to the right of the header.
+Shift and a double middle click restores the default mapping.
+
+Bounds affect the output. Control points stay in the authored value domain
+during creation and dragging. Point edits do not rescale the axis to fit the
+points.
+[Previous point clamping](./historical/automation_point_clamping_before_output_bounds_2026-11-18.md).
 
 Honor the lane's existing **`nano`**, **`mini`**, and **`editable`** vertical
 zoom categories. Both `nano` and `mini` display the curve shape scaled to the
@@ -676,9 +659,9 @@ Acceptance checks must also cover stable nested-row knob coordinates with
 the header continuation open/closed, including a knob on the folding anchor;
 copying a raw value to the OS clipboard, pasting a value from another app,
 and observing the same live-graph activation and settled specialization as a
-completed drag; rejected clipboard content must not modify the graph. Test
-all four bound configurations for the automation value axis, scaled read-only
-curve paths in `nano` and `mini`, and editable points/handles in `editable`.
+completed drag; rejected clipboard content must not modify the graph. Test pan
+and zoom with either bound, both bounds, and neither bound. Test scaled read-only
+curve paths in `nano` and `mini`, and editable points and handles in `editable`.
 For the ruler-header snap input, test multi-source covers, the selected cover,
 timestamp projection from different event payload types, and unavailable
 window requests before claiming graph-authored snapping is complete.

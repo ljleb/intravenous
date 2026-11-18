@@ -1,7 +1,9 @@
 import type { ObservationInterest, ObservationUpdate } from "./observations";
 import { ManualControlInteractions, resolveManualControl } from "./manualControls";
 import { ControlCompilationProgress, type ControlCompileStatus } from "./controlCompilation";
-import type { NodeAddress } from "./graphScope";
+import { addressKey, type NodeAddress } from "./graphScope";
+import { oppositeAutomationBound, pairedAutomationBoundLimits } from "./automationBoundInputs";
+import { clampAutomationValue } from "./automationCurveGeometry";
 import { validateNodeEventTarget, type SerializedNodeEvent } from "./nodeEvents";
 import { NodeEventInteractions } from "./nodeEventInteractions";
 import type { PlaybackDrag, PlaybackSnapshot } from "./playback";
@@ -154,7 +156,11 @@ export class WorkspaceSession {
         const descriptor = resolveManualControl(scope, control);
         if (!descriptor?.available || descriptor.live) throw new Error("The manual input is unavailable");
         if (descriptor.enabled === enabled) return;
-        await rpc.setManualInputEnabled(control, descriptor.value, enabled, descriptor.participation, scope.sessionRevision);
+        const instance = scope.nodes.find((item) => addressKey(item.address) === addressKey(node));
+        const opposite = oppositeAutomationBound(instance?.construction?.definitionId ?? instance?.definitionId, inputName);
+        const limits = enabled && opposite ? pairedAutomationBoundLimits(opposite, resolveManualControl(scope, { node, inputName: opposite })) : {};
+        const value = clampAutomationValue(descriptor.value, limits);
+        await rpc.setManualInputEnabled(control, value, enabled, descriptor.participation, scope.sessionRevision);
     }
 
     async sendNodeEvent(target: NodeAddress, event: SerializedNodeEvent, interactionId?: string): Promise<number> {
@@ -820,13 +826,29 @@ export class WorkspaceSession {
             "--rpc-fd",
             "3",
         ];
-        const childEnv = {
+        const childEnv: NodeJS.ProcessEnv = {
             ...process.env,
             INTRAVENOUS_DIR: process.env.INTRAVENOUS_DIR || serverDir,
             IV_LOG_FILE: this.serverDiagnosticLogPath,
         };
 
         this.resetCapturedServerLogs();
+        if (process.platform === "linux" && (!childEnv.HOME || !childEnv.XDG_RUNTIME_DIR)) {
+            try {
+                const { uid, homedir } = os.userInfo();
+                childEnv.HOME ||= homedir;
+                if (!childEnv.XDG_RUNTIME_DIR) {
+                    const runtimeDir = `/run/user/${uid}`;
+                    const stat = fs.statSync(runtimeDir, { throwIfNoEntry: false });
+                    if (stat?.isDirectory() && stat.uid === uid) {
+                        childEnv.XDG_RUNTIME_DIR = runtimeDir;
+                        this.outputChannel.appendLine(`Intravenous server restored XDG_RUNTIME_DIR: ${runtimeDir}`);
+                    }
+                }
+            } catch (error) {
+                this.outputChannel.appendLine(`Intravenous server could not restore missing session settings: ${error}`);
+            }
+        }
         this.outputChannel.appendLine(`starting Intravenous server: ${binary}`);
         this.outputChannel.appendLine(`Intravenous server cwd: ${this.workspaceRoot()}`);
         this.outputChannel.appendLine(

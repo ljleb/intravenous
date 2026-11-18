@@ -63,15 +63,26 @@ TEST_F(GraphJitRuntimeFixture, SparseTockPointsComputeOnlyTheRequestedCurveWindo
     ASSERT_NE(point_demand, result->coverage.output_requirements.end());
     EXPECT_TRUE(point_demand->required.contains(index(0)));
     EXPECT_TRUE(point_demand->required.contains(index(36000LL * 88200)));
+    std::size_t bounded_sources = 0;
+    for (auto const& requirement : result->coverage.output_requirements) {
+        if (plan.ports[requirement.port].name != "bound") continue;
+        ++bounded_sources;
+        EXPECT_FALSE(requirement.required.contains(index(0)));
+        EXPECT_FALSE(requirement.required.contains(index(4)));
+        EXPECT_TRUE(requirement.required.contains(index(2)));
+        EXPECT_TRUE(requirement.required.contains(index(3)));
+        EXPECT_FALSE(requirement.required.contains(index(36000LL * 88200)));
+    }
+    EXPECT_EQ(bounded_sources, 2u);
     auto const handle = data.resolve_output(iv::persisted_output_id(plan, window_storage,
         graph.project_generation));
     auto pinned = reader.pin();
     auto const* region = pinned->find_sample_region(handle, index(2));
     ASSERT_NE(region, nullptr);
     EXPECT_EQ(region->range, range(2, 4));
-    // The event source limits the endpoints to .25 and .75 before interpolation.
+    // Interpolation produces .5 and .75. The upper input clips only the second sample.
     EXPECT_FLOAT_EQ(static_cast<float>(region->at(index(2), 0)), .5f);
-    EXPECT_FLOAT_EQ(static_cast<float>(region->at(index(3), 0)), .625f);
+    EXPECT_FLOAT_EQ(static_cast<float>(region->at(index(3), 0)), .6f);
 }
 
 TEST_F(GraphJitRuntimeFixture, TransformedCurvePointsDetermineCoverageBeforeSequentialManualFallback)
@@ -273,7 +284,7 @@ TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPoi
         (void)iv::details::take_built_graph(session.get());
     }
     session.reset();
-    ASSERT_EQ(handlers.size(), 6u);
+    ASSERT_EQ(handlers.size(), 5u);
     struct Capture {
         std::string definition;
         std::string arguments;
@@ -302,15 +313,13 @@ TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPoi
     };
     auto added = invoke("AddPoint", {{"point", {{"id", 4}, {"seconds", 1.0}, {"value", -2.0}, {"interpolation", "hold"}, {"tension", 1.0}}}});
     ASSERT_TRUE(added.is_array());
-    ASSERT_EQ(added.size(), 2u);
+    ASSERT_EQ(added.size(), 1u);
     ASSERT_EQ(added[0].size(), 4u);
-    EXPECT_EQ(added[1]["min"]["value"], .25);
-    EXPECT_EQ(added[1]["max"]["value"], .75);
     // The stored list is sorted; the handler appends without sorting.
     EXPECT_EQ(added[0][0]["id"], 1);
     EXPECT_EQ(added[0][2]["id"], 3);
     EXPECT_EQ(added[0][3]["id"], 4);
-    EXPECT_EQ(added[0][3]["value"], .25);
+    EXPECT_EQ(added[0][3]["value"], -2.0);
     EXPECT_EQ(added[0][3]["interpolation"], "hold");
     auto const exact = invoke("AddPoint", {{"point", {{"id", 4}, {"value", .25}, {"sample_index", "9007199254740993"}}}});
     EXPECT_EQ(exact[0][3]["sample_index"], "9007199254740993");
@@ -351,7 +360,7 @@ TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPoi
     EXPECT_THROW(invoke("SetSegment", {{"id", 2}, {"interpolation", "bezier"}, {"tension", 2.0}}), std::invalid_argument);
     auto removed = invoke("RemovePoint", {{"id", 2}});
     ASSERT_TRUE(removed.is_array());
-    ASSERT_EQ(removed.size(), 2u);
+    ASSERT_EQ(removed.size(), 1u);
     ASSERT_EQ(removed[0].size(), 2u);
     EXPECT_EQ(removed[0][0]["id"], 1);
     EXPECT_EQ(removed[0][1]["id"], 3);
@@ -361,32 +370,24 @@ TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPoi
     EXPECT_EQ(moved[0][1]["id"], 2);
     EXPECT_EQ(moved[0][1]["seconds"], 1.0);
     EXPECT_EQ(moved[0][0]["value"], 0);
-    EXPECT_EQ(moved[0][1]["value"], .75);
+    EXPECT_EQ(moved[0][1]["value"], 2.0);
     EXPECT_EQ(moved[0][1]["interpolation"], "bezier");
     EXPECT_EQ(moved[0][1]["tension"], 0);
     auto const exact_move = invoke("MovePoint", {{"id", 2}, {"sample_index", "-9007199254740993"}, {"value", .75}});
     EXPECT_EQ(exact_move[0][1]["sample_index"], "-9007199254740993");
-    auto bounded = invoke("SetBound", {{"side", "min"}, {"bound", {{"value", .9}, {"enabled", true}}}});
-    EXPECT_EQ(bounded[0][0]["value"], 0);
-    EXPECT_EQ(bounded[0][1]["value"], 1);
-    EXPECT_EQ(bounded[1]["min"]["value"], .75);
-    EXPECT_EQ(bounded[1]["max"]["value"], .75);
     EXPECT_THROW((void)iv::automation::SampleIndex("9223372036854775808"), std::invalid_argument);
     EXPECT_THROW(invoke("RemovePoint", {{"id", 99}}), std::invalid_argument);
 }
 
-TEST(AutomationCurveBounds, ReenablingTheMinimumKeepsTheMaximum)
+TEST(AutomationCurveBounds, CrossedSignalsCollapseAndUncoveredSidesStayOpen)
 {
-    using namespace iv::automation;
-    ValueBounds const settings{.min = {.value = .75f, .enabled = false}, .max = {.value = 1, .enabled = true}};
-    auto const lowered = settings.with_bound(BoundSide::max, {.value = .5f, .enabled = true});
-    EXPECT_EQ(lowered.min, settings.min);
-    EXPECT_EQ(lowered.max.value, .5f);
-
-    auto const reenabled = lowered.with_bound(BoundSide::min, {.value = lowered.min.value, .enabled = true});
-    EXPECT_EQ(reenabled.min.value, .5f);
-    EXPECT_TRUE(reenabled.min.enabled);
-    EXPECT_EQ(reenabled.max, lowered.max);
+    using iv::automation::clamp_output_value;
+    EXPECT_EQ(clamp_output_value(-2, 6, 2), 4);
+    EXPECT_EQ(clamp_output_value(8, 6, 2), 4);
+    EXPECT_EQ(clamp_output_value(-2, 6, 6), 6);
+    EXPECT_EQ(clamp_output_value(-2, 0, std::nullopt), 0);
+    EXPECT_EQ(clamp_output_value(-2, std::nullopt, 1), -2);
+    EXPECT_EQ(clamp_output_value(10, std::nullopt, std::nullopt), 10);
 }
 
 } // namespace iv::test::graph_jit_tests

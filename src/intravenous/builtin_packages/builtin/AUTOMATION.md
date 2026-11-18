@@ -80,23 +80,22 @@ attached as it moves in a gap. It joins another curve when it crosses that
 curve's edge. The old neighbor becomes the end of the first curve.
 [Previous placement gestures](../../../../docs/historical/automation_point_drag_before_time_detents_2026-11-18.md#previous-builtin-automation-guide).
 
-Open `Scale` to set the Minimum and Maximum knobs. The button beside each
-knob enables that bound. Each enabled bound limits the other knob. If you
-enable a bound after the opposite knob has passed it, the bound you just
-enabled moves to the opposite knob's value.
+Use the `min` and `max` inputs in the lane header to set or connect bounds.
+Both knobs start disabled and reset to 0 and 1, respectively. Double-click
+to reset the knob value. Use the enable button to change its enabled state.
+If enabling one knob would cross the other, it moves to the opposite value.
 
-The project saves the bounds with the automation curve. The point source
-applies the bounds to point events before interpolation. Each stored point
-keeps its original value when you change a bound. Dragging a point brings it
-inside the enabled bounds, even if you only move it in time. A new point
-starts inside the bounds. Two distinct enabled bounds give a linear scale.
-One enabled bound or no enabled bounds give the same curved scale as the
-knobs. Choose Value snapping in the same panel to set the point guides.
-Projects with older display-only bounds start with both audio bounds disabled.
+The sampler first interpolates the authored curve. It then clamps each
+output sample using the bounds at that sample. An uncovered side supplies
+no limit. If the bounds cross, the sample equals their midpoint.
+
+The Scale panel selects the display and snapping rules. The editor shows
+sampled bound traces and a preview of the clamped output. Point editing uses
+authored values.
 
 Point and tension drags each form one undo operation.
-Bound drags also form one undo operation. `AddPoint`, `RemovePoint`, `MovePoint`,
-`PlacePoint`, `SetSegment`, and `SetBound` replace the module's construction arguments.
+Manual input drags also form one undo operation. `AddPoint`, `RemovePoint`,
+`MovePoint`, `PlacePoint`, and `SetSegment` replace the module's construction arguments.
 `PlacePoint` updates the point, its neighboring segments, and the order of
 points at the same sample together.
 Project persistence and history retain their accepted values. All lane

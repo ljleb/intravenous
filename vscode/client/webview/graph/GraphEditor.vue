@@ -4,7 +4,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import type { GraphEditorHostMessage, GraphEditorState } from "../../src/graphEditorProtocol";
 import { addressKey, readLayout, type NodeAddress, type Point } from "../../src/graphScope";
 import type { CurveAxes, CurveDragKind } from "../../src/automationCurveEditing";
-import type { AutomationBoundSide } from "../../src/automationCurveGeometry";
 import { webviewApi } from "../host";
 import PresentationHost from "../presentation/PresentationHost.vue";
 import type { SemanticNode } from "../presentation/semanticNode";
@@ -150,7 +149,7 @@ function startAutomation(event: PointerEvent, target: NodeAddress, pointId: numb
     const element = surface.value;
     if (!element || event.button !== (pointId === null ? 2 : 0) || automationPointerId !== null || manualGestures.pointerControl()) return;
     const origin = { x: event.clientX, y: event.clientY };
-    if (!automation.edits.begin(target, pointId, event.pointerId, axes, origin, kind, event.shiftKey)) return;
+    if (!automation.edits.begin(target, pointId, event.pointerId, axes, origin, kind, event.shiftKey, event.ctrlKey)) return;
     const id = automation.edits.activePoint()!.id;
     const destination = visiblePointCenter ? () => visiblePointCenter(id) : undefined;
     const mouse = event.pointerType === "mouse";
@@ -167,14 +166,6 @@ function startAutomation(event: PointerEvent, target: NodeAddress, pointId: numb
     };
     suppressAutomationContextMenu = pointId === null;
     captureAutomationPointer(event, element, origin, mouse);
-}
-function startAutomationBound(event: PointerEvent, target: NodeAddress, side: AutomationBoundSide) {
-    const element = surface.value;
-    if (!element || event.button !== 0 || automationPointerId !== null || manualGestures.pointerControl()) return;
-    const origin = { x: event.clientX, y: event.clientY };
-    if (!automation.edits.beginBound(target, side, event.pointerId, origin, event.ctrlKey)) return;
-    (event.currentTarget as HTMLElement).focus({ preventScroll: true });
-    captureAutomationPointer(event, element, origin, event.pointerType === "mouse");
 }
 function captureAutomationPointer(event: PointerEvent, element: HTMLElement, origin: Point, mouse: boolean) {
     event.preventDefault(); event.stopPropagation();
@@ -208,10 +199,8 @@ function publishInteractionHint() {
     const manual = document.hasFocus() ? manualGestures.hint() : null;
     const adjustingKnob = manualGestures.pointerControl();
     const point = document.hasFocus() ? automation.edits.activePoint() : null;
-    const bound = document.hasFocus() ? automation.edits.activeBound() : null;
-    const sensitivity = point || bound ? automation.edits.sensitivityHint() : undefined;
-    const edit = point ? automationPointStatus(point) : bound
-        ? `${bound.side === "min" ? "Minimum" : "Maximum"} ${Number(bound.value.toPrecision(6))}` : null;
+    const sensitivity = point ? automation.edits.sensitivityHint() : undefined;
+    const edit = point ? automationPointStatus(point) : null;
     const drag = playback.dragPosition.value;
     const hint: StatusHint | null = (manual && (adjustingKnob || manualGestures.numericEntry())
         ? { ...manual, text: manual.text + (adjustingKnob && pointerLockError ? ` · Pointer lock unavailable. ${pointerLockError}` : "") } : null)
@@ -460,7 +449,7 @@ provideGraphEditor({ layout, save, beginPointerLockExit, takeMiddleCursorTrace, 
     setTimelineZoomHint: (hint) => { timelineZoomHint.value = hint; },
     copyNodeDebugDetails: (address) => webviewApi.postMessage({ type: "copyNodeDebugDetails", nodeKey: addressKey(address) }),
     scope: computed(() => state.value.scope), shiftHeld: computed(() => hoverShift.value.held),
-    connectionDrag, hoveredPortGroup, startConnection, cancelConnection, startAutomation, startAutomationBound,
+    connectionDrag, hoveredPortGroup, startConnection, cancelConnection, startAutomation,
     selectedLanes, selectLane: (address, modifiers) => {
         selectedLanes.value = updateSelection(selectedLanes.value, [addressKey(address)], modifiers);
     }, portsChanged: scheduleWireUpdate,

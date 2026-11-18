@@ -1,5 +1,5 @@
 import { addressKey, type GraphScope, type GraphScopeNode, type NodeAddress, type Point as ScreenPoint } from "./graphScope";
-import { MovePoint, PlacePoint, RemovePoint, SetBound, SetSegment, type SetSegmentPayload } from "./generated/automationEvents";
+import { MovePoint, PlacePoint, RemovePoint, SetSegment, type SetSegmentPayload } from "./generated/automationEvents";
 import type { NodeEvent } from "./nodeEvents";
 import type { NodeEventGesture } from "./nodeEventMessaging";
 import { ScrubSensitivity } from "./scrubSensitivity";
@@ -8,15 +8,16 @@ import { automationTimeDrag, initialGapAttachment, placeAutomationPoint, pointIn
 import { updateSelection } from "./selection";
 import { knobScrubSpeed } from "./knobPresentation";
 
-import { automationBoundLimits, automationCycleSeconds, automationSampleIndex, automationUnitsPerPixel, automationValueAtFraction,
-    automationValueGuides, clampAutomationValue, compareAutomationPoints, defaultAutomationBounds, enabledAutomationBounds,
-    type AutomationValueBounds, type AutomationValueAxis, type AutomationValueRuler, type AutomationCurve, type AutomationPoint, type AutomationPointPosition,
-    type AutomationBound, type AutomationBoundSettings, type AutomationBoundSide, type CurveInterpolation } from "./automationCurveGeometry";
+import { automationCycleSeconds, automationSampleIndex, automationUnitsPerPixel, automationValueAtFraction,
+    automationValueGuides, clampAutomationValue, compareAutomationPoints,
+    type AutomationValueAxis, type AutomationValueRuler, type AutomationCurve, type AutomationPoint, type AutomationPointPosition,
+    type CurveInterpolation } from "./automationCurveGeometry";
 export { automationCycleSeconds, automationWindow } from "./automationCurveGeometry";
 export type { AutomationCurve, AutomationPoint, CurveInterpolation } from "./automationCurveGeometry";
 export type CurveAxes = { left: number; top: number; width: number; height: number;
     begin: number; end: number; spanSeconds?: number; ruler?: AutomationValueRuler } & AutomationValueAxis;
-export type CurveDragKind = "point" | "tension";
+export type CurveDragKind = "point" | "tension" | "tensionKnob";
+export const automationTensionLimits = { min: 0, max: 1, defaultValue: 1 } as const;
 type Transport = { send(target: NodeAddress, event: NodeEvent): Promise<void>; gesture(target: NodeAddress): NodeEventGesture };
 type Timers = { set(callback: () => void): unknown; clear(handle: unknown): void };
 type TimeLimits = { min?: bigint; max?: bigint };
@@ -28,38 +29,18 @@ type PointDrag = {
     segments: ReadonlyMap<number, SetSegmentPayload>; sentSegments: ReadonlyMap<number, SetSegmentPayload>;
     baseSegments: ReadonlyMap<number, SetSegmentPayload>; touched: Set<number>;
 };
-type Drag = { key: string; target: NodeAddress; pointerId: number; axes: CurveAxes; valueBounds: AutomationValueBounds; desired: AutomationPoint;
-    companions: readonly AutomationPointPosition[]; authoredBounds: AutomationValueBounds; anchorValue: number;
+type Drag = { key: string; target: NodeAddress; pointerId: number; axes: CurveAxes; desired: AutomationPoint;
+    companions: readonly AutomationPointPosition[];
     kind: CurveDragKind; initial: AutomationPoint; grab?: ScreenPoint; sampleRate?: number;
     lastPosition?: ScreenPoint; sensitivity?: ScrubSensitivity;
     detents: readonly number[]; plateau: number; anchorPlateau: number; snappedValue?: number;
     pointDrag?: PointDrag;
     sent: AutomationPoint | null; gesture: NodeEventGesture; timer?: unknown; pending?: Promise<void>;
     finishing?: Promise<void> };
-type BoundDrag = { key: string; target: NodeAddress; pointerId: number; side: AutomationBoundSide; settings: AutomationBoundSettings;
-    limits: AutomationValueBounds; sensitivity: ScrubSensitivity; position: ScreenPoint; value: number;
-    plateau: number; anchorPlateau: number };
-
-function readBoundSettings(value: unknown): AutomationBoundSettings | null {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    const settings = value as Partial<Record<AutomationBoundSide, Partial<AutomationBound>>>;
-    const read = (side: AutomationBoundSide) => {
-        const bound = settings[side];
-        if (bound !== undefined && (!bound || typeof bound !== "object" || Array.isArray(bound))) return null;
-        const { value, enabled } = bound === undefined ? defaultAutomationBounds[side] : { value: 0, enabled: false, ...bound };
-        return typeof value === "number" && Number.isFinite(Math.fround(value)) && typeof enabled === "boolean"
-            ? { value: Math.fround(value), enabled } : null;
-    };
-    const min = read("min"), max = read("max");
-    return min && max && !(min.enabled && max.enabled && min.value > max.value) ? { min, max } : null;
-}
-
 export function readAutomationCurve(value: GraphScopeNode["construction"], sampleRate?: number | null): AutomationCurve | null {
-    if (value?.definitionId !== "iv.builtin.automation.curve" || value.arguments.length < 1 || value.arguments.length > 2) return null;
-    const [points, configuration] = value.arguments;
+    if (value?.definitionId !== "iv.builtin.automation.curve" || value.arguments.length !== 1) return null;
+    const [points] = value.arguments;
     if (!Array.isArray(points)) return null;
-    const bounds = value.arguments.length === 2 ? readBoundSettings(configuration) : undefined;
-    if (bounds === null) return null;
     const ids = new Set<number>();
     const rate = sampleRate && Number.isSafeInteger(sampleRate) && sampleRate > 0 ? sampleRate : undefined;
     const result: AutomationPoint[] = [];
@@ -81,17 +62,15 @@ export function readAutomationCurve(value: GraphScopeNode["construction"], sampl
             ...(order !== undefined ? { order } : {}) });
     }
     result.sort(compareAutomationPoints);
-    return { points: result, cycleSeconds: automationCycleSeconds(rate), sampleRate: rate, ...(bounds ? { bounds } : {}) };
+    return { points: result, cycleSeconds: automationCycleSeconds(rate), sampleRate: rate };
 }
 
 export function curvePointAt(axes: CurveAxes, position: ScreenPoint, sampleRate?: number) {
     const offset = (position.x - axes.left) / axes.width * (axes.spanSeconds ?? axes.end - axes.begin);
-    // Creation needs an absolute value. At an unbounded edge use the nearest
-    // pixel centre, since the mathematical edge has no finite inverse.
-    const halfPixel = Math.min(.5, .5 / axes.height);
-    const lower = axes.min === undefined ? halfPixel : 0;
-    const upper = axes.max === undefined ? 1 - halfPixel : 1;
-    const fraction = Math.max(lower, Math.min(upper, 1 - (position.y - axes.top) / axes.height));
+    // At the edge of the curved view, use the nearest pixel center so that
+    // the inverse arctangent scale stays finite.
+    const inset = axes.display === "cropped" ? 0 : Math.min(.5, .5 / axes.height);
+    const fraction = Math.max(inset, Math.min(1 - inset, 1 - (position.y - axes.top) / axes.height));
     return { seconds: axes.begin + offset, sampleIndex: sampleRate ? automationSampleIndex(axes.begin, sampleRate, offset) : undefined,
         value: automationValueAtFraction(fraction, axes) };
 }
@@ -155,8 +134,6 @@ export class AutomationCurveEditing {
     private readonly ending = new Map<string, Map<number, { point: AutomationPointPosition; revision: number; axes: CurveAxes }>>();
     private readRevision = 0;
     private active: Drag | null = null;
-    private boundDrag: BoundDrag | null = null;
-    private readonly pendingBounds = new Map<string, { settings: AutomationBoundSettings; revision?: number }>();
     private readonly selection = new Map<string, ReadonlySet<number>>();
     constructor(private readonly transport: Transport, private readonly changed: () => void,
         private readonly timers: Timers = { set: (callback) => setTimeout(callback, 80), clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>) }) {}
@@ -178,10 +155,6 @@ export class AutomationCurveEditing {
             if (!entries.size) this.ending.delete(key);
         }
         for (const key of this.errors.keys()) if (!next.has(key)) this.errors.delete(key);
-        for (const [key, pending] of this.pendingBounds) {
-            if (!next.has(key) || (pending.revision !== undefined && this.readRevision >= pending.revision)) this.pendingBounds.delete(key);
-        }
-        if (this.boundDrag && !next.has(this.boundDrag.key)) this.boundDrag = null;
         for (const [key, ids] of this.selection) {
             const kept = new Set(next.get(key)?.points.filter((point) => ids.has(point.id)).map((point) => point.id));
             if (kept.size) this.selection.set(key, kept);
@@ -198,17 +171,6 @@ export class AutomationCurveEditing {
     }
     view(target: NodeAddress): AutomationCurve | null {
         return this.curves.get(addressKey(target)) ?? null;
-    }
-    bounds(target: NodeAddress): AutomationBoundSettings | undefined {
-        const key = addressKey(target);
-        const drag = this.boundDrag;
-        if (drag?.key === key)
-            return { ...drag.settings, [drag.side]: { enabled: true, value: drag.value } };
-        return this.pendingBounds.get(key)?.settings ?? this.curves.get(key)?.bounds;
-    }
-    boundsPending(target: NodeAddress): boolean { return this.pendingBounds.has(addressKey(target)); }
-    activeBound(): { side: AutomationBoundSide; value: number } | null {
-        return this.boundDrag ? { side: this.boundDrag.side, value: this.boundDrag.value } : null;
     }
     drafts(target: NodeAddress): AutomationPointPosition[] {
         const key = addressKey(target);
@@ -233,7 +195,7 @@ export class AutomationCurveEditing {
         return this.active?.key === key ? this.active.axes : this.ending.get(key)?.values().next().value?.axes ?? null;
     }
     pointerId(): number | null {
-        return this.boundDrag?.pointerId ?? (this.active?.finishing ? null : this.active?.pointerId ?? null);
+        return this.active?.finishing ? null : this.active?.pointerId ?? null;
     }
     activePoint(): AutomationPointPosition | null {
         return this.active?.finishing ? null : this.active?.desired ?? null;
@@ -244,29 +206,21 @@ export class AutomationCurveEditing {
             ? { point: drag.desired, value: drag.snappedValue } : null;
     }
     sensitivityHint(): string | undefined {
-        if (this.boundDrag) return this.boundDrag.sensitivity.hint();
         return this.active?.finishing ? undefined : this.active?.sensitivity?.hint();
     }
     changeSensitivity(delta: number): boolean {
-        const bound = this.boundDrag;
-        if (bound) {
-            if (bound.sensitivity.change(delta, -bound.position.y, bound.value)) {
-                bound.anchorPlateau = bound.plateau;
-                this.changed();
-            }
-            return true;
-        }
         const drag = this.active;
         if (!drag?.sensitivity || !drag.lastPosition || drag.finishing) return false;
-        if (drag.sensitivity.change(delta, -drag.lastPosition.y, clampAutomationValue(drag.desired.value, drag.valueBounds))) {
+        const value = drag.kind === "tensionKnob" ? drag.desired.tension : drag.desired.value;
+        if (drag.sensitivity.change(delta, -drag.lastPosition.y, value)) {
             drag.anchorPlateau = drag.plateau;
             this.changed();
         }
         return true;
     }
     begin(target: NodeAddress, id: number | null, pointerId: number, axes: CurveAxes, position?: ScreenPoint,
-        kind: CurveDragKind = "point", shift = false): boolean {
-        if (this.active || this.boundDrag || this.boundsPending(target) || axes.width <= 0 || axes.height <= 0) return false;
+        kind: CurveDragKind = "point", shift = false, precise = false): boolean {
+        if (this.active || axes.width <= 0 || axes.height <= 0) return false;
         const key = addressKey(target);
         const curve = this.curves.get(key);
         if (!curve || (kind === "point" && !curve.sampleRate)) return false;
@@ -282,32 +236,24 @@ export class AutomationCurveEditing {
         }
         const points = [...visiblePoints.values()].sort(compareAutomationPoints);
         const adding = id === null;
-        const authoredBounds = enabledAutomationBounds(curve.bounds);
         let visible = id === null ? undefined : visiblePoints.get(id);
         if (adding && kind === "point" && position) {
             const at = curvePointAt(axes, position, curve.sampleRate);
-            const value = Math.fround(clampAutomationValue(at.value, authoredBounds));
+            const value = Math.fround(at.value);
             if (at.sampleIndex === undefined || !Number.isFinite(value)) return false;
             visible = { ...at, id: nextPointId(points), sampleIndex: BigInt.asIntN(64, at.sampleIndex),
                 value, interpolation: "empty", tension: 1 };
         }
         if (!visible || (kind === "point" && visible.sampleIndex === undefined)
-            || (kind === "tension" && (visible.interpolation !== "bezier" || !position))) return false;
+            || (kind !== "point" && (visible.interpolation !== "bezier" || !position))) return false;
         const initial = visible;
         this.errors.delete(key);
-        const anchorValue = clampAutomationValue(initial.value, authoredBounds);
         const selected = this.selectedPoints(target);
         const companions = !adding && kind === "point" && selected.size > 1 && selected.has(initial.id)
             ? points.filter((entry) => entry.id !== initial.id && selected.has(entry.id)).map((entry) =>
                 pending?.get(entry.id)?.point ?? entry) : [];
-        const valueBounds = { ...authoredBounds };
-        for (const companion of companions) {
-            const offset = clampAutomationValue(companion.value, authoredBounds) - anchorValue;
-            if (authoredBounds.min !== undefined) valueBounds.min = Math.max(valueBounds.min!, authoredBounds.min - offset);
-            if (authoredBounds.max !== undefined) valueBounds.max = Math.min(valueBounds.max!, authoredBounds.max - offset);
-        }
         const detents = kind === "point" && position ? automationValueGuides(axes, axes.height, axes.ruler)
-            .map(({ value }) => value).filter((value) => value > (valueBounds.min ?? -Infinity) && value < (valueBounds.max ?? Infinity)) : [];
+            .map(({ value }) => value) : [];
         const neighbors = kind === "point" ? points.filter((point) => point.id !== initial.id) : [];
         const initialSlot = pointInsertionIndex(neighbors, initial);
         const gapAttachment = adding ? "nearest" : initialGapAttachment(neighbors, initial, initialSlot);
@@ -324,12 +270,14 @@ export class AutomationCurveEditing {
             segments: placed?.segments ?? new Map(), sentSegments: new Map(), baseSegments: placed?.segments ?? new Map(),
             touched: new Set(placed?.segments.keys()),
         } : undefined;
+        const sensitivity = !position ? undefined : kind === "point"
+            ? new ScrubSensitivity(automationUnitsPerPixel(axes, axes.height), -position.y, initial.value)
+            : kind === "tensionKnob"
+                ? new ScrubSensitivity(knobScrubSpeed(automationTensionLimits), -position.y, initial.tension, precise) : undefined;
         const drag: Drag = { key, target: structuredClone(target), pointerId, axes: { ...axes }, desired, initial,
-            kind, valueBounds, authoredBounds, anchorValue, companions, sampleRate: curve.sampleRate, grab: position ? { ...position } : undefined,
+            kind, companions, sampleRate: curve.sampleRate, grab: position ? { ...position } : undefined,
             lastPosition: position ? { ...position } : undefined,
-            sensitivity: kind === "point" && position
-                ? new ScrubSensitivity(automationUnitsPerPixel(axes, axes.height), -position.y, clampAutomationValue(initial.value, valueBounds)) : undefined,
-            detents, pointDrag,
+            sensitivity, detents, pointDrag,
             plateau: 0, anchorPlateau: 0,
             sent: adding ? null : initial, gesture: this.transport.gesture(target) };
         this.active = drag;
@@ -348,36 +296,23 @@ export class AutomationCurveEditing {
         this.applyPlacement(drag, drag.desired, point.time);
         this.scheduleDrag(drag);
     }
-    beginBound(target: NodeAddress, side: AutomationBoundSide, pointerId: number, position: ScreenPoint, precise: boolean): boolean {
-        const key = addressKey(target);
-        const settings = this.curves.get(key)?.bounds ?? defaultAutomationBounds;
-        if (this.active || this.boundDrag || this.pendingBounds.has(key) || !settings[side].enabled) return false;
-        const limits = automationBoundLimits(settings, side);
-        const value = settings[side].value;
-        const speed = knobScrubSpeed({ ...limits, defaultValue: defaultAutomationBounds[side].value });
-        this.errors.delete(key);
-        this.boundDrag = { key, target: structuredClone(target), pointerId, side, settings, limits, position: { ...position }, value,
-            sensitivity: new ScrubSensitivity(speed, -position.y, value, precise), plateau: 0, anchorPlateau: 0 };
-        this.changed();
-        return true;
-    }
     moveBy(pointerId: number, delta: ScreenPoint): void {
-        const position = this.boundDrag?.position ?? this.active?.lastPosition;
+        const position = this.active?.lastPosition;
         if (position) this.move(pointerId, { x: position.x + delta.x, y: position.y + delta.y });
     }
     move(pointerId: number, position: ScreenPoint): void {
-        if (this.boundDrag) {
-            if (this.boundDrag.pointerId === pointerId) this.moveBound(this.boundDrag, position);
-            return;
-        }
         const drag = this.active;
         if (!drag || drag.finishing || drag.pointerId !== pointerId) return;
         const previous = drag.lastPosition;
         if (previous?.x === position.x && previous.y === position.y) return;
         drag.lastPosition = { ...position };
         const { initial, grab, axes, sampleRate } = drag;
-        if (drag.kind === "tension") {
-            const tension = Math.fround(Math.min(1, Math.max(0, initial.tension! + (position.x - grab!.x) / 100)));
+        if (drag.kind !== "point") {
+            const { sensitivity } = drag;
+            const raw = sensitivity ? sensitivity.valueAt(-position.y) : initial.tension + (position.x - grab!.x) / 100;
+            const clamped = clampAutomationValue(raw, automationTensionLimits);
+            if (clamped !== raw) sensitivity?.anchorAt(-position.y, clamped);
+            const tension = Math.fround(clamped);
             if (tension === drag.desired.tension) return;
             drag.desired = { ...initial, tension };
         } else {
@@ -403,24 +338,19 @@ export class AutomationCurveEditing {
                     }
                 }
                 const vertical = -position.y;
-                const { sensitivity, valueBounds } = drag;
+                const { sensitivity } = drag;
                 if (position.y === previous?.y) {
-                    value = clampAutomationValue(drag.desired.value, valueBounds);
+                    value = drag.desired.value;
                 } else {
                     const snapped = sensitivity.valueAtDetents(vertical, drag.detents, drag.anchorPlateau);
-                    value = clampAutomationValue(snapped.value, valueBounds);
+                    value = snapped.value;
                     drag.plateau = snapped.plateau;
-                    drag.snappedValue = snapped.value === value ? snapped.snappedValue : undefined;
-                    if (snapped.value !== value) {
-                        // Discard travel beyond the limit so reversing responds immediately.
-                        sensitivity.anchorAt(vertical, value);
-                        drag.plateau = drag.anchorPlateau = 0;
-                    }
+                    drag.snappedValue = snapped.snappedValue;
                 }
             } else {
                 const next = curvePointAt(axes, position, sampleRate);
                 index = next.sampleIndex;
-                value = clampAutomationValue(next.value, drag.valueBounds);
+                value = next.value;
             }
             if (index === undefined) return;
             if (drag.companions.length) {
@@ -476,60 +406,14 @@ export class AutomationCurveEditing {
         });
         this.changed();
     }
-    private moveBound(drag: BoundDrag, position: ScreenPoint): void {
-        drag.position = { ...position };
-        const vertical = -position.y;
-        const { sensitivity, limits } = drag;
-        const defaultValue = defaultAutomationBounds[drag.side].value;
-        let raw = sensitivity.valueAt(vertical);
-        if (clampAutomationValue(defaultValue, limits) === defaultValue) {
-            const snapped = sensitivity.valueAtDetent(defaultValue, vertical - sensitivity.anchorPosition, drag.anchorPlateau);
-            raw = snapped.value;
-            drag.plateau = snapped.plateau;
-        }
-        const clamped = clampAutomationValue(raw, limits);
-        const value = Math.fround(clamped);
-        if (!Number.isFinite(value)) return;
-        if (raw !== clamped) {
-            sensitivity.anchorAt(vertical, value);
-            drag.anchorPlateau = drag.plateau;
-        }
-        if (value !== drag.value) { drag.value = value; this.changed(); }
-    }
-    async setBound(target: NodeAddress, side: AutomationBoundSide, bound: AutomationBound): Promise<void> {
-        const key = addressKey(target);
-        const curve = this.curves.get(key);
-        if (!curve || this.active || this.boundDrag || this.pendingBounds.has(key)) return;
-        const settings = curve.bounds ?? defaultAutomationBounds;
-        const value = Math.fround(bound.enabled ? clampAutomationValue(bound.value, automationBoundLimits(settings, side)) : bound.value);
-        if (!Number.isFinite(value) || (value === settings[side].value && bound.enabled === settings[side].enabled)) return;
-        const edited = { enabled: bound.enabled, value };
-        const pending: { settings: AutomationBoundSettings; revision?: number } = { settings: { ...settings, [side]: edited } };
-        const gesture = this.transport.gesture(target);
-        this.pendingBounds.set(key, pending);
-        this.errors.delete(key);
-        this.changed();
-        try {
-            try { await gesture.send(SetBound({ side, bound: edited })); }
-            finally { await gesture.finish(); }
-            pending.revision = gesture.acceptedRevision?.();
-        } catch (error) {
-            if (this.pendingBounds.get(key) === pending) this.errors.set(key, error instanceof Error ? error.message : String(error));
-        } finally {
-            if (this.pendingBounds.get(key) === pending && (pending.revision === undefined || this.readRevision >= pending.revision))
-                this.pendingBounds.delete(key);
-            this.changed();
-        }
-    }
     private movedPoints(drag: Drag, anchor: AutomationPointPosition): AutomationPointPosition[] {
         if (!drag.companions.length) return [anchor];
         const timeDelta = anchor.sampleIndex! - drag.initial.sampleIndex!;
-        const valueDelta = anchor.value - drag.anchorValue;
+        const valueDelta = anchor.value - drag.initial.value;
         return [anchor, ...drag.companions.map((point) => {
             if (anchor === drag.initial) return point;
             const sampleIndex = BigInt.asIntN(64, point.sampleIndex! + timeDelta);
-            const initial = clampAutomationValue(point.value, drag.authoredBounds);
-            const value = Math.fround(clampAutomationValue(initial + valueDelta, drag.authoredBounds));
+            const value = Math.fround(point.value + valueDelta);
             return { ...point, sampleIndex, seconds: Number(sampleIndex) / drag.sampleRate!, value };
         })];
     }
@@ -560,7 +444,7 @@ export class AutomationCurveEditing {
                 const orderChanged = sent?.order !== point.order || (edit && !sameOrder(edit.sentOrder, orderedIds));
                 if (sent?.sampleIndex === point.sampleIndex && sent?.value === point.value
                     && !styleChanged && !orderChanged && !segments.length) break;
-                if (drag.kind === "tension") {
+                if (drag.kind !== "point") {
                     await drag.gesture.send(SetSegment(segmentEdit(point)));
                 } else if (edit && (edit.adding || styleChanged || orderChanged || segments.length
                     || (orderedIds?.length && sent?.sampleIndex !== point.sampleIndex))) {
@@ -590,13 +474,6 @@ export class AutomationCurveEditing {
         return drag.pending;
     }
     finish(deleteClick = false): Promise<void> {
-        const bound = this.boundDrag;
-        if (bound) {
-            this.boundDrag = null;
-            const saved = this.setBound(bound.target, bound.side, { enabled: true, value: bound.value });
-            this.changed();
-            return saved;
-        }
         const drag = this.active;
         if (!drag) return Promise.resolve();
         if (drag.finishing) return drag.finishing;
@@ -620,11 +497,6 @@ export class AutomationCurveEditing {
         this.changed(); return drag.finishing;
     }
     abandon(): void {
-        if (this.boundDrag) {
-            this.boundDrag = null;
-            this.changed();
-            return;
-        }
         const drag = this.active;
         if (!drag) return;
         this.active = null;
@@ -636,7 +508,6 @@ export class AutomationCurveEditing {
     }
     disconnected(): void {
         if (this.active?.timer !== undefined) this.timers.clear(this.active.timer);
-        this.boundDrag = null; this.pendingBounds.clear();
         this.active = null; this.selection.clear(); this.curves.clear(); this.errors.clear(); this.ending.clear(); this.readRevision = 0; this.changed();
     }
     async segment(target: NodeAddress, id: number, interpolation: CurveInterpolation, tension: number): Promise<void> {

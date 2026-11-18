@@ -216,6 +216,7 @@ struct SampleContinuousValueExtension {
         // Presentation hint: logical units per vertical pointer pixel at 1x.
         // Absent means a stable speed derived from declared bounds/default.
         std::optional<Sample> scrub_speed {};
+        bool enabled_by_default = true;
 
         constexpr bool operator==(BoundaryInputOptions const&) const = default;
     };
@@ -229,6 +230,7 @@ struct SampleContinuousValueExtension {
         Sample neutral_value = 0.0f;
         combine_values_type combine_values = &add;
         std::optional<Sample> scrub_speed {};
+        bool enabled_by_default = true;
 
         constexpr bool operator==(SequentialInputOptions const&) const = default;
     };
@@ -243,6 +245,7 @@ struct SampleContinuousValueExtension {
             .min = options.min,
             .max = options.max,
             .scrub_speed = options.scrub_speed,
+            .enabled_by_default = options.enabled_by_default,
         };
     }
 
@@ -252,6 +255,7 @@ struct SampleContinuousValueExtension {
         Sample max = std::numeric_limits<Sample::storage>::infinity();
         Sample neutral_value = 0.0f;
         std::optional<Sample> scrub_speed {};
+        bool enabled_by_default = true;
 
         constexpr bool operator==(SequentialInputMetadata const&) const = default;
 
@@ -262,8 +266,7 @@ struct SampleContinuousValueExtension {
             writer.pod(min.value);
             writer.pod(max.value);
             writer.pod(neutral_value.value);
-            // Reserved byte. Earlier archives stored the port's fallback policy here.
-            writer.pod(std::uint8_t{0});
+            writer.pod(enabled_by_default);
             writer.pod(scrub_speed.has_value());
             if (scrub_speed) writer.pod(scrub_speed->value);
         }
@@ -280,7 +283,7 @@ struct SampleContinuousValueExtension {
                 .neutral_value = Sample{
                     reader.template pod<Sample::storage>()},
             };
-            (void)reader.template pod<std::uint8_t>();
+            result.enabled_by_default = reader.template pod<bool>();
             if (reader.template pod<bool>())
                 result.scrub_speed = Sample{reader.template pod<Sample::storage>()};
             return result;
@@ -340,6 +343,38 @@ struct SampleContinuousValueExtension {
         };
     }
 
+    struct CoverageInputOptions {
+        ChannelLayout channel_layout = continuous_value_details::default_audio_channel_layout;
+        Sample default_value = 0.0f;
+        bool enabled_by_default = false;
+
+        constexpr bool operator==(CoverageInputOptions const&) const = default;
+    };
+
+    struct CoverageInputMetadata {
+        Sample default_value = 0.0f;
+        bool enabled_by_default = false;
+
+        constexpr bool operator==(CoverageInputMetadata const&) const = default;
+
+        template<class Writer>
+        void write_binary(Writer& writer) const {
+            writer.pod(default_value.value);
+            writer.pod(enabled_by_default);
+        }
+
+        template<class Reader>
+        [[nodiscard]] static CoverageInputMetadata read_binary(Reader& reader) {
+            return {.default_value = Sample{reader.template pod<Sample::storage>()},
+                .enabled_by_default = reader.template pod<bool>()};
+        }
+    };
+
+    [[nodiscard]] static constexpr IntrospectionMetadata
+    introspection_metadata(CoverageInputMetadata const& metadata) noexcept {
+        return {.default_value = metadata.default_value};
+    }
+
     template<class Metadata>
     [[nodiscard]] static constexpr IntrospectionMetadata
     introspection_metadata(Metadata const&) noexcept
@@ -354,7 +389,6 @@ struct SampleContinuousValueExtension {
         constexpr bool operator==(Name const&) const = default;          \
     }
     IV_AUDIO_CHANNEL_OPTIONS(RegionInputOptions);
-    IV_AUDIO_CHANNEL_OPTIONS(CoverageInputOptions);
     IV_AUDIO_CHANNEL_OPTIONS(SequentialOutputOptions);
     IV_AUDIO_CHANNEL_OPTIONS(RegionOutputOptions);
     IV_AUDIO_CHANNEL_OPTIONS(CoverageOutputOptions);
@@ -374,7 +408,6 @@ struct SampleContinuousValueExtension {
         }
     };
     using RegionInputMetadata = StatelessMetadata;
-    using CoverageInputMetadata = StatelessMetadata;
     using SequentialOutputMetadata = StatelessMetadata;
     using RegionOutputMetadata = StatelessMetadata;
     using CoverageOutputMetadata = StatelessMetadata;
@@ -388,7 +421,12 @@ struct SampleContinuousValueExtension {
             .max = options.max,
             .neutral_value = options.neutral_value,
             .scrub_speed = options.scrub_speed,
+            .enabled_by_default = options.enabled_by_default,
         };
+    }
+
+    [[nodiscard]] static constexpr CoverageInputMetadata metadata(CoverageInputOptions const& options) noexcept {
+        return {.default_value = options.default_value, .enabled_by_default = options.enabled_by_default};
     }
 
 #define IV_STATELESS_METADATA_OVERLOAD(Options, Metadata)                \
@@ -398,7 +436,6 @@ struct SampleContinuousValueExtension {
         return {};                                                       \
     }
     IV_STATELESS_METADATA_OVERLOAD(RegionInputOptions, RegionInputMetadata)
-    IV_STATELESS_METADATA_OVERLOAD(CoverageInputOptions, CoverageInputMetadata)
     IV_STATELESS_METADATA_OVERLOAD(SequentialOutputOptions, SequentialOutputMetadata)
     IV_STATELESS_METADATA_OVERLOAD(RegionOutputOptions, RegionOutputMetadata)
     IV_STATELESS_METADATA_OVERLOAD(CoverageOutputOptions, CoverageOutputMetadata)
@@ -420,7 +457,8 @@ struct SampleContinuousValueExtension {
         std::size_t elements_per_value) noexcept
     {
         if (elements_per_value != 1) return false;
-        for (auto& value : destination) value = options.default_value;
+        auto const fallback = options.enabled_by_default ? options.default_value : options.neutral_value;
+        for (auto& value : destination) value = fallback;
         return true;
     }
 

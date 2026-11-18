@@ -469,6 +469,17 @@ test("reset uses the declared default and can reanchor an ongoing drag", () => {
     gestures.release(1);
 });
 
+test("double-click reset edits the value of a disabled input", () => {
+    const actions: unknown[] = [];
+    const gestures = new ManualControlGestures((action) => actions.push(action), () => "reset", () => {});
+    gestures.hover(control, { ...descriptor, enabled: false, participates: false, value: 2 }, { defaultValue: 1 });
+    assert.equal(gestures.resetHovered(), true);
+    assert.deepEqual(actions.slice(-2), [
+        { action: "update", interactionId: "reset", value: 1 },
+        { action: "end", interactionId: "reset", value: 1 },
+    ]);
+});
+
 test("interaction hints describe the current gesture and clear with its hover", () => {
     const gestures = new ManualControlGestures(() => {}, () => "drag", () => {});
     assert.equal(gestures.hint(), null);

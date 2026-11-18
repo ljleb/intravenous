@@ -112,23 +112,18 @@ and [point marker](./vue_presentation_refinement_direction.md#small-filled-contr
 sections. The graph-selected snap grid is additional to mandatory sample
 alignment, not its replacement.
 
-`AutomationCurve` stores independent minimum and maximum settings alongside
-the authored point list. Each setting consists of a finite value and an enabled
-flag. `PointSource` limits the value in each `CurvePointEvent` to the enabled
-bounds before the interpreter computes the curve. The stored points retain the
-original values. Their event positions, outgoing segment policy, tension, and
-sparse coverage retain the same rules. When enabled bounds meet, all emitted
-point values equal that bound. When a bound edit crosses the enabled opposite
-side, `SetBound` limits the edited value and preserves the opposite setting.
-`AddPoint` and `MovePoint` limit the edited point to the enabled bounds and
-preserve every other point. Existing out-of-range values survive project
-load, bound changes, and changes to segment type or tension.
-[Earlier display-only bounds](./historical/automation_display_only_bounds_2026-11-18.md)
+`AutomationCurve` exposes optional `min` and `max` Sample Coverage inputs.
+`PointSource` emits authored point values. `Curve` interpolates those values,
+then clamps each output sample using the bounds at that sample. Bound changes
+can affect the output between points. They leave the authored points,
+tension, and output Coverage unchanged.
 
-The presentation uses the enabled bounds for its vertical axis. Point edits
-never rescale it automatically. Both `nano` and `mini` show the curve and its
-gaps read-only. Point and tension editing are available at `editable` zoom.
-[Vue Presentation Refinement](./vue_presentation_refinement_direction.md#explicit-value-bounds-and-lane-zoom-categories)
+An uncovered side supplies no limit. Overlapping Regions supply the highest
+lower bound and the lowest upper bound. If those limits cross, the output
+sample equals their midpoint. Nonfinite input values supply no limit.
+
+Both manual bounds start disabled. Their reset values are 0 and 1.
+[Previous point clamping](./historical/automation_point_clamping_before_output_bounds_2026-11-18.md).
 
 ## 3. Event types and explicitly meaningful conversions
 

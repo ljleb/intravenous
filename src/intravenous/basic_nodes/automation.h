@@ -8,6 +8,8 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <numeric>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -49,50 +51,14 @@ struct Point {
     constexpr bool operator==(Point const&) const = default;
 };
 
-struct ValueBound {
-    float value = 0;
-    bool enabled = false;
-    constexpr bool operator==(ValueBound const&) const = default;
-};
-
-enum class BoundSide : std::uint8_t { min, max };
-
-struct ValueBounds {
-    ValueBound min{};
-    ValueBound max{.value = 1};
-    constexpr bool operator==(ValueBounds const&) const = default;
-
-    void validate() const {
-        if (!std::isfinite(min.value) || !std::isfinite(max.value)
-            || (min.enabled && max.enabled && min.value > max.value))
-            throw std::invalid_argument("invalid automation value bounds");
-    }
-    [[nodiscard]] ValueBounds with_bound(BoundSide side, ValueBound bound) const {
-        if (!std::isfinite(bound.value))
-            throw std::invalid_argument("invalid automation bound value");
-        auto bounds = *this;
-        switch (side) {
-        case BoundSide::min:
-            bounds.min = bound;
-            if (bounds.min.enabled && bounds.max.enabled)
-                bounds.min.value = std::min(bounds.min.value, bounds.max.value);
-            break;
-        case BoundSide::max:
-            bounds.max = bound;
-            if (bounds.max.enabled && bounds.min.enabled)
-                bounds.max.value = std::max(bounds.max.value, bounds.min.value);
-            break;
-        default:
-            throw std::invalid_argument("invalid automation bound side");
-        }
-        return bounds;
-    }
-    [[nodiscard]] float clamp(float value) const noexcept {
-        if (min.enabled) value = std::max(min.value, value);
-        if (max.enabled) value = std::min(max.value, value);
-        return value;
-    }
-};
+// An uncovered side supplies no limit. Crossed finite bounds collapse to
+// their midpoint so the result stays continuous as the two signals cross.
+inline float clamp_output_value(float value, std::optional<float> min, std::optional<float> max) noexcept {
+    if (min && max && *min > *max) return std::midpoint(*min, *max);
+    if (min) value = std::max(value, *min);
+    if (max) value = std::min(value, *max);
+    return value;
+}
 
 // Semantic events are reusable types, separate from the receiving node.
 struct AddPoint { Point point; };
@@ -105,7 +71,6 @@ struct PlacePoint {
     std::vector<SetSegment> segments{};
     std::vector<std::uint32_t> ordered_ids{};
 };
-struct SetBound { BoundSide side = BoundSide::min; ValueBound bound{}; };
 
 inline void validate_point(Point const& point) {
     if (!std::isfinite(point.seconds) || !std::isfinite(point.value)
@@ -142,9 +107,7 @@ inline bool point_order_less(Point const& left, Point const& right) {
 
 struct PointSource {
     ImmutableArray<Point> points;
-    ValueBounds bounds;
-    explicit PointSource(ImmutableArray<Point> points_, ValueBounds bounds_ = {}) : points(points_), bounds(bounds_) {
-        bounds.validate();
+    explicit PointSource(ImmutableArray<Point> points_) : points(points_) {
         for (auto const& point : points) validate_point(point);
         if (!std::ranges::is_sorted(points, point_time_less))
             throw std::invalid_argument("automation source points must be sorted within each time representation");
@@ -216,13 +179,16 @@ struct PointSource {
             return a != b ? a < b : point_order_less(*left.point, *right.point);
         });
         for (auto const& entry : ordered) output.write({.time = entry.time,
-            .value = CurvePointEvent{Sample{bounds.clamp(entry.point->value)}, entry.point->interpolation, entry.point->tension}});
+            .value = CurvePointEvent{Sample{entry.point->value}, entry.point->interpolation, entry.point->tension}});
     }
 };
 
 struct Curve {
     static constexpr auto inputs() {
-        return std::array{event_input("points", EventTypeId::curve_point, InputAccess::region)};
+        return std::tuple{
+            event_input("points", EventTypeId::curve_point, InputAccess::region),
+            input<Sample>("min", InputAccess::coverage, {.channel_layout = mono_planar_channel_layout}),
+            input<Sample>("max", InputAccess::coverage, {.channel_layout = mono_planar_channel_layout})};
     }
     static constexpr auto outputs() {
         return std::array{output<Sample>("value", OutputProduction::coverage)};
@@ -258,19 +224,29 @@ struct Curve {
             auto input = co_await ctx.request_input<"points">(metadata.coverage);
             input.region().for_each([&](TimedEvent const& point) { points.push_back(point); });
         }
+        (void)(co_await ctx.request_input_coverage<"min">());
+        (void)(co_await ctx.request_input_coverage<"max">());
         auto const coverage = point_coverage(points);
         std::vector<GlobalIndexRange> regions(coverage.begin(), coverage.end());
         auto output = ctx.output<"value">();
         auto const previous = output.previous_coverage();
         output.publish(regions);
+        auto const bound_changes = ctx.input<"min">().changed() | ctx.input<"max">().changed();
         if (ctx.local_state_changed || !ctx.input<"points">().changed().empty())
             output.change(previous | coverage);
+        else
+            output.change(bound_changes & coverage);
     }
+
     void propagate_reverse_coverage(PropagateReverseCoverageContext<Curve>& ctx) const {
-        // Tangents and equal-time endpoints require complete point contents,
-        // whose size follows the point count rather than the sample duration.
-        auto input = ctx.input<"points">();
-        for (auto region : input.coverage()) input.require(region);
+        auto const& wanted = ctx.output<"value">().required();
+        if (wanted.empty()) return;
+        // The event Region is sparse. Bound samples are needed only over the
+        // covered output positions that this invocation will render.
+        auto const points = ctx.input<"points">();
+        for (auto region : points.coverage()) points.require(region);
+        ctx.input<"min">().require(wanted);
+        ctx.input<"max">().require(wanted);
     }
 
     // Weighted harmonic endpoint derivative (PCHIP). Opposing secants produce
@@ -310,54 +286,83 @@ struct Curve {
     };
 
     static Segment segment(EventRegion const& input, GlobalIndex position) {
+        auto value = [](TimedEvent const& event) { return std::get<CurvePointEvent>(event.value).value.value; };
         auto const neighbors = input.neighbors(position, EventNeighborMode::cyclic);
         IV_ASSERT(neighbors.at_or_before && neighbors.after, "curve has no points for a covered position");
         auto const& before = *neighbors.at_or_before;
         auto const& after = *neighbors.after;
         auto const& outgoing = std::get<CurvePointEvent>(before.value);
-        auto const& incoming = std::get<CurvePointEvent>(after.value);
         Segment result{.begin = before.time, .end = after.time,
             .length = before.time == after.time ? 0x1p64
                 : static_cast<double>(before.time.forward_distance_to(after.time)),
-            .first = static_cast<float>(outgoing.value), .last = static_cast<float>(incoming.value),
             .tension = outgoing.tension, .interpolation = outgoing.interpolation};
+        if (outgoing.interpolation == CurveInterpolation::empty) return result;
+        result.first = value(before);
         // All events at one index use the last point's outgoing value. The
         // first point at that same index is only an incoming endpoint.
-        if (before.time == after.time) { result.last = result.first; return result; }
-        if (outgoing.interpolation != CurveInterpolation::bezier || outgoing.tension == 0) return result;
+        if (before.time == after.time || outgoing.interpolation == CurveInterpolation::hold) {
+            result.last = result.first;
+            return result;
+        }
+        result.last = value(after);
+        if (outgoing.tension == 0) return result;
         auto const slope = (result.last - result.first) / result.length;
         auto const previous = input.neighbors(before.time.retreated_by(1), EventNeighborMode::cyclic);
         auto const next = input.neighbors(after.time, EventNeighborMode::cyclic);
         if (previous.at_or_before && previous.after) {
             auto const& prior = std::get<CurvePointEvent>(previous.at_or_before->value);
-            auto const& first_at_begin = std::get<CurvePointEvent>(previous.after->value);
-            if (prior.interpolation == CurveInterpolation::bezier && first_at_begin.value == outgoing.value) {
+            if (prior.interpolation == CurveInterpolation::bezier) {
+                auto const previous_value = value(*previous.at_or_before);
+                auto const first_at_begin = value(*previous.after);
                 auto const length = static_cast<double>(previous.at_or_before->time.forward_distance_to(before.time));
-                if (length > 0) result.start_delta = tangent(
-                    (result.first - static_cast<float>(prior.value)) / length, slope, length, result.length) * result.length;
+                if (length > 0 && first_at_begin == result.first) result.start_delta = tangent(
+                    (result.first - previous_value) / length, slope, length, result.length) * result.length;
             }
         }
         if (next.at_or_before && next.after) {
             auto const& last_at_end = std::get<CurvePointEvent>(next.at_or_before->value);
-            auto const& following = std::get<CurvePointEvent>(next.after->value);
-            if (last_at_end.interpolation == CurveInterpolation::bezier && incoming.value == last_at_end.value) {
+            if (last_at_end.interpolation == CurveInterpolation::bezier) {
+                auto const last_at_end_value = value(*next.at_or_before);
+                auto const following = value(*next.after);
                 auto const length = static_cast<double>(after.time.forward_distance_to(next.after->time));
-                if (length > 0) result.end_delta = tangent(slope,
-                    (static_cast<float>(following.value) - result.last) / length, result.length, length) * result.length;
+                if (length > 0 && result.last == last_at_end_value) result.end_delta = tangent(slope,
+                    (following - result.last) / length, result.length, length) * result.length;
             }
         }
         return result;
     }
 
+    template<class Combine>
+    static std::optional<float> bound_at(ContinuousCoverage<Sample> const& bound, GlobalIndex position, Combine combine) {
+        if (!bound.coverage().contains(position)) return std::nullopt;
+        std::optional<float> result;
+        bool found = false;
+        for (auto region : bound) {
+            if (!region.range().contains(position)) continue;
+            found = true;
+            auto const value = region.at(position).value;
+            if (std::isfinite(value)) result = result ? combine(*result, value) : value;
+        }
+        if (!found) throw std::logic_error("covered automation bound has no Region");
+        return result;
+    }
+
     void tock_coverage(TockCoverageContext<Curve>& ctx) const {
         auto const input = ctx.input<"points">().region();
+        auto const min = ctx.input<"min">().regions();
+        auto const max = ctx.input<"max">().regions();
+        auto const bounded = !min.empty() || !max.empty();
         for (auto region : ctx.output<"value">().regions()) for (auto output : region.prepared_windows()) {
             Segment current;
             bool initialized = false;
             for (std::size_t frame = 0; frame < output.frame_count(); ++frame) {
                 auto const position = output.range().begin.advanced_by(frame);
                 if (!initialized || position == current.end) { current = segment(input, position); initialized = true; }
-                output.value(frame) = current.value(position);
+                auto value = current.value(position);
+                if (bounded) value.value = clamp_output_value(value.value,
+                    bound_at(min, position, [](float a, float b) { return std::max(a, b); }),
+                    bound_at(max, position, [](float a, float b) { return std::min(a, b); }));
+                output.value(frame) = value;
             }
         }
     }
@@ -366,11 +371,9 @@ struct Curve {
 // The module is the editable semantic node. Its two leaves retain fixed schemas.
 class AutomationCurve {
     std::vector<Point> points_;
-    ValueBounds bounds_;
 
     void replace_points(ModuleMessageContext<AutomationCurve>& ctx, std::vector<Point> const& points) const {
-        if (bounds_ == ValueBounds{}) ctx.replace<"iv.builtin.automation.curve">(points);
-        else ctx.replace<"iv.builtin.automation.curve">(points, bounds_);
+        ctx.replace<"iv.builtin.automation.curve">(points);
     }
     static void set_segment(std::vector<Point>& points, SetSegment const& event) {
         auto const found = std::ranges::find(points, event.id, &Point::id);
@@ -380,9 +383,7 @@ class AutomationCurve {
         validate_point(*found);
     }
 public:
-    explicit AutomationCurve(std::vector<Point> points, ValueBounds bounds = {})
-        : points_(std::move(points)), bounds_(bounds) {
-        bounds_.validate();
+    explicit AutomationCurve(std::vector<Point> points) : points_(std::move(points)) {
         for (auto const& point : points_) {
             validate_point(point);
         }
@@ -398,17 +399,20 @@ public:
         });
     }
     void build_graph(GraphBuilder& g) const {
-        auto points = g.node<"iv.builtin.automation.point_source">(g.immutable_array<Point>(points_), bounds_);
+        auto points = g.node<"iv.builtin.automation.point_source">(g.immutable_array<Point>(points_));
         auto curve = g.node<"iv.builtin.automation.interpreter">();
 
-        curve("points"_F = points);
+        auto const min = g.input<"min", Sample>(InputAccess::coverage, {
+            .channel_layout = mono_planar_channel_layout, .default_value = 0, .enabled_by_default = false});
+        auto const max = g.input<"max", Sample>(InputAccess::coverage, {
+            .channel_layout = mono_planar_channel_layout, .default_value = 1, .enabled_by_default = false});
+        curve("points"_F = points, "min"_P = min, "max"_P = max);
 
         g.outputs("value"_P = curve);
     }
     void on_message(ModuleMessageContext<AutomationCurve>& ctx, AddPoint const& event) const {
         auto point = event.point;
         validate_point(point);
-        point.value = bounds_.clamp(point.value);
         auto points = points_;
         points.push_back(point);
         replace_points(ctx, points);
@@ -428,7 +432,6 @@ public:
     void on_message(ModuleMessageContext<AutomationCurve>& ctx, PlacePoint const& event) const {
         auto point = event.point;
         validate_point(point);
-        point.value = bounds_.clamp(point.value);
         auto points = points_;
         auto const found = std::ranges::find(points, point.id, &Point::id);
         if (event.insert) {
@@ -465,12 +468,7 @@ public:
         found->sample_index = event.sample_index;
         found->value = event.value;
         validate_point(*found);
-        found->value = bounds_.clamp(found->value);
         replace_points(ctx, points);
-    }
-    void on_message(ModuleMessageContext<AutomationCurve>& ctx, SetBound const& event) const {
-        auto const bounds = bounds_.with_bound(event.side, event.bound);
-        ctx.replace<"iv.builtin.automation.curve">(points_, bounds);
     }
 };
 } // namespace iv::automation
