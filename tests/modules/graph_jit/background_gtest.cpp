@@ -583,21 +583,21 @@ TEST_F(GraphJitRuntimeFixture, PlaybackUnderrunSkipsTheGraphAndResumesForPrepare
     (void)executor.seek_playback(index(12));
     auto const first = executor.set_playback_running(true);
     executor.render_block(6, 48000);
-    EXPECT_EQ(executor.playback_snapshot().position, index(18));
+    EXPECT_EQ(executor.playback_snapshot().background_playhead, index(18));
     EXPECT_EQ(executor.playback_snapshot().applied_command, first);
     auto const missing = executor.seek_playback(index(1000));
     executor.render_block(6, 48000);
-    EXPECT_EQ(executor.playback_snapshot().position, index(24));
+    EXPECT_EQ(executor.playback_snapshot().background_playhead, index(24));
     EXPECT_LT(executor.playback_snapshot().applied_command, missing);
     EXPECT_EQ(observed_playback_calls, 4u);
     executor.render_block(64, 48000);
     EXPECT_EQ(observed_playback_calls, 4u);
-    EXPECT_EQ(executor.playback_snapshot().position, index(24));
+    EXPECT_EQ(executor.playback_snapshot().background_playhead, index(24));
     EXPECT_EQ(executor.playback_underrun_blocks(), 2u);
     auto const superseding = executor.seek_playback(index(14));
     executor.render_block(6, 48000);
     EXPECT_EQ(observed_playback_calls, 5u);
-    EXPECT_EQ(executor.playback_snapshot().position, index(20));
+    EXPECT_EQ(executor.playback_snapshot().background_playhead, index(20));
     EXPECT_EQ(executor.playback_snapshot().applied_command, superseding);
 
     auto const pause = executor.set_playback_running(false);
@@ -610,13 +610,13 @@ TEST_F(GraphJitRuntimeFixture, PlaybackUnderrunSkipsTheGraphAndResumesForPrepare
     executor.render_block(64, 48000);
     EXPECT_EQ(observed_playback_calls, 7u);
     EXPECT_EQ(executor.playback_underrun_blocks(), 2u);
-    EXPECT_EQ(executor.playback_snapshot().position, index(14));
+    EXPECT_EQ(executor.playback_snapshot().background_playhead, index(14));
     EXPECT_EQ(executor.playback_snapshot().applied_command, pause);
     EXPECT_FALSE(executor.playback_snapshot().running);
 
     executor.render_block(6, 48000);
     EXPECT_EQ(observed_playback_calls, 8u);
-    EXPECT_EQ(executor.playback_snapshot().position, index(20));
+    EXPECT_EQ(executor.playback_snapshot().background_playhead, index(20));
     EXPECT_EQ(executor.playback_snapshot().applied_command, resume);
     EXPECT_TRUE(executor.playback_snapshot().running);
     EXPECT_FALSE(executor.background_execution_failures().any());

@@ -60,12 +60,16 @@ semantics, conceptually `Sample value`, outgoing `CurveInterpolation` and
 Coincident points preserve an instantaneous jump in their input-event order.
 The first point at a sample index supplies the incoming segment's endpoint;
 the last point supplies the outgoing value, policy and tension. Intermediate
-zero-length segments contain no sample positions. Equal-index ordering must be stable across reconstruction. The point source
-uses persistent point IDs to break equal-index ties; generated events retain
-that producer order without adding point IDs to `CurvePointEvent`. An
+zero-length segments contain no sample positions. At the same index, the point
+source sorts by the saved `order` field, then by persistent point ID. Points
+without an `order` use zero. The point source writes events in this order.
+`CurvePointEvent` keeps its existing fields. An
 interpreter consumes equal-time events in their stable supplied order, including
 after upstream event transformations. At the shared index itself, the last
 point's outgoing policy determines the value or absence of coverage.
+
+The saved `order` field lets a drag choose either side of another point at
+the same sample. [Previous equal-index ordering](./historical/automation_point_drag_before_time_detents_2026-11-18.md#previous-cyclic-automation-direction).
 
 These equal-time rules and the tension convention below were accepted by the
 owner on 2026-11-15. The earlier open questions are retained in

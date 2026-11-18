@@ -728,6 +728,7 @@ template<class... Refs>
 inline auto make_sample_output_requests(
     GraphBuilder& builder, Refs&&... refs) {
   constexpr size_t count = sizeof...(Refs);
+  constexpr std::string_view default_output_name = "value";
   std::array<SampleOutputRequest, count> requests{};
   size_t index = 0;
   auto append = [&]<class Ref>(Ref&& ref) {
@@ -745,10 +746,10 @@ inline auto make_sample_output_requests(
     } else if constexpr (is_default_channel_named_arg_v<Value>) {
       using Channel = typename Value::channel_type;
       request.ref = builder.lift_to_sample_port(ref.value);
-      request.name = "main";
+      request.name = default_output_name;
       request.channel_layout = {.channel_type = ChannelTypeTraits<Channel>::id,
         .sample_layout = SampleStreamLayout::planar};
-      request.family_name = "main";
+      request.family_name = default_output_name;
       request.family_channel_type = ChannelTypeTraits<Channel>::id;
       request.target_channel_index = Value::channel_index;
     } else if constexpr (is_named_arg_v<Value>) {
@@ -762,10 +763,10 @@ inline auto make_sample_output_requests(
       static_assert(count == 1,
         "outputs(...) requires names when exposing more than one sample output");
       request.ref = builder.lift_to_sample_port(std::forward<Ref>(ref));
-      request.name = "main";
+      request.name = default_output_name;
       request.channel_layout = {.channel_type = request.ref.channel_type,
         .sample_layout = SampleStreamLayout::planar};
-      request.family_name = "main";
+      request.family_name = default_output_name;
       request.family_channel_type = request.ref.channel_type;
     }
   };

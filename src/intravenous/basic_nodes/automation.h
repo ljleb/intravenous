@@ -11,6 +11,7 @@
 #include <span>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace iv::automation {
@@ -44,6 +45,7 @@ struct Point {
     CurveInterpolation interpolation = CurveInterpolation::bezier;
     float tension = 1;
     SampleIndex sample_index{};
+    std::uint32_t order = 0;
     constexpr bool operator==(Point const&) const = default;
 };
 
@@ -97,6 +99,12 @@ struct AddPoint { Point point; };
 struct RemovePoint { std::uint32_t id = 0; };
 struct MovePoint { std::uint32_t id = 0; double seconds = 0; float value = 0; SampleIndex sample_index{}; };
 struct SetSegment { std::uint32_t id = 0; CurveInterpolation interpolation = CurveInterpolation::bezier; float tension = 1; };
+struct PlacePoint {
+    Point point;
+    bool insert = false;
+    std::vector<SetSegment> segments{};
+    std::vector<std::uint32_t> ordered_ids{};
+};
 struct SetBound { BoundSide side = BoundSide::min; ValueBound bound{}; };
 
 inline void validate_point(Point const& point) {
@@ -126,6 +134,10 @@ inline bool point_time_less(Point const& left, Point const& right) {
     if (left.sample_index.present())
         return left.sample_index.index().signed_value() < right.sample_index.index().signed_value();
     return left.seconds < right.seconds;
+}
+
+inline bool point_order_less(Point const& left, Point const& right) {
+    return left.order != right.order ? left.order < right.order : left.id < right.id;
 }
 
 struct PointSource {
@@ -201,7 +213,7 @@ struct PointSource {
         std::ranges::sort(ordered, [&](auto const& left, auto const& right) {
             auto const a = selected.begin.forward_distance_to(left.time);
             auto const b = selected.begin.forward_distance_to(right.time);
-            return a != b ? a < b : left.point->id < right.point->id;
+            return a != b ? a < b : point_order_less(*left.point, *right.point);
         });
         for (auto const& entry : ordered) output.write({.time = entry.time,
             .value = CurvePointEvent{Sample{bounds.clamp(entry.point->value)}, entry.point->interpolation, entry.point->tension}});
@@ -360,6 +372,13 @@ class AutomationCurve {
         if (bounds_ == ValueBounds{}) ctx.replace<"iv.builtin.automation.curve">(points);
         else ctx.replace<"iv.builtin.automation.curve">(points, bounds_);
     }
+    static void set_segment(std::vector<Point>& points, SetSegment const& event) {
+        auto const found = std::ranges::find(points, event.id, &Point::id);
+        if (found == points.end()) throw std::invalid_argument("automation point does not exist");
+        found->interpolation = event.interpolation;
+        found->tension = event.tension;
+        validate_point(*found);
+    }
 public:
     explicit AutomationCurve(std::vector<Point> points, ValueBounds bounds = {})
         : points_(std::move(points)), bounds_(bounds) {
@@ -375,7 +394,7 @@ public:
         std::ranges::sort(points_, [](Point const& left, Point const& right) {
             if (point_time_less(left, right)) return true;
             if (point_time_less(right, left)) return false;
-            return left.id < right.id;
+            return point_order_less(left, right);
         });
     }
     void build_graph(GraphBuilder& g) const {
@@ -403,11 +422,39 @@ public:
     }
     void on_message(ModuleMessageContext<AutomationCurve>& ctx, SetSegment const& event) const {
         auto points = points_;
-        auto const found = std::ranges::find(points, event.id, &Point::id);
-        if (found == points.end()) throw std::invalid_argument("automation point does not exist");
-        found->interpolation = event.interpolation;
-        found->tension = event.tension;
-        validate_point(*found);
+        set_segment(points, event);
+        replace_points(ctx, points);
+    }
+    void on_message(ModuleMessageContext<AutomationCurve>& ctx, PlacePoint const& event) const {
+        auto point = event.point;
+        validate_point(point);
+        point.value = bounds_.clamp(point.value);
+        auto points = points_;
+        auto const found = std::ranges::find(points, point.id, &Point::id);
+        if (event.insert) {
+            if (found != points.end()) throw std::invalid_argument("automation point already exists");
+            points.push_back(point);
+        } else {
+            if (found == points.end()) throw std::invalid_argument("automation point does not exist");
+            *found = point;
+        }
+        for (auto const& segment : event.segments) set_segment(points, segment);
+        if (!event.ordered_ids.empty()) {
+            std::unordered_map<std::uint32_t, std::uint32_t> ranks;
+            for (auto const id : event.ordered_ids) {
+                if (!ranks.emplace(id, static_cast<std::uint32_t>(ranks.size())).second)
+                    throw std::invalid_argument("duplicate automation point in coincident order");
+            }
+            if (!ranks.contains(point.id))
+                throw std::invalid_argument("placed automation point is missing from coincident order");
+            for (auto& candidate : points) {
+                if (auto const rank = ranks.find(candidate.id); rank != ranks.end()) {
+                    candidate.order = rank->second;
+                    ranks.erase(rank);
+                }
+            }
+            if (!ranks.empty()) throw std::invalid_argument("automation point does not exist");
+        }
         replace_points(ctx, points);
     }
     void on_message(ModuleMessageContext<AutomationCurve>& ctx, MovePoint const& event) const {

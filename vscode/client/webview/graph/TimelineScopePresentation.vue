@@ -10,15 +10,16 @@ import { nodeDisplayName } from "../presentation/nodeSummary";
 import TimeRuler from "../timeline/TimeRuler.vue";
 import { provideTimelineNavigation, provideTimelineWindow, type LaneValueGesture, type LaneValueNavigation } from "../timeline/timelineContext";
 import { initialTimelineViewport, isMiddleDoubleClick, middleClickMode, moveMiddleDrag, panTimeline, resetTimelineZoom, timelineMiddleDragAction,
-    timelineWheelAction, wheelPixels, wrapTimelineCursor, zoomAnchorHint, zoomFactorForPixels, zoomMiddleDrag, zoomTimelineHorizontally, zoomTimelineVertically,
+    timelineWheelAction, verticalMiddleDragZoomFactor, wheelPixels, wrapTimelineCursor, zoomAnchorHint, zoomFactorForPixels, zoomMiddleDrag,
+    zoomTimelineHorizontally, zoomTimelineVertically,
     type MiddleClick, type MiddleDrag, type TimelineZoomAction, type TimelineViewport } from "../../src/timelineViewport";
 import { useGraphEditor, type CursorWarpAnchor } from "./context";
 import { usePlayback } from "../timeline/playbackContext";
 
 const node = useNode();
 const playback = usePlayback();
-const playbackSeconds = computed(() => playback.position.value === null ? null
-    : Number(playback.position.value) / (playback.state.value?.sampleRate ?? 48000));
+const backgroundPlayheadSeconds = computed(() => playback.backgroundPlayhead.value === null ? null
+    : Number(playback.backgroundPlayhead.value) / (playback.state.value?.sampleRate ?? 48000));
 const scope = computed(() => node.value.scope!);
 const children = computed(() => scope.value.nodes.map((child) => ({
     child, semantic: semanticNodeFromScopeChild(child, scope.value),
@@ -60,7 +61,7 @@ provideTimelineNavigation({ wheel, beginMiddleDrag, registerValueNavigation(elem
 } });
 const middleDrag = shallowRef<MiddleDrag | null>(null);
 const wrappedCursor = shallowRef<(Point & { action: MiddleDrag["action"] | "valueZoom" }) | null>(null);
-let laneValueGesture: { lane: Element; mode: "pan" | "zoom"; gesture: LaneValueGesture } | null = null;
+let laneValueGesture: { lane: Element; gesture: LaneValueGesture } | null = null;
 let lockedTravel: Point = { x: 0, y: 0 };
 let middlePress: MiddleClick | null = null;
 let lastMiddleClick: MiddleClick | null = null;
@@ -192,7 +193,7 @@ function beginMiddleDrag(event: PointerEvent) {
     middlePress = { x: event.clientX, y: event.clientY, at: performance.now(), mode, lane: mode === "lane" ? lane : null };
     const laneMode = event.altKey ? "zoom" : "pan";
     const gesture = mode === "lane" && navigation ? navigation.begin(laneMode) : null;
-    if (lane && gesture) laneValueGesture = { lane, mode: laneMode, gesture };
+    if (lane && gesture) laneValueGesture = { lane, gesture };
     const action = laneValueGesture ? "pan" : timelineMiddleDragAction(event);
     middleDrag.value = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, action };
     middleDragMoved = false;
@@ -202,7 +203,7 @@ function beginMiddleDrag(event: PointerEvent) {
     middleCursorAnchor = event.pointerType === "mouse" ? {
         screenOrigin: { x: event.screenX, y: event.screenY }, scale: window.devicePixelRatio, moved: false,
     } : null;
-    if (laneValueGesture?.mode === "zoom") setTimelineZoomHint(zoomAnchorHint("valueZoom", { x: 0, y: 0 }));
+    if (laneValueGesture?.gesture.mode === "zoom") setTimelineZoomHint(zoomAnchorHint("valueZoom", { x: 0, y: 0 }));
     else if (action !== "pan") setTimelineZoomHint(zoomAnchorHint(action, { x: 0, y: 0 }));
     middleCursorTrace?.(`Started ${laneValueGesture ? `lane ${laneMode}` : action}. Pointer capture is ready.`);
     middlePointerLock.start(event.pointerId, { x: event.clientX, y: event.clientY }, event.pointerType === "mouse");
@@ -221,9 +222,13 @@ function updateMiddleDrag(event: PointerEvent) {
         middleCursorAnchor.moved = true;
     }
     middleDrag.value = { ...drag, x: event.clientX, y: event.clientY };
-    if (laneValueGesture?.mode !== "zoom") applyMiddleDrag(moved);
-    laneValueGesture?.gesture.move({ x: event.clientX - drag.x, y: event.clientY - drag.y },
-        { x: event.clientX, y: event.clientY });
+    if (laneValueGesture?.gesture.mode !== "zoom") applyMiddleDrag(moved);
+    moveLaneValueDrag({ x: event.clientX - drag.x, y: event.clientY - drag.y }, event.clientY);
+}
+function moveLaneValueDrag(delta: Point, cursorY: number) {
+    const gesture = laneValueGesture?.gesture;
+    if (gesture?.mode === "zoom" && delta.x) gesture.zoom(verticalMiddleDragZoomFactor(delta.x), cursorY);
+    if (gesture?.mode === "pan" && delta.y) gesture.pan(delta.y);
 }
 function wrappedPosition(point: Point, travel: Point) {
     const surface = root.value!;
@@ -234,12 +239,14 @@ function wrappedPosition(point: Point, travel: Point) {
     const bottom = Math.min(window.innerHeight, rect.top + surface.clientTop + surface.clientHeight);
     if (laneValueGesture) {
         // The sticky ruler covers part of a lane that has scrolled past it.
-        const lane = laneValueGesture.lane.getBoundingClientRect();
+        const { lane: element, gesture } = laneValueGesture;
+        const { mode } = gesture;
+        const lane = (mode === "pan" ? gesture.content : element).getBoundingClientRect();
         const laneLeft = Math.max(left, lane.left);
         const laneTop = Math.max(top, rect.top + surface.clientTop + headerHeight, lane.top);
         const laneRight = Math.min(right, lane.right);
         const laneBottom = Math.min(bottom, lane.bottom);
-        if (laneRight > laneLeft && laneBottom > laneTop)
+        if (mode === "pan" || (laneRight > laneLeft && laneBottom > laneTop))
             return wrapTimelineCursor(point, travel, { left: laneLeft, top: laneTop, width: laneRight - laneLeft, height: laneBottom - laneTop });
     }
     return wrapTimelineCursor(point, travel, { left, top, width: right - left, height: bottom - top });
@@ -251,20 +258,20 @@ function moveLockedMiddleDrag(id: number, delta: Point) {
     if (middleCursorTrace && ++tracedLockedMoves === 1) middleCursorTrace(`First locked move. ${JSON.stringify(delta)}`);
     cancelMiddleClick();
     const { action } = drag;
-    if (laneValueGesture?.mode === "zoom") {
+    if (laneValueGesture?.gesture.mode === "zoom") {
         lockedTravel.x += delta.x;
         lockedTravel.y += delta.y;
         const { visible, virtual, screens } = wrappedPosition(drag, lockedTravel);
         wrappedCursor.value = { ...visible, action: "valueZoom" };
         setTimelineZoomHint(zoomAnchorHint("valueZoom", screens));
-        laneValueGesture.gesture.move(delta, virtual);
+        moveLaneValueDrag(delta, virtual.y);
         return;
     }
     if (action === "pan") {
         const { visible } = wrappedPosition(wrappedCursor.value ?? drag, delta);
         wrappedCursor.value = { ...visible, action };
         applyMiddleDrag(panTimeline(viewport.value, delta, laneValueGesture !== null));
-        laneValueGesture?.gesture.move(delta, visible);
+        moveLaneValueDrag(delta, visible.y);
         return;
     }
     lockedTravel.x += delta.x;
@@ -321,7 +328,7 @@ function finishMiddleDrag(pointerId: number) {
     middleDrag.value = null;
     // Keep the wrapped cursor visible until the browser restores its cursor.
     if (document.pointerLockElement !== root.value) wrappedCursor.value = null;
-    if (drag.action !== "pan" || laneValueGesture?.mode === "zoom") setTimelineZoomHint(null);
+    if (drag.action !== "pan" || laneValueGesture?.gesture.mode === "zoom") setTimelineZoomHint(null);
     const laneChanged = laneValueGesture?.gesture.changed();
     laneValueGesture = null;
     if (root.value?.hasPointerCapture(pointerId)) root.value.releasePointerCapture(pointerId);
@@ -338,8 +345,8 @@ function middleLockChanged() {
     if (!drag || !root.value || !middlePointerLock.status().granted) return;
     lockedTravel = { x: 0, y: 0 };
     const { visible, screens } = wrappedPosition(drag, lockedTravel);
-    wrappedCursor.value = { ...visible, action: laneValueGesture?.mode === "zoom" ? "valueZoom" : drag.action };
-    if (laneValueGesture?.mode === "zoom") setTimelineZoomHint(zoomAnchorHint("valueZoom", screens));
+    wrappedCursor.value = { ...visible, action: laneValueGesture?.gesture.mode === "zoom" ? "valueZoom" : drag.action };
+    if (laneValueGesture?.gesture.mode === "zoom") setTimelineZoomHint(zoomAnchorHint("valueZoom", screens));
     else if (drag.action !== "pan") setTimelineZoomHint(zoomAnchorHint(drag.action, screens));
     if (root.value.hasPointerCapture(drag.pointerId)) root.value.releasePointerCapture(drag.pointerId);
 }
@@ -421,16 +428,16 @@ onBeforeUnmount(() => {
 
 <template>
     <section ref="root" class="timeline-scope"
-        :data-middle-drag="middleDrag && (laneValueGesture?.mode === 'zoom' ? 'valueZoom' : middleDrag.action)" aria-label="Project timeline"
+        :data-middle-drag="middleDrag && (laneValueGesture?.gesture.mode === 'zoom' ? 'valueZoom' : middleDrag.action)" aria-label="Project timeline"
         :style="scrollbarStyle" :data-has-selection="selectedLanes.size > 0"
         @wheel="wheel" @scroll="scrolled" @pointerdown.capture="beginMiddleDrag" @pointermove="updateMiddleDrag"
         @pointercancel="middlePointerCancelled" @lostpointercapture="middleCaptureLost"
         @mousedown.capture="preventMiddleDefault" @auxclick.capture="preventMiddleDefault">
         <header class="timeline-heading">
             <div class="node-column playback-position" data-status-shortcuts="Space ▶/Ⅱ">
-                <template v-if="playbackSeconds !== null">
-                    {{ playback.state.value?.running ? '▷' : 'Ⅱ' }} {{ playbackSeconds.toFixed(3) }} s
-                    <small>{{ playback.position.value?.toString() }} smp</small>
+                <template v-if="backgroundPlayheadSeconds !== null">
+                    {{ playback.state.value?.running ? '▷' : 'Ⅱ' }} {{ backgroundPlayheadSeconds.toFixed(3) }} s
+                    <small>{{ playback.backgroundPlayhead.value?.toString() }} smp</small>
                 </template>
             </div>
             <div ref="timeRegion" class="time-region"><TimeRuler :window="timeWindow" :sample-rate="scope.sampleRate ?? undefined" playback style="height: 100%" /></div>

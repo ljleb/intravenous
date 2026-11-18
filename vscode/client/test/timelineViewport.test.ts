@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { initialTimelineViewport, isMiddleDoubleClick, maximumLaneHeight, middleClickMode, minimumLaneHeight, moveMiddleDrag, panTimeline,
-    readTimelineViewport, resetTimelineZoom, timelineMiddleDragAction, timelineWheelAction, wheelPixels, wrapTimelineCursor, zoomAnchorHint, zoomMiddleDrag, zoomTimelineHorizontally,
-    zoomTimelineVertically, type MiddleDrag } from "../src/timelineViewport";
+    readTimelineViewport, resetTimelineZoom, timelineMiddleDragAction, timelineWheelAction, verticalMiddleDragZoomFactor, wheelPixels,
+    wrapTimelineCursor, zoomAnchorHint, zoomMiddleDrag, zoomTimelineHorizontally, zoomTimelineVertically, type MiddleDrag } from "../src/timelineViewport";
 
 test("timeline wheel modifiers implement the requested bindings", () => {
     const plain = { ctrlKey: false, altKey: false, shiftKey: false };
@@ -106,6 +106,16 @@ test("vertical middle zoom uses horizontal motion and the supplied vertical anch
     const first = moveMiddleDrag(view, drag, 4, 150, 120, 80)!;
     const second = moveMiddleDrag(first, { ...drag, x: 150, y: 120 }, 4, 175, 140, 140);
     assert.deepEqual(second, zoomTimelineVertically(first, 140, 75));
+});
+
+test("lane editors use the same middle drag zoom factor as the graph", () => {
+    const view = initialTimelineViewport;
+    const left = verticalMiddleDragZoomFactor(-50), right = verticalMiddleDragZoomFactor(50);
+    assert.ok(left > 1);
+    assert.ok(right < 1);
+    assert.equal(verticalMiddleDragZoomFactor(0), 1);
+    assert.equal(zoomMiddleDrag(view, "verticalZoom", { x: -50, y: 25 }, 80).laneHeight, view.laneHeight * left);
+    assert.equal(zoomMiddleDrag(view, "verticalZoom", { x: 50, y: 25 }, 80).laneHeight, view.laneHeight * right);
 });
 
 test("vertical middle zoom can reverse immediately after hitting the scale limit", () => {

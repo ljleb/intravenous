@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { automationWindow, curvePointAt, type CurveAxes, type CurveDragKind } from "../../src/automationCurveEditing";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
+import { automationWindow, type CurveAxes, type CurveDragKind } from "../../src/automationCurveEditing";
 import { automationBoundLimits, automationDisplayBounds, canPanAutomationValueAxis, automationSampleOffset, automationValueFraction, automationValueGuides, clampAutomationValue,
     compareAutomationTime, defaultAutomationBounds, enabledAutomationBounds, panAutomationValueAxis, panCurvedAutomationValueZoom,
     zoomAutomationValueAxis, type AutomationBoundSide, type AutomationPoint, type AutomationPointPosition, type AutomationValueAxis, type AutomationValueDisplay,
     type AutomationValueRuler, type AutomationValueZoom, type CurveInterpolation, type CurvePath } from "../../src/automationCurveGeometry";
 import { addressKey, type NodeAddress } from "../../src/graphScope";
-import { middleDragZoomFactor } from "../../src/timelineViewport";
 import { knobScrubSpeed } from "../../src/knobPresentation";
 import { rightClickHint } from "../../src/statusBarText";
 import { useOptionalGraphEditor } from "../graph/context";
@@ -93,6 +92,18 @@ const markerY = (point: AutomationPoint) => Math.max(2, Math.min(height.value - 
 const valueGuides = computed(() => axes.value ? automationValueGuides(axes.value, height.value, axes.value.ruler) : []);
 const valueLabelInset = computed(() => hideLabels.value || !valueGuides.value.length ? 0
     : 9 + 6 * Math.max(...valueGuides.value.map(({ value }) => String(value).length)));
+const valueLabelY = (guideY: number) => Math.min(height.value - 1, Math.max(8, guideY + 3));
+const snapGradientId = useId();
+const snapFadeWidth = 144;
+const snapGuide = computed(() => {
+    void version.value;
+    const address = node.value.address;
+    const snap = editable.value && address ? edits.activeSnap(address) : null;
+    if (!snap) return null;
+    const guideY = y(snap.value);
+    if (!(guideY >= 0 && guideY <= height.value)) return null;
+    return { value: snap.value, y: guideY, x: Math.max(valueLabelInset.value, Math.min(width.value, pointX(snap.point))) };
+});
 
 function segmentPath(segment: CurvePath): string {
     const a = x(segment.begin.seconds), b = x(segment.end.seconds);
@@ -148,7 +159,6 @@ const popover = ref<HTMLElement | null>(null);
 const scaleButton = ref<HTMLButtonElement | null>(null);
 const selected = computed(() => curve.value?.points.find((point) => point.id === segmentMenu.value?.id) ?? null);
 let menuAnchor: SVGElement | null = null;
-let pointClick: { pointerId: number; x: number; y: number; pointId: number } | null = null;
 const marquee = ref<{ pointerId: number; x: number; y: number; currentX: number; currentY: number;
     ctrlKey: boolean; metaKey: boolean; shiftKey: boolean } | null>(null);
 const selectionRect = computed(() => {
@@ -184,7 +194,6 @@ function closeMenus(restoreFocus = false) {
     menuAnchor = null;
 }
 function outside(event: PointerEvent) {
-    pointClick = null;
     if (!(event.target instanceof Element) || !event.target.closest(".automation-popover, .automation-scale-button")) closeMenus();
 }
 watch(editable, (enabled) => {
@@ -245,8 +254,8 @@ const error = computed(() => {
     return node.value.address ? edits.error(node.value.address) || node.value.constructionError : "";
 });
 const curveStatus = computed(() => error.value || (editable.value && curve.value?.sampleRate ? "" : "Read-only curve"));
-const curveShortcuts = `${rightClickHint} Add point · Drag Select`;
-const pointShortcuts = `⇧Click Delete · ${rightClickHint} Segment`;
+const curveShortcuts = `${rightClickHint} Drag Add · Drag Select`;
+const pointShortcuts = `⇧Drag Keep type · ⇧Click Delete · ${rightClickHint} Segment`;
 function pointStatus(point: AutomationPoint) {
     const { id, sampleIndex, seconds, value } = point;
     return automationPointStatus({ id, sampleIndex, seconds, value });
@@ -256,10 +265,10 @@ function pointerAxes(): CurveAxes | null {
     const rect = surface.value.getBoundingClientRect();
     return { ...axes.value, left: rect.left, top: rect.top, width: rect.width, height: rect.height };
 }
-function pointCursorPosition(control: SVGElement, target: NodeAddress, id: number) {
+function pointCursorPosition(control: SVGElement | null, target: NodeAddress, id: number) {
     const svg = surface.value;
     if (!svg || !editable.value) return null;
-    if (control.isConnected) {
+    if (control?.isConnected) {
         const rect = control.getBoundingClientRect();
         const x = (rect.left + rect.right) / 2, y = (rect.top + rect.bottom) / 2;
         if (document.elementFromPoint(x, y)?.closest(".curve-point") === control) return { x, y };
@@ -284,42 +293,26 @@ function pointCursorPosition(control: SVGElement, target: NodeAddress, id: numbe
 }
 function start(event: PointerEvent, id: number, kind: CurveDragKind = "point") {
     if (!editable.value || event.button !== 0) return;
-    if (event.shiftKey) {
-        if (kind === "point") preparePointClick(event, id);
-        return;
-    }
     const axes = pointerAxes();
     const target = node.value.address;
     if (axes && target) {
         const control = event.currentTarget as SVGElement;
         control.setAttribute("data-pointer-focus", "");
         control.focus({ preventScroll: true });
-        editor?.startAutomation(event, target, id, axes, kind, kind === "point" ? () => pointCursorPosition(control, target, id) : undefined);
+        editor?.startAutomation(event, target, id, axes, kind, kind === "point" ? (pointId) => pointCursorPosition(control, target, pointId) : undefined);
     }
 }
 function clearPointerFocusStyle(event: Event) {
     if (event.target instanceof SVGElement) event.target.removeAttribute("data-pointer-focus");
 }
-function preparePointClick(event: PointerEvent, pointId: number) {
-    pointClick = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, pointId };
-}
-function applyPointClick(event: MouseEvent, pointId: number) {
-    const press = pointClick;
-    pointClick = null;
-    if (!press || press.pointId !== pointId || event.button !== 0 || !event.shiftKey
-        || (event instanceof PointerEvent && press.pointerId !== event.pointerId)
-        || Math.hypot(press.x - event.clientX, press.y - event.clientY) > 5) return;
-    event.preventDefault();
-    removePoint(pointId);
-}
-function addPoint(event: MouseEvent) {
+function pressSurface(event: PointerEvent) {
+    if (event.button !== 2) { beginSelection(event); return; }
     if (!editable.value) return;
-    event.preventDefault();
     const address = node.value.address;
     const axes = pointerAxes();
     if (!address || !axes || !curve.value?.sampleRate) return;
     surface.value?.focus({ preventScroll: true });
-    void edits.add(address, curvePointAt(axes, { x: event.clientX, y: event.clientY }, curve.value.sampleRate));
+    editor?.startAutomation(event, address, null, axes, "point", (id) => pointCursorPosition(null, address, id));
 }
 function selectionPosition(event: PointerEvent) {
     const rect = surface.value!.getBoundingClientRect();
@@ -356,7 +349,6 @@ function finishSelection(event: PointerEvent) {
     edits.selectPoints(node.value.address, ids, drag);
 }
 function cancelSelection(event: PointerEvent) {
-    pointClick = null;
     if (marquee.value?.pointerId === event.pointerId) marquee.value = null;
 }
 function deleteSelected(event: KeyboardEvent) {
@@ -419,26 +411,25 @@ const valueNavigation: LaneValueNavigation = {
         const initialZoom = valueZoom.value ?? { factor: 1, center: .5 };
         let pan = initialPan, zoom = initialZoom;
         const laneHeight = height.value;
-        return {
-            move(delta, cursor) {
-                const current = { ...axis, pan, zoom };
-                let nextPan = pan, nextZoom = zoom;
-                if (mode === "zoom" && delta.x) {
-                    const next = zoomValueAt(current, element, middleDragZoomFactor(delta.x), cursor.y);
-                    if (!next) return;
-                    ({ pan: nextPan, zoom: nextZoom } = next);
-                } else if (mode === "pan" && delta.y) {
-                    if (axis.display !== "cropped" && zoom.factor > 1)
-                        nextZoom = panCurvedAutomationValueZoom(zoom, delta.y, laneHeight);
-                    else nextPan = panAutomationValueAxis(current, delta.y, laneHeight);
-                }
-                if (nextPan === pan && nextZoom.factor === zoom.factor && nextZoom.center === zoom.center) return;
-                pan = nextPan;
-                zoom = nextZoom;
-                setValueView(nodeKey, pan, zoom);
-            },
+        const gesture = {
+            content: element.closest(".lane-content") ?? element,
             changed() { return pan !== initialPan || zoom.factor !== initialZoom.factor || zoom.center !== initialZoom.center; },
         };
+        function update(nextPan: number, nextZoom: AutomationValueZoom) {
+            if (nextPan === pan && nextZoom.factor === zoom.factor && nextZoom.center === zoom.center) return;
+            pan = nextPan;
+            zoom = nextZoom;
+            setValueView(nodeKey, pan, zoom);
+        }
+        if (mode === "zoom") return { ...gesture, mode, zoom(factor, cursorY) {
+            const next = zoomValueAt({ ...axis, pan, zoom }, element, factor, cursorY);
+            if (next) update(next.pan, next.zoom);
+        } };
+        return { ...gesture, mode, pan(deltaY) {
+            if (axis.display !== "cropped" && zoom.factor > 1)
+                update(pan, panCurvedAutomationValueZoom(zoom, deltaY, laneHeight));
+            else update(panAutomationValueAxis({ ...axis, pan, zoom }, deltaY, laneHeight), zoom);
+        } };
     },
     zoom(factor, cursorY) {
         const target = valueNavigationTarget();
@@ -480,18 +471,33 @@ onBeforeUnmount(() => {
                 :aria-label="node.displayName || 'Automation curve'" :aria-description="curveStatus || curveShortcuts"
                 :data-status-hint="curveStatus" :data-status-shortcuts="curveStatus ? undefined : curveShortcuts"
                 :tabindex="editable ? 0 : undefined" :data-lane-item-editor="editable ? '' : undefined"
-                @pointerdown.self="beginSelection" @pointermove="moveSelection" @pointerup="finishSelection"
+                @pointerdown.self="pressSurface" @pointermove="moveSelection" @pointerup="finishSelection"
                 @pointercancel="cancelSelection" @lostpointercapture.self="cancelSelection"
                 @focusout="clearPointerFocusStyle" @keydown.capture="clearPointerFocusStyle"
-                @keydown.delete.self="deleteSelected" @contextmenu.self="addPoint">
+                @keydown.delete.self="deleteSelected" @contextmenu.self.prevent>
                 <g class="value-guides" aria-hidden="true">
                     <g v-for="guide in valueGuides" :key="guide.value" :class="{ zero: guide.value === 0, unit: Math.abs(guide.value) === 1 }">
                         <line :x1="valueLabelInset" :x2="width" :y1="guide.y" :y2="guide.y" />
-                        <text v-if="!hideLabels" x="4" :y="Math.min(height - 1, Math.max(8, guide.y + 3))">{{ guide.value }}</text>
+                        <text v-if="!hideLabels && guide.value !== snapGuide?.value" x="4" :y="valueLabelY(guide.y)">{{ guide.value }}</text>
                     </g>
                 </g>
                 <path :d="path" class="curve-line" />
                 <TimelinePlayhead />
+                <g v-if="snapGuide" class="value-snap-guide" aria-hidden="true">
+                    <defs>
+                        <linearGradient :id="snapGradientId" gradientUnits="userSpaceOnUse"
+                            :x1="snapGuide.x - snapFadeWidth" :x2="snapGuide.x + snapFadeWidth" y1="0" y2="0">
+                            <stop offset="0" stop-opacity="0" />
+                            <stop offset=".25" stop-opacity=".2" />
+                            <stop offset=".5" stop-opacity=".95" />
+                            <stop offset=".75" stop-opacity=".2" />
+                            <stop offset="1" stop-opacity="0" />
+                        </linearGradient>
+                    </defs>
+                    <line :x1="valueLabelInset" :x2="width" :y1="snapGuide.y" :y2="snapGuide.y"
+                        :stroke="`url(#${snapGradientId})`" stroke-width="1.25" vector-effect="non-scaling-stroke" />
+                    <text v-if="!hideLabels" x="4" :y="valueLabelY(snapGuide.y)">{{ snapGuide.value }}</text>
+                </g>
                 <rect v-if="selectionRect" v-bind="selectionRect" class="point-selection" aria-hidden="true" />
                 <g v-for="point in handles" :key="`tension-${point.id}`" class="curve-tension"
                     :transform="`translate(${pointX(point)} ${handleY(point)})`"
@@ -510,9 +516,9 @@ onBeforeUnmount(() => {
                     :data-limited="eventValue(point) !== point.value || undefined"
                     :aria-label="`Point at ${point.sampleIndex ?? point.seconds} ${point.sampleIndex === undefined ? 'seconds' : 'samples'}, value ${point.value}${selectedIds.has(point.id) ? ', selected' : ''}`"
                     :data-status-hint="pointStatus(point)" :data-status-shortcuts="pointShortcuts"
-                    aria-description="Drag to move. Shift-click to delete. Right-click for segment options."
+                    aria-description="Drag to place. Hold Shift to keep the point type. Shift-click to delete. Right-click for segment options."
                     @pointerdown="start($event, point.id)"
-                    @click.stop="applyPointClick($event, point.id)"
+                    @click.stop
                     @keydown="pointKey($event, point)" @contextmenu.stop="editSegment($event, point)">
                     <circle class="control-target" r="8" />
                     <circle v-if="selectedIds.has(point.id)" class="selected-point-ring" r="5.5" />
@@ -558,9 +564,9 @@ onBeforeUnmount(() => {
                         @keydown.down.stop.prevent="stepBound(bound.side, -1)" @keydown.left.stop.prevent="stepBound(bound.side, -1)">
                         <KnobFace :value="bound.value" :limits="bound.limits" />
                     </button>
-                    <button type="button" class="knob-side-toggle" :aria-pressed="bound.enabled" :aria-disabled="boundsPending"
+                    <button type="button" class="knob-side-toggle knob-enable-toggle" :aria-pressed="bound.enabled" :aria-disabled="boundsPending"
                         :aria-label="`${bound.name} bound`" :data-status-hint="`${bound.enabled ? 'Disable' : 'Enable'} ${bound.name.toLowerCase()} bound`"
-                        @click="toggleBound(bound.side)">
+                        @mousedown.left.prevent @click="toggleBound(bound.side)">
                         <span aria-hidden="true">{{ bound.enabled ? '●' : '○' }}</span>
                     </button>
                 </div>
@@ -586,8 +592,11 @@ onBeforeUnmount(() => {
 .value-guides line { stroke: var(--vscode-foreground); stroke-opacity: .08; }
 .value-guides .unit line { stroke-opacity: .15; }
 .value-guides .zero line { stroke-opacity: .22; }
-.value-guides text { fill: var(--vscode-descriptionForeground); opacity: .75; font-size: 9px;
-    font-variant-numeric: tabular-nums; }
+:is(.value-guides, .value-snap-guide) text { font-size: 9px; font-variant-numeric: tabular-nums; }
+.value-guides text { fill: var(--vscode-descriptionForeground); opacity: .75; }
+.value-snap-guide { pointer-events: none; color: var(--vscode-charts-blue, #3794ff); }
+.value-snap-guide stop { stop-color: currentColor; }
+.value-snap-guide text { fill: currentColor; font-weight: 600; }
 .curve-line { fill: none; stroke: currentColor; stroke-width: 1.5; pointer-events: none; }
 .point-selection { pointer-events: none; fill: color-mix(in srgb, var(--vscode-focusBorder) 13%, transparent);
     stroke: var(--vscode-focusBorder); stroke-width: 1; }

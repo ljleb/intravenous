@@ -237,11 +237,11 @@ TEST_F(GraphJitRuntimeFixture, ModuleOutputMeterUsesItsResolvedSampleTypeAndPubl
     ASSERT_TRUE(describe.error.empty()) << describe.error;
     ASSERT_TRUE(describe.capabilities);
     ASSERT_TRUE(std::ranges::any_of(*describe.capabilities, [](auto const& capability) {
-        return capability["kind"] == "output" && capability["member"] == "main";
+        return capability["kind"] == "output" && capability["member"] == "value";
     })) << describe.capabilities->dump();
     ObservationGraphRequest subscribe{.requirements = ObservationRequirements{.revision = 13,
         .probes = {{.id = 23, .source = {.node = {.instance_id = "module-meter"},
-            .member = "main"}, .operation = "level"}}}};
+            .member = "value"}, .operation = "level"}}}};
     in_event_source([&] { project.handle_observation_request(subscribe); });
     ASSERT_TRUE(subscribe.error.empty()) << subscribe.error;
     ASSERT_TRUE(project.wait_for_compilation());

@@ -61,10 +61,10 @@ function step(direction: number) {
         @pointerdown.stop @click.stop @contextmenu="control.numeric"
         @iv-hoverenter="control.hover(true)" @iv-hoverleave="control.hover(false)">
         <span v-if="showName" class="manual-name">{{ name }}</span>
-        <button v-if="direction !== 'output'" type="button" class="knob-side-toggle manual-input-toggle"
+        <button v-if="direction !== 'output'" type="button" class="knob-side-toggle knob-enable-toggle manual-input-toggle"
             :aria-pressed="!!descriptor?.enabled" :disabled="!descriptor?.available || descriptor.live || control.dragging.value"
             :aria-label="`${name} manual value`" :data-status-hint="descriptor?.enabled ? 'Disable manual value' : 'Enable manual value'"
-            @pointerdown.stop @click.stop="control.toggleEnabled" @contextmenu.stop.prevent>
+            @pointerdown.stop @mousedown.left.prevent @click.stop="control.toggleEnabled" @contextmenu.stop.prevent>
             <span aria-hidden="true">{{ descriptor?.enabled ? '●' : '○' }}</span>
         </button>
         <button ref="knob" type="button" class="manual-knob" role="slider" :aria-label="name"
@@ -103,7 +103,6 @@ function step(direction: number) {
 .manual-input[data-direction="output"] { position: relative; gap: 0; }
 .manual-input-toggle { --knob-toggle-accent: var(--iv-sample-input); margin-inline-start: 0;
     margin-inline-end: calc(-1 * var(--output-polarity-inset, 2px)); }
-.manual-input-toggle[aria-pressed="true"] > span { color: var(--iv-sample-input); background: transparent; }
 .manual-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .manual-knob { display: block; width: var(--knob-size, 30px); height: var(--knob-size, 30px); padding: 0; border: 0; border-radius: 50%;
     background: transparent; color: var(--iv-sample-input); cursor: ns-resize; touch-action: none; user-select: none; }

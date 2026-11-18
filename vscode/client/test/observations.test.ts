@@ -77,6 +77,47 @@ test("input observations use explicit interests alongside automatic output meter
     } finally { scope.dispose(); }
 });
 
+test("default lane observations subscribe only to the requested first input, with its channels intact", { timeout: 5000 }, async () => {
+    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    type Reconcile = Extract<import("../src/observations").ObservationHostRequest, { type: "observationReconcile" }>;
+    let publish: (request: Reconcile) => void;
+    const stereo = [{ index: 0, name: "left" }, { index: 1, name: "right" }];
+    const mono = [{ index: 0, name: "center" }];
+    const scope = new PresentationObservations((request) => {
+        queueMicrotask(() => scope.receive({ type: "observationResponse", requestId: request.requestId,
+            result: request.type === "observationDescribe" ? { capabilities: [
+                { nodeIndex: 0, kind: "input", member: "a-second", operations: ["level"], channels: mono },
+                { nodeIndex: 0, kind: "input", member: "z-first", operations: ["level"], channels: stereo },
+                { nodeIndex: 0, kind: "input", member: "z-first", delivery: "window", operations: ["waveform"], channels: stereo },
+                { nodeIndex: 1, kind: "input", member: "z-first", operations: ["level"], channels: mono },
+                { nodeIndex: 1, kind: "output", member: "value", operations: ["level"], channels: mono },
+            ] } : { revision: "1" } }));
+        if (request.type === "observationReconcile") publish(request);
+    });
+    const nextRequest = () => new Promise<Reconcile>((resolve) => { publish = resolve; });
+    const sink = { instanceId: "sink" }, source = { instanceId: "source" };
+    const owner = Symbol("sink");
+    const window = { begin: "0", length: "64", points: 8 };
+    try {
+        const installed = nextRequest();
+        scope.node(owner, sink, true, window, "z-first");
+        scope.node(Symbol("source"), source, true, window);
+        const { interests } = await installed;
+        assert.deepEqual(interests.map(({ source, operation, window }) =>
+            [source.node.instanceId, source.kind, source.member, source.channel, operation, window]), [
+            ["sink", "input", "z-first", 0, "level", undefined],
+            ["sink", "input", "z-first", 1, "level", undefined],
+            ["sink", "input", "z-first", 0, "waveform", window],
+            ["sink", "input", "z-first", 1, "waveform", window],
+            ["source", "output", "value", 0, "level", undefined],
+        ]);
+
+        const changed = nextRequest();
+        scope.node(owner, sink, true, window);
+        assert.deepEqual((await changed).interests, [interests[4]]);
+    } finally { scope.dispose(); }
+});
+
 test("viewport observations clone reactive addresses and survive presentation changes", async () => {
     const { PresentationObservations } = await import("../webview/presentation/observationContext");
     const requests: import("../src/observations").ObservationHostRequest[] = [];
@@ -133,6 +174,7 @@ test("stereo meters keep their capture interests and readings across visual scal
                 : { revision: String(++revision) } }));
     });
     const node = { instanceId: "stereo", path: [] };
+    const source = { node, kind: "output" as const, member: "audio" };
     const owner = Symbol("meter");
     const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
     try {
@@ -148,9 +190,9 @@ test("stereo meters keep their capture interests and readings across visual scal
                 value: { peak: entry.source.channel === 0 ? .5 : .25, rms: .1, samples: "64", nonfinite: "0" } })) }] } });
         assert.equal(scope.values.values.size, 2);
         const beforeSwitch = requests.length;
-        scope.setMode(node, "audio", "value");
+        scope.setMode(source, "value");
         assert.equal(scope.values.values.size, 2);
-        assert.equal(scope.mode(node, "audio"), "value");
+        assert.equal(scope.mode(source), "value");
         await settle();
         assert.equal(requests.length, beforeSwitch); // No RPC or graph compilation for a scale change.
         assert.ok(scope.capabilities.value.every((entry) => entry.operation === "level"));
@@ -163,10 +205,10 @@ test("stereo meters keep their capture interests and readings across visual scal
         assert.ok(restored?.type === "observationReconcile");
         assert.deepEqual(restored.interests, value.interests);
         const beforeBack = requests.length;
-        scope.setMode(node, "audio", "level");
+        scope.setMode(source, "level");
         await settle();
         assert.equal(requests.length, beforeBack);
-        assert.equal(scope.mode(node, "audio"), "level");
+        assert.equal(scope.mode(source), "level");
         assert.deepEqual(restored.interests, initial.interests);
     } finally { scope.dispose(); }
 });
@@ -252,14 +294,18 @@ test("meter display choices persist as frontend preferences without project muta
         const scope = new PresentationObservations(() => assert.fail("no visible sources"), {
             initial: { [key]: "value" }, save: (modes) => { saved = modes; },
         });
-        assert.equal(scope.mode(source.node, source.member), "value");
-        scope.setMode(source.node, source.member, "level");
+        const input = { ...source, kind: "input" as const };
+        assert.equal(scope.mode(source), "value");
+        assert.equal(scope.mode(input), "level");
+        scope.setMode(input, "value");
+        scope.setMode(source, "level");
         assert.equal(saved[key], "level");
         scope.dispose();
         const restored = new PresentationObservations(() => assert.fail("no visible sources"), {
             initial: saved, save: () => {},
         });
-        assert.equal(restored.mode(source.node, source.member), "level");
+        assert.equal(restored.mode(source), "level");
+        assert.equal(restored.mode(input), "value");
         restored.dispose();
     });
 });

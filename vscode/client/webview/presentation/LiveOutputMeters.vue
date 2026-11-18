@@ -7,20 +7,22 @@ import OutputWaveforms from "./OutputWaveforms.vue";
 import { useTimelineWindow } from "../timeline/timelineContext";
 import { sampleWindow } from "../../src/sampleWaveform";
 import { addressKey, type NodeAddress } from "../../src/graphScope";
-import type { MeterMode } from "../../src/observations";
+import { observationSourceKey, type MeterMode, type ObservationSource } from "../../src/observations";
 import type { NodeDisplayMode } from "./displayMode";
 
 const props = defineProps<{ mode?: NodeDisplayMode; bounds?: { min: number; max: number } }>();
 const showScaleLabels = computed(() => props.mode === "editable" || props.mode === undefined);
 
 const node = useNode();
+const firstInput = computed(() => node.value.ports.some((port) => port.direction === "output") ? undefined
+    : node.value.ports.find((port) => port.direction === "input" && port.kind === "continuous")?.name);
 const observations = useObservations();
 const root = ref<HTMLElement | null>(null);
-const owner = Symbol("live output presentation");
+const owner = Symbol("live port presentation");
 const visualizationModes: Array<{ mode: MeterMode; label: string }> = [
     { mode: "level", label: "Level (dBFS)" }, { mode: "value", label: "Value (linear)" },
 ];
-const menu = ref<{ member: string; left: number; top: number; positioned: boolean } | null>(null);
+const menu = ref<{ key: string; left: number; top: number; positioned: boolean } | null>(null);
 const menuRoot = ref<HTMLElement | null>(null);
 let returnFocus: HTMLElement | null = null;
 let observer: IntersectionObserver | undefined;
@@ -34,7 +36,7 @@ const visible = ref(false);
 let current: NodeAddress | undefined;
 function updateVisibility(): void {
     visible.value = !!current && intersecting && !document.hidden;
-    if (current) observations?.node(owner, current, visible.value, observationWindow.value);
+    if (current) observations?.node(owner, current, visible.value, observationWindow.value, firstInput.value);
 }
 watch(() => node.value.address ? addressKey(node.value.address) : null, () => {
     closeMenu();
@@ -42,7 +44,7 @@ watch(() => node.value.address ? addressKey(node.value.address) : null, () => {
     current = node.value.address;
     updateVisibility();
 }, { immediate: true });
-watch(observationWindow, updateVisibility);
+watch([observationWindow, firstInput], updateVisibility);
 const items = computed(() => {
     observations?.version.value;
     const address = node.value.address;
@@ -51,43 +53,47 @@ const items = computed(() => {
         && addressKey(entry.source.node) === addressKey(address))
         .map((entry) => ({ ...entry, result: observations.values.values.get(entry.id) }));
 });
-const outputs = computed(() => {
-    const groups = new Map<string, { member: string; mode: MeterMode; channels: typeof items.value }>();
+const meters = computed(() => {
+    const groups = new Map<string, { key: string; source: ObservationSource; mode: MeterMode; channels: typeof items.value }>();
     for (const item of items.value) {
-        if (item.kind !== "output") continue;
-        let group = groups.get(item.member);
+        if (firstInput.value === undefined ? item.kind !== "output" : item.kind !== "input" || item.member !== firstInput.value) continue;
+        const key = observationSourceKey({ ...item.source, channel: undefined });
+        let group = groups.get(key);
         if (!group) {
-            group = { member: item.member, mode: observations?.mode(item.source.node, item.member) ?? "level", channels: [] };
-            groups.set(item.member, group);
+            group = { key, source: item.source, mode: observations?.mode(item.source) ?? "level", channels: [] };
+            groups.set(key, group);
         }
         group.channels.push(item);
     }
     return [...groups.values()];
 });
 const state = computed(() => items.value.filter((item) => item.kind === "stateField"));
-const selectedMode = computed(() => outputs.value.find((output) => output.member === menu.value?.member)?.mode);
-watch(outputs, () => {
-    if (menu.value && !outputs.value.some((output) => output.member === menu.value!.member)) closeMenu();
+const selectedMeter = computed(() => meters.value.find((meter) => meter.key === menu.value?.key));
+const selectedMode = computed(() => selectedMeter.value?.mode);
+watch(selectedMeter, () => {
+    if (menu.value && !selectedMeter.value) closeMenu();
 });
 watch(() => node.value.definitionId, () => closeMenu());
-function switchMode(member: string, mode: MeterMode): void {
-    if (current) observations?.setMode(current, member, mode);
+function switchMode(mode: MeterMode): void {
+    if (selectedMeter.value) observations?.setMode(selectedMeter.value.source, mode);
     closeMenu(true);
 }
 function channelLabel(item: PresentedObservation): string {
-    return item.channels && item.channels.length > 1 ? `${item.member} · ${item.channelName}` : item.member;
+    const name = item.kind === "input" ? `Input ${item.member}` : item.member;
+    return item.channels && item.channels.length > 1 ? `${name} · ${item.channelName}` : name;
 }
 function closeMenu(restoreFocus = false): void {
     menu.value = null;
     if (restoreFocus && returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
     returnFocus = null;
 }
-async function openMenu(event: MouseEvent | KeyboardEvent, member: string): Promise<void> {
+async function openMenu(event: MouseEvent | KeyboardEvent, key: string): Promise<void> {
     if (event instanceof KeyboardEvent && event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
     event.preventDefault(); event.stopPropagation();
-    returnFocus = event.target instanceof Element ? event.target.closest<HTMLElement>("[role='meter']") : null;
-    const rect = returnFocus?.getBoundingClientRect();
-    menu.value = { member, left: event instanceof MouseEvent ? event.clientX : rect?.left ?? 0,
+    const meter = event.target instanceof Element ? event.target.closest<HTMLElement>("[role='meter']") : null;
+    returnFocus = meter === document.activeElement ? meter : null;
+    const rect = meter?.getBoundingClientRect();
+    menu.value = { key, left: event instanceof MouseEvent ? event.clientX : rect?.left ?? 0,
         top: event instanceof MouseEvent ? event.clientY : rect?.bottom ?? 0, positioned: false };
     const opened = menu.value;
     await nextTick();
@@ -149,16 +155,16 @@ onBeforeUnmount(() => {
 
 <template>
     <div ref="root" class="live-outputs" :data-mode="mode" :aria-description="observations?.error.value || undefined">
-        <div v-for="output in outputs" :key="output.member" class="output-group"
-            @contextmenu="openMenu($event, output.member)" @keydown="openMenu($event, output.member)">
+        <div v-for="meter in meters" :key="meter.key" class="output-group"
+            @contextmenu="openMenu($event, meter.key)" @keydown="openMenu($event, meter.key)">
             <div class="output-channels">
-                <div v-for="item in output.channels" :key="JSON.stringify([node.definitionId, item.id])" class="channel">
-                    <SampleMeter :mode="output.mode" :label="channelLabel(item)" :result="item.result" :active="visible"
+                <div v-for="item in meter.channels" :key="JSON.stringify([node.definitionId, item.id])" class="channel">
+                    <SampleMeter :mode="meter.mode" :label="channelLabel(item)" :result="item.result" :active="visible"
                         :show-scale-labels="showScaleLabels" />
                 </div>
             </div>
         </div>
-        <OutputWaveforms :mode="mode" :bounds="bounds" />
+        <OutputWaveforms :mode="mode" :bounds="bounds" :input-member="firstInput" />
         <div v-for="item in state" :key="item.id" class="state-field">
             <span class="output-name">{{ item.member }}</span>
             <output :aria-label="item.member">{{ item.result?.available ? stateText(item.result.value?.value) : '—' }}</output>
@@ -170,7 +176,7 @@ onBeforeUnmount(() => {
             :style="{ left: `${menu.left}px`, top: `${menu.top}px` }" @keydown="menuKey" @contextmenu.prevent>
             <button v-for="choice in visualizationModes" :key="choice.mode" type="button" role="menuitemradio"
                 :aria-checked="selectedMode === choice.mode" :tabindex="selectedMode === choice.mode ? 0 : -1"
-                @click.stop="switchMode(menu.member, choice.mode)">
+                @click.stop="switchMode(choice.mode)">
                 <span aria-hidden="true">{{ selectedMode === choice.mode ? '✓' : '' }}</span>{{ choice.label }}
             </button>
         </div>

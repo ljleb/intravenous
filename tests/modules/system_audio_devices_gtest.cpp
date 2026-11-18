@@ -496,7 +496,7 @@ TEST(SystemAudioDevices, PlaybackUnderrunDropsTheDevicesCurrentInputSlice)
     (void)executor.set_playback_running(true);
     devices.attach_graph_executor(executor);
     auto const before_recovery = request_output_block(output, 2 * block);
-    auto const position_after_failure = executor.playback_snapshot().position;
+    auto const position_after_failure = executor.playback_snapshot().background_playhead;
     auto const seek = executor.seek_playback({});
     auto const recovered = request_output_block(output, block);
     devices.detach_graph_executor(executor);

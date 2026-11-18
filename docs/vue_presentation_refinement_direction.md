@@ -88,6 +88,11 @@ channel readings within that full-width area, with aligned graduations and
 legible levels. Do not sacrifice input/output controls or force an artificial
 lane width to achieve the fill; the meter adapts to the available space.
 
+A default lane with no output ports observes its first continuous input when
+the input supports Sample observation. It uses the same per-channel meter for
+live level data and the same waveform view for windowed observations. Lanes
+with outputs show their usual output observations.
+
 The default visualization fills its allocated viewport without surrounding
 horizontal or vertical padding. Keep the channels distinguishable; spacing
 between channels is separate from an outer margin around the visualization.
@@ -400,20 +405,23 @@ knobs, cables and legend/status descriptions.
 
 ## 5. Automation editing and graph-authored snapping
 
-Keep the current cyclic `CurvePointEvent` semantics and Tock/computed
-interpreter: point IDs, outgoing `empty`/`hold`/automatic `bezier` segments,
-tension, stable equal-index order, and sparse coverage do not change.
-Refine the Vue curve editor's gestures as follows:
+The Tock interpreter computes samples from cyclic `CurvePointEvent` events.
+It reads each point's outgoing `empty`, `hold`, or automatic `bezier` segment.
+Point IDs stay stable when points move. The project stores the chosen order at equal indices.
 
-- **Left-click and drag a point** to move it. Grabbing an unselected point
-  leaves the current selection alone. Grabbing a selected point moves the
-  selected points together.
+- Left-drag a single point to move it with its curve.
+- Hold Shift during a single-point drag to keep the point's original type
+  and tension. Press or release Shift to change modes at the current sample.
+- Drag an unselected point to move it without changing the selection. Drag
+  a selected point to move the selected points together.
 - **Left-drag empty space** to select the points inside the rectangle. Ctrl
   toggles those points and Shift adds them.
 - **Shift+click a point** deletes it.
 - **Right-click an existing point** opens the segment menu for its outgoing
   curve type, tension, and **Delete point**.
-- **Right-click empty space** adds a point. Point hit testing takes precedence.
+- **Right-press empty space** adds a point at the nearest sample and starts
+  placing it immediately. Point hit testing takes precedence. The first point
+  on a blank curve is empty. Shift keeps the new point's initial type and tension.
   The [previous gestures](historical/vue_lane_and_point_selection_before_2026-11-18.md)
   remain available for context.
 - Provide a **tension handle near each applicable control point**, manipulable
@@ -421,10 +429,36 @@ Refine the Vue curve editor's gestures as follows:
   parameter used by the backend, keeping exact linear interpolation at `0` and
   the automatic clamped curve at `1`. Do not introduce manual Bézier handles.
 
+When adding a point in a gap, connect it to the nearer edge by sample distance
+along the index circle. At equal distances, connect it to the following edge.
+Keep the other side empty. Use the neighboring covered segment's type and
+tension. Use Bézier with tension 1 if the edge has no covered neighbor.
+
+When dragging an existing endpoint through a gap, keep it attached to its curve.
+The point can touch another curve while keeping its place in the first curve.
+When it crosses into the second curve, the previous neighbor becomes the end of
+the first curve. The dragged point stays attached to the second curve if it
+moves back into the gap. It rejoins the first curve when it crosses that edge.
+
+A point within its original covered span keeps its type and tension. If it
+moves into another covered span, it uses that span's type and tension. Keep
+track of crossed edges while Shift is held. When Shift is released, use the
+current attachment at the same sample.
+
+In both single-point drag modes, each neighbor has a time detent. A detent
+holds the point at the neighbor's sample while the pointer moves. In the
+first half, the dragged point comes before the neighbor. In the second half,
+the dragged point comes after it. If several neighbors share the sample,
+the detent treats them as a group and preserves their relative order.
+
 Point edits continue through typed node messages, draft reconciliation and one
-undoable gesture per completed manipulation. The handle, menu, and drag
+undoable gesture per completed manipulation. Insertion publishes on press and
+sends periodic updates as the pointer moves. Each placement update applies
+the point and related segment edits together. The handle, menu, and drag
 interactions must remain coherent across presentation remounts and accepted
 backend revisions; no direct mutation of DSP storage from Vue.
+
+[Previous point placement and drag modes](./historical/automation_point_drag_before_time_detents_2026-11-18.md).
 
 ### Value display and panning (2026-11-18)
 
@@ -436,7 +470,11 @@ affect only the lane view.
 
 **Alt+Shift+middle-button drag** across an automation lane changes its value
 zoom. Horizontal motion changes the scale around the value at the pointer's
-height. **Alt+Shift+scroll** over the lane also zooms its value axis around
+height. Drag left to zoom in or right to zoom out, as with Alt+middle-button
+drag on the graph. The timeline supplies the same zoom factor to every lane
+editor that supports this gesture.
+
+**Alt+Shift+scroll** over the lane also zooms its value axis around
 the pointer's height. **Shift+middle-button double-click** resets both value
 pan and zoom.
 In Curved display, zoom-out widens the arctangent scale when at least one
@@ -445,6 +483,11 @@ finite bounds, zoom-out stops when the full range fits.
 The value anchor continues in the same direction when the pointer wraps.
 The status bar shows how many screens above or below the visible lane the
 anchor has moved.
+
+While a dragged point is held at a value snap, draw a thin blue guide that is
+brightest under the point and fades horizontally. Brighten the matching value
+label on the left. Clear both highlights when the point leaves the snap or the
+drag ends.
 
 When bounds are supplied by signals, show their observed value curves and use
 the minimum of the visible lower bound and the maximum of the visible upper
@@ -546,7 +589,8 @@ distinct enabled bounds, map the value height linearly between them. With one
 or no enabled bounds, use the curved mapping from the one-sided or unbounded
 knob. If both bounds are equal, show the constant value with room around it.
 Shift and middle-drag pans the value scale when at most one bound is enabled.
-The same gesture pans the timeline horizontally.
+The same gesture pans the timeline horizontally. The cursor wraps within the
+visible lane content to the right of the lane header.
 With neither bound, shift the center of the arctangent scale. With one bound,
 keep that edge fixed and change the distance from it to the midpoint. The
 graph layout saves the lane's pan. Shift and a double middle click restores

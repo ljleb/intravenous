@@ -1181,28 +1181,28 @@ TEST(ProjectPlayback, CommandsAreOrderedAndAppliedOnlyAtBlockBoundaries)
     EXPECT_LT(seek, play);
     EXPECT_EQ(playback.snapshot().applied_command, 0u);
     auto selected = playback.begin_block(48000);
-    EXPECT_EQ(selected.state.execution_index, index(100));
+    EXPECT_EQ(selected.state.foreground_playhead, index(100));
     EXPECT_FALSE(selected.audition);
     EXPECT_EQ(playback.snapshot().applied_command, 0u);
     playback.end_block(selected, 16);
     auto state = playback.snapshot();
-    EXPECT_EQ(state.position, index(116));
+    EXPECT_EQ(state.background_playhead, index(116));
     EXPECT_EQ(state.start_position, index(100));
-    EXPECT_EQ(state.execution_index, index(116));
+    EXPECT_EQ(state.foreground_playhead, index(116));
     EXPECT_TRUE(state.running);
     EXPECT_EQ(state.applied_command, play);
     EXPECT_EQ(state.segment, 2u);
     (void)playback.toggle();
     (void)playback.toggle();
     selected = playback.begin_block(48000);
-    EXPECT_EQ(selected.state.execution_index, index(100));
+    EXPECT_EQ(selected.state.foreground_playhead, index(100));
     EXPECT_TRUE(selected.state.running);
 }
 
 TEST(ProjectPlayback, PauseReturnsToTheSelectedStartWithoutAudition)
 {
     iv::ProjectPlayback playback;
-    EXPECT_EQ(playback.snapshot().position, index(0));
+    EXPECT_EQ(playback.snapshot().background_playhead, index(0));
     EXPECT_EQ(playback.snapshot().start_position, index(0));
     EXPECT_FALSE(playback.snapshot().running);
     playback.end_block(playback.begin_block(48000), 8);
@@ -1211,36 +1211,36 @@ TEST(ProjectPlayback, PauseReturnsToTheSelectedStartWithoutAudition)
     auto selected = playback.begin_block(48000);
     EXPECT_EQ(selected.selection().held_position, index(-10));
     EXPECT_TRUE(selected.audition);
-    EXPECT_EQ(selected.state.execution_index, index(8));
+    EXPECT_EQ(selected.state.foreground_playhead, index(8));
     EXPECT_EQ(playback.snapshot().start_position, index(0));
     playback.end_block(selected, 8);
     EXPECT_EQ(playback.snapshot().start_position, index(-10));
-    EXPECT_EQ(playback.snapshot().execution_index, index(16));
+    EXPECT_EQ(playback.snapshot().foreground_playhead, index(16));
 
     (void)playback.toggle();
     playback.end_block(playback.begin_block(48000), 8);
     (void)playback.seek(index(50));
     playback.end_block(playback.begin_block(48000), 8);
-    EXPECT_EQ(playback.snapshot().position, index(58));
+    EXPECT_EQ(playback.snapshot().background_playhead, index(58));
 
     auto const pause = playback.set_running(false);
     selected = playback.begin_block(48000);
     EXPECT_EQ(selected.selection().held_position, index(50));
-    EXPECT_EQ(selected.state.execution_index, index(58));
+    EXPECT_EQ(selected.state.foreground_playhead, index(58));
     EXPECT_FALSE(selected.audition);
     // Old playback can continue while the return position is being prepared.
     playback.end_block(playback.current_block(48000), 8);
     selected = playback.begin_block(48000);
-    EXPECT_EQ(playback.snapshot().position, index(66));
-    EXPECT_EQ(selected.state.execution_index, index(66));
+    EXPECT_EQ(playback.snapshot().background_playhead, index(66));
+    EXPECT_EQ(selected.state.foreground_playhead, index(66));
     playback.end_block(selected, 8);
     EXPECT_EQ(playback.snapshot().applied_command, pause);
-    EXPECT_EQ(playback.snapshot().position, index(50));
+    EXPECT_EQ(playback.snapshot().background_playhead, index(50));
     EXPECT_EQ(playback.snapshot().start_position, index(50));
-    EXPECT_EQ(playback.snapshot().execution_index, index(74));
+    EXPECT_EQ(playback.snapshot().foreground_playhead, index(74));
     EXPECT_FALSE(playback.snapshot().running);
     (void)playback.toggle();
-    EXPECT_EQ(playback.begin_block(48000).state.execution_index, index(50));
+    EXPECT_EQ(playback.begin_block(48000).state.foreground_playhead, index(50));
 }
 
 TEST(ProjectPlayback, FullCommandQueueRejectsNewCommandsWithoutReplacingAcceptedCommands)
@@ -1251,7 +1251,7 @@ TEST(ProjectPlayback, FullCommandQueueRejectsNewCommandsWithoutReplacingAccepted
     EXPECT_THROW((void)playback.seek(index(1000)), std::runtime_error);
     auto selected = playback.begin_block(48000);
     EXPECT_EQ(selected.selection().held_position, index(255));
-    EXPECT_EQ(selected.state.execution_index, index(0));
+    EXPECT_EQ(selected.state.foreground_playhead, index(0));
     EXPECT_EQ(selected.state.applied_command, last);
     EXPECT_EQ(playback.snapshot().applied_command, 0u);
     auto next = playback.seek(index(-5));
@@ -1273,29 +1273,29 @@ TEST(ProjectPlayback, DragHoldsWhilePreparingAndResumesFromItsReleasePosition)
     EXPECT_TRUE(candidate.audition);
     auto const fallback = playback.current_block(48000);
     EXPECT_EQ(fallback.selection().held_position, index(16));
-    EXPECT_EQ(fallback.state.execution_index, index(16));
+    EXPECT_EQ(fallback.state.foreground_playhead, index(16));
     EXPECT_FALSE(fallback.audition);
     playback.end_block(fallback, 16);
     EXPECT_FALSE(playback.snapshot().running);
     EXPECT_EQ(playback.snapshot().start_position, index(0));
-    EXPECT_EQ(playback.snapshot().execution_index, index(32));
+    EXPECT_EQ(playback.snapshot().foreground_playhead, index(32));
     EXPECT_LT(playback.snapshot().applied_command, *begin);
 
     (void)playback.drag({Phase::move, 1}, index(200));
     candidate = playback.begin_block(48000);
     EXPECT_EQ(candidate.selection().held_position, index(200));
-    EXPECT_EQ(candidate.state.execution_index, index(32));
+    EXPECT_EQ(candidate.state.foreground_playhead, index(32));
     playback.end_block(candidate, 16);
 
     (void)playback.drag({Phase::end, 1}, index(300));
     candidate = playback.begin_block(48000);
     EXPECT_EQ(playback.current_block(48000).selection().held_position, index(200));
     EXPECT_TRUE(candidate.state.running);
-    EXPECT_EQ(candidate.state.execution_index, index(300));
+    EXPECT_EQ(candidate.state.foreground_playhead, index(300));
     EXPECT_FALSE(candidate.audition);
     playback.end_block(candidate, 16);
     EXPECT_EQ(playback.snapshot().start_position, index(300));
-    EXPECT_EQ(playback.snapshot().execution_index, index(316));
+    EXPECT_EQ(playback.snapshot().foreground_playhead, index(316));
     (void)playback.toggle();
     EXPECT_EQ(playback.begin_block(48000).selection().held_position, index(300));
 }
@@ -1313,7 +1313,7 @@ TEST(ProjectPlayback, QuickDragRestoresTheOrderedRunningState)
     auto const candidate = playback.begin_block(48000);
     EXPECT_TRUE(candidate.state.running);
     EXPECT_EQ(candidate.state.applied_command, *end);
-    EXPECT_EQ(candidate.state.execution_index, index(-40));
+    EXPECT_EQ(candidate.state.foreground_playhead, index(-40));
 }
 
 TEST(ProjectPlayback, PausedDragReleasePreservesItsLastAudition)
@@ -1353,7 +1353,7 @@ TEST(ProjectPlayback, RunningPositionWrapsThroughTheSignedSampleSeam)
     (void)playback.seek(index(std::numeric_limits<std::int64_t>::max()));
     (void)playback.set_running(true);
     playback.end_block(playback.begin_block(96000), 2);
-    EXPECT_EQ(playback.snapshot().position, index(std::numeric_limits<std::int64_t>::min() + 1));
+    EXPECT_EQ(playback.snapshot().background_playhead, index(std::numeric_limits<std::int64_t>::min() + 1));
     EXPECT_EQ(playback.snapshot().sample_rate, 96000);
 }
 
@@ -1365,28 +1365,28 @@ TEST_F(GraphExecutorFixture, DeviceRenderingKeepsLiveTickStateAcrossPauseResumeA
     executor.render_block(32, 48000);
     auto* storage = first_tick.storage;
     EXPECT_EQ(first_tick.sample_index, index(0));
-    EXPECT_EQ(executor.playback_snapshot().position, index(0));
+    EXPECT_EQ(executor.playback_snapshot().background_playhead, index(0));
     EXPECT_FALSE(executor.playback_snapshot().running);
     (void)executor.set_playback_running(true);
     executor.render_block(32, 48000);
     EXPECT_EQ(first_tick.sample_index, index(0));
-    EXPECT_EQ(executor.playback_snapshot().position, index(32));
+    EXPECT_EQ(executor.playback_snapshot().background_playhead, index(32));
     auto paused = executor.set_playback_running(false);
     executor.render_block(32, 48000);
     EXPECT_EQ(first_tick.sample_index, index(32));
     EXPECT_EQ(executor.playback_snapshot().applied_command, paused);
     executor.render_block(32, 48000);
     EXPECT_EQ(first_tick.sample_index, index(64));
-    EXPECT_EQ(executor.playback_snapshot().position, index(0));
+    EXPECT_EQ(executor.playback_snapshot().background_playhead, index(0));
     EXPECT_FALSE(executor.playback_snapshot().running);
     (void)executor.seek_playback(index(-100));
     executor.render_block(32, 48000);
     EXPECT_EQ(first_tick.sample_index, index(96));
-    EXPECT_EQ(executor.playback_snapshot().position, index(-100));
+    EXPECT_EQ(executor.playback_snapshot().background_playhead, index(-100));
     (void)executor.set_playback_running(true);
     executor.render_block(32, 48000);
     EXPECT_EQ(first_tick.sample_index, index(-100));
-    EXPECT_EQ(executor.playback_snapshot().position, index(-68));
+    EXPECT_EQ(executor.playback_snapshot().background_playhead, index(-68));
     EXPECT_EQ(first_tick.calls, 6u);
     EXPECT_EQ(first_tick.storage, storage);
     EXPECT_EQ(executor.active_generation(), 1u);

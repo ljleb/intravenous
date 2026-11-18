@@ -273,7 +273,7 @@ TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPoi
         (void)iv::details::take_built_graph(session.get());
     }
     session.reset();
-    ASSERT_EQ(handlers.size(), 5u);
+    ASSERT_EQ(handlers.size(), 6u);
     struct Capture {
         std::string definition;
         std::string arguments;
@@ -314,6 +314,36 @@ TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPoi
     EXPECT_EQ(added[0][3]["interpolation"], "hold");
     auto const exact = invoke("AddPoint", {{"point", {{"id", 4}, {"value", .25}, {"sample_index", "9007199254740993"}}}});
     EXPECT_EQ(exact[0][3]["sample_index"], "9007199254740993");
+    auto placed = invoke("PlacePoint", {
+        {"insert", true},
+        {"point", {{"id", 4}, {"sample_index", "9007199254740993"}, {"value", .5},
+            {"interpolation", "empty"}, {"tension", 1.0}}},
+        {"segments", {{{"id", 3}, {"interpolation", "hold"}, {"tension", .5}}}},
+    });
+    ASSERT_EQ(placed[0].size(), 4u);
+    EXPECT_EQ(placed[0][2]["interpolation"], "hold");
+    EXPECT_EQ(placed[0][2]["tension"], .5);
+    EXPECT_EQ(placed[0][3]["interpolation"], "empty");
+    EXPECT_EQ(placed[0][3]["sample_index"], "9007199254740993");
+    // Persist the chosen order even when a legacy point and an exact point
+    // occupy the same sample. The point IDs still identify their values.
+    auto const coincident = invoke("PlacePoint", {
+        {"insert", true}, {"point", {{"id", 4}, {"sample_index", "0"}, {"value", .5}}},
+        {"ordered_ids", {4, 1}},
+    });
+    EXPECT_EQ(coincident[0][0]["id"], 1);
+    EXPECT_EQ(coincident[0][0]["order"], 1);
+    EXPECT_EQ(coincident[0][3]["id"], 4);
+    EXPECT_EQ(coincident[0][3]["order"], 0);
+    EXPECT_TRUE(iv::automation::point_order_less({.id = 4}, {.id = 1, .order = 1}));
+    EXPECT_THROW(invoke("PlacePoint", {
+        {"insert", true}, {"point", {{"id", 4}}}, {"ordered_ids", {4, 4}},
+    }), std::invalid_argument);
+    EXPECT_TRUE(capture.definition.empty());
+    EXPECT_THROW(invoke("PlacePoint", {
+        {"insert", true}, {"point", {{"id", 4}}}, {"segments", {{{"id", 99}}}},
+    }), std::invalid_argument);
+    EXPECT_TRUE(capture.definition.empty());
     auto edited = invoke("SetSegment", {{"id", 2}, {"interpolation", "empty"}, {"tension", .5}});
     EXPECT_EQ(edited[0][1]["interpolation"], "empty");
     EXPECT_EQ(edited[0][1]["tension"], .5);

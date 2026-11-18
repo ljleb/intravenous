@@ -17,13 +17,14 @@ The superseded paused-suppression and recording interpretations are preserved
 
 ## Project position and display units
 
-The backend owns one applied playback position for the project session. A
-playhead is the presentation of that position. Scrolling or zooming a viewport
-does not change playback position. Multiple clients observe the same backend
-position.
+The backend owns one applied playback position for the project session.
+The **background playhead** shows that position. The **foreground playhead**
+shows the foreground Tick execution position. Scrolling or zooming a viewport
+does not change either position. Multiple clients observe the same backend
+positions.
 
-Seconds and project sample indices are two displays of that position. Seconds
-use the project sample rate, not the hardware device rate or a port's pace.
+Seconds and project sample indices are two ways to display these positions.
+Seconds use the project sample rate, not the hardware device rate or a port's pace.
 At 48,000 project samples per second, sample index 48,000 is one second.
 
 The initial playback controls select integer project sample positions through
@@ -52,12 +53,13 @@ create a project undo entry merely because a macro requested it. See
 There are **two project-coordinate trajectories**, not two independently
 executing node graphs:
 
-- The **applied playhead position** selects project-time background content.
-  It advances while running, and holds its selected position while paused.
-- The **foreground Tick global coordinate** is the node-visible
-  `FractionalGlobalIndex` (`ctx.index`) of the current Tick invocation. It
-  advances during successful foreground execution even when paused. Explicit
-  relocation can change its next global coordinate.
+- The **background playhead** selects project-time background content. It
+  advances while running and holds its applied position while paused.
+- The **foreground playhead** gives the starting global index of the next Tick
+  block. Each Tick invocation derives its node-visible `FractionalGlobalIndex`
+  (`ctx.index`) from that coordinate. The foreground playhead advances during
+  successful foreground execution even when paused. Explicit relocation can
+  change its next global coordinate.
 
 While running, both trajectories are aligned. While paused, they are
 independent. A third, compiler-owned **physical Sequential cursor** orders
@@ -66,18 +68,18 @@ node-visible time, and it continues contiguously across global-coordinate
 jumps. The physical audio-device clock is likewise not another project
 cursor. See [Global Indexing](./global_indexing.md#sequential-execution-order).
 
-Each new project session opens paused with its applied playhead and selected
+Each new project session opens paused with its background playhead and selected
 start at sample index zero. Every explicit seek sets the selected start when
 applied, including seeks during playback. Running Tick blocks advance the
-playhead independently of the remembered start. Play/Pause returns to that
-start when stopping, and the next Play begins there. The selected start
+background playhead independently of the remembered start. Play/Pause returns
+to that start when stopping, and the next Play begins there. The selected start
 belongs to the shared session. The previous startup and pause behavior is
 [preserved historically](./historical/playback_before_return_to_start_2026-11-17.md).
 
 The following is the semantic command table (the command becomes effective at
 a Tick boundary, possibly after preparation):
 
-| Action | Applied playhead | Next `ctx.index` |
+| Action | Background playhead | Foreground playhead |
 | --- | --- | --- |
 | Running Tick block | Advances with executed block | Advances with executed block, aligned |
 | Pause | Returns to the last selected start and holds there | Continues advancing on executed blocks |
@@ -265,27 +267,29 @@ must be defined so the last intended destination is not lost and so an
 obsolete request cannot indefinitely block a newer one.
 
 The frontend may display a **ghost/requested cursor** immediately at a pending
-destination while continuing to display the **applied playhead** separately.
+destination while continuing to display the **applied background playhead**
+separately.
 Applied position and running state come from coherent backend snapshots.
 The applied cursor, not the requested ghost position, identifies which data
 were actually selected for execution. No project edit or graph rebuild is
 created by merely seeking or drawing a ghost cursor.
 
 A click on the project time ruler seeks in the current transport mode. When a
-drag starts, playback pauses and the displayed playhead follows the pointer.
+drag starts, playback pauses and the displayed background playhead follows
+the pointer.
 The graph holds the last applied position until the drag position is ready.
 Releasing the pointer selects the release position as the new start. Playback
 resumes from that position if it was running when the drag began. A play or
 pause command during the drag sets the state to restore on release.
 
-Inside lanes, the playhead is drawn on surfaces with a project time axis, such
+Inside lanes, the playheads are drawn on surfaces with a project time axis, such
 as an automation curve or a waveform. Controls and live meters keep a clear
 view of their own content.
 
 The project ruler marks the selected start when that position is in view.
-A faint cursor tracks the foreground Tick coordinate on the ruler and on
-lane surfaces with a project time axis. The faint cursor appears when it
-differs from the displayed project playhead.
+The foreground playhead appears as a faint cursor on the ruler and on lane
+surfaces with a project time axis when it differs from the displayed
+background playhead.
 
 The background scheduler should preserve demand for the **currently applied**
 position/window while preparing a different pending destination. Forward

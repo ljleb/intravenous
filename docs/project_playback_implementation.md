@@ -8,12 +8,12 @@ to the owner.
 The normative contract is
 [Project Playback And Presentation Grids](./project_playback_and_presentation_grids_direction.md).
 Implement one coherent path: `GraphExecutor` applies ordered session commands
-at Tick boundaries, distinguishes the held playhead from the advancing foreground
-`ctx.index`, prepares background windows, and selects actual covered background
+at Tick boundaries, tracks the background and foreground playheads, prepares
+background windows, and selects actual covered background
 inputs even while paused. It delivers selected Events once per applied paused seek.
 Live Tick processing and history continue. RPC exposes
-accepted commands and coherent applied snapshots; Vue draws the shared
-playhead, displays samples/seconds, and provides controls independently of
+accepted commands and coherent applied snapshots. Vue draws both playheads,
+displays samples and seconds, and provides controls independently of
 viewport navigation. No graph rebuild or project undo entry follows a seek.
 
 Implementation order:
@@ -378,10 +378,12 @@ queue slot for release. When the drag position needs preparation,
 applying the request. The editor accepts Space with focus on the ruler or
 blank graph surface, even when no lane is selected.
 
-`ProjectPlaybackSnapshot` publishes the selected start and the next
-foreground Tick index with the project playhead. The ruler shows the
-selected start as a triangle. The faint cursor follows the foreground Tick
-index on the ruler, automation curves, and waveform views.
+`ProjectPlaybackSnapshot::background_playhead` is the applied position that
+selects background content. `ProjectPlaybackSnapshot::foreground_playhead`
+is the next foreground Tick index. JSON-RPC carries them in `position` and
+`executionIndex`, respectively. The foreground playhead is the faint cursor
+on the ruler, automation curves, and waveform views. The ruler shows the
+selected start as a triangle.
 
 Regressions cover startup, running seeks, return to the start, drag command
 ordering, drag release, and Event audition at a held position. Builds and

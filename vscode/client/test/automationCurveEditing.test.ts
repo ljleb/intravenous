@@ -24,12 +24,14 @@ function scope(revision = 1, value: GraphScopeNode["construction"] = constructio
 function harness(send: (event: NodeEvent) => Promise<void> = async () => {}, revision?: number) {
     let callback: (() => void) | null = null;
     let closed = 0;
+    let changes = 0;
     const direct: unknown[] = [];
     const edits = new AutomationCurveEditing({ send: async (_target, event) => { direct.push(serializeNodeEvent(event)); },
-        gesture: () => ({ send, finish: async () => { ++closed; }, acceptedRevision: () => revision }) }, () => {},
+        gesture: () => ({ send, finish: async () => { ++closed; }, acceptedRevision: () => revision }) }, () => { ++changes; },
         { set: (run) => { callback = run; return 1; }, clear: () => { callback = null; } });
     edits.reconcile(scope());
-    return { edits, direct, runTimer: () => { const run = callback; callback = null; run?.(); }, closed: () => closed };
+    return { edits, direct, runTimer: () => { const run = callback; callback = null; run?.(); },
+        closed: () => closed, changes: () => changes };
 }
 
 test("point drags retain the grab offset and a click without movement makes no semantic edit", async () => {
@@ -185,7 +187,7 @@ test("coalescing keeps the latest point while a message runs, and release flushe
     // A component remount only changes who reads this store.
     const remountedView = () => h.edits.drafts(target);
     h.edits.move(7, { x: 40, y: 25 });
-    assert.deepEqual(remountedView(), [{ id: 1, seconds: 4, sampleIndex: 192000n, value: .75 }]);
+    assert.deepEqual(remountedView(), [{ ...construction.arguments[0][0], seconds: 4, sampleIndex: 192000n, value: .75 }]);
     assert.deepEqual(h.edits.activePoint(), remountedView()[0]);
     const finished = h.edits.finish();
     assert.equal(h.edits.activePoint(), null);
@@ -202,7 +204,7 @@ test("the released draft survives old reads and yields to the accepted revision 
     h.edits.move(7, { x: 40, y: 25 });
     await h.edits.finish();
     h.edits.reconcile(scope(7));
-    assert.deepEqual(h.edits.drafts(target), [{ id: 1, seconds: 4, sampleIndex: 192000n, value: .75 }]);
+    assert.deepEqual(h.edits.drafts(target), [{ ...construction.arguments[0][0], seconds: 4, sampleIndex: 192000n, value: .75 }]);
     const other = structuredClone(construction);
     (other.arguments[0] as Array<{ value: number }>)[0].value = .25;
     h.edits.reconcile(scope(9, other));
@@ -267,8 +269,8 @@ test("successive point drags preserve each pending preview until its accepted sc
     h.edits.begin(target, 2, 8, axes);
     h.edits.move(8, { x: 70, y: 25 });
     assert.deepEqual(h.edits.drafts(target), [
-        { id: 1, seconds: 2, sampleIndex: 96000n, value: .5 },
-        { id: 2, seconds: 7, sampleIndex: 336000n, value: .75 },
+        { ...construction.arguments[0][0], seconds: 2, sampleIndex: 96000n },
+        { ...construction.arguments[0][1], seconds: 7, sampleIndex: 336000n, value: .75 },
     ]);
     await h.edits.finish();
     const window = automationWindow(h.edits.view(target)!, 0, 10, h.edits.drafts(target));
@@ -360,9 +362,199 @@ test("segment edits use typed messages and preserve the accepted curve until its
     assert.equal(h.edits.view(target)!.points[0].interpolation, "bezier");
     assert.equal(h.direct.length, 1);
     assert.deepEqual((h.direct[0] as { payload: unknown }).payload, { id: 1, interpolation: "empty", tension: .5 });
-    await h.edits.add(target, { seconds: 3, value: .25 });
-    assert.deepEqual((h.direct[1] as { payload: unknown }).payload,
-        { point: { id: 3, seconds: 0, value: .25, interpolation: "bezier", tension: 1, sample_index: "144000" } });
+});
+
+test("a new point is sent immediately and follows the nearer gap edge while dragging", async () => {
+    const sent: unknown[] = [];
+    const h = harness(async (event) => { sent.push(serializeNodeEvent(event).payload); });
+    const data = { ...construction, arguments: [[
+        { id: 1, seconds: 0, value: 1, interpolation: "hold", tension: 1 },
+        { id: 2, seconds: 1, value: 1, interpolation: "empty", tension: .75 },
+        { id: 3, seconds: 9, value: 0, interpolation: "bezier", tension: .4 },
+        { id: 4, seconds: 10, value: 1, interpolation: "empty", tension: 1 },
+    ]] };
+    h.edits.reconcile(scope(2, data));
+    assert.equal(h.edits.begin(target, null, 7, axes, { x: 20, y: 50 }), true);
+    const point = { id: 5, seconds: 0, value: .5, tension: 1, interpolation: "empty", sample_index: "96000", order: 0 };
+    assert.deepEqual(sent, [{ insert: true, point, segments: [{ id: 2, interpolation: "hold", tension: 1 }], ordered_ids: [] }]);
+    h.edits.reconcile(scope(2, data));
+    assert.equal(h.edits.pointerId(), 7);
+    assert.ok(automationWindow(h.edits.view(target)!, 0, 10, h.edits.drafts(target)).points.some(({ id }) => id === 5));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    h.edits.moveBy(7, { x: 50, y: 0 });
+    h.runTimer();
+    assert.deepEqual(sent[1], { insert: false,
+        point: { ...point, interpolation: "bezier", tension: .4, sample_index: "336000" },
+        segments: [{ id: 2, interpolation: "empty", tension: .75 }], ordered_ids: [] });
+    assert.equal(h.edits.drafts(target).find((draft) => draft.id === 2)?.interpolation, "empty");
+    await h.edits.finish();
+    assert.equal(h.closed(), 1);
+    assert.equal(sent.length, 2);
+});
+
+test("a re-drag stays with its curve until it crosses the neighboring curve in either direction", async () => {
+    const sent: unknown[] = [];
+    const h = harness(async (event) => { sent.push(serializeNodeEvent(event).payload); });
+    h.edits.reconcile(scope(2, { ...construction, arguments: [[
+        { id: 1, seconds: 0, value: 1, interpolation: "hold", tension: 1 },
+        { id: 2, seconds: 2.5, value: 1, interpolation: "empty", tension: 1 },
+        { id: 3, seconds: 10, value: 0, interpolation: "bezier", tension: .5 },
+        { id: 4, seconds: 12, value: 0, interpolation: "empty", tension: 1 },
+    ]] }));
+    assert.equal(h.edits.begin(target, 2, 7, axes, { x: 25, y: 50 }), true);
+    const style = (id: number) => (h.edits.drafts(target).find((point) => point.id === id)
+        ?? h.edits.view(target)?.points.find((point) => point.id === id))?.interpolation;
+    const move = (x: number) => h.edits.move(7, { x, y: 50 });
+    move(75);
+    assert.equal(style(1), "hold");
+    assert.equal(style(2), "empty");
+    move(104);
+    assert.equal(h.edits.activePoint()?.seconds, 10);
+    assert.equal(style(1), "hold");
+    assert.equal(style(2), "empty");
+    move(116);
+    assert.equal(h.edits.activePoint()?.seconds, 10);
+    assert.equal(style(1), "empty");
+    assert.equal(style(2), "bezier");
+    h.runTimer();
+    const placed = { id: 2, seconds: 0, value: 1, sample_index: "480000", order: 1, interpolation: "bezier", tension: .5 };
+    assert.deepEqual(sent[0], { insert: false, point: placed, ordered_ids: [3, 2],
+        segments: [{ id: 1, interpolation: "empty", tension: 1 }] });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    move(104);
+    assert.equal(h.edits.activePoint()?.seconds, 10);
+    assert.equal(style(1), "empty");
+    assert.equal(style(2), "bezier");
+    move(25);
+    assert.equal(h.edits.activePoint()?.seconds, 2.5);
+    assert.equal(style(2), "bezier");
+    move(-6);
+    assert.equal(h.edits.activePoint()?.seconds, 0);
+    assert.equal(style(2), "bezier");
+    move(-16);
+    assert.equal(h.edits.activePoint()?.seconds, 0);
+    assert.equal(style(2), "hold");
+    await h.edits.finish();
+    assert.equal(h.closed(), 1);
+});
+
+test("Shift preserves the original pulse and tracks curve crossings until released", async () => {
+    const sent: unknown[] = [];
+    const h = harness(async (event) => { sent.push(serializeNodeEvent(event).payload); });
+    h.edits.reconcile(scope(2, { ...construction, arguments: [[
+        { id: 1, seconds: 0, value: 1, interpolation: "hold", tension: 1 },
+        { id: 2, seconds: 2.5, value: 1, interpolation: "empty", tension: 1 },
+        { id: 3, seconds: 10, value: 0, interpolation: "bezier", tension: .5 },
+        { id: 4, seconds: 12, value: 0, interpolation: "empty", tension: 1 },
+    ]] }));
+    assert.equal(h.edits.begin(target, 2, 7, axes, { x: 25, y: 50 }), true);
+    h.edits.setPreservePointType(true);
+    h.edits.move(7, { x: 116, y: 50 });
+    h.edits.move(7, { x: 75, y: 50 });
+    assert.equal(h.edits.activePoint()?.seconds, 7.5);
+    assert.equal(h.edits.activePoint()?.interpolation, "empty");
+    h.edits.setPreservePointType(false);
+    assert.equal(h.edits.activePoint()?.seconds, 7.5);
+    assert.equal(h.edits.drafts(target).find((point) => point.id === 1)?.interpolation, "empty");
+    h.runTimer();
+    const placed = { id: 2, seconds: 0, value: 1, sample_index: "360000", order: 0, interpolation: "bezier", tension: .5 };
+    assert.deepEqual(sent[0], { insert: false, point: placed, ordered_ids: [],
+        segments: [{ id: 1, interpolation: "empty", tension: 1 }] });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const placement = h.edits.drafts(target);
+    for (const shift of [true, false, true, false]) h.edits.setPreservePointType(shift);
+    assert.deepEqual(h.edits.drafts(target), placement);
+    h.edits.setPreservePointType(true);
+    assert.equal(h.edits.activePoint()?.seconds, 7.5);
+    assert.equal(h.edits.drafts(target).find((point) => point.id === 1)?.interpolation, "hold");
+    await h.edits.finish();
+    assert.deepEqual(sent[1], { insert: false, point: { ...placed, interpolation: "empty", tension: 1 }, ordered_ids: [],
+        segments: [{ id: 1, interpolation: "hold", tension: 1 }] });
+    assert.equal(sent.length, 2);
+    assert.equal(h.closed(), 1);
+});
+
+test("Shift switches the interpolation inside a covered curve without moving the point", async () => {
+    const h = harness();
+    h.edits.reconcile(scope(2, { ...construction, arguments: [[
+        ...construction.arguments[0].slice(0, 1),
+        { id: 3, seconds: 3, value: .5, interpolation: "hold", tension: .75 },
+        ...construction.arguments[0].slice(1),
+    ]] }));
+    assert.equal(h.edits.begin(target, 3, 7, axes, { x: 30, y: 50 }), true);
+    h.edits.move(7, { x: 84, y: 50 });
+    assert.equal(h.edits.activePoint()?.seconds, 6);
+    assert.equal(h.edits.activePoint()?.interpolation, "bezier");
+    h.edits.setPreservePointType(true);
+    assert.equal(h.edits.activePoint()?.seconds, 6);
+    assert.equal(h.edits.activePoint()?.interpolation, "hold");
+    assert.equal(h.edits.activePoint()?.tension, .75);
+    h.edits.setPreservePointType(false);
+    assert.equal(h.edits.activePoint()?.interpolation, "bezier");
+    await h.edits.finish();
+});
+
+test("both drag modes choose the order on either half of the same sample detent", async () => {
+    for (const shift of [false, true]) {
+        const sent: Array<{ ordered_ids?: number[] }> = [];
+        const h = harness(async (event) => { sent.push(serializeNodeEvent(event).payload as typeof sent[number]); }, 3);
+        const points = [...construction.arguments[0], { ...construction.arguments[0][1], id: 3, value: .25, order: 0 }];
+        const data = { ...construction, arguments: [[points[0], { ...points[1], order: 1 }, points[2]]] };
+        h.edits.reconcile(scope(2, data));
+        const ids = () => automationWindow(h.edits.view(target)!, 0, 10, h.edits.drafts(target)).points.map(({ id }) => id);
+        assert.deepEqual(ids(), [1, 3, 2]);
+        assert.equal(h.edits.begin(target, 1, 7, axes, { x: 10, y: 50 }, "point", shift), true);
+        h.edits.move(7, { x: 54, y: 50 });
+        assert.equal(h.edits.activePoint()?.sampleIndex, 240000n);
+        assert.deepEqual(ids(), [1, 3, 2]);
+        h.runTimer();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        h.edits.move(7, { x: 66, y: 50 });
+        assert.equal(h.edits.activePoint()?.sampleIndex, 240000n);
+        assert.deepEqual(ids(), [3, 2, 1]);
+        h.edits.setPreservePointType(!shift);
+        assert.deepEqual(ids(), [3, 2, 1]);
+        h.edits.setPreservePointType(shift);
+        h.edits.move(7, { x: 78, y: 50 });
+        assert.equal(h.edits.activePoint()?.seconds, 5.4);
+        h.edits.move(7, { x: 54, y: 50 });
+        assert.deepEqual(ids(), [1, 3, 2]);
+        h.edits.move(7, { x: 66, y: 50 });
+        await h.edits.finish();
+        assert.deepEqual(sent.map(({ ordered_ids }) => ordered_ids), [[1, 3, 2], [3, 2, 1]]);
+        assert.deepEqual(ids(), [3, 2, 1]);
+        h.edits.reconcile(scope(3, { ...data, arguments: [[{ ...points[0], seconds: 5, order: 2 }, points[2], { ...points[1], order: 1 }]] }));
+        assert.deepEqual(ids(), [3, 2, 1]);
+        assert.equal(h.closed(), 1);
+    }
+});
+
+test("a right press on a blank curve adds an empty point, even without motion", async () => {
+    const sent: unknown[] = [];
+    const h = harness(async (event) => { sent.push(serializeNodeEvent(event).payload); });
+    h.edits.reconcile(scope(2, { ...construction, arguments: [[]] }));
+    assert.equal(h.edits.begin(target, null, 7, axes, { x: 10, y: 50 }), true);
+    assert.deepEqual(sent, [{ insert: true,
+        point: { id: 0, seconds: 0, value: .5, interpolation: "empty", tension: 1, sample_index: "48000", order: 0 },
+        segments: [], ordered_ids: [] }]);
+    await h.edits.finish();
+    assert.equal(sent.length, 1);
+    assert.equal(h.closed(), 1);
+});
+
+test("Shift-click still deletes while motion moves the point with its original type", async () => {
+    const sent: unknown[] = [];
+    const h = harness(async (event) => { sent.push(serializeNodeEvent(event).payload); });
+    assert.equal(h.edits.begin(target, 1, 7, axes, { x: 10, y: 50 }, "point", true), true);
+    h.edits.moveBy(7, { x: 1, y: 0 });
+    await h.edits.finish(true);
+    assert.deepEqual(sent, [{ id: 1 }]);
+
+    assert.equal(h.edits.begin(target, 2, 7, axes, { x: 50, y: 0 }, "point", true), true);
+    h.edits.moveBy(7, { x: 10, y: 0 });
+    await h.edits.finish(true);
+    assert.deepEqual(sent[1], { id: 2, seconds: 0, value: 1, sample_index: "288000" });
 });
 
 test("creation and live rendering distinguish adjacent exact samples beyond the safe integer range", async () => {
@@ -377,20 +569,21 @@ test("creation and live rendering distinguish adjacent exact samples beyond the 
         { ...construction.arguments[0][1], sample_index: String(base + 2n) },
     ]] };
     h.edits.reconcile(scope(2, data));
-    assert.equal(h.edits.begin(target, 1, 7, bounds, { x: 10, y: 50 }), true);
+    assert.equal(h.edits.begin(target, 1, 7, bounds, { x: 10, y: 50 }, "point", true), true);
     h.edits.move(7, { x: 14, y: 50 });
     assert.equal(h.edits.activePoint()?.sampleIndex, base + 1n);
     h.edits.move(7, { x: 16, y: 50 });
     assert.equal(h.edits.activePoint()?.sampleIndex, base + 2n);
-    h.edits.move(7, { x: 26, y: 50 });
+    h.edits.move(7, { x: 56, y: 50 });
     const rendered = automationWindow(h.edits.view(target)!, 0, spanSeconds, h.edits.drafts(target), origin);
     assert.deepEqual(rendered.points.map((point) => point.sampleIndex), [base + 2n, base + 3n]);
     assert.ok(rendered.vertices.some((point) => point.seconds === 3 / rate && point.value === .5));
     await h.edits.finish();
     assert.deepEqual(sent, [{ id: 1, seconds: 0, value: .5, sample_index: String(base + 3n) }]);
-    await h.edits.add(target, curvePointAt(bounds, { x: 42, y: 50 }, rate));
-    assert.deepEqual((h.direct[0] as { payload: { point: unknown } }).payload.point,
-        { id: 3, seconds: 0, value: .5, interpolation: "bezier", tension: 1, sample_index: String(base + 4n) });
+    assert.equal(h.edits.begin(target, null, 7, bounds, { x: 42, y: 50 }), true);
+    await h.edits.finish();
+    assert.deepEqual(sent[1], { insert: true, segments: [], ordered_ids: [],
+        point: { id: 3, seconds: 0, value: .5, interpolation: "bezier", tension: 0, sample_index: String(base + 4n), order: 0 } });
 });
 
 test("a tension drag updates its draft, clamps at both ends and closes one typed gesture", async () => {
@@ -482,9 +675,10 @@ test("the curve uses clamped points while stored values survive until dragged", 
     await h.edits.finish();
     assert.deepEqual(sent[1], { id: 1, seconds: 0, sample_index: "96000", value: 1 });
     assert.deepEqual(h.edits.bounds(target), settings);
-    await h.edits.add(target, { seconds: 2, value: 9 });
-    assert.deepEqual((h.direct[0] as { payload: unknown }).payload,
-        { point: { id: 3, seconds: 0, sample_index: "96000", value: 1, interpolation: "bezier", tension: 1 } });
+    assert.equal(h.edits.begin(target, null, 7, { ...axes, max: 10 }, { x: 20, y: 10 }), true);
+    await h.edits.finish();
+    assert.deepEqual(sent[2], { insert: true, segments: [], ordered_ids: [],
+        point: { id: 3, seconds: 0, sample_index: "96000", value: 1, interpolation: "bezier", tension: 0, order: 0 } });
 });
 
 test("moving past a disabled bound and re-enabling it preserves the opposite knob", async () => {
@@ -694,9 +888,16 @@ test("point drags snap to fractional values only when the ruler displays them", 
     const h = harness();
     for (const ruler of ["auto", "whole", "off"] as const) {
         assert.equal(h.edits.begin(target, 1, 7, { ...axes, height: 160, ruler }, { x: 10, y: 80 }), true);
+        assert.equal(h.edits.activeSnap(target), null);
+        const changes = h.changes();
         h.edits.moveBy(7, { x: 0, y: -10 });
         assert.equal(h.edits.activePoint()?.value, ruler === "auto" ? .5 : .5625);
-        await h.edits.finish();
+        assert.equal(h.edits.activeSnap(target)?.value, ruler === "auto" ? .5 : undefined);
+        assert.equal(h.edits.activeSnap({ instanceId: "other" }), null);
+        assert.equal(h.changes(), changes + 1);
+        const finished = h.edits.finish();
+        assert.equal(h.edits.activeSnap(target), null);
+        await finished;
     }
 });
 
@@ -707,13 +908,17 @@ test("point drags snap to visible integers and retain their detent travel when s
     assert.equal(h.edits.begin(target, 1, 7, bounded, { x: 10, y: 50 }), true);
     h.edits.moveBy(7, { x: 0, y: -20 });
     assert.equal(h.edits.activePoint()?.value, 1);
+    assert.equal(h.edits.activeSnap(target)?.value, 1);
     h.edits.changeSensitivity(-1);
     h.edits.moveBy(7, { x: 5, y: -10 });
     assert.equal(h.edits.activePoint()?.value, 1);
+    assert.equal(h.edits.activeSnap(target)?.value, 1);
     h.edits.moveBy(7, { x: 0, y: -10 });
     assert.equal(h.edits.activePoint()?.value, Math.fround(1.28));
+    assert.equal(h.edits.activeSnap(target), null);
     h.edits.moveBy(7, { x: 0, y: 100 });
     assert.equal(h.edits.activePoint()?.value, -1);
+    assert.equal(h.edits.activeSnap(target)?.value, -1);
     await h.edits.finish();
     assert.deepEqual(sent, [{ id: 1, seconds: 0, sample_index: "72000", value: -1 }]);
 });

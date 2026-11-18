@@ -56,6 +56,9 @@ const timelineZoomHint = ref<string | null>(null);
 let lastInteractionHint: StatusHint | null | undefined;
 let pointerLockError = "";
 let automationPointerId: number | null = null;
+let automationButton = 0;
+let automationShift = false;
+let suppressAutomationContextMenu = false;
 type PointDragWarp = CursorWarpAnchor & { initialCenter: Point | null; destination: () => Point | null; trace: boolean; moved: boolean };
 type PendingCursorWarp = CursorWarpAnchor & { lockOrigin: Point; expiresAt: number; destination: () => Point | null; trace?: boolean } & (
     { type: "warpCursorAfterPointDrag"; initialCenter: Point | null }
@@ -126,7 +129,7 @@ const pointerLock = new KnobPointerLock<Point>({
         pointDragWarp = null;
         document.documentElement.removeAttribute("data-automation-drag");
         if (point && !lockOrigin) automation.edits.move(id, point);
-        void automation.edits.finish();
+        void automation.edits.finish(!!point && automationShift);
     } else {
         if (!point) knobClicks.cancel();
         const control = manualGestures.pointerControl();
@@ -142,24 +145,27 @@ watch(automation.version, () => {
     // Graph replacement, undo, or a failed edit can end the gesture before mouseup.
     if (automationPointerId !== null && automation.edits.pointerId() === null) pointerLock.cancel();
 }, { flush: "sync" });
-function startAutomation(event: PointerEvent, target: NodeAddress, pointId: number, axes: CurveAxes, kind: CurveDragKind,
-    visiblePointCenter?: () => Point | null) {
+function startAutomation(event: PointerEvent, target: NodeAddress, pointId: number | null, axes: CurveAxes, kind: CurveDragKind,
+    visiblePointCenter?: (id: number) => Point | null) {
     const element = surface.value;
-    if (!element || event.button !== 0 || automationPointerId !== null || manualGestures.pointerControl()) return;
+    if (!element || event.button !== (pointId === null ? 2 : 0) || automationPointerId !== null || manualGestures.pointerControl()) return;
     const origin = { x: event.clientX, y: event.clientY };
-    if (!automation.edits.begin(target, pointId, event.pointerId, axes, origin, kind)) return;
+    if (!automation.edits.begin(target, pointId, event.pointerId, axes, origin, kind, event.shiftKey)) return;
+    const id = automation.edits.activePoint()!.id;
+    const destination = visiblePointCenter ? () => visiblePointCenter(id) : undefined;
     const mouse = event.pointerType === "mouse";
-    const initialCenter = mouse ? visiblePointCenter?.() : null;
+    const initialCenter = mouse && pointId !== null ? destination?.() : null;
     if (kind === "point" && traceNextPointDrag) {
         traceNextPointDrag = false;
         tracePointDrag = true;
         traceAutomationCursor(`Press. ${JSON.stringify({ pointerType: event.pointerType, origin, screenX: event.screenX,
             screenY: event.screenY, pixelRatio: window.devicePixelRatio, initialCenter })}`);
     }
-    if (mouse && visiblePointCenter) pointDragWarp = {
+    if (mouse && destination) pointDragWarp = {
         screenOrigin: { x: event.screenX, y: event.screenY }, scale: window.devicePixelRatio, initialCenter: initialCenter ?? null,
-        destination: visiblePointCenter, trace: tracePointDrag, moved: false,
+        destination, trace: tracePointDrag, moved: false,
     };
+    suppressAutomationContextMenu = pointId === null;
     captureAutomationPointer(event, element, origin, mouse);
 }
 function startAutomationBound(event: PointerEvent, target: NodeAddress, side: AutomationBoundSide) {
@@ -173,6 +179,8 @@ function startAutomationBound(event: PointerEvent, target: NodeAddress, side: Au
 function captureAutomationPointer(event: PointerEvent, element: HTMLElement, origin: Point, mouse: boolean) {
     event.preventDefault(); event.stopPropagation();
     automationPointerId = event.pointerId;
+    automationButton = event.button;
+    automationShift = event.shiftKey;
     pointerLockError = "";
     if (mouse) document.documentElement.setAttribute("data-automation-drag", "");
     element.setPointerCapture(event.pointerId);
@@ -226,7 +234,8 @@ function moveCapturedControl(event: PointerEvent) {
     if (automationPointerId === event.pointerId) {
         event.preventDefault(); event.stopImmediatePropagation();
         if (document.pointerLockElement === surface.value) return;
-        if (!(event.buttons & 1)) { releaseCapturedControl(event); return; }
+        updateAutomationShift(event.shiftKey);
+        if (!(event.buttons & (automationButton === 2 ? 2 : 1))) { releaseCapturedControl(event); return; }
         const origin = pointerLock.status().origin;
         if (pointDragWarp && (event.clientX !== origin?.x || event.clientY !== origin?.y)) pointDragWarp.moved = true;
         automation.edits.move(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -241,10 +250,11 @@ function moveCapturedControl(event: PointerEvent) {
     manualGestures.move(event.pointerId, -event.clientY);
 }
 function releaseCapturedControl(event: PointerEvent) {
-    if (event.type === "pointerup" && event.button !== 0) return;
+    if (event.type === "pointerup" && event.button !== (automationPointerId === event.pointerId ? automationButton : 0)) return;
     if (automationPointerId === event.pointerId) {
         event.stopImmediatePropagation();
         if (event.type !== "pointerup" && event.type !== "pointermove") { pointerLock.cancel(); return; }
+        updateAutomationShift(event.shiftKey);
     }
     if (manualGestures.pointerId() === event.pointerId) knobClicks.release(performance.now());
     pointerLock.release(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -252,15 +262,17 @@ function releaseCapturedControl(event: PointerEvent) {
 function lockedControlMove(event: MouseEvent) {
     if (document.pointerLockElement !== surface.value) return;
     event.stopImmediatePropagation();
+    updateAutomationShift(event.shiftKey);
     // A synthesized move with an empty buttons mask is not a mouse release.
     // Mouseup, pointerup, native focus loss and pointerlockchange own termination.
     pointerLock.move({ x: event.movementX, y: event.movementY });
 }
 function lockedControlRelease(event: MouseEvent) {
-    if (event.button !== 0) return;
+    if (event.button !== (automationPointerId === null ? 0 : automationButton)) return;
     if (automationPointerId !== null && document.pointerLockElement !== surface.value) return;
     const id = automationPointerId ?? manualGestures.pointerId();
     if (id === null) return;
+    updateAutomationShift(event.shiftKey);
     if (automationPointerId === null) knobClicks.release(performance.now());
     pointerLock.release(id, { x: event.clientX, y: event.clientY });
 }
@@ -323,6 +335,7 @@ function wheelControl(event: WheelEvent) {
     event.preventDefault(); event.stopImmediatePropagation();
 }
 function clickOutsideManual(event: PointerEvent) {
+    if (automationPointerId === null) suppressAutomationContextMenu = false;
     pendingCursorReturnId = null;
     cancelPendingCursorWarp("A new pointer press arrived.");
     const target = event.target instanceof Element ? event.target : null;
@@ -330,6 +343,17 @@ function clickOutsideManual(event: PointerEvent) {
     manualGestures.cancelEntry();
     if (!target?.closest(".manual-input") || event.button !== 0) knobClicks.cancel();
     if (!target?.closest(".manual-input") && automationPointerId === null) { pointerLock.cancel(); manualGestures.finish(); }
+}
+function guardAutomationContextMenu(event: MouseEvent) {
+    if (suppressAutomationContextMenu && event.button === 2) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+    }
+}
+function updateAutomationShift(shift: boolean) {
+    if (automationPointerId === null || automationShift === shift) return;
+    automationShift = shift;
+    automation.edits.setPreservePointType(shift);
 }
 function blurPointerControls() {
     pendingCursorReturnId = null;
@@ -678,6 +702,7 @@ function focusIdleSurface() {
     if (document.hasFocus() && document.activeElement === document.body) surface.value?.focus({ preventScroll: true });
 }
 function keyDown(event: KeyboardEvent) {
+    updateAutomationShift(event.shiftKey);
     const editingText = event.target instanceof Element
         && !!event.target.closest("input, textarea, select, [contenteditable]:not([contenteditable=false]), [role=textbox]");
     if (!editingText && event.code === "Space" && !event.ctrlKey && !event.metaKey && !event.altKey) {
@@ -709,6 +734,7 @@ function keyDown(event: KeyboardEvent) {
     if (event.key === "Escape") { cancelConnection(); knobClicks.cancel(); pointerLock.cancel(); }
 }
 function keyUp(event: KeyboardEvent) {
+    updateAutomationShift(event.shiftKey);
     hoverShift.value = keyboardPortHoverShift(hoverShift.value, event.shiftKey);
 }
 function observePointerShift(event: PointerEvent) {
@@ -816,6 +842,7 @@ onMounted(() => {
     document.addEventListener("pointerlockchange", controlLockChanged);
     document.addEventListener("pointerlockerror", controlLockFailed);
     window.addEventListener("pointerdown", clickOutsideManual, true);
+    window.addEventListener("contextmenu", guardAutomationContextMenu, true);
     window.addEventListener("wheel", wheelControl, { capture: true, passive: false });
     window.addEventListener("focus", focusPointerHint);
     window.addEventListener("focus", focusIdleSurface);
@@ -852,6 +879,7 @@ onBeforeUnmount(() => {
     document.removeEventListener("pointerlockchange", controlLockChanged);
     document.removeEventListener("pointerlockerror", controlLockFailed);
     window.removeEventListener("pointerdown", clickOutsideManual, true);
+    window.removeEventListener("contextmenu", guardAutomationContextMenu, true);
     window.removeEventListener("wheel", wheelControl, true);
     window.removeEventListener("focus", focusPointerHint);
     window.removeEventListener("focus", focusIdleSurface);

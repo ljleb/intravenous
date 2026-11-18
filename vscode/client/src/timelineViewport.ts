@@ -52,7 +52,11 @@ export function zoomTimelineHorizontally(view: TimelineViewport, pointerX: numbe
 }
 
 export function zoomTimelineVertically(view: TimelineViewport, pointerY: number, delta: number): TimelineViewport {
-    const laneHeight = clamp(view.laneHeight * zoomFactorForPixels(-delta), minimumLaneHeight, maximumLaneHeight);
+    return scaleTimelineLanes(view, pointerY, zoomFactorForPixels(-delta));
+}
+
+function scaleTimelineLanes(view: TimelineViewport, pointerY: number, factor: number): TimelineViewport {
+    const laneHeight = clamp(view.laneHeight * factor, minimumLaneHeight, maximumLaneHeight);
     const lanePosition = (view.scrollTop + pointerY) / view.laneHeight;
     return { ...view, laneHeight, scrollTop: Math.max(0, lanePosition * laneHeight - pointerY) };
 }
@@ -81,12 +85,12 @@ export function timelineMiddleDragAction(modifiers: ZoomModifiers): MiddleDrag["
     return timelineZoomAction(modifiers) ?? "pan";
 }
 const middleDragZoomSensitivity = 3;
-export function middleDragZoomFactor(delta: number): number {
-    return zoomFactorForPixels(delta * middleDragZoomSensitivity);
+export function verticalMiddleDragZoomFactor(horizontalPixels: number): number {
+    return zoomFactorForPixels(-horizontalPixels * middleDragZoomSensitivity);
 }
 export function zoomMiddleDrag(view: TimelineViewport, action: TimelineZoomAction, delta: Point, anchor: number): TimelineViewport {
     return action === "verticalZoom"
-        ? delta.x ? zoomTimelineVertically(view, anchor, delta.x * middleDragZoomSensitivity) : view
+        ? delta.x ? scaleTimelineLanes(view, anchor, verticalMiddleDragZoomFactor(delta.x)) : view
         : delta.y ? zoomTimelineHorizontally(view, anchor, delta.y * middleDragZoomSensitivity) : view;
 }
 

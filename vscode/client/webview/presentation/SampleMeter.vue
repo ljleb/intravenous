@@ -46,7 +46,8 @@ const ticks = computed(() => {
 });
 const ariaValue = computed(() => reading.value.available && !updating.value
     ? Math.max(domain.value.min, Math.min(domain.value.max, reading.value.displayValue!)) : undefined);
-const meterHint = computed(() => `${props.label} · ${status.value} · ${rightClickHint} scale`);
+const meterHint = computed(() => `${props.label} · ${status.value}`);
+const meterShortcuts = `${rightClickHint} scale`;
 let resize: ResizeObserver | undefined;
 onMounted(() => {
     resize = new ResizeObserver(([entry]) => { width.value = entry?.contentRect.width ?? 0; });
@@ -61,7 +62,8 @@ onBeforeUnmount(() => { stopAnimation(); resize?.disconnect(); });
         :data-mode="mode" :data-below="reading.available && reading.below" :data-above="reading.available && reading.above"
         role="meter" tabindex="0" aria-haspopup="menu" :aria-label="label" :aria-valuemin="domain.min" :aria-valuemax="domain.max"
         :aria-valuenow="ariaValue" :aria-valuetext="status" :aria-busy="updating"
-        :data-status-hint="meterHint">
+        :data-status-hint="meterHint" :data-status-shortcuts="meterShortcuts"
+        @mousedown.left.prevent @mousedown.right.prevent>
         <template v-if="reading.available">
             <span class="peak-fill" :style="{ width: `${reading.position * 100}%` }" />
             <span class="reading-mark" :style="{ left: `${reading.heldPosition * 100}%` }" />
@@ -79,5 +81,6 @@ onBeforeUnmount(() => { stopAnimation(); resize?.disconnect(); });
 .unavailable { background: repeating-linear-gradient(135deg, transparent, transparent 7px, color-mix(in srgb, var(--vscode-foreground) 4%, transparent) 7px, color-mix(in srgb, var(--vscode-foreground) 4%, transparent) 8px); }
 .unavailable-mark { position: absolute; right: 5px; bottom: 1px; opacity: .6; }
 .hide-scale-labels :deep(.ruler-tick span) { display: none; }
-.sample-meter:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.sample-meter:focus { outline: none; }
+.sample-meter:focus-visible { box-shadow: inset 0 2px var(--vscode-foreground); }
 </style>

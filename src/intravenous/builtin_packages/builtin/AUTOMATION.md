@@ -39,12 +39,12 @@ produces a full-circle constant.
 
 Coincident points define jumps. The first point supplies the incoming endpoint.
 The last point supplies the outgoing value and policy. Intermediate zero-length
-segments contain no sample positions.
+segments contain no sample positions. At the same sample, points follow their
+saved `order`, then their ID. The default `order` is zero.
 
 Bézier tension ranges from 0 to 1. Tension 0 gives exact linear interpolation.
-Tension 1 gives spacing-aware, clamped automatic interpolation. New points use
-Bézier interpolation with tension 1. The interpreter uses weighted harmonic
-PCHIP derivatives. Derivatives flatten at extrema, jumps, and boundaries beside
+Tension 1 gives spacing-aware, clamped automatic interpolation. The interpreter
+uses weighted harmonic PCHIP derivatives. Derivatives flatten at extrema, jumps, and boundaries beside
 hold or empty segments. Intermediate tensions blend the linear and automatic
 curves. Values stay within the segment endpoint values.
 
@@ -63,11 +63,22 @@ background data never count as a gap.
 The Vue presentation creates an empty point list for a new curve. The clip ruler
 shows seconds and sample positions. Zoom in to see individual sample marks.
 
-- Click empty space to add a point at the nearest sample.
-- Click a point to select it. Drag it to move it between samples.
+- Right-press empty space to add a point at the nearest sample and start placing it.
+- Drag a point to move it with its curve.
+- Hold Shift while dragging to keep the point's original type and tension.
 - Shift-click a point to remove it.
 - Right-click a point to set its outgoing segment or choose Delete point.
 - Drag the diamond beside a Bézier point left or right to adjust its tension.
+
+A time detent holds the dragged point at a neighbor's sample while the pointer
+moves. The first half of the detent puts the point before its neighbor. The
+second half puts it after. Shift changes the placement mode at any time.
+
+A new point in a gap connects to the nearer edge and leaves the other side
+empty. The first point on a blank curve is empty. An existing endpoint stays
+attached as it moves in a gap. It joins another curve when it crosses that
+curve's edge. The old neighbor becomes the end of the first curve.
+[Previous placement gestures](../../../../docs/historical/automation_point_drag_before_time_detents_2026-11-18.md#previous-builtin-automation-guide).
 
 Open `Scale` to set the Minimum and Maximum knobs. The button beside each
 knob enables that bound. Each enabled bound limits the other knob. If you
@@ -85,7 +96,9 @@ Projects with older display-only bounds start with both audio bounds disabled.
 
 Point and tension drags each form one undo operation.
 Bound drags also form one undo operation. `AddPoint`, `RemovePoint`, `MovePoint`,
-`SetSegment`, and `SetBound` replace the module's construction arguments.
+`PlacePoint`, `SetSegment`, and `SetBound` replace the module's construction arguments.
+`PlacePoint` updates the point, its neighboring segments, and the order of
+points at the same sample together.
 Project persistence and history retain their accepted values. All lane
 heights display the same curve shape and gaps. Zoom to
 `editable` height to display its editing controls.

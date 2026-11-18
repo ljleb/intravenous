@@ -22,18 +22,19 @@ function markerX(position: bigint | null) {
     }
     return fraction >= 0 && fraction <= 1 ? `${fraction * 100}%` : null;
 }
-const x = computed(() => markerX(playback.position.value));
-const executionX = computed(() => markerX(playback.executionIndex.value));
+const backgroundX = computed(() => markerX(playback.backgroundPlayhead.value));
+const foregroundX = computed(() => markerX(playback.foregroundPlayhead.value));
 </script>
 
 <template>
-    <line v-if="executionX !== null && executionX !== x" class="timeline-playhead execution-playhead"
-        :x1="executionX" :x2="executionX" y1="0" y2="100%" vector-effect="non-scaling-stroke" aria-hidden="true" />
-    <line v-if="x !== null" class="timeline-playhead" :x1="x" :x2="x" y1="0" y2="100%"
+    <line v-if="foregroundX !== null && foregroundX !== backgroundX" class="timeline-playhead foreground-playhead"
+        :x1="foregroundX" :x2="foregroundX" y1="0" y2="100%" vector-effect="non-scaling-stroke" aria-hidden="true" />
+    <line v-if="backgroundX !== null" class="timeline-playhead background-playhead" :x1="backgroundX" :x2="backgroundX" y1="0" y2="100%"
         vector-effect="non-scaling-stroke" aria-hidden="true" />
 </template>
 
 <style scoped>
-.timeline-playhead { stroke: var(--vscode-debugIcon-startForeground, #89d185); stroke-opacity: .65; pointer-events: none; }
-.execution-playhead { stroke: var(--iv-lane-ruler-tick); stroke-opacity: 1; }
+.timeline-playhead { pointer-events: none; }
+.background-playhead { stroke: var(--vscode-debugIcon-startForeground, #89d185); stroke-opacity: .65; }
+.foreground-playhead { stroke: var(--iv-lane-ruler-tick); stroke-opacity: 1; }
 </style>

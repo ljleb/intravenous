@@ -26,8 +26,8 @@ type GraphEditorContext = {
     hoveredPortGroup: Ref<{ nodeKey: string; direction: "input" | "output" } | null>;
     startConnection: (event: PointerEvent, port: GraphPortEndpoint, edit?: GraphConnectionEnd) => void;
     cancelConnection: () => void;
-    startAutomation: (event: PointerEvent, target: NodeAddress, pointId: number, axes: CurveAxes, kind: CurveDragKind,
-        visiblePointCenter?: () => Point | null) => void;
+    startAutomation: (event: PointerEvent, target: NodeAddress, pointId: number | null, axes: CurveAxes, kind: CurveDragKind,
+        visiblePointCenter?: (id: number) => Point | null) => void;
     startAutomationBound: (event: PointerEvent, target: NodeAddress, side: AutomationBoundSide) => void;
 };
 const key: InjectionKey<GraphEditorContext> = Symbol("graphEditor");

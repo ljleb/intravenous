@@ -14,9 +14,9 @@
 namespace iv {
 
 struct ProjectPlaybackSnapshot {
-    GlobalIndex position{};
+    GlobalIndex background_playhead{}; // Project position used to select background content.
     GlobalIndex start_position{};
-    GlobalIndex execution_index{};
+    GlobalIndex foreground_playhead{}; // Starting index of the next Tick block.
     bool running = false;
     std::uint64_t applied_command = 0;
     std::uint64_t segment = 0;
@@ -67,7 +67,8 @@ class ProjectPlayback {
     // Present while the audio side is processing a drag, even before its first position applies.
     std::optional<bool> drag_resume_running_{};
     std::atomic<std::uint64_t> publication_{0};
-    std::atomic<std::uint64_t> position_{0}, start_position_{0}, execution_index_{0}, applied_{0}, segment_{0};
+    std::atomic<std::uint64_t> background_playhead_{0}, start_position_{0}, foreground_playhead_{0};
+    std::atomic<std::uint64_t> applied_{0}, segment_{0};
     std::atomic<bool> running_{false};
     std::atomic<double> sample_rate_{48000};
 
@@ -103,9 +104,9 @@ class ProjectPlayback {
     void publish() noexcept
     {
         publication_.fetch_add(1, std::memory_order_acq_rel);
-        position_.store(state_.position.bits(), std::memory_order_relaxed);
+        background_playhead_.store(state_.background_playhead.bits(), std::memory_order_relaxed);
         start_position_.store(state_.start_position.bits(), std::memory_order_relaxed);
-        execution_index_.store(state_.execution_index.bits(), std::memory_order_relaxed);
+        foreground_playhead_.store(state_.foreground_playhead.bits(), std::memory_order_relaxed);
         running_.store(state_.running, std::memory_order_relaxed);
         applied_.store(state_.applied_command, std::memory_order_relaxed);
         segment_.store(state_.segment, std::memory_order_relaxed);
@@ -146,7 +147,7 @@ public:
 
         [[nodiscard]] TickPlaybackSelection selection() const noexcept
         {
-            return {state.running ? std::nullopt : std::optional{state.position}, audition};
+            return {state.running ? std::nullopt : std::optional{state.background_playhead}, audition};
         }
     };
 
@@ -209,16 +210,16 @@ public:
         consumed_.store(consumed, std::memory_order_release);
         auto state = pending_;
         state.sample_rate = sample_rate;
-        state.position = pending_position_.value_or(state_.position);
-        state.execution_index = state.running ? state.position : state_.execution_index;
+        state.background_playhead = pending_position_.value_or(state_.background_playhead);
+        state.foreground_playhead = state.running ? state.background_playhead : state_.foreground_playhead;
         return {state, pending_audition_};
     }
 
     void end_block(Block const& executed, std::size_t frames) noexcept
     {
         state_ = executed.state;
-        state_.execution_index = state_.execution_index.advanced_by(frames);
-        if (state_.running) state_.position = state_.execution_index;
+        state_.foreground_playhead = state_.foreground_playhead.advanced_by(frames);
+        if (state_.running) state_.background_playhead = state_.foreground_playhead;
         publish();
     }
 
@@ -228,9 +229,9 @@ public:
             auto const before = publication_.load(std::memory_order_acquire);
             if (before & 1) continue;
             ProjectPlaybackSnapshot result{
-                .position = GlobalIndex::from_bits(position_.load(std::memory_order_relaxed)),
+                .background_playhead = GlobalIndex::from_bits(background_playhead_.load(std::memory_order_relaxed)),
                 .start_position = GlobalIndex::from_bits(start_position_.load(std::memory_order_relaxed)),
-                .execution_index = GlobalIndex::from_bits(execution_index_.load(std::memory_order_relaxed)),
+                .foreground_playhead = GlobalIndex::from_bits(foreground_playhead_.load(std::memory_order_relaxed)),
                 .running = running_.load(std::memory_order_relaxed),
                 .applied_command = applied_.load(std::memory_order_relaxed),
                 .segment = segment_.load(std::memory_order_relaxed),

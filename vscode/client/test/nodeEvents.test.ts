@@ -20,7 +20,7 @@ const protocol = (): NodeEventProtocol => ({ formatVersion: 0, definitions: [],
     receivers: [{ address: target, supportedEventTypes: [event.eventType] }] });
 
 test("typed automation events snapshot their payload and cannot be forged as a raw JSON event", () => {
-    const point = { id: 4, seconds: 0, value: .5, interpolation: "bezier" as const, tension: 1, sample_index: "96000" };
+    const point = { id: 4, seconds: 0, value: .5, interpolation: "bezier" as const, tension: 1, sample_index: "96000", order: 0 };
     const typed = AddPoint({ point });
     point.value = .9;
     const first = serializeNodeEvent(typed);

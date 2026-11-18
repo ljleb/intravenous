@@ -4,10 +4,11 @@ import { addressKey } from "../../src/graphScope";
 import { ObservationValues, observationSourceKey, type ObservationCapability, type ObservationHostRequest,
     type ObservationInterest, type ObservationResponse, type ObservationSource, type ObservationUpdate, type MeterMode, type ObservationWindow, sameObservationWindow } from "../../src/observations";
 
-type NodeInterest = { node: NodeAddress; visible: boolean; window?: ObservationWindow };
+type NodeInterest = { node: NodeAddress; visible: boolean; window?: ObservationWindow; firstInput?: string };
 export type PortObservation = Omit<ObservationInterest, "id">;
 export type PresentedObservation = ObservationCapability & { source: ObservationSource; id: string; operation: string; channelName?: string };
 type Capability = PresentedObservation;
+const meterModeKey = ({ node, kind, member }: ObservationSource) => observationSourceKey({ node, kind, member });
 export class PresentationObservations {
     readonly version = ref(0);
     readonly capabilities = ref<Capability[]>([]);
@@ -67,11 +68,12 @@ export class PresentationObservations {
         if (message.error) pending.reject(new Error(message.error));
         else pending.resolve(message.result);
     }
-    node(owner: symbol, node: NodeAddress, visible: boolean, window?: ObservationWindow): void {
+    node(owner: symbol, node: NodeAddress, visible: boolean, window?: ObservationWindow, firstInput?: string): void {
         const previous = this.nodes.get(owner);
         if (previous?.visible === visible && addressKey(previous.node) === addressKey(node)
+            && previous.firstInput === firstInput
             && sameObservationWindow(previous.window, window)) return;
-        this.nodes.set(owner, { node, visible, window });
+        this.nodes.set(owner, { node, visible, window, firstInput });
         this.schedule();
     }
     remove(owner: symbol): void { this.nodes.delete(owner); this.schedule(); }
@@ -106,9 +108,14 @@ export class PresentationObservations {
     private async discover(): Promise<void> {
         const epoch = this.epoch;
         const unique = new Map<string, NodeAddress>();
+        const firstInputs = new Map<string, string>();
         if (this.visible) {
-            for (const entry of this.nodes.values())
-                if (entry.visible) unique.set(addressKey(entry.node), entry.node);
+            for (const entry of this.nodes.values()) {
+                if (!entry.visible) continue;
+                const key = addressKey(entry.node);
+                unique.set(key, entry.node);
+                if (entry.firstInput !== undefined) firstInputs.set(key, entry.firstInput);
+            }
         }
         // Explicit readers can receive an unavailable or pending result from
         // the backend even when discovery does not advertise a capability.
@@ -124,15 +131,15 @@ export class PresentationObservations {
             const budget = 64 - explicit.length;
             const stateNodes = new Set<number>();
             for (const capability of response.capabilities) {
-                if (!budget || capability.kind === "input") continue;
+                if (!budget) continue;
                 const node = nodes[capability.nodeIndex];
                 if (!node) continue;
-                // All output meters and one supported numeric State field per
-                // node prove the first two registry-backed operations.
+                if (capability.kind === "input" && firstInputs.get(addressKey(node)) !== capability.member) continue;
+                // Include at most one supported numeric State field per node.
                 if (capability.kind === "stateField" && stateNodes.has(capability.nodeIndex)) continue;
                 if (capability.kind === "stateField") stateNodes.add(capability.nodeIndex);
                 if (capability.operations.length === 0) continue;
-                const channels = capability.kind === "output" ? capability.channels ?? [] : [undefined];
+                const channels = capability.kind === "stateField" ? [undefined] : capability.channels ?? [];
                 // Keep every channel of an advertised port together at the
                 // viewport budget boundary; never show half a stereo pair.
                 if (channels.length > budget - capabilities.length) continue;
@@ -140,7 +147,7 @@ export class PresentationObservations {
                     const source: ObservationSource = { node, kind: capability.kind, member: capability.member,
                         ...(channel ? { channel: channel.index } : {}) };
                     const operation = capability.delivery === "window" ? "waveform"
-                        : capability.kind === "output" ? "level" : capability.operations[0];
+                        : capability.kind === "stateField" ? capability.operations[0] : "level";
                     if (!capability.operations.includes(operation)) continue;
                     const id = this.id(source, operation, capability);
                     capabilities.push({ ...capability, source, id, operation, channelName: channel?.name });
@@ -163,12 +170,11 @@ export class PresentationObservations {
         if (!id) { id = `probe:${++this.nextSourceId}`; this.sourceIds.set(key, id); }
         return id;
     }
-    mode(node: NodeAddress, member: string): MeterMode {
-        return this.modes.get(observationSourceKey({ node, kind: "output", member })) ?? "level";
+    mode(source: ObservationSource): MeterMode {
+        return this.modes.get(meterModeKey(source)) ?? "level";
     }
-    setMode(node: NodeAddress, member: string, mode: MeterMode): void {
-        const key = observationSourceKey({ node, kind: "output", member });
-        this.modes.set(key, mode);
+    setMode(source: ObservationSource, mode: MeterMode): void {
+        this.modes.set(meterModeKey(source), mode);
         // Both scales display the same level operation. A visual scale switch
         // keeps readings, probe identity and the active executable unchanged.
         this.preferences?.save(Object.fromEntries(this.modes));
@@ -181,8 +187,8 @@ export class PresentationObservations {
         if (this.sourceIds.size > 4096) for (const [key, id] of this.sourceIds)
             if (!activeIds.has(id)) this.sourceIds.delete(key);
         if (this.modes.size > 4096) {
-            const active = new Set(capabilities.filter((entry) => entry.kind === "output")
-                .map((entry) => observationSourceKey({ ...entry.source, channel: undefined })));
+            const active = new Set(capabilities.filter((entry) => entry.kind !== "stateField")
+                .map((entry) => meterModeKey(entry.source)));
             for (const key of this.modes.keys()) if (!active.has(key)) this.modes.delete(key);
         }
         this.capabilities.value = capabilities;

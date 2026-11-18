@@ -9,7 +9,7 @@ import { webviewApi } from "../host";
 // A presentation can use a time ruler without being a graph or a lane.
 // It makes no assumption about the node's number or kinds of output ports.
 const props = defineProps<{ window: TimelineWindow; playback?: boolean; sampleRate?: number }>();
-const { position, executionIndex, state, requestedPosition, dragPosition } = usePlayback();
+const { backgroundPlayhead, foregroundPlayhead, state, requestedPosition, dragPosition } = usePlayback();
 const sampleRate = computed(() => props.sampleRate ?? state.value?.sampleRate ?? 48000);
 const root = ref<HTMLElement | null>(null);
 const width = ref(0);
@@ -17,8 +17,8 @@ const ticks = computed(() => timelineTicks(props.window, width.value));
 const markerPosition = (selected: bigint | null) => selected === null ? -1
     : (Number(selected) / sampleRate.value - props.window.beginSeconds)
         * width.value / (props.window.endSeconds - props.window.beginSeconds);
-const marker = computed(() => markerPosition(position.value));
-const executionMarker = computed(() => markerPosition(executionIndex.value));
+const backgroundMarker = computed(() => markerPosition(backgroundPlayhead.value));
+const foregroundMarker = computed(() => markerPosition(foregroundPlayhead.value));
 const displayedStart = computed(() => dragPosition.value ?? state.value?.startPosition);
 const startMarker = computed(() => {
     const start = displayedStart.value;
@@ -121,12 +121,14 @@ onBeforeUnmount(() => {
         @pointercancel="cancelSeek" @lostpointercapture="cancelSeek"
         :data-status-shortcuts="playback ? 'Click/drag seek · Space ▶/Ⅱ' : undefined">
         <RulerGraduations :ticks="ticks" />
-        <div v-if="playback && executionMarker >= 0 && executionMarker <= width && executionMarker !== marker"
-            class="playhead-marker execution-marker" :style="{ left: `${executionMarker}px` }"
-            role="img" aria-label="Foreground Tick position" />
-        <div v-if="playback && marker >= 0 && marker <= width" class="playhead-marker" :style="{ left: `${marker}px` }" />
+        <div v-if="playback && foregroundMarker >= 0 && foregroundMarker <= width && foregroundMarker !== backgroundMarker"
+            class="playhead-marker foreground-playhead" :style="{ left: `${foregroundMarker}px` }"
+            role="img" aria-label="Foreground playhead" />
+        <div v-if="playback && backgroundMarker >= 0 && backgroundMarker <= width"
+            class="playhead-marker background-playhead" :style="{ left: `${backgroundMarker}px` }"
+            role="img" aria-label="Background playhead" />
         <div v-if="playback && requestedMarker >= 0 && requestedMarker <= width" class="requested-marker"
-            :style="{ left: `${requestedMarker}px` }" aria-label="Requested playhead position" />
+            :style="{ left: `${requestedMarker}px` }" aria-label="Requested background playhead position" />
         <div v-if="playback && startMarker >= 0 && startMarker <= width" class="start-marker"
             :style="{ left: `${startMarker}px` }" role="img" :aria-label="startLabel" :data-status-hint="`Start ${displayedStart} smp`" />
     </div>
@@ -135,8 +137,9 @@ onBeforeUnmount(() => {
 <style scoped>
 .time-ruler { position: relative; min-width: 0; overflow: hidden; }
 .seekable { cursor: ew-resize; touch-action: none; user-select: none; }
-.playhead-marker { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--vscode-debugIcon-startForeground, #89d185); pointer-events: none; }
-.execution-marker { background: var(--iv-ruler-tick); }
+.playhead-marker { position: absolute; top: 0; bottom: 0; width: 1px; pointer-events: none; }
+.background-playhead { background: var(--vscode-debugIcon-startForeground, #89d185); }
+.foreground-playhead { background: var(--iv-ruler-tick); }
 .requested-marker { position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--vscode-focusBorder, #569cd6); pointer-events: none; }
 .start-marker {
     position: absolute; bottom: 0; margin-left: -5px;

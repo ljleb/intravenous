@@ -801,6 +801,19 @@ TEST(GraphModules, OutputRequestCopiesBorrowedStringsIntoTheSession)
     EXPECT_EQ(outputs.front().name, "main");
 }
 
+TEST(GraphModules, UnnamedChannelAssignmentsExposeOneValueOutput)
+{
+    GraphBuilder graph;
+    auto input = graph.input<"in">();
+    graph.outputs(stereo::left = input, stereo::right = input);
+
+    auto configured = std::move(graph).finish();
+    auto const outputs = configured.public_ports.sample_outputs(configured.node_bundles);
+    ASSERT_EQ(outputs.size(), 1u);
+    EXPECT_EQ(outputs.front().name, "value");
+    EXPECT_EQ(outputs.front().channel_layout.channel_type, ChannelTypeId::stereo);
+}
+
 TEST(GraphModules, PublicInputCanFeedPublicOutputWithoutAnInternalNode)
 {
     auto const configured = configure_direct_public_sample_passthrough();

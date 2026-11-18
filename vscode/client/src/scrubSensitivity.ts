@@ -1,6 +1,6 @@
-const detentHalfWidth = 12;
+export const detentHalfWidth = 12;
 export const scrubSensitivityShortcut = "Wheel ↑×2 ↓½";
-type DetentValue = { value: number; plateau: number };
+type DetentValue = { value: number; plateau: number; snappedValue?: number };
 
 // Knobs and automation points change sensitivity around the current value.
 export class ScrubSensitivity {
@@ -21,21 +21,26 @@ export class ScrubSensitivity {
         const start = this.anchorValue < target ? (this.anchorValue - target) / scale - detentHalfWidth
             : this.anchorValue > target ? (this.anchorValue - target) / scale + detentHalfWidth : anchorPlateau;
         const end = start + travel;
+        const plateau = Math.max(-detentHalfWidth, Math.min(detentHalfWidth, end));
         return {
             value: end < -detentHalfWidth ? target + (end + detentHalfWidth) * scale
                 : end > detentHalfWidth ? target + (end - detentHalfWidth) * scale : target,
-            plateau: Math.max(-detentHalfWidth, Math.min(detentHalfWidth, end)),
+            plateau,
+            snappedValue: end === plateau ? target : undefined,
         };
     }
     valueAtDetents(position: number, targets: readonly number[], anchorPlateau: number): DetentValue {
         let travel = position - this.anchorPosition;
         const direction = travel < 0 ? -1 : 1;
-        let result = { value: this.valueAt(position), plateau: 0 };
+        let result: DetentValue = { value: this.valueAt(position), plateau: 0 };
         // Visit visible detents in travel order. Subtract the physical width
         // of each one passed so the result is independent of event count.
         for (let i = direction > 0 ? 0 : targets.length - 1; i >= 0 && i < targets.length; i += direction) {
             const target = targets[i];
             if (direction * (target - this.anchorValue) < 0) continue;
+            const distance = (target - this.anchorValue) / this.unitsPerPixel;
+            if (direction * (distance - travel) > 0)
+                return { value: this.anchorValue + travel * this.unitsPerPixel, plateau: 0 };
             result = this.valueAtDetent(target, travel, anchorPlateau);
             if (direction * (result.value - target) <= 0) break;
             travel -= direction * (target === this.anchorValue

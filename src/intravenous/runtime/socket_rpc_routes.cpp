@@ -58,9 +58,9 @@ std::string playback_result(int id, ProjectPlaybackRequest request)
     if (!request.snapshot) return jsonrpc_error(id, -32000, "playback service is unavailable");
     auto const& state = *request.snapshot;
     Json result{
-        {"position", std::to_string(state.position.signed_value())},
+        {"position", std::to_string(state.background_playhead.signed_value())},
         {"startPosition", std::to_string(state.start_position.signed_value())},
-        {"executionIndex", std::to_string(state.execution_index.signed_value())},
+        {"executionIndex", std::to_string(state.foreground_playhead.signed_value())},
         {"running", state.running},
         {"sampleRate", state.sample_rate},
         {"appliedCommand", std::to_string(state.applied_command)},

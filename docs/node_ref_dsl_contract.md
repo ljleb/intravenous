@@ -115,6 +115,11 @@ Output-selection rules superseded on 2026-11-14 are preserved in
 - An unqualified node argument to a node call, chaining operation, or public
   `outputs(...)` selects its first declared output across both kinds. An event
   output declared before the sample outputs is therefore the default.
+- An unnamed Sample output in `outputs(...)` is named `value`. Unnamed
+  channel assignments also use `value` as their shared port name. To keep the
+  previous name for an existing project, declare the output as `"main"_P`
+  explicitly. Projects that adopt the new name must update stored connections
+  and output gains that refer to the old name.
 - Named bindings select a kind: `"audio"_P = node` selects the first sample
   output, and `"points"_F = node` selects the first event output. Explicit
   output selection chooses a different source port when needed.

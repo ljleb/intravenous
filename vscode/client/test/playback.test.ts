@@ -21,48 +21,48 @@ test("seek retains exact sample indices and quantizes seconds at the project rat
 });
 test("position animation stops on pause, starts a new seek segment and bounds stale extrapolation", () => {
     const display = new PlaybackDisplay();
-    assert.equal(display.position(100), null);
+    assert.equal(display.backgroundPlayhead(100), null);
     display.update(state(), 100);
-    assert.equal(display.position(150), 50400n);
-    assert.equal(display.position(10000), 60000n);
+    assert.equal(display.backgroundPlayhead(150), 50400n);
+    assert.equal(display.backgroundPlayhead(10000), 60000n);
     display.update(state({ position: "48000", running: false, segment: "2" }), 200);
-    assert.equal(display.position(10000), 48000n);
+    assert.equal(display.backgroundPlayhead(10000), 48000n);
     display.update(state({ position: "-24000", segment: "3" }), 300);
-    assert.equal(display.position(350), -21600n);
+    assert.equal(display.backgroundPlayhead(350), -21600n);
     display.update(null, 400);
-    assert.equal(display.position(500), null);
+    assert.equal(display.backgroundPlayhead(500), null);
 });
 test("animation keeps exact integer positions and wraps on the cyclic timeline", () => {
     const display = new PlaybackDisplay();
     display.update(state({ position: "9223372036854775807", sampleRate: 1000 }), 0);
-    assert.equal(display.position(2), -9223372036854775807n);
+    assert.equal(display.backgroundPlayhead(2), -9223372036854775807n);
 });
 test("repeated running snapshots hold the applied cursor during an underrun", () => {
     const display = new PlaybackDisplay();
     display.update(state(), 0);
     display.update(state(), 50);
-    assert.equal(display.position(75), 48000n);
+    assert.equal(display.backgroundPlayhead(75), 48000n);
     display.update(state({ position: "48064" }), 100);
-    assert.equal(display.position(125), 49264n);
+    assert.equal(display.backgroundPlayhead(125), 49264n);
 });
-test("foreground animation follows Tick progress while the project playhead is held", () => {
+test("the foreground playhead follows Tick progress while the background playhead is held", () => {
     const display = new PlaybackDisplay();
     display.update(state(), 0);
-    assert.equal(display.executionIndex(25), display.position(25));
+    assert.equal(display.foregroundPlayhead(25), display.backgroundPlayhead(25));
 
     const paused = state({ running: false, executionIndex: "50400", segment: "2" });
     display.update(paused, 50);
-    assert.equal(display.position(75), 48000n);
-    assert.equal(display.executionIndex(75), 51600n);
+    assert.equal(display.backgroundPlayhead(75), 48000n);
+    assert.equal(display.foregroundPlayhead(75), 51600n);
     assert.equal(display.isAnimating(75), true);
-    assert.equal(display.executionIndex(1000), 62400n);
+    assert.equal(display.foregroundPlayhead(1000), 62400n);
     assert.equal(display.isAnimating(1000), false);
 
     display.update(paused, 100);
-    assert.equal(display.executionIndex(125), 50400n);
+    assert.equal(display.foregroundPlayhead(125), 50400n);
     assert.equal(display.isAnimating(125), false);
     display.update(state({ executionIndex: undefined }), 150);
-    assert.equal(display.executionIndex(175), null);
+    assert.equal(display.foregroundPlayhead(175), null);
 });
 test("requested cursor waits for its exact accepted command or a superseding one", () => {
     const seek = { position: "-300", acceptedCommand: "9007199254740993" };

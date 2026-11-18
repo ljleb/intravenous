@@ -1,6 +1,8 @@
 export type PlaybackSnapshot = {
+    /** Applied background playhead as a signed decimal sample index. */
     position: string;
     startPosition?: string;
+    /** Foreground playhead as a signed decimal sample index. */
     executionIndex?: string;
     running: boolean;
     sampleRate: number;
@@ -45,26 +47,26 @@ const extrapolationLimitMs = 250;
 export class PlaybackDisplay {
     private selected: PlaybackSnapshot | null = null;
     private receivedAt = 0;
-    private advancing = false;
-    private executionAdvancing = false;
+    private backgroundAdvancing = false;
+    private foregroundAdvancing = false;
     update(snapshot: PlaybackSnapshot | null, now: number): void {
-        this.advancing = snapshot?.running === true && (snapshot.segment !== this.selected?.segment
+        this.backgroundAdvancing = snapshot?.running === true && (snapshot.segment !== this.selected?.segment
             || snapshot.position !== this.selected?.position);
-        const executionIndex = snapshot?.executionIndex;
-        const previousExecutionIndex = this.selected?.executionIndex;
-        this.executionAdvancing = executionIndex !== undefined && (snapshot?.running ? this.advancing
-            : previousExecutionIndex !== undefined && executionIndex !== previousExecutionIndex);
+        const foregroundPlayhead = snapshot?.executionIndex;
+        const previousForegroundPlayhead = this.selected?.executionIndex;
+        this.foregroundAdvancing = foregroundPlayhead !== undefined && (snapshot?.running ? this.backgroundAdvancing
+            : previousForegroundPlayhead !== undefined && foregroundPlayhead !== previousForegroundPlayhead);
         this.selected = snapshot;
         this.receivedAt = now;
     }
     isAnimating(now: number): boolean {
-        return (this.advancing || this.executionAdvancing) && now - this.receivedAt < extrapolationLimitMs;
+        return (this.backgroundAdvancing || this.foregroundAdvancing) && now - this.receivedAt < extrapolationLimitMs;
     }
-    position(now: number): bigint | null {
-        return this.displayPosition(this.selected?.position, this.advancing, now);
+    backgroundPlayhead(now: number): bigint | null {
+        return this.displayPosition(this.selected?.position, this.backgroundAdvancing, now);
     }
-    executionIndex(now: number): bigint | null {
-        return this.displayPosition(this.selected?.executionIndex, this.executionAdvancing, now);
+    foregroundPlayhead(now: number): bigint | null {
+        return this.displayPosition(this.selected?.executionIndex, this.foregroundAdvancing, now);
     }
     private displayPosition(position: string | undefined, advancing: boolean, now: number): bigint | null {
         const state = this.selected;

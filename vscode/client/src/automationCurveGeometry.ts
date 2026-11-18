@@ -1,7 +1,8 @@
 import { valueScaleFraction } from "./knobPresentation";
 
 export type CurveInterpolation = "empty" | "hold" | "bezier";
-export type AutomationPointPosition = { id: number; seconds: number; value: number; sampleIndex?: bigint; tension?: number };
+export type AutomationPointPosition = { id: number; seconds: number; value: number; sampleIndex?: bigint;
+    tension?: number; interpolation?: CurveInterpolation; order?: number };
 export type AutomationPoint = AutomationPointPosition & { interpolation: CurveInterpolation; tension: number };
 export type AutomationCurve = { points: AutomationPoint[]; cycleSeconds: number; sampleRate?: number; bounds?: AutomationBoundSettings };
 export type AutomationValueBounds = { min?: number; max?: number };
@@ -79,6 +80,10 @@ export function compareAutomationTime(a: AutomationPointPosition, b: AutomationP
     if (a.sampleIndex !== undefined && b.sampleIndex !== undefined)
         return a.sampleIndex < b.sampleIndex ? -1 : a.sampleIndex > b.sampleIndex ? 1 : 0;
     return a.seconds - b.seconds;
+}
+
+export function compareAutomationPoints(a: AutomationPointPosition, b: AutomationPointPosition): number {
+    return compareAutomationTime(a, b) || (a.order ?? 0) - (b.order ?? 0) || a.id - b.id;
 }
 
 const clampOneSidedPan = (pan: number) => Math.max(-16, Math.min(16, pan));
@@ -274,8 +279,10 @@ export function automationWindow(curve: AutomationCurve, begin: number, end: num
     for (const draft of drafts) {
         const original = curve.points[byId.get(draft.id) ?? -1];
         if (original) selected.set(draft.id, { ...original, ...draft });
+        else if (draft.interpolation !== undefined && draft.tension !== undefined)
+            selected.set(draft.id, { ...draft, interpolation: draft.interpolation, tension: draft.tension });
     }
-    const points = [...selected.values()].sort((a, b) => compareAutomationTime(a, b) || a.id - b.id);
+    const points = [...selected.values()].sort(compareAutomationPoints);
     const groups: Array<{ first: AutomationPoint; last: AutomationPoint }> = [];
     for (const authored of points) {
         const value = clampAutomationValue(authored.value, bounds);

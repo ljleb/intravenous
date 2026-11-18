@@ -4224,12 +4224,13 @@ TEST_F(ProjectGraphFixture, StereoObservationCapabilitiesKeepPublicChannelNamesA
     auto const output_config = generation->graph->node_bundles.resolve_sample_output(
         {root, iv::PortKind::sample, 0}).config;
     ASSERT_EQ(output_config.channel_layout.channel_type, iv::ChannelTypeId::stereo);
+    EXPECT_EQ(output_config.name, "value");
     iv::ObservationGraphRequest describe{.describe_nodes = {{.instance_id = "stereo-module"}}};
     in_event_source([&] { project_graph.handle_observation_request(describe); });
     ASSERT_TRUE(describe.error.empty()) << describe.error;
     ASSERT_TRUE(describe.capabilities);
     auto const output = std::ranges::find_if(*describe.capabilities, [](auto const& capability) {
-        return capability["kind"] == "output" && capability["member"] == "main";
+        return capability["kind"] == "output" && capability["member"] == "value";
     });
     ASSERT_NE(output, describe.capabilities->end()) << describe.capabilities->dump();
     EXPECT_EQ((*output)["channels"], nlohmann::ordered_json::array({
