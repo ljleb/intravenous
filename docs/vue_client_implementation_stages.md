@@ -3775,3 +3775,16 @@ The wire mask now follows the width of the label text. Wires remain visible
 over the rest of the label background. Knobs and ports share a static
 outline with two distinct controls. At minimum lane height, the compact
 handle fits inside its lane and opens the full-size folded rows.
+
+After owner feedback, the socket sits partly over the knob arc. Its hit area
+extends toward the cable and leaves the center of the knob open for dragging.
+
+The next pass puts the dial face in front of the socket. A separate grab
+area extends toward the cable from the exposed part of the socket.
+
+A circular cutout now leaves a gap between the socket and the dial arc.
+
+The owner chose the compact cutout style after the
+[A/B comparison](./historical/vue_knob_style_comparison.md). The timeline
+no longer shows the style toggle. `KnobFace.vue` shades the area between
+the default marker and the current pointer on the dial and in its preview.

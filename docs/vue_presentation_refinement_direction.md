@@ -233,6 +233,10 @@ mapping may account for the bounds, but bounds must not silently change the
 orientation endpoints or compress the displayed arc. Preserve useful
 magnitude differentiation for unbounded controls.
 
+When a knob declares a default value, use a dim fill from its default marker
+to the current pointer. Follow the available arc in both the dial and its
+preview. At the default angle, omit the fill.
+
 ### Hover-keyboard clipboard transfer for knob values
 
 While a knob is hovered (or is the active/focused knob), **`c` copies** its

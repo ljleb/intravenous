@@ -4,7 +4,8 @@ import { useManualInput } from "./manualControlContext";
 import { knobScrubSpeed } from "../../src/knobPresentation";
 import { manualKnobStatus } from "../../src/manualControlGesture";
 import KnobFace from "./KnobFace.vue";
-const props = defineProps<{ name: string; showName?: boolean; direction?: "input" | "output" }>();
+const props = defineProps<{ name: string; showName?: boolean; direction?: "input" | "output";
+    portCutout?: boolean }>();
 const control = useManualInput(() => props.name, () => props.direction ?? "input");
 const { value, available, limits, state, descriptor } = control;
 const increment = computed(() => knobScrubSpeed(limits.value) * 2);
@@ -61,7 +62,7 @@ function step(direction: number) {
             @pointerdown="control.scrub" @dblclick.stop.prevent @contextmenu="control.numeric"
             @keydown.left.stop.prevent="step(-1)" @keydown.down.stop.prevent="step(-1)"
             @keydown.right.stop.prevent="step(1)" @keydown.up.stop.prevent="step(1)">
-            <KnobFace :value="value ?? limits.defaultValue ?? 0" :limits="limits" />
+            <KnobFace :value="value ?? limits.defaultValue ?? 0" :limits="limits" :port-cutout="portCutout" />
         </button>
         <button v-if="direction === 'output'" type="button" class="output-invert"
             :class="{ inverted: control.inverted.value }" :aria-pressed="control.inverted.value"
