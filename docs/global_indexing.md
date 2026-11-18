@@ -68,10 +68,22 @@ particular global execution lattice; it does not define another index type.
 ## Sequential execution order
 
 Tick is an ordered sequence of invocations. Normally one invocation's global interval
-ends where the next begins. A pause/resume, seek, loop, or other transport seam may
-instead make the next `FractionalGlobalIndex` jump to any global coordinate. The Tick
-graph continues running while playback is paused; on resume it observes the selected
-global coordinate immediately.
+ends where the next begins. A resume, running seek, explicit foreground relocation, loop,
+or other global-coordinate seam may instead make the next `FractionalGlobalIndex` jump
+to another global coordinate. During intentional playback pause, Tick keeps executing
+and normally advancing its own global coordinate. **A seek while paused changes only
+the selected playhead**, not the next Tick global coordinate. Resume realigns the
+next Tick coordinate to that playhead; a seek while running relocates both. The
+foreground has one shared node-visible global coordinate, not one per node or recorder.
+
+There are two project-coordinate trajectories (the applied playhead and the global
+Tick execution index), plus a separate hidden **physical Sequential execution cursor**.
+Only successfully executed Tick values advance the physical cursor. At a jump in
+global coordinates, retained Sequential samples/events/history are joined by
+physical invocation order, even when their project addresses are no longer adjacent.
+Output revision/finalization follows that physical order while recorded positions
+retain their original addresses across seams. A missed execution deadline does not
+insert fabricated values into this history.
 
 The selected playback position, its seconds/sample display, and the planned
 control boundary are specified in
@@ -99,6 +111,11 @@ seam, a slow lattice therefore resumes at its next legal global lattice point. I
 physical storage cursor nevertheless follows the preceding Tick value, so Sequential
 history crosses the seam without being cleared or reinterpreted as a globally adjacent
 range.
+
+A delayed live Sequential input takes its coverage from the same retained
+physical position as its value. After a seek, subtracting the delay from the
+new global index does not find that position. This rule does not change the
+project positions used for Random Access or background replay.
 
 ## Finite ranges
 

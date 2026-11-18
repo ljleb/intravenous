@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -1164,6 +1165,85 @@ TEST(GraphExecutorPersistedStorageCompatibility,
     current.storage.ports[0].event_type = iv::EventTypeId::midi;
     EXPECT_FALSE(iv::graph_jit::persisted_storage_is_compatible(
         current, 0, previous, 0));
+}
+
+TEST(ProjectPlayback, CommandsAreOrderedAndAppliedOnlyAtBlockBoundaries)
+{
+    iv::ProjectPlayback playback;
+    auto seek = playback.seek(index(100));
+    auto pause = playback.set_running(false);
+    auto resume = playback.set_running(true);
+    EXPECT_LT(seek, pause);
+    EXPECT_LT(pause, resume);
+    EXPECT_EQ(playback.snapshot().applied_command, 0u);
+    auto selected = playback.begin_block(48000);
+    EXPECT_EQ(selected.execution_index, index(100));
+    EXPECT_EQ(playback.snapshot().applied_command, 0u);
+    playback.end_block(selected, 16);
+    auto state = playback.snapshot();
+    EXPECT_EQ(state.position, index(116));
+    EXPECT_TRUE(state.running);
+    EXPECT_EQ(state.applied_command, resume);
+    EXPECT_EQ(state.segment, 3u);
+    (void)playback.toggle();
+    (void)playback.toggle();
+    selected = playback.begin_block(48000);
+    EXPECT_EQ(selected.execution_index, index(116));
+    EXPECT_TRUE(selected.state.running);
+}
+
+TEST(ProjectPlayback, FullCommandQueueRejectsNewCommandsWithoutReplacingAcceptedCommands)
+{
+    iv::ProjectPlayback playback;
+    std::uint64_t last = 0;
+    for (int i = 0; i < 256; ++i) last = playback.seek(index(i));
+    EXPECT_THROW((void)playback.seek(index(1000)), std::runtime_error);
+    auto selected = playback.begin_block(48000);
+    EXPECT_EQ(selected.execution_index, index(255));
+    EXPECT_EQ(selected.state.applied_command, last);
+    EXPECT_EQ(playback.snapshot().applied_command, 0u);
+    auto next = playback.seek(index(-5));
+    EXPECT_EQ(next, last + 1);
+    EXPECT_EQ(playback.begin_block(48000).execution_index, index(-5));
+}
+
+TEST(ProjectPlayback, RunningPositionWrapsThroughTheSignedSampleSeam)
+{
+    iv::ProjectPlayback playback;
+    (void)playback.seek(index(std::numeric_limits<std::int64_t>::max()));
+    playback.end_block(playback.begin_block(96000), 2);
+    EXPECT_EQ(playback.snapshot().position, index(std::numeric_limits<std::int64_t>::min() + 1));
+    EXPECT_EQ(playback.snapshot().sample_rate, 96000);
+}
+
+TEST_F(GraphExecutorFixture, DeviceRenderingKeepsLiveTickStateAcrossPauseResumeAndSeek)
+{
+    iv::GraphExecutor executor;
+    auto graph = compiled_graph(1, &observe_first);
+    ASSERT_EQ(stage_graph(executor, graph), iv::GraphExecutorStageResult::accepted);
+    executor.render_block(32, 48000);
+    auto* storage = first_tick.storage;
+    EXPECT_EQ(first_tick.sample_index, index(0));
+    EXPECT_EQ(executor.playback_snapshot().position, index(32));
+    auto paused = executor.set_playback_running(false);
+    executor.render_block(32, 48000);
+    EXPECT_EQ(first_tick.sample_index, index(32));
+    EXPECT_EQ(executor.playback_snapshot().applied_command, paused);
+    executor.render_block(32, 48000);
+    EXPECT_EQ(first_tick.sample_index, index(64));
+    EXPECT_EQ(executor.playback_snapshot().position, index(32));
+    EXPECT_FALSE(executor.playback_snapshot().running);
+    (void)executor.seek_playback(index(-100));
+    executor.render_block(32, 48000);
+    EXPECT_EQ(first_tick.sample_index, index(96));
+    EXPECT_EQ(executor.playback_snapshot().position, index(-100));
+    (void)executor.set_playback_running(true);
+    executor.render_block(32, 48000);
+    EXPECT_EQ(first_tick.sample_index, index(-100));
+    EXPECT_EQ(executor.playback_snapshot().position, index(-68));
+    EXPECT_EQ(first_tick.calls, 5u);
+    EXPECT_EQ(first_tick.storage, storage);
+    EXPECT_EQ(executor.active_generation(), 1u);
 }
 
 TEST_F(GraphExecutorFixture, StagesActivatesAndDispatchesOnlyActiveGeneration)
@@ -4314,108 +4394,6 @@ TEST_F(BackgroundCoveragePropagationFixture, BufferedReverseDependenciesAreActiv
     workspace.discard(std::move(prepared));
 }
 
-TEST_F(BackgroundCoveragePropagationFixture, LiveSequentialFeedbackCoverageDoesNotDependOnAnUpstreamCoverageSeed)
-{
-    using namespace iv;
-    using namespace iv::graph_jit;
-    BackgroundEvaluationPlan plan;
-    plan.requires_live_tick_coverage = true;
-    plan.nodes = {
-        {.bundle = 0, .authored_tock_execution = true, .outputs = {0}},
-        {.bundle = 1, .tracks_live_tick_coverage = true, .uses_replay_forward_coverage = true,
-         .replay_mode = TickReplayMode::full, .inputs = {1}, .outputs = {2}},
-        {.bundle = 2, .tracks_live_tick_coverage = true, .uses_replay_forward_coverage = true,
-         .replay_mode = TickReplayMode::full, .inputs = {3}, .outputs = {4}},
-    };
-    plan.ports = {
-        {.node = 0, .configured_port = {0, PortKind::event, 0}, .kind = PortKind::event,
-         .direction = PortDirection::output, .output_production = OutputProductionKind::coverage,
-         .authored_tock_output = true, .outgoing_connections = {0},
-         .accumulators = {.output_change = 0, .output_requirement = 0}},
-        {.node = 1, .configured_port = {1, PortKind::event, 0}, .kind = PortKind::event,
-         .direction = PortDirection::input, .incoming_connections = {0, 1},
-         .accumulators = {.input_change = 0, .input_requirement = 0}},
-        {.node = 1, .configured_port = {1, PortKind::event, 0}, .kind = PortKind::event,
-         .direction = PortDirection::output, .outgoing_connections = {2},
-         .accumulators = {.output_change = 1, .output_requirement = 1}},
-        {.node = 2, .configured_port = {2, PortKind::event, 0}, .kind = PortKind::event,
-         .direction = PortDirection::input, .incoming_connections = {2},
-         .accumulators = {.input_change = 1, .input_requirement = 1}},
-        {.node = 2, .configured_port = {2, PortKind::event, 0}, .kind = PortKind::event,
-         .direction = PortDirection::output, .outgoing_connections = {1},
-         .accumulators = {.output_change = 2, .output_requirement = 2}},
-    };
-    auto connect = [&](BackgroundPortIndex source, BackgroundPortIndex target) {
-        auto const from = plan.ports[source].configured_port;
-        auto const to = plan.ports[target].configured_port;
-        plan.connections.push_back({.kind = PortKind::event,
-            .source_coverage_ports = {source}, .target_coverage_ports = {target},
-            .event_deliveries = {{.source = {from.node_bundle_handle, from.port_index},
-                .target = {to.node_bundle_handle, to.port_index}, .source_port = source, .target_port = target}}});
-    };
-    connect(0, 1);
-    connect(4, 1);
-    connect(2, 3);
-    plan.accumulators = {.input_change_count = 2, .output_change_count = 3,
-        .output_requirement_count = 3, .input_requirement_count = 2};
-    CompiledGraphBackgroundOperations operations{
-        .propagate_forward = +[](BackgroundEvaluationCall* call) {
-            for (auto& node : std::span<BackgroundNodeCall>(call->nodes)) {
-                if (has_activity(node.activity, BackgroundNodeActivity::forward) && node.replay_forward)
-                    node.replay_forward(node.replay_context, node.forward);
-            }
-        },
-        .propagate_reverse = &no_op_background_evaluate,
-        .evaluate = &no_op_background_evaluate,
-    };
-    // Production plans mark live Sequential outputs full and never schedule
-    // a sparse-coverage fixed point for their feedback component.
-    plan.requires_live_tick_coverage = false;
-    for (std::size_t node : {1u, 2u}) {
-        plan.nodes[node].tracks_live_tick_coverage = false;
-        plan.nodes[node].uses_replay_forward_coverage = false;
-        plan.nodes[node].full_live_tick_coverage = true;
-    }
-    plan.ports[2].full_live_tick_coverage = true;
-    plan.ports[4].full_live_tick_coverage = true;
-    for (auto kind : {PortKind::event, PortKind::sample}) {
-        if (kind == PortKind::sample) {
-            for (auto& port : plan.ports) {
-                port.kind = kind;
-                port.configured_port.port_kind = kind;
-            }
-            plan.connections = {
-                {.kind = kind, .source_coverage_ports = {0, 4}, .target_coverage_ports = {1},
-                 .sample_source_port_by_channel = {0, 4}, .sample_read_latencies = {0, 0}, .sample_target_port = 1},
-                {.kind = kind, .source_coverage_ports = {2}, .target_coverage_ports = {3},
-                 .sample_source_port_by_channel = {2}, .sample_read_latencies = {0}, .sample_target_port = 3}};
-            plan.ports[1].incoming_connections = {0};
-            plan.ports[2].outgoing_connections = {1};
-            plan.ports[3].incoming_connections = {1};
-            plan.ports[4].outgoing_connections = {0};
-        }
-        for (bool full_seed : {true, false}) {
-            SCOPED_TRACE(full_seed);
-            BackgroundCoverageState recorded_state(3), live_state(3);
-            BackgroundPropagationWorkspace recorded(plan, 48000), live(plan, 48000);
-            CoveragePropagationRequest roots;
-            OutputCoverageChangeRequest seed{.port = 0,
-                .coverage = full_seed ? full_index_coverage() : IndexCoverage{}, .finalized = true};
-            for (auto region : seed.coverage) seed.regions.push_back(region);
-            roots.output_changes.push_back(std::move(seed));
-            auto selection = recorded.prepare(operations, recorded_state, roots);
-            auto prepared = live.prepare_live_tick(operations, live_state, selection, {}, true);
-            ASSERT_EQ(prepared.output_coverages().size(), 3u);
-            EXPECT_EQ(prepared.output_coverages()[1], full_index_coverage());
-            EXPECT_EQ(prepared.output_coverages()[2], full_index_coverage());
-            for (std::size_t node : {1u, 2u})
-                EXPECT_FALSE(has_activity(prepared.node_activity()[node], BackgroundNodeActivity::forward));
-            live.discard(std::move(prepared));
-            recorded.discard(std::move(selection));
-        }
-    }
-}
-
 TEST_F(GraphExecutorFixture, ObservationStampsFollowActivationRatherThanCodePreparationOrder)
 {
     iv::GraphExecutor executor;
@@ -4513,12 +4491,10 @@ TEST_F(BackgroundCoveragePropagationFixture, InputUnionReplayPreservesGapsWhileF
 {
     using namespace iv;
     using namespace iv::graph_jit;
-    for (auto [mode, authored] : {std::pair{TickReplayMode::input_union, false},
-            std::pair{TickReplayMode::full, false}, std::pair{TickReplayMode::full, true}}) {
+    for (auto mode : {TickReplayMode::input_union, TickReplayMode::full}) {
         BackgroundEvaluationPlan plan;
         plan.nodes = {{.bundle = 0, .replays_tick = true,
-            .authored_forward_coverage = authored,
-            .uses_replay_forward_coverage = !authored, .replay_mode = mode,
+            .uses_replay_forward_coverage = true, .replay_mode = mode,
             .inputs = {0, 1}, .outputs = {2}}};
         plan.ports = {
             {.node = 0, .configured_port = {0, PortKind::sample, 0},
@@ -4542,13 +4518,7 @@ TEST_F(BackgroundCoveragePropagationFixture, InputUnionReplayPreservesGapsWhileF
             .propagate_forward = +[](BackgroundEvaluationCall* call) {
                 for (auto const& node : std::span<BackgroundNodeCall>(call->nodes)) {
                     if (!has_activity(node.activity, BackgroundNodeActivity::forward)) continue;
-                    if (node.replay_forward)
-                        node.replay_forward(node.replay_context, node.forward);
-                    else {
-                        auto const coverage = node.forward.inputs.data()[0].coverage();
-                        node.forward.outputs.data()[0].publish_coverage(coverage);
-                        node.forward.outputs.data()[0].change(coverage);
-                    }
+                    node.replay_forward(node.replay_context, node.forward);
                 }
             },
             .propagate_reverse = &no_op_background_evaluate, .evaluate = &no_op_background_evaluate};
@@ -4559,7 +4529,7 @@ TEST_F(BackgroundCoveragePropagationFixture, InputUnionReplayPreservesGapsWhileF
         });
         auto result = workspace.commit(state, std::move(prepared));
         ASSERT_EQ(result.output_changes.size(), 1u);
-        if (authored || mode == TickReplayMode::input_union)
+        if (mode == TickReplayMode::input_union)
             EXPECT_EQ(result.output_changes[0].coverage, index_coverage({{20, 24}}));
         else EXPECT_EQ(result.output_changes[0].coverage, full_index_coverage());
     }

@@ -844,12 +844,15 @@ is now recorded in
 [Project Playback And Presentation Grids](./project_playback_and_presentation_grids_direction.md).
 The core contract separates the selected project position from continued Tick
 execution, uses samples and seconds for the same position, and assigns applied
-playback state to `GraphExecutor`. The owner selected a builtin callback
-structure for nodes that need playback state. Ordinary Tock/persisted clip
-sources do not need it: the existing contract supplies neutral/empty Tick
-input views while paused. The initial playhead does not depend on adding a
-node-facing accessor. No implementation or mouse/keyboard playback gesture is
-claimed by this document change.
+playback state to `GraphExecutor`. The owner selected an optional builtin callback
+structure for nodes that need playback state. Ordinary Tock clip sources do
+not need it. **Later owner correction (2026-11-17):** the initial
+neutral/empty Tick-input-on-pause plan quoted in the previous checkpoint was
+superseded. The current normative playback contract preserves covered held
+Samples, delivers Events once on an applied paused seek, and keeps Random
+Access Region/Coverage views intact. The initial playhead does not depend on
+adding a node-facing held-position accessor. This historical implementation
+checkpoint does not claim those revised semantics have landed.
 
 The same document records the owner's proposed grid source: a node output
 projected into timeline marks through output observation. Grid selection does

@@ -142,6 +142,7 @@ struct ReflectedEventOutputPortBinding {
     // Invocation-local authored state whose address is given only to the
     // Tick/persisted facade and its generated post-step operation.
     mutable OutputDisposition disposition = OutputDisposition::untouched;
+    mutable std::size_t authored_begin_index = 0;
 };
 
 static_assert(std::is_standard_layout_v<ReflectedContinuousChannelStorageBinding>);

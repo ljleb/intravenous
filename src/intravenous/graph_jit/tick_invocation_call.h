@@ -4,6 +4,7 @@
 #include <intravenous/graph/reflected_node_operations.h>
 
 #include <cstddef>
+#include <optional>
 #include <type_traits>
 
 namespace iv::graph_jit {
@@ -63,6 +64,7 @@ struct TickInvocationCall {
     // input views above. Indices are compiler-owned output-change accumulator
     // indices. Missing entries mean unknown coverage, never known absence.
     ReflectedSpan<IndexCoverage const> output_coverages{};
+    std::optional<GlobalIndex> held_background_position{};
     LiveObservationFrame* observations = nullptr;
 };
 

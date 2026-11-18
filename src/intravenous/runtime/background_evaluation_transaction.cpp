@@ -6,6 +6,7 @@
 #include <intravenous/graph_jit/background_storage_plan.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <cmath>
 #include <limits>
@@ -120,9 +121,6 @@ class BackgroundEvaluationTransaction::Impl {
     PersistedDataStore::ReaderSlot reader_{};
     std::optional<PersistedDataStore::ReaderPin> pin_{};
     std::optional<PreparedCoveragePropagation> prepared_{};
-    std::unique_ptr<LiveTickCoverageState> owned_live_coverage_{};
-    LiveTickCoverageState* live_coverage_ = nullptr;
-    std::optional<PreparedCoveragePropagation> prepared_live_coverage_{};
     // The published Tick materialization of this generation, if any, and the
     // part of each demanded Tick Sequential input that it still represents.
     TickMaterializationSnapshot const* previous_materialization_ = nullptr;
@@ -137,10 +135,6 @@ class BackgroundEvaluationTransaction::Impl {
 
     void discard_prepared() noexcept
     {
-        if (prepared_live_coverage_) {
-            live_coverage_->propagation.discard(std::move(*prepared_live_coverage_));
-            prepared_live_coverage_.reset();
-        }
         if (prepared_) {
             propagation_->discard(std::move(*prepared_));
             prepared_.reset();
@@ -241,56 +235,34 @@ class BackgroundEvaluationTransaction::Impl {
             }
 
             std::optional<ProducedRecord> current;
-            std::size_t remaining_blocks = 0;
-            bool invalid = false;
-            std::string error;
+            std::array<std::byte, sizeof(RealtimeProducedRecordHeader)> header_bytes{};
+            std::size_t header_size = 0;
             prefix.for_each([&](AsyncQueueBlock const& block) {
-                if (invalid) return;
                 auto bytes = block.used_storage();
-                if (!current) {
-                    if (bytes.size() < sizeof(RealtimeProducedRecordHeader)) {
-                        invalid = true;
-                        error = "realtime-produced record header is incomplete";
-                        return;
+                while (!bytes.empty()) {
+                    if (!current) {
+                        auto const size = std::min(bytes.size(), header_bytes.size() - header_size);
+                        std::memcpy(header_bytes.data() + header_size, bytes.data(), size);
+                        bytes = bytes.subspan(size);
+                        header_size += size;
+                        if (header_size != header_bytes.size()) break;
+                        current.emplace(ProducedRecord{.route = route});
+                        std::memcpy(&current->header, header_bytes.data(), header_bytes.size());
+                        header_size = 0;
                     }
-                    ProducedRecord record{.route = route};
-                    std::memcpy(
-                        &record.header, bytes.data(), sizeof(record.header));
-                    if (record.header.record_block_count == 0) {
-                        invalid = true;
-                        error = "realtime-produced record has no physical blocks";
-                        return;
+                    auto const size = std::min(bytes.size(), current->header.payload_size - current->payload.size());
+                    auto const payload = bytes.first(size);
+                    current->payload.insert(current->payload.end(), payload.begin(), payload.end());
+                    bytes = bytes.subspan(size);
+                    if (current->payload.size() == current->header.payload_size) {
+                        records.push_back(std::move(*current));
+                        current.reset();
                     }
-                    record.payload.reserve(record.header.payload_size);
-                    bytes = bytes.subspan(sizeof(record.header));
-                    remaining_blocks = record.header.record_block_count;
-                    current.emplace(std::move(record));
                 }
-
-                if (remaining_blocks == 0
-                    || bytes.size()
-                        > current->header.payload_size
-                            - current->payload.size()) {
-                    invalid = true;
-                    error = "realtime-produced record payload exceeds its header";
-                    return;
-                }
-                current->payload.insert(
-                    current->payload.end(), bytes.begin(), bytes.end());
-                --remaining_blocks;
-                if (remaining_blocks != 0) return;
-                if (current->payload.size() != current->header.payload_size) {
-                    invalid = true;
-                    error = "realtime-produced record payload is incomplete";
-                    return;
-                }
-                records.push_back(std::move(*current));
-                current.reset();
             });
-            if (invalid) return std::unexpected(std::move(error));
-            if (current || remaining_blocks != 0) {
+            if (header_size != 0 || current) {
                 return std::unexpected(
-                    "realtime-produced record ends before its declared block count");
+                    "realtime-produced record is incomplete");
             }
         }
         return records;
@@ -1544,18 +1516,6 @@ class BackgroundEvaluationTransaction::Impl {
             inputs_.projection.project(inputs_.projection.data, plan, *prepared_, *realization,
                 candidate ? candidate->target_version() : base.version());
 
-        if (materializations_ && graph_->background_evaluation_plan.requires_live_tick_coverage) {
-            if (!live_coverage_) {
-                owned_live_coverage_ = std::make_unique<LiveTickCoverageState>(
-                    graph_->background_evaluation_plan, graph_->specialization.sample_rate);
-                live_coverage_ = owned_live_coverage_.get();
-            }
-            prepared_live_coverage_.emplace(live_coverage_->propagation.prepare_live_tick(
-                graph_->background_operations, live_coverage_->coverage, *prepared_, inputs_.roots,
-                !live_coverage_->initialized,
-                BackgroundCoverageDiscovery{.data = this, .materialize = &materialize_discovery}));
-        }
-
         std::unique_ptr<TickMaterializationSnapshot> tick_materialization;
         if (materializations_) {
             std::vector<IndexCoverage> tick_input_requirements(plan.ports.size());
@@ -1570,8 +1530,7 @@ class BackgroundEvaluationTransaction::Impl {
                 return std::unexpected(std::move(frozen.error()));
             }
             tick_materialization = std::move(*frozen);
-            tick_materialization->set_output_coverages(prepared_live_coverage_
-                ? prepared_live_coverage_->output_coverages() : prepared_->output_coverages());
+            tick_materialization->set_output_coverages(prepared_->output_coverages());
             if (previous_materialization_
                 && !materialization_retention_.empty()) {
                 tick_materialization->carry_forward(
@@ -1597,12 +1556,6 @@ class BackgroundEvaluationTransaction::Impl {
             selected->retain_payload(prepared_payload_);
             auto result = propagation_->commit(*coverage_, std::move(*prepared_));
             prepared_.reset();
-            if (prepared_live_coverage_) {
-                (void)live_coverage_->propagation.commit(live_coverage_->coverage,
-                    std::move(*prepared_live_coverage_));
-                prepared_live_coverage_.reset();
-                live_coverage_->initialized = true;
-            }
             return BackgroundEvaluationResult{
                 .coverage = std::move(result),
                 .prepared_data = std::move(selected),
@@ -1637,12 +1590,6 @@ class BackgroundEvaluationTransaction::Impl {
                 std::move(tick_materialization));
         }
 
-        if (prepared_live_coverage_) {
-            (void)live_coverage_->propagation.commit(live_coverage_->coverage,
-                std::move(*prepared_live_coverage_));
-            prepared_live_coverage_.reset();
-            live_coverage_->initialized = true;
-        }
         auto result = propagation_->commit(*coverage_, std::move(*prepared_));
         prepared_.reset();
         return BackgroundEvaluationResult{
@@ -1661,8 +1608,7 @@ public:
          TickMaterializationStore* materializations,
          BackgroundTransactionInputs inputs,
          std::span<BackgroundProducedInputRoute const> produced_routes = {},
-         std::span<PinnedBlockPrefix const> produced_prefixes = {},
-         LiveTickCoverageState* live_coverage = nullptr)
+         std::span<PinnedBlockPrefix const> produced_prefixes = {})
         : graph_(&graph)
         , tock_states_(&tock_states)
         , coverage_(&coverage)
@@ -1673,7 +1619,6 @@ public:
         , remaining_materialized_sample_bytes_(inputs_.maximum_materialized_sample_bytes)
         , produced_routes_(produced_routes)
         , produced_prefixes_(produced_prefixes)
-        , live_coverage_(live_coverage)
     {}
 
     ~Impl()
@@ -1779,8 +1724,7 @@ BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
     TickMaterializationStore& materializations,
     BackgroundTransactionInputs inputs,
     std::span<BackgroundProducedInputRoute const> produced_routes,
-    std::span<PinnedBlockPrefix const> produced_prefixes,
-    LiveTickCoverageState* live_coverage)
+    std::span<PinnedBlockPrefix const> produced_prefixes)
     : impl_(std::make_unique<Impl>(
         graph,
         tock_states,
@@ -1790,8 +1734,7 @@ BackgroundEvaluationTransaction::BackgroundEvaluationTransaction(
         &materializations,
         std::move(inputs),
         produced_routes,
-        produced_prefixes,
-        live_coverage))
+        produced_prefixes))
 {}
 
 BackgroundEvaluationTransaction::~BackgroundEvaluationTransaction() = default;

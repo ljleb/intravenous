@@ -635,7 +635,7 @@ RegisteredSignature const* node_constructor_signature()
         "IV_NODE Tick Region/Coverage inputs initially require complete-buffer access."); \
     static_assert(::iv::details::replay_declaration_is_valid_v<Node>, \
         "IV_NODE intrinsically replayable nodes must author a Tick callback, " \
-        "have no State, provide propagation for Random Access inputs, " \
+        "have no State, Random Access inputs, or authored coverage propagation callbacks, " \
         "and declare only computed Sequential outputs; resolved timing is validated by " \
         "the whole-graph planner."); \
     static_assert(::iv::details::background_state_type_is_valid_v<Node>, \
@@ -654,12 +654,12 @@ RegisteredSignature const* node_constructor_signature()
     static_assert(!(::iv::details::has_propagate_forward_coverage<Node> \
                 || ::iv::details::has_propagate_forward_coverage_batch<Node>) \
             || ::iv::details::has_coverage_propagation_domain_v<Node>, \
-        "IV_NODE node type defines propagate_forward_coverage but declares neither Tock outputs nor replayable Tick execution."); \
+        "IV_NODE node type defines propagate_forward_coverage but does not declare Tock execution."); \
     static_assert(!(::iv::details::has_propagate_reverse_coverage<Node> \
                 || ::iv::details::has_propagate_reverse_coverage_batch<Node>) \
             || (::iv::details::has_coverage_propagation_domain_v<Node> \
                 && ::iv::details::declares_random_access_inputs_v<Node>), \
-        "IV_NODE node type defines propagate_reverse_coverage but requires random-access inputs and either Tock outputs or replayable Tick execution.")
+        "IV_NODE node type defines propagate_reverse_coverage but requires Tock execution and Random Access inputs.")
 
 #define IV_NODE_IMPL(Id, Node, Unique) \
     namespace { \

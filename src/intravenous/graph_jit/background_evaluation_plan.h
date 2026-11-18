@@ -320,6 +320,7 @@ struct EventDeliveryPlan {
     std::size_t semantic_source_index = 0;
     PlannedDeliveryMechanism mechanism =
         PlannedDeliveryMechanism::tick_to_sequential;
+    std::size_t live_read_latency = 0;
 
     bool operator==(EventDeliveryPlan const&) const = default;
 };
@@ -545,9 +546,7 @@ struct BackgroundNodeOperationPlacementPlan {
 struct BackgroundReplayInvocationPlan {
     BackgroundNodeIndex node = 0;
     std::size_t maximum_block_size = 0;
-    // True for an authored block callback. Pointwise replay additionally
-    // materializes any input with nonzero history so block_extended() remains
-    // available as history plus its one current value.
+    // True when the authored callback may request a contiguous input block.
     bool block_input_access = false;
     std::vector<BackgroundBindingSlot> input_bindings{};
     std::vector<BackgroundBindingSlot> output_bindings{};
@@ -600,6 +599,7 @@ struct TickCaptureBindingPlan {
     // per semantic slice with the SCC quantum.
     std::size_t maximum_block_size = 0;
     std::size_t maximum_invocations_per_callback = 0;
+    std::size_t event_acceptance_capacity = 0;
     bool operator==(TickCaptureBindingPlan const&) const = default;
 };
 

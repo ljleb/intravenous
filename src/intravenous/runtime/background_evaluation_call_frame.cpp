@@ -472,10 +472,6 @@ struct BackgroundEvaluationCallFrame::ReplayFrameStorage {
     std::vector<ReflectedEventInputPortBinding> event_inputs{};
     std::vector<ReflectedEventOutputPortBinding> event_outputs{};
     std::vector<GlobalIndexRange> regions{};
-    std::vector<RandomAccessContinuousInputPort> random_sample_inputs{};
-    std::vector<RandomAccessEventInputPort> random_event_inputs{};
-    std::vector<bool> sample_input_is_random{};
-    std::vector<bool> event_input_is_random{};
     std::vector<std::unique_ptr<SampleStorage>> sample_input_storage{};
     std::vector<std::unique_ptr<SampleStorage>> sample_output_storage{};
     std::vector<std::unique_ptr<EventStorage>> event_input_storage{};
@@ -660,13 +656,13 @@ BackgroundEvaluationCallFrame::BackgroundEvaluationCallFrame(
                     "background replay input binding slot is out of range");
             }
             auto const& binding = plan.runtime.bindings[slot];
-            bool const random = plan.ports[binding.port].random_access_input;
+            auto const& port = plan.ports[binding.port];
+            if (!port.replay_sequential_input || port.random_access_input || port.sequential_history != 0)
+                throw std::invalid_argument("background Tick replay requires a pointwise Sequential input binding");
             if (binding.kind == PortKind::sample) {
                 storage->sample_inputs.emplace_back();
-                storage->sample_input_is_random.push_back(random);
             } else {
                 storage->event_inputs.emplace_back();
-                storage->event_input_is_random.push_back(random);
             }
         }
         for (auto const slot : replay.output_bindings) {
@@ -1421,40 +1417,13 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
             auto const sample_capacity = replay_frame_capacity(storage.regions);
             std::size_t sample_input = 0;
             std::size_t event_input = 0;
-            std::size_t random_sample_input = 0;
-            std::size_t random_event_input = 0;
             for (auto const binding_slot : replay.input_bindings) {
                 auto const& binding = runtime.bindings[binding_slot];
                 auto const& port = plan.ports[binding.port];
                 auto* adapter = adapters[binding_slot].get();
-                if (port.random_access_input) {
-                    if (binding.kind == PortKind::sample) {
-                        storage.random_sample_inputs.push_back(
-                            node_storage[replay.node]->sample_inputs[random_sample_input++]);
-                        ++sample_input;
-                    } else {
-                        storage.random_event_inputs.push_back(
-                            node_storage[replay.node]->event_inputs[random_event_input++]);
-                        ++event_input;
-                    }
-                    continue;
-                }
                 if (binding.kind == PortKind::sample) {
-                    auto const needs_contiguous_input =
-                        replay.block_input_access
-                        || port.sequential_history != 0;
-                    if (needs_contiguous_input
-                        && port.sequential_history
-                            > std::numeric_limits<std::size_t>::max()
-                                - replay.maximum_block_size) {
-                        return std::unexpected(
-                            "background replay contiguous input capacity overflows size_t");
-                    }
                     auto const contiguous_value_capacity =
-                        needs_contiguous_input
-                            ? port.sequential_history
-                                + replay.maximum_block_size
-                            : 0;
+                        replay.block_input_access ? replay.maximum_block_size : 0;
                     auto raw = std::make_unique<
                         ReplayFrameStorage::SampleStorage>(
                             port.sample_layout,
@@ -1532,10 +1501,8 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
             operation_frames[replay.node]->set_leaf_hooks(
                 &storage, &prepare_replay, &finalize_replay);
             if (!std::ranges::all_of(
-                    std::views::iota(std::size_t{0}, storage.sample_inputs.size()),
-                    [&storage](std::size_t input) {
-                        if (storage.sample_input_is_random[input]) return true;
-                        auto const& binding = storage.sample_inputs[input];
+                    storage.sample_inputs,
+                    [](ReflectedContinuousInputPortBinding const& binding) {
                         if (!valid_replay_sample_storage(binding.storage)) {
                             return false;
                         }
@@ -1559,10 +1526,9 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                         return valid_replay_sample_storage(binding.storage);
                     }) ||
                 !std::ranges::all_of(
-                    std::views::iota(std::size_t{0}, storage.event_inputs.size()),
-                    [&storage](std::size_t input) {
-                        return storage.event_input_is_random[input]
-                            || valid_replay_event_storage(storage.event_inputs[input].storage);
+                    storage.event_inputs,
+                    [](ReflectedEventInputPortBinding const& binding) {
+                        return valid_replay_event_storage(binding.storage);
                     }) ||
                 !std::ranges::all_of(
                     storage.event_outputs,
@@ -1577,8 +1543,6 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
         frame.replay.continuous_output_bindings = storage.sample_outputs;
         frame.replay.event_input_bindings = storage.event_inputs;
         frame.replay.event_output_bindings = storage.event_outputs;
-        frame.replay.random_access_inputs = storage.random_sample_inputs;
-        frame.replay.random_access_event_inputs = storage.random_event_inputs;
         frame.replay.sample_rate = selection_.sample_rate;
         frame.replay_regions = storage.regions;
     }

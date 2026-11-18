@@ -10,8 +10,12 @@ import { provideTimelineWindow } from "../timeline/timelineContext";
 import { moveMiddlePan, timelineWheelAction, wheelPixels, zoomTimelineHorizontally,
     zoomTimelineVertically, type MiddlePan } from "../../src/timelineViewport";
 import { useGraphEditor } from "./context";
+import { usePlayback } from "../timeline/playbackContext";
 
 const node = useNode();
+const playback = usePlayback();
+const playbackSeconds = computed(() => playback.position.value === null ? null
+    : Number(playback.position.value) / (playback.state.value?.sampleRate ?? 48000));
 const scope = computed(() => node.value.scope!);
 const children = computed(() => scope.value.nodes.map((child) => ({
     child, semantic: semanticNodeFromScopeChild(child, scope.value),
@@ -44,6 +48,8 @@ const timeWindow = computed(() => ({ beginSeconds: viewport.value.beginSeconds,
     endSeconds: viewport.value.beginSeconds + Math.max(1, timeWidth.value) * viewport.value.secondsPerPixel,
     sampleRate: scope.value.sampleRate }));
 provideTimelineWindow(timeWindow);
+const playheadX = computed(() => playbackSeconds.value === null ? -1
+    : (playbackSeconds.value - viewport.value.beginSeconds) / viewport.value.secondsPerPixel);
 const pan = shallowRef<MiddlePan | null>(null);
 let panMoved = false;
 let observer: ResizeObserver | null = null;
@@ -146,16 +152,22 @@ onBeforeUnmount(() => {
         @pointerup="endPan" @pointercancel="endPan" @lostpointercapture="endPan"
         @mousedown="preventMiddleDefault" @auxclick="preventMiddleDefault">
         <header class="timeline-heading">
-            <div class="node-column">{{ node.kind }}</div>
-            <div ref="timeRegion" class="time-region"><TimeRuler :window="timeWindow" style="height: 100%" /></div>
+            <div class="node-column playback-position" title="Space: play/pause. Click the ruler to seek.">
+                <template v-if="playbackSeconds !== null">
+                    {{ playback.state.value?.running ? '▷' : 'Ⅱ' }} {{ playbackSeconds.toFixed(3) }} s
+                    <small>{{ playback.position.value?.toString() }} smp</small>
+                </template>
+            </div>
+            <div ref="timeRegion" class="time-region"><TimeRuler :window="timeWindow" :sample-rate="scope.sampleRate" playback style="height: 100%" /></div>
         </header>
         <div class="lanes">
+            <div v-if="playheadX >= 0 && playheadX <= timeWidth" class="playhead-line"
+                :style="{ left: `calc(var(--node-label-width) + ${playheadX}px)` }" />
             <section v-for="{ child, semantic } in children" :key="addressKey(child.address)"
                 class="lane" :class="{ selected: selectedLane === addressKey(child.address) }"
                 :style="{ height: `${laneHeight}px` }" :aria-label="nodeDisplayName(semantic)" tabindex="0"
                 :aria-current="selectedLane === addressKey(child.address) ? 'true' : undefined"
-                @click="clickedLane($event, child.address)" @keydown.enter.self="selectLane(child.address)"
-                @keydown.space.self.prevent="selectLane(child.address)">
+                @click="clickedLane($event, child.address)" @keydown.enter.self="selectLane(child.address)">
                 <PresentationHost :node="semantic" :region-height="laneHeight - 1" lane
                     @copy-debug-details="copyNodeDebugDetails(child.address)" />
             </section>
@@ -188,7 +200,10 @@ onBeforeUnmount(() => {
 .timeline-heading { display: grid; grid-template-columns: var(--node-label-width) minmax(0, 1fr); }
 .timeline-heading { box-sizing: border-box; position: sticky; top: 0; z-index: 1; background: var(--vscode-editor-background); flex: 0 0 var(--timeline-header-height); border-bottom: 1px solid var(--vscode-panel-border); }
 .node-column { box-sizing: border-box; min-width: 0; padding: 8px 12px; border-right: 1px solid var(--vscode-panel-border); }
-.lanes { flex: 0 0 auto; min-height: 0; }
+.lanes { flex: 0 0 auto; min-height: 0; position: relative; }
+.playhead-line { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--vscode-debugIcon-startForeground, #89d185); opacity: .65; pointer-events: none; z-index: 1; }
+.playback-position { overflow: hidden; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.playback-position small { opacity: .6; margin-left: 6px; }
 .lane { box-sizing: border-box; border-bottom: 1px solid var(--vscode-panel-border); }
 .lane.selected { background: var(--vscode-list-inactiveSelectionBackground); outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 .lane:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }

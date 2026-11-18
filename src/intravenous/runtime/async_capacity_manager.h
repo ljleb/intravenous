@@ -163,6 +163,8 @@ class ProducedBlockWriter {
 public:
     ProducedBlockWriter() = default;
 
+    [[nodiscard]] bool ensure_capacity(ProducedBlockChain& chain,
+        ProducerReserve& reserve, std::size_t bytes) noexcept;
     [[nodiscard]] bool append(std::span<std::byte const> bytes) noexcept;
     [[nodiscard]] std::size_t remaining_capacity() const noexcept
     {

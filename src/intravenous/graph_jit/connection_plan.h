@@ -52,7 +52,6 @@ struct PlannedGraphNode {
     bool full_live_tick_coverage = false;
     TickReplayMode replay_mode = TickReplayMode::disabled;
     bool contextually_replayable = false;
-    bool authored_forward_coverage = false;
     bool authored_reverse_coverage = false;
 };
 

@@ -29,6 +29,21 @@ struct SequentialCoverageProjection {
 
 enum class SequentialCoveragePresence { absent, covered, unknown };
 
+template<class SelectSource>
+[[nodiscard]] inline SequentialCoveragePresence select_projection_presence(
+    std::span<SequentialCoverageSource const> sources, SelectSource const& select) noexcept
+{
+    if (sources.empty()) return SequentialCoveragePresence::absent;
+    bool unknown = false;
+    for (auto const& source : sources) {
+        if (!source.output_change) continue;
+        auto const presence = select(source);
+        if (presence == SequentialCoveragePresence::absent) return presence;
+        unknown |= presence == SequentialCoveragePresence::unknown;
+    }
+    return unknown ? SequentialCoveragePresence::unknown : SequentialCoveragePresence::covered;
+}
+
 // Cold coverage algebra only; realtime point queries never construct sets.
 [[nodiscard]] inline IndexCoverage const& full_index_coverage()
 {
@@ -39,30 +54,10 @@ enum class SequentialCoveragePresence { absent, covered, unknown };
     return full;
 }
 
-[[nodiscard]] inline SequentialCoveragePresence projection_presence(
-    std::span<SequentialCoverageSource const> sources,
-    std::span<IndexCoverage const> output_coverages,
-    GlobalIndex index) noexcept
-{
-    if (sources.empty()) return SequentialCoveragePresence::absent;
-    bool unknown = false;
-    for (auto const& source : sources) {
-        if (!source.output_change) continue;
-        if (*source.output_change >= output_coverages.size()) {
-            unknown = true;
-        } else if (!output_coverages[*source.output_change].contains(
-                       index.retreated_by(source.read_latency))) {
-            return SequentialCoveragePresence::absent;
-        }
-    }
-    return unknown ? SequentialCoveragePresence::unknown
-                   : SequentialCoveragePresence::covered;
-}
-
-[[nodiscard]] inline SequentialCoveragePresence input_presence(
+template<class SelectProjection>
+[[nodiscard]] inline SequentialCoveragePresence select_input_presence(
     std::span<SequentialCoverageProjection const> projections,
-    std::span<IndexCoverage const> output_coverages,
-    GlobalIndex index,
+    SelectProjection const& select,
     std::optional<std::size_t> channel = {}) noexcept
 {
     bool unknown = false;
@@ -73,8 +68,7 @@ enum class SequentialCoveragePresence { absent, covered, unknown };
                 contributes |= target == *channel;
             if (!contributes) continue;
         }
-        auto const presence = projection_presence(
-            projection.sources, output_coverages, index);
+        auto const presence = select(projection.sources);
         if (presence == SequentialCoveragePresence::covered) return presence;
         unknown |= presence == SequentialCoveragePresence::unknown;
     }

@@ -569,6 +569,21 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
     if (method == "audioDevices.get") {
         return parsed(GetAudioDevicesRequest{});
     }
+    if (method == "playback.get") return parsed(GetPlaybackRequest{});
+    if (method == "playback.toggle") return parsed(TogglePlaybackRequest{});
+    if (method == "playback.setRunning") {
+        if (!params.contains("running") || !params.at("running").is_boolean())
+            throw std::invalid_argument("playback.setRunning requires boolean param 'running'");
+        return parsed(SetPlaybackRunningRequest{params.at("running").get<bool>()});
+    }
+    if (method == "playback.seek") {
+        auto text = parse_string_param(params, "position");
+        std::int64_t position = 0;
+        auto converted = std::from_chars(text.data(), text.data() + text.size(), position);
+        if (converted.ec != std::errc{} || converted.ptr != text.data() + text.size())
+            throw std::invalid_argument("playback.seek requires a signed decimal sample index string");
+        return parsed(SeekPlaybackRequest{GlobalIndex::from_signed(position)});
+    }
     if (method == "audioDevices.set") {
         return parsed(SetAudioDevicesRequest{
             .output_device_id = parse_optional_nullable_string_param(params, "outputDeviceId"),

@@ -24,11 +24,11 @@ For acyclic Tick nodes:
 - `TickReplayMode::full` declares intrinsic replay eligibility and generated full
   output coverage.
 - `TickReplayMode::disabled` does not grant intrinsic background replay.
-- Eligibility still requires deterministic, side-effect-free computation and
-  compatible state, history, latency, input and output declarations. Intrinsic
-  eligibility does not prove contextual replayability.
-- Existing authored coverage callbacks keep their separately declared contract;
-  this correction does not discard authored propagation.
+- Replay must be deterministic, side-effect-free, and pointwise. Replayable Tick
+  nodes have no `State`, history, latency, Random Access input, or authored
+  forward or reverse coverage callback. Intrinsic eligibility does not prove
+  contextual replayability. Position shifts and authored propagation belong to
+  Tock, not Tick.
 
 For example, sparse automation feeding an acyclic input-union gain remains
 absent in automation gaps. The gain may compute using its input fallback there,
@@ -56,9 +56,14 @@ Check SCC membership explicitly. Published recordings can terminate a dependency
 traversal without replaying their original feedback producer. An acyclic
 processor may consume those selected recorded contents normally.
 
-Any future deterministic offline Sequential renderer is a separate feature. It
-may eventually execute feedback from initialized state; that does not change
-ordinary background replay eligibility.
+A future pure isolated background Sequential renderer is a separate execution
+facility: it can copy and initialize an eligible Sequential subgraph for each
+semantic Region and execute stateful feedback from that initial state. That
+changes neither ordinary pointwise contextual replay eligibility nor the
+feed-forward dependency DAG of background work. Overlapping Regions may have
+different values at the same position because their instance histories begin
+at different Region boundaries. The concrete Tock/input API remains undecided;
+see [Project Playback](./project_playback_and_presentation_grids_direction.md#future-isolated-background-sequential-rendering-distinct-from-playback).
 
 ## Unchanged output and storage contracts
 
@@ -76,7 +81,8 @@ of known-covered data remains an underrun, never fallback.
 
 1. Restore input-union declaration/serialization, propagation and downstream
    fallback for acyclic Tick nodes, with the explicit feedback-SCC override and
-   replay exclusion. Keep coverage work off the audio thread.
+   replay exclusion. Keep position-addressed coverage propagation off the audio
+   thread. Live Tick uses bounded presence lookups on the values it consumes.
 2. Verify sparse acyclic chains, all-input-union feedback SCCs, recording
    boundaries, live delivery, replay and consumer fallback. The owner runs
    builds, tests and measurements.

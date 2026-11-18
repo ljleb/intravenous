@@ -1,3 +1,4 @@
+#include <intravenous/graph_jit/background_storage_plan.h>
 #include <intravenous/runtime/audio_input_synchronizer.h>
 #include <intravenous/runtime/graph_executor.h>
 #include <intravenous/runtime/system_audio_devices.h>
@@ -24,6 +25,7 @@
 #include <mutex>
 #include <ranges>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -37,11 +39,19 @@ struct FakeOutputRenderState {
     bool shutdown = false;
 };
 
+struct FakeInputCaptureState {
+    std::vector<iv::Sample> samples{};
+    std::mutex mutex{};
+    std::condition_variable cv{};
+    bool shutdown = false;
+};
+
 struct DeviceLifetimeState {
     std::atomic<size_t> output_shutdowns = 0;
     std::atomic<size_t> input_shutdowns = 0;
     std::mutex output_mutex{};
     std::shared_ptr<FakeOutputRenderState> output{};
+    std::shared_ptr<FakeInputCaptureState> input{};
 };
 
 class FakeOutputDevice {
@@ -101,41 +111,51 @@ public:
 class FakeInputDevice {
     iv::RenderConfig config_;
     std::shared_ptr<DeviceLifetimeState> lifetime_;
-    std::mutex mutex_;
-    std::condition_variable cv_;
-    bool shutdown_ = false;
+    std::shared_ptr<FakeInputCaptureState> capture_;
 
 public:
     FakeInputDevice(iv::RenderConfig config, std::shared_ptr<DeviceLifetimeState> lifetime)
         : config_(config)
         , lifetime_(std::move(lifetime))
-    {}
+        , capture_(std::make_shared<FakeInputCaptureState>())
+    {
+        lifetime_->input = capture_;
+    }
 
     FakeInputDevice(FakeInputDevice&& other) noexcept
         : config_(other.config_)
         , lifetime_(std::move(other.lifetime_))
+        , capture_(std::move(other.capture_))
     {}
 
     iv::RenderConfig const& config() const { return config_; }
 
     iv::AudioInputBlock wait_for_captured_block()
     {
-        std::unique_lock lock(mutex_);
-        cv_.wait(lock, [&] { return shutdown_; });
-        throw std::logic_error("fake input stopped");
+        std::unique_lock lock(capture_->mutex);
+        capture_->cv.wait(lock, [&] { return capture_->shutdown || !capture_->samples.empty(); });
+        if (capture_->shutdown) throw std::logic_error("fake input stopped");
+        return {.samples = capture_->samples};
     }
 
-    void release_captured_block() {}
+    void release_captured_block()
+    {
+        {
+            std::scoped_lock lock(capture_->mutex);
+            capture_->samples.clear();
+        }
+        capture_->cv.notify_all();
+    }
 
     void request_shutdown()
     {
         {
-            std::scoped_lock lock(mutex_);
-            if (shutdown_) return;
-            shutdown_ = true;
+            std::scoped_lock lock(capture_->mutex);
+            if (capture_->shutdown) return;
+            capture_->shutdown = true;
             ++lifetime_->input_shutdowns;
         }
-        cv_.notify_all();
+        capture_->cv.notify_all();
     }
 };
 
@@ -176,7 +196,15 @@ bool combine_sample_values(
 
 iv::SystemAudioOutputBinding selected_output_binding{};
 iv::SystemAudioOutputBinding missing_output_binding{};
+iv::SystemAudioInputBinding selected_input_binding{};
 std::atomic<std::size_t> render_probe_calls = 0;
+
+void render_input_probe(iv::graph_jit::RealtimeRootPlan const*, std::byte*,
+    iv::graph_jit::TickInvocationCall const*, iv::GlobalIndex, std::size_t)
+{
+    render_probe_calls.fetch_add(1, std::memory_order_relaxed);
+    selected_output_binding.write(selected_input_binding.captured_samples());
+}
 
 void render_binding_probe(
     iv::graph_jit::RealtimeRootPlan const*,
@@ -408,6 +436,82 @@ TEST(SystemAudioDevices, OutputClockSlicesLargeDeviceRequestsIntoProjectBlocks)
     for (auto const sample : rendered) {
         EXPECT_FLOAT_EQ(sample.value, 0.75f);
     }
+}
+
+TEST(SystemAudioDevices, PlaybackUnderrunDropsTheDevicesCurrentInputSlice)
+{
+    constexpr std::size_t block = 64;
+    auto lifetime = std::make_shared<DeviceLifetimeState>();
+    iv::SystemAudioDevices devices(48000, block, make_backend(lifetime));
+    auto resources = devices.resources();
+    selected_input_binding = resources.system_audio.resolve_input("default");
+    selected_output_binding = resources.system_audio.resolve_output("default");
+    auto output = current_output(lifetime);
+    ASSERT_TRUE(output);
+    ASSERT_TRUE(lifetime->input);
+
+    std::vector<iv::Sample> samples(8 * block * 2);
+    for (std::size_t offset = 0; offset < samples.size(); ++offset)
+        samples[offset] = iv::Sample{static_cast<float>(offset / 2) / 1024.0f};
+    iv::AudioInputSynchronizer reference(48000, block, 48000, 2 * block);
+    reference.push_captured_block({.samples = samples});
+    auto const first = reference.render_timeline_block();
+    auto const skipped = reference.render_timeline_block();
+    auto const third = reference.render_timeline_block();
+    ASSERT_NE(skipped.samples.front().value, third.samples.front().value);
+    {
+        auto& capture = *lifetime->input;
+        std::unique_lock lock(capture.mutex);
+        capture.samples = samples;
+        capture.cv.notify_all();
+        ASSERT_TRUE(capture.cv.wait_for(lock, std::chrono::seconds(5), [&] { return capture.samples.empty(); }));
+    }
+
+    iv::GraphExecutor executor(resources);
+    auto graph = std::make_shared<iv::CompiledGraph>();
+    graph->project_generation = 1;
+    graph->specialization = {.sample_rate = 48000, .block_size = block};
+    graph->node_layout = iv::NodeLayoutBuilder(block).build();
+    graph->root_operations.tick_block.function = &render_input_probe;
+    graph->root_operations.combine_sequential_input = &combine_sample_values;
+    auto const no_op = +[](iv::graph_jit::BackgroundEvaluationCall*) {};
+    graph->background_operations = {no_op, no_op, no_op};
+    auto& plan = graph->background_evaluation_plan;
+    // The probe reads from the device. This disconnected port supplies a
+    // background readiness window with known-empty coverage.
+    plan.nodes = {{.inputs = {0}}};
+    plan.ports = {{.direction = iv::graph_jit::PortDirection::input, .tick_sequential_input = true}};
+    plan.tick_sequential_inputs = {0};
+    plan.tick_runtime.nodes.resize(plan.nodes.size());
+    auto const background_plan = iv::graph_jit::detail::finalize_background_runtime_plan(plan);
+    ASSERT_TRUE(background_plan.has_value()) << (background_plan ? "" : background_plan.error());
+    executor.set_tick_materialization_demand(iv::IndexCoverage{iv::GlobalIndexRange{{}, block}});
+    ASSERT_EQ(executor.stage(graph), iv::GraphExecutorStageResult::accepted);
+    bool activated = false;
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!(activated = executor.activate_pending({})) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    ASSERT_TRUE(activated);
+    render_probe_calls.store(0, std::memory_order_relaxed);
+    devices.attach_graph_executor(executor);
+    auto const before_recovery = request_output_block(output, 2 * block);
+    auto const position_after_failure = executor.playback_snapshot().position;
+    auto const seek = executor.seek_playback({});
+    auto const recovered = request_output_block(output, block);
+    devices.detach_graph_executor(executor);
+    devices.stop();
+
+    ASSERT_EQ(before_recovery.size(), 4 * block);
+    ASSERT_EQ(recovered.size(), 2 * block);
+    for (std::size_t offset = 0; offset < 2 * block; ++offset) {
+        EXPECT_FLOAT_EQ(before_recovery[offset].value, first.samples[offset].value);
+        EXPECT_FLOAT_EQ(before_recovery[2 * block + offset].value, 0.0f);
+        EXPECT_FLOAT_EQ(recovered[offset].value, third.samples[offset].value);
+    }
+    EXPECT_EQ(position_after_failure.bits(), block);
+    EXPECT_EQ(executor.playback_snapshot().applied_command, seek);
+    EXPECT_EQ(executor.playback_underrun_blocks(), 1u);
+    EXPECT_EQ(render_probe_calls.load(std::memory_order_relaxed), 2u);
 }
 
 TEST(SystemAudioDevices, LogicalOutputBindingFollowsDeviceSelection)

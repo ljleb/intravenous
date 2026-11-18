@@ -158,7 +158,8 @@ pace.
 ### Global coordinates and physical Sequential cursors
 
 Every Tick and Tock node observes one coordinate type: `FractionalGlobalIndex`. Tick
-normally advances it, but resume/seek may make it jump. This does not reset the Tick
+normally advances it, but resume or a running seek may make it jump; a
+paused seek changes only the playhead. This does not reset the Tick
 graph's Sequential state.
 
 Physical continuous rings and compact carries use compiler-owned linear value cursors,
@@ -1186,8 +1187,12 @@ block. Explicitly writing an empty Tick/persisted event block produces ordinary
 authoritative empty event data, not a recording void; omitting output authoring leaves
 the block untouched. For `tick_block()`, `written` and `voided` each apply to the
 entire addressed callback block. For scalar `tick()`, that block contains one sample.
-This deliberately makes recording start/stop precision follow Tick callback boundaries;
-sparse event payloads remain sparse inside their authoritative written block.
+Callback boundaries constrain the granularity of authoring requests, but record
+start/stop cannot retroactively change earlier authored positions merely because
+those values finalize after a later callback. Physical Sequential latency history
+crosses global-coordinate seeks; final capture may need several disjoint addressed
+ranges. Sparse event payloads remain sparse inside each authoritative written range.
+See [Project Playback](./project_playback_and_presentation_grids_direction.md#buffered-tick-output-authoring-and-transport-seams).
 
 Before background execution, `BackgroundExecutor` independently pins one finite
 `(first,last)` prefix from every relevant producer queue. There is intentionally no

@@ -459,6 +459,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/project_persistence_project_graph_bridge.cpp
     runtime/project_persistence_package_jit_bridge.cpp
     runtime/socket_rpc_system_audio_devices_bridge.cpp
+    runtime/socket_rpc_graph_executor_bridge.cpp
     runtime/socket_rpc_iv_module_source_introspection_bridge.cpp
     runtime/socket_rpc_node_instances_bridge.cpp
     runtime/socket_rpc_project_graph_bridge.cpp

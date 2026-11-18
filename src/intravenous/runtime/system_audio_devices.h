@@ -109,7 +109,6 @@ class SystemAudioDevices {
     std::thread input_capture_thread_ {};
     std::thread output_render_thread_ {};
     std::vector<Sample> input_render_buffer_{};
-    GlobalIndex realtime_cursor_{};
 
     friend class AudioDeviceSelectionTransaction;
     AudioDevicesSnapshot apply_selected_devices_locked(ProjectAudioDeviceSelection selection);

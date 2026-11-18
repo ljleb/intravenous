@@ -9,9 +9,11 @@
 #include <intravenous/runtime/persisted_data_store.h>
 #include <intravenous/runtime/realtime_produced_record.h>
 #include <intravenous/runtime/realtime_persisted_state.h>
+#include <intravenous/runtime/project_playback.h>
 #include <intravenous/runtime/tick_invocation_frame.h>
 
 #include <atomic>
+#include <array>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -143,7 +145,8 @@ class GraphExecutor {
         RealtimeGeneration(
             CompiledGraph const& graph,
             ResourceContext const& resources,
-            PersistedDataStore& data,
+            PersistedDataStore& data);
+        void provision_producers(
             AsyncCapacityManager& capacity_manager,
             RealtimeProducerCapacityConfig const& capacity_policy);
     };
@@ -155,7 +158,6 @@ class GraphExecutor {
         TockStateStorage tock_states{};
         BackgroundCoverageState coverage{};
         BackgroundPropagationWorkspace propagation;
-        std::unique_ptr<LiveTickCoverageState> live_coverage{};
         std::shared_ptr<PersistedDataStore::Snapshot const> prepared_data{};
         std::shared_ptr<TickMaterializationSnapshot const> prepared_materialization{};
         std::vector<std::unique_ptr<PendingQueue>> pending_inputs{};
@@ -263,9 +265,7 @@ class GraphExecutor {
             std::shared_ptr<CompiledGraph const> graph,
             ResourceContext const& resources,
             PersistedDataStore& data,
-            AsyncCapacityManager& capacity_manager,
             std::atomic<bool>& production_reservation_failed,
-            RealtimeProducerCapacityConfig const& capacity_policy,
             AsyncWorkSignal& background_work_signal);
 
         void initialize_first_generation();
@@ -422,6 +422,20 @@ class GraphExecutor {
     // Audio is the sole writer. The actor derives its bounded automatic
     // lookahead from this coordinate; explicit control-path demand overrides it.
     std::atomic<std::uint64_t> requested_playback_index_{0};
+    struct PlaybackDemand {
+        GlobalIndex project{};
+        GlobalIndexRange execution{};
+        bool paused = false;
+        bool operator==(PlaybackDemand const&) const = default;
+    };
+    struct PublishedPlaybackDemand {
+        std::atomic<std::uint64_t> project{}, execution{}, extent{};
+        std::atomic<bool> paused{};
+    };
+    std::array<PlaybackDemand, 2> last_playback_demand_{};
+    std::array<PublishedPlaybackDemand, 2> published_playback_demand_{};
+    std::atomic<std::uint64_t> playback_demand_revision_{0};
+    ProjectPlayback playback_{};
     // Generations and gestures own their live targets. The registry shares
     // those cells without retaining controls after their last owner is gone.
     // Locked only for lookup, never by realtime.
@@ -433,6 +447,14 @@ class GraphExecutor {
     BackgroundExecutor background_executor_;
 
     [[nodiscard]] ExecutionGeneration& realtime_execution_generation();
+    void publish_playback_demand(std::array<PlaybackDemand, 2> demand) noexcept;
+    [[nodiscard]] std::optional<std::array<PlaybackDemand, 2>> read_playback_demand() const noexcept;
+    [[nodiscard]] static bool playback_ready(CompiledGraph const& graph,
+        RealtimePersistedState const& persisted, PlaybackDemand const& demand) noexcept;
+    bool activate_pending_at(PlaybackDemand const& applied, PlaybackDemand const* candidate = nullptr,
+        RealtimePersistedState const** activated_root = nullptr, bool* applied_candidate = nullptr);
+    void execute_tick_block(ExecutionGeneration& generation, RealtimePersistedState const& persisted,
+        GlobalIndex sample_index, std::size_t block_size, TickPlaybackSelection selection, bool ready);
     [[nodiscard]] ExecutionGeneration const& realtime_execution_generation()
         const;
     [[nodiscard]] std::expected<BackgroundEvaluationResult, std::string>
@@ -456,6 +478,21 @@ class GraphExecutor {
         ManualControlId const& id, Sample value);
 
 public:
+    [[nodiscard]] ProjectPlaybackSnapshot playback_snapshot() const noexcept { return playback_.snapshot(); }
+    [[nodiscard]] std::uint64_t set_playback_running(bool running) { return playback_.set_running(running); }
+    [[nodiscard]] std::uint64_t seek_playback(GlobalIndex position) { return playback_.seek(position); }
+    void handle_playback(ProjectPlaybackRequest& request) {
+        if (request.operation == ProjectPlaybackOperation::set_running)
+            request.accepted_command = set_playback_running(request.running);
+        else if (request.operation == ProjectPlaybackOperation::toggle)
+            request.accepted_command = playback_.toggle();
+        else if (request.operation == ProjectPlaybackOperation::seek)
+            request.accepted_command = seek_playback(request.position);
+        request.snapshot = playback_snapshot();
+    }
+    // Device-clock entry. Applies session commands and activation at this
+    // boundary, then continues Tick execution even when the playhead is held.
+    void render_block(std::size_t frames, double sample_rate);
     explicit GraphExecutor(
         ResourceContext resources = {},
         RealtimeProducerCapacityConfig producer_capacity = {},

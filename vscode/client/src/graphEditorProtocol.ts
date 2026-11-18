@@ -5,6 +5,7 @@ import type { GraphLayout, GraphScope } from "./graphScope";
 import type { LiveGraphSessionStatus } from "./liveGraphProtocol";
 import type { GraphConnectionEdit, GraphPortEndpoint } from "./graphConnectionEditing";
 import type { NodeEventHostRequest, NodeEventResponse } from "./nodeEventMessaging";
+import type { PlaybackSnapshot } from "./playback";
 
 export type GraphEditorState = {
     sessionStatus: LiveGraphSessionStatus;
@@ -15,6 +16,7 @@ export type GraphEditorState = {
 };
 export type GraphEditorAction = "addNode" | "editNode" | "deleteNode" | "openNodeSource" | "createPackage" | "deleteConnection" | "undo" | "redo";
 export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorState }
+    | { type: "playbackUpdate"; snapshot: PlaybackSnapshot | null; requestedPosition: string | null }
     | ObservationResponse
     | { type: "observationVisibility"; visible: boolean }
     | { type: "observationUpdate"; update: ObservationUpdate }
@@ -23,6 +25,8 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "graphWindowFocus"; focused: boolean }
     | { type: "graphAction"; action: "addNode" | "editNode" | "createPackage"; instanceId?: string };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
+    | { type: "playbackToggle" }
+    | { type: "playbackSeek"; position: string }
     | ObservationHostRequest
     | NodeEventHostRequest
     | { type: "graphInteractionHint"; hint: ManualControlHint | null }

@@ -5,6 +5,7 @@ import { VirtualNode, SourceSpan } from "./graphModel";
 import type { GraphScope } from "./graphScope";
 import type { NodeAddress } from "./graphScope";
 import type { NodeEventProtocol, SerializedNodeEvent } from "./nodeEvents";
+import type { PlaybackSnapshot } from "./playback";
 
 export type SourceQueryRange = {
     start: { line: number; column: number };
@@ -22,6 +23,9 @@ export type AudioDevicesSnapshot = {
 
 
 export class WorkspaceRpc {
+    getPlayback(): Promise<PlaybackSnapshot> { return this.client.request("playback.get", {}); }
+    togglePlayback(): Promise<PlaybackSnapshot> { return this.client.request("playback.toggle", {}); }
+    seekPlayback(position: string): Promise<PlaybackSnapshot> { return this.client.request("playback.seek", { position }); }
     constructor(
         private readonly client: JsonRpcSocketClient,
         private readonly currentRevision: () => number = () => 0,

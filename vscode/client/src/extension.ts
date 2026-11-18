@@ -40,6 +40,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const graphEditor = new GraphEditorProvider(context.extensionUri, session);
     context.subscriptions.push(graphEditor);
+    for (const seek of [false, true]) context.subscriptions.push(vscode.commands.registerCommand(
+        seek ? "intravenous.seekPlayback" : "intravenous.togglePlayback", async () => {
+            try { await graphEditor.playbackAction(seek); }
+            catch (error) { void vscode.window.showErrorMessage(`Cannot change playback: ${error.message}`); }
+        }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.openGraphEditor", () => graphEditor.open()));
     const graphActions: GraphEditorAction[] = ["addNode", "editNode", "deleteNode", "openNodeSource", "createPackage", "deleteConnection", "undo", "redo"];
     for (const action of graphActions) {

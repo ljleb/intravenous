@@ -5,6 +5,7 @@
 #include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/runtime/socket_rpc_requests.h>
+#include <intravenous/runtime/project_playback.h>
 #include <intravenous/runtime/socket_rpc_response_builders.h>
 #include <intravenous/sample.h>
 
@@ -81,6 +82,7 @@ namespace iv {
                  SocketRpcNodeEventProtocolResultBuilder&);
     using SocketRpcGetAudioDevicesEvent =
         void (*)(GetAudioDevicesRequest const &, SocketRpcAudioDevicesResultBuilder &);
+    using SocketRpcPlaybackEvent = void (*)(ProjectPlaybackRequest&);
     using SocketRpcSetAudioDevicesEvent =
         void (*)(SetAudioDevicesRequest const &, SocketRpcAudioDevicesResultBuilder &);
     using SocketRpcSaveProjectEvent =
@@ -124,6 +126,7 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcNodeMessageGestureEvent, iv_socket_rpc_node_message_gesture_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetNodeEventProtocolEvent, iv_socket_rpc_get_node_event_protocol_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetAudioDevicesEvent, iv_socket_rpc_get_audio_devices_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcPlaybackEvent, iv_socket_rpc_playback_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetAudioDevicesEvent, iv_socket_rpc_set_audio_devices_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSaveProjectEvent, iv_socket_rpc_save_project_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcEnableProjectAutosaveEvent, iv_socket_rpc_enable_project_autosave_event);

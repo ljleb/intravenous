@@ -456,7 +456,7 @@ namespace iv {
 
         template<typename Node>
         inline constexpr bool has_coverage_propagation_domain_v =
-            has_tock_family_v<Node> || (has_tick_family_v<Node> && intrinsically_replayable_v<Node>);
+            has_tock_family_v<Node>;
 
         template<typename Node>
         inline constexpr bool background_state_type_is_valid_v = [] {
@@ -490,23 +490,11 @@ namespace iv {
                     && declares_random_access_inputs_v<Node>));
 
         template<typename Node>
-        consteval bool replay_ports_are_valid()
+        consteval bool replay_outputs_are_valid()
         {
             if constexpr (!has_constexpr_port_configs<Node>) {
                 return false;
             } else {
-                if constexpr (has_inputs<Node>) {
-                    if (any_port_config(Node::inputs(), [](auto const& config) {
-                        return is_random_access(config);
-                    })) {
-                        // Non-pointwise access needs authored availability and
-                        // reverse-demand mapping, even for pure Tick code.
-                        if constexpr (!(has_propagate_forward_coverage<Node>
-                              || has_propagate_forward_coverage_batch<Node>)
-                            || !(has_propagate_reverse_coverage<Node>
-                              || has_propagate_reverse_coverage_batch<Node>)) return false;
-                    }
-                }
                 if constexpr (has_outputs<Node>) {
                     if (any_port_config(Node::outputs(), [](auto const& config) {
                         return !is_sequential_output(config)
@@ -523,7 +511,12 @@ namespace iv {
             || (has_constexpr_port_configs<Node>
                 && has_tick_family_v<Node>
                 && !has_State<Node>
-                && replay_ports_are_valid<Node>());
+                && !declares_random_access_inputs_v<Node>
+                && !has_propagate_forward_coverage<Node>
+                && !has_propagate_forward_coverage_batch<Node>
+                && !has_propagate_reverse_coverage<Node>
+                && !has_propagate_reverse_coverage_batch<Node>
+                && replay_outputs_are_valid<Node>());
 
         template <typename Node>
         concept has_internal_latency = requires(Node node, size_t internal_latency)

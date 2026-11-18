@@ -103,9 +103,15 @@ persisted-output mappings, migration entries and node/event routing tables.
 An in-progress realtime pass never changes generation or persisted-state version.
 Pending replacements become active only at legal pass boundaries.
 
-Realtime execution must not allocate dynamically, wait for the background worker,
+An executing Tick root must not allocate dynamically, run background work,
 resize cross-thread storage, reclaim heap objects, or destroy superseded immutable
-versions.
+versions. Foreground block admission is different: it may be stalled while
+required background values prepare, potentially missing the audio-device deadline
+and causing an underrun. The stalled root does not advance Tick state, physical
+Sequential storage cursors, playhead, or recording. A wait cannot be indefinitely
+uninterruptible: command handling, generation replacement and shutdown must still
+make progress. Blocking or underrunning does not change Sample/Event/Coverage
+semantics. See [Project Playback](./project_playback_and_presentation_grids_direction.md#background-preparation-pending-seeks-and-missed-deadlines).
 
 ## 4. Background actor
 
@@ -489,11 +495,22 @@ is `untouched`. The generated default skip implementation authors sample silence
 authoritative-empty event blocks through those same ordinary facades. The generic
 low-level sample/event ports contain no disposition pointer or state.
 
-Disposition is whole-callback-block semantics for Tick/persisted output. A written
-`tick_block()` invocation overwrites its complete addressed block; a voided invocation
-erases that complete block; an untouched invocation publishes no item. Scalar `tick()`
-uses the same rule for its one-sample block. History and latency affect the mutable
-Tick storage window but do not expand a recording item beyond the addressed block.
+Authored `OutputDisposition` does not automatically depend on the playhead running.
+A recorder may author with paused transport at the advancing shared foreground
+`ctx.index`, or choose to gate its writes on playback. Every eligible authored
+position must retain its `written`/`voided`/`untouched` meaning through the output's
+physical Sequential finalization window, even when Record state changes before that
+window becomes final. Recording does not gain an independently advancing write cursor.
+
+Within one uninterrupted global-coordinate strip, a `tick_block()` capture can be
+represented by its latency-shifted contiguous finalized range. Across a seek or other
+coordinate seam, a physically contiguous finalized group can comprise several
+nonadjacent project-addressed ranges. Preserve those original addresses and authoring
+eligibility rather than stamping the whole group from the latest `ctx.index`.
+Whole-block disposition remains the authored callback operation where the interface
+only permits whole-block authoring; it is not permission to retroactively classify
+previously authored values by the **current** callback's disposition. See the
+[playhead recording contract](./project_playback_and_presentation_grids_direction.md#buffered-tick-output-authoring-and-transport-seams).
 
 ## 14. Background -> realtime persisted state is a latest-version mailbox
 

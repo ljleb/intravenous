@@ -955,7 +955,9 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                                     .source_channel = timing.source.channel,
                                     .storage = storage,
                                     .delivery = timing.delivery,
-                                    .read_latency = timing.read_latency,
+                                    .read_latency = result.ports[storage].storage == PortStorageKind::current_tick
+                                        ? timing.read_latency
+                                        : background_connection.sample_read_latencies[channel.source_index],
                                     .target_history = connection->target_history,
                                 });
                             storage_connection.direct_samples.push_back(
@@ -1127,7 +1129,9 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                             *storage);
                         materialization.source_channels.push_back(timing.source);
                         materialization.source_read_latencies.push_back(
-                            timing.read_latency);
+                            storage_kind == PortStorageKind::current_tick
+                                ? timing.read_latency
+                                : background_connection.sample_read_latencies[source_index]);
                     }
                     auto append_partial_projection = [&] (
                         ChannelTypeId source_type,
@@ -1561,7 +1565,7 @@ std::expected<void, std::string> validate_background_runtime_plan(
         return port.direction == PortDirection::input
             ? node.authored_tock_execution
                 ? port.random_access_input
-                : node.replays_tick && (port.replay_sequential_input || port.random_access_input)
+                : node.replays_tick && port.replay_sequential_input
             : node.authored_tock_execution
                 ? port.authored_tock_output
                 : node.replays_tick && port.replayed_tick_output;
@@ -1902,7 +1906,7 @@ std::expected<void, std::string> finalize_background_runtime_plan(
         return port.direction == PortDirection::input
             ? node.authored_tock_execution
                 ? port.random_access_input
-                : node.replays_tick && (port.replay_sequential_input || port.random_access_input)
+                : node.replays_tick && port.replay_sequential_input
             : node.authored_tock_execution
                 ? port.authored_tock_output
                 : node.replays_tick && port.replayed_tick_output;
@@ -2490,16 +2494,10 @@ std::expected<void, std::string> finalize_tick_runtime_plan(
         }
         auto const& region = schedule.regions[
             *schedule.bundle_to_region[bundle]];
-        if (!region.cyclic) {
-            return CaptureInvocationShape{
-                .maximum_block_size = maximum_block_size,
-                .maximum_invocations = 1,
-            };
-        }
         if (region.maximum_block_size == 0
-            || region.scc_feedback_latency == 0) {
+            || (region.cyclic && region.scc_feedback_latency == 0)) {
             return std::unexpected(
-                "GraphJit Tick capture has invalid SCC slice semantics");
+                "GraphJit Tick capture has invalid invocation slice semantics");
         }
         return CaptureInvocationShape{
             .maximum_block_size = std::min(

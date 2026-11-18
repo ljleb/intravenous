@@ -847,6 +847,10 @@ unless a selected persisted boundary terminates the dependency traversal.
 
 Source work, 2026-11-15:
 
+The live coverage workspace described below was an intermediate implementation.
+See [pointwise replay and physical Sequential coverage](./project_playback_implementation.md#pointwise-replay-and-delayed-live-reads)
+for the replacement.
+
 - `prove_full_live_tick_coverage()` now uses a dependency work list over
   normalized continuous projections and event contributions. Proven full
   generated union nodes no longer enter live sparse-coverage tracking solely

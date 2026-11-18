@@ -1050,7 +1050,9 @@ Front 7 replay boundary, not a Region or Coverage representation rule.
 
 Migration should preserve the broader architectural invariants already established:
 
-- the audio thread does not block on background evaluation;
+- node Tick callbacks do not perform or discover background work; admission of a
+  whole Tick root may wait for required prepared data and underrun the physical audio
+  deadline instead of executing with fabricated fallback values;
 - random-access materialization/publication occurs off the audio thread;
 - Tock-owned `State` remains separately owned background state and may allocate dynamically;
 - `NodeStorage` remains the packed fixed-layout audio-thread realization;

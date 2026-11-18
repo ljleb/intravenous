@@ -22,6 +22,7 @@ import { KnobClicks } from "../../src/knobClicks";
 import { PointerLockExitGuard } from "../../src/pointerLockExitGuard";
 import { PointerLockExitRedirect } from "../../src/pointerLockExitRedirect";
 import { TrustedHover } from "../../src/trustedHover";
+import { providePlayback } from "../timeline/playbackContext";
 import { projectHistoryShortcut } from "../../src/projectHistoryShortcut";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
 import { connectionEndKey, connectionWirePath, portEndpointKey, portSlotKey, selectedLaneConnections, selectedLaneWirePath,
@@ -31,6 +32,8 @@ type HoveredPortGroup = { nodeKey: string; direction: "input" | "output" };
 type PreviewAnchor = PortWireAnchor & { direction: "input" | "output" };
 
 const state = shallowRef<GraphEditorState>({ sessionStatus: "starting", scope: null, layout: readLayout(null), definitions: [], error: "" });
+const playback = providePlayback();
+onBeforeUnmount(() => playback.dispose());
 let observationHint: import("../../src/observations").ObservationHint | null = null;
 const observations = new PresentationObservations((request) => webviewApi.postMessage(request), (hint) => {
     observationHint = hint;
@@ -428,6 +431,11 @@ function pointerLeftWindow(event: PointerEvent) {
 function keyDown(event: KeyboardEvent) {
     const editingText = event.target instanceof Element
         && !!event.target.closest("input, textarea, select, [contenteditable]:not([contenteditable=false]), [role=textbox]");
+    if (!editingText && event.code === "Space" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        if (!event.repeat) webviewApi.postMessage({ type: "playbackToggle" });
+        return;
+    }
     const history = projectHistoryShortcut(event, editingText);
     if (history) {
         event.preventDefault();
@@ -467,6 +475,10 @@ function createPackage() {
     creatingPackage.value = false;
 }
 function receive(event: MessageEvent<GraphEditorHostMessage>) {
+    if (event.data?.type === "playbackUpdate") {
+        playback.receive(event.data.snapshot, event.data.requestedPosition);
+        return;
+    }
     if (event.data?.type === "observationVisibility") {
         observations.setVisible(event.data.visible);
         return;

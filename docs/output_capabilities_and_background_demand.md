@@ -330,13 +330,22 @@ output remains Sequential. Recording or contextual replay is required before
 those values can support historical random access.
 
 A Tock Region or Coverage output (including sparse automation) supplies prepared
-bounded windows to a Tick consumer's Sequential input. Circular output
-coverage may contain gaps; the consuming Sequential input applies fallback only
-at known-absent positions. Known-covered but unavailable data are an underrun,
-not absence. The background actor prepares a successor graph's first window
-before activation. If an active graph outruns preparation, the affected
-playback block is silenced/reported; no realtime allocation, blocking,
-random-access discovery or Tock invocation is permitted.
+bounded windows to a Tick consumer's Sequential input. Circular output Coverage
+may contain gaps; the consuming Sequential input applies fallback only at
+known-absent positions. Known-covered but unavailable data are an underrun,
+not absence. The background actor prepares required windows before a pending
+running seek/resume is applied. Current applied playback continues during a
+pending running seek; preparation must not evict or starve that current demand.
+
+If an active graph outruns required preparation, its requested foreground Tick block
+cannot run: do not execute a partial root, fill the missing input with neutral values,
+advance its Sequential history/`ctx.index`/playhead, or commit recording from that
+unsuccessful block. A missed audio-device deadline is reported as an underrun and can
+produce a hardware dropout outside graph semantics. Waiting for readiness may miss that
+deadline; it must not indefinitely obstruct control commands, graph replacement or
+shutdown. No realtime allocation, Random Access discovery or Tock invocation is
+permitted in Tick code. See
+[Project Playback And Presentation Grids](./project_playback_and_presentation_grids_direction.md#background-preparation-pending-seeks-and-missed-deadlines).
 
 An ordinary Sequential consumer must not force an entire upstream Region or
 buffer to be computed. It consumes a bounded sliding/ring window whose

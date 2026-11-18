@@ -16,6 +16,9 @@ These documents are retained because they record deleted architectures, supersed
 
 ## Superseded output realization and background planning
 
+- [Tick Replay And Playback Coverage Before The Pointwise Correction (2026-11-17)](./tick_replay_and_playback_coverage_before_pointwise_correction_2026-11-17.md)
+  preserves the invalid replay paths and the exact-window coverage proposal.
+
 - [Output Shape Symmetry Before Correction](./output_shape_symmetry_before_correction.md)
   preserves the incorrect all-shapes-on-both-domains wording. The accepted
   matrix permits Sequential outputs only on Tick and Region/Coverage outputs
@@ -319,3 +322,10 @@ Preserved before the owner separated configuration commitment from DSP readiness
 - [RMS fill before latest-peak display (2026-11-16)](vue_rms_fill_before_latest_peak_2026-11-16.md)
   preserves the RMS-fill motion contract before the owner requested a latest
   received peak bar alongside the separate momentum peak marker.
+
+## Superseded project playback and recording semantics (2026-11-17)
+
+- [Playback before the Two-Coordinate Clarification](./playback_before_two_coordinate_clarification_2026-11-17.md)
+  preserves the staged-index documentation's paused neutral/empty delivery,
+  seek relocation, single-range capture and underrun wording. The current
+  requirements are in [Project Playback And Presentation Grids](../project_playback_and_presentation_grids_direction.md).

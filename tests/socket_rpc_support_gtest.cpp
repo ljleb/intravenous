@@ -1,7 +1,10 @@
+#include <intravenous/runtime/graph_executor.h>
 #include <intravenous/runtime/server_options.h>
+#include <intravenous/runtime/socket_rpc_graph_executor_bridge.h>
 #include <intravenous/runtime/socket_rpc_requests.h>
 #include <intravenous/runtime/socket_rpc_routes.h>
 #include <intravenous/runtime/socket_rpc_response_builders.h>
+#include <intravenous/runtime/socket_rpc_server.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -122,6 +125,60 @@ TEST(SocketRpcRequestParser, ParsesGetAudioDevicesRequest)
     EXPECT_EQ(parsed.request_id, 31);
     auto const *request = std::get_if<iv::GetAudioDevicesRequest>(&parsed.payload);
     ASSERT_NE(request, nullptr);
+}
+
+TEST(SocketRpcRequestParser, PlaybackControlsPreserveExactIndicesWithoutProjectRevisions)
+{
+    auto get = iv::parse_socket_rpc_request(R"({"jsonrpc":"2.0","id":1,"method":"playback.get","params":{}})");
+    EXPECT_NE(std::get_if<iv::GetPlaybackRequest>(&get.payload), nullptr);
+    auto toggle = iv::parse_socket_rpc_request(R"({"jsonrpc":"2.0","id":2,"method":"playback.toggle","params":{}})");
+    EXPECT_NE(std::get_if<iv::TogglePlaybackRequest>(&toggle.payload), nullptr);
+    auto pause = iv::parse_socket_rpc_request(R"({"jsonrpc":"2.0","id":3,"method":"playback.setRunning","params":{"running":false}})");
+    ASSERT_NE(std::get_if<iv::SetPlaybackRunningRequest>(&pause.payload), nullptr);
+    EXPECT_FALSE(std::get<iv::SetPlaybackRunningRequest>(pause.payload).running);
+    auto seek = iv::parse_socket_rpc_request(R"({"jsonrpc":"2.0","id":4,"method":"playback.seek","params":{"position":"-9223372036854775808"}})");
+    ASSERT_NE(std::get_if<iv::SeekPlaybackRequest>(&seek.payload), nullptr);
+    EXPECT_EQ(std::get<iv::SeekPlaybackRequest>(seek.payload).position.signed_value(), std::numeric_limits<std::int64_t>::min());
+    for (auto position : {"17", "\"1.5\"", "\"9223372036854775808\"", "\"5x\""}) {
+        auto request = std::string(R"({"jsonrpc":"2.0","id":1,"method":"playback.seek","params":{"position":)") + position + "}}";
+        EXPECT_THROW((void)iv::parse_socket_rpc_request(request), std::exception);
+    }
+    EXPECT_THROW((void)iv::parse_socket_rpc_request(R"({"jsonrpc":"2.0","id":1,"method":"playback.setRunning","params":{"running":1}})"), std::exception);
+}
+
+TEST(SocketRpcPlayback, RoutesAuthorizeControlsWithoutCreatingProjectMutations)
+{
+    iv::SocketRpcServer server{"."};
+    iv::GraphExecutor executor;
+    auto playback_scope = iv::socket_rpc_graph_executor_bridge::bind(server, executor);
+    iv::SocketRpcRouteRegistry routes;
+    std::uint64_t last_accepted = 0;
+    for (auto method : {"playback.get", "playback.toggle", "playback.setRunning", "playback.seek"}) {
+        SCOPED_TRACE(method);
+        std::string capability;
+        std::optional<bool> mutating;
+        auto request = iv::parse_socket_rpc_request(Json{{"jsonrpc", "2.0"}, {"id", 1}, {"method", method},
+            {"params", {{"position", "-123"}, {"running", false}}}}.dump());
+        iv::SocketRpcRouteResult result;
+        IV_EVENT_SOURCE(iv::SocketRpcServer, method) {
+            result = routes.dispatch(request, {.client_id = "client", .authorize = [&](auto const& requested) {
+                capability = requested;
+            }, .before_invoke = [&](bool value) { mutating = value; }});
+        }
+        auto const reading = std::string_view(method) == "playback.get";
+        EXPECT_EQ(capability, reading ? "project.read" : "project.write");
+        ASSERT_TRUE(mutating.has_value());
+        EXPECT_FALSE(*mutating);
+        EXPECT_FALSE(result.mutates_session);
+        auto const response = parse_json_line(result.response);
+        ASSERT_TRUE(response.contains("result")) << response;
+        auto const& snapshot = response.at("result");
+        EXPECT_EQ(snapshot.at("position"), "0");
+        EXPECT_EQ(snapshot.at("appliedCommand"), "0");
+        EXPECT_EQ(snapshot.at("running"), true);
+        if (reading) EXPECT_FALSE(snapshot.contains("acceptedCommand"));
+        else EXPECT_EQ(snapshot.at("acceptedCommand"), std::to_string(++last_accepted));
+    }
 }
 
 TEST(SocketRpcRequestParser, ParsesSetAudioDevicesRequest)

@@ -522,14 +522,12 @@ forward coroutine must be able to request the finite point-event Region, inspect
 outgoing types, then publish exact active output coverage. This does not make
 `LinearCurve`'s staged full-circle coverage an accepted fallback.
 
-A replayable Tick node with mechanically pointwise dependencies may continue
-using compiler-generated propagation. Its declared `TickReplayMode` selects the
+A replayable Tick node is strictly pointwise and uses compiler-generated
+propagation. Its declared `TickReplayMode` selects the
 union of its input coverages or the whole circle as output coverage; its
 Sequential inputs resolve absent upstream positions either way (see
 [absence and Sequential fallback](./automation_and_suspendable_coverage_direction.md#4-absence-and-sequential-fallback)).
-More complex replayable Tick nodes use
-these same authored propagation semantics without changing their Tick evaluation
-into Tock evaluation.
+Only Tock nodes author propagation callbacks.
 
 ## 9. `propagate_reverse_coverage()`
 
@@ -676,7 +674,8 @@ preserved in the [historical predecessor](./historical/output_ports_before_compu
 
 Intrinsic replay eligibility remains separate from port output shape and
 realization. Replay is permitted only for deterministic, side-effect-free Tick
-computations with no stateful Sequential history/latency and only when
+computations with no `State`, Sequential history or latency, Random Access
+input, or authored forward or reverse coverage callback, and only when
 contextual dependencies can be obtained from the same immutable snapshot.
 `TickReplayMode::{disabled,input_union,full}` remains the intended declaration.
 Outside feedback SCCs, input-union output coverage follows input coverage;
@@ -702,13 +701,10 @@ GraphJit already imports its LLVM definition. Replay uses **that** imported
 wrapper in the background evaluation DAG, allowing normal O3 inlining, fusion,
 value specialization, and possible SIMD. It does not redefine `tick()` for ordinary
 nodes or introduce a second implementation of the DSP algorithm. GraphJit generates
-identity-time forward/reverse propagation for mechanically pointwise dependencies.
-When a replayable Tick node has a non-pointwise Random Access dependency, such as a
-source addressed by a `FractionalGlobalIndex` coordinate stream, its background dependency
-mapping is supplied through the same forward/reverse propagation contracts used by
-background planning. Conservative whole-input/whole-output dependency bounds remain legal where
-sound; suspendable propagation may instead read selected input data to discover
-tighter bounds or exact output existence when required.
+same-position forward and reverse propagation. Use Tock for positional shifts
+and other position-addressed dependencies. See the [historical correction
+record](./historical/tick_replay_and_playback_coverage_before_pointwise_correction_2026-11-17.md)
+for the wording that incorrectly allowed non-pointwise Tick replay.
 
 The trait gives **intrinsic eligibility** only. An output is contextually
 replayable for requested coverage only if all of its required upstream inputs are
@@ -719,12 +715,10 @@ output terminates traversal even if its original producer cannot replay. Replay
 uses isolated invocation-local scratch, immutable configuration and a canonical
 block-position/alignment contract; it cannot mutate shared live execution state.
 
-Random Access replay dependencies are an availability requirement, not an alternate
-execution mode inside `tick()`. Before a background replay invocation, the background
-transaction resolves the selected immutable versions, runs any required Tock/replay
-work, and installs the planned Region/Coverage views. During ordinary audio-thread
-Tick execution the same rule is stricter: every Random Access input is already bound
-to its callback-pinned persisted/materialized view before `tick_block()` begins. Tick
+Before a replay invocation, the background transaction resolves the selected
+immutable versions and supplies Sequential values at the replay position.
+Non-replayable Tick nodes may read Random Access inputs. Each is bound to its
+callback-pinned persisted or materialized view before `tick_block()` begins. Tick
 code never invokes Tock, performs dependency discovery, waits for materialization, or
 extends its Random Access coverage in response to values it reads.
 
@@ -1094,9 +1088,8 @@ traversed while replaying them. Published persisted outputs are stored boundarie
 the background evaluator reads their selected version and does not traverse their
 live producers. Weakly connected evaluation components provide forward/reverse/
 evaluation orders, stable port indices, coverage accumulators and callback
-imports. Mechanically pointwise replayable Tick dependencies use compiler-generated
-temporal propagation; non-pointwise Random Access dependencies use the authored
-background propagation contract described above.
+imports. Replayable Tick dependencies use compiler-generated same-position
+propagation. Authored Random Access dependency maps belong to Tock.
 
 Whole-project semantic SCC analysis remains necessary for Tick-to-Sequential feedback and
 for the conservative prohibition on a random-access **input** edge inside its own
@@ -1131,11 +1124,8 @@ For a new node with Tock outputs (`tock/ephemeral` or `tock/persisted`):
 For a newly created Tock output, old coverage is empty, so all new coverage is
 an exact semantic output change and propagates downstream.
 
-For a replayable Tick output whose availability mapping is mechanically pointwise,
-GraphJit derives coverage from the exact available coverage of its transitive
-dependencies. A replayable Tick node may also declare background propagation for a
-non-pointwise Random Access dependency without acquiring a Tock output or
-`tock_coverage()`. A tick/persisted output acquires
+For a replayable Tick output, GraphJit derives coverage from its `TickReplayMode`
+and the coverage of its dependencies. A tick/persisted output acquires
 random-access coverage as its finalized values are published, whether or not
 its producer is replayable.
 
@@ -1464,19 +1454,41 @@ A sequential input consumes its selected pinned published data **as-is**, even i
 that data are stale for a pending candidate. A genuinely missing position
 produces that **input's own `neutral_value`** (including when members of a tile
 have different neutral values). Stale does not mean missing: old published data
-remain readable until a replacement is atomically published. The audio thread
-never waits for a background evaluation transaction, invokes `tock_coverage()`, or allocates
-persisted data on demand. A coherent pinned snapshot prevents concurrent publication from
+remain readable until a replacement is atomically published. The foreground Tick callback never invokes `tock_coverage()`, performs
+background evaluation, or allocates persisted data on demand. At the root
+readiness boundary the executor may have to wait for required prepared data;
+if this exceeds the audio-device deadline, it is an **underrun**, not permission
+to run Tick with fabricated inputs. Such waiting must remain interruptible
+and must not indefinitely obstruct control/graph replacement/shutdown. A coherent pinned snapshot prevents concurrent publication from
 mutating memory under an audio callback. The neutral fallback does not authorize
 out-of-coverage arbitrary random-access reads by node code; those remain invalid.
 
-While playback is paused, background-produced Sequential continuous inputs are treated
-as missing and therefore read their own `neutral_value`; background-produced
-Sequential event inputs are empty. Region and Coverage inputs expose empty extents.
-The Tick graph itself continues executing, including live and ephemeral signal paths.
-Resume selects the applicable immutable background snapshot at a callback boundary and
-may jump the shared node-visible `FractionalGlobalIndex`; it does not reset live
-Sequential history or introduce a second node time coordinate.
+When playback is paused, a background-fed **Sequential Sample** input selects the
+applied playhead position on every actually executed foreground Tick invocation;
+known-covered content at that position remains available. The input uses its own
+`neutral_value` only when that selected position is genuinely absent. Background-fed
+**Sequential Events** remain available and are delivered once for a newly applied
+paused seek to their position, not once per held Tick invocation. During running
+playback they are delivered when traversed. This requires translation to the receiving
+foreground invocation's Event timing without changing stored source timestamps.
+**Region and Coverage Random Access inputs** retain their normal pinned views and
+actual Coverage while paused. No generic port class is globally silenced by transport.
+
+An acyclic pointwise replay requested at position `I` evaluates its dependencies at
+`I`; a live invocation during pause can use background data held at playhead position
+`P` with Tick `ctx.index = I`. Their computed values and `input_union` coverage can
+differ although the same Tick implementation is replayable. Preserve the distinction
+between transport-selected live coverage and position-addressed background coverage,
+without weakening intrinsic/contextual replayability. See
+[Project Playback And Presentation Grids](./project_playback_and_presentation_grids_direction.md#background-selection-coverage-and-pause).
+
+A pending seek/resume does not substitute newly requested positions for currently
+applied background input selections. The background worker prepares required windows
+before their applied transition. A known-covered-but-unprepared input is a missed
+execution deadline, never an uncovered input. The normal pause keeps Tick and physical
+Sequential history running. A deadline failure is different: the entire requested Tick
+block cannot execute, and no logical Tick/playhead/storage progression is attributed
+to that unsuccessful block. Audio-device dropout is outside the authored graph.
 
 ### Provisioned queue items and Tick/persisted recording boundaries
 
@@ -1507,18 +1519,35 @@ the default skipped-block silence and empty-event outputs, it uses those same or
 facades. Ephemeral Tick outputs and all Tock outputs instantiate facades without
 observation and pay no dynamic recording check.
 
-For `tick_block()`, the disposition applies to the positions the addressed callback
-block finalizes: for a block beginning at `B` with `N` positions and an output latency
-`L`, `[B - L, B + N - L)`. Those are the positions no later block can change: the block
-may still revise sample values or add events in its latency window `[B - L, B)`, and
-leaves its own newest `L` positions open to the next block. `written` publishes one
-authoritative overwrite of that range and `voided` publishes one authoritative erase of
-it. Scalar `tick()` has the same rule with a one-sample block. History does not extend a
-recording item. Recording start and stop precision therefore follows Tick callback
-boundaries, shifted by the output's latency. (Newly settled 2026-11-10, human
-co-author; the superseded text, under which the item covered the callback block itself,
-is preserved in
-[historical/persisted_recording_callback_block_2026-11-10.md](historical/persisted_recording_callback_block_2026-11-10.md).)
+A `Sequential/buffered` output may author while playback is paused. `untouched`,
+`written` and `voided` are authored recording decisions, not automatic transport
+states. Nodes may gate their authoring on playback if desired; the generic recording
+transport imposes no such restriction. Record on/off and explicit `write_void()`
+need to preserve which actually authored positions are eligible for a committed
+recording even when finalization happens in a later invocation. Producing a live
+monitoring value and authoring a recorded value are not interchangeable.
+
+For `tick_block()`, finalized values follow the physical Sequential execution order.
+Within an uninterrupted global-coordinate segment, a block beginning at `B` with `N`
+positions and output latency `L` finalizes `[B - L, B + N - L)`: later blocks may revise
+its newest `L` positions and earlier `L` positions may be finalized in this block.
+**Across a global-coordinate seam this is not necessarily one global interval.**
+For example, with `L = 2`, executing `[100,104)` and then `[500,504)` can finalize
+`102, 103, 500, 501` in the next physical group, not `[498,502)`. Preserve each
+value's authored project address, recording eligibility and finalization order; split
+physical capture into multiple addressed ranges when needed. Do not prematurely seal
+or discard revision history on pause, seek, resume, or a running loop. This new seam
+clarification supersedes the older single-range/whole-finalized-block assumption;
+see [the historical wording](./historical/playback_before_two_coordinate_clarification_2026-11-17.md).
+
+Callback boundaries and the resolved pace still constrain when output authoring can
+be requested; the system must not invent sub-callback authored writes that the node
+interface cannot express. However, a later `untouched` invocation must not erase or
+lose earlier eligible authored values that become final then. A real end of foreground
+graph execution with still-open latency history needs its own lifecycle/finalization
+contract; an intentional pause is not such an end, because Tick continues executing.
+The earlier change from callback-addressed capture to finalization is preserved in
+[historical/persisted_recording_callback_block_2026-11-10.md](./historical/persisted_recording_callback_block_2026-11-10.md).
 
 An explicitly authored zero-event Tick/persisted block is distinct from both an
 untouched output and a recording void. Calling the ordinary block-authoring operation

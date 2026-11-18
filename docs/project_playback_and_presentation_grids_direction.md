@@ -1,19 +1,26 @@
 # Project Playback And Presentation Grids
 
-_Status: intended playback contract following the owner's agreement on 2026-11-13.
-The generated-grid section records a proposed presentation feature. Neither
-section claims implementation. The owner selected a builtin callback structure
-for node access to playback state. Ordinary clip sources do not require it._
+_Status: normative project transport and foreground/background binding contract.
+The initial playback design was agreed on 2026-11-13; the owner clarified and
+replaced its paused-delivery, coordinate-relocation, recording and readiness
+semantics on 2026-11-17. This is intended behavior, not a claim that the staged
+playback implementation already realizes it. The generated-grid section
+remains a proposed presentation feature._
 
 Related contracts are [Global Indexing](./global_indexing.md),
-[System Audio Devices](./system_audio_devices_direction.md), and
-[Vue Output Observation](./vue_output_observation_direction.md).
+[Coverage And Background Evaluation](./coverage_and_background_evaluation.md),
+[Sequential Port Storage](./sequential_port_storage_planning.md),
+[Output Capabilities](./output_capabilities_and_background_demand.md), and
+[System Audio Devices](./system_audio_devices_direction.md).
+The superseded paused-suppression and recording interpretations are preserved
+[historically](./historical/playback_before_two_coordinate_clarification_2026-11-17.md).
 
 ## Project position and display units
 
-The backend owns one playback position for the project session. A playhead is
-the presentation of that position. Scrolling or zooming a viewport does not
-change playback position. Multiple clients observe the same backend position.
+The backend owns one applied playback position for the project session. A
+playhead is the presentation of that position. Scrolling or zooming a viewport
+does not change playback position. Multiple clients observe the same backend
+position.
 
 Seconds and project sample indices are two displays of that position. Seconds
 use the project sample rate, not the hardware device rate or a port's pace.
@@ -40,94 +47,315 @@ or navigating a viewport is not a persistent project graph edit and should not
 create a project undo entry merely because a macro requested it. See
 [Module Interoperability And Graph Macros](./module_interoperability_and_graph_macros_direction.md).
 
-## Playback and continuous Tick execution
+## Transport and one continuous foreground execution history
 
-Playback has running and paused states. While running, the project playhead
-advances with execution. Pause holds the selected project position. Resume
-continues from that selected position. Seek selects a new project position.
+There are **two project-coordinate trajectories**, not two independently
+executing node graphs:
 
-Tick execution continues while playback is paused. Audio-device servicing,
-live node processing, and Sequential history do not stop with the playhead.
-Resume or seek can change the global coordinate of subsequent execution,
-as specified by Global Indexing. Neither operation implicitly clears node
-state or Sequential history.
+- The **applied playhead position** selects project-time background content.
+  It advances while running, and holds its selected position while paused.
+- The **foreground Tick global coordinate** is the node-visible
+  `FractionalGlobalIndex` (`ctx.index`) of the current Tick invocation. It
+  advances during successful foreground execution even when paused. Explicit
+  relocation can change its next global coordinate.
 
-### Background clip data during pause
+While running, both trajectories are aligned. While paused, they are
+independent. A third, compiler-owned **physical Sequential cursor** orders
+actually executed values and addresses retained rings/history. It is not a
+node-visible time, and it continues contiguously across global-coordinate
+jumps. The physical audio-device clock is likewise not another project
+cursor. See [Global Indexing](./global_indexing.md#sequential-execution-order).
 
-An ordinary audio-clip source can produce its data through a Tock/persisted
-output. It does not need live playback state to publish the clip's regions.
-The published data remain available independently of playback position.
+The following is the semantic command table (the command becomes effective at
+a Tick boundary, possibly after preparation):
+
+| Action | Applied playhead | Next `ctx.index` |
+| --- | --- | --- |
+| Running Tick block | Advances with executed block | Advances with executed block, aligned |
+| Pause | Holds the selected position | Continues advancing on executed blocks |
+| Seek while paused | Changes to the destination | Unchanged by the seek |
+| Remain paused | Holds destination | Continues advancing on executed blocks |
+| Resume/start | Advances from held position | Relocates to held position, then advances |
+| Seek while running | Relocates to destination, continues | Relocates to destination, continues in alignment |
+| Explicit foreground relocation while paused | Unchanged | Relocates the one shared foreground coordinate |
+
+Pausing, seeking, resuming, and explicit foreground relocation never
+implicitly clear Tick `State`, Sequential history, delay/feedback state, or
+physical storage cursors. From the perspective of an operation that does not
+inspect `ctx.index`, successive successfully executed Tick values form one
+continuous history; global-coordinate segments are joined at transport seams.
+Each port still projects the selected global interval onto its resolved pace
+lattice. The same shared relocation applies to **every** foreground Tick node:
+there are no per-node, per-recorder, or independently advancing foreground
+project cursors. While running, a requested foreground relocation must also
+relocate the playhead (or be rejected as a separate operation), rather than
+breaking alignment.
+
+A counter-based noise generator using `ctx.index` keeps producing changing
+noise while paused. A microphone, live instrument, delay or reverb likewise
+continues ordinary Tick execution during an intentional pause. The playhead
+must not freeze, mute, or reset these computations. A transport-aware node can
+choose to silence its own contribution or otherwise respond to transport;
+this is **authored node behavior**, not a global rule for Sample inputs.
+Similarly, smoothing is an explicit signal/input interpretation rather than a
+mandatory approximation for every parameter change; the compiled graph should
+preserve sample-exact authored behavior.
+
+### Background selection, coverage and pause
+
+An ordinary clip or automation source can publish Tock/buffered or computed
+position-addressed data without consulting the live playhead. Such data and
+its Coverage exist independently of transport state. A module can compose
+multiple clips on a lane, including offsets, overlaps and fades, using the
+general graph facilities; the executor does not identify or mix "clips" by
+special-case type.
 
 For example:
 
 ```text
-AudioClip                         Gain                         SystemAudioOutput
-Tock/persisted Sample output ---> Tick Sequential input -----> Tick input
+AudioClip                          Gain                       SystemAudioOutput
+Tock/buffered Sample output ------> Tick Sequential input ----> Tick input
 ```
 
-The runtime selects the published data window for the Tick input. While paused,
-that input receives its own declared `neutral_value`. Background event delivery
-provides no events. Tick Region/Coverage views are empty. Stored clip data and
-background computation are not erased or globally disabled by this rule.
+For a **Sequential input** reading position-addressed Sample data, normal
+playback selects each traversed project position; pause repeatedly selects
+the **held applied playhead position**. If the selected position is covered,
+its value remains available. A genuinely uncovered position uses that
+**input's** declared fallback/`neutral_value`. Known-covered data not yet
+prepared are unavailable, **not** uncovered, and never justify fallback.
 
-These are existing requirements in
-[Graph JIT Direction](./graph_jit_direction.md)
-and [Sequential Playback And Persisted-Data Availability](./coverage_and_background_evaluation.md#sequential-playback-and-persisted-data-availability).
-Live Tick sources continue processing. Pause must distinguish background data
-delivery from current Tick delivery rather than mute the whole graph.
+This is selection of the input's position, not a global remapping of all
+Sequential streams. Current/live Tick input values continue to follow actual
+foreground execution. A Region or Coverage **Random Access input** retains its
+ordinary prepared, pinned, position-addressed view while paused; it does not
+become empty, collapse to the held position, or lose its actual Coverage.
 
-Persistence alone does not identify background playback. A Tick/persisted
-output can record a live source and still supply current Tick data. Its
-current Tick delivery must not stop merely because the output is persisted.
+Coverage derived by `TickReplayMode::input_union` uses the actual coverages of
+the values selected for that evaluation. A paused live invocation can select
+background data at playhead position `P` while a pure pointwise Tick replay
+requested at global position `I` selects data at `I`. Their output values and
+coverage may differ even when the same node implementation is intrinsically
+replayable. This is not permission to weaken pointwise replay or change its
+existing purity/state constraints. Do not mix live transport-selected
+coverage with background position-addressed replay coverage, or silently
+turn held covered inputs into uncovered inputs. [Tick Input-Union Coverage](./tick_input_union_and_feedback_direction.md)
+remains authoritative about fallback, `input_union`, `full`, and feedback SCCs.
 
-### Optional node access through callback state
+### Event delivery is selection of occurrences, not pausing the Event stream
 
-The selected position and the current Tick callback's global interval are
-different facts while paused. The implementation must not treat the count
-of rendered device frames as the paused project position.
+Background Event Coverage and stored occurrences remain available while
+paused, just as Sample data do. Generic Event input machinery does **not**
+remove Events merely because playback is paused. Instead, the transport
+selection determines which occurrences a Sequential input delivers:
 
-The owner selected a builtin, read-only playback structure in callback context
-when a node needs to inspect playback state. A possible use is a live Tick
-sequencer that must react to a playback start. An explicit graph connection
-from a new playback-source node is not required.
+- During running playback, occurrences are delivered once when their project
+  positions are traversed in an executed interval.
+- A **newly applied seek while paused** selects occurrences at its destination
+  and delivers them **once**. Repeating a seek to the same destination is a new
+  encounter and can deliver them once again.
+- Repeated paused Tick invocations at an unchanged playhead do **not**
+  redeliver those occurrences. Merely pausing does not synthesize a seek event.
+- A resumed running traversal follows the normal traversal rule, including
+  occurrences at the resumed starting position when applicable. A node that
+  needs to reconcile a paused audition with subsequent playback can do so as
+  authored behavior (for example MIDI voice management).
 
-This capability is separate from the runtime's paused-delivery rule. The clip
-example above does not justify adding it to ordinary Tock callbacks or making
-it a prerequisite for the initial playhead. Exact member names, callback scope,
-and replay semantics must follow a concrete node requirement. A Tock clip
-source continues to use requested coverage, not a live playback cursor.
+When the applied playhead and `ctx.index` are different, a selected Event's
+original project timestamp cannot be passed unmodified as its foreground
+callback timestamp: existing Sequential Event consumers interpret timestamps
+relative to the current invocation. The binding must deliver it at the
+corresponding local execution position (normally the beginning of the paused
+seek's invocation), retaining source position/identity when required by
+planning or provenance. It must not rewrite the authoritative stored Event.
+Preserve ordering and applicable per-port pacing. Repeated execution at the
+held position is not repeated occurrence delivery.
 
-The superseded clip example and recommendation for an explicit source node are
-preserved in
-[Playback Discussion Before The Initial Contract](./historical/playback_design_discussion_before_contract_2026-11-13.md#initial-contract-draft-before-correcting-the-clip-example).
+An authored Event gate can deliberately suppress paused audition, just as an
+audio-playback node can suppress held Sample excitation. Neither suppression
+belongs to the generic port domain. This allows graph-authored clip audition
+on paused seeks, including MIDI and automation Events, without requiring a
+second Event access model.
+
+### Node-visible playback state
+
+The owner selected an optional builtin, read-only playback structure in Tick
+callback context for nodes that actually need transport state. It may expose
+`playing()` and, when a concrete consumer requires it, a transition/segment
+indication. Do **not** add a held-playhead-position accessor to every Tick
+node: node-global `ctx.index` remains the one position available to ordinary
+Tick code, and no requirement discussed so far needs a second node-facing
+time coordinate. An optional transport-aware callback need not be used by
+ordinary clips, gain, or CBRNG nodes. Tock callbacks use their requested
+coverage, not the live session cursor.
+
+## Buffered Tick output authoring and transport seams
+
+`Sequential/buffered` output is the existing recording facility. The executor
+does not prohibit writing merely because playback is paused. An authored
+recorder's Record/Arm/Stop policy selects whether to write, `write_void()`, or
+leave the output `untouched`; monitoring or producing a value is not
+synonymous with committing a recording. There is no universal recorder-arm
+state, no new recorder port kind, and no per-recorder execution cursor.
+A recorder can deliberately write only while running, or can continue writing
+at the independently advancing foreground global coordinates while paused.
+An explicit foreground-relocation command can align those coordinates with
+the held playhead before recording; this relocates **all** Tick nodes. Multiple
+recorders share this coordinate, even when recording separate streams.
+
+Recording semantics are based on **actually authored eligible positions** and
+on the physical Sequential output-history finalization rule. Every position
+actually executed and eligible for recording is eventually represented by its
+finalized value (or an explicit `voided` edit), not silently lost because a
+later invocation disarms recording. The same rule applies to authoring while
+paused. The default meaning of `untouched`, `written`, `voided`, and explicit
+empty Event writes is unchanged. In particular, producing default silence in
+a skipped Tick node is an actual authored write when it uses the output facade;
+it is not equivalent to `untouched`.
+
+A block with output latency `L` can revise previously authored values during
+later physical Tick invocations. Finalization follows this **physical**
+invocation order. The project addresses belong to the corresponding global
+coordinate strips, not to the numerically contiguous interval obtained by
+subtracting `L` from the current block's `ctx.index` after a seek. For example,
+with two samples of latency, executing `[100,104)` then jumping to `[500,504)`
+can make one subsequent finalized group correspond to positions `102, 103,
+500, 501`; it must not be mislabeled `[498,502)`. The recording transport
+may need to split one physical finalized group into several project-addressed
+ranges. Recording authorization/void/written provenance must survive a
+latency window even when the node's authoring policy changes. Seek, pause,
+resume and loop seams do not automatically seal, discard, or reset that
+pending history.
+
+The simple `[B - L, B + N - L)` finalized range is valid **inside an
+uninterrupted global-coordinate strip**, not as a blanket rule for a group
+crossing a seam. A separate graph-destruction/termination contract may be
+needed for still-revisable values when foreground Tick execution actually
+ends. Ordinary pause does **not** create that condition: foreground Tick
+execution continues and can finalize outstanding values. A recorder's
+eligibility at a position is not retroactively changed when its value
+becomes final later.
+
+## Background preparation, pending seeks, and missed deadlines
+
+Background evaluation is a feed-forward DAG. Its dependencies are prepared
+and bound before the foreground Tick root consumes them; background execution
+does not execute Tock from the audio callback. Feedback SCCs belong to
+Sequential foreground execution and cannot enter ordinary pointwise
+background replay. A proposed future pure, isolated Sequential renderer is
+separate from ordinary replay and does not change these rules.
+
+A seek is a **requested** destination until its required background data are
+ready. A running seek retains execution at the old applied position while its
+destination is prepared. A resume remains paused until the required starting
+window is ready. A paused seek can likewise retain the previous applied
+position until its requested destination and its once-only Event audition can
+be applied coherently. Only application of the new position changes the
+selection consumed by the graph. Superseded pending cursor requests need not
+all be applied or auditioned. Control-command ordering and any coalescing
+must be defined so the last intended destination is not lost and so an
+obsolete request cannot indefinitely block a newer one.
+
+The frontend may display a **ghost/requested cursor** immediately at a pending
+destination while continuing to display the **applied playhead** separately.
+Applied position and running state come from coherent backend snapshots.
+The applied cursor, not the requested ghost position, identifies which data
+were actually selected for execution. No project edit or graph rebuild is
+created by merely seeking or drawing a ghost cursor.
+
+The background scheduler should preserve demand for the **currently applied**
+position/window while preparing a different pending destination. Forward
+lookahead, bidirectional neighborhoods around a dragged cursor, pointer
+velocity/direction, reuse of overlap, priority changes, and cancellation of
+obsolete speculative work are tuning strategies to evaluate with actual
+projects. Cache occupancy and prediction alter readiness/latency only, never
+Sample values, Event occurrences, Coverage, or graph semantics. A cold,
+expensive request may not be instant; predictive performance is a target,
+not a semantic guarantee.
+
+Missing *prepared* data at a known-covered required position is a missed
+execution deadline, not a new transport action, an uncovered input, or
+permission to synthesize neutral data. In the chosen failure policy, a
+foreground Tick block executes with its complete required prepared inputs,
+or it does **not** execute. During an unsuccessful attempt, no Tick callback,
+Sequential state, physical Sequential cursor, foreground global coordinate,
+applied playhead, or recording output advances. The audio hardware's clock
+cannot be stopped by this rule: an audio-device underrun/dropout can occur
+outside the authored graph. Device fallback/silence is not graph-authored
+sample data and is not a recorded value. Waiting for preparation may miss an
+audio-device deadline; this is a resource/scheduling failure to diagnose and
+optimize, not intended normal behavior. Live device capture continues in
+physical time and obsolete captured frames may be dropped, with no backlog
+latency or additional underrun-specific resampling. MIDI note-off/controller
+state dropped during a stall may need input-side state reconciliation (or a
+clear-all-notes recovery) to avoid stuck voices.
+
+Blocking **foreground DSP execution** must not indefinitely block command
+processing, graph activation/replacement, shutdown, or recovery from a
+missing/unfulfillable preparation request. The implementation can preserve
+the no-Tick-execution invariant with an interruptible readiness check rather
+than an uninterruptible wait in the device callback. Recorded data missing
+because foreground work has not yet produced them are not magically
+prepared by waiting. Capacity failure or permanent missing dependencies need
+an explicit failure/reporting path; background DAG-ness alone does not
+promise that a request can become ready. A producer may predictably underrun
+when configured to record into an expensive dependent computation; this is
+not a semantic exception that authorizes substitute values.
+
+## Future isolated background Sequential rendering (distinct from playback)
+
+A future facility may instantiate a **copy of the reachable Sequential subgraph**
+with initialized state, execute it in physical Sequential order over each requested
+Region, and materialize the results for position-addressed consumers. This is not
+ordinary pointwise contextual Tick replay: it can execute stateful pure processors,
+including a Sequential feedback SCC inside the isolated instance, provided all
+nodes in its executed dependency closure satisfy the declared purity contract.
+The **background evaluation dependency graph remains a feed-forward DAG**; an
+internally time-stepped isolated Sequential instance does not create a background
+dependency SCC.
+
+Unmarked nodes may promise purity according to the intended trait convention;
+`impure` nodes (for example live system microphone inputs) are not re-executed in
+these jobs. A published recording can terminate traversal: the job reads those
+recorded values without re-executing their impure original producer. Violating a
+node's declared contract is an implementation error; automatic proof of arbitrary
+DSP purity is not required. Jobs may run in parallel across different Regions,
+including overlapping Regions, but each **semantic Region** receives its own
+initialized state. Two Regions can therefore produce different values at the same
+project position. Preserve Region identities and their state-start boundaries.
+Splitting work for scheduling is not permission to insert new state resets.
+
+This facility can regenerate output after graph/input edits and can implement
+rendering/freezing or cached procedural materialization. A live
+`Sequential/buffered` recording is different: a one-of-a-kind physical input
+may not be reproducible and its authoritative recorded data must survive cache
+eviction. These operations can reuse code generation, scheduling and storage
+mechanisms without being the same execution strategy. **No decision is made here**
+to add an arbitrary Sequential input to every Tock node or a new node callback
+family; the API that declares and initiates isolated jobs remains future design.
+This facility does not move the live playhead or foreground `ctx.index`.
 
 ## Backend ownership and realtime boundary
 
-The intended execution owner is `GraphExecutor`. It applies playback commands
-at Tick boundaries and owns the applied position and running/paused state.
-`SystemAudioDevices` supplies output-clock pacing and device buffers.
-`ProjectGraph` continues to coordinate graph revisions. A position change
-does not by itself request graph reconstruction or reset a generation.
+`GraphExecutor` owns command application, the one foreground coordinate,
+applied playhead, and execution block boundaries. `SystemAudioDevices`
+supplies output-clock pacing and device buffers; `ProjectGraph` coordinates
+graph revisions. A position change does not itself reconstruct the graph,
+reset a generation, or create a project undo entry.
 
-Commands from clients have one backend order. Accepted commands reach the
-execution owner in that order. Position snapshots describe applied state,
-so the client can distinguish an accepted seek from its execution boundary.
-Command acceptance does not depend on a client receiving every snapshot.
+Client commands have an accepted order. A command may be accepted but not
+applied while its required data prepare; snapshots describe **applied**
+position, state, and command/segment identity, not an optimistic requested
+position. Snapshot publication is coherent and bounded. The audio callback
+performs no network I/O, JSON serialization or allocation for playhead
+reporting. A client can animate between snapshots while running, but must
+not extrapolate across a pause, seek or other segment change. Displayed
+execution position does not claim exact hardware speaker time.
 
-The audio thread performs no network I/O, JSON serialization, allocation,
-or blocking synchronization for playhead reporting. It publishes bounded
-state for a control-path reader. Position and playback state must belong
-to the same coherent snapshot.
-
-A client can animate between snapshots while playback runs. Backend updates
-correct that animation. A pause or seek starts a new position segment, so
-animation must not extrapolate across that change. The displayed execution
-position does not claim exact hardware speaker time.
-
-The first implementation includes a position/state read and playback commands
-through JSON-RPC. Exact route names and update frequency follow the complete
-client feature. These controls do not depend on implementing every output
-observation operation first.
+The first implementation exposes a position/state read and playback commands
+through JSON-RPC. Exact route names, optional foreground-relocation control,
+transition metadata and update frequency follow the complete feature
+implementation. No output-observation feature, tempo map or generated beat
+grid is a prerequisite.
 
 ## Project ruler input for graph-authored snapping (accepted 2026-11-16)
 

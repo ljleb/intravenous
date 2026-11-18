@@ -66,6 +66,15 @@ struct ContinuousActivityFrontierPlan {
     std::size_t remembered_value_storage_offset = 0;
 };
 
+struct LiveTickCoverageHistoryPlan {
+    std::size_t output_change = 0;
+    std::size_t primitive = 0;
+    std::int32_t pace = 0;
+    std::size_t capacity = 0;
+    NodeLayout::RegionHandle region{};
+    std::size_t storage_offset = 0;
+};
+
 struct DeclarationPlan {
     NodeLayout node_layout{};
     TockStateLayout tock_state_layout{};
@@ -81,6 +90,7 @@ struct DeclarationPlan {
     // TTL is disabled and the realtime root pays no activity cost.
     std::vector<std::optional<PrimitiveActivityPlan>> primitive_activity{};
     std::vector<ContinuousActivityFrontierPlan> activity_frontiers{};
+    std::vector<LiveTickCoverageHistoryPlan> live_coverage_histories{};
 };
 
 // The project module imports a package callback by declaring the symbol GraphJit

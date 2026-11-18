@@ -113,35 +113,6 @@ PersistedOutputId capture_output_id(
             + static_cast<std::size_t>(bytes % block_payload_capacity != 0));
 }
 
-[[nodiscard]] std::size_t queued_record_block_count(
-    std::size_t payload_size,
-    std::size_t block_storage_size)
-{
-    if (block_storage_size < sizeof(RealtimeProducedRecordHeader)
-        || payload_size > std::numeric_limits<std::size_t>::max()
-                - sizeof(RealtimeProducedRecordHeader)) {
-        throw std::length_error("Realtime-produced record is too large");
-    }
-    return capture_block_count(
-        sizeof(RealtimeProducedRecordHeader) + payload_size,
-        1,
-        block_storage_size);
-}
-
-[[nodiscard]] std::size_t queued_record_block_count_noexcept(
-    std::size_t payload_size,
-    std::size_t block_storage_size) noexcept
-{
-    if (block_storage_size < sizeof(RealtimeProducedRecordHeader)
-        || payload_size > std::numeric_limits<std::size_t>::max()
-                - sizeof(RealtimeProducedRecordHeader)) {
-        return 0;
-    }
-    auto const bytes = sizeof(RealtimeProducedRecordHeader) + payload_size;
-    return bytes / block_storage_size
-        + static_cast<std::size_t>(bytes % block_storage_size != 0);
-}
-
 template<class Binding>
 std::optional<PersistedOutputHandle> direct_persisted_sample_output(
     graph_jit::BackgroundEvaluationPlan const& plan,
@@ -234,16 +205,119 @@ std::optional<PersistedOutputHandle> direct_persisted_event_output(
 
 class TickInvocationWorkspace::Impl {
 public:
-    struct SampleCaptureSlot {
+    struct RecordingSpans {
+        struct Span {
+            std::uint64_t sequential_begin = 0;
+            GlobalIndexRange addresses{};
+            OutputDisposition disposition = OutputDisposition::untouched;
+        };
+
+        std::vector<Span> slots{};
+        std::size_t head = 0;
+        std::size_t count = 0;
+        std::size_t extent = 0;
+        std::uint64_t next_sequential_index = 0;
+
+        void allocate(std::size_t latency)
+        {
+            if (latency == std::numeric_limits<std::size_t>::max()) {
+                throw std::length_error("Tick recording latency is too large");
+            }
+            slots.resize(latency + 1);
+        }
+
+        void transfer_from(RecordingSpans const& previous) noexcept
+        {
+            assert(slots.size() == previous.slots.size());
+            head = 0;
+            count = previous.count;
+            extent = previous.extent;
+            next_sequential_index = previous.next_sequential_index;
+            for (std::size_t index = 0; index < count; ++index) {
+                slots[index] = previous.slots[(previous.head + index) % previous.slots.size()];
+            }
+        }
+
+        template<typename Finalize>
+        void capture(Span span, std::size_t latency, Finalize&& finalize) noexcept
+        {
+            if (span.addresses.extent == 0) return;
+            auto const current_extent = static_cast<std::size_t>(span.addresses.extent);
+            span.sequential_begin = next_sequential_index;
+            next_sequential_index += current_extent;
+            auto const merged = [&] {
+                if (count == 0) return false;
+                auto& tail = slots[(head + count - 1) % slots.size()];
+                if (tail.disposition != span.disposition
+                    || tail.sequential_begin + tail.addresses.extent != span.sequential_begin
+                    || tail.addresses.begin.advanced_by(tail.addresses.extent) != span.addresses.begin) {
+                    return false;
+                }
+                tail.addresses.extent += current_extent;
+                return true;
+            }();
+            if (!merged) {
+                assert(count < slots.size());
+                slots[(head + count++) % slots.size()] = span;
+            }
+            extent += current_extent;
+            while (extent > latency) {
+                auto& first = slots[head];
+                auto const size = std::min<std::size_t>(first.addresses.extent, extent - latency);
+                auto finalized = first;
+                finalized.addresses.extent = size;
+                finalize(finalized);
+                first.addresses.begin = first.addresses.begin.advanced_by(size);
+                first.addresses.extent -= size;
+                first.sequential_begin += size;
+                extent -= size;
+                if (first.addresses.extent == 0) {
+                    head = (head + 1) % slots.size();
+                    --count;
+                }
+            }
+        }
+    };
+
+    struct RecordingProducer {
         ProducerReserve* reserve = nullptr;
         PendingQueue* pending = nullptr;
         std::atomic<bool>* reservation_failed = nullptr;
         ProducedBlockChain callback_chain{};
+        ProducedBlockWriter writer{};
+        bool callback_failed = false;
+
+        void fail_queue_reservation() noexcept
+        {
+            callback_failed = true;
+            if (reservation_failed) reservation_failed->store(true, std::memory_order_release);
+        }
+
+        void publish_callback_chain() noexcept
+        {
+            if (callback_chain && !callback_failed
+                && !pending->publish(std::move(callback_chain))) fail_queue_reservation();
+            callback_chain = {};
+            writer = {};
+            callback_failed = false;
+        }
+
+        bool write_header(RealtimeProducedRecordHeader const& header) noexcept
+        {
+            return !callback_failed
+                && header.payload_size <= std::numeric_limits<std::size_t>::max() - sizeof(header)
+                && writer.ensure_capacity(callback_chain, *reserve, sizeof(header) + header.payload_size)
+                && writer.append(std::as_bytes(std::span{&header, std::size_t{1}}));
+        }
+    };
+
+    struct SampleCaptureSlot : RecordingProducer {
         ChannelLayout layout{};
         ContinuousValueStorageGeometry geometry{};
         std::int32_t absolute_pace_exponent = 0;
         std::size_t history = 0;
         std::size_t latency = 0;
+        RecordingSpans spans{};
 
         [[nodiscard]] graph_jit::TickSampleCaptureOperation operation() noexcept
         {
@@ -261,28 +335,11 @@ public:
             };
         }
 
-        void fail_queue_reservation() noexcept
-        {
-            if (reservation_failed) {
-                reservation_failed->store(true, std::memory_order_release);
-            }
-        }
-
-        void publish_callback_chain() noexcept
-        {
-            if (!callback_chain) return;
-            auto const published = pending
-                && pending->publish(std::move(callback_chain));
-            assert(published);
-            if (!published) fail_queue_reservation();
-        }
-
         void capture(
             ReflectedContinuousOutputPortBinding const& binding,
             GlobalIndex sample_index,
             std::size_t block_size) noexcept
         {
-            if (binding.disposition == OutputDisposition::untouched) return;
             if (!reserve || !pending
                 || binding.storage.channel_layout != layout
                 || binding.storage.geometry != geometry
@@ -316,124 +373,65 @@ public:
             auto const projection = FractionalGlobalIndexRange::from_global_range(
                 window).try_project_onto_lattice(absolute_pace_exponent);
             if (!projection || projection->count == 0) return;
-            auto const selected_count = projection->count;
-            if (selected_count
-                    > std::numeric_limits<std::size_t>::max()
-                        / bytes_per_value_index) {
-                return;
-            }
-            // The values this block finalizes: its latency window before the
-            // block and the block, less its own newest `latency` values, which
-            // the next block may still revise (coverage_and_background_
-            // evaluation.md, dispositions). Latency counts values of the
-            // output's pace.
-            auto const recorded_range = GlobalIndexRange{
-                .begin = GlobalIndex::from_bits(projection->begin_index_bits)
-                    .retreated_by(latency),
-                .extent = selected_count,
-            };
-            if (static_cast<std::size_t>(recorded_range.extent)
-                    != selected_count) {
-                return;
-            }
-            if (binding.disposition == OutputDisposition::voided) {
-                auto const block_count = queued_record_block_count_noexcept(
-                    0, reserve->block_storage_size());
-                if (block_count == 0) {
-                    fail_queue_reservation();
-                    return;
+            spans.capture({
+                .addresses = {GlobalIndex::from_bits(projection->begin_index_bits), projection->count},
+                .disposition = binding.disposition,
+            }, latency, [&](RecordingSpans::Span const& finalized) {
+                if (finalized.disposition != OutputDisposition::untouched) {
+                    auto const physical_begin = binding.sequential_begin_index
+                        + finalized.sequential_begin - (spans.next_sequential_index - projection->count);
+                    publish(finalized, binding, physical_begin, channels, bytes_per_value_index);
                 }
-                auto chain = reserve->acquire(block_count);
-                if (!chain) {
-                    fail_queue_reservation();
-                    return;
-                }
-                auto writer = chain.writer();
-                auto const header = RealtimeProducedRecordHeader{
-                    .payload_kind = RealtimeProducedPayloadKind::void_value,
-                    .record_block_count = block_count,
-                    .payload_size = 0,
+            });
+        }
+
+        void publish(
+            RecordingSpans::Span const& finalized,
+            ReflectedContinuousOutputPortBinding const& binding,
+            std::uint64_t physical_begin,
+            std::size_t channels, std::size_t bytes_per_value_index) noexcept
+        {
+            auto const recorded_range = finalized.addresses;
+            auto const selected_count = static_cast<std::size_t>(recorded_range.extent);
+            auto const voided = finalized.disposition == OutputDisposition::voided;
+            if (!write_header({
+                    .payload_kind = voided ? RealtimeProducedPayloadKind::void_value
+                        : RealtimeProducedPayloadKind::continuous_values,
+                    .payload_size = voided ? 0 : selected_count * bytes_per_value_index,
                     .begin = recorded_range.begin,
                     .range_extent = recorded_range.extent,
                     .continuous_layout = layout,
                     .continuous_geometry = geometry,
-                };
-                if (!writer.append(std::as_bytes(
-                        std::span{&header, std::size_t{1}}))) {
-                    fail_queue_reservation();
-                    return;
-                }
-                auto const appended = callback_chain.append(std::move(chain));
-                assert(appended);
-                if (!appended) fail_queue_reservation();
+                })) {
+                fail_queue_reservation();
                 return;
             }
-            auto append_values = [&](auto& writer) noexcept {
-                auto append_value = [&](std::size_t frame,
-                                        std::size_t channel) noexcept {
+            if (voided) return;
+            for (std::size_t frame = 0; frame < selected_count; ++frame) {
+                for (std::size_t channel = 0; channel < channels; ++channel) {
                     auto const& source = binding.storage.channels[channel];
-                    auto const delayed = binding.sequential_begin_index
-                        - latency + frame - source.value_delay;
+                    auto const delayed = physical_begin + frame - source.value_delay;
                     auto const source_frame = static_cast<std::size_t>(
                         delayed & (source.value_capacity - 1));
-                    return writer.append(std::span<std::byte const>{
+                    if (!writer.append(std::span<std::byte const>{
                         source.storage
                             + source_frame * source.value_stride_bytes,
-                        geometry.value_size_bytes});
-                };
-                for (std::size_t frame = 0;
-                     frame < selected_count; ++frame) {
-                    for (std::size_t channel = 0;
-                         channel < channels; ++channel) {
-                        if (!append_value(frame, channel)) return false;
+                        geometry.value_size_bytes})) {
+                        fail_queue_reservation();
+                        return;
                     }
                 }
-                return true;
-            };
-
-            auto const payload_size =
-                selected_count * bytes_per_value_index;
-            auto const block_count = queued_record_block_count_noexcept(
-                payload_size, reserve->block_storage_size());
-            if (block_count == 0) {
-                fail_queue_reservation();
-                return;
             }
-            auto chain = reserve->acquire(block_count);
-            if (!chain) {
-                fail_queue_reservation();
-                return;
-            }
-            auto writer = chain.writer();
-            auto const header = RealtimeProducedRecordHeader{
-                .payload_kind = RealtimeProducedPayloadKind::continuous_values,
-                .record_block_count = block_count,
-                .payload_size = payload_size,
-                .begin = recorded_range.begin,
-                .range_extent = recorded_range.extent,
-                .continuous_layout = layout,
-                .continuous_geometry = geometry,
-            };
-            if (!writer.append(std::as_bytes(
-                    std::span{&header, std::size_t{1}}))
-                || !append_values(writer)) {
-                fail_queue_reservation();
-                return;
-            }
-            auto const appended = callback_chain.append(std::move(chain));
-            assert(appended);
-            if (!appended) fail_queue_reservation();
         }
     };
 
-    struct EventCaptureSlot {
-        ProducerReserve* reserve = nullptr;
-        PendingQueue* pending = nullptr;
-        std::atomic<bool>* reservation_failed = nullptr;
-        ProducedBlockChain callback_chain{};
+    struct EventCaptureSlot : RecordingProducer {
         EventTypeId type = EventTypeId::empty;
         std::size_t history = 0;
         std::size_t latency = 0;
+        std::size_t acceptance_capacity = 0;
+        std::size_t maximum_invocations = 0;
+        std::size_t header_bytes = 0;
 
         [[nodiscard]] graph_jit::TickEventCaptureOperation operation() noexcept
         {
@@ -451,54 +449,55 @@ public:
             };
         }
 
-        void fail_queue_reservation() noexcept
-        {
-            if (reservation_failed) {
-                reservation_failed->store(true, std::memory_order_release);
-            }
-        }
-
-        void publish_callback_chain() noexcept
-        {
-            if (!callback_chain) return;
-            auto const published = pending
-                && pending->publish(std::move(callback_chain));
-            assert(published);
-            if (!published) fail_queue_reservation();
-        }
-
-        // Events the output authored in its newest `latency` positions of the
-        // last captured block, which are not final yet. The next block's
-        // record holds them: a block records the positions it finalizes
-        // (coverage_and_background_evaluation.md, dispositions). Sized when
-        // the workspace binds the slot.
-        std::vector<TimedEvent> pending_events{};
+        struct PendingEvent {
+            std::uint64_t sequential_index = 0;
+            std::size_t write_order = 0;
+            Event value{};
+        };
+        RecordingSpans spans{};
+        std::vector<PendingEvent> pending_events{};
         std::size_t pending_count = 0;
 
-        bool publish_void(GlobalIndexRange range) noexcept
+        std::size_t provision(std::size_t capacity)
         {
-            auto const block_count = queued_record_block_count_noexcept(
-                0, reserve->block_storage_size());
-            if (block_count == 0) return false;
-            auto chain = reserve->acquire(block_count);
-            if (!chain) return false;
-            auto writer = chain.writer();
-            auto const header = RealtimeProducedRecordHeader{
-                .payload_kind = RealtimeProducedPayloadKind::void_value,
-                .record_block_count = block_count,
-                .payload_size = 0,
-                .begin = range.begin,
-                .range_extent = range.extent,
-                .event_type = type,
-                .event_count = 0,
-            };
-            if (!writer.append(std::as_bytes(
-                    std::span{&header, std::size_t{1}}))) {
-                return false;
+            auto const limit = std::numeric_limits<std::size_t>::max();
+            if (latency > limit - maximum_invocations
+                || (capacity != 0 && latency + maximum_invocations > limit / capacity)) {
+                throw std::length_error("Tick Event capture invocation bound is too large");
             }
-            auto const appended = callback_chain.append(std::move(chain));
-            assert(appended);
-            return appended;
+            auto const payload_events = (latency + maximum_invocations) * capacity;
+            if (payload_events > (limit - header_bytes) / sizeof(TimedEvent)) {
+                throw std::length_error("Tick Event capture payload is too large");
+            }
+            acceptance_capacity = capacity;
+            pending_events.resize((latency + 1) * capacity);
+            return capture_block_count(1, header_bytes + payload_events * sizeof(TimedEvent),
+                realtime_produced_block_storage_size);
+        }
+
+        bool publish(RecordingSpans::Span const& span,
+                     std::span<PendingEvent const> events) noexcept
+        {
+            auto const voided = span.disposition == OutputDisposition::voided;
+            if (!write_header({
+                .payload_kind = voided ? RealtimeProducedPayloadKind::void_value
+                    : RealtimeProducedPayloadKind::events,
+                .payload_size = voided ? 0 : events.size() * sizeof(TimedEvent),
+                .begin = span.addresses.begin,
+                .range_extent = span.addresses.extent,
+                .event_type = type,
+                .event_count = voided ? 0 : events.size(),
+            })) return false;
+            if (!voided) {
+                for (auto const& selected : events) {
+                    auto const event = TimedEvent{
+                        .time = span.addresses.begin.advanced_by(selected.sequential_index - span.sequential_begin),
+                        .value = selected.value,
+                    };
+                    if (!writer.append(std::as_bytes(std::span{&event, std::size_t{1}}))) return false;
+                }
+            }
+            return true;
         }
 
         void capture(
@@ -506,177 +505,63 @@ public:
             GlobalIndex sample_index,
             std::size_t block_size) noexcept
         {
-            auto const untouched =
-                binding.disposition == OutputDisposition::untouched;
-            if (untouched && pending_count == 0) return;
             auto const& storage = binding.storage;
-            if (!reserve || !pending || storage.storage == nullptr
-                || storage.type != type
-                || binding.history != history || binding.latency != latency
-                || storage.event_capacity == 0
-                || !std::has_single_bit(storage.event_capacity)) {
-                return;
-            }
-            // The positions this block finalizes: its latency window before
-            // the block and the block, less its own newest `latency`
-            // positions, which the next block may still add events to. A
-            // block that authors nothing still finalizes the events the
-            // previous block left pending there.
-            auto const window = untouched
-                ? GlobalIndexRange{
-                    .begin = sample_index.retreated_by(latency),
-                    .extent = std::min<GlobalIndex::extent_type>(
-                        latency, block_size),
+            if (!reserve || !pending
+                || storage.type != type || binding.history != history || binding.latency != latency
+                || (storage.event_capacity != 0 && (storage.storage == nullptr
+                    || !std::has_single_bit(storage.event_capacity)))) return;
+
+            auto const sequential_begin = spans.next_sequential_index;
+            auto const open_begin = sequential_begin - spans.extent;
+            auto const open_window = GlobalIndexRange{
+                sample_index.retreated_by(spans.extent), spans.extent + block_size};
+            if (binding.disposition == OutputDisposition::written && storage.event_capacity != 0) {
+                auto const* events = reinterpret_cast<TimedEvent const*>(storage.storage + storage.events_offset);
+                auto const write = *reinterpret_cast<std::size_t const*>(storage.storage
+                    + (storage.persistent_ring ? storage.write_index_offset : storage.count_offset));
+                auto const authored = write - binding.authored_begin_index;
+                IV_ASSERT(authored <= storage.event_capacity && authored <= acceptance_capacity,
+                    "Tick Event output exceeds its planned acceptance bound");
+                auto const previous_count = pending_count;
+                for (std::size_t offset = 0; offset < authored; ++offset) {
+                    auto const& event = events[(binding.authored_begin_index + offset) & (storage.event_capacity - 1)];
+                    auto const position = open_window.offset_of(event.time);
+                    if (!position) continue;
+                    IV_ASSERT(capture_event_matches_type(type, event.value),
+                        "Tick Event output wrote an incompatible Event");
+                    IV_ASSERT(pending_count < pending_events.size(),
+                        "Tick Event output exceeded its planned pending capacity");
+                    pending_events[pending_count] = {open_begin + *position, pending_count, event.value};
+                    ++pending_count;
                 }
-                : realtime_port_window(
-                    sample_index.retreated_by(latency), block_size, 0, 0);
-            auto const selected_window_size =
-                static_cast<std::size_t>(window.extent);
-            if (selected_window_size == 0
-                || static_cast<GlobalIndex::extent_type>(selected_window_size)
-                    != window.extent) {
-                return;
-            }
-            if (binding.disposition == OutputDisposition::voided) {
-                pending_count = 0;
-                if (!publish_void(window)) fail_queue_reservation();
-                return;
+                if (pending_count != previous_count) {
+                    std::sort(pending_events.begin(), pending_events.begin() + pending_count,
+                        [open_begin](PendingEvent const& left, PendingEvent const& right) {
+                            if (left.sequential_index == right.sequential_index) return left.write_order < right.write_order;
+                            return left.sequential_index - open_begin < right.sequential_index - open_begin;
+                        });
+                }
             }
 
-            auto const* events = reinterpret_cast<TimedEvent const*>(
-                storage.storage + storage.events_offset);
-            std::size_t read = 0;
-            std::size_t write = untouched
-                ? std::size_t{0}
-                : *reinterpret_cast<std::size_t const*>(
-                    storage.storage + storage.count_offset);
-            if (storage.persistent_ring && !untouched) {
-                read = *reinterpret_cast<std::size_t const*>(
-                    storage.storage + storage.read_index_offset);
-                write = *reinterpret_cast<std::size_t const*>(
-                    storage.storage + storage.write_index_offset);
-            }
-            if (write < read) return;
-            auto const available = std::min(
-                write - read, storage.event_capacity);
-            auto const event_at = [&](std::size_t index) -> TimedEvent const& {
-                return events[(read + index) & (storage.event_capacity - 1)];
-            };
-
-            // This block's authored events in the window, in order; those
-            // after it stay pending.
-            std::size_t selected_begin = available;
-            std::size_t selected_count = 0;
-            GlobalIndex::extent_type previous_offset = 0;
-            bool first_selected = true;
-            for (std::size_t index = 0; index < available; ++index) {
-                auto const& event = event_at(index);
-                auto const offset = window.offset_of(event.time);
-                if (!offset) continue;
-                if (!capture_event_matches_type(type, event.value)
-                    || (!first_selected && *offset < previous_offset)) {
-                    return;
+            std::size_t consumed = 0;
+            spans.capture({
+                .addresses = {sample_index, block_size},
+                .disposition = binding.disposition,
+            }, latency, [&](RecordingSpans::Span const& finalized) {
+                auto const first = consumed;
+                while (consumed < pending_count && pending_events[consumed].sequential_index
+                    - finalized.sequential_begin < finalized.addresses.extent) ++consumed;
+                if (finalized.disposition != OutputDisposition::untouched
+                    && !publish(finalized, std::span{pending_events}.subspan(first, consumed - first))) {
+                    fail_queue_reservation();
                 }
-                if (first_selected) selected_begin = index;
-                previous_offset = *offset;
-                first_selected = false;
-                ++selected_count;
-            }
-            // Pending events are sorted; those this block finalizes lead.
-            std::size_t pending_in_window = 0;
-            while (pending_in_window < pending_count
-                && window.contains(pending_events[pending_in_window].time)) {
-                ++pending_in_window;
-            }
-            auto const total_count = pending_in_window + selected_count;
-            if (total_count > std::numeric_limits<std::size_t>::max()
-                    / sizeof(TimedEvent)) {
-                return;
-            }
-            // Pending events precede this block's at an equal position: they
-            // were authored first.
-            auto append_values = [&](auto& writer) noexcept {
-                std::size_t from_pending = 0;
-                std::size_t from_block = 0;
-                while (from_pending < pending_in_window
-                    || from_block < selected_count) {
-                    auto const take_pending = from_block == selected_count
-                        || (from_pending < pending_in_window
-                            && window.offset_of(
-                                    pending_events[from_pending].time)
-                                    .value_or(0)
-                                <= window.offset_of(
-                                    event_at(selected_begin + from_block).time)
-                                    .value_or(0));
-                    auto const& event = take_pending
-                        ? pending_events[from_pending++]
-                        : event_at(selected_begin + from_block++);
-                    if (!writer.append(std::as_bytes(
-                            std::span{&event, std::size_t{1}}))) {
-                        return false;
-                    }
+            });
+            if (consumed != 0) {
+                std::move(pending_events.begin() + consumed, pending_events.begin() + pending_count, pending_events.begin());
+                pending_count -= consumed;
+                for (std::size_t index = 0; index < pending_count; ++index) {
+                    pending_events[index].write_order = index;
                 }
-                return true;
-            };
-            auto const payload_size = total_count * sizeof(TimedEvent);
-            auto const block_count = queued_record_block_count_noexcept(
-                payload_size, reserve->block_storage_size());
-            if (block_count == 0) {
-                fail_queue_reservation();
-                return;
-            }
-            auto chain = reserve->acquire(block_count);
-            if (!chain) {
-                fail_queue_reservation();
-                return;
-            }
-            auto writer = chain.writer();
-            auto const header = RealtimeProducedRecordHeader{
-                .payload_kind = RealtimeProducedPayloadKind::events,
-                .record_block_count = block_count,
-                .payload_size = payload_size,
-                .begin = window.begin,
-                .range_extent = selected_window_size,
-                .event_type = type,
-                .event_count = total_count,
-            };
-            if (!writer.append(std::as_bytes(
-                    std::span{&header, std::size_t{1}}))
-                || !append_values(writer)) {
-                fail_queue_reservation();
-                return;
-            }
-            auto const appended = callback_chain.append(std::move(chain));
-            assert(appended);
-            if (!appended) fail_queue_reservation();
-
-            // Events after the window wait for the next record: pending ones
-            // it did not finalize, then this block's, in position order with
-            // the earlier-authored first at an equal position.
-            std::move(
-                pending_events.begin()
-                    + static_cast<std::ptrdiff_t>(pending_in_window),
-                pending_events.begin()
-                    + static_cast<std::ptrdiff_t>(pending_count),
-                pending_events.begin());
-            pending_count -= pending_in_window;
-            auto const pending_begin = window.begin.advanced_by(window.extent);
-            auto const order = RangeRelativeIndexOrder{pending_begin};
-            for (std::size_t index = 0; index < available; ++index) {
-                auto const& event = event_at(index);
-                if (window.contains(event.time)
-                    || pending_begin.signed_distance_to(event.time) < 0) {
-                    continue;
-                }
-                if (pending_count == pending_events.size()) break;
-                auto position = pending_count;
-                while (position != 0
-                    && order(event.time, pending_events[position - 1].time)) {
-                    pending_events[position] = pending_events[position - 1];
-                    --position;
-                }
-                pending_events[position] = event;
-                ++pending_count;
             }
         }
     };
@@ -840,34 +725,51 @@ public:
             PersistedDataStore::Snapshot const& published,
             TickMaterializedSampleInput const* materialized,
             GlobalIndex sample_index,
-            std::size_t block_size) noexcept
+            std::size_t block_size, std::optional<GlobalIndex> held) noexcept
         {
+            if (block_size == 0) return;
+            auto const selected_index = held.value_or(sample_index);
             auto const requested = GlobalIndexRange{
-                .begin = sample_index,
-                .extent = block_size,
+                .begin = selected_index,
+                .extent = held ? 1 : block_size,
             };
             clear(block_size);
             if (output) {
-                auto retained = IndexCoverage{requested};
-                if (materialized) retained.exclude(materialized->coverage);
-                for (auto const region : retained) {
-                    published.for_each_sample_region(
-                        *output,
-                        region,
-                        [&](PersistedSampleRegion const& stored,
-                            GlobalIndexRange intersection) {
-                            copy(stored, sample_index, intersection);
-                        });
-                }
+                published.for_each_sample_region(*output, requested,
+                    [&](PersistedSampleRegion const& stored, GlobalIndexRange intersection) {
+                        if (!materialized || !materialized->coverage.intersects(intersection)) {
+                            copy(stored, selected_index, intersection);
+                            return;
+                        }
+                        if (materialized->coverage.contains(intersection)) return;
+                        auto cursor = intersection.begin;
+                        auto remaining = intersection.extent;
+                        while (remaining != 0) {
+                            auto const covered = materialized->coverage.contains(cursor);
+                            GlobalIndex::extent_type count = 1;
+                            while (count < remaining
+                                && materialized->coverage.contains(cursor.advanced_by(count)) == covered) ++count;
+                            if (!covered) copy(stored, selected_index, {cursor, count});
+                            cursor = cursor.advanced_by(count);
+                            remaining -= count;
+                        }
+                    });
             }
 
-            if (!materialized) return;
-            materialized->for_each_region(
+            if (materialized) materialized->for_each_region(
                 requested,
                 [&](TickMaterializedSampleRegion const& region,
                     GlobalIndexRange intersection) {
-                    copy(*materialized, region, sample_index, intersection);
+                    copy(*materialized, region, selected_index, intersection);
                 });
+            if (held) {
+                for (std::size_t channel = 0; channel < channel_count(layout); ++channel) {
+                    for (std::size_t frame = 1; frame < block_size; ++frame) {
+                        std::memcpy(value_storage(frame, channel), value_storage(0, channel),
+                            geometry.value_size_bytes);
+                    }
+                }
+            }
         }
 
         // The caller selected only complete materializations, so every
@@ -997,21 +899,27 @@ public:
             auto& size = count();
             if (size == capacity) return;
             events()[size] = event;
+            events()[size].time = event.time.advanced_by(delivery_offset);
             semantic_source_indices[size] = semantic_source_index;
             ++size;
         }
+
+        std::uint64_t delivery_offset = 0;
 
         void populate(
             PersistedDataStore::Snapshot const& published,
             TickMaterializedEventInput const* materialized,
             GlobalIndex sample_index,
-            std::size_t block_size) noexcept
+            std::size_t block_size, TickPlaybackSelection selection) noexcept
         {
             count() = 0;
+            if (block_size == 0 || (selection.held_position && !selection.audition)) return;
+            auto const selected_index = selection.held_position.value_or(sample_index);
+            delivery_offset = sample_index.bits() - selected_index.bits();
             // Only the current window: the consumer owns its event history.
             auto const range = GlobalIndexRange{
-                .begin = sample_index,
-                .extent = block_size,
+                .begin = selected_index,
+                .extent = selection.held_position ? 1 : block_size,
             };
 
             if (materialized) {
@@ -1130,6 +1038,8 @@ public:
     std::vector<RandomAccessEventInputPort> event_views{};
     std::vector<SampleCaptureSlot> sample_capture_slots{};
     std::vector<EventCaptureSlot> event_capture_slots{};
+    std::vector<std::pair<std::size_t, std::size_t>> sample_recording_transfers{};
+    std::vector<std::pair<std::size_t, std::size_t>> event_recording_transfers{};
     std::vector<graph_jit::TickSampleCaptureOperation> sample_captures{};
     std::vector<graph_jit::TickEventCaptureOperation> event_captures{};
     std::vector<RealtimeProducerRequirement> producer_requirements{};
@@ -1357,21 +1267,21 @@ public:
         }
 
         auto capture_requirement = [&](auto const& planned,
-                                       std::size_t blocks_per_invocation) {
+                                       std::size_t payload_size,
+                                       std::size_t maximum_records) {
             if (planned.maximum_block_size == 0
                 || planned.maximum_invocations_per_callback == 0) {
                 throw std::invalid_argument(
                     "Tick capture has invalid callback invocation bounds");
             }
-            if (blocks_per_invocation
-                > std::numeric_limits<std::size_t>::max()
-                    / planned.maximum_invocations_per_callback) {
-                throw std::length_error(
-                    "Tick capture callback reserve is too large");
+            if (maximum_records > (std::numeric_limits<std::size_t>::max() - payload_size)
+                    / sizeof(RealtimeProducedRecordHeader)) {
+                throw std::length_error("Tick capture fragmentation reserve is too large");
             }
-            auto const required = blocks_per_invocation
-                * planned.maximum_invocations_per_callback;
-            return required;
+            return capture_block_count(
+                planned.maximum_invocations_per_callback,
+                payload_size + maximum_records * sizeof(RealtimeProducedRecordHeader),
+                realtime_produced_block_storage_size);
         };
         auto capture_bounds_match_workspace = [&](auto const& planned) {
             return planned.maximum_block_size != 0
@@ -1414,7 +1324,7 @@ public:
                 FractionalGlobalIndexRange::maximum_projection_count(
                     planned.maximum_block_size,
                     port.absolute_pace_exponent);
-            if (!maximum_value_count) {
+            if (!maximum_value_count || *maximum_value_count == 0) {
                 throw std::length_error(
                     "Tick continuous capture projection is too large");
             }
@@ -1434,10 +1344,10 @@ public:
             }
             auto const payload_size =
                 *maximum_value_count * bytes_per_value_index;
+            selected.spans.allocate(port.output_latency);
             auto const required = capture_requirement(
                 planned,
-                queued_record_block_count(
-                    payload_size, realtime_produced_block_storage_size));
+                payload_size, 1 + std::min(port.output_latency, *maximum_value_count - 1));
             producer_requirements.push_back({
                 .output = output,
                 .port = planned.port,
@@ -1470,36 +1380,17 @@ public:
                 .type = port.event_type,
                 .history = port.output_history,
                 .latency = port.output_latency,
+                .maximum_invocations = planned.maximum_invocations_per_callback,
             };
-            // The events of the output's latency positions, which wait for
-            // the next block's record.
-            if (port.output_latency != 0) {
-                auto const pending_capacity =
-                    event_sequence_capacity_for_sample_span(
-                        port.max_events_per_index, port.output_latency);
-                if (!pending_capacity) {
-                    throw std::length_error(
-                        "Tick event capture latency window is too large");
-                }
-                selected.pending_events.resize(*pending_capacity);
-            }
             auto const window = planned.maximum_block_size;
-            auto const event_capacity = event_sequence_capacity_for_sample_span(
-                port.max_events_per_index, window);
-            if (!event_capacity) {
-                throw std::length_error(
-                    "Tick event capture capacity is too large");
+            auto const fragments = window == 0 ? 0 : 1 + std::min(port.output_latency, window - 1);
+            if (!bounds_compatible || fragments > std::numeric_limits<std::size_t>::max()
+                    / sizeof(RealtimeProducedRecordHeader) / selected.maximum_invocations) {
+                throw std::length_error("Tick Event capture fragmentation bound is invalid");
             }
-            if (*event_capacity > std::numeric_limits<std::size_t>::max()
-                    / sizeof(TimedEvent)) {
-                throw std::length_error(
-                    "Tick event capture payload is too large");
-            }
-            auto const payload_size = *event_capacity * sizeof(TimedEvent);
-            auto const required = capture_requirement(
-                planned,
-                queued_record_block_count(
-                    payload_size, realtime_produced_block_storage_size));
+            selected.header_bytes = fragments * sizeof(RealtimeProducedRecordHeader) * selected.maximum_invocations;
+            selected.spans.allocate(port.output_latency);
+            auto const required = selected.provision(planned.event_acceptance_capacity);
             producer_requirements.push_back({
                 .output = output,
                 .port = planned.port,
@@ -1558,7 +1449,7 @@ public:
         PersistedDataStore::Snapshot const& published,
         TickMaterializationSnapshot const& materialized,
         GlobalIndex sample_index,
-        std::size_t block_size) noexcept
+        std::size_t block_size, TickPlaybackSelection selection) noexcept
     {
         auto const materialization_matches = materialized.generation() == generation
             && materialized.data_version() == published.version();
@@ -1584,7 +1475,7 @@ public:
                 published,
                 materialized_sample_is_complete ? materialized_sample : nullptr,
                 sample_index,
-                selected_block_size);
+                selected_block_size, selection.held_position);
         }
         for (auto& selected : sequential_event_slots) {
             auto const* materialized_event = materialization_matches
@@ -1597,7 +1488,7 @@ public:
                     ? materialized_event
                     : nullptr,
                 sample_index,
-                selected_block_size);
+                selected_block_size, selection);
         }
         for (std::size_t slot = 0; slot < sample_slots.size(); ++slot) {
             auto& selected = sample_slots[slot];
@@ -1690,8 +1581,8 @@ public:
             .sample_captures = sample_captures,
             .event_captures = event_captures,
             .output_coverages = materialization_matches
-                ? materialized.output_coverages()
-                : std::span<IndexCoverage const>{},
+                ? materialized.output_coverages() : std::span<IndexCoverage const>{},
+            .held_background_position = selection.held_position,
         };
     }
 };
@@ -1769,6 +1660,60 @@ void TickInvocationWorkspace::bind_producer_endpoint(
         producer, reserve, pending, reservation_failed);
 }
 
+void TickInvocationWorkspace::prepare_recording_transfer_from(
+    TickInvocationWorkspace const& previous,
+    graph_jit::BackgroundEvaluationPlan const& plan,
+    std::span<NodeBundlePortId const> inherited_outputs)
+{
+    auto& target = *impl_;
+    auto const& source = *previous.impl_;
+    for (std::size_t index = 0; index < target.producer_requirements.size(); ++index) {
+        auto& requirement = target.producer_requirements[index];
+        if (!std::ranges::contains(inherited_outputs, plan.ports[requirement.port].configured_port)) continue;
+        auto const found = std::ranges::find(source.producer_requirements,
+            requirement.output, &RealtimeProducerRequirement::output);
+        if (found == source.producer_requirements.end()) continue;
+        auto const old_index = static_cast<std::size_t>(found - source.producer_requirements.begin());
+        if (requirement.kind == PortKind::sample) {
+            auto const& before = source.sample_capture_slots[old_index];
+            auto const& after = target.sample_capture_slots[index];
+            if (after.latency != 0 && after.latency == before.latency
+                && after.layout == before.layout && after.geometry == before.geometry
+                && after.absolute_pace_exponent == before.absolute_pace_exponent) {
+                target.sample_recording_transfers.emplace_back(old_index, index);
+            }
+        } else {
+            auto const previous_slot = old_index - source.sample_capture_slots.size();
+            auto const target_slot = index - target.sample_capture_slots.size();
+            auto const& before = source.event_capture_slots[previous_slot];
+            auto& after = target.event_capture_slots[target_slot];
+            if (after.latency != 0 && after.latency == before.latency && after.type == before.type) {
+                if (after.acceptance_capacity < before.acceptance_capacity) {
+                    requirement.maximum_blocks_per_callback = after.provision(before.acceptance_capacity);
+                }
+                target.event_recording_transfers.emplace_back(previous_slot, target_slot);
+            }
+        }
+    }
+}
+
+void TickInvocationWorkspace::transfer_recording_from(TickInvocationWorkspace const& previous) noexcept
+{
+    auto& target = *impl_;
+    auto const& source = *previous.impl_;
+    for (auto const [from, to] : target.sample_recording_transfers) {
+        target.sample_capture_slots[to].spans.transfer_from(source.sample_capture_slots[from].spans);
+    }
+    for (auto const [from, to] : target.event_recording_transfers) {
+        auto const& before = source.event_capture_slots[from];
+        auto& after = target.event_capture_slots[to];
+        after.spans.transfer_from(before.spans);
+        assert(before.pending_count <= after.pending_events.size());
+        std::copy_n(before.pending_events.begin(), before.pending_count, after.pending_events.begin());
+        after.pending_count = before.pending_count;
+    }
+}
+
 TickInvocationWorkspace::CaptureScope
 TickInvocationWorkspace::begin_capture() noexcept
 {
@@ -1779,9 +1724,9 @@ graph_jit::TickInvocationCall TickInvocationWorkspace::bind(
     PersistedDataStore::Snapshot const& published,
     TickMaterializationSnapshot const& materialized,
     GlobalIndex sample_index,
-    std::size_t block_size) noexcept
+    std::size_t block_size, TickPlaybackSelection selection) noexcept
 {
-    return impl_->bind(published, materialized, sample_index, block_size);
+    return impl_->bind(published, materialized, sample_index, block_size, selection);
 }
 
 TickInvocationFrame::TickInvocationFrame(
@@ -1789,7 +1734,7 @@ TickInvocationFrame::TickInvocationFrame(
     TickMaterializationStore::ReaderSlot& materialization_reader,
     TickInvocationWorkspace& workspace,
     GlobalIndex sample_index,
-    std::size_t block_size) noexcept
+    std::size_t block_size, TickPlaybackSelection selection) noexcept
     : published_data_(data_reader.pin())
     , materialized_storage_(materialization_reader.pin())
     , published_data_view_(&published_data_.snapshot())
@@ -1799,14 +1744,14 @@ TickInvocationFrame::TickInvocationFrame(
         *published_data_view_,
         *materialized_storage_view_,
         sample_index,
-        block_size))
+        block_size, selection))
 {}
 
 TickInvocationFrame::TickInvocationFrame(
     RealtimePersistedState const& persisted,
     TickInvocationWorkspace& workspace,
     GlobalIndex sample_index,
-    std::size_t block_size) noexcept
+    std::size_t block_size, TickPlaybackSelection selection) noexcept
     : published_data_view_(&persisted.data())
     , materialized_storage_view_(&persisted.materialization())
     , capture_scope_(workspace.begin_capture())
@@ -1814,7 +1759,7 @@ TickInvocationFrame::TickInvocationFrame(
         *published_data_view_,
         *materialized_storage_view_,
         sample_index,
-        block_size))
+        block_size, selection))
 {}
 
 } // namespace iv

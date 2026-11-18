@@ -209,6 +209,8 @@ struct RootPrimitive {
     std::vector<std::size_t> manual_controls{};
     // Only inputs whose sources may be absent need a resolution pass.
     std::vector<std::size_t> coverage_inputs{};
+    std::vector<std::size_t> live_coverage_outputs{};
+    std::vector<SequentialCoverageProjection> live_event_inputs{};
     // Compact realtime output binding and semantic output-coverage index.
     std::vector<std::pair<std::size_t, std::size_t>> sparse_event_outputs{};
     // Callback-local write starts, so coverage filtering does not revisit
@@ -358,6 +360,7 @@ struct RealtimeRootPlan {
 
     // Facts derived once from those sections and the remaining plan.
     std::vector<RootPrimitive> primitives{};
+    std::vector<std::optional<detail::LiveTickCoverageHistoryPlan>> live_coverage_histories{};
     // Indexed like ExecutionPlan::primitive_steps and ExecutionPlan::regions.
     std::vector<RootStep> steps{};
     std::vector<RootRegion> regions{};
@@ -603,6 +606,45 @@ std::uint64_t pace_begin_index(
     return sequential_begin_index(frame, cursor, pace_exponent, callback_index);
 }
 
+std::byte& live_coverage_value(RootFrame const& frame,
+    detail::LiveTickCoverageHistoryPlan const& history, std::uint64_t physical) noexcept
+{
+    return frame.storage_base[history.storage_offset + (physical & (history.capacity - 1))];
+}
+
+SequentialCoveragePresence live_projection_presence(RootFrame const& frame,
+    std::span<SequentialCoverageSource const> sources, std::uint64_t physical,
+    GlobalIndex position, std::int32_t pace) noexcept
+{
+    return select_projection_presence(sources, [&](SequentialCoverageSource const& source) {
+        auto const change = *source.output_change;
+        if (change < frame.plan.live_coverage_histories.size()) {
+            if (auto const& history = frame.plan.live_coverage_histories[change]) {
+                IV_ASSERT(history->pace == pace, "live Sequential coverage has a different pace than its value");
+                return live_coverage_value(frame, *history, physical - source.read_latency) != std::byte{0}
+                    ? SequentialCoveragePresence::covered : SequentialCoveragePresence::absent;
+            }
+        }
+        if (!frame.invocation) return SequentialCoveragePresence::unknown;
+        auto const held = frame.invocation->held_background_position;
+        auto const selected = frame.invocation->output_coverages;
+        if (change >= selected.size()) return SequentialCoveragePresence::unknown;
+        auto const address = held ? GlobalIndex::from_bits(project_lattice(*held, 1, pace).begin_index)
+                                  : position;
+        return selected.data()[change].contains(address.retreated_by(source.read_latency))
+            ? SequentialCoveragePresence::covered : SequentialCoveragePresence::absent;
+    });
+}
+
+SequentialCoveragePresence live_input_presence(RootFrame const& frame,
+    std::span<SequentialCoverageProjection const> projections, std::uint64_t physical,
+    GlobalIndex position, std::int32_t pace, std::optional<std::size_t> channel = {}) noexcept
+{
+    return select_input_presence(projections, [&](auto const& sources) {
+        return live_projection_presence(frame, sources, physical, position, pace);
+    }, channel);
+}
+
 std::byte* continuous_value(
     RootFrame const& frame,
     std::size_t representation_index,
@@ -831,14 +873,13 @@ void compose_samples(
                             contribution.target_channels[converted]),
                         lane,
                         derived[index].coverage_sources.empty()
-                                || projection_presence(
+                                || live_projection_presence(frame,
                                        derived[index].coverage_sources,
-                                       static_cast<std::span<IndexCoverage const>>(
-                                           frame.invocation->output_coverages),
+                                       write_frame,
                                        GlobalIndex::from_bits(global_first + offset
                                            + (shift_writes_by_read_latency
                                                    ? derived[index].write_latencies[converted]
-                                                   : 0))) == SequentialCoveragePresence::covered
+                                                   : 0)), target.absolute_pace_exponent) == SequentialCoveragePresence::covered
                             ? mixed_value(mix, converted, sources)
                             : 0.0f);
                 }
@@ -1545,15 +1586,16 @@ void stage_sample_timelines(
                 if (input.resolves_coverage) {
                     auto const position = GlobalIndex::from_bits(
                         project_lattice(callback_index, callback_size, pace).begin_index + value);
-                    std::span<IndexCoverage const> const coverages = frame.invocation->output_coverages;
                     auto present = [&](auto const& projections) {
-                        auto presence = input_presence(projections, coverages, position, channel);
+                        auto presence = live_input_presence(frame, projections,
+                            timeline_begin + value, position, pace, channel);
                         IV_ASSERT(presence != SequentialCoveragePresence::unknown,
                             "mixed Sequential contribution coverage was not resolved before Tick");
                         return presence == SequentialCoveragePresence::covered;
                     };
                     auto const background = present(input.background_coverage_projections);
-                    auto const realtime = input.combines_invocation_supplied && present(input.realtime_coverage_projections);
+                    auto const realtime = input.combines_invocation_supplied
+                        && present(input.realtime_coverage_projections);
                     if (realtime) {
                         auto const& operand = input.realtime_operand_channels[channel];
                         std::memcpy(destination, continuous_value(frame, operand.storage,
@@ -1567,7 +1609,8 @@ void stage_sample_timelines(
                     } else if (background) {
                         std::memcpy(destination, supplied_value, value_size);
                     } else {
-                        auto const aggregate = input_presence(input.coverage_projections, coverages, position);
+                        auto const aggregate = live_input_presence(frame, input.coverage_projections,
+                            timeline_begin + value, position, pace);
                         auto const& absent = aggregate == SequentialCoveragePresence::absent
                             ? input.fallback_value : input.neutral_value;
                         std::memcpy(destination, absent.data(), value_size);
@@ -1705,12 +1748,12 @@ void stage_sequential_sample_resolution(
         if (input.invocation_supplied) continue; // Resolved while staging its slot.
         auto const lattice = project_lattice(index, count, input.absolute_pace_exponent);
         auto const begin = pace_begin_index(frame, input.absolute_pace_exponent, index);
-        std::span<IndexCoverage const> const coverages = frame.invocation->output_coverages;
         auto const& operands = !input.manual_operand_channels.empty()
             ? input.manual_operand_channels : input.coverage_operand_channels;
         for (std::size_t value = 0; value < lattice.value_count; ++value) {
-            auto const presence = input_presence(input.coverage_projections,
-                coverages, GlobalIndex::from_bits(lattice.begin_index + value));
+            auto const presence = live_input_presence(frame, input.coverage_projections,
+                begin + value, GlobalIndex::from_bits(lattice.begin_index + value),
+                input.absolute_pace_exponent);
             IV_ASSERT(presence != SequentialCoveragePresence::unknown,
                 "Sequential input coverage was not resolved before Tick");
             for (std::size_t channel = 0; channel < input.channels.size(); ++channel) {
@@ -1786,11 +1829,10 @@ void stage_manual_control_sample_timelines(
                 if (control.fallback_only) {
                     auto const position = project_lattice(slice_index, slice_size, pace)
                         .begin_index + value_index;
-                    std::span<IndexCoverage const> const coverages = frame.invocation
-                        ? std::span<IndexCoverage const>(frame.invocation->output_coverages)
-                        : std::span<IndexCoverage const>{};
-                    if (input_presence(input.coverage_projections, coverages,
-                            GlobalIndex::from_bits(position)) != SequentialCoveragePresence::absent)
+                    auto const present = live_input_presence(frame, input.coverage_projections,
+                        timeline_begin + value_index, GlobalIndex::from_bits(position), pace)
+                            != SequentialCoveragePresence::absent;
+                    if (present)
                         continue;
                 }
                 if (control.first_for_input && !input.resolves_coverage
@@ -1917,6 +1959,54 @@ void initialize_tick_slots(RootFrame& frame) noexcept
     }
 }
 
+FractionalGlobalExtent lattice_extent(std::uint64_t values, std::int32_t pace) noexcept
+{
+    if (pace > 0) return {.whole = values >> pace, .fraction = values << (64 - pace)};
+    return {.whole = pace == -64 ? 0 : values << -pace};
+}
+
+void stage_live_output_coverage(RootFrame& frame, std::size_t primitive_index,
+    GlobalIndex index, std::size_t count) noexcept
+{
+    auto const& primitive = frame.plan.primitives[primitive_index];
+    if (primitive.live_coverage_outputs.empty()) return;
+    auto const& inputs = frame.plan.sample_ports.primitives[primitive_index].inputs;
+    auto const window = FractionalGlobalIndexRange::from_global_range({index, count});
+    for (auto const change : primitive.live_coverage_outputs) {
+        auto const& history = *frame.plan.live_coverage_histories[change];
+        auto const output = *window.try_project_onto_lattice(history.pace);
+        auto const begin = pace_begin_index(frame, history.pace, index);
+        for (std::size_t offset = 0; offset < output.count; ++offset) {
+            auto present = [&](auto const& projections, std::int32_t pace) {
+                if (projections.empty()) return false;
+                auto physical = begin + offset;
+                auto address = output.begin_index_bits + offset;
+                if (pace != history.pace) {
+                    auto const position = output.begin.advanced_by(lattice_extent(offset, history.pace));
+                    auto const match = FractionalGlobalIndexRange{
+                        .begin = position, .extent = {.fraction = 1}}.try_project_onto_lattice(pace);
+                    if (!match || match->count == 0) return false;
+                    auto const prefix = FractionalGlobalIndexRange{
+                        .begin = window.begin, .extent = window.begin.forward_distance_to(position)}
+                        .try_project_onto_lattice(pace);
+                    if (!prefix) return false;
+                    physical = pace_begin_index(frame, pace, index) + prefix->count;
+                    address = match->begin_index_bits;
+                }
+                auto const presence = live_input_presence(frame, projections, physical,
+                    GlobalIndex::from_bits(address), pace);
+                IV_ASSERT(presence != SequentialCoveragePresence::unknown,
+                    "Tick input-union coverage was not resolved before Tick");
+                return presence == SequentialCoveragePresence::covered;
+            };
+            auto const covered = std::ranges::any_of(inputs, [&](auto const& input) {
+                return present(input.coverage_projections, input.absolute_pace_exponent);
+            }) || present(primitive.live_event_inputs, 0);
+            live_coverage_value(frame, history, begin + offset) = covered ? std::byte{1} : std::byte{0};
+        }
+    }
+}
+
 // Writes what one invocation of a primitive changes: the windows of its
 // timeline-owning slot inputs and staged manual controls, and the Sequential
 // begin index of each binding. Everything else in its context is complete for
@@ -1952,6 +2042,7 @@ ReflectedNodeTickContext const& prepare_invocation(
             enclosing_index,
             enclosing_size);
     }
+    stage_live_output_coverage(frame, primitive_index, callback_index, callback_size);
     if (!primitive.sparse_event_outputs.empty()) {
         auto bindings = frame_array<ReflectedEventOutputPortBinding>(frame.scratch,
             primitive.event_outputs_offset, primitive.event_output_count);
@@ -2137,7 +2228,8 @@ void update_primitive_activity(
 // Events outside a Tick output's declared coverage are not contributions.
 // Compact its callback-owned sequence before realization, fan-out and capture;
 // every downstream event input then sees the same authoritative stream.
-void resolve_event_output_coverage(RootFrame& frame, RootPrimitive const& primitive) noexcept
+void resolve_event_output_coverage(RootFrame& frame, RootPrimitive const& primitive,
+    GlobalIndex index, std::size_t count) noexcept
 {
     if (primitive.sparse_event_outputs.empty()) return;
     auto bindings = frame_array<ReflectedEventOutputPortBinding>(frame.scratch,
@@ -2146,10 +2238,10 @@ void resolve_event_output_coverage(RootFrame& frame, RootPrimitive const& primit
         primitive.sparse_event_begins_offset, primitive.sparse_event_outputs.size());
     for (std::size_t slot = 0; slot < primitive.sparse_event_outputs.size(); ++slot) {
         auto const [binding_index, output_change] = primitive.sparse_event_outputs[slot];
-        IV_ASSERT(frame.invocation && output_change < frame.invocation->output_coverages.size(),
-            "event output coverage was not resolved before Tick");
-        auto const& coverage = frame.invocation->output_coverages.data()[output_change];
+        auto const& history = *frame.plan.live_coverage_histories[output_change];
+        auto const begin = pace_begin_index(frame, 0, index);
         auto const& storage = bindings[binding_index].storage;
+        if (storage.event_capacity == 0) continue;
         auto const first = storage.persistent_ring
             ? load_raw<std::size_t>(storage.storage, storage.read_index_offset) : 0;
         auto const count_offset = storage.persistent_ring ? storage.write_index_offset : storage.count_offset;
@@ -2161,7 +2253,10 @@ void resolve_event_output_coverage(RootFrame& frame, RootPrimitive const& primit
         auto next = authored_begin;
         for (auto read = authored_begin; read != end; ++read) {
             auto const& event = events[read & (storage.event_capacity - 1)];
-            if (coverage.contains(event.time)) events[next++ & (storage.event_capacity - 1)] = event;
+            auto const offset = index.forward_distance_to(event.time);
+            IV_ASSERT(offset < count, "pointwise Tick authored an event outside its invocation");
+            if (offset < count && live_coverage_value(frame, history, begin + offset) != std::byte{0})
+                events[next++ & (storage.event_capacity - 1)] = event;
         }
         store_raw(storage.storage, count_offset, next);
     }
@@ -2178,13 +2273,17 @@ void mark_primitive_outputs(RootFrame& frame, RootPrimitive const& primitive) no
     }
 }
 
+void capture_outputs(RootFrame& frame, std::size_t primitive_index,
+    GlobalIndex index, std::size_t block_size) noexcept;
+
 void invoke_primitive(
     RootFrame& frame,
     std::size_t primitive_index,
     GlobalIndex callback_index,
     std::size_t callback_size,
     GlobalIndex enclosing_index,
-    std::size_t enclosing_size) noexcept
+    std::size_t enclosing_size,
+    bool captures) noexcept
 {
     auto const& primitive = frame.plan.primitives[primitive_index];
     auto const& context = prepare_invocation(
@@ -2197,28 +2296,26 @@ void invoke_primitive(
     if (!frame.plan.tracks_activity) {
         primitive.callbacks.tick_block(
             primitive.node_data.data(), context, callback_index, callback_size);
-        resolve_event_output_coverage(frame, primitive);
-        return;
-    }
-    auto const decision = decide_primitive_activity(
-        frame, primitive_index, context, callback_index, callback_size);
-    if (decision.should_skip) {
-        primitive.callbacks.skip_block(
-            primitive.node_data.data(), context, callback_index, callback_size);
     } else {
-        if (decision.state) decision.state->dormant = 0;
-        primitive.callbacks.tick_block(
-            primitive.node_data.data(), context, callback_index, callback_size);
-        update_primitive_activity(
-            frame, primitive_index, decision, context, callback_index, callback_size);
+        auto const decision = decide_primitive_activity(
+            frame, primitive_index, context, callback_index, callback_size);
+        if (decision.should_skip) {
+            primitive.callbacks.skip_block(
+                primitive.node_data.data(), context, callback_index, callback_size);
+        } else {
+            if (decision.state) decision.state->dormant = 0;
+            primitive.callbacks.tick_block(
+                primitive.node_data.data(), context, callback_index, callback_size);
+            update_primitive_activity(
+                frame, primitive_index, decision, context, callback_index, callback_size);
+        }
     }
-    resolve_event_output_coverage(frame, primitive);
+    if (captures) capture_outputs(frame, primitive_index, callback_index, callback_size);
+    resolve_event_output_coverage(frame, primitive, callback_index, callback_size);
     mark_primitive_outputs(frame, primitive);
 }
 
-// Captures run after every operation of the producer step has finalized its
-// authored output window: once per SCC slice, and once for a primitive that
-// slices its own invocation.
+// Capture each callback before the next one can replace its disposition.
 void capture_outputs(
     RootFrame& frame,
     std::size_t primitive_index,
@@ -2269,19 +2366,20 @@ void run_step(
     if (allow_primitive_slicing && step.maximum_block_size < block_size) {
         for (std::size_t offset = 0; offset < block_size;
              offset += step.maximum_block_size) {
+            auto const slice_index = index.advanced_by(offset);
+            auto const slice_size = std::min(step.maximum_block_size, block_size - offset);
             invoke_primitive(
                 frame,
                 step.primitive,
-                index.advanced_by(offset),
-                std::min(step.maximum_block_size, block_size - offset),
+                slice_index,
+                slice_size,
                 index,
-                block_size);
+                block_size, step.captures);
         }
     } else {
-        invoke_primitive(frame, step.primitive, index, block_size, index, block_size);
+        invoke_primitive(frame, step.primitive, index, block_size, index, block_size, step.captures);
     }
     if (!step.after.empty()) run_operations(frame, step.after, index, block_size);
-    if (step.captures) capture_outputs(frame, step.primitive, index, block_size);
 }
 
 // Invokes one compatible set of primitive steps as native callback lanes.
@@ -2371,8 +2469,10 @@ void run_step_batch(
         }
     }
     for (auto const step_index : steps) {
-        auto const& primitive = plan.primitives[plan.steps[step_index].primitive];
-        resolve_event_output_coverage(frame, primitive);
+        auto const& step = plan.steps[step_index];
+        auto const& primitive = plan.primitives[step.primitive];
+        if (step.captures) capture_outputs(frame, step.primitive, index, block_size);
+        resolve_event_output_coverage(frame, primitive, index, block_size);
         mark_primitive_outputs(frame, primitive);
     }
     if (run_step_operations) {
@@ -2380,9 +2480,6 @@ void run_step_batch(
             auto const& step = plan.steps[step_index];
             if (!step.after.empty()) {
                 run_operations(frame, step.after, index, block_size);
-            }
-            if (step.captures) {
-                capture_outputs(frame, step.primitive, index, block_size);
             }
         }
     }
@@ -2454,6 +2551,8 @@ void stage_specialized_manual_controls(
         slice_count,
         GlobalIndex::from_bits(enclosing_index_bits),
         enclosing_count);
+    stage_live_output_coverage(root_frame, primitive_index,
+        GlobalIndex::from_bits(slice_index_bits), slice_count);
 }
 
 // One region's complete invocation through its compiled specialization. The
@@ -2787,6 +2886,10 @@ public:
         feedback_ready_.resize(storage.feedback_timelines.size());
         sample_carry_ready_.resize(storage.carry_operations.size());
         primitive_ready_.resize(plan_.sample_ports.primitives.size());
+        plan_.live_coverage_histories.resize(lowering_.connections.background.accumulators.output_change_count);
+        for (auto const& history : lowering_.declarations.live_coverage_histories) {
+            plan_.live_coverage_histories[history.output_change] = history;
+        }
 
         if (auto valid = build_addresses(); !valid) return valid;
         if (auto valid = build_authored_extents(); !valid) return valid;
@@ -3626,13 +3729,34 @@ private:
                     plan_.observation_channels[index] = input_.observations->probes[*implementation->second->observation_slot].channels;
             }
 
+            auto const& background = lowering_.connections.background;
+            for (auto const& history : lowering_.declarations.live_coverage_histories) {
+                if (history.primitive == index) primitive.live_coverage_outputs.push_back(history.output_change);
+            }
+            if (!primitive.live_coverage_outputs.empty()) {
+                auto const node = *background.bundle_to_background_node[bundle];
+                for (auto const port : background.nodes[node].inputs) {
+                    auto const& input = background.ports[port];
+                    if (input.kind != PortKind::event || input.input_access != InputAccessKind::sequential) continue;
+                    for (auto const connection : input.incoming_connections) {
+                        for (auto const& delivery : background.connections[connection].event_deliveries) {
+                            if (delivery.target_port != port) continue;
+                            SequentialCoverageSource source{.read_latency = delivery.live_read_latency};
+                            if (delivery.source_port) {
+                                auto const& output = background.ports[*delivery.source_port];
+                                if (!output.full_live_tick_coverage) source.output_change = output.accumulators.output_change;
+                            }
+                            primitive.live_event_inputs.push_back({.sources = {source}});
+                        }
+                    }
+                }
+            }
             std::size_t compact_output = 0;
             for (std::size_t port = 0; port < plan_.event_ports.primitives[index].outputs.size(); ++port) {
                 if (!plan_.event_ports.primitives[index].outputs[port].realtime) continue;
                 auto const& nodes = lowering_.connections.nodes;
                 auto planned = std::ranges::find(nodes, bundle, &detail::PlannedGraphNode::bundle);
                 if (planned != nodes.end() && !planned->full_live_tick_coverage) {
-                    auto const& background = lowering_.connections.background;
                     auto output = std::ranges::find_if(background.ports, [&](auto const& candidate) {
                         return candidate.direction == PortDirection::output
                             && candidate.configured_port == NodeBundlePortId{bundle, PortKind::event, port};
@@ -4933,7 +5057,7 @@ private:
 
     bool primitive_stages_manual_controls(RootPrimitive const& primitive) const
     {
-        return !primitive.coverage_inputs.empty() || std::ranges::any_of(
+        return !primitive.live_coverage_outputs.empty() || !primitive.coverage_inputs.empty() || std::ranges::any_of(
             primitive.manual_controls,
             [&](std::size_t control) {
                 return control < plan_.sample_ports.manual_controls.size()

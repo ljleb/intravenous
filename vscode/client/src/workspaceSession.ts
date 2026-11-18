@@ -99,6 +99,18 @@ type GraphNodesUpdatedNotification = {
 };
 
 export class WorkspaceSession {
+    async readPlayback(): Promise<import("./playback").PlaybackSnapshot | null> {
+        const rpc = this.rpc;
+        if (!rpc || this.graphSessionStatus !== "running") return null;
+        const state = await rpc.getPlayback();
+        return this.rpc === rpc && this.graphSessionStatus === "running" ? state : null;
+    }
+    async playbackCommand(position?: string): Promise<import("./playback").PlaybackSnapshot | null> {
+        const rpc = this.rpc;
+        if (!rpc || this.graphSessionStatus !== "running") throw new Error("The Intravenous server is unavailable");
+        const snapshot = await (position === undefined ? rpc.togglePlayback() : rpc.seekPlayback(position));
+        return this.rpc === rpc && this.graphSessionStatus === "running" ? snapshot : null;
+    }
     private readonly observationChanges = new vscode.EventEmitter<ObservationUpdate>();
     readonly onDidChangeObservations = this.observationChanges.event;
     private readonly graphChanges = new vscode.EventEmitter<void>();

@@ -3,6 +3,7 @@
 #include <intravenous/graph_jit/tick_invocation_call.h>
 #include <intravenous/runtime/async_capacity_manager.h>
 #include <intravenous/runtime/persisted_data_store.h>
+#include <intravenous/runtime/project_playback.h>
 #include <intravenous/runtime/realtime_persisted_state.h>
 #include <intravenous/runtime/tick_materialization_snapshot.h>
 
@@ -50,7 +51,7 @@ class TickInvocationWorkspace {
         PersistedDataStore::Snapshot const& published,
         TickMaterializationSnapshot const& materialized,
         GlobalIndex sample_index,
-        std::size_t block_size) noexcept;
+        std::size_t block_size, TickPlaybackSelection selection) noexcept;
 
 public:
     TickInvocationWorkspace(
@@ -90,6 +91,11 @@ public:
         ProducerReserve& reserve,
         PendingQueue& pending,
         std::atomic<bool>& reservation_failed);
+
+    void prepare_recording_transfer_from(TickInvocationWorkspace const& previous,
+        graph_jit::BackgroundEvaluationPlan const& plan,
+        std::span<NodeBundlePortId const> inherited_outputs);
+    void transfer_recording_from(TickInvocationWorkspace const& previous) noexcept;
 };
 
 // Callback-scoped owner for the narrow generated Tick invocation record.
@@ -110,7 +116,7 @@ public:
         TickMaterializationStore::ReaderSlot& materialization_reader,
         TickInvocationWorkspace& workspace,
         GlobalIndex sample_index = {},
-        std::size_t block_size = 0) noexcept;
+        std::size_t block_size = 0, TickPlaybackSelection selection = {}) noexcept;
 
     // GraphExecutor uses one already-adopted coherent root for the entire
     // realtime pass. Its mailbox retains the root until a later pass boundary.
@@ -118,7 +124,7 @@ public:
         RealtimePersistedState const& persisted,
         TickInvocationWorkspace& workspace,
         GlobalIndex sample_index = {},
-        std::size_t block_size = 0) noexcept;
+        std::size_t block_size = 0, TickPlaybackSelection selection = {}) noexcept;
 
     TickInvocationFrame(TickInvocationFrame const&) = delete;
     TickInvocationFrame& operator=(TickInvocationFrame const&) = delete;

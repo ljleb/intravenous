@@ -7494,6 +7494,63 @@ void live_union_fallback_module(iv::GraphBuilder& graph) {
     graph.outputs();
 }
 IV_MODULE("iv.test.replay.live_union_fallback", live_union_fallback_module);
+
+struct ReplayEventCoverageValue {
+    static constexpr auto replay_mode = iv::TickReplayMode::input_union;
+    static constexpr auto inputs() {
+        return std::array{iv::event_input("events", iv::EventTypeId::trigger, iv::InputAccess::sequential)};
+    }
+    static constexpr auto outputs() { return std::array{iv::output<iv::Sample>("out")}; }
+    void tick_block(iv::TickBlockContext<ReplayEventCoverageValue> const& ctx) const {
+        auto output = ctx.output<"out">().block();
+        for (std::size_t frame = 0; frame < output.size(); ++frame)
+            output[frame] = iv::Sample{3.f};
+    }
+};
+IV_NODE("iv.test.replay.event_coverage_value", ReplayEventCoverageValue);
+
+void live_event_union_fallback_module(iv::GraphBuilder& graph) {
+    auto source = graph.node<"iv.test.graph_jit.state_context.single_region_event_source">();
+    auto sparse = graph.node<"iv.test.replay.event_coverage_value">();
+    auto resolved = graph.node<"iv.test.replay.manual_full">();
+    auto probe = graph.node<"iv.test.replay.live_probe">();
+    sparse.connect_event_input(0, source.event_port());
+    resolved(sparse);
+    probe(resolved);
+    graph.outputs();
+}
+IV_MODULE("iv.test.replay.live_event_union_fallback", live_event_union_fallback_module);
+
+struct DelayedSparseSampleProbe {
+    struct State { std::uint64_t calls = 0; std::array<float, 2> values{}; };
+    static constexpr auto inputs() {
+        return std::array{iv::input<iv::Sample>("value", {
+            .default_value = 0.25f, .fallback = iv::SequentialFallback::manual_control}),
+            iv::input<iv::Sample>("alignment")};
+    }
+    void tick_block(iv::TickBlockContext<DelayedSparseSampleProbe> const& ctx) const {
+        auto input = ctx.input<"value">();
+        auto& state = ctx.state();
+        ++state.calls;
+        for (std::size_t frame = 0; frame < std::min(state.values.size(), ctx.block_size); ++frame)
+            state.values[frame] = static_cast<float>(input.get_value(frame));
+    }
+};
+IV_NODE("iv.test.replay.delayed_sparse_probe", DelayedSparseSampleProbe);
+
+void delayed_sparse_coverage_module(iv::GraphBuilder& graph) {
+    auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
+    auto sparse = graph.node<"iv.test.replay.add_one">();
+    auto pass = graph.node<"iv.test.replay.add_one">();
+    auto alignment = graph.node<"iv.test.graph_jit.state_context.latency_argument_ramp_source">(std::size_t{2});
+    auto probe = graph.node<"iv.test.replay.delayed_sparse_probe">();
+    sparse(source);
+    pass(sparse);
+    probe(pass, alignment);
+    graph.outputs();
+}
+IV_MODULE("iv.test.replay.delayed_sparse_coverage", delayed_sparse_coverage_module);
+
 void replay_module_manual_resolution(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
     auto direct = graph.node<"iv.test.replay.manual_full">();

@@ -301,17 +301,13 @@ void SystemAudioDevices::output_render_loop(
 
                 auto* executor = graph_executor_.load(std::memory_order_acquire);
                 if (executor) {
-                    (void)executor->activate_pending(realtime_cursor_);
-                    if (executor->active_generation()) {
-                        executor->tick_block(realtime_cursor_, count);
-                    }
+                    executor->render_block(count, sample_rate_);
                 }
 
                 current_input_binding = nullptr;
                 current_output_binding = nullptr;
                 current_input_samples = {};
                 current_output_samples = {};
-                realtime_cursor_ = realtime_cursor_.advanced_by(count);
                 offset += count;
             }
             output_device->device.submit_response();

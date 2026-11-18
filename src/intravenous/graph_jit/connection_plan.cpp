@@ -344,6 +344,18 @@ std::expected<void, std::string> inventory_nodes(
                 return;
             }
             auto const has_tick_callback = view.operations->runtime.tick_block != nullptr;
+            if (view.replay_mode != TickReplayMode::disabled
+                && (!has_tick_callback
+                    || view.operations->runtime.has_propagate_forward_coverage
+                    || view.operations->runtime.has_propagate_reverse_coverage
+                    || std::ranges::any_of(view.ports->sample_inputs(), [](auto const& config) {
+                        return is_random_access(config);
+                    }) || std::ranges::any_of(view.ports->event_inputs(), [](auto const& config) {
+                        return is_random_access(config);
+                    }))) {
+                error = "GraphJit Tick replay requires pointwise Sequential inputs and generated coverage";
+                return;
+            }
             if (has_tick_callback && (std::ranges::any_of(view.ports->sample_inputs(), [](auto const& config) {
                     return is_random_access(config) && config.content_access != InputContentAccess::complete_buffer;
                 }) || std::ranges::any_of(view.ports->event_inputs(), [](auto const& config) {
@@ -403,8 +415,8 @@ std::expected<void, std::string> inventory_nodes(
                 .event_output_count = view.ports->event_output_count(),
                 .tick_execution = has_tick_callback,
                 .replay_mode = view.replay_mode,
-                .authored_forward_coverage = view.operations->runtime.has_propagate_forward_coverage,
-                .authored_reverse_coverage = view.operations->runtime.has_propagate_reverse_coverage,
+                .authored_reverse_coverage = !has_tick_callback
+                    && view.operations->runtime.has_propagate_reverse_coverage,
             });
             auto const first_state = plan.realtime_port_states.states.size();
             inventory_realtime_port_states(
@@ -2831,14 +2843,14 @@ void mark_live_sequential_outputs(ConfiguredGraph const& graph, ConnectionAnalys
         node_index[node.bundle] = i;
         node.full_live_tick_coverage = node.tick_execution
             && (belongs_to_feedback_scc(plan, node.bundle)
-                || (!node.authored_forward_coverage && node.replay_mode != TickReplayMode::input_union));
+                || node.replay_mode != TickReplayMode::input_union);
         if (node.full_live_tick_coverage) ready.push_back(i);
     }
     auto target_index = [&](NodeBundleHandle bundle) -> std::optional<std::size_t> {
         if (bundle >= node_index.size() || !node_index[bundle]) return {};
         auto index = *node_index[bundle];
         auto const& node = plan.nodes[index];
-        if (!node.tick_execution || node.full_live_tick_coverage || node.authored_forward_coverage
+        if (!node.tick_execution || node.full_live_tick_coverage
             || node.replay_mode != TickReplayMode::input_union) return {};
         return index;
     };
@@ -2941,7 +2953,7 @@ std::expected<void, std::string> populate_background_topology(
     // requesting background replay of its Tick values.
     auto tracks_tick_coverage = [](PlannedGraphNode const& node) {
         return node.tick_execution && !node.full_live_tick_coverage
-            && (node.authored_forward_coverage || node.replay_mode == TickReplayMode::input_union);
+            && node.replay_mode == TickReplayMode::input_union;
     };
     std::vector<bool> needs_background_node(graph.node_bundles.size(), false);
     auto require_bundle = [&](NodeBundleHandle bundle) {
@@ -3029,13 +3041,10 @@ std::expected<void, std::string> populate_background_topology(
             .replays_tick = node.contextually_replayable,
             .full_live_tick_coverage = node.full_live_tick_coverage,
             .tracks_live_tick_coverage = tracks_tick_coverage(node),
-            .authored_forward_coverage = authored_tock
-                || node.authored_forward_coverage,
-            .authored_reverse_coverage = (authored_tock || node.contextually_replayable)
-                && node.authored_reverse_coverage,
-            .uses_replay_forward_coverage = (node.contextually_replayable
-                || tracks_tick_coverage(node)) && !node.authored_forward_coverage,
-            .uses_replay_reverse_coverage = node.contextually_replayable && !node.authored_reverse_coverage,
+            .authored_forward_coverage = authored_tock,
+            .authored_reverse_coverage = authored_tock && node.authored_reverse_coverage,
+            .uses_replay_forward_coverage = node.contextually_replayable,
+            .uses_replay_reverse_coverage = node.contextually_replayable,
             .replay_mode = node.replay_mode,
             .uses_imported_tick_block_for_replay = node.contextually_replayable,
             .replay_maximum_block_size = node.contextually_replayable
@@ -3521,7 +3530,7 @@ std::expected<void, std::string> populate_background_topology(
 
         for (auto const& source : connection.source_channel_timings) {
             background.sample_deliveries.push_back(source.delivery);
-            background.sample_read_latencies.push_back(source.read_latency);
+            background.sample_read_latencies.push_back(target_replay ? 0 : source.read_latency);
             auto const background_source = !uses_realtime_storage(source.delivery)
                 || target_replay || tracks_coverage_for_bundle(source.source.bundle);
             if (!background_source) {
@@ -3672,6 +3681,13 @@ std::expected<void, std::string> populate_background_topology(
                         "GraphJit background event delivery lost its target port");
                 }
             }
+            std::size_t live_read_latency = 0;
+            if (uses_realtime_storage(delivery.mechanism)) {
+                auto const detach = connection.detach ? connection.detach->loop_extra_latency : 0;
+                if (delivery.read_latency > std::numeric_limits<std::size_t>::max() - detach)
+                    return std::unexpected("GraphJit live event coverage delay overflows");
+                live_read_latency = delivery.read_latency + detach;
+            }
             background.event_deliveries.push_back(graph_jit::EventDeliveryPlan{
                 .source = source.source,
                 .target = target.target,
@@ -3681,6 +3697,7 @@ std::expected<void, std::string> populate_background_topology(
                 .target_port = target_port,
                 .semantic_source_index = delivery.source_index,
                 .mechanism = delivery.mechanism,
+                .live_read_latency = live_read_latency,
             });
 
             if (!relevant) continue;

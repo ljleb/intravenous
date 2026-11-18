@@ -302,27 +302,22 @@ std::vector<CapturedRecord> captured_records(iv::PinnedBlockPrefix const& prefix
 {
     std::vector<CapturedRecord> records;
     std::vector<std::byte> bytes;
-    std::size_t remaining_blocks = 0;
     prefix.for_each([&](iv::AsyncQueueBlock const& block) {
         auto const used = block.used_storage();
-        if (remaining_blocks == 0) {
-            iv::RealtimeProducedRecordHeader header{};
-            if (used.size() < sizeof(header)) return;
-            std::memcpy(&header, used.data(), sizeof(header));
-            remaining_blocks = std::max<std::size_t>(header.record_block_count, 1);
-        }
         bytes.insert(bytes.end(), used.begin(), used.end());
-        if (--remaining_blocks != 0) return;
-        CapturedRecord record;
-        std::memcpy(&record.header, bytes.data(), sizeof(record.header));
-        auto const payload_end = std::min(
-            bytes.size(), sizeof(record.header) + record.header.payload_size);
-        record.payload.assign(
-            bytes.begin() + static_cast<std::ptrdiff_t>(sizeof(record.header)),
-            bytes.begin() + static_cast<std::ptrdiff_t>(payload_end));
-        records.push_back(std::move(record));
-        bytes.clear();
     });
+    auto remaining = std::span<std::byte const>{bytes};
+    while (remaining.size() >= sizeof(iv::RealtimeProducedRecordHeader)) {
+        CapturedRecord record;
+        std::memcpy(&record.header, remaining.data(), sizeof(record.header));
+        remaining = remaining.subspan(sizeof(record.header));
+        if (record.header.payload_size > remaining.size()) break;
+        auto payload = remaining.first(record.header.payload_size);
+        record.payload.assign(payload.begin(), payload.end());
+        remaining = remaining.subspan(payload.size());
+        records.push_back(std::move(record));
+    }
+    EXPECT_TRUE(remaining.empty());
     return records;
 }
 
@@ -584,6 +579,45 @@ TEST_F(GraphJitRuntimeFixture, PlaybackUnderrunSkipsTheGraphAndResumesForPrepare
     executor.tick_block(index(40), 6);
     EXPECT_EQ(observed_playback_calls, 2u);
     EXPECT_EQ(executor.playback_underrun_blocks(), 1u);
+
+    auto const first = executor.seek_playback(index(10));
+    executor.render_block(6, 48000);
+    EXPECT_EQ(executor.playback_snapshot().position, index(16));
+    EXPECT_EQ(executor.playback_snapshot().applied_command, first);
+    auto const missing = executor.seek_playback(index(1000));
+    executor.render_block(6, 48000);
+    EXPECT_EQ(executor.playback_snapshot().position, index(22));
+    EXPECT_LT(executor.playback_snapshot().applied_command, missing);
+    EXPECT_EQ(observed_playback_calls, 4u);
+    executor.render_block(64, 48000);
+    EXPECT_EQ(observed_playback_calls, 4u);
+    EXPECT_EQ(executor.playback_snapshot().position, index(22));
+    EXPECT_EQ(executor.playback_underrun_blocks(), 2u);
+    auto const superseding = executor.seek_playback(index(12));
+    executor.render_block(6, 48000);
+    EXPECT_EQ(observed_playback_calls, 5u);
+    EXPECT_EQ(executor.playback_snapshot().position, index(18));
+    EXPECT_EQ(executor.playback_snapshot().applied_command, superseding);
+
+    auto const pause = executor.set_playback_running(false);
+    executor.render_block(6, 48000);
+    EXPECT_EQ(executor.playback_snapshot().applied_command, pause);
+    EXPECT_FALSE(executor.playback_snapshot().running);
+
+    // The held position is prepared, but the resumed 64-frame window is not.
+    auto const resume = executor.set_playback_running(true);
+    executor.render_block(64, 48000);
+    EXPECT_EQ(observed_playback_calls, 7u);
+    EXPECT_EQ(executor.playback_underrun_blocks(), 2u);
+    EXPECT_EQ(executor.playback_snapshot().position, index(18));
+    EXPECT_EQ(executor.playback_snapshot().applied_command, pause);
+    EXPECT_FALSE(executor.playback_snapshot().running);
+
+    executor.render_block(6, 48000);
+    EXPECT_EQ(observed_playback_calls, 8u);
+    EXPECT_EQ(executor.playback_snapshot().position, index(24));
+    EXPECT_EQ(executor.playback_snapshot().applied_command, resume);
+    EXPECT_TRUE(executor.playback_snapshot().running);
     EXPECT_FALSE(executor.background_execution_failures().any());
 }
 
@@ -1161,13 +1195,7 @@ TEST_F(GraphJitRuntimeFixture, GeneratedRootInvokesPersistedTickCaptures)
     EXPECT_EQ(probe.first_event_time, index(1003));
 }
 
-// A Tick/persisted output of latency 1 records, for each block, the positions
-// that block finalizes (coverage_and_background_evaluation.md, dispositions):
-// for a block at B of N positions, [B - 1, B + N - 1). The sample record holds
-// each value after its revision, and the event record holds the event the
-// block added in its latency window beside the one the previous block
-// authored at the same position.
-TEST_F(GraphJitRuntimeFixture, PersistedLatentTickOutputsRecordWhatEachBlockFinalizes)
+TEST_F(GraphJitRuntimeFixture, PersistedLatentTickOutputsFinalizeAtTheirAuthoredAddressesAcrossSeek)
 {
     auto compiled = compile(graph_jit_revising_capture_module_id, 454);
     ASSERT_TRUE(compiled.succeeded())
@@ -1216,7 +1244,7 @@ TEST_F(GraphJitRuntimeFixture, PersistedLatentTickOutputsRecordWhatEachBlockFina
 
     auto storage = graph.node_layout.create_storage(resources);
     storage.initialize();
-    for (std::int64_t begin = 0; begin < 128; begin += 64) {
+    for (auto const begin : {0, 500}) {
         iv::TickInvocationFrame frame{
             data_reader, materialization_reader, workspace, index(begin), 64};
         graph.root_operations.tick_block(
@@ -1225,33 +1253,28 @@ TEST_F(GraphJitRuntimeFixture, PersistedLatentTickOutputsRecordWhatEachBlockFina
     EXPECT_FALSE(reservation_failed.load(std::memory_order_relaxed));
 
     auto const samples = captured_records(pending[*sample_endpoint]->pin());
-    ASSERT_EQ(samples.size(), 2u);
-    for (std::size_t block = 0; block < samples.size(); ++block) {
-        SCOPED_TRACE("sample record of block " + std::to_string(block));
-        auto const begin = static_cast<std::int64_t>(block * 64) - 1;
-        auto const& record = samples[block];
-        EXPECT_EQ(record.header.begin, index(begin));
-        ASSERT_EQ(record.header.range_extent, 64u);
-        ASSERT_EQ(record.payload.size(), 64 * sizeof(iv::Sample));
-        std::array<iv::Sample, 64> values{};
+    ASSERT_EQ(samples.size(), 3u);
+    std::array const ranges{range(0, 63), range(63, 64), range(500, 563)};
+    std::array const initial_values{1000.0f, 1499.0f, 1500.0f};
+    for (std::size_t slot = 0; slot < samples.size(); ++slot) {
+        auto const& record = samples[slot];
+        EXPECT_EQ(record.header.begin, ranges[slot].begin);
+        ASSERT_EQ(record.header.range_extent, ranges[slot].extent);
+        ASSERT_EQ(record.payload.size(), ranges[slot].extent * sizeof(iv::Sample));
+        std::vector<iv::Sample> values(ranges[slot].extent);
         std::memcpy(values.data(), record.payload.data(), record.payload.size());
-        EXPECT_FLOAT_EQ(values.front(), static_cast<float>(1000 + begin));
-        EXPECT_FLOAT_EQ(values.back(), static_cast<float>(1000 + begin + 63));
+        EXPECT_FLOAT_EQ(values.front(), initial_values[slot]);
+        EXPECT_FLOAT_EQ(values.back(), initial_values[slot] + values.size() - 1);
     }
 
     auto const events = captured_records(pending[*event_endpoint]->pin());
-    ASSERT_EQ(events.size(), 2u);
-    // The first block finalizes [-1, 63): its event at -1. The second block
-    // finalizes [63, 127): the first block's event at 63 and its own.
-    std::array<std::size_t, 2> const counts{1, 2};
-    std::array<std::int64_t, 2> const times{-1, 63};
+    ASSERT_EQ(events.size(), 3u);
+    std::array<std::size_t, 3> const counts{0, 2, 0};
     for (std::size_t block = 0; block < events.size(); ++block) {
         SCOPED_TRACE("event record of block " + std::to_string(block));
         auto const& record = events[block];
-        EXPECT_EQ(
-            record.header.begin,
-            index(static_cast<std::int64_t>(block * 64) - 1));
-        EXPECT_EQ(record.header.range_extent, 64u);
+        EXPECT_EQ(record.header.begin, ranges[block].begin);
+        EXPECT_EQ(record.header.range_extent, ranges[block].extent);
         ASSERT_EQ(record.header.event_count, counts[block]);
         ASSERT_EQ(
             record.payload.size(), counts[block] * sizeof(iv::TimedEvent));
@@ -1261,7 +1284,7 @@ TEST_F(GraphJitRuntimeFixture, PersistedLatentTickOutputsRecordWhatEachBlockFina
                 &timed,
                 record.payload.data() + event * sizeof(iv::TimedEvent),
                 sizeof(timed));
-            EXPECT_EQ(timed.time, index(times[block]));
+            EXPECT_EQ(timed.time, index(63));
         }
     }
 }
@@ -1328,14 +1351,15 @@ TEST_F(GraphJitRuntimeFixture, PersistedLatentPacedSampleOutputRecordsWhatEachBl
                 .extent = 64,
             }).try_project_onto_lattice(exponent);
         ASSERT_TRUE(projection.has_value());
-        auto const first = iv::GlobalIndex::from_bits(projection->begin_index_bits)
-            .retreated_by(1);
+        auto const lattice_begin = iv::GlobalIndex::from_bits(projection->begin_index_bits);
+        auto const first = block == 0 ? lattice_begin : lattice_begin.retreated_by(1);
+        auto const count = projection->count - (block == 0 ? 1 : 0);
         auto const& record = records[block];
         EXPECT_EQ(record.header.begin, first);
-        ASSERT_EQ(record.header.range_extent, projection->count);
+        ASSERT_EQ(record.header.range_extent, count);
         ASSERT_EQ(
-            record.payload.size(), projection->count * sizeof(iv::Sample));
-        std::vector<iv::Sample> values(projection->count);
+            record.payload.size(), count * sizeof(iv::Sample));
+        std::vector<iv::Sample> values(count);
         std::memcpy(values.data(), record.payload.data(), record.payload.size());
         auto const first_index = first.signed_value();
         EXPECT_FLOAT_EQ(values.front(), static_cast<float>(1000 + first_index));
@@ -1343,7 +1367,7 @@ TEST_F(GraphJitRuntimeFixture, PersistedLatentPacedSampleOutputRecordsWhatEachBl
             values.back(),
             static_cast<float>(
                 1000 + first_index
-                + static_cast<std::int64_t>(projection->count) - 1));
+                + static_cast<std::int64_t>(count) - 1));
     }
 }
 
@@ -1999,6 +2023,105 @@ TEST_F(GraphJitRuntimeFixture, LiveInputUnionPreservesGapsForTheNextInputsManual
     // AddOne may compute 1 in its own gaps. Those values are uncovered, so
     // ManualFull must use its own .25 fallback there, then add 1.
     EXPECT_EQ(probe->values, (std::array<float, 8>{1.25f, 1.25f, 6, 7, 8, 9, 1.25f, 1.25f}));
+}
+
+TEST_F(GraphJitRuntimeFixture, HeldSampleAndEmptyEventContributeLiveCoverage)
+{
+    struct Fixture {
+        char const* module;
+        std::int64_t held;
+        float covered_value;
+    };
+    for (auto const fixture : {Fixture{"iv.test.replay.live_union_fallback", 20, 6.f},
+            Fixture{"iv.test.replay.live_event_union_fallback", 31, 4.f}}) {
+        auto compiled = compile(fixture.module, 3012);
+        ASSERT_TRUE(compiled.succeeded())
+            << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+        auto const& graph = *compiled.compiled_graph;
+        auto const& plan = graph.background_evaluation_plan;
+        iv::PersistedDataStore data;
+        iv::TickMaterializationStore materializations;
+        auto data_reader = data.register_reader();
+        auto materialization_reader = materializations.register_reader();
+        auto states = graph.tock_state_layout.create_storage(resources);
+        states.initialize();
+        iv::BackgroundCoverageState coverage{plan.accumulators.output_change_count};
+        iv::BackgroundPropagationWorkspace propagation{plan, graph.specialization.sample_rate};
+        iv::CoveragePropagationRequest roots;
+        for (std::size_t node = 0; node < plan.nodes.size(); ++node)
+            roots.locally_changed_nodes.push_back(node);
+        for (auto port : plan.tick_sequential_inputs)
+            roots.input_demands.push_back({.port = port,
+                .required = index_coverage({{fixture.held, fixture.held + 1}, {100, 101}})});
+        iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data, materializations,
+            {.semantic_version = 1, .roots = std::move(roots)}};
+        auto prepared = transaction.execute();
+        ASSERT_TRUE(prepared) << prepared.error();
+        auto storage = graph.node_layout.create_storage(resources);
+        storage.initialize();
+        iv::TickInvocationWorkspace workspace{plan, graph.project_generation, data,
+            graph.specialization.block_size, graph.root_operations.combine_sequential_input,
+            graph.root_operations.initialize_sequential_input};
+        struct State { std::uint64_t calls; std::array<float, 8> values; };
+        auto probe = find_unique_state<State>(graph.node_layout, storage);
+        ASSERT_NE(probe, nullptr);
+        auto tick = [&](std::int64_t execution, std::int64_t held, float expected) {
+            iv::TickInvocationFrame frame{data_reader, materialization_reader, workspace,
+                index(execution), 8, {.held_position = index(held)}};
+            graph.root_operations.tick_block(storage.buffer().data(), &frame.call(), index(execution), 8);
+            EXPECT_TRUE(std::ranges::all_of(probe->values, [&](float value) { return value == expected; }));
+        };
+        tick(500, fixture.held, fixture.covered_value);
+        tick(508, fixture.held, fixture.covered_value);
+        tick(516, 100, 1.25f);
+        EXPECT_EQ(probe->calls, 3u);
+    }
+}
+
+TEST_F(GraphJitRuntimeFixture, DelayedSparseSampleUsesPhysicalCoverageAcrossSeeks)
+{
+    auto compiled = compile("iv.test.replay.delayed_sparse_coverage", 3011);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    auto const& plan = graph.background_evaluation_plan;
+    ASSERT_TRUE(std::ranges::none_of(plan.nodes, &iv::graph_jit::BackgroundNodePlan::replays_tick));
+    iv::PersistedDataStore data;
+    iv::TickMaterializationStore materializations;
+    auto data_reader = data.register_reader();
+    auto materialization_reader = materializations.register_reader();
+    auto states = graph.tock_state_layout.create_storage(resources);
+    states.initialize();
+    iv::BackgroundCoverageState coverage{plan.accumulators.output_change_count};
+    iv::BackgroundPropagationWorkspace propagation{plan, graph.specialization.sample_rate};
+    iv::CoveragePropagationRequest roots;
+    for (std::size_t node = 0; node < plan.nodes.size(); ++node)
+        roots.locally_changed_nodes.push_back(node);
+    for (auto port : plan.tick_sequential_inputs)
+        roots.input_demands.push_back({.port = port, .required = index_coverage({{22, 24}, {100, 102}})});
+    iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data, materializations,
+        {.semantic_version = 1, .roots = std::move(roots)}};
+    auto prepared = transaction.execute();
+    ASSERT_TRUE(prepared) << prepared.error();
+
+    auto storage = graph.node_layout.create_storage(resources);
+    storage.initialize();
+    iv::TickInvocationWorkspace workspace{plan, graph.project_generation, data,
+        graph.specialization.block_size, graph.root_operations.combine_sequential_input,
+        graph.root_operations.initialize_sequential_input};
+    struct State { std::uint64_t calls; std::array<float, 2> values; };
+    auto probe = find_unique_state<State>(graph.node_layout, storage);
+    ASSERT_NE(probe, nullptr);
+    auto tick = [&](std::int64_t position) {
+        iv::TickInvocationFrame frame{data_reader, materialization_reader, workspace, index(position), 2};
+        graph.root_operations.tick_block(storage.buffer().data(), &frame.call(), index(position), 2);
+    };
+    tick(22);
+    tick(100);
+    EXPECT_EQ(probe->values, (std::array<float, 2>{8.f, 9.f}));
+    tick(22);
+    EXPECT_EQ(probe->values, (std::array<float, 2>{.25f, .25f}));
+    EXPECT_EQ(probe->calls, 3u);
 }
 
 TEST_F(GraphJitRuntimeFixture, ComputedTockRegionMaterializesOnlyTheDemandedPlaybackWindow)

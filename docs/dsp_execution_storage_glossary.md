@@ -282,6 +282,20 @@ A **background evaluation component** is a statically planned component of the
 background evaluation DAG with retained forward/reverse/evaluation ordering and
 port metadata.
 
+## Project transport coordinate semantics (clarification 2026-11-17)
+
+[Project Playback And Presentation Grids](./project_playback_and_presentation_grids_direction.md)
+separates the **applied project playhead** from the one shared foreground
+`ctx.index`. They are aligned while running, independent while paused. A
+paused seek changes only the applied playhead; a running seek or resume
+relocates the shared foreground global coordinate. Neither is the hidden
+physical Sequential cursor, which advances by actually executed values and
+preserves retained history across global-coordinate seams. A recorder does
+not create another node-specific cursor. Background-to-Sequential delivery
+selects at the applied playhead while paused; Random Access views retain
+ordinary positional semantics. Deadline failures do not advance physical
+Sequential history.
+
 ## Scheduling contexts
 
 ### Audio thread / audio-thread execution
@@ -390,9 +404,7 @@ and a sound may-change superset for output values. It may conservatively over-re
 affected positions but must never under-report them.
 
 For authored Tock nodes this is provided by `propagate_forward_coverage()`; eligible
-Tick replay uses compiler-generated propagation where the mapping is mechanically
-known and authored background propagation where a non-pointwise Random Access
-dependency requires it.
+Tick replay uses compiler-generated propagation from its replay declaration.
 
 ### Reverse coverage propagation
 

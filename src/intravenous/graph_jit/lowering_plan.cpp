@@ -260,7 +260,7 @@ std::expected<GraphAnalysis, std::string> analyze_graph(
                 || !implementation->skip_block.empty()
                 || !implementation->skip_block_batch.empty()))
             || (!has_tock && !implementation->tock_coverage_batch.empty())
-            || (!has_tock && implementation->replay_mode == TickReplayMode::disabled
+            || (!has_tock
                 && (!implementation->propagate_forward_coverage.empty()
                     || !implementation->propagate_forward_coverage_batch.empty()
                     || !implementation->propagate_reverse_coverage.empty()
@@ -813,7 +813,6 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             }
         }
     }
-
     for (auto const& primitive : event_ports.primitives) {
         for (auto const& binding : primitive.inputs) {
             auto const valid_invocation_binding = binding.invocation_supplied
@@ -843,6 +842,122 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             }
         }
     }
+
+    std::vector<LiveTickCoverageHistoryPlan> live_histories;
+    auto const& background = connections.background;
+    auto& sample_storage = sample_ports.storage;
+    std::vector<std::size_t> retained_coverage(background.accumulators.output_change_count);
+    auto retain = [&](SequentialCoverageSource const& source, std::size_t history)
+        -> std::expected<void, std::string> {
+        if (!source.output_change) return {};
+        if (source.read_latency > std::numeric_limits<std::size_t>::max() - history)
+            return std::unexpected("GraphJit live coverage retention overflows");
+        auto& extent = retained_coverage[*source.output_change];
+        extent = std::max(extent, source.read_latency + history);
+        return {};
+    };
+    for (auto const& primitive : sample_ports.primitives) {
+        for (auto const& port : primitive.inputs) {
+            for (auto const& projection : port.coverage_projections) {
+                for (auto const& source : projection.sources) {
+                    if (auto retained = retain(source, port.history); !retained)
+                        return std::unexpected(std::move(retained.error()));
+                }
+            }
+        }
+    }
+    auto retain_composition = [&](auto const& contributions, std::size_t history)
+        -> std::expected<void, std::string> {
+        for (auto const& contribution : contributions) {
+            for (auto const& source : contribution.sources) {
+                for (auto const& coverage : source.coverage_sources) {
+                    if (auto retained = retain(coverage, history); !retained) return retained;
+                }
+            }
+            for (auto const& coverage : contribution.coverage_sources) {
+                if (auto retained = retain(coverage, history); !retained) return retained;
+            }
+        }
+        return {};
+    };
+    for (auto const& composition : sample_storage.compositions) {
+        if (auto retained = retain_composition(composition.contributions, composition.target_history); !retained)
+            return std::unexpected(std::move(retained.error()));
+    }
+    for (auto const& timeline : sample_storage.feedback_timelines) {
+        if (auto retained = retain_composition(
+                timeline.writer.composition_contributions, timeline.writer.revision_frames); !retained)
+            return std::unexpected(std::move(retained.error()));
+    }
+    for (auto const& connection : background.connections) {
+        for (auto const& delivery : connection.event_deliveries) {
+            if (!delivery.source_port || !uses_realtime_storage(delivery.mechanism)) continue;
+            auto const& source = background.ports[*delivery.source_port];
+            if (auto retained = retain({source.accumulators.output_change, delivery.live_read_latency}, 0);
+                !retained) return std::unexpected(std::move(retained.error()));
+        }
+    }
+    auto ensure_pace = [&](std::int32_t pace) {
+        if (!std::ranges::contains(sample_storage.sequential_pace_cursors,
+                pace, &SequentialPaceCursorPlan::absolute_pace_exponent))
+            sample_storage.sequential_pace_cursors.push_back({.absolute_pace_exponent = pace});
+    };
+    for (auto const& port : background.ports) {
+        if (port.direction != PortDirection::output || !port.accumulators.output_change
+            || !background.nodes[port.node].tracks_live_tick_coverage) continue;
+        auto const primitive = std::ranges::find_if(analysis.primitives, [&](auto const& candidate) {
+            return candidate.bundle.node_bundle == port.configured_port.node_bundle_handle;
+        });
+        if (primitive == analysis.primitives.end())
+            return std::unexpected("GraphJit live coverage output has no primitive");
+        auto const primitive_index = static_cast<std::size_t>(primitive - analysis.primitives.begin());
+        auto const output = port.configured_port.port_index;
+        auto const change = *port.accumulators.output_change;
+        auto const pace = port.kind == PortKind::sample
+            ? sample_ports.primitives[primitive_index].outputs[output].absolute_pace_exponent : 0;
+        auto const maximum_window = FractionalGlobalIndexRange::maximum_projection_count(
+            input.specialization.block_size, pace);
+        auto const retained = retained_coverage[change];
+        constexpr auto max_capacity = std::bit_floor(std::numeric_limits<std::size_t>::max());
+        if (!maximum_window || *maximum_window > max_capacity
+            || retained > max_capacity - *maximum_window)
+            return std::unexpected("GraphJit live coverage history capacity overflows");
+        auto const capacity = std::bit_ceil(std::max(std::size_t{1}, retained + *maximum_window));
+        std::string value_identity;
+        if (port.kind == PortKind::sample) {
+            auto const storage = sample_ports.primitives[primitive_index].outputs[output].storage;
+            if (storage) {
+                auto const& representation = sample_storage.representations[*storage];
+                auto const carry = std::ranges::find(sample_storage.carry_operations,
+                    *storage, &SampleCarryOperationPlan::representation_index);
+                auto const allocation = carry != sample_storage.carry_operations.end()
+                    ? carry->persistent_allocation : representation.persistent_allocation;
+                if (allocation != no_sample_persistent_allocation)
+                    value_identity = sample_storage.persistent_allocations[allocation].migration_identity;
+            }
+        } else {
+            auto const storage = event_ports.primitives[primitive_index].outputs[output].storage;
+            if (storage) {
+                auto const carry = std::ranges::find(event_ports.carry_operations,
+                    *storage, &EventCarryPlan::working_representation);
+                auto const retained_storage = carry != event_ports.carry_operations.end()
+                    ? carry->persistent_representation : *storage;
+                value_identity = event_ports.ports[retained_storage].migration_identity;
+            }
+        }
+        auto const identity = value_identity.empty() ? std::string{} : "graphjit.live_coverage:" + value_identity;
+        live_histories.push_back({
+            .output_change = change, .primitive = primitive_index,
+            .pace = pace, .capacity = capacity,
+            .region = layout_builder.declare_raw_region(capacity, 1, identity, initialize_zero_raw_region),
+        });
+        ensure_pace(pace);
+        for (auto const& binding : sample_ports.primitives[primitive_index].inputs)
+            if (!binding.coverage_projections.empty()) ensure_pace(binding.absolute_pace_exponent);
+        if (!event_ports.primitives[primitive_index].inputs.empty()) ensure_pace(0);
+    }
+    std::ranges::sort(sample_storage.sequential_pace_cursors, {},
+        &SequentialPaceCursorPlan::absolute_pace_exponent);
 
     auto declared_sample_storage = declare_sample_storage(
         layout_builder, sample_ports.storage);
@@ -1207,7 +1322,8 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             };
             return owns(sample_ports.storage.persistent_allocations)
                 || owns(sample_ports.storage.producer_authored_extents)
-                || owns(sample_ports.storage.sequential_pace_cursors);
+                || owns(sample_ports.storage.sequential_pace_cursors)
+                || owns(live_histories);
         };
 
     for (std::size_t region_index = 0;
@@ -1370,7 +1486,10 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         .primitive_layout_nodes = std::move(declared_node_indices),
         .primitive_activity = std::move(primitive_activity),
         .activity_frontiers = std::move(activity_frontiers),
+        .live_coverage_histories = std::move(live_histories),
     };
+    for (auto& history : plan.live_coverage_histories)
+        history.storage_offset = plan.node_layout.regions[history.region.index].storage_offset;
     for (auto& activity : plan.primitive_activity) {
         if (!activity) continue;
         if (!activity->region.valid()
@@ -9848,6 +9967,23 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
             input, *analysis, *connections, *port_realization, cost_model);
         if (!event_ports) {
             return std::unexpected(std::move(event_ports.error()));
+        }
+        for (auto& capture : connections->background.tick_runtime.event_captures) {
+            auto const port = connections->background.ports[capture.port].configured_port;
+            std::size_t primitive = 0;
+            while (primitive < analysis->primitives.size()
+                && analysis->primitives[primitive].bundle.node_bundle != port.node_bundle_handle) {
+                ++primitive;
+            }
+            if (primitive >= event_ports->primitives.size()
+                || port.port_index >= event_ports->primitives[primitive].outputs.size()) {
+                return std::unexpected("GraphJit recorded Event output has no primitive binding");
+            }
+            auto const storage = event_ports->primitives[primitive].outputs[port.port_index].storage;
+            if (!storage || *storage >= event_ports->ports.size()) {
+                return std::unexpected("GraphJit recorded Event output has no callback storage");
+            }
+            capture.event_acceptance_capacity = event_ports->ports[*storage].event_capacity;
         }
         auto root_stack = plan_root_stack_buffers(*sample_ports, *event_ports);
         if (!root_stack) {

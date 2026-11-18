@@ -108,6 +108,10 @@ struct DispatchNodeMessageRequest {
 struct GetNodeEventProtocolRequest {};
 
 struct GetAudioDevicesRequest {};
+struct GetPlaybackRequest {};
+struct TogglePlaybackRequest {};
+struct SetPlaybackRunningRequest { bool running = true; };
+struct SeekPlaybackRequest { GlobalIndex position{}; };
 struct SetProjectToolchainRequest { ProjectToolchainSettings settings{}; };
 struct SetAudioDevicesRequest {
     std::optional<std::string> output_device_id {};
@@ -158,6 +162,10 @@ using SocketRpcRequestPayload = std::variant<
     BeginNodeMessageGestureRequest,
     EndNodeMessageGestureRequest,
     GetAudioDevicesRequest,
+    GetPlaybackRequest,
+    TogglePlaybackRequest,
+    SetPlaybackRunningRequest,
+    SeekPlaybackRequest,
     SetProjectToolchainRequest,
     SetAudioDevicesRequest,
     SaveProjectRequest,

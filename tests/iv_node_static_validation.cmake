@@ -65,8 +65,8 @@ expect_invalid(
 expect_invalid(
     invalid_tock_callback_shape.cpp
     "defines tock_coverage but declares no Tock output port"
-    "defines propagate_forward_coverage but declares neither Tock outputs nor replayable Tick execution"
-    "defines propagate_reverse_coverage but requires random-access inputs and either Tock outputs or replayable Tick execution")
+    "defines propagate_forward_coverage but does not declare Tock execution"
+    "defines propagate_reverse_coverage but requires Tock execution and Random Access inputs")
 
 expect_invalid(
     invalid_tock_state.cpp
@@ -76,6 +76,15 @@ expect_invalid(
 expect_invalid(
     invalid_replayable_node.cpp
     "IV_NODE intrinsically replayable nodes must author a Tick callback")
+
+expect_invalid(
+    invalid_replay_random_access.cpp
+    "have no State, Random Access inputs, or authored coverage propagation callbacks")
+
+expect_invalid(
+    invalid_replay_coverage_callbacks.cpp
+    "defines propagate_forward_coverage but does not declare Tock execution"
+    "defines propagate_reverse_coverage but requires Tock execution and Random Access inputs")
 
 expect_invalid(
     invalid_replay_boolean.cpp

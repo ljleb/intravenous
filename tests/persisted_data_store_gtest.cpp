@@ -648,10 +648,7 @@ iv::graph_jit::BackgroundEvaluationPlan direct_tick_plan(
             .kind = kind,
             .direction = PortDirection::output,
             .persisted_tick_output = true,
-            // Latency 0: these plans test capture mechanics. A latent output
-            // records what each block finalizes, which the GraphJit capture
-            // test PersistedLatentTickOutputsRecordWhatEachBlockFinalizes
-            // covers.
+            // Individual capture cases set latency when they exercise finalization.
             .output_history = 1,
             .output_latency = 0,
             .realization = iv::OutputRealization::buffered,
@@ -753,6 +750,7 @@ iv::graph_jit::BackgroundEvaluationPlan direct_tick_plan(
             .port = 0,
             .maximum_block_size = 4,
             .maximum_invocations_per_callback = 1,
+            .event_acceptance_capacity = 8,
         }};
         plan.tick_runtime.nodes = {
             TickNodeInvocationPlan{
@@ -873,17 +871,27 @@ std::span<iv::FFTBin const> sequential_fft_at(
     return {value, binding.storage.geometry.elements_per_value};
 }
 
+void append_record(
+    iv::ProducerReserve& reserve,
+    iv::ProducedBlockChain& chain,
+    iv::ProducedBlockWriter& writer,
+    iv::RealtimeProducedRecordHeader header,
+    std::span<std::byte const> payload = {})
+{
+    ASSERT_TRUE(writer.ensure_capacity(chain, reserve, sizeof(header) + payload.size()));
+    ASSERT_TRUE(writer.append(std::as_bytes(std::span{&header, 1u})));
+    if (!payload.empty()) ASSERT_TRUE(writer.append(payload));
+}
+
 void publish_record(
     iv::ProducerReserve& reserve,
     iv::PendingQueue& pending,
     iv::RealtimeProducedRecordHeader header,
     std::span<std::byte const> payload = {})
 {
-    auto chain = reserve.acquire(header.record_block_count);
-    ASSERT_TRUE(chain);
-    auto writer = chain.writer();
-    ASSERT_TRUE(writer.append(std::as_bytes(std::span{&header, 1u})));
-    if (!payload.empty()) ASSERT_TRUE(writer.append(payload));
+    iv::ProducedBlockChain chain;
+    iv::ProducedBlockWriter writer;
+    append_record(reserve, chain, writer, header, payload);
     ASSERT_TRUE(pending.publish(std::move(chain)));
 }
 
@@ -2026,6 +2034,122 @@ TEST(TickInvocationWorkspace,
     EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 2).value, -0.25f);
 }
 
+TEST(TickInvocationWorkspace, PauseHoldsCoveredSamplesAndUsesNeutralForAnUncoveredPosition)
+{
+    auto plan = sequential_tick_sample_plan();
+    iv::PersistedDataStore data;
+    auto reader = data.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    auto snapshot = std::make_unique<iv::TickMaterializationSnapshot>(1, 1, iv::PersistedDataVersion{},
+        std::vector<iv::TickMaterializedSampleInput>{iv::make_tick_materialized_sample_input(
+            1, plan.ports[1].sample_layout, {0}, iv::IndexCoverage{range(4, 3)}, {40.0f, 50.0f, 60.0f})},
+        std::vector<iv::TickMaterializedEventInput>{});
+    std::array<iv::IndexCoverage, 1> position_coverage{iv::IndexCoverage{range(4, 3)}};
+    snapshot->set_output_coverages(position_coverage);
+    (void)materializations.promote(std::move(snapshot));
+    iv::TickInvocationWorkspace workspace{plan, 1, data, 4};
+    for (auto held : {std::optional<iv::GlobalIndex>{}, std::optional{index(5)}, std::optional{index(7)}}) {
+        iv::TickInvocationFrame frame{reader, materialization_reader, workspace,
+            index(held ? 100 : 4), 3, {.held_position = held}};
+        auto inputs = static_cast<std::span<iv::ReflectedContinuousInputPortBinding const>>(frame.call().sequential_sample_inputs);
+        ASSERT_EQ(inputs.size(), 1u);
+        if (held) {
+            for (std::size_t sample = 0; sample < 3; ++sample)
+                EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], sample).value, *held == index(5) ? 49.75f : -.25f);
+        } else {
+            EXPECT_FLOAT_EQ(sequential_sample_at(inputs[0], 0).value, 39.75f);
+        }
+        auto coverage = static_cast<std::span<iv::IndexCoverage const>>(frame.call().output_coverages);
+        ASSERT_EQ(coverage.size(), 1u);
+        EXPECT_EQ(coverage[0], position_coverage[0]);
+    }
+}
+
+TEST(TickInvocationWorkspace, PauseKeepsRandomAccessSampleAndEventViewsPositionAddressed)
+{
+    for (auto kind : {iv::PortKind::sample, iv::PortKind::event}) {
+        SCOPED_TRACE(kind == iv::PortKind::sample ? "sample" : "event");
+        auto plan = direct_tick_plan(kind);
+        iv::PersistedDataStore data;
+        auto output = data.resolve_output(local_output(kind, 0));
+        auto candidate = data.begin_candidate(1);
+        if (kind == iv::PortKind::sample) candidate.overwrite(sample_region(output, range(0, 4), 10));
+        else candidate.overwrite(iv::PersistedEventChunk{.output = output, .range = range(0, 4),
+            .type = iv::EventTypeId::trigger, .events = {{.time = index(1), .value = iv::TriggerEvent{}}}});
+        ASSERT_EQ(data.publish(std::move(candidate)), iv::PersistedDataPublishResult::published);
+        auto reader = data.register_reader();
+        iv::TickMaterializationStore materializations;
+        auto materialization_reader = materializations.register_reader();
+        iv::TickInvocationWorkspace workspace{plan, 1, data, 4};
+        for (bool hold : {false, true, false}) {
+            iv::TickInvocationFrame frame{reader, materialization_reader, workspace, index(0), 4,
+                {.held_position = hold ? std::optional{index(100)} : std::nullopt}};
+            if (kind == iv::PortKind::sample) {
+                auto inputs = static_cast<std::span<iv::RandomAccessContinuousInputPort const>>(frame.call().random_access_sample_inputs);
+                ASSERT_EQ(inputs.size(), 1u);
+                EXPECT_EQ(inputs[0].coverage(), iv::IndexCoverage{range(0, 4)});
+                EXPECT_FALSE(inputs[0].region_views().empty());
+            } else {
+                auto inputs = static_cast<std::span<iv::RandomAccessEventInputPort const>>(frame.call().random_access_event_inputs);
+                ASSERT_EQ(inputs.size(), 1u);
+                EXPECT_EQ(inputs[0].coverage(), iv::IndexCoverage{range(0, 4)});
+                EXPECT_FALSE(inputs[0].regions().empty());
+            }
+        }
+    }
+}
+
+TEST(TickInvocationWorkspace, PausedEventAuditionRebasesOccurrencesWithoutChangingCoverage)
+{
+    using namespace iv;
+    using namespace iv::graph_jit;
+    auto plan = direct_tick_plan(PortKind::event);
+    plan.ports[1].input_access = InputAccessKind::sequential;
+    plan.ports[1].random_access_input = false;
+    plan.ports[1].tick_sequential_input = true;
+    plan.storage.ports[0].max_events_per_index = 2;
+    plan.tick_runtime.random_access_event_inputs.clear();
+    plan.tick_runtime.sequential_event_inputs = {{.port = 1, .storage = {0}}};
+    plan.tick_runtime.nodes[1] = {.sequential_event_count = 1, .event_capture_begin = 1};
+    PersistedDataStore data;
+    auto output = data.resolve_output(local_output(PortKind::event, 0));
+    auto candidate = data.begin_candidate(1);
+    candidate.overwrite(PersistedEventChunk{.output = output, .range = range(4, 3),
+        .type = EventTypeId::trigger, .events = {{.time = index(5), .value = TriggerEvent{}}}});
+    ASSERT_EQ(data.publish(std::move(candidate)), PersistedDataPublishResult::published);
+    auto reader = data.register_reader();
+    TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    auto snapshot = std::make_unique<TickMaterializationSnapshot>(1, 1, reader.pin()->version(),
+        std::vector<TickMaterializedSampleInput>{}, std::vector<TickMaterializedEventInput>{});
+    std::array<IndexCoverage, 1> position_coverage{IndexCoverage{range(4, 3)}};
+    snapshot->set_output_coverages(position_coverage);
+    (void)materializations.promote(std::move(snapshot));
+    TickInvocationWorkspace workspace{plan, 1, data, 4};
+    auto check = [&](GlobalIndex held, GlobalIndex execution, bool audition, std::size_t expected) {
+        TickInvocationFrame frame{reader, materialization_reader, workspace, execution, 4,
+            {.held_position = held, .audition = audition}};
+        auto bindings = std::span<ReflectedEventInputPortBinding const>(frame.call().sequential_event_inputs);
+        ASSERT_EQ(bindings.size(), 1u);
+        auto const& storage = bindings[0].storage;
+        ASSERT_EQ(*reinterpret_cast<std::size_t const*>(storage.storage + storage.count_offset), expected);
+        if (expected != 0) {
+            auto const* occurrence = reinterpret_cast<TimedEvent const*>(storage.storage + storage.events_offset);
+            EXPECT_EQ(occurrence->time, execution);
+        }
+        auto coverage = std::span<IndexCoverage const>(frame.call().output_coverages);
+        ASSERT_EQ(coverage.size(), 1u);
+        EXPECT_EQ(coverage.front(), position_coverage[0]);
+        EXPECT_TRUE(coverage.front().contains(held));
+        EXPECT_FALSE(coverage.front().contains(execution));
+    };
+    check(index(5), index(100), true, 1);
+    check(index(5), index(104), false, 0);
+    check(index(5), index(108), true, 1);
+    check(index(6), index(112), true, 0);
+}
+
 TEST(TickInvocationWorkspace, SemanticCoverageIsIndependentOfMaterializedRegions)
 {
     auto plan = sequential_tick_sample_plan();
@@ -2250,9 +2374,63 @@ TEST(TickInvocationWorkspace,
 }
 
 TEST(TickInvocationWorkspace,
-     EmptyWrittenEventBlockPublishesAnAuthoritativeEmptyRecord)
+     WrittenSampleTailFinalizesAtItsOriginalAddressAfterDisarmingAndSeeking)
+{
+    auto plan = direct_tick_plan(iv::PortKind::sample);
+    plan.ports[0].output_latency = 2;
+    iv::PersistedDataStore data;
+    auto data_reader = data.register_reader();
+    iv::TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    iv::TickInvocationWorkspace workspace{plan, 1, data, 4};
+    iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
+    iv::AsyncCapacityManager manager{1};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue pending{reserve, work_signal};
+    std::atomic<bool> reservation_failed{false};
+    ASSERT_EQ(manager.maintain(reserve, {1, 1, 2}), 2u);
+    workspace.bind_producer_endpoint(0, reserve, pending, reservation_failed);
+
+    std::array<iv::Sample, 8> source{10, 11, 12, 13, 20, 21, 22, 23};
+    auto capture = [&](iv::GlobalIndex begin, std::size_t sequential_begin,
+                       iv::OutputDisposition disposition) {
+        iv::TickInvocationFrame frame{
+            data_reader, materialization_reader, workspace, begin, 4};
+        auto binding = sample_output_binding(source, 1, 2, disposition,
+            iv::mono_interleaved_channel_layout);
+        binding.sequential_begin_index = sequential_begin;
+        auto const& operation = frame.call().sample_captures.data()[0];
+        operation.capture(operation.context, &binding, begin, 4);
+    };
+    capture(index(100), 0, iv::OutputDisposition::written);
+    capture(index(500), 4, iv::OutputDisposition::untouched);
+
+    EXPECT_FALSE(reservation_failed.load());
+    auto const bytes = queued_bytes(pending.pin());
+    constexpr auto record_size = sizeof(iv::RealtimeProducedRecordHeader) + 2 * sizeof(iv::Sample);
+    ASSERT_EQ(bytes.size(), 2 * record_size);
+    for (std::size_t record = 0; record < 2; ++record) {
+        auto const* start = bytes.data() + record * record_size;
+        iv::RealtimeProducedRecordHeader header;
+        std::memcpy(&header, start, sizeof(header));
+        EXPECT_EQ(header.payload_kind, iv::RealtimeProducedPayloadKind::continuous_values);
+        EXPECT_EQ(header.begin, index(100 + 2 * record));
+        EXPECT_EQ(header.range_extent, 2u);
+        ASSERT_EQ(header.payload_size, 2 * sizeof(iv::Sample));
+        std::array<iv::Sample, 2> values{};
+        std::memcpy(values.data(), start + sizeof(header), header.payload_size);
+        EXPECT_EQ(values[0], source[2 * record]);
+        EXPECT_EQ(values[1], source[2 * record + 1]);
+    }
+}
+
+TEST(TickInvocationWorkspace,
+     ZeroCapacityEventOutputFinalizesEmptyWrittenTailAfterDisarmingAndSeeking)
 {
     auto plan = direct_tick_plan(iv::PortKind::event);
+    plan.ports[0].output_latency = 2;
+    plan.ports[0].max_events_per_index = 0;
+    plan.tick_runtime.event_captures[0].event_acceptance_capacity = 0;
     iv::PersistedDataStore data;
     auto data_reader = data.register_reader();
     iv::TickMaterializationStore materializations;
@@ -2267,21 +2445,11 @@ TEST(TickInvocationWorkspace,
     workspace.bind_producer_endpoint(
         0, reserve, pending, reservation_failed);
 
-    struct EventStorage {
-        std::size_t count = 0;
-        std::array<iv::TimedEvent, 8> events{};
-    } storage;
     iv::ReflectedEventOutputPortBinding binding{
-        .storage = {
-            .storage = reinterpret_cast<std::byte*>(&storage),
-            .count_offset = offsetof(EventStorage, count),
-            .events_offset = offsetof(EventStorage, events),
-            .event_capacity = storage.events.size(),
-            .type = iv::EventTypeId::trigger,
-        },
+        .storage = {.type = iv::EventTypeId::trigger},
         .source_type = iv::EventTypeId::trigger,
         .history = 1,
-        .latency = 0,
+        .latency = 2,
         .disposition = iv::OutputDisposition::written,
     };
 
@@ -2292,19 +2460,112 @@ TEST(TickInvocationWorkspace,
         operation.capture(operation.context, &binding, index(-2), 4);
         EXPECT_TRUE(pending.pin().empty());
     }
+    {
+        iv::TickInvocationFrame frame{
+            data_reader, materialization_reader, workspace, index(500), 4};
+        auto const& operation = frame.call().event_captures.data()[0];
+        binding.disposition = iv::OutputDisposition::untouched;
+        operation.capture(operation.context, &binding, index(500), 4);
+    }
 
     EXPECT_FALSE(reservation_failed.load());
     auto selected = pending.pin();
     auto const bytes = queued_bytes(selected);
-    ASSERT_EQ(bytes.size(), sizeof(iv::RealtimeProducedRecordHeader));
+    ASSERT_EQ(bytes.size(), 2 * sizeof(iv::RealtimeProducedRecordHeader));
     iv::RealtimeProducedRecordHeader header;
     std::memcpy(&header, bytes.data(), sizeof(header));
     EXPECT_EQ(header.payload_kind,
         iv::RealtimeProducedPayloadKind::events);
     EXPECT_EQ(header.payload_size, 0u);
     EXPECT_EQ(header.begin, index(-2));
-    EXPECT_EQ(header.range_extent, 4u);
+    EXPECT_EQ(header.range_extent, 2u);
     EXPECT_EQ(header.event_count, 0u);
+    std::memcpy(&header, bytes.data() + sizeof(header), sizeof(header));
+    EXPECT_EQ(header.payload_kind, iv::RealtimeProducedPayloadKind::events);
+    EXPECT_EQ(header.begin, index(0));
+    EXPECT_EQ(header.range_extent, 2u);
+    EXPECT_EQ(header.payload_size, 0u);
+    EXPECT_EQ(header.event_count, 0u);
+}
+
+TEST(TickInvocationWorkspace, EventFinalizationKeepsEveryAcceptedEqualTimeWriteInOrder)
+{
+    using namespace iv;
+    auto plan = direct_tick_plan(PortKind::event);
+    plan.ports[0].output_latency = 4;
+    for (auto& port : plan.ports) port.event_type = EventTypeId::sample;
+    plan.storage.ports[0].event_type = EventTypeId::sample;
+    plan.event_target_subsets[0].type = EventTypeId::sample;
+    PersistedDataStore data;
+    auto data_reader = data.register_reader();
+    TickMaterializationStore materializations;
+    auto materialization_reader = materializations.register_reader();
+    TickInvocationWorkspace workspace{plan, 1, data, 4};
+    ProducerReserve reserve{realtime_produced_block_storage_size};
+    AsyncCapacityManager manager{1};
+    AsyncWorkSignal work_signal;
+    PendingQueue pending{reserve, work_signal};
+    std::atomic<bool> reservation_failed{false};
+    ASSERT_EQ(manager.maintain(reserve, {1, 1, 2}), 2u);
+    workspace.bind_producer_endpoint(0, reserve, pending, reservation_failed);
+    struct EventStorage {
+        std::size_t count = 0;
+        std::array<TimedEvent, 8> events{};
+    } storage;
+    ReflectedEventOutputPortBinding binding{
+        .storage = {
+            .storage = reinterpret_cast<std::byte*>(&storage),
+            .count_offset = offsetof(EventStorage, count),
+            .events_offset = offsetof(EventStorage, events),
+            .event_capacity = storage.events.size(), .type = EventTypeId::sample},
+        .source_type = EventTypeId::sample, .history = 1, .latency = 4,
+        .disposition = OutputDisposition::written,
+    };
+    std::array<std::int64_t, 5> const starts{100, 500, 1000, 1500, 2000};
+    for (std::size_t invocation = 0; invocation < starts.size(); ++invocation) {
+        auto const start = index(starts[invocation]);
+        storage.count = storage.events.size();
+        for (std::size_t event = 0; event < storage.count; ++event) {
+            storage.events[event] = {start.retreated_by(invocation),
+                SampleEvent{Sample{static_cast<float>(invocation * storage.count + event)}}};
+        }
+        TickInvocationFrame frame{data_reader, materialization_reader, workspace, start, 1};
+        auto const& capture = frame.call().event_captures.data()[0];
+        capture.capture(capture.context, &binding, start, 1);
+    }
+    {
+        // This callback finalizes four disjoint written ranges with no occurrences.
+        auto const start = index(2500);
+        TickInvocationFrame frame{data_reader, materialization_reader, workspace, start, 4};
+        auto const& capture = frame.call().event_captures.data()[0];
+        binding.disposition = OutputDisposition::untouched;
+        capture.capture(capture.context, &binding, start, 4);
+    }
+    EXPECT_FALSE(reservation_failed.load());
+    auto const bytes = queued_bytes(pending.pin());
+    constexpr auto event_payload_size = 40 * sizeof(TimedEvent);
+    ASSERT_EQ(bytes.size(), starts.size() * sizeof(RealtimeProducedRecordHeader) + event_payload_size);
+    RealtimeProducedRecordHeader header;
+    std::memcpy(&header, bytes.data(), sizeof(header));
+    EXPECT_EQ(header.begin, index(100));
+    EXPECT_EQ(header.range_extent, 1u);
+    ASSERT_EQ(header.event_count, 40u);
+    ASSERT_EQ(header.payload_size, event_payload_size);
+    for (std::size_t event = 0; event < header.event_count; ++event) {
+        TimedEvent occurrence;
+        std::memcpy(&occurrence, bytes.data() + sizeof(header) + event * sizeof(TimedEvent), sizeof(occurrence));
+        EXPECT_EQ(occurrence.time, index(100));
+        EXPECT_FLOAT_EQ(std::get<SampleEvent>(occurrence.value).value.value, static_cast<float>(event));
+    }
+    for (std::size_t range_index = 1; range_index < starts.size(); ++range_index) {
+        auto const offset = range_index * sizeof(header) + event_payload_size;
+        std::memcpy(&header, bytes.data() + offset, sizeof(header));
+        EXPECT_EQ(header.payload_kind, RealtimeProducedPayloadKind::events);
+        EXPECT_EQ(header.begin, index(starts[range_index]));
+        EXPECT_EQ(header.range_extent, 1u);
+        EXPECT_EQ(header.event_count, 0u);
+        EXPECT_EQ(header.payload_size, 0u);
+    }
 }
 
 TEST(TickInvocationWorkspace,
@@ -2530,7 +2791,7 @@ TEST(TickInvocationWorkspace,
 }
 
 TEST(BackgroundEvaluationTransaction,
-     AppliesOverlappingQueuedSampleOverwritesInPublicationOrder)
+     AppliesOverlappingSampleRecordsPackedAcrossPhysicalBlocksInOrder)
 {
     auto graph = queued_persisted_graph(iv::PortKind::sample);
     iv::ResourceContext resources;
@@ -2542,19 +2803,20 @@ TEST(BackgroundEvaluationTransaction,
     iv::PersistedDataStore data;
     auto reader = data.register_reader();
     iv::TickMaterializationStore materializations;
-    iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
+    iv::ProducerReserve reserve{64};
     iv::AsyncCapacityManager manager{1};
     iv::AsyncWorkSignal work_signal;
     iv::PendingQueue pending{reserve, work_signal};
-    ASSERT_EQ(manager.maintain(reserve, {2, 2, 4}), 4u);
+    ASSERT_EQ(manager.maintain(reserve, {4, 4, 8}), 8u);
 
     std::array<iv::Sample, 4> first{10.0f, 11.0f, 12.0f, 13.0f};
-    publish_record(
+    iv::ProducedBlockChain chain;
+    iv::ProducedBlockWriter writer;
+    append_record(
         reserve,
-        pending,
+        chain, writer,
         {
             .payload_kind = iv::RealtimeProducedPayloadKind::continuous_values,
-            .record_block_count = 1,
             .payload_size = sizeof(first),
             .begin = index(2),
             .range_extent = first.size(),
@@ -2564,12 +2826,11 @@ TEST(BackgroundEvaluationTransaction,
         },
         std::as_bytes(std::span{first}));
     std::array<iv::Sample, 2> second{30.0f, 31.0f};
-    publish_record(
+    append_record(
         reserve,
-        pending,
+        chain, writer,
         {
             .payload_kind = iv::RealtimeProducedPayloadKind::continuous_values,
-            .record_block_count = 1,
             .payload_size = sizeof(second),
             .begin = index(3),
             .range_extent = second.size(),
@@ -2578,6 +2839,7 @@ TEST(BackgroundEvaluationTransaction,
                 iv::ContinuousValueTypeId::sample, std::nullopt),
         },
         std::as_bytes(std::span{second}));
+    ASSERT_TRUE(pending.publish(std::move(chain)));
 
     auto const output = data.resolve_output(
         local_output(iv::PortKind::sample, 0));
@@ -2650,7 +2912,6 @@ TEST(BackgroundEvaluationTransaction,
     std::array<iv::Sample, 4> payload{30, 31, 32, 33};
     publish_record(reserve, pending, {
         .payload_kind = iv::RealtimeProducedPayloadKind::continuous_values,
-        .record_block_count = 1,
         .payload_size = sizeof(payload),
         .begin = index(0),
         .range_extent = 4,
@@ -2715,7 +2976,6 @@ TEST(BackgroundEvaluationTransaction,
         {
             .payload_kind =
                 iv::RealtimeProducedPayloadKind::continuous_values,
-            .record_block_count = 1,
             .payload_size = sizeof(values),
             .begin = index(20),
             .range_extent = 2,
@@ -2851,7 +3111,6 @@ TEST(BackgroundEvaluationTransaction,
         pending,
         {
             .payload_kind = iv::RealtimeProducedPayloadKind::continuous_values,
-            .record_block_count = 1,
             .payload_size = sizeof(successor_values),
             .begin = index(10),
             .range_extent = successor_values.size(),
@@ -2922,7 +3181,6 @@ TEST(BackgroundEvaluationTransaction,
     ASSERT_EQ(manager.maintain(reserve, {1, 1, 2}), 2u);
     publish_record(reserve, pending, {
         .payload_kind = iv::RealtimeProducedPayloadKind::events,
-        .record_block_count = 1,
         .payload_size = 0,
         .begin = index(0),
         .range_extent = 4,
@@ -2985,7 +3243,6 @@ TEST(BackgroundEvaluationTransaction,
     ASSERT_EQ(manager.maintain(reserve, {1, 1, 2}), 2u);
     publish_record(reserve, pending, {
         .payload_kind = iv::RealtimeProducedPayloadKind::void_value,
-        .record_block_count = 1,
         .payload_size = 0,
         .begin = index(2),
         .range_extent = 4,
@@ -3050,7 +3307,6 @@ TEST(BackgroundEvaluationTransaction,
     ASSERT_EQ(manager.maintain(reserve, {1, 1, 2}), 2u);
     publish_record(reserve, pending, {
         .payload_kind = iv::RealtimeProducedPayloadKind::void_value,
-        .record_block_count = 1,
         .payload_size = 0,
         .begin = index(2),
         .range_extent = 4,

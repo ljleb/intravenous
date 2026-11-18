@@ -51,6 +51,22 @@ Json built_result(std::string const& response)
     }
     return *result;
 }
+
+std::string playback_result(int id, ProjectPlaybackRequest request)
+{
+    IV_INVOKE_LINKER_EVENT(iv_socket_rpc_playback_event, request);
+    if (!request.snapshot) return jsonrpc_error(id, -32000, "playback service is unavailable");
+    auto const& state = *request.snapshot;
+    Json result{
+        {"position", std::to_string(state.position.signed_value())},
+        {"running", state.running},
+        {"sampleRate", state.sample_rate},
+        {"appliedCommand", std::to_string(state.applied_command)},
+        {"segment", std::to_string(state.segment)},
+    };
+    if (request.accepted_command) result["acceptedCommand"] = std::to_string(*request.accepted_command);
+    return jsonrpc_result(id, std::move(result));
+}
 } // namespace
 
 struct SocketRpcRouteRegistry::Impl {
@@ -106,6 +122,20 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
     : impl_(std::make_unique<Impl>())
 {
     using Context = SocketRpcRouteContext;
+    impl_->add<GetPlaybackRequest>("playback.get", "project.read", false, false,
+        [](auto const&, int id, Context const&) { return playback_result(id, {}); });
+    impl_->add<TogglePlaybackRequest>("playback.toggle", "project.write", false, false,
+        [](auto const&, int id, Context const&) {
+            return playback_result(id, {.operation = ProjectPlaybackOperation::toggle});
+        });
+    impl_->add<SetPlaybackRunningRequest>("playback.setRunning", "project.write", false, false,
+        [](auto const& request, int id, Context const&) {
+            return playback_result(id, {.operation = ProjectPlaybackOperation::set_running, .running = request.running});
+        });
+    impl_->add<SeekPlaybackRequest>("playback.seek", "project.write", false, false,
+        [](auto const& request, int id, Context const&) {
+            return playback_result(id, {.operation = ProjectPlaybackOperation::seek, .position = request.position});
+        });
     impl_->add<GraphQueryBySpansRequest>(
         "graph.queryBySpans", "project.read", false, false,
         [](auto const& request, int id, Context const&) {

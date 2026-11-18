@@ -28,15 +28,12 @@ struct RealtimeProductionFailures {
     }
 };
 
-// Stored at byte zero of the first block published for one logical record.
-// InputRoute supplies destination identity, so it is deliberately absent here.
-// Every record begins at a physical block boundary. record_block_count lets a
-// background selection distinguish adjacent records after several record chains
-// have been joined into one pass-level pending-queue publication.
+// The header and payload form a byte stream across the callback's private
+// blocks. InputRoute supplies destination identity. payload_size identifies
+// the next header even when it begins inside a block.
 struct RealtimeProducedRecordHeader {
     RealtimeProducedPayloadKind payload_kind =
         RealtimeProducedPayloadKind::continuous_values;
-    std::size_t record_block_count = 0;
     std::size_t payload_size = 0;
     GlobalIndex begin{};
     GlobalIndex::extent_type range_extent = 0;

@@ -99,3 +99,21 @@ applicable as an internal `SystemAudioDevices` concern:
 `GraphExecutor::activate_pending()` and `GraphExecutor::tick_block()`. The exact pacing
 policy is an execution detail, but hardware-device synchronization must not leak into
 `ProjectGraph`, `NodeInstances`, or `GraphConnections`.
+
+If required background preparation cannot meet a foreground block's hardware
+deadline, no partial Tick computation or fabricated graph samples are authorized.
+The audio device may underrun even if the foreground executor waits; hardware time
+cannot be paused. An underrun/dropout supplied at the device boundary is not authored
+DSP data, not persisted recording, and not an advancement of the unexecuted logical
+Tick interval. Control commands, graph replacement and shutdown must remain able to
+make progress if a dependency remains unavailable.
+
+Live capture clocks keep running during a graph deadline failure. Do not accumulate
+arbitrary stale microphone/MIDI input as new monitoring latency or add a special
+resampling stage to conceal the missed deadline; discard input values that cannot
+be consumed at their intended realtime positions. Retain the existing synchronization
+and rate-correction policy needed for ordinary device-clock differences. For stateful
+MIDI consumers, dropped note-offs or controller changes can require state
+reconciliation (for example a current-key snapshot or a clear-all-notes recovery)
+so lost messages do not leave stuck notes. Those are exceptional device-input recovery
+policies, not project transport actions.

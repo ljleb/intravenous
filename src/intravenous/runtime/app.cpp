@@ -42,6 +42,7 @@
 #include <intravenous/runtime/project_graph_node_instances_bridge.h>
 #include <intravenous/runtime/project_graph_package_definitions_bridge.h>
 #include <intravenous/runtime/server_options.h>
+#include <intravenous/runtime/socket_rpc_graph_executor_bridge.h>
 #include <intravenous/runtime/socket_rpc_node_instances_bridge.h>
 #include <intravenous/runtime/socket_rpc_project_graph_bridge.h>
 #include <intravenous/runtime/socket_rpc_iv_module_source_introspection_bridge.h>
@@ -427,6 +428,8 @@ int run_server_mode(int argc, char** argv)
         project_persistence_project_autosave_bridge::bind(project_persistence, project_autosave);
 
     // RPC bridges.
+    auto rpc_playback_scope =
+        socket_rpc_graph_executor_bridge::bind(server, graph_executor);
     auto rpc_audio_scope =
         socket_rpc_system_audio_devices_bridge::bind(server, system_audio_devices);
     auto rpc_project_graph_scope =

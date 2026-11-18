@@ -761,6 +761,16 @@ struct PersistedTickPass {
     void tick_block(iv::TickBlockContext<PersistedTickPass> const&) const {}
 };
 
+struct LatentPersistedTickSource {
+    static constexpr auto outputs() {
+        return std::array{iv::output<iv::Sample>("out", iv::OutputRealization::buffered)};
+    }
+    void constrain_ports(iv::ConstrainPortsContext<LatentPersistedTickSource>& ctx) const {
+        ctx.output<"out">().latency() = 2;
+    }
+    void tick_block(iv::TickBlockContext<LatentPersistedTickSource> const&) const {}
+};
+
 struct LatentSamplePass {
     static constexpr auto inputs()
     {
@@ -3989,6 +3999,44 @@ TEST(GraphJitConnectionPlan, IntrinsicTickReplaySuppliesRandomAccess)
     EXPECT_TRUE(plan->background.nodes[source_node].uses_replay_forward_coverage);
     EXPECT_TRUE(plan->background.nodes[source_node].uses_replay_reverse_coverage);
     EXPECT_TRUE(plan->background.nodes[source_node].uses_imported_tick_block_for_replay);
+}
+
+TEST(GraphJitConnectionPlan, ReplayReadsSamePositionDespiteLiveAlignment)
+{
+    using namespace iv;
+
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<ReplayableSource>(graph);
+    auto recording = details::configure_concrete_node<LatentPersistedTickSource>(graph);
+    auto pair = details::configure_concrete_node<ReplayablePair>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSamplePass>(graph);
+    auto const pair_bundle = pair.node_bundle_handle();
+    pair(source, recording);
+    sink(pair);
+    graph.outputs();
+
+    auto plan = build_connection_analysis_plan(std::move(graph).finish(), 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    std::size_t live_paths = 0;
+    for (auto const& connection : plan->sample_connections) {
+        if (connection.target_port.node_bundle_handle != pair_bundle) continue;
+        ASSERT_EQ(connection.source_channel_timings.size(), 1u);
+        EXPECT_EQ(connection.source_channel_timings.front().read_latency, 2u);
+        ++live_paths;
+    }
+    EXPECT_EQ(live_paths, 2u);
+    std::size_t replay_paths = 0;
+    for (auto const& route : plan->background.storage.direct_samples) {
+        auto const& target = plan->background.sample_target_subsets[route.target_subset];
+        if (target.port.node_bundle_handle != pair_bundle
+            || plan->background.storage.ports[route.storage].storage == graph_jit::PortStorageKind::current_tick)
+            continue;
+        EXPECT_EQ(route.read_latency, 0u);
+        EXPECT_EQ(plan->background.connections[route.connection].sample_read_latencies,
+            (std::vector<std::size_t>{0}));
+        ++replay_paths;
+    }
+    EXPECT_EQ(replay_paths, 2u);
 }
 
 TEST(GraphJitConnectionPlan, RejectsNonSampleContextualReplayAtReplayBoundary)

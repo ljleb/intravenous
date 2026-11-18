@@ -118,8 +118,7 @@ public:
                                     std::span<BackgroundProducedInputRoute const>
                                         produced_routes,
                                     std::span<PinnedBlockPrefix const>
-                                        produced_prefixes,
-                                    LiveTickCoverageState* live_coverage = nullptr);
+                                        produced_prefixes);
     ~BackgroundEvaluationTransaction();
 
     BackgroundEvaluationTransaction(BackgroundEvaluationTransaction const&) =

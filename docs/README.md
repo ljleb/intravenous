@@ -35,6 +35,7 @@ The primary application-architecture entry points are:
 - [DSP Execution And Storage Glossary](./dsp_execution_storage_glossary.md)
 - [Output Capabilities, Buffer Access, And Background Demand](./output_capabilities_and_background_demand.md) (normative 2026-11-16 supersession)
 - [Circular Global Timeline Indexing](./global_indexing.md)
+- [Project Playback And Presentation Grids](./project_playback_and_presentation_grids_direction.md) (normative transport, Event delivery, buffered recording, preparation)
 - [Circular Global Index Migration Status](./global_index_migration_status.md)
 - [Coverage, Random Access, And Background Evaluation](./coverage_and_background_evaluation.md)
 - [Cyclic Automation, Event Projections, And Suspendable Coverage Propagation](./automation_and_suspendable_coverage_direction.md)

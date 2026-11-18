@@ -174,6 +174,25 @@ ProducedBlockWriter::ProducedBlockWriter(ProducedBlockChain& chain) noexcept
     }
 }
 
+bool ProducedBlockWriter::ensure_capacity(ProducedBlockChain& chain,
+    ProducerReserve& reserve, std::size_t bytes) noexcept
+{
+    if (chain.last_ != last_ || (chain.owner_ && chain.owner_ != &reserve)) return false;
+    if (bytes <= remaining_) return true;
+    auto const additional = bytes - remaining_;
+    auto const block_size = reserve.block_storage_size();
+    auto const count = 1 + (additional - 1) / block_size;
+    if (count > (std::numeric_limits<std::size_t>::max() - remaining_ - written_) / block_size) return false;
+    auto suffix = reserve.acquire(count);
+    if (!suffix) return false;
+    auto* const first = suffix.first_;
+    if (!chain.append(std::move(suffix))) return false;
+    if (!current_) current_ = first;
+    last_ = chain.last_;
+    remaining_ += count * block_size;
+    return true;
+}
+
 bool ProducedBlockWriter::append(
     std::span<std::byte const> bytes) noexcept
 {
