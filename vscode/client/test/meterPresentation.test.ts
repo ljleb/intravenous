@@ -48,6 +48,28 @@ test("missing and nonfinite measurements stay distinct from measured silence", (
     assert.match(silent.text, /−∞/);
 });
 
+test("output gain scales live and held meter levels before either display scale", () => {
+    const meter = new MeterPresentationState();
+    meter.update({ available: true, value: { peak: .8, rms: .5, samples: "64" } }, true, 0);
+    const recent = { available: true, value: { peak: .25, rms: .125, samples: "64" } };
+    meter.update(recent, true, 20);
+    const scaled = meter.reading("value", -2);
+    assert.equal(scaled.displayValue, .5);
+    assert.equal(scaled.rmsPosition, .25);
+    assert.equal(scaled.heldOverReference, true);
+    assert.equal(meter.reading("level", -2).displayValue, sampleDecibels(.5));
+    assert.equal(recent.value.peak, .25);
+    assert.equal(meter.reading("value").displayValue, .25);
+
+    meter.update({ available: false, pending: true }, true, 30);
+    assert.match(meter.status("value", .5), /previous reading: 0.125 peak/);
+    assert.equal(meter.reading("value", .5).heldPosition, .4);
+    assert.equal(meter.reading("value", 0).heldPosition, 0);
+    assert.equal(meter.reading("value", 0).available, true);
+    meter.update({ available: false }, true, 40);
+    assert.equal(meter.reading("value", 0).available, false);
+});
+
 test("meter and timeline graduations share finite ordered numeric geometry", () => {
     const ticks = numericTicks(levelDomain.min, levelDomain.max, 660);
     assert.ok(ticks.length > 2);

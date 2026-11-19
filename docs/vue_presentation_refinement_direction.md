@@ -141,6 +141,9 @@ normal port/knob gestures, even if their visuals appear joined. Directly shown
 inputs and temporarily expanded port lists must use the same composition.
 Place a knob's label close to its upper-right edge for inputs and its
 upper-left edge for outputs.
+Use the same socket columns and row heights for event ports and knob ports
+in editable headers and their continuations. Individual event sockets keep their
+rounded-square shape. Applied cables use solid strokes for either port kind.
 The input name must remain readable when cables cross the lane area; cable
 layout/opacity must not obscure it.
 
@@ -218,7 +221,8 @@ retains the separate per-port connection chooser.
 
 As the lane shrinks, step from full-size knobs to compact knobs and then to
 folded port symbols. At mini and nano heights, use read-only port symbols or
-stacks to show connection state and anchor cables. Port editing and popovers
+stacks to show connection state and anchor cables. Event symbols stay rounded
+squares and mixed stacks show both socket shapes. Port editing and popovers
 are available at editable height.
 [Earlier mini and nano popovers](./historical/vue_mini_port_popovers_before_read_only_2026-11-19.md).
 [Earlier placement and interactions](./historical/vue_folded_port_layout_before_cropped_sockets_2026-11-19.md).
@@ -599,10 +603,12 @@ required for all edits in `editable`.
 
 The project time ruler uses the inputs of authored Timeline nodes as described
 in [Timeline nodes and project snapping](./project_playback_and_presentation_grids_direction.md#timeline-nodes-and-project-snapping).
-The editor uses the same visible event marks for drawing and snapping.
-Keep the radius in screen pixels across horizontal zoom levels. The beat
-source supplies timestamps in project samples. The point editor applies
-snapping during creation and drag and saves the chosen sample index.
+The automation editor draws the ruler's visible event marks as vertical guides
+and snaps to those same marks. Use a screen-pixel radius when creating a point
+and pointer-travel detents during a drag. The active guide uses the same blue
+fade as value snapping. The beat source supplies timestamps in project samples,
+and the point editor saves the chosen sample index.
+[Earlier radius-only drag snapping](./historical/automation_beat_snap_before_detents_2026-11-19.md).
 
 ## 6. Contextual information: status bar before tooltips
 

@@ -613,8 +613,18 @@ TEST_F(ObservationService, WindowBodiesFollowContentIndependentlyOfRefreshStatus
     now += std::chrono::milliseconds(300);
     collect();
     ASSERT_EQ(executor.windows.size(), 2u);
+    executor.windows.back()->result.status = ObservationWindowResult::Status::pending_execution;
+    executor.windows.back()->complete.store(true, std::memory_order_release);
+    delivery.batches.clear();
+    collect();
+    EXPECT_TRUE(delivery.batches.empty());
+
+    now += std::chrono::milliseconds(300);
+    collect();
+    ASSERT_EQ(executor.windows.size(), 3u);
     complete(*executor.windows.back(), 2, 0.5f);
     collect();
+    ASSERT_EQ(delivery.batches.size(), 1u);
     auto const refreshed = connection.payload_for_write(delivery.batches.front());
     auto const& changes = refreshed["scopes"]["lane"]["windows"]["wave"];
     EXPECT_EQ(changes["outdated"], false);
@@ -625,7 +635,7 @@ TEST_F(ObservationService, WindowBodiesFollowContentIndependentlyOfRefreshStatus
     collect();
     now += std::chrono::milliseconds(300);
     collect();
-    ASSERT_EQ(executor.windows.size(), 3u);
+    ASSERT_EQ(executor.windows.size(), 4u);
     complete(*executor.windows.back(), 3, -0.5f);
     collect();
     auto const changed = connection.payload_for_write(delivery.batches.front());

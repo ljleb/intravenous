@@ -57,6 +57,9 @@ export class ManualControlGestures {
     liveValue(control: ManualControlId): number | undefined {
         return this.live.find((entry) => manualControlKey(entry.control) === manualControlKey(control))?.value;
     }
+    currentValue(control: ManualControlId, descriptor?: ManualControlDescriptor): number | undefined {
+        return this.state(control)?.value ?? this.liveValue(control) ?? descriptor?.value;
+    }
     activity(control: ManualControlId): KnobActivity {
         const key = manualControlKey(control);
         if (this.active && manualControlKey(this.active.control) === key) return "active";

@@ -1,13 +1,19 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { addressKey } from "../../src/graphScope";
-import { sampleWaveform } from "../../src/sampleWaveform";
+import { sampleWaveform, sampleWindow } from "../../src/sampleWaveform";
 import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
+import { useTimelineWindow } from "../timeline/timelineContext";
 import { useNode } from "./nodeContext";
 import { useObservations } from "./observationContext";
 const props = defineProps<{ bounds?: { min: number; max: number }; mode?: string; inputMember?: string }>();
 const node = useNode();
 const observations = useObservations();
+const timeline = useTimelineWindow();
+const visibleWindow = computed(() => {
+    const time = timeline?.value;
+    return time ? sampleWindow(time.beginSeconds, time.endSeconds, time.sampleRate, 2) : undefined;
+});
 const waveforms = computed(() => {
     observations?.version.value;
     const address = node.value.address;
@@ -15,9 +21,9 @@ const waveforms = computed(() => {
     return observations.capabilities.value.filter((entry) => entry.delivery === "window"
         && (props.inputMember === undefined ? entry.kind === "output" : entry.kind === "input" && entry.member === props.inputMember)
         && addressKey(entry.source.node) === addressKey(address)).map((entry) => {
-        const result = observations.values.windows.get(entry.id);
+        const result = observations.values.windowForDisplay(entry.id, visibleWindow.value);
         const label = entry.kind === "input" ? `Input ${entry.member}` : entry.member;
-        return { ...entry, label, result, geometry: sampleWaveform(result, props.bounds) };
+        return { ...entry, label, result, geometry: sampleWaveform(result, props.bounds, visibleWindow.value) };
     });
 });
 function waveformStatus(item: (typeof waveforms.value)[number]): string {
@@ -40,7 +46,7 @@ function waveformStatus(item: (typeof waveforms.value)[number]): string {
                     :x="region.x" y="4" :width="region.width" height="92" class="coverage" />
                 <path v-for="(path, i) in item.geometry.paths" :key="`path-${i}`" :d="path"
                     fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" vector-effect="non-scaling-stroke" />
-                <TimelinePlayhead :sample-window="item.result?.window" />
+                <TimelinePlayhead :sample-window="visibleWindow ?? item.result?.window" />
             </svg>
             <span class="label">{{ item.label }}<template v-if="item.channels && item.channels.length > 1"> · {{ item.channelName }}</template></span>
         </div>

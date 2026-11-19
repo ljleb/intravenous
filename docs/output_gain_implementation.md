@@ -16,6 +16,10 @@ source bytes. The transform preserves coverage gaps, logical Region identity,
 and source materialization validity. Consumers use a coherent selected gain.
 [Earlier output observation contract](./historical/output_gain_before_connection_observation_2026-11-19.md).
 
+The default node presentation uses the output knob's displayed gain to scale
+its observed peak, RMS, and held peak. It applies the gain magnitude in Vue,
+so the meter can preview a knob change while the executable catches up.
+
 Region and Coverage output gains use a Tick multiplier when their authored
 consumers only require realtime Sequential delivery. The multiplier preserves
 uncovered positions so the destination can apply its existing fallback. If any

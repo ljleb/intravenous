@@ -32,7 +32,6 @@ const panel = ref<HTMLElement | null>(null);
 const portArea = ref<HTMLElement | null>(null);
 const portAreaHeight = ref(compactKnobSize + foldedSocketHeight);
 const knobSize = computed(() => portAreaHeight.value >= fullKnobSize + foldedSocketHeight ? fullKnobSize : compactKnobSize);
-const portHeight = (port: SemanticPort) => hasKnob(port) ? knobSize.value : 22;
 let header: HTMLElement | null = null;
 let portAreaObserver: ResizeObserver | null = null;
 const expanded = ref<"header" | SemanticPortDirection | null>(null);
@@ -46,17 +45,12 @@ const panelPositioned = ref(false);
 const panelPosition = ref<Record<string, string>>({ left: "0px", top: "0px" });
 const continuationOffsets = ref<Partial<Record<SemanticPortDirection, number>>>({});
 const above = ref(false);
-const panelKnobSize = computed(() => chooserPort.value ? fullKnobSize : knobSize.value);
 const groups: Partial<Record<SemanticPortDirection, HTMLElement>> = {};
 const nodeKey = computed(() => node.value.address ? addressKey(node.value.address) : "");
 const directions: SemanticPortDirection[] = ["input", "output"];
 const ports = (direction: SemanticPortDirection) => node.value.ports.filter((port) => port.direction === direction);
-const outputHasKnob = computed(() => ports("output").some(hasKnob));
-function outputKnobColumn(size: number): string {
-    return outputHasKnob.value ? `calc(${size}px + var(--output-polarity-width) - var(--output-polarity-inset))` : "0px";
-}
 function layoutDirection(direction: SemanticPortDirection) {
-    return lanePortLayout(ports(direction), props.inline ? 0 : portAreaHeight.value, portHeight, foldedSocketHeight);
+    return lanePortLayout(ports(direction), props.inline ? 0 : portAreaHeight.value, knobSize.value, foldedSocketHeight);
 }
 const layout = computed(() => ({ input: layoutDirection("input"), output: layoutDirection("output") }));
 const foldedDirections = computed(() => directions.filter((direction) => layout.value[direction].folded.length));
@@ -96,8 +90,9 @@ const groupConnections = computed(() => {
     const summarize = (direction: SemanticPortDirection) => {
         const group = layout.value[direction].folded;
         const connected = group.filter((port) => portLinks(port).length > 0).length;
+        const kinds = [...new Set(group.map((port) => port.kind))];
         return { state: connected === 0 ? "empty" : connected === group.length ? "full" : "partial",
-            pending: group.some(pending), connected };
+            pending: group.some(pending), connected, kinds };
     };
     return { input: summarize("input"), output: summarize("output") };
 });
@@ -326,7 +321,7 @@ watch(shiftHeld, (held) => {
     else if (hoveredPort.value) openConnectionChooser(hoveredPort.value);
 });
 watch([expanded, chooserPort], () => editor?.portsChanged(), { flush: "post" });
-watch([portAreaHeight, () => props.inline, outputHasKnob,
+watch([portAreaHeight, () => props.inline,
     () => layout.value.input.continuationOffset, () => layout.value.output.continuationOffset,
     () => layout.value.input.folded.length, () => layout.value.output.folded.length], () => {
     if (props.inline) closePanel();
@@ -398,13 +393,13 @@ onBeforeUnmount(() => {
 
 <template>
     <div ref="portArea" class="node-ports" :class="{ inline }"
-        :style="{ '--folded-socket-height': `${foldedSocketHeight}px`, '--knob-size': `${knobSize}px`,
-            '--port-row-gap': `${lanePortRowGap}px`, '--output-knob-column': outputKnobColumn(knobSize) }">
+        :style="{ '--folded-socket-height': `${foldedSocketHeight}px`, '--port-row-height': `${knobSize}px`,
+            '--port-row-gap': `${lanePortRowGap}px` }">
         <div v-for="direction in directions" :key="direction" :ref="(element) => setGroup(direction, element)"
             class="port-group" :data-port-group="direction" :data-node-key="nodeKey" :data-direction="direction"
             :data-folded-ports="!inline && layout[direction].folded.length ? direction : undefined">
             <NodePortRow v-for="port in layout[direction].direct" :key="portKey(port)" :port="port" :endpoint="endpoint(port)"
-                :height="portHeight(port)" :knob-size="knobSize" :has-knob="hasKnob(port)" :hint="portStatus(port)"
+                :has-knob="hasKnob(port)" :hint="portStatus(port)"
                 :connected="applied(port)" :pending="pending(port)" :unavailable="destinationDirection === port.direction && !accepts(port)"
                 @handle-hover="enterPort($event, port)" @handle-leave="hoveredPort = null"
                 @wire-start="start($event, port)" />
@@ -412,7 +407,6 @@ onBeforeUnmount(() => {
                 :type="inline ? undefined : 'button'" :role="inline ? 'img' : undefined"
                 :class="{ cropped: !inline, single: layout[direction].folded.length === 1,
                     pending: groupConnections[direction].pending, unavailable: !inline && destinationDirection === direction && !groupAccepts(direction) }"
-                :data-port-kind="layout[direction].folded.every((port) => port.kind === 'event') ? 'event' : 'sample'"
                 :data-connection-state="groupConnections[direction].state"
                 :data-port-slot="node.address ? portSlotKey(node.address, direction) : undefined"
                 :aria-label="`${layout[direction].folded.length}${inline ? '' : ' more'} ${direction} ports, ${groupConnections[direction].connected} connected`"
@@ -420,15 +414,17 @@ onBeforeUnmount(() => {
                 :aria-disabled="inline ? undefined : destinationDirection === direction && !groupAccepts(direction)"
                 :data-status-hint="`${layout[direction].folded.length}${inline ? '' : ' more'} ${direction} ports · ${groupConnections[direction].connected} connected`"
                 v-on="inline ? {} : { click: hoverHeader }">
-                <span class="port-circle stacked-first" />
-                <span v-if="inline && layout[direction].folded.length > 1" class="port-circle stacked-second" />
+                <span class="port-circle stacked-first"
+                    :data-port-kind="inline || groupConnections[direction].kinds.length === 1 ? groupConnections[direction].kinds[0] : undefined" />
+                <span v-if="inline && layout[direction].folded.length > 1" class="port-circle stacked-second"
+                    :data-port-kind="groupConnections[direction].kinds.at(-1)" />
             </component>
         </div>
     </div>
     <Teleport to="body">
         <div v-if="expanded && !inline" ref="panel" class="port-panel"
             :class="{ above, continuation: !chooserPort, positioning: !panelPositioned }"
-            :style="[panelPosition, { '--port-row-gap': `${lanePortRowGap}px`, '--output-knob-column': outputKnobColumn(panelKnobSize) }]"
+            :style="[panelPosition, { '--port-row-gap': `${lanePortRowGap}px`, '--port-row-height': `${knobSize}px` }]"
             :aria-hidden="!panelPositioned"
             :data-lane-key="nodeKey"
             :data-port-group="chooserPort?.direction" :data-node-key="nodeKey" :data-direction="chooserPort?.direction"
@@ -454,7 +450,7 @@ onBeforeUnmount(() => {
                 :style="{ marginBlockStart: `${continuationOffsets[direction] ?? 0}px` }"
                 :data-direction="direction" :data-folded-ports="direction">
                 <NodePortRow v-for="port in layout[direction].folded" :key="portKey(port)" :port="port" :endpoint="endpoint(port)"
-                    :height="hasKnob(port) ? panelKnobSize : 22" :knob-size="panelKnobSize" :has-knob="hasKnob(port)" :hint="portStatus(port)"
+                    :has-knob="hasKnob(port)" :hint="portStatus(port)"
                     :connected="applied(port)" :pending="pending(port)" :unavailable="destinationDirection === port.direction && !accepts(port)"
                     @handle-hover="enterPort($event, port)" @handle-leave="hoveredPort = null" @wire-start="start($event, port)" />
             </div>
@@ -463,11 +459,19 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.node-ports, .port-panel { --output-polarity-width: 12px; --output-polarity-inset: 2px; }
+.node-ports, .port-panel {
+    --output-polarity-width: 12px;
+    --output-polarity-inset: 2px;
+    --port-control-column: calc(var(--port-row-height) + var(--output-polarity-width) - var(--output-polarity-inset));
+    --socket-tuck: 10px;
+    --port-handle-width: 24px;
+    --port-socket-size: 12px;
+    --socket-center-inset: calc(var(--port-control-column) - var(--socket-tuck) + var(--port-socket-size) / 2);
+}
 .node-ports { display: grid; grid-template-columns: minmax(min-content, 1fr) fit-content(50%);
     grid-template-rows: minmax(0, 1fr); gap: 4px; margin-top: 5px; min-height: 22px; }
 .port-group { position: relative; display: flex; flex-direction: column; gap: var(--port-row-gap); min-height: 0; }
-.node-ports:not(.inline) .port-group[data-direction="output"][data-folded-ports] { min-width: calc(24px + var(--output-knob-column)); }
+.node-ports:not(.inline) .port-group[data-direction="output"][data-folded-ports] { min-width: calc(var(--port-handle-width) + var(--port-control-column)); }
 [data-direction="input"] { --port-base-color: var(--iv-port-input); --port-color: var(--port-base-color); }
 [data-direction="output"] { --port-base-color: var(--iv-port-output); --port-color: var(--port-base-color); }
 .port-circle {
@@ -476,7 +480,7 @@ onBeforeUnmount(() => {
     display: inline-block; flex: 0 0 12px; width: 12px; height: 12px; box-sizing: border-box;
     border-radius: 50%; background: var(--port-circle-fill);
 }
-[data-port-kind="event"]:not(.single) .port-circle { border-radius: 3px; }
+[data-port-kind="event"] .port-circle, .port-circle[data-port-kind="event"] { border-radius: 25%; }
 .pending .port-circle { border: 2px dashed var(--port-circle-outline, var(--port-color)); }
 .port-slot { position: relative; flex: 0 0 var(--port-slot-height, 22px); width: 28px; height: var(--port-slot-height, 22px);
     box-sizing: border-box; padding: 0; border: 1px solid transparent; border-radius: 7px; background: transparent; }
@@ -485,10 +489,12 @@ button.port-slot { cursor: pointer; }
 .stacked-first { position: absolute; left: 4px; top: 50%; transform: translateY(-50%); }
 .stacked-second { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); }
 .single .stacked-first { left: 7px; }
-.port-slot.cropped { position: absolute; bottom: 0; left: var(--knob-size); width: 24px; height: var(--folded-socket-height);
+.port-slot.cropped { position: absolute; bottom: 0; left: calc(var(--socket-center-inset) - var(--port-handle-width) / 2);
+    width: var(--port-handle-width); height: var(--folded-socket-height);
     overflow: hidden; border: 0; border-radius: 4px 4px 0 0; }
-.port-group[data-direction="output"] > .cropped { left: auto; right: var(--output-knob-column); }
-.cropped .port-circle { top: calc(var(--folded-socket-height) - 6px); left: 6px; width: 12px; transform: none; }
+.port-group[data-direction="output"] > .cropped { left: auto; right: calc(var(--socket-center-inset) - var(--port-handle-width) / 2); }
+.cropped .port-circle { top: calc(var(--folded-socket-height) - var(--port-socket-size) / 2); left: 50%;
+    width: var(--port-socket-size); transform: translateX(-50%); }
 .connected .port-circle,
 .cropped[data-connection-state="partial"] .port-circle,
 .port-slot[data-connection-state="partial"] .stacked-second,

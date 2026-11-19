@@ -107,6 +107,8 @@ bool warp_cursor(Display* display, bool cursor_hiding_supported, int editor_pid,
     const auto delta_x = params->at("deltaX").get<std::int64_t>();
     const auto delta_y = params->at("deltaY").get<std::int64_t>();
     const bool hide_cursor = params->contains("hideCursor") && params->at("hideCursor") == true;
+    const bool follow_pointer = params->contains("followPointer") && params->at("followPointer") == true;
+    const bool trace = params->contains("trace") && params->at("trace") == true;
     int root_x = 0, root_y = 0, window_x = 0, window_y = 0;
     const auto skipped = [](const char* reason) {
         std::fprintf(stderr, "Cursor return skipped. %s\n", reason);
@@ -124,14 +126,17 @@ bool warp_cursor(Display* display, bool cursor_hiding_supported, int editor_pid,
     unsigned mask = 0;
     if (!XQueryPointer(display, root, &pointer_root, &under_pointer, &root_x, &root_y, &window_x, &window_y, &mask)
         || under_pointer == None) return skipped("No X11 window under the cursor. The editor must use X11 or XWayland.");
-    if (hide_cursor && (mask & (Button1Mask | Button2Mask | Button3Mask))) return false;
-    const bool verify_editor_window = hide_cursor && editor_pid > 1;
+    if (hide_cursor && (mask & (Button1Mask | Button2Mask | Button3Mask))) {
+        if (trace) return skipped("A mouse button was still held at cursor return.");
+        return false;
+    }
+    const bool verify_editor_window = follow_pointer && editor_pid > 1;
     const Window source_window = verify_editor_window ? focused_editor_window(display, root, editor_pid) : under_pointer;
     if (source_window == None) return skipped("The focused X11 window does not belong to VS Code.");
 
     // Point returns target a specific control. A relative return after a pan
     // can follow physical movement anywhere within the verified editor window.
-    const int origin_tolerance = hide_cursor ? 16 : 4;
+    const int origin_tolerance = follow_pointer ? 16 : 4;
     const auto near = [origin_tolerance](std::int64_t expected, int actual) {
         return expected >= actual - origin_tolerance && expected <= actual + origin_tolerance;
     };
@@ -144,7 +149,10 @@ bool warp_cursor(Display* display, bool cursor_hiding_supported, int editor_pid,
     }
 
     const auto sampled_x = root_x, sampled_y = root_y;
-    const auto target_x = sampled_x + delta_x, target_y = sampled_y + delta_y;
+    const auto matched_x = scaled_origin_matches ? origin_x : screen_x;
+    const auto matched_y = scaled_origin_matches ? origin_y : screen_y;
+    const auto target_x = (follow_pointer ? sampled_x : matched_x) + delta_x;
+    const auto target_y = (follow_pointer ? sampled_y : matched_y) + delta_y;
     if (!valid_coordinate(target_x) || !valid_coordinate(target_y)) return skipped("Target coordinates exceed the X11 range.");
     XWindowAttributes attributes{};
     Window unused = None;
@@ -171,15 +179,15 @@ bool warp_cursor(Display* display, bool cursor_hiding_supported, int editor_pid,
         return verify_editor_window ? CursorWarpRange{begin, end}
             : CursorWarpRange{std::max(begin, origin - origin_tolerance), std::min(end, origin + origin_tolerance + 1)};
     };
-    const auto source_x = source_range(scaled_origin_matches ? origin_x : screen_x, window_left, attributes.width, delta_x);
-    const auto source_y = source_range(scaled_origin_matches ? origin_y : screen_y, window_top, attributes.height, delta_y);
+    const auto source_x = source_range(matched_x, window_left, attributes.width, delta_x);
+    const auto source_y = source_range(matched_y, window_top, attributes.height, delta_y);
     const auto in_source = [&](std::int64_t x, std::int64_t y) { return source_x.contains(x) && source_y.contains(y); };
-    if (hide_cursor && !in_source(root_x, root_y)) return skipped("The pointer left the cursor return window.");
+    if (follow_pointer && !in_source(root_x, root_y)) return skipped("The pointer left the cursor return window.");
     // Xorg includes the far edge of the source rectangle and treats zero
     // as the entire extent. Use the sampled target for a one-pixel band.
     const auto source_width = source_x.end - source_x.begin - 1;
     const auto source_height = source_y.end - source_y.begin - 1;
-    const bool relative_warp = hide_cursor && source_width > 0 && source_height > 0;
+    const bool relative_warp = follow_pointer && source_width > 0 && source_height > 0;
     if (expires_at <= now()) return skipped("The request expired while locating the target window.");
 
     // Some XWayland servers emulate warps only while the cursor is hidden.
@@ -211,6 +219,13 @@ bool warp_cursor(Display* display, bool cursor_hiding_supported, int editor_pid,
     };
     const bool read_back = XQueryPointer(display, root, &pointer_root, &under_pointer,
         &root_x, &root_y, &window_x, &window_y, &mask);
+    if (trace) {
+        std::fprintf(stderr, "Cursor return trace. X11 sampled (%d, %d), target (%lld, %lld), read back (%d, %d). "
+            "Read succeeded: %s. Cursor hiding requested: %s, available: %s. Relative warp: %s.\n",
+            sampled_x, sampled_y, static_cast<long long>(target_x), static_cast<long long>(target_y),
+            root_x, root_y, read_back ? "yes" : "no", hide_cursor ? "yes" : "no",
+            cursor_hiding_supported ? "yes" : "no", relative_warp ? "yes" : "no");
+    }
     if (!read_back || !at_target()) {
         if (read_back && verify_editor_window && relative_warp && (root_x != sampled_x || root_y != sampled_y)
             && in_source(root_x, root_y) && in_source(root_x - delta_x, root_y - delta_y)) return false;
@@ -219,7 +234,7 @@ bool warp_cursor(Display* display, bool cursor_hiding_supported, int editor_pid,
         return false;
     }
     // Without hiding, XWayland can update its internal position without
-    // moving the visible cursor. Do not confirm a middle-button warp in that case.
+    // moving the visible cursor. Confirm a hidden warp only with XFixes support.
     return !hide_cursor || cursor_hiding_supported;
 }
 #endif

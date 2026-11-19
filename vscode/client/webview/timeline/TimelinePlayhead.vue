@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { ObservationWindow } from "../../src/observations";
-import { rulerMarkerPoints } from "./geometry";
+import { rulerMarkerPoints, timelineSampleFraction } from "./geometry";
 import { usePlayback } from "./playbackContext";
 import { useTimelineWindow, type PresentationTimeWindow } from "./timelineContext";
 
@@ -19,7 +19,7 @@ function markerX(position: bigint | null) {
     } else {
         const rate = playback.state.value?.sampleRate ?? window.sampleRate;
         if (!rate) return null;
-        fraction = (Number(position) / rate - window.beginSeconds) / (window.endSeconds - window.beginSeconds);
+        fraction = timelineSampleFraction(position, window, rate);
     }
     return fraction >= 0 && fraction <= 1 ? `${fraction * 100}%` : null;
 }

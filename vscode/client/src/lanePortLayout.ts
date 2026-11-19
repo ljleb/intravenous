@@ -3,7 +3,7 @@ export const lanePortRowGap = 3;
 // Fit complete rows in definition order. Leave space for the folded socket
 // only when the column has more rows than it can show.
 export function lanePortLayout<T>(ports: readonly T[], height: number,
-    portHeight: (port: T) => number = () => 22, foldedSocketHeight = 0): {
+    rowHeight = 22, foldedSocketHeight = 0): {
     direct: readonly T[]; folded: readonly T[]; continuationOffset: number;
 } {
     const available = Number.isFinite(height) ? Math.max(0, height) : 0;
@@ -11,8 +11,8 @@ export function lanePortLayout<T>(ports: readonly T[], height: number,
     let countWithSocket = 0;
     let usedWithSocket = 0;
     let used = 0;
-    for (const port of ports) {
-        const next = used + (directCount ? lanePortRowGap : 0) + portHeight(port);
+    while (directCount < ports.length) {
+        const next = used + (directCount ? lanePortRowGap : 0) + rowHeight;
         if (next > available) break;
         used = next;
         ++directCount;

@@ -12,6 +12,7 @@ import { addressKey, type NodeAddress } from "../../src/graphScope";
 import { observationSourceKey, type MeterMode, type ObservationSource } from "../../src/observations";
 import type { NodeDisplayMode } from "./displayMode";
 import { isContextMenuKey, useContextPopover } from "./contextPopover";
+import { readManualControlValue, useOptionalManualControls } from "./manualControlContext";
 
 const props = defineProps<{ mode?: NodeDisplayMode; bounds?: { min: number; max: number } }>();
 const showScaleLabels = computed(() => props.mode === "editable" || props.mode === undefined);
@@ -20,6 +21,18 @@ const node = useNode();
 const firstInput = computed(() => node.value.ports.some((port) => port.direction === "output") ? undefined
     : node.value.ports.find((port) => port.direction === "input" && port.kind === "continuous")?.name);
 const observations = useObservations();
+const manualControls = useOptionalManualControls();
+const outputGains = computed(() => {
+    const address = node.value.address;
+    const gains = new Map<string, number>();
+    if (!address) return gains;
+    for (const port of node.value.ports) {
+        if (port.direction !== "output" || port.kind !== "continuous" || !port.manualControl?.available) continue;
+        const gain = readManualControlValue(manualControls, { node: address, outputName: port.name }, port.manualControl);
+        if (gain !== undefined) gains.set(port.name, gain);
+    }
+    return gains;
+});
 const root = ref<HTMLElement | null>(null);
 const owner = Symbol("live port presentation");
 const visualizationModes: Array<{ mode: MeterMode; label: string }> = [
@@ -119,6 +132,7 @@ onBeforeUnmount(() => {
             <div class="output-channels">
                 <div v-for="item in meter.channels" :key="JSON.stringify([node.definitionId, item.id])" class="channel">
                     <SampleMeter :mode="meter.mode" :label="channelLabel(item)" :result="item.result" :active="visible"
+                        :gain="item.kind === 'output' ? outputGains.get(item.member) : undefined"
                         :show-scale-labels="showScaleLabels" />
                 </div>
             </div>

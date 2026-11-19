@@ -20,7 +20,9 @@ std::string_view graph_jit_runtime_package_source()
     static constexpr std::string_view part_1 = R"cpp(
 #include <intravenous/dsl.h>
 #include <intravenous/basic_nodes/automation.h>
+#include <intravenous/basic_nodes/beats.h>
 #include <intravenous/basic_nodes/output_gain.h>
+#include <intravenous/basic_nodes/timeline.h>
 
 // This fixture has an independent package catalog. Register the automation
 // implementations here without loading the rest of the builtin package.
@@ -28,6 +30,8 @@ IV_NODE("iv.builtin.automation.point_source", iv::automation::PointSource);
 IV_REGISTER_OUTPUT_GAIN_NODES();
 IV_NODE("iv.builtin.automation.interpreter", iv::automation::Curve);
 IV_MODULE_CLASS("iv.builtin.automation.curve", iv::automation::AutomationCurve);
+IV_NODE("iv.builtin.beats", iv::Beats);
+IV_MODULE_CLASS("iv.builtin.timeline", iv::Timeline);
 
 #include <algorithm>
 #include <array>
@@ -7893,6 +7897,19 @@ void transformed_sparse_curve_module(iv::GraphBuilder& graph) {
     graph.outputs();
 }
 IV_MODULE("iv.test.automation.transformed_sparse_curve", transformed_sparse_curve_module);
+void project_beat_grid_module(iv::GraphBuilder& graph) {
+    auto beats = graph.node<"iv.builtin.beats">();
+    auto timeline = graph.node<"iv.builtin.timeline">();
+    timeline.connect_event_input(0, beats.event_port("beats"));
+    graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+        auto nested_beats = graph.node<"iv.builtin.beats">(240.0, 3u, std::vector<std::uint32_t>{3});
+        auto nested_timeline = graph.node<"iv.builtin.timeline">();
+        nested_timeline.connect_event_input(0, nested_beats.event_port("beats"));
+        boundary.outputs();
+    }, "nested");
+    graph.outputs();
+}
+IV_MODULE("iv.test.replay.project_beat_grid", project_beat_grid_module);
 void empty_sparse_curve_module(iv::GraphBuilder& graph) {
     auto curve = graph.node<"iv.builtin.automation.curve">(std::vector<iv::automation::Point>{});
     auto manual = graph.node<"iv.test.replay.manual_full">();

@@ -15,7 +15,9 @@ import { useObservations, usePortObservation } from "./observationContext";
 import { rightClickHint } from "../../src/statusBarText";
 import { useOptionalGraphEditor } from "../graph/context";
 import { automationPointStatus } from "../statusHints";
-import { automationTimelineTicks, snapTimelineSample } from "../timeline/geometry";
+import { automationTimelineTicks, snapTimelineSample, timelineSnapRadiusPx } from "../timeline/geometry";
+import { usePlayback } from "../timeline/playbackContext";
+import { visibleCursorDestination } from "../graph/cursorReturn";
 import RulerGraduations from "../timeline/RulerGraduations.vue";
 import { useTimelineMarks, useTimelineNavigation, useTimelineWindow, type LaneValueNavigation } from "../timeline/timelineContext";
 import NodeLane from "./NodeLane.vue";
@@ -39,6 +41,9 @@ const node = useNode();
 const editor = useOptionalGraphEditor();
 const { edits, version } = useAutomationEditing();
 const time = useTimelineWindow();
+const timelineMarks = useTimelineMarks();
+const { backgroundPlayhead } = usePlayback();
+const showBeats = computed(() => time?.value.gridMode === "beats");
 const navigation = useTimelineNavigation();
 const surface = ref<SVGSVGElement | null>(null);
 const width = ref(1), height = ref(1);
@@ -138,9 +143,10 @@ const ticks = computed(() => axes.value ? automationTimelineTicks({
     beginSeconds: axes.value.begin, endSeconds: axes.value.end, spanSeconds: axes.value.spanSeconds,
 }, width.value, curve.value?.sampleRate) : []);
 const x = (offset: number) => axes.value ? offset / axes.value.spanSeconds * width.value : 0;
-const pointX = (point: AutomationPointPosition) => x(curve.value?.sampleRate && axes.value && point.sampleIndex !== undefined
-    ? automationSampleOffset(point.sampleIndex, axes.value.begin, curve.value.sampleRate)
-    : point.seconds - (axes.value?.begin ?? 0));
+const sampleX = (index: bigint) => curve.value?.sampleRate && axes.value
+    ? x(automationSampleOffset(index, axes.value.begin, curve.value.sampleRate)) : undefined;
+const pointX = (point: AutomationPointPosition) => (point.sampleIndex === undefined ? undefined : sampleX(point.sampleIndex))
+    ?? x(point.seconds - (axes.value?.begin ?? 0));
 const y = (value: number) => (1 - automationValueFraction(value, axes.value ?? {})) * height.value;
 function previewPath(tracks: BoundSample[][]): string {
     return tracks.map((track) => track.map(({ seconds, value }, index) =>
@@ -157,7 +163,7 @@ const valueLabelInset = computed(() => hideLabels.value || !valueGuides.value.le
     : 9 + 6 * Math.max(...valueGuides.value.map(({ value }) => String(value).length)));
 const valueLabelY = (guideY: number) => Math.min(height.value - 1, Math.max(8, guideY + 3));
 const snapGradientId = useId();
-const snapFadeWidth = 144;
+const snapFadeLength = 144;
 const snapGuide = computed(() => {
     void version.value;
     const address = node.value.address;
@@ -166,6 +172,22 @@ const snapGuide = computed(() => {
     const guideY = y(snap.value);
     if (!(guideY >= 0 && guideY <= height.value)) return null;
     return { value: snap.value, y: guideY, x: Math.max(valueLabelInset.value, Math.min(width.value, pointX(snap.point))) };
+});
+const snapLines = computed(() => {
+    void version.value;
+    const lines: Array<{ axis: "value" | "time"; start: number; end: number; transform: string }> = [];
+    const value = snapGuide.value;
+    if (value) lines.push({ axis: "value", start: valueLabelInset.value - value.x, end: width.value - value.x,
+        transform: `translate(${value.x} ${value.y})` });
+    const address = node.value.address;
+    const time = editable.value && address ? edits.activeTimeSnap(address) : null;
+    const timeX = time ? sampleX(time.sampleIndex) : undefined;
+    if (time && timeX !== undefined && timeX >= 0 && timeX <= width.value) {
+        const pointY = Math.max(0, Math.min(height.value, y(time.point.value)));
+        lines.push({ axis: "time", start: -pointY, end: height.value - pointY,
+            transform: `translate(${timeX} ${pointY}) rotate(90)` });
+    }
+    return lines;
 });
 
 const markers = computed(() => editable.value ? (view.value?.points ?? []).filter((point) => {
@@ -244,15 +266,15 @@ function pointStatus(point: AutomationPoint) {
     const { id, sampleIndex, seconds, value } = point;
     return automationPointStatus({ id, sampleIndex, seconds, value });
 }
-const timelineMarks = useTimelineMarks();
 function pointerAxes(): CurveAxes | null {
     if (!surface.value || !axes.value) return null;
     const rect = surface.value.getBoundingClientRect();
-    const marks = timelineMarks?.value ?? [];
-    const tolerance = 6 * (curve.value?.sampleRate ?? 0) * (axes.value.spanSeconds ?? axes.value.end - axes.value.begin)
+    const marks = showBeats.value ? (timelineMarks?.value ?? []).map(({ index }) => index) : [];
+    const playhead = backgroundPlayhead.value;
+    const tolerance = timelineSnapRadiusPx * (curve.value?.sampleRate ?? 0) * (axes.value.spanSeconds ?? axes.value.end - axes.value.begin)
         / Math.max(1, rect.width);
     return { ...axes.value, left: rect.left, top: rect.top, width: rect.width, height: rect.height,
-        snapTime: (index) => snapTimelineSample(index, marks, tolerance) };
+        timeDetents: playhead === null ? marks : [...marks, playhead], snapTime: (index) => snapTimelineSample(index, marks, tolerance) };
 }
 function pointCursorPosition(control: SVGElement | null, target: NodeAddress, id: number) {
     const svg = surface.value;
@@ -267,18 +289,8 @@ function pointCursorPosition(control: SVGElement | null, target: NodeAddress, id
     const point = edits.drafts(target).find((point) => point.id === id) ?? curve.value?.points.find((point) => point.id === id);
     if (!point || !axes.value) return null;
     const rect = svg.getBoundingClientRect();
-    const timeline = svg.closest(".timeline-scope");
-    const viewport = timeline?.getBoundingClientRect();
-    const rulerBottom = timeline?.querySelector(":scope > .timeline-heading")?.getBoundingClientRect().bottom;
-    const left = Math.max(0, rect.left, viewport?.left ?? 0), right = Math.min(window.innerWidth, rect.right, viewport?.right ?? Infinity);
-    const top = Math.max(0, rect.top, viewport?.top ?? 0, rulerBottom ?? 0), bottom = Math.min(window.innerHeight, rect.bottom, viewport?.bottom ?? Infinity);
-    if (right - left < 4 || bottom - top < 4) return null;
-    const pointLeft = rect.left + pointX(point) * rect.width / width.value;
-    const pointTop = rect.top + y(point.value) * rect.height / height.value;
-    if (!Number.isFinite(pointLeft) || !Number.isFinite(pointTop)) return null;
-    const x = Math.max(left + 2, Math.min(right - 2, pointLeft));
-    const yPosition = Math.max(top + 2, Math.min(bottom - 2, pointTop));
-    return svg.contains(document.elementFromPoint(x, yPosition)) ? { x, y: yPosition } : null;
+    return visibleCursorDestination(svg, { x: rect.left + pointX(point) * rect.width / width.value,
+        y: rect.top + y(point.value) * rect.height / height.value });
 }
 function start(event: PointerEvent, id: number, kind: CurveDragKind = "point") {
     if (!editable.value || event.button !== 0) return;
@@ -475,7 +487,7 @@ onBeforeUnmount(() => {
 <template>
     <NodeLane :mode="mode">
         <div class="automation-surface">
-            <RulerGraduations class="clip-ruler" :ticks="ticks" :label-inset="valueLabelInset" :hide-labels="hideLabels" compact />
+            <RulerGraduations v-if="!showBeats" class="clip-ruler" :ticks="ticks" :label-inset="valueLabelInset" :hide-labels="hideLabels" compact />
             <svg ref="surface" class="automation-curve" :viewBox="`0 0 ${width} ${height}`" preserveAspectRatio="none"
                 :aria-label="node.displayName || 'Automation curve'" :aria-description="curveStatus || curveShortcuts"
                 :data-status-hint="curveStatus" :data-status-shortcuts="curveStatus ? undefined : curveShortcuts"
@@ -495,10 +507,10 @@ onBeforeUnmount(() => {
                     <path v-if="minPath" :d="minPath" />
                     <path v-if="maxPath" :d="maxPath" class="upper-bound" />
                 </g>
-                <g v-if="snapGuide" class="value-snap-guide" aria-hidden="true">
+                <g v-if="snapLines.length" class="snap-guides" aria-hidden="true">
                     <defs>
                         <linearGradient :id="snapGradientId" gradientUnits="userSpaceOnUse"
-                            :x1="snapGuide.x - snapFadeWidth" :x2="snapGuide.x + snapFadeWidth" y1="0" y2="0">
+                            :x1="-snapFadeLength" :x2="snapFadeLength" y1="0" y2="0">
                             <stop offset="0" stop-opacity="0" />
                             <stop offset=".25" stop-opacity=".2" />
                             <stop offset=".5" stop-opacity=".95" />
@@ -506,9 +518,9 @@ onBeforeUnmount(() => {
                             <stop offset="1" stop-opacity="0" />
                         </linearGradient>
                     </defs>
-                    <line :x1="valueLabelInset" :x2="width" :y1="snapGuide.y" :y2="snapGuide.y"
+                    <line v-for="guide in snapLines" :key="guide.axis" :x1="guide.start" :x2="guide.end" y1="0" y2="0" :transform="guide.transform"
                         :stroke="`url(#${snapGradientId})`" stroke-width="1.25" vector-effect="non-scaling-stroke" />
-                    <text v-if="!hideLabels" x="4" :y="valueLabelY(snapGuide.y)">{{ snapGuide.value }}</text>
+                    <text v-if="snapGuide && !hideLabels" x="4" :y="valueLabelY(snapGuide.y)">{{ snapGuide.value }}</text>
                 </g>
                 <rect v-if="selectionRect" v-bind="selectionRect" class="point-selection" aria-hidden="true" />
                 <g v-for="point in handles" :key="`tension-${point.id}`" class="curve-tension"
@@ -581,11 +593,11 @@ onBeforeUnmount(() => {
 .value-guides line { stroke: var(--vscode-foreground); stroke-opacity: .08; }
 .value-guides .unit line { stroke-opacity: .15; }
 .value-guides .zero line { stroke-opacity: .22; }
-:is(.value-guides, .value-snap-guide) text { font-size: 9px; font-variant-numeric: tabular-nums; }
+:is(.value-guides, .snap-guides) text { font-size: 9px; font-variant-numeric: tabular-nums; }
 .value-guides text { fill: var(--vscode-descriptionForeground); opacity: .75; }
-.value-snap-guide { pointer-events: none; color: var(--vscode-charts-blue, #3794ff); }
-.value-snap-guide stop { stop-color: currentColor; }
-.value-snap-guide text { fill: currentColor; font-weight: 600; }
+.snap-guides { pointer-events: none; color: var(--vscode-charts-blue, #3794ff); }
+.snap-guides stop { stop-color: currentColor; }
+.snap-guides text { fill: currentColor; font-weight: 600; }
 .automation-bound-traces { pointer-events: none; }
 .automation-bound-traces path { fill: none; stroke: var(--vscode-charts-blue, #3794ff); stroke-width: 1; opacity: .55; stroke-dasharray: 3 3; }
 .automation-bound-traces .upper-bound { stroke: var(--vscode-charts-orange, #d18616); }

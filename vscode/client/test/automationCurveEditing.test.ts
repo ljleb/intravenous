@@ -72,6 +72,53 @@ test("rectangle selection toggles and unions points, then moves a selected group
     assert.equal(h.closed(), 1);
 });
 
+test("horizontal beat detents hold the authored sample through the same travel as value detents", async () => {
+    const h = harness();
+    const beat = 96000n;
+    const gridAxes = { ...axes, timeDetents: [beat] };
+    assert.equal(h.edits.begin(target, 1, 7, gridAxes, { x: 10, y: 50 }), true);
+    h.edits.moveBy(7, { x: 5, y: 0 });
+    assert.equal(h.edits.activePoint()?.sampleIndex, 72000n);
+    assert.equal(h.edits.activeTimeSnap(target), null);
+    h.edits.moveBy(7, { x: 5, y: 0 });
+    assert.equal(h.edits.activeTimeSnap(target)?.sampleIndex, beat);
+    h.edits.moveBy(7, { x: 24, y: 0 });
+    assert.equal(h.edits.activePoint()?.sampleIndex, beat);
+    h.edits.moveBy(7, { x: 1, y: 0 });
+    assert.equal(h.edits.activePoint()?.sampleIndex, 100800n);
+    assert.equal(h.edits.activeTimeSnap(target), null);
+    h.edits.moveBy(7, { x: -1, y: 0 });
+    assert.equal(h.edits.activeTimeSnap(target)?.sampleIndex, beat);
+    assert.equal(h.edits.activeTimeSnap({ instanceId: "other" }), null);
+    const finished = h.edits.finish();
+    assert.equal(h.edits.activeTimeSnap(target), null);
+    await finished;
+});
+
+test("a selected group uses the grabbed point's beat detent and keeps the other point offsets", async () => {
+    const h = harness();
+    h.edits.selectPoints(target, [1, 2]);
+    assert.equal(h.edits.begin(target, 1, 7, { ...axes, timeDetents: [96000n] }, { x: 10, y: 50 }), true);
+    h.edits.moveBy(7, { x: 18, y: 0 });
+    assert.equal(h.edits.activeTimeSnap(target)?.sampleIndex, 96000n);
+    assert.deepEqual(h.edits.drafts(target).map(({ sampleIndex }) => sampleIndex), [96000n, 288000n]);
+    await h.edits.finish();
+});
+
+test("a new point snaps at pickup and starts its drag inside the beat detent", async () => {
+    const h = harness();
+    const beat = 96000n;
+    const gridAxes = { ...axes, timeDetents: [beat], snapTime: (index: bigint) => index === 86400n ? beat : index };
+    assert.equal(h.edits.begin(target, null, 7, gridAxes, { x: 18, y: 50 }), true);
+    assert.equal(h.edits.activeTimeSnap(target)?.sampleIndex, beat);
+    h.edits.moveBy(7, { x: 12, y: 0 });
+    assert.equal(h.edits.activePoint()?.sampleIndex, beat);
+    h.edits.moveBy(7, { x: 1, y: 0 });
+    assert.equal(h.edits.activePoint()?.sampleIndex, 100800n);
+    assert.equal(h.edits.activeTimeSnap(target), null);
+    await h.edits.finish();
+});
+
 test("dragging an unselected control point preserves a separate selection", async () => {
     const moves: number[] = [];
     const h = harness(async (event) => { moves.push((serializeNodeEvent(event).payload as { id: number }).id); });
@@ -507,7 +554,7 @@ test("Shift switches the interpolation inside a covered curve without moving the
     await h.edits.finish();
 });
 
-test("both drag modes choose the order on either half of the same sample detent", async () => {
+test("both drag modes choose order within one detent when a beat and points share a sample", async () => {
     for (const shift of [false, true]) {
         const sent: Array<{ ordered_ids?: number[] }> = [];
         const h = harness(async (event) => { sent.push(serializeNodeEvent(event).payload as typeof sent[number]); }, 3);
@@ -516,9 +563,10 @@ test("both drag modes choose the order on either half of the same sample detent"
         h.edits.reconcile(scope(2, data));
         const ids = () => automationWindow(h.edits.view(target)!, 0, 10, h.edits.drafts(target)).points.map(({ id }) => id);
         assert.deepEqual(ids(), [1, 3, 2]);
-        assert.equal(h.edits.begin(target, 1, 7, axes, { x: 10, y: 50 }, "point", shift), true);
+        assert.equal(h.edits.begin(target, 1, 7, { ...axes, timeDetents: [240000n] }, { x: 10, y: 50 }, "point", shift), true);
         h.edits.move(7, { x: 54, y: 50 });
         assert.equal(h.edits.activePoint()?.sampleIndex, 240000n);
+        assert.equal(h.edits.activeTimeSnap(target)?.sampleIndex, 240000n);
         assert.deepEqual(ids(), [1, 3, 2]);
         h.runTimer();
         await new Promise<void>((resolve) => setImmediate(resolve));
@@ -530,6 +578,7 @@ test("both drag modes choose the order on either half of the same sample detent"
         h.edits.setPreservePointType(shift);
         h.edits.move(7, { x: 78, y: 50 });
         assert.equal(h.edits.activePoint()?.seconds, 5.4);
+        assert.equal(h.edits.activeTimeSnap(target), null);
         h.edits.move(7, { x: 54, y: 50 });
         assert.deepEqual(ids(), [1, 3, 2]);
         h.edits.move(7, { x: 66, y: 50 });

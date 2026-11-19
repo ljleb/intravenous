@@ -310,16 +310,21 @@ void Observations::collect(Clock::time_point now)
                 if (interest.window) {
                     auto capture = std::ranges::find_if(windows_,
                         [&](auto const& item) { return same_window(item.interest, interest); });
+                    bool const has_ready_payload = capture != windows_.end() && capture->payload
+                        && (*capture->payload)["status"] == "ready";
+                    // A refresh can finish pending while playback prepares a seek.
+                    // Keep the ready window until the retry produces a result.
                     if (capture != windows_.end() && capture->query
-                        && capture->query->complete.load(std::memory_order_acquire)) {
+                        && capture->query->complete.load(std::memory_order_acquire)
+                        && (!has_ready_payload
+                            || capture->query->result.status != ObservationWindowResult::Status::pending_execution)) {
                         auto payload = window_payload(*capture);
                         payload["id"] = interest.id;
                         payload["outdated"] = capture->query->result.status == ObservationWindowResult::Status::ready
                             && capture->query->result.data_version < execution_data_version_;
                         windows.push_back(std::move(payload));
                         if (capture->body) batch.bodies.push_back(capture->body);
-                    } else if (capture != windows_.end() && capture->payload
-                        && (*capture->payload)["status"] == "ready") {
+                    } else if (has_ready_payload) {
                         auto payload = *capture->payload;
                         payload["id"] = interest.id;
                         payload["outdated"] = true;

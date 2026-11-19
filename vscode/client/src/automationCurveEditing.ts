@@ -15,7 +15,8 @@ import { automationCycleSeconds, automationSampleIndex, automationUnitsPerPixel,
 export { automationCycleSeconds, automationWindow } from "./automationCurveGeometry";
 export type { AutomationCurve, AutomationPoint, CurveInterpolation } from "./automationCurveGeometry";
 export type CurveAxes = { left: number; top: number; width: number; height: number;
-    begin: number; end: number; spanSeconds?: number; ruler?: AutomationValueRuler; snapTime?: (index: bigint) => bigint } & AutomationValueAxis;
+    begin: number; end: number; spanSeconds?: number; ruler?: AutomationValueRuler;
+    timeDetents?: readonly bigint[]; snapTime?: (index: bigint) => bigint } & AutomationValueAxis;
 export type CurveDragKind = "point" | "tension";
 export const automationTensionLimits = { min: 0, max: 1, defaultValue: 1 } as const;
 type Transport = { send(target: NodeAddress, event: NodeEvent): Promise<void>; gesture(target: NodeAddress): NodeEventGesture };
@@ -25,6 +26,7 @@ type PointDrag = {
     adding: boolean; appeared: boolean; placing: boolean; deleteOnClick: boolean; moved: boolean;
     initialSlot: number; gapAttachment: GapAttachment;
     timeAt?: (pixels: number) => PointTime; time?: PointTime; sentOrder: readonly number[]; limits: TimeLimits;
+    snappedTime?: bigint;
     segments: ReadonlyMap<number, SetSegmentPayload>; sentSegments: ReadonlyMap<number, SetSegmentPayload>;
     baseSegments: ReadonlyMap<number, SetSegmentPayload>; touched: Set<number>;
 };
@@ -207,6 +209,12 @@ export class AutomationCurveEditing {
         return drag && !drag.finishing && drag.key === addressKey(target) && drag.snappedValue !== undefined
             ? { point: drag.desired, value: drag.snappedValue } : null;
     }
+    activeTimeSnap(target: NodeAddress): { point: AutomationPointPosition; sampleIndex: bigint } | null {
+        const drag = this.active;
+        const sampleIndex = drag?.pointDrag?.snappedTime;
+        return drag && !drag.finishing && drag.key === addressKey(target) && sampleIndex !== undefined
+            ? { point: drag.desired, sampleIndex } : null;
+    }
     sensitivityHint(): string | undefined {
         return this.active?.finishing ? undefined : this.active?.sensitivity?.hint();
     }
@@ -266,7 +274,9 @@ export class AutomationCurveEditing {
             neighbors, byId: visiblePoints, base: desired, adding, appeared: !adding && curve.points.some(({ id }) => id === initial.id),
             placing: !shift && !companions.length, deleteOnClick: !adding && shift, moved: false,
             initialSlot, gapAttachment,
-            timeAt: position && !companions.length ? automationTimeDrag(neighbors, initial, secondsPerPixel, curve.sampleRate!, axes.snapTime) : undefined,
+            timeAt: position ? automationTimeDrag(companions.length ? [] : neighbors, initial,
+                secondsPerPixel, curve.sampleRate!, axes.timeDetents) : undefined,
+            snappedTime: adding && axes.timeDetents?.includes(initial.sampleIndex!) ? initial.sampleIndex : undefined,
             sentOrder: [],
             limits: companions.length ? orderedTimeLimits(points, new Set([initial.id, ...companions.map((point) => point.id)])) : {},
             segments: placed?.segments ?? new Map(), sentSegments: new Map(), baseSegments: placed?.segments ?? new Map(),
@@ -321,18 +331,13 @@ export class AutomationCurveEditing {
             let index = drag.desired.sampleIndex;
             let value: number;
             const previousSnap = drag.snappedValue;
-            if (grab && drag.sensitivity) {
-                if (position.x !== previous?.x || (!pointDrag.time && position.x !== grab.x)) {
-                    const pixels = position.x - grab.x;
-                    if (pointDrag.timeAt) {
-                        time = pointDrag.timeAt(pixels);
-                        index = time.sampleIndex;
-                    } else {
-                        const delta = automationSampleIndex(pixels / axes.width * (axes.spanSeconds ?? axes.end - axes.begin), sampleRate);
-                        if (delta === undefined) return;
-                        index = initial.sampleIndex! + delta;
-                        index = axes.snapTime?.(index) ?? index;
-                    }
+            const previousTimeSnap = pointDrag.snappedTime;
+            if (grab && drag.sensitivity && pointDrag.timeAt) {
+                if (position.x !== previous?.x) {
+                    const next = pointDrag.timeAt(position.x - grab.x);
+                    index = next.sampleIndex;
+                    pointDrag.snappedTime = next.snappedTime;
+                    if (!drag.companions.length) time = next;
                 }
                 const vertical = -position.y;
                 const { sensitivity } = drag;
@@ -348,17 +353,18 @@ export class AutomationCurveEditing {
                 const next = curvePointAt(axes, position, sampleRate);
                 index = next.sampleIndex;
                 value = next.value;
+                pointDrag.snappedTime = index !== undefined && axes.timeDetents?.includes(index) ? index : undefined;
             }
             if (index === undefined) return;
             if (drag.companions.length) {
                 const { limits } = pointDrag;
-                let delta = index - initial.sampleIndex!;
-                if (!grab) delta = BigInt.asIntN(64, delta);
+                let delta = BigInt.asIntN(64, index - initial.sampleIndex!);
                 if (limits.min !== undefined && delta < limits.min) delta = limits.min;
                 if (limits.max !== undefined && delta > limits.max) delta = limits.max;
                 index = initial.sampleIndex! + delta;
             }
             const sampleIndex = BigInt.asIntN(64, index);
+            if (pointDrag.snappedTime !== sampleIndex) pointDrag.snappedTime = undefined;
             const authoredValue = Math.fround(value);
             const { base, neighbors } = pointDrag;
             const desired = { ...base, sampleIndex, seconds: Number(sampleIndex) / sampleRate, value: authoredValue,
@@ -369,7 +375,7 @@ export class AutomationCurveEditing {
             const slotChanged = time !== undefined && time.slot !== previousSlot;
             if (!Number.isFinite(authoredValue) || (sampleIndex === drag.desired.sampleIndex && authoredValue === drag.desired.value
                 && desired.order === drag.desired.order && !slotChanged)) {
-                if (drag.snappedValue !== previousSnap) this.changed();
+                if (drag.snappedValue !== previousSnap || pointDrag.snappedTime !== previousTimeSnap) this.changed();
                 return;
             }
             if (time && slotChanged && !pointDrag.adding) {

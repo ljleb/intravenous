@@ -1,7 +1,46 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { timelineTicks } from "../webview/timeline/geometry";
+import { timelineTimeDrag } from "../src/timelineTimeDrag";
+import { selectVisibleTimelineMarks, snapTimelineSample, timelineTicks } from "../webview/timeline/geometry";
 import { compactWidthPx, editableHeightPx, effectiveDisplayMode, nanoHeightPx } from "../webview/presentation/displayMode";
+
+test("the ruler keeps coarser coincident beats and snapping only uses the displayed marks", () => {
+    const displayed = selectVisibleTimelineMarks([
+        { index: 160n, x: 16, depth: 3 },
+        { index: 110n, x: 11, depth: 2 },
+        { index: 240n, x: 24, depth: 1 },
+        { index: 160n, x: 16, depth: 0 },
+        { index: 60n, x: 6, depth: 1 },
+        { index: 0n, x: 0, depth: 2 },
+    ]);
+    assert.deepEqual(displayed.map(({ index, depth }) => [index, depth]), [[60n, 1], [160n, 0], [240n, 1]]);
+    const targets = displayed.map(({ index }) => index);
+    assert.equal(snapTimelineSample(112n, targets, 5), 112n);
+    assert.equal(snapTimelineSample(165n, targets, 5), 160n);
+    assert.equal(snapTimelineSample(166n, targets, 5), 166n);
+});
+
+test("drag detents add pointer travel and keep the adjacent samples reachable in either direction", () => {
+    const anchor = (1n << 53n) + 1n;
+    const drag = timelineTimeDrag(anchor, 1, 1, [anchor + 20n, anchor + 20n, anchor - 20n]);
+    for (const direction of [-1, 1]) {
+        const sign = BigInt(direction);
+        assert.equal(drag(19 * direction).sampleIndex, anchor + sign * 19n);
+        for (const travel of [20, 32, 44])
+            assert.equal(drag(travel * direction).snappedIndex, anchor + sign * 20n);
+        assert.equal(drag(45 * direction).sampleIndex, anchor + sign * 21n);
+        assert.equal(drag(45 * direction).snappedIndex, undefined);
+    }
+});
+
+test("dragging from a snap target starts inside its detent", () => {
+    const drag = timelineTimeDrag(100n, 1, 1, [100n, 120n]);
+    assert.equal(drag(12).sampleIndex, 100n);
+    assert.equal(drag(13).sampleIndex, 101n);
+    assert.equal(drag(31).sampleIndex, 119n);
+    assert.equal(drag(56).sampleIndex, 120n);
+    assert.equal(drag(57).sampleIndex, 121n);
+});
 
 test("timeline ruler maps time to a shared horizontal position", () => {
     const ticks = timelineTicks({ beginSeconds: 2, endSeconds: 12 }, 900);

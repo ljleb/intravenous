@@ -34,3 +34,8 @@ A `TriggerEvent` input receives an occurrence at every mark.
 The node represents tempo to six decimal places. The subdivision factors can
 multiply to at most 1,024. The finest interval must span at least one project
 sample. The node rounds a mark to the nearest sample and advances on ties.
+
+Connect the Beats output to the `beats` input of `iv.builtin.timeline` to use
+it as a project snap grid. The ruler combines marks from the project's Timeline
+nodes, including Timeline nodes inside modules. Seeking and automation point
+editing snap to the marks visible at the current zoom level.

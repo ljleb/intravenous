@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { Duplex } from "node:stream";
 import { JsonRpcSocketClient } from "./rpcClient";
-import type { CursorWarp } from "./graphEditorProtocol";
+import type { CursorWarp, TraceLog } from "./graphEditorProtocol";
 
 const initialRestartDelayMs = 1000;
 const maximumRestartDelayMs = 30000;
@@ -68,19 +68,26 @@ export class NativeClientHelper {
             if (!run.cursorWarp) {
                 const reason = typeof params.cursorWarpUnavailableReason === "string" ? params.cursorWarpUnavailableReason
                     : "The native helper reported no cursor warp support for the current display.";
-                this.log(`Automation cursor return is unavailable. ${reason}`);
+                this.log(`Native cursor return is unavailable. ${reason}`);
             }
         }, (error) => { if (run.rpc) stop(error.message); });
         run.readyTimer = setTimeout(() => stop("timed out waiting for readiness"), readyTimeoutMs);
         void run.rpc.connect().catch((error: Error) => stop(error.message));
     }
 
-    warpCursor(request: CursorWarp, hideCursor = false, completed?: () => void): void {
+    warpCursor(request: CursorWarp, { hideCursor = false, followPointer = false, completed, trace }: {
+        hideCursor?: boolean; followPointer?: boolean; completed?: () => void; trace?: TraceLog;
+    } = {}): void {
         const run = this.running;
         const now = Date.now();
         if (!request) return;
-        const skipped = (detail: string) => this.log(`Cursor return skipped. ${detail}`);
+        const skipped = (detail: string) => {
+            trace?.("Native cursor return skipped", { reason: detail });
+            this.log(`Cursor return skipped. ${detail}`);
+        };
         if (!run?.cursorWarp || !run.rpc || !run.socket?.writable || run.socket.writableNeedDrain) {
+            trace?.("Native helper unavailable", { launched: !!run, ready: run?.readyAt !== undefined,
+                cursorWarp: run?.cursorWarp, writable: run?.socket?.writable, backpressure: run?.socket?.writableNeedDrain });
             if (run?.readyAt === undefined || run.cursorWarp)
                 skipped("The helper is not ready for cursor return.");
             return;
@@ -94,10 +101,17 @@ export class NativeClientHelper {
         }
         const params = { originX, originY, deltaX, deltaY, expiresAt,
             ...(screenOrigin && { screenOrigin: { x: screenOrigin.x, y: screenOrigin.y } }),
-            ...(hideCursor && { hideCursor: true }) };
-        if (!completed || !run.cursorWarpResult) { run.rpc.notify("native.warpCursor", params); return; }
+            ...(hideCursor && { hideCursor: true }),
+            ...(followPointer && { followPointer: true }),
+            ...(trace && { trace: true }) };
+        const expectsReply = !!completed && run.cursorWarpResult;
+        trace?.("Native warp dispatched", { hideCursor, followPointer, expectsReply, expiresInMs: expiresAt - now });
+        if (!expectsReply) { run.rpc.notify("native.warpCursor", params); return; }
         void run.rpc.request<{ moved: boolean }>("native.warpCursor", params).then((result) => {
-            if (result?.moved && this.running === run && Date.now() < expiresAt) completed();
+            const elapsedMs = Date.now() - now;
+            const confirmed = result?.moved === true && this.running === run && now + elapsedMs < expiresAt;
+            trace?.("Native warp replied", { moved: result?.moved, confirmed, elapsedMs });
+            if (confirmed) completed?.();
         }).catch((error) => skipped(`The helper could not confirm cursor return. ${String(error)}`));
     }
 

@@ -3,6 +3,7 @@ import type { TimelineMark } from "./timelineContext";
 
 export type RulerTick = { x: number; label: string; sampleLabel?: string; minor?: boolean };
 export const rulerMarkerPoints = "-5.5,0 5.5,0 0,7";
+export const timelineSnapRadiusPx = 6;
 
 // Shared numeric graduation geometry. The domain owns its units and labels;
 // timeline and meter renderers share tick placement and visual presentation.
@@ -29,6 +30,10 @@ export function numericTicks(begin: number, end: number, width: number,
 
 // Frontend geometry only; this window makes no claim that audio data exist.
 export type TimelineWindow = { beginSeconds: number; endSeconds: number };
+export function timelineSampleFraction(index: bigint, window: TimelineWindow & { spanSeconds?: number }, sampleRate: number): number {
+    return automationSampleOffset(index, window.beginSeconds, sampleRate) / (window.spanSeconds ?? window.endSeconds - window.beginSeconds);
+}
+
 export function timelineTicks(window: TimelineWindow, width: number) {
     return numericTicks(window.beginSeconds, window.endSeconds, width, (value) => `${value} s`)
         .map(({ value, ...tick }) => ({ ...tick, seconds: value }));
@@ -55,12 +60,26 @@ export function automationTimelineTicks(window: TimelineWindow & { spanSeconds?:
     return ticks.sort((a, b) => a.x - b.x);
 }
 
-export function snapTimelineSample(index: bigint, marks: readonly TimelineMark[], tolerance: number): bigint {
+export function selectVisibleTimelineMarks(candidates: readonly TimelineMark[]): TimelineMark[] {
+    const spacing = 8;
+    const displayed = new Map<number, TimelineMark>();
+    for (const mark of [...candidates].sort((a, b) => a.depth - b.depth || a.x - b.x)) {
+        const slot = Math.floor(mark.x / spacing);
+        const overlaps = [slot - 1, slot, slot + 1].some((neighbor) => {
+            const accepted = displayed.get(neighbor);
+            return accepted !== undefined && Math.abs(accepted.x - mark.x) < spacing;
+        });
+        if (!overlaps) displayed.set(slot, mark);
+    }
+    return [...displayed.values()].sort((a, b) => a.x - b.x);
+}
+
+export function snapTimelineSample(index: bigint, marks: readonly bigint[], tolerance: number): bigint {
     let snapped = index;
     let nearest = tolerance;
     for (const mark of marks) {
-        const distance = Math.abs(Number(BigInt.asIntN(64, mark.index - index)));
-        if (distance <= nearest) { snapped = mark.index; nearest = distance; }
+        const distance = Math.abs(Number(BigInt.asIntN(64, mark - index)));
+        if (distance <= nearest) { snapped = mark; nearest = distance; }
     }
     return snapped;
 }

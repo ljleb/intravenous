@@ -10,6 +10,11 @@ type Context = { gestures: ManualControlGestures; version: Ref<number>;
 const key: InjectionKey<Context> = Symbol("iv.manualControls");
 export function provideManualControls(context: Context): void { provide(key, context); }
 export function useOptionalManualControls(): Context | null { return inject(key, null); }
+export function readManualControlValue(context: Context | null, id: ManualControlId | null,
+    descriptor?: ManualControlDescriptor): number | undefined {
+    void context?.version.value;
+    return context && id ? context.gestures.currentValue(id, descriptor) : descriptor?.value;
+}
 
 // Semantic presentation capability; transport and backend interaction IDs stay
 // in the host. Specialized components can use the same input as the fallback.
@@ -32,11 +37,7 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: M
         const pointerControl = context?.gestures.pointerControl();
         return !!id.value && !!pointerControl && manualControlKey(id.value) === manualControlKey(pointerControl);
     });
-    const signedValue = computed(() => {
-        void context?.version.value;
-        return state.value?.value ?? (id.value ? context?.gestures.liveValue(id.value) : undefined)
-            ?? descriptor.value?.value;
-    });
+    const signedValue = computed(() => readManualControlValue(context, id.value, descriptor.value));
     const value = computed(() => toValue(direction) === "output" && signedValue.value !== undefined
         ? Math.abs(signedValue.value) : signedValue.value);
     const inverted = computed(() => {

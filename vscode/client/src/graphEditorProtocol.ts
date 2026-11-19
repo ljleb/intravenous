@@ -15,6 +15,12 @@ export type CursorWarp = {
     deltaX: number; deltaY: number;
     expiresAt: number;
 };
+export type CursorReturnPolicy = "automationPoint" | "playhead" | "wrapped";
+export type TraceDetails = Record<string, unknown>;
+export type TraceLog = (step: string, details?: TraceDetails) => void;
+export type CursorReturnMessage =
+    | { type: "returnCursor"; warp: CursorWarp; requestId: number; policy?: CursorReturnPolicy; traceId?: string }
+    | { type: "cursorReturnSkipped"; detail: string };
 
 type SaveGraphLayoutMessage = {
     type: "saveGraphLayout";
@@ -40,11 +46,13 @@ export type GraphEditorState = {
 };
 export type GraphEditorAction = "addNode" | "editNode" | "deleteNode" | "openNodeSource" | "createPackage" | "deleteConnection" | "undo" | "redo";
 export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorState }
-    | { type: "playbackUpdate"; snapshot: PlaybackSnapshot | null; requestedPosition: string | null }
+    | { type: "playbackUpdate"; snapshot: PlaybackSnapshot | null; requestedPosition: string | null;
+        releasedDragPosition: string | null; dragReleaseId?: string }
     | ObservationResponse
     | { type: "observationVisibility"; visible: boolean }
     | { type: "observationUpdate"; update: ObservationDelivery; sequence: number; previousSequence?: number }
     | { type: "startObservationProfile"; durationMs: number }
+    | { type: "startPlayheadTrace"; traceId: string }
     | NodeEventResponse
     | { type: "manualControlState"; interactions: ManualControlInteractionState[]; live: ManualControlLiveValue[] }
     | { type: "graphWindowFocus"; focused: boolean }
@@ -53,14 +61,14 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
 export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "playbackToggle" }
     | { type: "playbackSeek"; position: string }
-    | { type: "playbackDrag"; phase: PlaybackDragPhase; position: string }
+    | { type: "playbackDrag"; phase: PlaybackDragPhase; position: string; releaseId?: string }
     | ObservationHostRequest
     | { type: "observationResync" }
     | { type: "observationProfile"; summary: ObservationProfileSummary }
+    | { type: "playheadTrace"; traceId: string; step: string; details?: TraceDetails }
     | NodeEventHostRequest
     | { type: "graphInteractionHint"; hint: StatusHint | null }
-    | { type: "warpCursorAfterPointDrag" | "warpCursorAfterMiddleDrag"; warp: CursorWarp; requestId: number }
-    | { type: "cursorReturnSkipped"; detail: string }
+    | CursorReturnMessage
     | { type: "manualControlAction"; action: ManualControlAction }
     | { type: "deleteSelectedLanes"; instanceIds: string[] }
     | { type: "setManualInputEnabled"; target: NodeAddress; inputName: string; enabled: boolean }

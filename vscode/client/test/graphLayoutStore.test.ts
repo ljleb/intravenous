@@ -20,9 +20,11 @@ test("graph layout saves serialize, survive a new store, and leave project inten
         const key = addressKey({ instanceId: "curve" });
         const last = readLayout({ positions: { node: { x: 200, y: -300 } }, viewport: { x: 10, y: 20, scale: 0.5 },
             automationBounds: { [key]: { min: -2 }, inverted: { min: 1, max: 0 } },
-            timeline: { beginSeconds: -5, secondsPerPixel: 0.02, laneHeight: 640, scrollTop: 123 } });
+            timeline: { beginSeconds: -5, secondsPerPixel: 0.02, laneHeight: 640, scrollTop: 123 }, timelineGrid: "beats" });
         await Promise.all([store.save(first), store.save(last)]);
         assert.deepEqual(await new GraphLayoutStore(directory).load(), last);
+        assert.equal(readLayout(null).timelineGrid, "seconds");
+        assert.equal(readLayout({ timelineGrid: "invalid" }).timelineGrid, "seconds");
         assert.deepEqual(placeNodes([], last).automationBounds, { [key]: { min: -2 } });
         assert.equal(await fs.readFile(project, "utf8"), "project intent\n");
         assert.deepEqual(await fs.readdir(path.dirname(store.filePath)), ["graph-layout.json"]);

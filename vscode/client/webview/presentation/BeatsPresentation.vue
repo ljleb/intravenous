@@ -5,6 +5,7 @@ import { beatBpm, beatGridTicks, defaultBeatBpm, maximumBeatBpm, maximumBeatsPer
 import { addressKey } from "../../src/graphScope";
 import { useOptionalGraphEditor } from "../graph/context";
 import { useTimelineWindow } from "../timeline/timelineContext";
+import { usePlayheadSeek } from "../timeline/usePlayheadSeek";
 import type { NodeDisplayMode } from "./displayMode";
 import GenericPresentation from "./GenericPresentation.vue";
 import Knob from "./Knob.vue";
@@ -58,6 +59,7 @@ const ticks = computed(() => {
         beginSeconds: window.beginSeconds, spanSeconds: window.spanSeconds ?? window.endSeconds - window.beginSeconds,
     }, window.sampleRate, width.value) : [];
 });
+const beginSeek = usePlayheadSeek(surface, () => time?.value, () => ticks.value.map(({ sample }) => sample));
 const labels = computed(() => {
     if (props.mode !== "editable") return [];
     let nextX = 0;
@@ -116,7 +118,8 @@ onBeforeUnmount(() => resize?.disconnect());
 
 <template>
     <NodeLane v-if="time" :mode="mode">
-        <div ref="surface" class="beat-grid" :data-status-hint="status">
+        <div ref="surface" class="beat-grid" :data-status-hint="status" data-status-shortcuts="Click/drag seek · Space ▶/Ⅱ"
+            @pointerdown="beginSeek">
             <svg class="beat-grid-marks" role="img" aria-label="Beats grid preview" :aria-description="status">
                 <line v-for="tick in ticks" :key="String(tick.sample)" :x1="tick.x" :x2="tick.x"
                     :y1="tick.depth === 0 ? '0%' : tick.depth === 1 ? '40%' : `${100 - 40 / tick.depth}%`" y2="100%"
@@ -149,7 +152,7 @@ onBeforeUnmount(() => resize?.disconnect());
 </template>
 
 <style scoped>
-.beat-grid { position: relative; width: 100%; height: 100%; overflow: hidden; user-select: none; }
+.beat-grid { position: relative; width: 100%; height: 100%; overflow: hidden; user-select: none; touch-action: none; cursor: ew-resize; }
 .beat-grid-marks { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .beat-grid-marks line:not(.timeline-playhead) { stroke: var(--iv-port-output); stroke-opacity: .32; }
 .beat-grid-marks line.beat { stroke-opacity: .58; }

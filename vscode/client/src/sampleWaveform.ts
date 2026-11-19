@@ -1,4 +1,4 @@
-import type { ObservationWindow, ObservationWindowResult } from "./observations";
+import type { ObservationTimeSpan, ObservationWindow, ObservationWindowResult } from "./observations";
 
 export function sampleWindow(beginSeconds: number, endSeconds: number, sampleRate: number | null | undefined,
     points: number): ObservationWindow | undefined {
@@ -15,16 +15,17 @@ export type SampleWaveformGeometry = { paths: string[]; coverage: Array<{ x: num
 // The default vertical scale is -1..1; specialized presentations can supply
 // their existing bounds. This is representative sampling, not an exact envelope: connecting samples never promises to preserve intervening peaks.
 export function sampleWaveform(result: ObservationWindowResult | undefined,
-    bounds = { min: -1, max: 1 }): SampleWaveformGeometry {
+    bounds = { min: -1, max: 1 }, visible?: ObservationTimeSpan): SampleWaveformGeometry {
     const paths: string[] = [], coverage: SampleWaveformGeometry["coverage"] = [];
     if (result?.status !== "ready") return { paths, coverage };
     const pace = result.paceExponent ?? 0;
-    const rootBegin = BigInt(result.window.begin);
+    const window = visible ?? result.window;
+    const rootBegin = BigInt(window.begin);
     const nativeBegin = pace >= 0 ? rootBegin << BigInt(pace) : rootBegin >> BigInt(-pace);
     const fraction = pace >= 0 ? 0 : Number(rootBegin - (nativeBegin << BigInt(-pace))) / 2 ** -pace;
-    const nativeLength = Number(result.window.length) * 2 ** pace;
+    const nativeLength = Number(window.length) * 2 ** pace;
     if (!Number.isFinite(nativeLength) || nativeLength <= 0) return { paths, coverage };
-    const x = (index: string) => (Number(BigInt.asUintN(64, BigInt(index) - nativeBegin)) - fraction) / nativeLength * 1000;
+    const x = (index: string) => (Number(BigInt.asIntN(64, BigInt(index) - nativeBegin)) - fraction) / nativeLength * 1000;
     for (const region of result.regions) {
         const begin = Math.max(0, x(region.begin));
         const end = Math.min(1000, x(region.begin) + Number(region.length) / nativeLength * 1000);

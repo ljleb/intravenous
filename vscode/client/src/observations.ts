@@ -9,6 +9,7 @@ export type ObservationSource = {
 };
 export type MeterMode = "level" | "value";
 export type ObservationWindow = { begin: string; length: string; points: number; maxDepth?: number };
+export type ObservationTimeSpan = Pick<ObservationWindow, "begin" | "length">;
 export type ObservationWindowSnapshot = { epoch: number; generation: string; dataVersion: string };
 export type ObservationWindowResult = {
     id: string; window: ObservationWindow; status: "pending" | "ready" | "unavailable" | "failed";
@@ -57,16 +58,44 @@ export class ObservationValues {
     private queuedUpdate?: { update: ObservationUpdate; scopeId: string };
     readonly values = new Map<string, ObservationDisplayValue>();
     readonly windows = new Map<string, ObservationWindowResult>();
-    private desiredWindows = new Map<string, ObservationWindow>();
+    private desiredWindows = new Map<string, { source: string; window: ObservationWindow }>();
+    private readyWindows = new Map<string, ObservationWindowResult>();
     get windowSnapshot(): ObservationWindowSnapshot | undefined {
         return this.generation != null && this.dataVersion !== undefined
             ? { epoch: this.windowEpoch, generation: this.generation, dataVersion: this.dataVersion } : undefined;
     }
     expectWindows(interests: ObservationInterest[]): void {
-        this.desiredWindows = new Map(interests.filter((interest) => interest.window)
-            .map((interest) => [interest.id, interest.window!]));
+        const next = new Map(interests.filter((interest) => interest.window).map((interest) => [interest.id, {
+            source: JSON.stringify([observationSourceKey(interest.source), interest.operation]), window: interest.window!,
+        }]));
+        for (const [id, previous] of this.desiredWindows) {
+            const wanted = next.get(id);
+            if (!wanted || previous.source !== wanted.source || previous.window.maxDepth !== wanted.window.maxDepth)
+                this.forgetWindow(id);
+        }
+        this.desiredWindows = next;
         for (const [id, result] of this.windows)
-            if (!sameObservationWindow(result.window, this.desiredWindows.get(id))) this.windows.delete(id);
+            if (!sameObservationWindow(result.window, next.get(id)?.window)) this.windows.delete(id);
+    }
+    forgetWindow(id: string): void {
+        this.desiredWindows.delete(id);
+        this.windows.delete(id);
+        this.readyWindows.delete(id);
+    }
+    windowForDisplay(id: string, visible: ObservationTimeSpan | undefined = this.desiredWindows.get(id)?.window): ObservationWindowResult | undefined {
+        if (!visible) return;
+        const current = this.windows.get(id);
+        const aligned = current?.window.begin === visible.begin && current.window.length === visible.length ? current : undefined;
+        if (aligned && aligned.status !== "pending") return aligned;
+        const ready = this.readyWindows.get(id);
+        // One last ready window per active interest. Consumers project its
+        // absolute positions through the current viewport and clip to overlap.
+        if (ready) {
+            const begin = BigInt(visible.begin), old = BigInt(ready.window.begin);
+            if (old < begin + BigInt(visible.length) && begin < old + BigInt(ready.window.length))
+                return ready.outdated ? ready : { ...ready, outdated: true };
+        }
+        return aligned;
     }
     acceptGeneration(generation: number | null): boolean {
         const next = generation === null ? null : String(generation);
@@ -76,6 +105,7 @@ export class ObservationValues {
         ++this.windowEpoch;
         this.values.clear();
         this.windows.clear();
+        this.readyWindows.clear();
         const queued = this.queuedUpdate;
         if (queued && next !== null && BigInt(queued.update.generation) <= BigInt(next)) {
             this.queuedUpdate = undefined;
@@ -109,11 +139,13 @@ export class ObservationValues {
         for (const item of scope.values) this.values.set(item.id, { activationId: update.activationId,
             available: item.available, ...(item.pending ? { pending: true } : {}), value: item.value });
         for (const item of scope.windows ?? []) {
-            if (!sameObservationWindow(item.window, this.desiredWindows.get(item.id))) continue;
-            const previous = this.windows.get(item.id);
-            if (previous?.status === "ready" && item.status === "ready"
+            if (!sameObservationWindow(item.window, this.desiredWindows.get(item.id)?.window)) continue;
+            const previous = this.readyWindows.get(item.id);
+            if (previous && item.status === "ready" && sameObservationWindow(item.window, previous.window)
                 && compareObservationWindowVersions(item, previous) < 0) continue;
             this.windows.set(item.id, item);
+            if (item.status === "ready") this.readyWindows.set(item.id, item);
+            else if (item.status !== "pending") this.readyWindows.delete(item.id);
         }
         return true;
     }
@@ -126,6 +158,7 @@ export class ObservationValues {
         this.queuedUpdate = undefined;
         this.values.clear();
         this.windows.clear();
+        this.readyWindows.clear();
         this.desiredWindows.clear();
     }
 }

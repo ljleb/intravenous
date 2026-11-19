@@ -281,6 +281,18 @@ The graph holds the last applied position until the drag position is ready.
 Releasing the pointer selects the release position as the new start. Playback
 resumes from that position if it was running when the drag began. A play or
 pause command during the drag sets the state to restore on release.
+The editor keeps the release position visible through the transport handoff,
+so native cursor return can land on the displayed playhead.
+
+The Beats lane uses the same seek gesture as the ruler. The ruler snaps to its
+displayed beat marks in Beats mode. The Beats lane snaps to its own visible marks.
+During a drag, a snap adds physical pointer travel at the selected sample.
+The samples on either side stay reachable. Mouse drags use pointer lock.
+When native cursor return is available, release returns the pointer to the
+playhead or to the nearest visible edge of the drag surface.
+Object drags and middle-button pan and zoom share the native cursor return.
+Each gesture supplies a destination. The graph editor waits for pointer
+lock to end before it asks the native helper to move the cursor.
 
 Inside lanes, the playheads are drawn on surfaces with a project time axis, such
 as an automation curve or a waveform. Controls and live meters keep a clear
@@ -400,6 +412,12 @@ port accepts BeatEvent Coverage. Place Timeline nodes wherever they belong
 in the project graph, including inside subgraphs. Use graph connections to
 route beat generators and transforms to their inputs.
 
+The ruler's top-right popover selects Seconds or Beats and saves the choice in
+the project graph layout. Seconds is the default. It shows time graduations
+and disables grid snapping. Beats shows event marks and snaps to the visible
+marks. The ruler and automation lanes draw only the selected time grid. The
+editor requests Timeline event windows in Beats mode.
+
 The editor observes the resolved inputs of every Timeline node in the
 project. The observation carries event timestamps and payloads, with the
 timing and Coverage of the receiving port. The UI owns the merge rules.
@@ -408,11 +426,18 @@ For beats, it combines events by sample index and keeps the smallest
 displayed marks for its zoom level. The ruler and the snap gesture use the
 same list.
 
-When creating or dragging an automation control point, quantize to integer
-project samples while the pointer moves. Use a visible beat mark within
-the snap radius when available. With no eligible mark, use the nearest
-project sample. A change to the grid affects subsequent edits. Existing
-point positions are retained.
+The timeline draws the ruler's visible beat marks continuously over each run
+of time-aware lanes, including automation lanes. While the viewport changes,
+the editor can project overlapping data from the last ready observation window
+until the replacement arrives. A point created within the snap radius starts
+at the nearest visible mark. During
+a drag, use the same pointer-travel detents as value snapping. A beat and a
+neighboring point at the same sample share a detent. Highlight the active time
+guide in blue. The displayed background playhead at pickup also provides a
+detent, in both time-grid modes. Between detents, quantize to the nearest
+project sample. A grid change affects subsequent edits. Existing point
+positions are retained.
+[Earlier radius-only drag snapping](./historical/automation_beat_snap_before_detents_2026-11-19.md).
 
 The [previous ruler input and cover selector](./historical/ruler_coverage_input_before_timeline_nodes_2026-11-19.md)
 is preserved with its source-selection rationale.

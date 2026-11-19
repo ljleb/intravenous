@@ -20,18 +20,20 @@ export type MeterReading = {
     text: string;
 };
 function number(value: unknown): value is number { return typeof value === "number" && Number.isFinite(value); }
-export function meterReading(mode: MeterMode, result?: ObservationDisplayValue): MeterReading {
+export function meterReading(mode: MeterMode, result?: ObservationDisplayValue, gain = 1): MeterReading {
     const missing: MeterReading = { available: false, position: 0, rmsPosition: 0,
         below: false, above: false, overReference: false, text: "Unavailable" };
     if (!result?.available) return missing;
-    const peak = result.value?.peak, rms = result.value?.rms;
+    const rawPeak = result.value?.peak, rawRms = result.value?.rms;
     const samples = result.value?.samples;
     const hasSamples = typeof samples === "string" ? /^[1-9]\d*$/.test(samples)
         : typeof samples === "number" && Number.isSafeInteger(samples) && samples > 0;
-    if (!number(peak) || !number(rms) || peak < 0 || rms < 0 || !hasSamples) {
+    if (!number(rawPeak) || !number(rawRms) || rawPeak < 0 || rawRms < 0 || !hasSamples) {
         const count = result.value?.nonfinite;
         return count && count !== "0" ? { ...missing, text: `Unavailable · ${count} nonfinite samples` } : missing;
     }
+    const magnitude = Number.isFinite(gain) ? Math.abs(gain) : 1;
+    const peak = rawPeak * magnitude, rms = rawRms * magnitude;
     if (mode === "value") {
         const nonfinite = result.value?.nonfinite;
         return { available: true, position: meterPosition(peak, 0, 1), rmsPosition: meterPosition(rms, 0, 1),
@@ -76,17 +78,17 @@ export class MeterPresentationState {
     }
     get moving(): boolean { return this.active && !!this.previous && this.motion.moving; }
     get updating(): boolean { return this.active && !!this.previous && (!this.current || !!this.current.pending); }
-    reading(mode: MeterMode): MeterReading & { heldPosition: number; heldOverReference: boolean } {
+    reading(mode: MeterMode, gain = 1): MeterReading & { heldPosition: number; heldOverReference: boolean } {
         const result = !this.active ? undefined : this.updating ? this.previous : this.current;
         // The filled bar follows received peaks immediately in both directions.
         // Only the separate held marker uses presentation motion.
-        const reading = meterReading(mode, result);
+        const reading = meterReading(mode, result, gain);
         const held = meterReading(mode, result && { ...result,
-            value: { ...result.value, peak: this.displayed.peak } });
+            value: { ...result.value, peak: this.displayed.peak } }, gain);
         return { ...reading, heldPosition: held.position, heldOverReference: held.overReference };
     }
-    status(mode: MeterMode): string {
-        return this.updating ? `Updating · previous reading: ${meterReading(mode, this.previous).text}`
-            : meterReading(mode, this.active ? this.current : undefined).text;
+    status(mode: MeterMode, gain = 1): string {
+        return this.updating ? `Updating · previous reading: ${meterReading(mode, this.previous, gain).text}`
+            : meterReading(mode, this.active ? this.current : undefined, gain).text;
     }
 }

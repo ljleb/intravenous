@@ -73,10 +73,12 @@ export type GraphViewState = {
     presentationStates: PresentationStates;
     laneOrder: string[];
 };
+export type TimelineGridMode = "seconds" | "beats";
 export type GraphLayout = GraphViewState & {
     positions: Record<string, Point>;
     viewport: Point & { scale: number };
     timeline: TimelineViewport;
+    timelineGrid: TimelineGridMode;
     automationBounds?: Record<string, { min?: number; max?: number }>;
 };
 export const nodeWidth = 300;
@@ -134,6 +136,7 @@ export function readLayout(value: unknown): GraphLayout {
         ...(Object.keys(automationBounds).length ? { automationBounds } : {}),
         ...readGraphViewState(layout),
         timeline: readTimelineViewport(layout?.timeline),
+        timelineGrid: layout?.timelineGrid === "beats" ? "beats" : "seconds",
         viewport: finitePoint(view) && Number.isFinite(view.scale) && view.scale >= 0.1 && view.scale <= 2
             ? { x: view.x, y: view.y, scale: view.scale }
             : { x: 40, y: 40, scale: 1 },

@@ -91,7 +91,7 @@ export class PresentationObservations {
         else if (!this.explicit.delete(id)) return;
         if (sameSource && previous.window && next.window) { this.scheduleWindows(); return; }
         this.values.values.delete(id);
-        this.values.windows.delete(id);
+        this.values.forgetWindow(id);
         ++this.version.value;
         this.schedule();
     }
@@ -291,10 +291,7 @@ export function usePortObservation(request: () => PortObservation | undefined) {
             const wanted = request()?.window;
             if (!observations || !id.value || !wanted) return undefined;
             void observations.version.value;
-            // The scope validates replies against the submitted window. A
-            // presentation that plots absolute time can show those samples
-            // while its next viewport is still being coalesced.
-            return observations.values.windows.get(id.value);
+            return observations.values.windowForDisplay(id.value, wanted);
         }),
         value: computed(() => {
             const wanted = request();

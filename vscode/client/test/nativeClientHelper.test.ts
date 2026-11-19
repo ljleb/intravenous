@@ -103,7 +103,7 @@ test("unavailable cursor return logs the native capability reason once per launc
     run.ready(false, "The native helper was built without X11 support.");
     run.ready(false);
     helper.warpCursor(cursorWarp());
-    assert.deepEqual(messages, ["Automation cursor return is unavailable. The native helper was built without X11 support."]);
+    assert.deepEqual(messages, ["Native cursor return is unavailable. The native helper was built without X11 support."]);
     assert.deepEqual(warpMessages(run), []);
 });
 
@@ -123,8 +123,11 @@ test("cursor return preserves both coordinate pairs and can request a hidden cur
     assert.match(messages[1], /coordinates were invalid/);
     helper.warpCursor({ ...request, expiresAt: Date.now() });
     assert.match(messages[2], /^Cursor return skipped.*expired/);
-    helper.warpCursor(request, true);
-    assert.deepEqual(warpMessages(run).map(({ params }) => params), [request, { ...request, hideCursor: true }]);
+    helper.warpCursor(request, { hideCursor: true });
+    helper.warpCursor(request, { hideCursor: true, followPointer: true });
+    assert.deepEqual(warpMessages(run).map(({ params }) => params), [
+        request, { ...request, hideCursor: true }, { ...request, hideCursor: true, followPointer: true },
+    ]);
 });
 
 test("cursor return only confirms a move accepted by the helper before expiry", async (t) => {
@@ -135,6 +138,7 @@ test("cursor return only confirms a move accepted by the helper before expiry", 
     helper.start();
     run.ready(true, undefined, true);
     let completed = 0;
+    const trace: unknown[] = [];
     const confirm = () => { ++completed; };
     const reply = async (moved: boolean) => {
         const id = warpMessages(run).at(-1)?.id;
@@ -143,13 +147,17 @@ test("cursor return only confirms a move accepted by the helper before expiry", 
         await new Promise<void>((resolve) => setImmediate(resolve));
     };
 
-    helper.warpCursor(cursorWarp(), true, confirm);
+    helper.warpCursor(cursorWarp(), { hideCursor: true, completed: confirm, trace: (step, details) => trace.push([step, details]) });
     await reply(false);
     assert.equal(completed, 0);
-    helper.warpCursor(cursorWarp(), true, confirm);
+    assert.deepEqual(trace, [
+        ["Native warp dispatched", { hideCursor: true, followPointer: false, expectsReply: true, expiresInMs: 100 }],
+        ["Native warp replied", { moved: false, confirmed: false, elapsedMs: 0 }],
+    ]);
+    helper.warpCursor(cursorWarp(), { hideCursor: true, completed: confirm });
     await reply(true);
     assert.equal(completed, 1);
-    helper.warpCursor(cursorWarp(), true, confirm);
+    helper.warpCursor(cursorWarp(), { hideCursor: true, completed: confirm });
     t.mock.timers.tick(101);
     await reply(true);
     assert.equal(completed, 1);

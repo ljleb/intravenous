@@ -58,6 +58,34 @@ test("window results reject obsolete viewport positions and data versions withou
     values.receive(update({ ...data, window: next }), "viewport");
     assert.equal(values.windows.size, 0);
 });
+test("window previews reproject the last ready result while an overlapping viewport loads", () => {
+    const values = new ObservationValues();
+    values.acceptGeneration(7);
+    const data = result();
+    const source = { node: { instanceId: "curve" }, kind: "output" as const, member: "value" };
+    const request = { id: "wave", source, operation: "waveform", window: data.window };
+    const receive = (window: ObservationWindowResult) => values.receive({
+        activationId: "0", generation: "7", revision: "0", index: "0", blockSize: 0, dataVersion: "4",
+        scopes: [{ scopeId: "viewport", values: [], windows: [window] }],
+    }, "viewport");
+    values.expectWindows([request]);
+    receive(data);
+    const next = { ...data.window, begin: "6" };
+    assert.equal(values.windowForDisplay("wave", next)?.outdated, true);
+    values.expectWindows([{ ...request, window: next }]);
+    receive({ ...data, window: next, status: "pending", regions: [] });
+    const preview = values.windowForDisplay("wave");
+    assert.equal(preview?.outdated, true);
+    assert.equal(sampleWaveform(preview, undefined, next).paths[1], "M100.000,72.500L200.000,50.000");
+    assert.equal(values.windowForDisplay("wave", { ...next, begin: "10" }), undefined);
+    receive({ ...data, window: next, regions: [] });
+    assert.deepEqual(values.windowForDisplay("wave")?.regions, []);
+    values.expectWindows([{ ...request, source: { ...source, member: "another" }, window: next }]);
+    assert.equal(values.windowForDisplay("wave"), undefined);
+    receive({ ...data, window: next });
+    values.acceptGeneration(8);
+    assert.equal(values.windowForDisplay("wave"), undefined);
+});
 test("bound windows arriving before the matching graph scope are used when it arrives", () => {
     const values = new ObservationValues();
     values.acceptGeneration(7);

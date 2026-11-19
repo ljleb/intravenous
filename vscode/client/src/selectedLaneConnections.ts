@@ -9,7 +9,6 @@ export type SelectedLaneWire = {
     target: PortWireAnchor;
     connectionIds: string[];
     applied: boolean;
-    kind: GraphPortEndpoint["kind"] | "mixed";
     emphasized: boolean;
 };
 
@@ -84,10 +83,8 @@ export function selectedLaneConnections(scope: GraphScope, selected: ReadonlySet
                     if (!existing.connectionIds.includes(entry.id)) existing.connectionIds.push(entry.id);
                     existing.applied = existing.applied && entry.applied;
                     existing.emphasized ||= emphasized;
-                    if (existing.kind !== connection.kind) existing.kind = "mixed";
                 } else {
-                    wires.set(key, { key, source, target, connectionIds: [entry.id], applied: entry.applied,
-                        kind: connection.kind, emphasized });
+                    wires.set(key, { key, source, target, connectionIds: [entry.id], applied: entry.applied, emphasized });
                 }
             }
         }

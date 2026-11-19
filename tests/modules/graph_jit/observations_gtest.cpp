@@ -406,6 +406,53 @@ TEST_F(GraphJitRuntimeFixture, BackgroundInputWaveformsUseCoverageRegionsAndSequ
     }
 }
 
+TEST_F(GraphJitRuntimeFixture, BeatGridObservationReadsRootAndNestedTimelineInputs)
+{
+    auto compiled = compile("iv.test.replay.project_beat_grid", 751);
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    ObservationCollectRequest collection;
+    for (auto const& input : graph.background_evaluation_plan.public_event_coverage_inputs) {
+        if (input.type != EventTypeId::beat) continue;
+        ASSERT_TRUE(input.reconstructible);
+        ASSERT_EQ(input.sources.size(), 1u);
+        auto& query = collection.windows.emplace_back(std::make_shared<ObservationWindowQuery>());
+        query->configured_generation = graph.configured_generation.value_or(graph.project_generation);
+        query->kind = ObservationSourceKind::input;
+        query->port = input.port;
+        query->window = {.begin = index(0), .length = 44101, .points = 32, .max_depth = 2};
+    }
+    ASSERT_EQ(collection.windows.size(), 2u);
+
+    GraphExecutor executor(resources);
+    ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
+    auto const activation_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    bool activated = false;
+    while (!(activated = executor.activate_pending(index(0))) && std::chrono::steady_clock::now() < activation_deadline)
+        std::this_thread::yield();
+    ASSERT_TRUE(activated);
+
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    executor.handle_observation_collect(collection);
+    using Mark = std::pair<std::int64_t, unsigned>;
+    std::vector<std::vector<Mark>> observed;
+    for (auto const& query : collection.windows) {
+        while (!query->complete.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        ASSERT_TRUE(query->complete.load(std::memory_order_acquire));
+        ASSERT_EQ(query->result.status, ObservationWindowResult::Status::ready) << query->result.error;
+        ASSERT_TRUE(query->result.unavailable_regions.empty());
+        auto& marks = observed.emplace_back();
+        for (auto const& event : query->result.events)
+            marks.emplace_back(event.time.signed_value(), std::get<BeatEvent>(event.value).depth);
+    }
+    std::ranges::sort(observed);
+    EXPECT_EQ(observed, (std::vector<std::vector<Mark>>{
+        {{0, 0}, {7350, 2}, {14700, 2}, {22050, 1}, {29400, 2}, {36750, 2}, {44100, 1}},
+        {{0, 0}, {22050, 2}, {44100, 1}},
+    }));
+}
+
 TEST_F(GraphJitRuntimeFixture, PublicCoverageObservationReadsBeforeInternalDownmixAndAllowsDisconnection)
 {
     auto original = configured_module_graph(*revision, "iv.test.replay.stereo_coverage_boundary");

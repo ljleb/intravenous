@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, onScopeDispose } from "vue";
-import { addressKey, type Point } from "../../src/graphScope";
+import { addressKey, type Point, type TimelineGridMode } from "../../src/graphScope";
 import { orderLanes, laneRuns } from "../../src/laneSelection";
 import { KnobPointerLock } from "../../src/knobPointerLock";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
@@ -9,14 +9,17 @@ import { semanticNodeFromScopeChild } from "../presentation/semanticNode";
 import PresentationHost from "../presentation/PresentationHost.vue";
 import { presentations } from "../presentation/presentations";
 import { nodeDisplayName } from "../presentation/nodeSummary";
+import LaneSettings from "../presentation/LaneSettings.vue";
 import TimeRuler from "../timeline/TimeRuler.vue";
 import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
+import { selectVisibleTimelineMarks } from "../timeline/geometry";
 import { provideTimelineMarks, provideTimelineNavigation, provideTimelineWindow, type TimelineMark, type LaneValueGesture, type LaneValueNavigation } from "../timeline/timelineContext";
 import { initialTimelineViewport, isMiddleDoubleClick, middleClickMode, moveMiddleDrag, panTimeline, resetTimelineZoom, timelineMiddleDragAction,
     timelineWheelAction, verticalMiddleDragZoomFactor, wheelPixels, wrapTimelineCursor, zoomAnchorHint, zoomFactorForPixels, zoomMiddleDrag,
     zoomTimelineHorizontally, zoomTimelineVertically,
     type MiddleClick, type MiddleDrag, type TimelineZoomAction, type TimelineViewport } from "../../src/timelineViewport";
-import { useGraphEditor, type CursorWarpAnchor } from "./context";
+import { useGraphEditor } from "./context";
+import { cursorWarpAnchor, type CursorWarpAnchor } from "./cursorReturn";
 import { usePlayback } from "../timeline/playbackContext";
 import { useObservations } from "../presentation/observationContext";
 import { automationSampleIndex, automationSampleOffset } from "../../src/automationCurveGeometry";
@@ -26,8 +29,7 @@ const playback = usePlayback();
 const backgroundPlayheadSeconds = computed(() => playback.backgroundPlayhead.value === null ? null
     : Number(playback.backgroundPlayhead.value) / (playback.state.value?.sampleRate ?? 48000));
 const scope = computed(() => node.value.scope!);
-const { layout, save, copyNodeDebugDetails, selectedLanes, beginPointerLockExit,
-    reportCursorReturnSkipped, setTimelineZoomHint } = useGraphEditor();
+const { layout, save, copyNodeDebugDetails, selectedLanes, finishPointerLock, setTimelineZoomHint } = useGraphEditor();
 const children = computed(() => orderLanes(scope.value.nodes, layout.value.laneOrder).map((child) => ({
     child, semantic: semanticNodeFromScopeChild(child, scope.value),
 })));
@@ -39,6 +41,12 @@ const timelineRuns = computed(() => {
 });
 const viewport = computed({ get: () => layout.value.timeline,
     set: (value) => { layout.value.timeline = value; } });
+const gridMode = computed(() => layout.value.timelineGrid);
+function setGridMode(mode: TimelineGridMode) {
+    if (gridMode.value === mode) return;
+    layout.value.timelineGrid = mode;
+    save();
+}
 const laneHeight = computed(() => viewport.value.laneHeight);
 const headerHeight = 36;
 const scrollbarStyle = computed(() => {
@@ -58,14 +66,15 @@ const timeWidth = ref(0);
 const timeWindow = computed(() => {
     const { beginSeconds, secondsPerPixel } = viewport.value;
     const spanSeconds = Math.max(1, timeWidth.value) * secondsPerPixel;
-    return { beginSeconds, endSeconds: beginSeconds + spanSeconds, spanSeconds, sampleRate: scope.value.sampleRate };
+    return { beginSeconds, endSeconds: beginSeconds + spanSeconds, spanSeconds, sampleRate: scope.value.sampleRate,
+        gridMode: gridMode.value };
 });
 provideTimelineWindow(timeWindow);
 const observations = useObservations();
 const timelineInterests = new Map<string, string>();
 const observedTimelineWindow = computed(() => {
     const { beginSeconds, spanSeconds, sampleRate } = timeWindow.value;
-    if (!sampleRate || timeWidth.value <= 0) return undefined;
+    if (gridMode.value !== "beats" || !sampleRate || timeWidth.value <= 0) return undefined;
     const first = automationSampleIndex(beginSeconds, sampleRate);
     const last = automationSampleIndex(beginSeconds, sampleRate, spanSeconds);
     return first === undefined || last === undefined || last < first ? undefined : {
@@ -95,28 +104,26 @@ watch([() => scope.value.timelineNodes, observedTimelineWindow], ([nodes, window
 onScopeDispose(() => {
     for (const id of timelineInterests.values()) observations?.observePort(id, undefined);
 });
-const timelineMarks = computed<readonly TimelineMark[]>(() => {
-    if (!observations) return [];
+const timelineMarks = computed<readonly TimelineMark[]>((previous) => {
+    if (gridMode.value !== "beats" || !observations) return [];
     void observations.version.value;
-    const snapshot = observations.values.windowSnapshot;
-    if (!snapshot) return [];
     const { beginSeconds, spanSeconds, sampleRate } = timeWindow.value;
-    if (!sampleRate) return [];
+    const visible = observedTimelineWindow.value;
+    if (!sampleRate || !visible) return [];
     const candidates: TimelineMark[] = [];
     for (const id of timelineInterests.values()) {
-        const result = observations.values.windows.get(id);
-        if (result?.status !== "ready" || result.outdated || result.dataVersion !== snapshot.dataVersion) continue;
+        const result = observations.values.windowForDisplay(id, visible);
+        if (result?.status !== "ready") continue;
         for (const mark of result.marks ?? []) {
             const index = BigInt(mark.index);
             const x = automationSampleOffset(index, beginSeconds, sampleRate) / spanSeconds * timeWidth.value;
             if (x >= 0 && x <= timeWidth.value) candidates.push({ index, depth: mark.depth, x });
         }
     }
-    candidates.sort((a, b) => a.depth - b.depth || a.x - b.x);
-    const displayed: TimelineMark[] = [];
-    for (const mark of candidates)
-        if (!displayed.some((previous) => Math.abs(previous.x - mark.x) < 8)) displayed.push(mark);
-    return displayed.sort((a, b) => a.x - b.x);
+    const displayed = selectVisibleTimelineMarks(candidates);
+    if (previous?.length === displayed.length && displayed.every(({ index, depth, x }, i) =>
+        index === previous[i].index && depth === previous[i].depth && x === previous[i].x)) return previous;
+    return displayed;
 });
 provideTimelineMarks(timelineMarks);
 const valueNavigationTargets = new Map<Element, LaneValueNavigation>();
@@ -142,14 +149,8 @@ const middlePointerLock = new KnobPointerLock<Point>({
     locked: () => !!root.value && document.pointerLockElement === root.value,
 }, moveLockedMiddleDrag, (id, release, lockOrigin) => {
     const destination = wrappedCursor.value;
-    const warp = release && lockOrigin && destination && middleCursorAnchor?.moved
-        ? { ...middleCursorAnchor, destination } : undefined;
-    if (lockOrigin) beginPointerLockExit(lockOrigin, warp);
-    if (middleCursorAnchor?.moved && (!release || !lockOrigin || !destination)) {
-        reportCursorReturnSkipped(release && !lockOrigin
-            ? middlePointerLockError || "The middle-button drag used pointer capture."
-            : "The middle-button drag ended before a normal pointer-lock release.");
-    }
+    finishPointerLock(release, lockOrigin, middleCursorAnchor?.moved
+        ? { ...middleCursorAnchor, destination: () => destination, policy: "wrapped" } : undefined, middlePointerLockError);
     middleCursorAnchor = null;
     finishMiddleDrag(id);
 }, (message) => {
@@ -248,9 +249,8 @@ function beginMiddleDrag(event: PointerEvent) {
     middleDrag.value = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, action };
     middleDragMoved = false;
     middlePointerLockError = "";
-    middleCursorAnchor = event.pointerType === "mouse" ? {
-        screenOrigin: { x: event.screenX, y: event.screenY }, scale: window.devicePixelRatio, moved: false,
-    } : null;
+    const cursorAnchor = cursorWarpAnchor(event, window.devicePixelRatio);
+    middleCursorAnchor = cursorAnchor ? { ...cursorAnchor, moved: false } : null;
     if (laneValueGesture?.gesture.mode === "zoom") setTimelineZoomHint(zoomAnchorHint("valueZoom", { x: 0, y: 0 }));
     else if (action !== "pan") setTimelineZoomHint(zoomAnchorHint(action, { x: 0, y: 0 }));
     middlePointerLock.start(event.pointerId, { x: event.clientX, y: event.clientY }, event.pointerType === "mouse");
@@ -476,7 +476,20 @@ onBeforeUnmount(() => {
                     <small>{{ playback.backgroundPlayhead.value?.toString() }} smp</small>
                 </template>
             </div>
-            <div ref="timeRegion" class="time-region"><TimeRuler :window="timeWindow" :marks="timelineMarks" playback style="height: 100%" /></div>
+            <div ref="timeRegion" class="time-region">
+                <TimeRuler :window="timeWindow" :marks="timelineMarks" playback style="height: 100%" />
+                <LaneSettings :label="gridMode === 'beats' ? 'Beats' : 'Seconds'" dialog-label="Timeline grid"
+                    hint="Choose the timeline grid and snapping" :width="156" :preferred-height="66" v-slot="{ close }">
+                    <div class="timeline-grid-choices">
+                        <button type="button" tabindex="-1" :aria-pressed="gridMode === 'seconds'" @click="setGridMode('seconds'); close()">
+                            Seconds <span>No grid snapping</span>
+                        </button>
+                        <button type="button" tabindex="-1" :aria-pressed="gridMode === 'beats'" @click="setGridMode('beats'); close()">
+                            Beats <span>Snap to visible marks</span>
+                        </button>
+                    </div>
+                </LaneSettings>
+            </div>
         </header>
         <div class="lanes">
             <section v-for="{ child, semantic } in children" :key="addressKey(child.address)"
@@ -487,8 +500,11 @@ onBeforeUnmount(() => {
                 <PresentationHost :node="semantic" :region-height="laneHeight - 1" lane
                     @copy-debug-details="copyNodeDebugDetails(child.address)" />
             </section>
-            <svg v-for="run in timelineRuns" :key="run.begin" class="lane-playheads" aria-hidden="true"
+            <svg v-for="run in timelineRuns" :key="run.begin" class="lane-timeline-overlay" aria-hidden="true"
                 :style="{ top: `${run.begin * laneHeight}px`, height: `${(run.end - run.begin) * laneHeight}px` }">
+                <line v-for="mark in timelineMarks" :key="mark.index.toString()" class="beat-guide"
+                    :class="{ bar: mark.depth === 0, beat: mark.depth === 1 }"
+                    :x1="mark.x" :x2="mark.x" y1="0" y2="100%" vector-effect="non-scaling-stroke" />
                 <TimelinePlayhead />
             </svg>
             <div v-if="!children.length" class="empty">No project instances.</div>
@@ -527,13 +543,23 @@ onBeforeUnmount(() => {
     pointer-events: none; fill: none; stroke: var(--vscode-editor-foreground); stroke-width: 1.5;
     stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 1px var(--vscode-editor-background));
 }
-.time-region { min-width: 0; }
+.time-region { position: relative; min-width: 0; }
+.timeline-grid-choices { display: grid; gap: 2px; }
+.timeline-grid-choices button { border: 0; padding: 4px 6px; text-align: left; font: inherit;
+    font-size: 11px; border-radius: 3px; background: transparent; color: inherit; cursor: pointer; }
+.timeline-grid-choices button span { display: block; font-size: 10px; opacity: .8; }
+.timeline-grid-choices button[aria-pressed="true"] { background: var(--vscode-list-activeSelectionBackground);
+    color: var(--vscode-list-activeSelectionForeground); }
+.timeline-grid-choices button:not([aria-pressed="true"]):hover { background: var(--vscode-list-hoverBackground); }
 .timeline-heading { display: grid; grid-template-columns: var(--node-label-width) minmax(0, 1fr); }
 .timeline-heading { box-sizing: border-box; position: sticky; top: 0; z-index: 1; background: var(--vscode-editor-background); flex: 0 0 var(--timeline-header-height); border-bottom: 1px solid var(--vscode-panel-border); }
 .node-column { box-sizing: border-box; min-width: 0; padding: 8px 12px; border-right: 1px solid var(--vscode-panel-border); }
 .lanes { flex: 0 0 auto; min-height: 0; position: relative; }
-.lane-playheads { position: absolute; inset-inline-start: var(--node-label-width);
+.lane-timeline-overlay { position: absolute; inset-inline-start: var(--node-label-width);
     width: calc(100% - var(--node-label-width)); pointer-events: none; }
+.beat-guide { stroke: var(--vscode-foreground); stroke-opacity: .09; }
+.beat-guide.beat { stroke-opacity: .15; }
+.beat-guide.bar { stroke-opacity: .23; }
 .playback-position { overflow: hidden; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--iv-lane-title-color); }
 .playback-position small { color: var(--iv-port-label-base); margin-left: 6px; }
 .lane { position: relative; box-sizing: border-box; border-bottom: 1px solid var(--vscode-panel-border); }

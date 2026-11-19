@@ -1,13 +1,42 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createSSRApp, defineComponent, h } from "vue";
+import { renderToString } from "vue/server-renderer";
 import { isPendingPlaybackSeek, PlaybackDisplay, playbackSampleIndexFromSeconds,
     playbackSeekPosition, type PlaybackSnapshot } from "../src/playback";
 import { WorkspaceRpc } from "../src/workspaceRpc";
 import type { JsonRpcSocketClient } from "../src/rpcClient";
+import { providePlayback, usePlayback } from "../webview/timeline/playbackContext";
 
 const state = (changes: Partial<PlaybackSnapshot> = {}): PlaybackSnapshot => ({
     position: "48000", startPosition: "48000", executionIndex: "48000",
     sampleRate: 48000, running: true, appliedCommand: "1", segment: "1", ...changes,
+});
+test("the displayed playhead stays at the drop while the final transport request is pending", async (t) => {
+    const cancelFrame = Object.getOwnPropertyDescriptor(globalThis, "cancelAnimationFrame");
+    Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, value: () => {} });
+    t.after(() => {
+        if (cancelFrame) Object.defineProperty(globalThis, "cancelAnimationFrame", cancelFrame);
+        else Reflect.deleteProperty(globalThis, "cancelAnimationFrame");
+    });
+    let playback!: ReturnType<typeof providePlayback>;
+    let view!: ReturnType<typeof usePlayback>;
+    const child = defineComponent({ setup() { view = usePlayback(); return () => null; } });
+    await renderToString(createSSRApp({ setup() { playback = providePlayback(); return () => h(child); } }));
+    const update = (snapshot: PlaybackSnapshot, requestedPosition: string | null, releasedDragPosition: string | null,
+        dragReleaseId?: string) => playback.receive({ type: "playbackUpdate", snapshot, requestedPosition, releasedDragPosition, dragReleaseId });
+
+    const paused = state({ running: false, executionIndex: undefined });
+    update(paused, null, null);
+    view.dragPosition.value = "49000";
+    const releaseId = view.releaseDrag("49000");
+    update(paused, "48050", null, "earlier-drag");
+    assert.equal(view.backgroundPlayhead.value, 49000n);
+    update(paused, "49000", "49000", releaseId);
+    assert.equal(view.backgroundPlayhead.value, 49000n);
+    update({ ...paused, position: "49000", startPosition: "49000" }, null, null, releaseId);
+    assert.equal(view.backgroundPlayhead.value, 49000n);
+    assert.equal(view.dragPreview.value, null);
 });
 test("seek retains exact sample indices and quantizes seconds at the project rate", () => {
     assert.equal(playbackSeekPosition("-9223372036854775808", 48000), "-9223372036854775808");

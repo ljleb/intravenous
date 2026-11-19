@@ -148,8 +148,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }, (message) => outputChannel.appendLine(message));
         context.subscriptions.push(nativeHelper);
         nativeHelper.start();
-    } else if (vscode.workspace.getConfiguration("intravenous").get("warpCursorAfterPointDrag", true)) {
-        outputChannel.appendLine("Automation cursor return is unavailable. It requires a local Linux desktop extension host with X11 support.");
+    } else {
+        outputChannel.appendLine("Native cursor return is unavailable. It requires a local Linux desktop extension host with X11 support.");
     }
     if (!workspaceFolder) {
         return;
@@ -171,7 +171,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             catch (error) { void vscode.window.showErrorMessage(`Cannot change playback: ${error.message}`); }
         }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.openGraphEditor", () => graphEditor.open()));
-    context.subscriptions.push(vscode.commands.registerCommand("intravenous.profileObservations", () => graphEditor.profileObservations()));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.debug", () => graphEditor.debug()));
     const graphActions: GraphEditorAction[] = ["addNode", "editNode", "deleteNode", "openNodeSource", "createPackage", "deleteConnection", "undo", "redo"];
     for (const action of graphActions) {
         context.subscriptions.push(vscode.commands.registerCommand(`intravenous.${action}`, async () => {

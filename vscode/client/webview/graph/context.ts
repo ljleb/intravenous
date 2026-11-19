@@ -6,8 +6,14 @@ import type { PortConnectionDrag } from "../../src/portConnectionGesture";
 import type { CurveAxes, CurveDragKind } from "../../src/automationCurveEditing";
 import type { KnobLimits } from "../../src/knobScrub";
 import type { StatusHint } from "../../src/statusBarText";
+import type { CursorFollow, CursorFollowTarget, CursorTrace } from "./cursorReturn";
 
-export type CursorWarpAnchor = { screenOrigin: Point; scale: number };
+export type ObjectDrag = {
+    trace?: CursorTrace;
+    move: (point: Point) => void;
+    moveBy: (delta: Point) => void;
+    finish: (point: Point | null, lockOrigin: Point | null) => CursorFollowTarget | undefined;
+};
 export type KnobDrag = {
     move: (point: Point) => void;
     moveBy: (delta: Point) => void;
@@ -28,8 +34,9 @@ type GraphEditorContext = {
     selectedLanes: Readonly<Ref<ReadonlySet<string>>>;
     portsChanged: () => void;
     elementAtPointer: () => Element | null;
-    beginPointerLockExit: (origin: Point, warp?: CursorWarpAnchor & { destination: Point }) => void;
-    reportCursorReturnSkipped: (detail: string) => void;
+    takePlayheadTrace: () => CursorTrace | undefined;
+    startObjectDrag: (event: PointerEvent, drag: ObjectDrag) => (() => void) | undefined;
+    finishPointerLock: (release: Point | null, lockOrigin: Point | null, follow?: CursorFollow, lockError?: string) => void;
     setTimelineZoomHint: (hint: string | null) => void;
     connectionDrag: Ref<PortConnectionDrag | null>;
     hoveredPortGroup: Ref<{ nodeKey: string; direction: "input" | "output" } | null>;

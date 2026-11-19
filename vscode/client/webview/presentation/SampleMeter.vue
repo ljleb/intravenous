@@ -6,15 +6,15 @@ import { numericTicks } from "../timeline/geometry";
 import RulerGraduations from "../timeline/RulerGraduations.vue";
 import { rightClickHint } from "../../src/statusBarText";
 
-const props = defineProps<{ mode: MeterMode; label: string; result?: ObservationDisplayValue; active?: boolean;
+const props = defineProps<{ mode: MeterMode; label: string; result?: ObservationDisplayValue; active?: boolean; gain?: number;
     showScaleLabels: boolean }>();
 const root = ref<HTMLElement | null>(null), width = ref(0);
 const domain = computed(() => props.mode === "level" ? levelDomain : valueDomain);
 const presentation = new MeterPresentationState();
 const motionVersion = ref(0);
 const updating = computed(() => { void motionVersion.value; return presentation.updating; });
-const reading = computed(() => { void motionVersion.value; return presentation.reading(props.mode); });
-const status = computed(() => { void motionVersion.value; return presentation.status(props.mode); });
+const reading = computed(() => { void motionVersion.value; return presentation.reading(props.mode, props.gain); });
+const status = computed(() => { void motionVersion.value; return presentation.status(props.mode, props.gain); });
 let animation = 0;
 function stopAnimation(): void { cancelAnimationFrame(animation); animation = 0; }
 function animate(now: number): void {

@@ -4,7 +4,7 @@ import { GraphLayoutStore } from "./graphLayoutStore";
 import { addressKey, readLayout, type GraphScope } from "./graphScope";
 import { nodeDebugDetails } from "./nodeDebugDetails";
 import { ObservationDeliveryState, type ObservationDelivery } from "./observationDelivery";
-import type { GraphEditorAction, GraphEditorHostMessage, GraphEditorState, GraphEditorWebviewMessage } from "./graphEditorProtocol";
+import type { GraphEditorAction, GraphEditorHostMessage, GraphEditorState, GraphEditorWebviewMessage, TraceDetails } from "./graphEditorProtocol";
 import type { WorkspaceSession } from "./workspaceSession";
 import { formatStatusHint, isStatusHint, playbackShortcut, rightClickHint, type StatusHint } from "./statusBarText";
 import { isNodeEventRequest, isNodeEventGestureRequest, replyToNodeEvent, replyToNodeEventGesture } from "./nodeEventMessaging";
@@ -40,8 +40,9 @@ export class GraphEditorProvider implements vscode.Disposable {
     private disposed = false;
     private layoutError = "";
     private playbackReading = false;
-    private pendingSeek: PlaybackSeek | null = null;
+    private pendingSeek: (PlaybackSeek & { releasedFrom?: vscode.WebviewPanel }) | null = null;
     private playbackDrag: { panel: vscode.WebviewPanel; dragId: string; position: string } | null = null;
+    private readonly dragReleaseIds = new WeakMap<vscode.WebviewPanel, string>();
     private playbackSnapshot: PlaybackSnapshot | null = null;
     private readonly playbackTimer = setInterval(() => { void this.refreshPlayback(); }, 50);
 
@@ -50,11 +51,13 @@ export class GraphEditorProvider implements vscode.Disposable {
         if (this.pendingSeek && !isPendingPlaybackSeek(this.pendingSeek, this.playbackSnapshot)) this.pendingSeek = null;
         for (const panel of this.ready) if (panel.visible) void panel.webview.postMessage({
             type: "playbackUpdate", snapshot: this.playbackSnapshot, requestedPosition: this.pendingSeek?.position ?? null,
+            releasedDragPosition: this.pendingSeek?.releasedFrom === panel ? this.pendingSeek.position : null,
+            dragReleaseId: this.dragReleaseIds.get(panel),
         });
     }
 
-    private async seekPlayback(position: string, drag?: PlaybackDrag): Promise<void> {
-        const request: PlaybackSeek = { position };
+    private async seekPlayback(position: string, drag?: PlaybackDrag, releasedFrom?: vscode.WebviewPanel): Promise<void> {
+        const request: PlaybackSeek & { releasedFrom?: vscode.WebviewPanel } = { position, releasedFrom };
         this.pendingSeek = request;
         this.postPlayback();
         try {
@@ -68,17 +71,21 @@ export class GraphEditorProvider implements vscode.Disposable {
         } finally { this.postPlayback(); }
     }
 
-    private async dragPlayback(panel: vscode.WebviewPanel, phase: PlaybackDragPhase, position: string): Promise<void> {
+    private async dragPlayback(panel: vscode.WebviewPanel, phase: PlaybackDragPhase, position: string, releaseId?: string): Promise<void> {
         if (phase === "begin") {
             if (!panel.visible) return;
             this.finishPlaybackDrag();
             this.playbackDrag = { panel, dragId: crypto.randomBytes(8).readBigUInt64BE().toString(), position };
         }
         const drag = this.playbackDrag;
-        if (drag?.panel !== panel) return;
+        if (phase === "end" && releaseId) this.dragReleaseIds.set(panel, releaseId);
+        if (drag?.panel !== panel) {
+            if (phase === "end" && releaseId) this.postPlayback();
+            return;
+        }
         drag.position = position;
         if (phase === "end") this.playbackDrag = null;
-        try { await this.seekPlayback(position, { phase, dragId: drag.dragId }); }
+        try { await this.seekPlayback(position, { phase, dragId: drag.dragId }, phase === "end" ? panel : undefined); }
         catch (error) {
             if (phase === "begin" && this.playbackDrag === drag) this.playbackDrag = null;
             throw error;
@@ -217,25 +224,41 @@ export class GraphEditorProvider implements vscode.Disposable {
         return panel;
     }
 
-    async profileObservations(): Promise<void> {
-        const panel = [...this.ready].find((entry) => entry.active);
+    async debug(): Promise<void> {
+        const profileDurationMs = 10_000;
+        const traceId = crypto.randomUUID();
+        const actions: Array<vscode.QuickPickItem & { request: GraphEditorHostMessage; status: string; durationMs: number }> = [
+            { label: "Trace Playhead Cursor Return", description: "Records the next ruler or Beats-lane seek drag",
+                request: { type: "startPlayheadTrace", traceId },
+                status: "Playhead trace armed. Drag the background playhead once, then check Intravenous output.", durationMs: 30_000 },
+            { label: "Profile Observation Updates", description: "Measures observation traffic for 10 seconds",
+                request: { type: "startObservationProfile", durationMs: profileDurationMs },
+                status: "Recording observation updates for 10 seconds. See Intravenous output for the report.", durationMs: profileDurationMs },
+        ];
+        const action = await vscode.window.showQuickPick(actions, { placeHolder: "Choose an Intravenous diagnostic" });
+        if (!action) return;
+        const panel = [...this.ready].find((entry) => entry.active)
+            ?? (this.lastActivePanel && this.ready.has(this.lastActivePanel) ? this.lastActivePanel : null);
         if (!panel) {
-            void vscode.window.showInformationMessage("Open the Intravenous Graph editor before profiling observation updates.");
+            void vscode.window.showInformationMessage("Open the Intravenous Graph editor to run this diagnostic.");
             return;
         }
-        const durationMs = 10_000;
-        const request: GraphEditorHostMessage = { type: "startObservationProfile", durationMs };
+        panel.reveal(panel.viewColumn, false);
         try {
-            if (!await panel.webview.postMessage(request)) {
-                void vscode.window.showInformationMessage("The Intravenous Graph editor could not start the observation profile.");
+            if (!await panel.webview.postMessage(action.request)) {
+                void vscode.window.showInformationMessage("The Intravenous Graph editor could not start the diagnostic.");
                 return;
             }
-            const message = `Recording observation updates for ${durationMs / 1000} seconds. See Intravenous output for the report.`;
-            this.log(message);
-            vscode.window.setStatusBarMessage(message, durationMs);
+            if (action.request.type === "startPlayheadTrace") this.logPlayheadTrace(action.request.traceId, action.status);
+            else this.log(action.status);
+            vscode.window.setStatusBarMessage(action.status, action.durationMs);
         } catch (error) {
-            void vscode.window.showErrorMessage(`Cannot profile observation updates: ${error}`);
+            void vscode.window.showErrorMessage(`Cannot start the Intravenous diagnostic: ${error}`);
         }
+    }
+
+    private logPlayheadTrace(id: string, step: string, details?: TraceDetails): void {
+        this.log(`Playhead cursor trace [${id.slice(0, 8)}]. ${step}${details ? ` ${JSON.stringify(details)}` : ""}`);
     }
 
     async runAction(action: GraphEditorAction, target?: vscode.WebviewPanel): Promise<void> {
@@ -338,6 +361,8 @@ export class GraphEditorProvider implements vscode.Disposable {
                 }
             } else if (message?.type === "observationResync") {
                 this.postObservationSnapshot(panel);
+            } else if (message?.type === "playheadTrace") {
+                this.logPlayheadTrace(message.traceId, message.step, message.details);
             } else if (message?.type === "observationProfile") {
                 const s = message.summary;
                 const updateRate = (s.updates / s.seconds).toFixed(2);
@@ -361,20 +386,30 @@ export class GraphEditorProvider implements vscode.Disposable {
                 if (response.error) void vscode.window.showErrorMessage(`Cannot send node event: ${response.error}`);
             } else if (message?.type === "cursorReturnSkipped" && typeof message.detail === "string") {
                 this.log(`Cursor return skipped. ${message.detail}`);
-            } else if (message?.type === "warpCursorAfterPointDrag" || message?.type === "warpCursorAfterMiddleDrag") {
+            } else if (message?.type === "returnCursor") {
+                const { traceId } = message;
+                const trace = traceId ? (step: string, details?: TraceDetails) => this.logPlayheadTrace(traceId, step, details) : undefined;
+                trace?.("Extension received cursor return", { requestId: message.requestId, panelActive: panel.active,
+                    windowFocused: vscode.window.state.focused, helperAvailable: !!this.nativeHelper, policy: message.policy });
                 const skipped = !panel.active || !vscode.window.state.focused ? "graph editor lost focus"
-                    : message.type === "warpCursorAfterPointDrag"
+                    : message.policy === "automationPoint"
                         && !vscode.workspace.getConfiguration("intravenous").get("warpCursorAfterPointDrag", true) ? "cursor return is disabled"
                     : !this.nativeHelper ? "no local native helper" : null;
                 if (skipped) {
+                    trace?.("Extension skipped cursor return", { reason: skipped });
                     if (skipped === "graph editor lost focus") this.log(`Cursor return skipped. ${skipped}.`);
-                } else this.nativeHelper?.warpCursor(message.warp, message.type === "warpCursorAfterMiddleDrag", () => {
-                    if (this.panels.has(panel)) void panel.webview.postMessage({ type: "cursorReturnCompleted", requestId: message.requestId });
+                } else this.nativeHelper?.warpCursor(message.warp, {
+                    hideCursor: message.policy === "wrapped" || message.policy === "playhead",
+                    followPointer: message.policy === "wrapped",
+                    completed: () => {
+                        if (this.panels.has(panel)) void panel.webview.postMessage({ type: "cursorReturnCompleted", requestId: message.requestId });
+                    },
+                    trace,
                 });
             } else if (message?.type === "playbackToggle" || message?.type === "playbackSeek" || message?.type === "playbackDrag") {
                 try {
                     if (message.type === "playbackDrag") {
-                        await this.dragPlayback(panel, message.phase, playbackSeekPosition(message.position, 1));
+                        await this.dragPlayback(panel, message.phase, playbackSeekPosition(message.position, 1), message.releaseId);
                     } else if (message.type === "playbackSeek") await this.seekPlayback(playbackSeekPosition(message.position, 1));
                     else await this.session.playbackCommand();
                 }

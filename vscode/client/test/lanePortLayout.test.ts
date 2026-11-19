@@ -17,21 +17,21 @@ test("overflow keeps the rows that fit in definition order", () => {
 });
 
 test("the folded socket reserves space only while the column has hidden ports", () => {
-    const ports = [24, 22, 24];
-    const fit = (height: number) => lanePortLayout(ports, height, (rowHeight) => rowHeight, 8);
+    const ports = ["audio", "trigger", "mix"];
+    const fit = (height: number) => lanePortLayout(ports, height, 24, 8);
     assert.deepEqual(fit(31), { direct: [], folded: ports, continuationOffset: 0 });
-    assert.deepEqual(fit(32), { direct: [24], folded: [22, 24], continuationOffset: 27 });
-    assert.deepEqual(fit(56), { direct: [24], folded: [22, 24], continuationOffset: 27 });
-    assert.deepEqual(fit(57), { direct: [24, 22], folded: [24], continuationOffset: 52 });
-    assert.deepEqual(fit(76), { direct: ports, folded: [], continuationOffset: 79 });
+    assert.deepEqual(fit(32), { direct: ports.slice(0, 1), folded: ports.slice(1), continuationOffset: 27 });
+    assert.deepEqual(fit(58), { direct: ports.slice(0, 1), folded: ports.slice(1), continuationOffset: 27 });
+    assert.deepEqual(fit(59), { direct: ports.slice(0, 2), folded: ports.slice(2), continuationOffset: 54 });
+    assert.deepEqual(fit(78), { direct: ports, folded: [], continuationOffset: 81 });
 });
 
-test("folded columns start at their own next row, even with the same header bottom", () => {
-    const inputs = lanePortLayout([31, 31, 31], 65, (height) => height, 8);
-    const outputs = lanePortLayout([22, 22, 22], 65, (height) => height, 8);
+test("folded columns resume after their own last visible row", () => {
+    const ports = ["first", "second", "third"];
+    const inputs = lanePortLayout(ports, 65, 31, 8);
+    const outputs = lanePortLayout(ports.slice(0, 2), 65, 31, 8);
     assert.equal(inputs.continuationOffset, 34);
-    assert.equal(outputs.continuationOffset, 50);
-    assert.equal(lanePortLayout([31, 31, 31], 73, (height) => height, 8).continuationOffset, 68);
+    assert.equal(outputs.continuationOffset, 68);
 });
 
 test("at minimum lane height the compact handle represents all ports", () => {
@@ -51,12 +51,16 @@ test("small and unmeasured lanes keep every port reachable without changing orde
     }
 });
 
-test("inline knobs reserve their full row height before exposing more ports", () => {
-    const ports = [{ name: "audio", height: 30 }, { name: "trigger", height: 22 }, { name: "mix", height: 30 }];
-    const heightOf = (port: typeof ports[number]) => port.height;
-    assert.deepEqual(lanePortLayout(ports, 54, heightOf), { direct: ports.slice(0, 1), folded: ports.slice(1), continuationOffset: 33 });
-    assert.deepEqual(lanePortLayout(ports, 55, heightOf), { direct: ports.slice(0, 2), folded: ports.slice(2), continuationOffset: 58 });
-    assert.deepEqual(lanePortLayout(ports, 88, heightOf), { direct: ports, folded: [], continuationOffset: 91 });
-    assert.deepEqual(lanePortLayout(ports.slice(0, 1), 29, heightOf), { direct: [], folded: ports.slice(0, 1), continuationOffset: 0 });
-    assert.deepEqual(lanePortLayout(ports.slice(0, 1), 30, heightOf), { direct: ports.slice(0, 1), folded: [], continuationOffset: 33 });
+test("event-only and mixed columns use the same row spacing and continuation offset", () => {
+    const inputs = ["audio", "trigger", "mix"];
+    const outputs = ["trigger", "pulse", "release"];
+    for (const rowHeight of [24, 31]) {
+        const height = 2 * rowHeight + 3 + 8;
+        const input = lanePortLayout(inputs, height, rowHeight, 8);
+        const output = lanePortLayout(outputs, height, rowHeight, 8);
+        assert.deepEqual(input.direct, inputs.slice(0, 2));
+        assert.deepEqual(output.direct, outputs.slice(0, 2));
+        assert.equal(output.continuationOffset, 2 * (rowHeight + 3));
+        assert.equal(input.continuationOffset, output.continuationOffset);
+    }
 });
