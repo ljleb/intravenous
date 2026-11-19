@@ -157,7 +157,7 @@ onBeforeUnmount(() => {
 .canvas { position: relative; flex: 1; min-height: 200px; overflow: hidden; touch-action: none; background-image: radial-gradient(var(--vscode-editorWhitespace-foreground, #7775) 1px, transparent 1px); background-size: 24px 24px; }
 .world { position: absolute; transform-origin: 0 0; }
 .wires { position: absolute; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
-.wires path { fill: none; stroke: var(--vscode-charts-blue, #559ddd); stroke-width: 2; pointer-events: stroke; }
+.wires path { fill: none; stroke: var(--iv-port-output); stroke-width: 2; pointer-events: stroke; }
 .wires .pending { stroke-dasharray: 6 4; stroke: var(--vscode-editorWarning-foreground); }
 .node-card { position: absolute; box-sizing: border-box; border: 1px solid var(--vscode-panel-border, #777); border-radius: 6px; background: var(--vscode-editorWidget-background); box-shadow: 0 3px 10px #0003; }
 .node-card.unrealized { border-style: dashed; }

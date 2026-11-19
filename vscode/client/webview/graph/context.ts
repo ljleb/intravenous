@@ -4,8 +4,18 @@ import type { GraphScope } from "../../src/graphScope";
 import type { GraphConnectionEnd, GraphPortEndpoint } from "../../src/graphConnectionEditing";
 import type { PortConnectionDrag } from "../../src/portConnectionGesture";
 import type { CurveAxes, CurveDragKind } from "../../src/automationCurveEditing";
+import type { KnobLimits } from "../../src/knobScrub";
+import type { StatusHint } from "../../src/statusBarText";
 
 export type CursorWarpAnchor = { screenOrigin: Point; scale: number };
+export type KnobDrag = {
+    move: (point: Point) => void;
+    moveBy: (delta: Point) => void;
+    changeSensitivity: (delta: number) => boolean;
+    finish: (point: Point | null) => void;
+    active?: () => boolean;
+    hint?: () => StatusHint;
+};
 
 type GraphEditorContext = {
     layout: Ref<GraphLayout>;
@@ -27,6 +37,12 @@ type GraphEditorContext = {
     hoveredPortGroup: Ref<{ nodeKey: string; direction: "input" | "output" } | null>;
     startConnection: (event: PointerEvent, port: GraphPortEndpoint, edit?: GraphConnectionEnd) => void;
     cancelConnection: () => void;
+    activeKnob: Readonly<Ref<string | null>>;
+    startKnob: (event: PointerEvent, key: string, begin: () => KnobDrag | undefined, reset?: () => void) => void;
+    cancelKnob: () => boolean;
+    openKnobValue: (anchor: HTMLElement, label: string, value: number, limits: () => KnobLimits,
+        apply: (value: number) => void, bindValueEntry?: (anchor: DOMRect) => void) => void;
+    closeKnobValueWithin: (panel: HTMLElement) => void;
     startAutomation: (event: PointerEvent, target: NodeAddress, pointId: number | null, axes: CurveAxes, kind: CurveDragKind,
         visiblePointCenter?: (id: number) => Point | null) => void;
 };

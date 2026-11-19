@@ -19,11 +19,13 @@ dependencies. See [the automation guide](builtin/AUTOMATION.md) for the
 provides computed Event Coverage. Intravenous generates the marks in each
 requested window on the background thread.
 
-The construction arguments are tempo in beats per minute, beats per bar,
-subdivision factors, and the signed sample index of the bar line at the time origin.
-The defaults are `120`, `4`, `[2, 2]`, and `0`. Each factor divides the previous
-interval into equal parts. Use `[2, 2]` for four divisions per beat, `[3]` for
-triplets, or `[]` for beats and bars alone.
+The construction arguments are tempo in beats per minute, beats per bar, and
+subdivision factors. They default to `120`, `4`, and `[2, 2]`. Each factor
+divides the previous interval into equal parts. Use `[2, 2]` for four divisions
+per beat, `[3]` for triplets, or `[]` for beats and bars alone. Bar 1 starts at
+sample zero. The top-right BPM button in the Beats lane opens these settings.
+See the [original origin argument](../../../docs/historical/beats_constructor_origin.md)
+for the earlier phase anchor.
 
 Each position has a single `BeatEvent`. Its `depth` is `0` for a bar line,
 `1` for another beat, and `2` or higher for successive subdivisions.

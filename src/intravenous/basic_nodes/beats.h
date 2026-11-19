@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/node/lifecycle.h>
+#include <intravenous/node/message.h>
 
 #include <array>
 #include <bit>
@@ -11,6 +12,12 @@
 #include <vector>
 
 namespace iv {
+
+struct SetBeatGrid {
+    double bpm;
+    std::uint32_t beats_per_bar;
+    std::vector<std::uint32_t> subdivisions;
+};
 
 class Beats {
     using WideIndex = __int128_t;
@@ -27,7 +34,6 @@ class Beats {
 
     std::uint32_t scaled_bpm_;
     std::uint32_t beats_per_bar_;
-    std::int64_t origin_sample_;
     std::uint32_t subdivisions_per_beat_ = 1;
     std::array<std::uint32_t, max_subdivision_levels> subdivision_strides_{};
 
@@ -80,9 +86,8 @@ class Beats {
 
 public:
     explicit Beats(double bpm = 120.0, std::uint32_t beats_per_bar = 4,
-        std::vector<std::uint32_t> subdivisions = {2, 2}, std::int64_t origin_sample = 0)
-        : scaled_bpm_(scale_tempo(bpm)), beats_per_bar_(beats_per_bar),
-          origin_sample_(origin_sample)
+        std::vector<std::uint32_t> subdivisions = {2, 2})
+        : scaled_bpm_(scale_tempo(bpm)), beats_per_bar_(beats_per_bar)
     {
         if (beats_per_bar_ == 0) {
             throw std::invalid_argument("beats per bar must be positive");
@@ -109,6 +114,11 @@ public:
             {.max_events_per_index = 1.0})};
     }
 
+    void on_message(NodeMessageContext<Beats>& ctx, SetBeatGrid const& event) const
+    {
+        ctx.replace<"iv.builtin.beats">(event.bpm, event.beats_per_bar, event.subdivisions);
+    }
+
     void constrain_ports(ConstrainPortsContext<Beats>& ctx) const
     {
         ctx.output<"beats">().ordering() = CoverageOrdering::sorted;
@@ -132,7 +142,7 @@ public:
         // Invert nearest-sample rounding to find the first mark in the window.
         // Derive each position from its mark index so partitioning cannot drift.
         auto const first_mark_at_or_after = [&](WideIndex sample) {
-            return ceil_divide((sample - origin_sample_) * period.denominator - rounding,
+            return ceil_divide(sample * period.denominator - rounding,
                 period.numerator);
         };
         for (auto const region : output.regions()) {
@@ -140,7 +150,7 @@ public:
                 WideIndex const begin = window.begin.signed_value();
                 auto const end = first_mark_at_or_after(begin + window.extent);
                 for (auto mark = first_mark_at_or_after(begin); mark < end; ++mark) {
-                    auto const sample = origin_sample_ + floor_divide(
+                    auto const sample = floor_divide(
                         mark * period.numerator + rounding, period.denominator);
                     region.write({
                         .time = GlobalIndex::from_signed(static_cast<std::int64_t>(sample)),

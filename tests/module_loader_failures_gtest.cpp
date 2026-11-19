@@ -327,7 +327,7 @@ TEST(ModuleLoaderPackages, BuiltinBeatsExposesComputedEventCoverage)
 void builtin_beats(iv::GraphBuilder& g)
 {
     using namespace iv;
-    auto beats = g.node<"beats">(123.5, 3u, std::vector<std::uint32_t>{3, 2}, std::int64_t{-5});
+    auto beats = g.node<"beats">(123.5, 3u, std::vector<std::uint32_t>{3, 2});
     auto defaults = g.node<"beats">();
     g.event_outputs("configured"_F = beats.event_port("beats"), "defaults"_F = defaults.event_port("beats"));
 }

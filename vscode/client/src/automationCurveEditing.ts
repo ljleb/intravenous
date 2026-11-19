@@ -2,11 +2,11 @@ import { addressKey, type GraphScope, type GraphScopeNode, type NodeAddress, typ
 import { MovePoint, PlacePoint, RemovePoint, SetSegment, type SetSegmentPayload } from "./generated/automationEvents";
 import type { NodeEvent } from "./nodeEvents";
 import type { NodeEventGesture } from "./nodeEventMessaging";
+import { NodeEventUpdates, type NodeEventUpdateTimers } from "./nodeEventUpdates";
 import { ScrubSensitivity } from "./scrubSensitivity";
 import { automationTimeDrag, initialGapAttachment, placeAutomationPoint, pointInsertionIndex,
     type GapAttachment, type PointTime } from "./automationPointPlacement";
 import { updateSelection } from "./selection";
-import { knobScrubSpeed } from "./knobPresentation";
 
 import { automationCycleSeconds, automationSampleIndex, automationUnitsPerPixel, automationValueAtFraction,
     automationValueGuides, clampAutomationValue, compareAutomationPoints,
@@ -16,10 +16,9 @@ export { automationCycleSeconds, automationWindow } from "./automationCurveGeome
 export type { AutomationCurve, AutomationPoint, CurveInterpolation } from "./automationCurveGeometry";
 export type CurveAxes = { left: number; top: number; width: number; height: number;
     begin: number; end: number; spanSeconds?: number; ruler?: AutomationValueRuler } & AutomationValueAxis;
-export type CurveDragKind = "point" | "tension" | "tensionKnob";
+export type CurveDragKind = "point" | "tension";
 export const automationTensionLimits = { min: 0, max: 1, defaultValue: 1 } as const;
 type Transport = { send(target: NodeAddress, event: NodeEvent): Promise<void>; gesture(target: NodeAddress): NodeEventGesture };
-type Timers = { set(callback: () => void): unknown; clear(handle: unknown): void };
 type TimeLimits = { min?: bigint; max?: bigint };
 type PointDrag = {
     neighbors: AutomationPoint[]; byId: ReadonlyMap<number, AutomationPoint>; base: AutomationPoint;
@@ -35,7 +34,7 @@ type Drag = { key: string; target: NodeAddress; pointerId: number; axes: CurveAx
     lastPosition?: ScreenPoint; sensitivity?: ScrubSensitivity;
     detents: readonly number[]; plateau: number; anchorPlateau: number; snappedValue?: number;
     pointDrag?: PointDrag;
-    sent: AutomationPoint | null; gesture: NodeEventGesture; timer?: unknown; pending?: Promise<void>;
+    sent: AutomationPoint | null; gesture: NodeEventGesture; updates: NodeEventUpdates;
     finishing?: Promise<void> };
 export function readAutomationCurve(value: GraphScopeNode["construction"], sampleRate?: number | null): AutomationCurve | null {
     if (value?.definitionId !== "iv.builtin.automation.curve" || value.arguments.length !== 1) return null;
@@ -136,7 +135,7 @@ export class AutomationCurveEditing {
     private active: Drag | null = null;
     private readonly selection = new Map<string, ReadonlySet<number>>();
     constructor(private readonly transport: Transport, private readonly changed: () => void,
-        private readonly timers: Timers = { set: (callback) => setTimeout(callback, 80), clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>) }) {}
+        private readonly timers?: NodeEventUpdateTimers) {}
     reconcile(scope: GraphScope | null): void {
         if (scope?.sessionRevision !== undefined && scope.sessionRevision < this.readRevision) return;
         this.readRevision = scope?.sessionRevision ?? this.readRevision;
@@ -211,7 +210,7 @@ export class AutomationCurveEditing {
     changeSensitivity(delta: number): boolean {
         const drag = this.active;
         if (!drag?.sensitivity || !drag.lastPosition || drag.finishing) return false;
-        const value = drag.kind === "tensionKnob" ? drag.desired.tension : drag.desired.value;
+        const value = drag.desired.value;
         if (drag.sensitivity.change(delta, -drag.lastPosition.y, value)) {
             drag.anchorPlateau = drag.plateau;
             this.changed();
@@ -219,7 +218,7 @@ export class AutomationCurveEditing {
         return true;
     }
     begin(target: NodeAddress, id: number | null, pointerId: number, axes: CurveAxes, position?: ScreenPoint,
-        kind: CurveDragKind = "point", shift = false, precise = false): boolean {
+        kind: CurveDragKind = "point", shift = false): boolean {
         if (this.active || axes.width <= 0 || axes.height <= 0) return false;
         const key = addressKey(target);
         const curve = this.curves.get(key);
@@ -270,18 +269,17 @@ export class AutomationCurveEditing {
             segments: placed?.segments ?? new Map(), sentSegments: new Map(), baseSegments: placed?.segments ?? new Map(),
             touched: new Set(placed?.segments.keys()),
         } : undefined;
-        const sensitivity = !position ? undefined : kind === "point"
-            ? new ScrubSensitivity(automationUnitsPerPixel(axes, axes.height), -position.y, initial.value)
-            : kind === "tensionKnob"
-                ? new ScrubSensitivity(knobScrubSpeed(automationTensionLimits), -position.y, initial.tension, precise) : undefined;
+        const sensitivity = position && kind === "point"
+            ? new ScrubSensitivity(automationUnitsPerPixel(axes, axes.height), -position.y, initial.value) : undefined;
         const drag: Drag = { key, target: structuredClone(target), pointerId, axes: { ...axes }, desired, initial,
             kind, companions, sampleRate: curve.sampleRate, grab: position ? { ...position } : undefined,
             lastPosition: position ? { ...position } : undefined,
             sensitivity, detents, pointDrag,
             plateau: 0, anchorPlateau: 0,
-            sent: adding ? null : initial, gesture: this.transport.gesture(target) };
+            sent: adding ? null : initial, gesture: this.transport.gesture(target),
+            updates: new NodeEventUpdates(() => this.sendNext(drag), (error) => this.failed(drag, error), this.timers) };
         this.active = drag;
-        if (adding) void this.flush(drag).catch(() => {});
+        if (adding) void drag.updates.flush().catch(() => {});
         this.changed(); return true;
     }
     setPreservePointType(shift: boolean): void {
@@ -308,13 +306,8 @@ export class AutomationCurveEditing {
         drag.lastPosition = { ...position };
         const { initial, grab, axes, sampleRate } = drag;
         if (drag.kind !== "point") {
-            const { sensitivity } = drag;
-            const raw = sensitivity ? sensitivity.valueAt(-position.y) : initial.tension + (position.x - grab!.x) / 100;
-            const clamped = clampAutomationValue(raw, automationTensionLimits);
-            if (clamped !== raw) sensitivity?.anchorAt(-position.y, clamped);
-            const tension = Math.fround(clamped);
-            if (tension === drag.desired.tension) return;
-            drag.desired = { ...initial, tension };
+            if (grab) this.setDraggedTension(drag.target, initial.id, initial.tension + (position.x - grab.x) / 100);
+            return;
         } else {
             if (!sampleRate) return;
             const pointDrag = drag.pointDrag!;
@@ -390,6 +383,14 @@ export class AutomationCurveEditing {
         }
         this.scheduleDrag(drag);
     }
+    setDraggedTension(target: NodeAddress, id: number, value: number): void {
+        const drag = this.active;
+        if (!drag || drag.finishing || drag.kind !== "tension" || drag.key !== addressKey(target) || drag.desired.id !== id) return;
+        const tension = Math.fround(clampAutomationValue(value, automationTensionLimits));
+        if (tension === drag.desired.tension) return;
+        drag.desired = { ...drag.desired, tension };
+        this.scheduleDrag(drag);
+    }
     private applyPlacement(drag: Drag, point: AutomationPoint, time: PointTime): void {
         const edit = drag.pointDrag!;
         const { base, baseSegments, adding, neighbors } = edit;
@@ -400,10 +401,7 @@ export class AutomationCurveEditing {
         for (const id of edit.segments.keys()) edit.touched.add(id);
     }
     private scheduleDrag(drag: Drag): void {
-        if (!drag.companions.length && drag.timer === undefined && !drag.pending) drag.timer = this.timers.set(() => {
-            drag.timer = undefined;
-            void this.flush(drag).catch(() => {});
-        });
+        if (!drag.companions.length) drag.updates.schedule();
         this.changed();
     }
     private movedPoints(drag: Drag, anchor: AutomationPointPosition): AutomationPointPosition[] {
@@ -433,56 +431,51 @@ export class AutomationCurveEditing {
         edit.time?.orderedIds.forEach((id, order) => drafts.set(id, { ...(drafts.get(id) ?? neighborDraft(id)), order }));
         return [...drafts.values()];
     }
-    private flush(drag: Drag): Promise<void> {
-        if (drag.pending) return drag.pending;
-        drag.pending = (async () => {
-            while (this.active === drag) {
-                const { desired: point, sent, pointDrag: edit } = drag;
-                const segments = edit ? segmentChanges(edit) : [];
-                const orderedIds = edit?.time?.orderedIds;
-                const styleChanged = !sameSegment(sent ?? undefined, point);
-                const orderChanged = sent?.order !== point.order || (edit && !sameOrder(edit.sentOrder, orderedIds));
-                if (sent?.sampleIndex === point.sampleIndex && sent?.value === point.value
-                    && !styleChanged && !orderChanged && !segments.length) break;
-                if (drag.kind !== "point") {
-                    await drag.gesture.send(SetSegment(segmentEdit(point)));
-                } else if (edit && (edit.adding || styleChanged || orderChanged || segments.length
-                    || (orderedIds?.length && sent?.sampleIndex !== point.sampleIndex))) {
-                    const desiredSegments = edit.segments;
-                    await drag.gesture.send(PlacePoint({ insert: sent === null,
-                        point: { id: point.id, seconds: 0, sample_index: point.sampleIndex!.toString(),
-                            value: point.value, interpolation: point.interpolation, tension: point.tension, order: point.order ?? 0 },
-                        segments, ordered_ids: [...(orderedIds ?? [])] }));
-                    edit.sentSegments = desiredSegments;
-                    edit.sentOrder = orderedIds ?? [];
-                } else {
-                    for (const moved of this.movedPoints(drag, point)) {
-                        if (this.active !== drag) break;
-                        await drag.gesture.send(MovePoint({ id: moved.id, seconds: 0,
-                            sample_index: moved.sampleIndex!.toString(), value: moved.value }));
-                    }
-                }
-                drag.sent = point;
+    private async sendNext(drag: Drag): Promise<boolean> {
+        if (this.active !== drag) return false;
+        const { desired: point, sent, pointDrag: edit } = drag;
+        const segments = edit ? segmentChanges(edit) : [];
+        const orderedIds = edit?.time?.orderedIds;
+        const styleChanged = !sameSegment(sent ?? undefined, point);
+        const orderChanged = sent?.order !== point.order || (edit && !sameOrder(edit.sentOrder, orderedIds));
+        if (sent?.sampleIndex === point.sampleIndex && sent?.value === point.value
+            && !styleChanged && !orderChanged && !segments.length) return false;
+        if (drag.kind !== "point") {
+            await drag.gesture.send(SetSegment(segmentEdit(point)));
+        } else if (edit && (edit.adding || styleChanged || orderChanged || segments.length
+            || (orderedIds?.length && sent?.sampleIndex !== point.sampleIndex))) {
+            const desiredSegments = edit.segments;
+            await drag.gesture.send(PlacePoint({ insert: sent === null,
+                point: { id: point.id, seconds: 0, sample_index: point.sampleIndex!.toString(),
+                    value: point.value, interpolation: point.interpolation, tension: point.tension, order: point.order ?? 0 },
+                segments, ordered_ids: [...(orderedIds ?? [])] }));
+            edit.sentSegments = desiredSegments;
+            edit.sentOrder = orderedIds ?? [];
+        } else {
+            for (const moved of this.movedPoints(drag, point)) {
+                if (this.active !== drag) break;
+                await drag.gesture.send(MovePoint({ id: moved.id, seconds: 0,
+                    sample_index: moved.sampleIndex!.toString(), value: moved.value }));
             }
-        })().catch(async (error) => {
-            this.errors.set(drag.key, error instanceof Error ? error.message : String(error));
-            if (this.active === drag) this.active = null;
-            try { await drag.gesture.finish(); } catch {}
-            this.changed();
-            throw error;
-        }).finally(() => { drag.pending = undefined; });
-        return drag.pending;
+        }
+        drag.sent = point;
+        return true;
+    }
+    private async failed(drag: Drag, error: unknown): Promise<void> {
+        this.errors.set(drag.key, error instanceof Error ? error.message : String(error));
+        if (this.active === drag) this.active = null;
+        try { await drag.gesture.finish(); } catch {}
+        this.changed();
     }
     finish(deleteClick = false): Promise<void> {
         const drag = this.active;
         if (!drag) return Promise.resolve();
         if (drag.finishing) return drag.finishing;
-        if (drag.timer !== undefined) this.timers.clear(drag.timer);
-        drag.timer = undefined;
+        drag.updates.clearTimer();
         const remove = deleteClick && drag.pointDrag?.deleteOnClick && !drag.pointDrag.moved;
         const pending = remove
             ? drag.gesture.send(RemovePoint({ id: drag.desired.id })).finally(() => drag.gesture.finish())
-            : this.flush(drag).then(() => drag.gesture.finish());
+            : drag.updates.flush().then(() => drag.gesture.finish());
         drag.finishing = pending.then(() => {
             const revision = drag.gesture.acceptedRevision?.();
             if (!remove && this.active === drag && revision !== undefined && this.readRevision < revision) {
@@ -500,14 +493,13 @@ export class AutomationCurveEditing {
         const drag = this.active;
         if (!drag) return;
         this.active = null;
-        if (drag.timer !== undefined) this.timers.clear(drag.timer);
         // History navigation and removal discard unsent movement. Accepted
         // updates still close in order after the outstanding request.
-        void (drag.pending ?? Promise.resolve()).catch(() => {}).then(() => drag.gesture.finish()).catch(() => {});
+        void drag.updates.stop().catch(() => {}).then(() => drag.gesture.finish()).catch(() => {});
         this.changed();
     }
     disconnected(): void {
-        if (this.active?.timer !== undefined) this.timers.clear(this.active.timer);
+        void this.active?.updates.stop().catch(() => {});
         this.active = null; this.selection.clear(); this.curves.clear(); this.errors.clear(); this.ending.clear(); this.readRevision = 0; this.changed();
     }
     async segment(target: NodeAddress, id: number, interpolation: CurveInterpolation, tension: number): Promise<void> {

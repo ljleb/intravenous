@@ -66,14 +66,12 @@ const active = computed(() => props.port.binding !== "none"
 }
 
 .port-row[data-direction="input"] .port-icon {
-    color: var(--iv-sample-input);
+    color: var(--iv-port-input);
 }
 
 .port-row[data-direction="output"] .port-icon {
-    color: var(--iv-sample-output);
+    color: var(--iv-port-output);
 }
-.port-row[data-kind="event"][data-direction="input"] .port-icon { color: var(--iv-event-input); }
-.port-row[data-kind="event"][data-direction="output"] .port-icon { color: var(--iv-event-output); }
 
 .port-row[data-active="true"] .port-icon {
     opacity: 0.95;

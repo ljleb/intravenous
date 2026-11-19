@@ -2,24 +2,20 @@ import type { ManualControlAction, ManualControlDescriptor, ManualControlId, Man
 import { manualControlKey, canEditManualControl, manualControlName } from "./manualControls";
 import { addressKey, type NodeAddress } from "./graphScope";
 import { rightClickHint, type StatusHint } from "./statusBarText";
-import { ScrubSensitivity, scrubSensitivityShortcut } from "./scrubSensitivity";
+import { scrubSensitivityShortcut } from "./scrubSensitivity";
+import { clampKnobValue as clamp, KnobScrub, type KnobLimits } from "./knobScrub";
+import { KnobValueEditing, type KnobValueEntry } from "./knobValueEntry";
 
-export type ManualControlLimits = { min?: number; max?: number; defaultValue?: number; scrubSpeed?: number };
+export type ManualControlLimits = KnobLimits;
 export type ManualControlHint = StatusHint & { text: string };
 export type KnobActivity = "idle" | "hover" | "active" | "retained";
 type Hover = { control: ManualControlId; descriptor: ManualControlDescriptor; limits: ManualControlLimits; portStatus?: string };
-export type ManualValueEntry = Hover & {
-    id: string; draft: string; error: string;
-    anchor: { left: number; top: number; bottom: number };
-};
+export type ManualValueEntry = Hover & KnobValueEntry;
 
 type Gesture = {
     interactionId: string; control: ManualControlId; value: number;
-    pointer?: { id: number; position: number; sensitivity: ScrubSensitivity;
-        plateau: number; limits: ManualControlLimits; anchorPlateau: number };
+    pointer?: { id: number; scrub: KnobScrub };
 };
-const clamp = (value: number, limits: ManualControlLimits) =>
-    Math.max(limits.min ?? -Infinity, Math.min(limits.max ?? Infinity, value));
 const displayValue = (value: number) => Number(value.toPrecision(6)).toString();
 export function manualKnobStatus(name: string, value: number, canReset: boolean, port = ""): ManualControlHint {
     return { text: `${port ? `${port} · ` : ""}${name} ${displayValue(value)}`,
@@ -32,7 +28,7 @@ export class ManualControlGestures {
     private hovered: ManualControlId | null = null;
     private hoverDetails: Hover | null = null;
     private retainedInteraction: string | null = null;
-    private entry: ManualValueEntry | null = null;
+    readonly valueEditing: KnobValueEditing<Hover>;
     private remote: ManualControlInteractionState[] = [];
     private live: ManualControlLiveValue[] = [];
     private readonly ending = new Map<string, ManualControlInteractionState>();
@@ -43,6 +39,7 @@ export class ManualControlGestures {
         private readonly newId: () => string, private readonly changed: () => void,
         private readonly outputPolarity: { initial?: Record<string, boolean>;
             save?: (inverted: Record<string, boolean>) => void } = {}) {
+        this.valueEditing = new KnobValueEditing(newId, changed);
         for (const [key, inverted] of Object.entries(outputPolarity.initial ?? {}))
             if (inverted === true) this.outputInversions.set(key, true);
     }
@@ -139,15 +136,13 @@ export class ManualControlGestures {
         if (this.hoverDetails && manualControlKey(this.hoverDetails.control) === key) {
             this.hoverDetails = { ...this.hoverDetails, descriptor, limits }; changed = true;
         }
-        if (this.entry && manualControlKey(this.entry.control) === key) {
-            this.entry.descriptor = descriptor; this.entry.limits = limits; changed = true;
+        const entry = this.valueEditing.owner();
+        if (entry && manualControlKey(entry.control) === key) {
+            entry.descriptor = descriptor; entry.limits = limits; changed = true;
         }
         if (this.active?.pointer && manualControlKey(this.active.control) === key) {
-            const old = this.active.pointer.limits;
-            if (old.defaultValue !== limits.defaultValue) this.active.pointer.plateau = 0;
-            if (old.defaultValue !== limits.defaultValue || old.min !== limits.min || old.max !== limits.max)
-                this.anchorPointer();
-            this.active.pointer.limits = limits; changed = true;
+            this.active.pointer.scrub.refresh(limits, this.displayValue(control, this.active.value));
+            changed = true;
         }
         if (changed) this.changed();
     }
@@ -169,8 +164,8 @@ export class ManualControlGestures {
         this.cancelEntry();
         this.edit(control, descriptor);
         if (!this.active || !Number.isFinite(unitsPerPixel) || unitsPerPixel <= 0) return false;
-        this.active.pointer = { id: pointerId, position, plateau: 0, limits, anchorPlateau: 0,
-            sensitivity: new ScrubSensitivity(unitsPerPixel, position, this.displayValue(control, this.active.value), precise) };
+        this.active.pointer = { id: pointerId, scrub: new KnobScrub(unitsPerPixel, position,
+            this.displayValue(control, this.active.value), limits, precise) };
         this.changed();
         return true;
     }
@@ -184,90 +179,53 @@ export class ManualControlGestures {
     move(pointerId: number, position: number, min?: number, max?: number): void {
         const pointer = this.active?.pointer;
         if (!pointer || pointer.id !== pointerId || !this.active) return;
-        // Recompute from one anchor for this sensitivity instead of adding
-        // rounded increments. Identical travel must not depend on event count.
-        const { sensitivity } = pointer;
-        const delta = position - sensitivity.anchorPosition;
-        pointer.position = position;
-        const limits = { ...pointer.limits, min: min ?? pointer.limits.min, max: max ?? pointer.limits.max };
+        const { scrub } = pointer;
+        const limits = min === undefined && max === undefined ? scrub.limits
+            : { ...scrub.limits, min: min ?? scrub.limits.min, max: max ?? scrub.limits.max };
         const before = this.displayValue(this.active.control, this.active.value);
-        const target = limits.defaultValue;
-        let value = sensitivity.valueAt(position);
-        if (target !== undefined && Number.isFinite(target) && clamp(target, limits) === target) {
-            // Numeric values occupy their full range. Only the exact default
-            // gets extra physical travel, retained across sensitivity changes.
-            const snapped = sensitivity.valueAtDetent(target, delta, pointer.anchorPlateau);
-            value = snapped.value;
-            pointer.plateau = snapped.plateau;
-        }
-        const unclamped = value;
-        value = clamp(value, limits);
+        const value = scrub.move(position, before, limits);
         if (value !== before) this.update(this.active.control, this.valueFromDisplay(this.active.control, value));
-        // Do not accumulate invisible travel beyond a hard bound.
-        if (value !== unclamped) this.anchorPointer();
     }
     moveBy(pointerId: number, delta: number): void {
         const pointer = this.active?.pointer;
-        if (pointer?.id === pointerId) this.move(pointerId, pointer.position + delta);
+        if (pointer?.id === pointerId) this.move(pointerId, pointer.scrub.position + delta);
     }
     changeSensitivity(delta: number): boolean {
         const active = this.active;
         const pointer = active?.pointer;
         if (!active || !pointer) return false;
-        if (pointer.sensitivity.change(delta, pointer.position, this.displayValue(active.control, active.value))) {
-            pointer.anchorPlateau = pointer.plateau;
-            this.changed();
-        }
+        if (pointer.scrub.changeSensitivity(delta, this.displayValue(active.control, active.value))) this.changed();
         return true;
     }
-    private anchorPointer(): void {
-        const pointer = this.active?.pointer;
-        if (!pointer || !this.active) return;
-        pointer.sensitivity.anchorAt(pointer.position, this.displayValue(this.active.control, this.active.value));
-        pointer.anchorPlateau = pointer.plateau;
-    }
+
     isEditingNode(address: NodeAddress): boolean {
-        return [this.active?.control, this.entry?.control].some((control) =>
+        return [this.active?.control, this.valueEditing.owner()?.control].some((control) =>
             control && addressKey(control.node) === addressKey(address));
     }
     openEntry(control: ManualControlId, descriptor: ManualControlDescriptor, limits: ManualControlLimits,
         anchor: ManualValueEntry["anchor"]): void {
         this.finish();
         if (!canEditManualControl(control, descriptor)) return;
-        this.entry = { id: this.newId(), control, descriptor, limits, anchor,
-            draft: String(this.displayValue(control, this.state(control)?.value ?? descriptor.value)), error: "" };
-        this.changed();
+        const entry = { control, descriptor, limits };
+        this.valueEditing.open(manualControlName(control), this.displayValue(control, this.state(control)?.value ?? descriptor.value),
+            anchor, () => entry.limits, (value) => {
+                this.edit(control, entry.descriptor);
+                this.update(control, this.valueFromDisplay(control, value));
+                this.finish(control);
+            }, entry);
     }
-    numericEntry(): ManualValueEntry | null { return this.entry ? { ...this.entry } : null; }
-    setEntryDraft(draft: string): void {
-        if (!this.entry) return;
-        this.entry.draft = draft; this.entry.error = ""; this.changed();
+    numericEntry(): ManualValueEntry | null {
+        const owner = this.valueEditing.owner(), view = this.valueEditing.view();
+        return owner && view ? { ...owner, ...view } : null;
     }
-    acceptEntry(): boolean {
-        const entry = this.entry;
-        if (!entry) return false;
-        const value = Number(entry.draft);
-        if (!entry.draft.trim() || !Number.isFinite(value)
-            || value !== clamp(value, entry.limits)) {
-            entry.error = "Enter a finite value within the input limits.";
-            this.changed(); return false;
-        }
-        this.entry = null;
-        this.edit(entry.control, entry.descriptor);
-        this.update(entry.control, this.valueFromDisplay(entry.control, value));
-        this.finish(entry.control);
-        this.changed(); return true;
-    }
-    cancelEntry(): void {
-        if (!this.entry) return;
-        this.entry = null; this.changed();
-    }
+    setEntryDraft(draft: string): void { this.valueEditing.setDraft(draft); }
+    acceptEntry(): boolean { return this.valueEditing.accept(); }
+    cancelEntry(): void { this.valueEditing.cancel(); }
     resetHovered(): boolean {
-        if (this.active?.pointer && this.active.pointer.limits.defaultValue !== undefined) {
+        if (this.active?.pointer && this.active.pointer.scrub.limits.defaultValue !== undefined) {
             this.update(this.active.control, this.valueFromDisplay(this.active.control,
-                clamp(this.active.pointer.limits.defaultValue, this.active.pointer.limits)));
-            this.active.pointer.plateau = 0;
-            this.anchorPointer();
+                clamp(this.active.pointer.scrub.limits.defaultValue, this.active.pointer.scrub.limits)));
+            this.active.pointer.scrub.resetAnchor(this.displayValue(this.active.control, this.active.value));
             return true;
         }
         const hover = this.hoverDetails;
@@ -297,14 +255,15 @@ export class ManualControlGestures {
         return true;
     }
     hint(): ManualControlHint | null {
-        if (this.entry) return {
-            text: this.entry.error ? `${manualControlName(this.entry.control)} · ${this.entry.error}` : manualControlName(this.entry.control),
-            shortcuts: this.entry.error ? "Esc cancel" : "Enter apply · Esc cancel",
+        const entry = this.valueEditing.view();
+        if (entry) return {
+            text: entry.error ? `${entry.label} · ${entry.error}` : entry.label,
+            shortcuts: entry.error ? "Esc cancel" : "Enter apply · Esc cancel",
         };
         if (this.active?.pointer) return {
             text: `${manualControlName(this.active.control)} ${displayValue(this.displayValue(this.active.control, this.active.value))}`
                 + (this.outputInverted(this.active.control, this.active.value) ? " · inverted" : "")
-                + ` · ${this.active.pointer.sensitivity.hint()}`,
+                + ` · ${this.active.pointer.scrub.hint()}`,
             shortcuts: `${scrubSensitivityShortcut} · Esc release`,
         };
         if (!this.hoverDetails || !canEditManualControl(this.hoverDetails.control, this.hoverDetails.descriptor)) return null;
@@ -331,6 +290,6 @@ export class ManualControlGestures {
     }
     disconnected(): void {
         this.active = null; this.hovered = null; this.hoverDetails = null; this.retainedInteraction = null;
-        this.entry = null; this.remote = []; this.live = []; this.ending.clear(); this.changed();
+        this.valueEditing.cancel(); this.remote = []; this.live = []; this.ending.clear(); this.changed();
     }
 }

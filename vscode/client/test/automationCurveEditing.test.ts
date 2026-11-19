@@ -809,19 +809,15 @@ test("locked tension drags use only horizontal travel and preserve it on release
     assert.equal(locked, false);
 });
 
-test("the tension knob scrubs vertically and changes sensitivity without jumping", async () => {
+test("tension knob values coalesce into a single typed edit gesture", async () => {
     const sent: unknown[] = [];
     const h = harness(async (event) => { sent.push(serializeNodeEvent(event).payload); });
-    assert.equal(h.edits.begin(target, 1, 7, axes, { x: 10, y: 50 }, "tensionKnob"), true);
-    h.edits.moveBy(7, { x: 50, y: 0 });
-    assert.equal(h.edits.activePoint()?.tension, 0);
-    h.edits.moveBy(7, { x: 0, y: -50 });
+    assert.equal(h.edits.begin(target, 1, 7, axes, { x: 10, y: 50 }, "tension"), true);
+    h.edits.setDraggedTension(target, 1, .25);
     assert.equal(h.edits.activePoint()?.tension, .25);
-    assert.equal(h.edits.changeSensitivity(-120), true);
-    assert.equal(h.edits.activePoint()?.tension, .25);
-    h.edits.moveBy(7, { x: 0, y: -100 });
+    h.edits.setDraggedTension(target, 1, 2);
     assert.equal(h.edits.activePoint()?.tension, 1);
-    h.edits.moveBy(7, { x: 0, y: 25 });
+    h.edits.setDraggedTension(target, 1, .75);
     assert.equal(h.edits.activePoint()?.tension, .75);
     await h.edits.finish();
     assert.deepEqual(sent, [{ id: 1, interpolation: "bezier", tension: .75 }]);

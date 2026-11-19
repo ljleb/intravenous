@@ -1,17 +1,16 @@
 <script setup lang="ts">
-import { manualControlName } from "../../src/manualControls";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import type { ManualControlGestures } from "../../src/manualControlGesture";
+import type { KnobValueEntry } from "../../src/knobValueEntry";
 
-const props = defineProps<{ gestures: ManualControlGestures; version: number }>();
+const props = defineProps<{ entry: KnobValueEntry | null; accept: () => boolean; cancel: () => void;
+    setDraft: (draft: string) => void; target?: HTMLElement; returnFocus?: HTMLElement }>();
 const input = ref<HTMLInputElement | null>(null);
 const viewport = ref({ width: window.innerWidth, height: window.innerHeight });
-const entry = computed(() => { void props.version; return props.gestures.numericEntry(); });
 const position = computed(() => {
-    const anchor = entry.value?.anchor;
+    const anchor = props.entry?.anchor;
     if (!anchor) return {};
     const width = Math.min(190, viewport.value.width - 8);
-    const height = entry.value?.error ? 90 : 42;
+    const height = props.entry?.error ? 90 : 42;
     const proposedTop = anchor.bottom + height + 4 <= viewport.value.height ? anchor.bottom + 4 : anchor.top - height - 4;
     const top = Math.max(4, Math.min(proposedTop, viewport.value.height - height - 4));
     return { width: `${width}px`, left: `${Math.max(4, Math.min(anchor.left, viewport.value.width - width - 4))}px`,
@@ -19,16 +18,18 @@ const position = computed(() => {
 });
 function resize() { viewport.value = { width: window.innerWidth, height: window.innerHeight }; }
 function close(accept: boolean) {
-    if (accept && !props.gestures.acceptEntry()) return;
-    if (!accept) props.gestures.cancelEntry();
-    document.querySelector<HTMLElement>(".graph-editor")?.focus({ preventScroll: true });
+    if (accept && !props.accept()) return;
+    if (!accept) props.cancel();
+    const target = props.returnFocus ?? document.querySelector<HTMLElement>(".graph-editor");
+    target?.focus({ preventScroll: true });
 }
 function blur() {
+    const id = props.entry?.id;
     queueMicrotask(() => {
-        if (input.value?.isConnected && document.activeElement !== input.value) props.gestures.cancelEntry();
+        if (props.entry?.id === id && input.value?.isConnected && document.activeElement !== input.value) props.cancel();
     });
 }
-watch(() => entry.value?.id, async (id) => {
+watch(() => props.entry?.id, async (id) => {
     if (!id) return;
     await nextTick();
     input.value?.focus({ preventScroll: true });
@@ -39,15 +40,15 @@ onBeforeUnmount(() => window.removeEventListener("resize", resize));
 </script>
 
 <template>
-    <Teleport to="body">
+    <Teleport :to="target ?? 'body'">
         <form v-if="entry" class="manual-value-popover" :style="position" role="dialog"
-            :aria-label="`${manualControlName(entry.control)} value`" @submit.prevent="close(true)"
+            :aria-label="`${entry.label} value`" @submit.prevent="close(true)"
             @pointerdown.stop @keydown.esc.stop.prevent="close(false)">
             <input ref="input" type="text" inputmode="decimal" :value="entry.draft"
-                :aria-label="`${manualControlName(entry.control)} value`" :aria-invalid="!!entry.error"
+                :aria-label="`${entry.label} value`" :aria-invalid="!!entry.error"
                 :aria-description="entry.error || undefined"
                 autocomplete="off" spellcheck="false"
-                @input="props.gestures.setEntryDraft(($event.target as HTMLInputElement).value)" @blur="blur" />
+                @input="setDraft(($event.target as HTMLInputElement).value)" @blur="blur" />
             <span v-if="entry.error" class="entry-error" role="alert">{{ entry.error }}</span>
         </form>
     </Teleport>

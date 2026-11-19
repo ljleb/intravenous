@@ -3991,8 +3991,10 @@ versioned marker query, persistent selector, and automation snap gesture.
 ### Builtin beat generator, 2026-11-18
 
 `iv.builtin.beats` is a Tock node with a computed `BeatEvent` Coverage output.
-The constructor takes a fixed tempo, beats per bar, nested subdivision factors,
-and a signed sample index for the grid origin. `BeatEvent::depth` distinguishes
+The constructor takes a fixed tempo, beats per bar, and nested subdivision
+factors. The grid starts at sample zero. See the
+[earlier origin argument](./historical/beats_constructor_origin.md).
+`BeatEvent::depth` distinguishes
 bar lines, beats, and subdivisions. The ordinary Beat-to-Trigger conversion
 preserves the timestamp of each mark. A consumer that uses the depth reads
 `BeatEvent` before that conversion.
@@ -4007,3 +4009,44 @@ subdivision control. [Builtin usage](../src/intravenous/builtin_packages/README.
 The isolated release build passed 148 tests across node build requests, GraphJit
 connection planning, project persistence, and the builtin package loading case.
 The package test constructs the node with default and custom arguments.
+
+The Beats lane previews the fixed grid from accepted `GraphScopeNode` construction
+arguments and the project sample rate. Bars, beats, and successive subdivisions
+use different mark heights. The lane reduces mark density when zooming out. The
+preview has no event subscription and does not supply the project ruler or snapping.
+Those features still need a bounded event query for the selected cover.
+The top-right BPM button opens a knob, a beats-per-bar field, and an ordered
+list of subdivision factors. The BPM drag previews locally and sends typed
+`SetBeatGrid` updates while held. `NodeEventUpdates` coalesces these updates and
+flushes the final change on release. Automation point edits use the same queue.
+`NodeEventGesture` groups the accepted changes for undo. `Beats::on_message`
+replaces the configured invocation through the same mechanism as
+`AutomationCurve::on_message`. Exact BPM entry, beats per bar, and subdivision
+edits publish when the field commits or a level is added or removed.
+
+The Beats settings panel uses knobs for BPM, beats per bar, and each subdivision
+factor. Exact entry uses the same right-click popover as the port knobs. Drags
+start in whole-number steps. Reducing wheel sensitivity enables fractional BPM
+steps. Beats per bar and subdivision factors are whole numbers.
+
+### Deferred viewport observation proposal
+
+Measure the time from a lane entering the viewport to its first fresh reading.
+Break that time down by capability lookup, compilation, generation activation,
+and delivery before choosing an optimization.
+
+For live readings of values already materialized in the foreground executor, explore
+preparing capture descriptors off the audio thread and swapping the visible set at
+a block boundary. This requires a safe capture point and storage that stays valid
+for the lifetime of the executable generation. Keep the existing compilation and
+activation path for readings that extend a value's lifetime, require new storage,
+or cause additional DSP. Consider compiling likely viewport transitions in advance
+only if measurements show that this remaining compilation latency matters.
+
+For bounded timeline data such as automation bounds and event marks, explore a
+shared timeline request policy. Request a padded span at a suitable resolution,
+keep the result while the viewport can reuse it, and request more near an edge or
+when zoom calls for finer data. Presentations still draw and handle edits against
+the visible viewport. Keep the padding and memory bounded, preserve source and data
+versions and coverage gaps, and retain exact event times for snapping. Playback
+work takes priority over prefetched windows.

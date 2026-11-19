@@ -528,6 +528,33 @@ Disconnect removes that client's hover state and ends each of its open gestures 
 the last value the server received from it, as an explicit end would. See
 [Live gesture values are transient](#live-gesture-values-are-transient).
 
+Presentations that edit construction data preview the local draft immediately.
+A drag publishes typed node events through the shared coalescing policy, flushes
+its final update on release, and groups the accepted changes into one undo
+entry. A discrete edit publishes when its field or action commits. The
+interaction owner retains the preview through the accepted graph revision and
+restores accepted data after rejection. Port controls use the live manual
+control mechanism described below.
+
+Use knobs for editable numeric settings in node presentations. Use the shared
+right-click value popover for exact entry and validate the setting's range and
+numeric type there. Keep list actions such as adding or removing a subdivision
+separate from the knob that sets its value.
+
+### Shared components for new lanes
+
+Build new lanes by composing the shared Vue components. Use `NodeLane` for
+the lane frame, `Knob` for numeric editing, and `LaneSettings` for a button
+with a settings panel in the upper-right corner. Use `RulerGraduations` and
+`TimelinePlayhead` in time-based views where applicable.
+
+Supply lane-specific values, limits, snapping rules, edit callbacks, and panel
+content as props or slots. Keep the widget's markup, pointer and keyboard
+gestures, exact entry, focus behavior, and status hints in the shared
+implementation. When a new lane needs a variation of an existing control,
+extend the shared component and check its existing callers as part of the same
+change.
+
 ## Source navigation uses `NodeAddress` and its selector path
 
 C++ source annotations resolve presentation and source focus to the semantic pair:
@@ -695,6 +722,8 @@ The exact authored default receives additional mouse travel. Preserve every
 nearby numeric value; do not clamp a numeric interval to the default. The
 extra travel has a fixed width in pointer pixels, independent of sensitivity.
 Changing sensitivity inside that region preserves progress through it.
+For knobs with stepped values, apply the detent before quantizing the drag.
+The detent yields the exact authored default even when it lies between steps.
 
 Right-click opens a numeric-value popover. Typing remains local until Enter
 accepts one exact-value gesture. Escape, clicking outside, or leaving the

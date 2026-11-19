@@ -19,7 +19,8 @@ import RulerGraduations from "../timeline/RulerGraduations.vue";
 import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
 import { useTimelineNavigation, useTimelineWindow, type LaneValueNavigation } from "../timeline/timelineContext";
 import NodeLane from "./NodeLane.vue";
-import KnobFace from "./KnobFace.vue";
+import Knob from "./Knob.vue";
+import LaneSettings from "./LaneSettings.vue";
 import { useAutomationEditing } from "./automationEditingContext";
 import { nanoHeightPx, type NodeDisplayMode } from "./displayMode";
 import { useLane } from "./laneContext";
@@ -176,9 +177,7 @@ const handleY = (point: AutomationPoint) => {
 
 type PopoverPosition = { left: number; top: number };
 const segmentMenu = ref<({ id: number } & PopoverPosition) | null>(null);
-const scaleMenu = ref<PopoverPosition | null>(null);
 const popover = ref<HTMLElement | null>(null);
-const scaleButton = ref<HTMLButtonElement | null>(null);
 const selected = computed(() => {
     void version.value;
     const point = curve.value?.points.find(({ id }) => id === segmentMenu.value?.id);
@@ -209,7 +208,6 @@ function editSegment(event: MouseEvent | KeyboardEvent, point: AutomationPoint) 
     const rect = control.getBoundingClientRect();
     const x = event instanceof MouseEvent ? event.clientX : rect.right;
     const y = event instanceof MouseEvent ? event.clientY : rect.bottom;
-    scaleMenu.value = null;
     segmentMenu.value = { id: point.id, ...menuPosition(x, y, 220, 145) };
     void nextTick(() => popover.value?.querySelector("select")?.focus({ preventScroll: true }));
 }
@@ -218,9 +216,9 @@ function changeSegment(point: AutomationPoint, interpolation: CurveInterpolation
     void edits.segment(node.value.address, point.id, interpolation, Math.fround(tension));
 }
 function closeMenus(restoreFocus = false) {
-    if (restoreFocus) (scaleMenu.value ? scaleButton.value : menuAnchor ?? surface.value)?.focus({ preventScroll: true });
+    if (popover.value) editor?.closeKnobValueWithin(popover.value);
+    if (restoreFocus) (menuAnchor ?? surface.value)?.focus({ preventScroll: true });
     segmentMenu.value = null;
-    scaleMenu.value = null;
     menuAnchor = null;
 }
 function escapeSegment() {
@@ -228,7 +226,7 @@ function escapeSegment() {
     closeMenus(true);
 }
 function outside(event: PointerEvent) {
-    if (!(event.target instanceof Element) || !event.target.closest(".automation-popover, .automation-scale-button")) closeMenus();
+    if (!(event.target instanceof Element) || !event.target.closest(".automation-popover")) closeMenus();
 }
 watch(editable, (enabled) => {
     if (enabled) return;
@@ -239,14 +237,6 @@ watch(editable, (enabled) => {
 });
 watch(selected, (point) => { if (!point) segmentMenu.value = null; });
 
-function showScale() {
-    if (scaleMenu.value) { closeMenus(); return; }
-    if (!scaleButton.value) return;
-    const rect = scaleButton.value.getBoundingClientRect();
-    segmentMenu.value = null;
-    scaleMenu.value = menuPosition(rect.right - 192, rect.bottom + 4, 204, 158);
-    void nextTick(() => popover.value?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true }));
-}
 function changeDisplay(event: Event) {
     if (!editor || key.value === null) return;
     const mode = (event.target as HTMLSelectElement).value as AutomationValueDisplay;
@@ -378,6 +368,23 @@ function pointKey(event: KeyboardEvent, point: AutomationPoint) {
     } else if (event.key === "Enter" || event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
         editSegment(event, point);
 }
+function tensionBinding(point: AutomationPoint) {
+    const target = node.value.address;
+    return {
+        beginEdit(event: PointerEvent) {
+            const axes = pointerAxes();
+            return !!target && !!axes && edits.begin(target, point.id, event.pointerId, axes,
+                { x: event.clientX, y: event.clientY }, "tension");
+        },
+        endEdit() { void edits.finish(); },
+        editActive: () => edits.pointerId() !== null,
+        apply(value: number, live: boolean) {
+            if (live && target) edits.setDraggedTension(target, point.id, value);
+            else changeSegment(point, "bezier", value);
+        },
+    };
+}
+
 function adjustTension(event: KeyboardEvent, point: AutomationPoint): boolean {
     const adjustment = { ArrowLeft: -.05, ArrowDown: -.05, ArrowRight: .05, ArrowUp: .05 }[event.key];
     const value = event.key === "Home" ? 0 : event.key === "End" ? 1
@@ -541,9 +548,19 @@ onBeforeUnmount(() => {
                     <circle class="point-marker" r="2.6" />
                 </g>
             </svg>
-            <button v-if="editable && editor && curve" ref="scaleButton" type="button" class="automation-scale-button"
-                aria-label="Automation value scale" aria-haspopup="dialog" :aria-expanded="!!scaleMenu"
-                data-status-hint="Set value display and snapping" @pointerdown.stop @click.stop="showScale">Scale</button>
+            <LaneSettings v-if="editable && editor && curve" label="Scale" dialog-label="Automation value scale"
+                hint="Set value display and snapping" :width="204" :preferred-height="158" @toggle="(open) => open && closeMenus()">
+                <label class="automation-settings-row">Display <select :value="display" @change="changeDisplay">
+                    <option value="curved">Curved</option><option value="cropped">Cropped</option>
+                </select></label>
+                <label class="automation-settings-row">Value snapping
+                    <select :value="ruler" data-status-hint="Auto adds finer guides as you zoom in" @change="changeRuler">
+                        <option value="auto">Auto</option><option value="whole">Whole</option>
+                        <option value="half">Halves</option><option value="off">Off</option>
+                    </select>
+                </label>
+                <span v-if="error" role="alert" class="scale-error">{{ error }}</span>
+            </LaneSettings>
         </div>
     </NodeLane>
     <Teleport to="body">
@@ -556,37 +573,16 @@ onBeforeUnmount(() => {
             </select></label>
             <div v-if="selected.interpolation === 'bezier'" class="automation-popover-control">
                 <span aria-hidden="true">Tension</span>
-                <button type="button" class="automation-knob" role="slider" aria-label="Bézier tension"
-                    :aria-valuemin="automationTensionLimits.min" :aria-valuemax="automationTensionLimits.max" :aria-valuenow="selected.tension"
-                    :data-status-hint="`Tension ${Number(selected.tension.toPrecision(6))}`" data-status-shortcuts="Drag"
-                    @pointerdown="start($event, selected.id, 'tensionKnob')" @keydown="adjustTension($event, selected)">
-                    <KnobFace :value="selected.tension" :limits="automationTensionLimits" />
-                </button>
+                <Knob :identity="`${key}:automation:tension:${selected.id}`" label="Bézier tension"
+                    :value="selected.tension" :limits="automationTensionLimits" :step=".05" v-bind="tensionBinding(selected)" />
             </div>
             <button type="button" class="delete-point" @click="removePoint(selected.id)">Delete point</button>
-        </div>
-        <div v-if="editable && scaleMenu" ref="popover" class="automation-popover"
-            :style="{ left: `${scaleMenu.left}px`, top: `${scaleMenu.top}px` }"
-            role="dialog" aria-label="Automation value scale" @keydown.esc.stop="closeMenus(true)"
-            @pointerdown.stop @wheel.stop>
-            <label>Display <select :value="display" @change="changeDisplay">
-                <option value="curved">Curved</option><option value="cropped">Cropped</option>
-            </select></label>
-            <label>Value snapping
-                <select :value="ruler" data-status-hint="Auto adds finer guides as you zoom in" @change="changeRuler">
-                    <option value="auto">Auto</option>
-                    <option value="whole">Whole</option>
-                    <option value="half">Halves</option>
-                    <option value="off">Off</option>
-                </select>
-            </label>
-            <span v-if="error" role="alert" class="scale-error">{{ error }}</span>
         </div>
     </Teleport>
 </template>
 
 <style scoped>
-.automation-surface { position: relative; width: 100%; height: 100%; min-height: 1px; color: var(--iv-sample-input); }
+.automation-surface { position: relative; width: 100%; height: 100%; min-height: 1px; color: var(--iv-port-input); }
 .clip-ruler { opacity: .55; }
 .automation-curve { position: relative; display: block; width: 100%; height: 100%; overflow: hidden; touch-action: none; }
 .value-guides { pointer-events: none; }
@@ -623,33 +619,18 @@ onBeforeUnmount(() => {
 .curve-point[data-selected] .point-marker { r: 3.2px; }
 .tension-stem { fill: none; stroke: currentColor; stroke-opacity: .22; pointer-events: none; }
 .curve-tension[data-hovered] .tension-marker { fill-opacity: 1; transform: scale(1.27); }
-.automation-scale-button {
-    position: absolute; top: 2px; right: 4px; border: 1px solid transparent; padding: 1px 4px; border-radius: 3px;
-    color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); font: inherit; font-size: 10px;
-    cursor: pointer;
-}
-.automation-scale-button:is(:hover, :focus-visible, [aria-expanded="true"]) {
-    color: var(--vscode-foreground); border-color: var(--vscode-panel-border);
-}
 .automation-popover {
     position: fixed; z-index: 1000; display: grid; gap: 8px; padding: 10px; max-width: 192px;
     color: var(--vscode-editorWidget-foreground); background: var(--vscode-editorWidget-background);
     border: 1px solid var(--vscode-widget-border); box-shadow: 0 2px 8px var(--vscode-widget-shadow);
 }
-.automation-popover label, .automation-popover-control { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.automation-popover select {
+.automation-popover label, .automation-popover-control, .automation-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.automation-popover select, .automation-settings-row select {
     max-width: 100px; color: var(--vscode-input-foreground); background: var(--vscode-input-background);
     border: 1px solid var(--vscode-input-border); font: inherit;
 }
 .automation-popover .delete-point { justify-self: end; color: var(--vscode-errorForeground); background: transparent;
     border: 0; border-radius: 2px; font: inherit; padding: 3px 8px; cursor: pointer; }
 .automation-popover .delete-point:is(:hover, :focus-visible) { background: var(--vscode-toolbar-hoverBackground); }
-.automation-knob {
-    width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: transparent;
-    color: var(--knob-toggle-accent, var(--iv-sample-input)); cursor: ns-resize; touch-action: none;
-}
-.automation-knob svg { display: block; width: 100%; height: 100%; }
-.automation-knob:disabled { cursor: default; opacity: .4; }
-.automation-knob:focus-visible { outline: 1px solid currentColor; }
 .scale-error { color: var(--vscode-errorForeground); }
 </style>

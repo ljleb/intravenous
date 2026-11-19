@@ -189,19 +189,13 @@ function toggleMember(index: number): void {
 }
 
 .port-dot[data-direction="input"] {
-    background: var(--iv-sample-input);
+    background: var(--iv-port-input);
 }
 
 .port-dot[data-direction="output"] {
-    background: var(--iv-sample-output);
+    background: var(--iv-port-output);
 }
 .port-dot[data-kind="event"] { border-radius: 2px; }
-.port-dot[data-kind="event"][data-direction="input"] {
-    background: var(--iv-event-input);
-}
-.port-dot[data-kind="event"][data-direction="output"] {
-    background: var(--iv-event-output);
-}
 
 .port-dot[data-connectivity="connected"],
 .port-dot[data-connectivity="mixed"] {

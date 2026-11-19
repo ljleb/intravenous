@@ -7,17 +7,16 @@ import type { CurveAxes, CurveDragKind } from "../../src/automationCurveEditing"
 import { webviewApi } from "../host";
 import PresentationHost from "../presentation/PresentationHost.vue";
 import type { SemanticNode } from "../presentation/semanticNode";
-import { provideGraphEditor, type CursorWarpAnchor } from "./context";
+import { provideGraphEditor, type CursorWarpAnchor, type KnobDrag } from "./context";
 import NodeEditor from "./NodeEditor.vue";
 import { fixedConnectionPorts, type GraphConnectionEnd, type GraphPortEndpoint } from "../../src/graphConnectionEditing";
 import { beginPortConnection, canDropPortConnection, finishPortConnection, movePortConnection, type PortConnectionDrag } from "../../src/portConnectionGesture";
 import { initialPortHoverShift, keyboardPortHoverShift, pointerPortHoverShift } from "../../src/portHoverShift";
 import { connectionCursorOutputFraction, type PortColorColumns } from "../../src/connectionPreview";
 import { ManualControlGestures } from "../../src/manualControlGesture";
-import { knobScrubSpeed } from "../../src/knobPresentation";
 import { provideManualControls } from "../presentation/manualControlContext";
 import ManualValuePopover from "../presentation/ManualValuePopover.vue";
-import { canEditManualControl, manualControlKey, resolveManualControl } from "../../src/manualControls";
+import { canEditManualControl, resolveManualControl } from "../../src/manualControls";
 import { KnobPointerLock } from "../../src/knobPointerLock";
 import { KnobClicks } from "../../src/knobClicks";
 import { PointerLockExitGuard } from "../../src/pointerLockExitGuard";
@@ -25,6 +24,7 @@ import { PointerLockExitRedirect } from "../../src/pointerLockExitRedirect";
 import { TrustedHover } from "../../src/trustedHover";
 import { providePlayback } from "../timeline/playbackContext";
 import { useAutomationEditing } from "../presentation/automationEditingContext";
+import { useBeatGridEditing } from "../presentation/beatGridEditingContext";
 import { automationPointStatus, useElementStatusHint } from "../statusHints";
 import { scrubSensitivityShortcut } from "../../src/scrubSensitivity";
 import type { StatusHint } from "../../src/statusBarText";
@@ -43,6 +43,7 @@ const wireOpacity = { faint: .19, emphasized: .72 };
 const state = shallowRef<GraphEditorState>({ sessionStatus: "starting", scope: null, layout: readLayout(null), definitions: [], error: "" });
 const playback = providePlayback();
 const automation = useAutomationEditing();
+const beats = useBeatGridEditing();
 const elementStatus = useElementStatusHint();
 onBeforeUnmount(() => playback.dispose());
 const observations = new PresentationObservations((request) => webviewApi.postMessage(request), {
@@ -95,12 +96,17 @@ function queueCursorWarp(warp: PendingCursorWarp) {
     }, Math.max(0, warp.expiresAt - Date.now()));
 }
 const knobClicks = new KnobClicks();
+const activeKnob = ref<string | null>(null);
+let knobDrag: (KnobDrag & { pointerId: number }) | null = null;
+const valueEntryAnchor = shallowRef<HTMLElement>();
+
 const manualGestures = new ManualControlGestures(
     (action) => webviewApi.postMessage({ type: "manualControlAction", action }),
     () => crypto.randomUUID(), () => { ++manualVersion.value; publishInteractionHint(); }, {
         initial: webviewApi.getState()?.outputInversions,
         save: (outputInversions) => webviewApi.setState({ ...webviewApi.getState(), outputInversions }),
     });
+const manualValueEntry = computed(() => { void manualVersion.value; return manualGestures.valueEditing.view(); });
 const pointerLock = new KnobPointerLock<Point>({
     request: () => surface.value!.requestPointerLock(),
     exit: () => document.exitPointerLock(),
@@ -111,7 +117,8 @@ const pointerLock = new KnobPointerLock<Point>({
         automation.edits.moveBy(id, delta);
     } else {
         knobClicks.move(delta.x, delta.y);
-        manualGestures.moveBy(id, -delta.y);
+        knobDrag?.moveBy(delta);
+        publishInteractionHint();
     }
 }, (id, point, lockOrigin) => {
     if (lockOrigin) beginPointerLockExit(lockOrigin);
@@ -131,25 +138,27 @@ const pointerLock = new KnobPointerLock<Point>({
         void automation.edits.finish(!!point && automationShift);
     } else {
         if (!point) knobClicks.cancel();
-        const control = manualGestures.pointerControl();
-        const knob = point && document.elementFromPoint(point.x, point.y)?.closest<HTMLElement>(".manual-input");
-        manualGestures.release(id);
-        if (!control || !knob || knob.dataset.manualControl !== manualControlKey(control)) manualGestures.hover(null);
+        const drag = knobDrag;
+        knobDrag = null;
+        activeKnob.value = null;
+        drag?.finish(point);
+        publishInteractionHint();
     }
     if (surface.value?.hasPointerCapture(id)) surface.value.releasePointerCapture(id);
 }, (message) => {
     pointerLockError = message; publishInteractionHint();
 });
-watch(automation.version, () => {
+watch([automation.version, beats.version], () => {
     // Graph replacement, undo, or a failed edit can end the gesture before mouseup.
     if (automationPointerId !== null && automation.edits.pointerId() === null) pointerLock.cancel();
+    if (knobDrag?.active && !knobDrag.active()) pointerLock.cancel();
 }, { flush: "sync" });
 function startAutomation(event: PointerEvent, target: NodeAddress, pointId: number | null, axes: CurveAxes, kind: CurveDragKind,
     visiblePointCenter?: (id: number) => Point | null) {
     const element = surface.value;
-    if (!element || event.button !== (pointId === null ? 2 : 0) || automationPointerId !== null || manualGestures.pointerControl()) return;
+    if (!element || event.button !== (pointId === null ? 2 : 0) || automationPointerId !== null || knobDrag) return;
     const origin = { x: event.clientX, y: event.clientY };
-    if (!automation.edits.begin(target, pointId, event.pointerId, axes, origin, kind, event.shiftKey, event.ctrlKey)) return;
+    if (!automation.edits.begin(target, pointId, event.pointerId, axes, origin, kind, event.shiftKey)) return;
     const id = automation.edits.activePoint()!.id;
     const destination = visiblePointCenter ? () => visiblePointCenter(id) : undefined;
     const mouse = event.pointerType === "mouse";
@@ -180,21 +189,27 @@ function captureAutomationPointer(event: PointerEvent, element: HTMLElement, ori
 provideManualControls({ gestures: manualGestures, version: manualVersion, setEnabled: (control, enabled) => {
     if (control.inputName !== undefined)
         webviewApi.postMessage({ type: "setManualInputEnabled", target: control.node, inputName: control.inputName, enabled });
-}, startKnob: (event, control, descriptor, limits) => {
-    if (manualGestures.pointerControl() || automationPointerId !== null) return;
-    surface.value?.focus({ preventScroll: true });
-    manualGestures.hover(control, descriptor, limits);
+} });
+function startKnob(event: PointerEvent, key: string, begin: () => KnobDrag | undefined, reset?: () => void) {
+    const element = surface.value;
+    if (!element || knobDrag || automationPointerId !== null) return;
+    const control = event.currentTarget as HTMLElement;
+    if (!control.closest(":popover-open, [role=dialog]")) element.focus({ preventScroll: true });
+    else control.focus({ preventScroll: true });
     const origin = { x: event.clientX, y: event.clientY };
-    if (event.pointerType === "mouse" && knobClicks.press(manualControlKey(control), origin, performance.now(), event.detail)) {
-        manualGestures.resetHovered();
+    if (event.pointerType === "mouse" && knobClicks.press(key, origin, performance.now(), event.detail) && reset) {
+        reset();
         return;
     }
-    const scale = knobScrubSpeed(limits);
-    if (!manualGestures.scrub(control, descriptor, event.pointerId, -event.clientY, scale, limits, event.ctrlKey)) return;
-    surface.value?.setPointerCapture(event.pointerId);
+    const drag = begin();
+    if (!drag) { knobClicks.cancel(); return; }
+    knobDrag = { ...drag, pointerId: event.pointerId };
+    activeKnob.value = key;
+    element.setPointerCapture(event.pointerId);
     pointerLockError = "";
     pointerLock.start(event.pointerId, origin, event.pointerType === "mouse");
-} });
+    publishInteractionHint();
+}
 function publishInteractionHint() {
     const manual = document.hasFocus() ? manualGestures.hint() : null;
     const adjustingKnob = manualGestures.pointerControl();
@@ -202,8 +217,9 @@ function publishInteractionHint() {
     const sensitivity = point ? automation.edits.sensitivityHint() : undefined;
     const edit = point ? automationPointStatus(point) : null;
     const drag = playback.dragPosition.value;
-    const hint: StatusHint | null = (manual && (adjustingKnob || manualGestures.numericEntry())
+    const hint: StatusHint | null = (manual && (adjustingKnob || manualGestures.valueEditing.view())
         ? { ...manual, text: manual.text + (adjustingKnob && pointerLockError ? ` · Pointer lock unavailable. ${pointerLockError}` : "") } : null)
+        ?? (document.hasFocus() ? knobDrag?.hint?.() : undefined)
         ?? (edit ? { text: edit + (sensitivity ? ` · ${sensitivity}` : "") + (pointerLockError ? " · Pointer lock unavailable" : ""),
             shortcuts: sensitivity ? scrubSensitivityShortcut : undefined } : null)
         ?? (timelineZoomHint.value ? { text: timelineZoomHint.value } : null)
@@ -230,13 +246,13 @@ function moveCapturedControl(event: PointerEvent) {
         automation.edits.move(event.pointerId, { x: event.clientX, y: event.clientY });
         return;
     }
-    if (!manualGestures.pointerControl()) return;
-    if (manualGestures.pointerId() !== event.pointerId) return;
+    if (knobDrag?.pointerId !== event.pointerId) return;
     event.stopImmediatePropagation();
     if (document.pointerLockElement === surface.value) return;
     if (!(event.buttons & 1)) { releaseCapturedControl(event); return; }
     knobClicks.move(event.movementX, event.movementY);
-    manualGestures.move(event.pointerId, -event.clientY);
+    knobDrag.move({ x: event.clientX, y: event.clientY });
+    publishInteractionHint();
 }
 function releaseCapturedControl(event: PointerEvent) {
     if (event.type === "pointerup" && event.button !== (automationPointerId === event.pointerId ? automationButton : 0)) return;
@@ -245,7 +261,7 @@ function releaseCapturedControl(event: PointerEvent) {
         if (event.type !== "pointerup" && event.type !== "pointermove") { pointerLock.cancel(); return; }
         updateAutomationShift(event.shiftKey);
     }
-    if (manualGestures.pointerId() === event.pointerId) knobClicks.release(performance.now());
+    if (knobDrag?.pointerId === event.pointerId) knobClicks.release(performance.now());
     pointerLock.release(event.pointerId, { x: event.clientX, y: event.clientY });
 }
 function lockedControlMove(event: MouseEvent) {
@@ -259,8 +275,8 @@ function lockedControlMove(event: MouseEvent) {
 function lockedControlRelease(event: MouseEvent) {
     if (event.button !== (automationPointerId === null ? 0 : automationButton)) return;
     if (automationPointerId !== null && document.pointerLockElement !== surface.value) return;
-    const id = automationPointerId ?? manualGestures.pointerId();
-    if (id === null) return;
+    const id = automationPointerId ?? knobDrag?.pointerId;
+    if (id === undefined) return;
     updateAutomationShift(event.shiftKey);
     if (automationPointerId === null) knobClicks.release(performance.now());
     pointerLock.release(id, { x: event.clientX, y: event.clientY });
@@ -311,8 +327,8 @@ function controlLockChanged() {
     if (pointerLock.status().granted && document.pointerLockElement === surface.value) {
         // Capture is only a fallback while the lock is pending. A successful
         // lock owns relative mouse input and must not retain a capture target.
-        const id = automationPointerId ?? manualGestures.pointerId();
-        if (id !== null && surface.value?.hasPointerCapture(id)) surface.value.releasePointerCapture(id);
+        const id = automationPointerId ?? knobDrag?.pointerId;
+        if (id !== undefined && surface.value?.hasPointerCapture(id)) surface.value.releasePointerCapture(id);
         pointerLockError = "";
         publishInteractionHint();
     }
@@ -320,8 +336,10 @@ function controlLockChanged() {
 function controlLockFailed() { pointerLock.error(); }
 function wheelControl(event: WheelEvent) {
     const delta = event.deltaY || event.deltaX;
-    if (!manualGestures.changeSensitivity(delta) && !automation.edits.changeSensitivity(delta)) return;
+    if (knobDrag) knobDrag.changeSensitivity(delta);
+    else if (!automation.edits.changeSensitivity(delta)) return;
     event.preventDefault(); event.stopImmediatePropagation();
+    publishInteractionHint();
 }
 function clickOutsideManual(event: PointerEvent) {
     if (automationPointerId === null) suppressAutomationContextMenu = false;
@@ -330,8 +348,8 @@ function clickOutsideManual(event: PointerEvent) {
     const target = event.target instanceof Element ? event.target : null;
     if (target?.closest(".manual-value-popover")) return;
     manualGestures.cancelEntry();
-    if (!target?.closest(".manual-input") || event.button !== 0) knobClicks.cancel();
-    if (!target?.closest(".manual-input") && automationPointerId === null) { pointerLock.cancel(); manualGestures.finish(); }
+    if (!target?.closest(".manual-input, .knob-control") || event.button !== 0) knobClicks.cancel();
+    if (!target?.closest(".manual-input, .knob-control") && automationPointerId === null) { pointerLock.cancel(); manualGestures.finish(); }
 }
 function guardAutomationContextMenu(event: MouseEvent) {
     if (suppressAutomationContextMenu && event.button === 2) {
@@ -426,13 +444,11 @@ const root = computed<SemanticNode>(() => ({
 }));
 const cursorOutputFraction = computed(() => connectionDrag.value
     ? connectionCursorOutputFraction(connectionDrag.value.end, previewColorColumns.value) : 0.5);
-function wireColor(direction: "input" | "output", kind?: "sample" | "event" | "mixed"): string {
-    return `var(--iv-${kind === "event" ? "event" : "sample"}-${direction})`;
+function wireColor(direction: "input" | "output"): string {
+    return `var(--iv-port-${direction})`;
 }
-const cursorWireColor = computed(() => {
-    const kind = connectionDrag.value?.port.kind;
-    return `color-mix(in srgb, ${wireColor("input", kind)} ${(1 - cursorOutputFraction.value) * 100}%, ${wireColor("output", kind)} ${cursorOutputFraction.value * 100}%)`;
-});
+const cursorWireColor = computed(() =>
+    `color-mix(in srgb, ${wireColor("input")} ${(1 - cursorOutputFraction.value) * 100}%, ${wireColor("output")} ${cursorOutputFraction.value * 100}%)`);
 const previewWires = computed(() => {
     const drag = connectionDrag.value;
     if (!drag?.moved) return [];
@@ -474,7 +490,23 @@ provideGraphEditor({ layout, save,
     setTimelineZoomHint: (hint) => { timelineZoomHint.value = hint; },
     copyNodeDebugDetails: (address) => webviewApi.postMessage({ type: "copyNodeDebugDetails", nodeKey: addressKey(address) }),
     scope: computed(() => state.value.scope), shiftHeld: computed(() => hoverShift.value.held),
-    connectionDrag, hoveredPortGroup, startConnection, cancelConnection, startAutomation,
+    connectionDrag, hoveredPortGroup, startConnection, cancelConnection, startAutomation, activeKnob, startKnob,
+    cancelKnob() {
+        if (!knobDrag) return false;
+        knobClicks.cancel();
+        pointerLock.cancel();
+        return true;
+    },
+    openKnobValue(anchor, label, value, limits, apply, bindValueEntry) {
+        if (knobDrag) pointerLock.cancel();
+        const rect = anchor.getBoundingClientRect();
+        valueEntryAnchor.value = anchor;
+        if (bindValueEntry) bindValueEntry(rect);
+        else manualGestures.valueEditing.open(label, value, rect, limits, apply);
+    },
+    closeKnobValueWithin(panel) {
+        if (panel.contains(valueEntryAnchor.value ?? null)) manualGestures.cancelEntry();
+    },
     selectedLanes, selectLane: (address, modifiers) => {
         const selection = selectLaneRange(selectedLanes.value, laneKeys.value, laneSelectionAnchor, addressKey(address), modifiers);
         selectedLanes.value = selection.selected;
@@ -705,7 +737,7 @@ function pointerCancelled(event: PointerEvent) {
     if (connectionDrag.value?.pointerId === event.pointerId) cancelConnection();
 }
 function pointerLeftWindow(event: PointerEvent) {
-    if (manualGestures.pointerControl() || automationPointerId !== null) { event.stopImmediatePropagation(); return; }
+    if (knobDrag || automationPointerId !== null) { event.stopImmediatePropagation(); return; }
     if (!event.relatedTarget && (event.clientX <= 0 || event.clientY <= 0
         || event.clientX >= window.innerWidth || event.clientY >= window.innerHeight)) pointerCancelled(event);
 }
@@ -762,6 +794,7 @@ function keyDown(event: KeyboardEvent) {
         event.stopPropagation();
         cancelConnection();
         automation.edits.abandon();
+        beats.edits.abandon();
         webviewApi.postMessage({ type: "projectHistory", direction: history });
         return;
     }
@@ -778,7 +811,7 @@ function observePointerShift(event: PointerEvent) {
 function windowBlurred() {
     if (document.hasFocus()) return;
     hoverShift.value = initialPortHoverShift();
-    if (!manualGestures.pointerControl() && automationPointerId === null && !warpAfterUnlock) blurPointerControls();
+    if (!knobDrag && automationPointerId === null && !warpAfterUnlock) blurPointerControls();
     publishInteractionHint();
     // Keep the captured gesture. Native activation can blur this iframe again
     // immediately after a successful pointerdown; the host reports real exits.
@@ -825,7 +858,7 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     }
     if (event.data?.type === "manualControlState") {
         manualGestures.receive(event.data.interactions, event.data.live);
-        if (!manualGestures.pointerControl() && automationPointerId === null) pointerLock.cancel();
+        if (knobDrag?.active && !knobDrag.active()) pointerLock.cancel();
         return;
     }
     if (event.data?.type === "graphAction") {
@@ -936,7 +969,10 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="state.error" class="error" role="alert">{{ state.error }}</div>
         <PresentationHost v-if="state.scope" :node="root" view-choice="editable" />
-        <ManualValuePopover :gestures="manualGestures" :version="manualVersion" />
+        <ManualValuePopover :entry="manualValueEntry"
+            :target="valueEntryAnchor?.closest<HTMLElement>(':popover-open, [role=dialog]') ?? undefined"
+            :return-focus="valueEntryAnchor" :accept="() => manualGestures.acceptEntry()"
+            :cancel="() => manualGestures.cancelEntry()" :set-draft="(draft) => manualGestures.setEntryDraft(draft)" />
         <NodeEditor v-if="editing !== null" :key="editing" :node="editedNode" :definitions="state.definitions"
             @close="editing = null" />
         <Teleport to="body">
@@ -971,18 +1007,18 @@ onBeforeUnmount(() => {
                 </mask>
                 <linearGradient v-for="(wire, index) in selectedWires" :id="`selected-wire-${index}`" :key="wire.key"
                     gradientUnits="userSpaceOnUse" :x1="wire.source.x" :y1="wire.source.y" :x2="wire.target.x" :y2="wire.target.y">
-                    <stop offset="0" :style="{ stopColor: wireColor('output', wire.kind) }" />
-                    <stop offset="1" :style="{ stopColor: wireColor('input', wire.kind) }" />
+                    <stop offset="0" :style="{ stopColor: wireColor('output') }" />
+                    <stop offset="1" :style="{ stopColor: wireColor('input') }" />
                 </linearGradient>
                 <linearGradient v-for="(wire, index) in previewWires" :id="`preview-wire-${index}`" :key="wire.anchor.id"
                     gradientUnits="userSpaceOnUse" :x1="wire.anchor.x" :y1="wire.anchor.y" :x2="wire.cursor.x" :y2="wire.cursor.y">
-                    <stop offset="0" :style="{ stopColor: wireColor(wire.anchor.direction, connectionDrag?.port.kind) }" />
+                    <stop offset="0" :style="{ stopColor: wireColor(wire.anchor.direction) }" />
                     <stop offset="1" :style="{ stopColor: cursorWireColor }" />
                 </linearGradient>
                 <linearGradient v-for="(wire, index) in dropPreviewWires" :id="`drop-preview-wire-${index}`" :key="`drop-${wire.anchor.id}`"
                     gradientUnits="userSpaceOnUse" :x1="wire.anchor.x" :y1="wire.anchor.y" :x2="wire.target.x" :y2="wire.target.y">
-                    <stop offset="0" :style="{ stopColor: wireColor(wire.anchor.direction, connectionDrag?.port.kind) }" />
-                    <stop offset="1" :style="{ stopColor: wireColor(wire.target.direction, connectionDrag?.port.kind) }" />
+                    <stop offset="0" :style="{ stopColor: wireColor(wire.anchor.direction) }" />
+                    <stop offset="1" :style="{ stopColor: wireColor(wire.target.direction) }" />
                 </linearGradient>
             </defs>
             <g mask="url(#wire-knob-mask)">

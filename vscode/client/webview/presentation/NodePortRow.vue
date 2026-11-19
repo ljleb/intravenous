@@ -42,11 +42,9 @@ const emit = defineEmits<{
 <style scoped>
 .control-row { display: grid; grid-template-columns: var(--knob-size) 24px minmax(0, 1fr);
     grid-template-rows: var(--port-row-height) auto;
-    align-items: center; min-width: 0; flex-shrink: 0; --port-color: var(--iv-sample-input); }
+    align-items: center; min-width: 0; flex-shrink: 0; --port-color: var(--iv-port-input); }
 .control-row[data-direction="output"] { grid-template-columns: minmax(0, 1fr) 24px var(--output-knob-column);
-    --port-color: var(--iv-sample-output); }
-.control-row[data-port-kind="event"][data-direction="input"] { --port-color: var(--iv-event-input); }
-.control-row[data-port-kind="event"][data-direction="output"] { --port-color: var(--iv-event-output); }
+    --port-color: var(--iv-port-output); }
 .control-row.unavailable { --port-color: var(--vscode-disabledForeground); color: var(--vscode-disabledForeground); }
 .port-knob { grid-column: 1; grid-row: 1; padding: 0; gap: 2px; }
 .port-handle { position: relative; grid-column: 2; grid-row: 1; display: grid; place-items: center; width: 24px; height: 22px;

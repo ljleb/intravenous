@@ -7,6 +7,8 @@ GraphJit test package artifact on 2026-11-14. Its definition ID was subsequently
 updated to `iv.builtin.automation.curve` for builtin promotion; the compiler's
 event identities, fingerprints, and payload schemas are unchanged. It contains
 no TypeScript rules.
+`beats.node-events.json` contains the `SetBeatGrid` identity and payload schema
+from the builtin package compiler metadata.
 `automation.names.json` selects nominal identities and assigns frontend export
 names. Display names do not select or identify events.
 

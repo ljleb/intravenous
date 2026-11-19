@@ -1,13 +1,13 @@
 import { computed, inject, provide, toValue, watch, type InjectionKey, type MaybeRefOrGetter, type Ref } from "vue";
-import { ManualControlGestures, type ManualControlLimits } from "../../src/manualControlGesture";
+import type { ManualControlGestures } from "../../src/manualControlGesture";
 import { canEditManualControl, manualControlKey, type ManualControlId, type ManualControlDescriptor } from "../../src/manualControls";
-import { knobPortStatus } from "../../src/knobPresentation";
+import { knobPortStatus, knobScrubSpeed } from "../../src/knobPresentation";
+import type { KnobDrag } from "../graph/context";
 import { oppositeAutomationBound, pairedAutomationBoundLimits } from "../../src/automationBoundInputs";
 import { useNode } from "./nodeContext";
 
 type Context = { gestures: ManualControlGestures; version: Ref<number>;
-    setEnabled: (control: ManualControlId, enabled: boolean) => void;
-    startKnob: (event: PointerEvent, control: ManualControlId, descriptor: ManualControlDescriptor, limits: ManualControlLimits) => void };
+    setEnabled: (control: ManualControlId, enabled: boolean) => void };
 const key: InjectionKey<Context> = Symbol("iv.manualControls");
 export function provideManualControls(context: Context): void { provide(key, context); }
 export function useOptionalManualControls(): Context | null { return inject(key, null); }
@@ -83,21 +83,35 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: M
             context.gestures.invertOutput(id.value, descriptor.value);
         },
         finish() { if (id.value) context?.gestures.finish(id.value); },
+        reset() {
+            if (!context || !id.value || !descriptor.value) return;
+            context.gestures.hover(id.value, descriptor.value, limits.value, knobPortStatus(port.value));
+            context.gestures.resetHovered();
+        },
         toggleEnabled() {
             if (id.value?.inputName !== undefined && descriptor.value?.available && !descriptor.value.live && !dragging.value)
                 context?.setEnabled(id.value, !descriptor.value.enabled);
         },
-        numeric(event: MouseEvent) {
-            event.preventDefault(); event.stopPropagation();
+        numeric(anchor: DOMRect) {
             if (!id.value || !descriptor.value || !context || !available.value) return;
-            const anchor = (event.currentTarget as HTMLElement).getBoundingClientRect();
-            document.querySelector<HTMLElement>(".graph-editor")?.focus({ preventScroll: true });
             context.gestures.openEntry(id.value, descriptor.value, limits.value, anchor);
         },
-        scrub(event: PointerEvent) {
-            if (event.button !== 0 || !available.value || !id.value || !descriptor.value || !context) return;
-            event.preventDefault(); event.stopPropagation();
-            context.startKnob(event, id.value, descriptor.value, limits.value);
+        scrub(event: PointerEvent): KnobDrag | undefined {
+            const member = id.value, current = descriptor.value;
+            if (!available.value || !member || !current || !context) return;
+            const gestures = context.gestures, pointer = event.pointerId, key = manualControlKey(member);
+            gestures.hover(member, current, limits.value);
+            if (!gestures.scrub(member, current, pointer, -event.clientY, knobScrubSpeed(limits.value), limits.value, event.ctrlKey)) return;
+            return {
+                move: (point) => gestures.move(pointer, -point.y), moveBy: (delta) => gestures.moveBy(pointer, -delta.y),
+                changeSensitivity: (delta) => gestures.changeSensitivity(delta),
+                active: () => gestures.pointerId() === pointer,
+                finish(point) {
+                    const element = point && document.elementFromPoint(point.x, point.y)?.closest<HTMLElement>(".manual-input");
+                    gestures.release(pointer);
+                    if (element?.dataset.manualControl !== key) gestures.unhover(member);
+                },
+            };
         },
     };
 }

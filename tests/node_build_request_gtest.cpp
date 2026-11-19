@@ -2546,11 +2546,11 @@ std::vector<BeatMark> render_beats(
 
 TEST(Beats, EmitsCoarsestDepthForEachPositionInDisjointRequestedWindows)
 {
-    iv::Beats beats{120, 3, {2, 3}, 10};
+    iv::Beats beats{120, 3, {2, 3}};
     EXPECT_EQ(render_beats(beats, 48000,
-                  iv::IndexCoverage{range(9, 12011), range(24010, 24011), range(72010, 72011)}),
-        (std::vector<BeatMark>{{10, 0}, {4010, 3}, {8010, 3}, {12010, 2},
-            {24010, 1}, {72010, 0}}));
+                  iv::IndexCoverage{range(-1, 12001), range(24000, 24001), range(72000, 72001)}),
+        (std::vector<BeatMark>{{0, 0}, {4000, 3}, {8000, 3}, {12000, 2},
+            {24000, 1}, {72000, 0}}));
 }
 
 TEST(Beats, RoundsAbsolutePositionsConsistentlyAcrossWindowBoundaries)
@@ -2573,9 +2573,9 @@ TEST(Beats, HandlesRequestsAcrossTheSignedTimelineSeam)
 {
     constexpr auto min = std::numeric_limits<std::int64_t>::min();
     constexpr auto max = std::numeric_limits<std::int64_t>::max();
-    iv::Beats beats{60, 3, {}, max};
+    iv::Beats beats{60, 3, {}};
     EXPECT_EQ(render_beats(beats, 1, iv::IndexCoverage{iv::GlobalIndexRange{index(max - 1), 4}}),
-        (std::vector<BeatMark>{{min, 0}, {min + 1, 1}, {max - 1, 1}, {max, 0}}));
+        (std::vector<BeatMark>{{min, 1}, {min + 1, 1}, {max - 1, 0}, {max, 1}}));
 }
 
 TEST(Beats, RejectsInvalidTempoMeterAndSubdivisionDensity)

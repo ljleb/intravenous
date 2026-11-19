@@ -2,6 +2,7 @@ import { markRaw, type Component } from "vue";
 
 import GenericPresentation from "./GenericPresentation.vue";
 import AutomationCurvePresentation from "./AutomationCurvePresentation.vue";
+import BeatsPresentation from "./BeatsPresentation.vue";
 import { PresentationRegistry } from "./registry";
 
 export const genericPresentationId = "iv.generic";
@@ -17,3 +18,5 @@ presentations.register({ presentationId: "iv.builtin.automation.curve", displayN
     definitionIds: ["iv.builtin.automation.curve"], component: markRaw(AutomationCurvePresentation),
     // An empty point list; points are added and edited on the curve.
     initialConfiguration: "{}" });
+presentations.register({ presentationId: "iv.builtin.beats", displayName: "Beats",
+    definitionIds: ["iv.builtin.beats"], component: markRaw(BeatsPresentation) });

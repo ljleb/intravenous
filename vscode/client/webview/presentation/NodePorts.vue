@@ -522,9 +522,8 @@ onBeforeUnmount(() => {
 .port-group { display: flex; flex-direction: column; gap: 3px; min-height: var(--port-slot-height, 22px); }
 .port-group:has(> .control-row[data-folded-ports]) { align-self: stretch; }
 .port-group > .control-row[data-folded-ports] { flex-grow: 1; }
-[data-direction="input"] { --port-base-color: var(--iv-sample-input); --port-event-color: var(--iv-event-input); --port-color: var(--port-base-color); }
-[data-direction="output"] { --port-base-color: var(--iv-sample-output); --port-event-color: var(--iv-event-output); --port-color: var(--port-base-color); }
-[data-port-kind="event"] { --port-color: var(--port-event-color); }
+[data-direction="input"] { --port-base-color: var(--iv-port-input); --port-color: var(--port-base-color); }
+[data-direction="output"] { --port-base-color: var(--iv-port-output); --port-color: var(--port-base-color); }
 .port-circle { display: inline-block; flex: 0 0 12px; width: 12px; height: 12px; box-sizing: border-box; border: 2px solid var(--port-color); border-radius: 50%; }
 [data-port-kind="event"]:not(.single) .port-circle { border-radius: 3px; }
 .connected .port-circle { background: var(--port-color); }
