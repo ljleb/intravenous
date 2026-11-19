@@ -68,6 +68,7 @@ export type GraphScope = {
     timelineNodes?: NodeAddress[];
 };
 export type Point = { x: number; y: number };
+export type GraphLaneCopy = { sourceInstanceId: string; instanceId: string };
 export type PresentationState = { [name: string]: JsonValue };
 export type PresentationStates = Record<string, PresentationState>;
 export type GraphViewState = {
@@ -96,6 +97,23 @@ export function addressKey(address: NodeAddress): string {
 
 export function presentationStateKey(address: NodeAddress, presentationId: string): string {
     return JSON.stringify([presentationId, address.instanceId, address.path ?? []]);
+}
+
+export function copyLanePresentationStates(states: PresentationStates, copies: readonly GraphLaneCopy[]): PresentationStates {
+    const destinations = new Map(copies.map(({ sourceInstanceId, instanceId }) => [sourceInstanceId, instanceId]));
+    const result: PresentationStates = {};
+    for (const [key, state] of Object.entries(states)) {
+        let parts: unknown;
+        try { parts = JSON.parse(key); }
+        catch { continue; }
+        if (!Array.isArray(parts) || parts.length !== 3) continue;
+        const [presentationId, sourceInstanceId, path] = parts;
+        if (typeof presentationId !== "string" || typeof sourceInstanceId !== "string" || !Array.isArray(path)) continue;
+        const instanceId = destinations.get(sourceInstanceId);
+        if (instanceId === undefined) continue;
+        result[presentationStateKey({ instanceId, path }, presentationId)] = JSON.parse(JSON.stringify(state));
+    }
+    return result;
 }
 
 export function readPresentationStates(value: unknown): PresentationStates {

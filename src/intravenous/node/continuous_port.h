@@ -333,6 +333,7 @@ public:
     {}
 
     [[nodiscard]] constexpr std::size_t size() const noexcept { return storage_->frame_count(); }
+    [[nodiscard]] constexpr ChannelLayout channel_layout() const noexcept { return storage_->channel_layout; }
     [[nodiscard]] constexpr GlobalIndex position(std::size_t slot) const noexcept
     {
         IV_ASSERT(slot < size(), "prepared run slot is out of bounds");

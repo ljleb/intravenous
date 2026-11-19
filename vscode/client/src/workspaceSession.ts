@@ -2,7 +2,7 @@ import type { ObservationInterest } from "./observations";
 import type { ObservationDelivery } from "./observationDelivery";
 import { ManualControlInteractions, resolveManualControl } from "./manualControls";
 import { ControlCompilationProgress, type ControlCompileStatus } from "./controlCompilation";
-import type { NodeAddress } from "./graphScope";
+import type { GraphLaneCopy, NodeAddress } from "./graphScope";
 import { validateNodeEventTarget, type SerializedNodeEvent } from "./nodeEvents";
 import { NodeEventInteractions } from "./nodeEventInteractions";
 import type { PlaybackDrag, PlaybackSnapshot } from "./playback";
@@ -270,8 +270,8 @@ export class WorkspaceSession {
         await rpc.applyProjectEdit(instanceIds.map((instanceId) => ({ method: "nodeInstances.delete", params: { instanceId } })), revision);
     }
 
-    async duplicateGraphNodes(instanceIds: readonly string[]): Promise<{ sourceInstanceId: string; instanceId: string }[]> {
-        if (!instanceIds.length) return [];
+    async duplicateGraphNodes(copies: readonly GraphLaneCopy[]): Promise<void> {
+        if (!copies.length) return;
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         const rpc = this.rpc;
         await this.manualControls.settled();
@@ -279,12 +279,10 @@ export class WorkspaceSession {
         const scope = await rpc.getGraphScope();
         if (rpc !== this.rpc) throw new Error("The session changed before duplicating the lanes");
         const visible = new Set(scope.nodes.filter((node) => !isTimelineSnapNode(node)).map(({ instance }) => instance.instanceId));
-        if (!scope.editable || instanceIds.some((id) => !visible.has(id))) {
+        if (!scope.editable || copies.some(({ sourceInstanceId }) => !visible.has(sourceInstanceId))) {
             throw new Error("A selected node is no longer available");
         }
-        const copies = [...new Set(instanceIds)].map((sourceInstanceId) => ({ sourceInstanceId, instanceId: crypto.randomUUID() }));
         await rpc.applyProjectEdit([{ method: "nodeInstances.duplicate", params: { copies } }], scope.sessionRevision ?? revision);
-        return copies;
     }
 
     async projectHistory(direction: "undo" | "redo"): Promise<void> {

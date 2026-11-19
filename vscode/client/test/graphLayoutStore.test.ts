@@ -7,7 +7,7 @@ import { reactive } from "vue";
 import { readAutomationCurveView, zoomAutomationValueAxis } from "../src/automationCurveGeometry";
 import { saveGraphLayoutMessage } from "../src/graphEditorProtocol";
 import { GraphLayoutStore } from "../src/graphLayoutStore";
-import { addressKey, placeNodes, presentationStateKey, readLayout } from "../src/graphScope";
+import { addressKey, copyLanePresentationStates, placeNodes, presentationStateKey, readLayout } from "../src/graphScope";
 import type { TimelineSnapMemory } from "../src/timelineSnap";
 
 test("graph layout saves serialize, survive a new store, and leave project intent untouched", async () => {
@@ -52,6 +52,42 @@ test("the project layout round trips lane order and independent presentation sta
         await store.save(layout, { [curve]: null });
         assert.deepEqual((await store.load()).presentationStates, { [custom]: second });
         assert.deepEqual((await store.load()).laneOrder, order);
+    } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test("lane copies save independent snapshots of all presentation states owned by the selected instances", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "iv-lane-copies-"));
+    try {
+        const store = new GraphLayoutStore(directory);
+        const memberPath = [{ name: "member" }];
+        const curve = (instanceId: string) => presentationStateKey({ instanceId }, "iv.builtin.automation.curve");
+        const member = (instanceId: string) => presentationStateKey({ instanceId, path: memberPath }, "example.member");
+        const zoom = { factor: 2, center: .5 };
+        const layout = reactive(readLayout({ presentationStates: {
+            [curve("curve")]: { ruler: "half", pan: 3, zoom },
+            [member("module")]: { layers: { preview: true } },
+            [curve("unselected")]: { pan: 4 },
+        } }));
+        await store.save(layout, layout.presentationStates);
+        const snapshots = copyLanePresentationStates(layout.presentationStates, [
+            { sourceInstanceId: "curve", instanceId: "curve-copy" },
+            { sourceInstanceId: "module", instanceId: "module-copy" },
+            { sourceInstanceId: "without-settings", instanceId: "default-copy" },
+        ]);
+        zoom.factor = 8;
+        const message = structuredClone(saveGraphLayoutMessage(layout, snapshots, false));
+        assert.deepEqual(Object.keys(message.presentationStates).sort(), [curve("curve-copy"), member("module-copy")].sort());
+
+        const later = { ...layout.presentationStates[curve("curve")], pan: 42 };
+        await Promise.all([
+            store.save(layout, { [curve("curve")]: later }),
+            store.save(readLayout(message.layout), message.presentationStates),
+        ]);
+        const { presentationStates } = await new GraphLayoutStore(directory).load();
+        assert.deepEqual(presentationStates[curve("curve-copy")], { ruler: "half", pan: 3, zoom: { factor: 2, center: .5 } });
+        assert.deepEqual(presentationStates[curve("curve")], later);
+        assert.deepEqual(presentationStates[member("module-copy")], { layers: { preview: true } });
+        assert.deepEqual(presentationStates[curve("unselected")], { pan: 4 });
     } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 

@@ -328,22 +328,27 @@ TEST_F(GraphJitRuntimeFixture, BackgroundInputWaveformsUseCoverageRegionsAndSequ
         std::string_view module, control, observed_input;
         std::int64_t begin;
         std::vector<GlobalIndexRange> regions;
-        std::array<float, 8> values;
+        std::vector<float> values;
         bool override_connections = false;
         bool public_input = false;
+        std::int64_t stride = 1;
     };
     for (auto const& test : {
              Case{"iv.test.replay.coverage_manual_window", "in", "in", 18,
                  {range(18, 20), range(20, 24), range(24, 26)}, {.25f, .25f, 4, 5, 6, 7, .25f, .25f}},
              Case{"iv.test.replay.coverage_manual_window", "coverage", "in", 18,
                  {range(18, 26)}, {.25f, .25f, .25f, .25f, .25f, .25f, .25f, .25f}, true},
+             // Both requested samples belong to the same manual Region, with no storage for the samples between them.
+             Case{"iv.test.replay.coverage_manual_window", "coverage", "in", 18,
+                 {range(18, 26)}, {.25f, .25f}, true, false, 7},
              Case{"iv.test.replay.coverage_manual_window", "coverage", "coverage", 18,
                  {range(18, 20), range(20, 24), range(24, 26)}, {.25f, .25f, 4, 5, 6, 7, .25f, .25f}, false, true},
              Case{"iv.test.automation.transformed_sparse_curve", "gain", "gain", 0,
                  {range(0, 8)}, {0, .5f, 1, 1.5f, .25f, .25f, .25f, .25f}},
          }) {
         SCOPED_TRACE(::testing::Message{} << test.module << " control=" << test.control
-            << " observed input=" << test.observed_input << " public=" << test.public_input);
+            << " observed input=" << test.observed_input << " public=" << test.public_input
+            << " stride=" << test.stride);
         auto compiled = compile_with_manual_input(test.module, 741, test.control, .25f, test.override_connections);
         ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
         auto const& graph = *compiled.compiled_graph;
@@ -374,7 +379,7 @@ TEST_F(GraphJitRuntimeFixture, BackgroundInputWaveformsUseCoverageRegionsAndSequ
         query->kind = ObservationSourceKind::input;
         query->port = selected;
         query->operation = &*operation;
-        query->window = {index(test.begin), 8, 8};
+        query->window = {index(test.begin), 8, test.values.size()};
 
         GraphExecutor executor(resources);
         ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
@@ -397,7 +402,7 @@ TEST_F(GraphJitRuntimeFixture, BackgroundInputWaveformsUseCoverageRegionsAndSequ
             ASSERT_NE(observed, query->result.regions.end());
             for (auto const& [position, value] : observed->values) {
                 ASSERT_LT(value_index, test.values.size());
-                EXPECT_EQ(position, index(test.begin + static_cast<std::int64_t>(value_index)));
+                EXPECT_EQ(position, index(test.begin + static_cast<std::int64_t>(value_index) * test.stride));
                 ASSERT_TRUE(value.captured);
                 EXPECT_FLOAT_EQ(value.load<float>(), test.values[value_index++]);
             }

@@ -464,13 +464,14 @@ export class GraphEditorProvider implements vscode.Disposable {
                     await this.refresh();
                 } catch (error) { void vscode.window.showErrorMessage(`Cannot delete lanes: ${error.message}`); }
             } else if (message?.type === "duplicateSelectedLanes") {
+                const { copies, requestId } = message;
                 try {
-                    const copies = await this.session.duplicateGraphNodes(message.instanceIds);
-                    void panel.webview.postMessage({ type: "graphLanesInserted", duplicate: true,
+                    await this.session.duplicateGraphNodes(copies);
+                    void panel.webview.postMessage({ type: "graphLanesInserted", duplicateRequestId: requestId,
                         lanes: copies.map(({ sourceInstanceId, instanceId }) => ({ instanceId, afterInstanceId: sourceInstanceId })) });
                     await this.refresh();
                 } catch (error) {
-                    void panel.webview.postMessage({ type: "graphLanesInserted", duplicate: true, lanes: [] });
+                    void panel.webview.postMessage({ type: "graphLanesInserted", duplicateRequestId: requestId, lanes: [] });
                     void vscode.window.showErrorMessage(`Cannot duplicate lanes: ${error.message}`);
                 }
             } else if (message?.type === "setManualInputEnabled") {

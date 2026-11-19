@@ -5,7 +5,8 @@ import { saveGraphLayoutMessage, type GraphEditorHostMessage, type GraphEditorSt
     type GraphLaneInsertion } from "../../src/graphEditorProtocol";
 import { ObservationProfile } from "../../src/observationProfile";
 import { ObservationDeliveryReceiver } from "../../src/observationDelivery";
-import { addressKey, readLayout, type NodeAddress, type Point, type PresentationState } from "../../src/graphScope";
+import { addressKey, copyLanePresentationStates, readLayout, type NodeAddress, type Point,
+    type PresentationState, type PresentationStates } from "../../src/graphScope";
 import { isTimelineSnapNode } from "../../src/timelineSnap";
 import type { CurveAxes, CurveDragKind } from "../../src/automationCurveEditing";
 import { webviewApi } from "../host";
@@ -394,7 +395,7 @@ const laneKeys = computed(() => orderedLanes.value.map(({ address }) => addressK
 const selectedLaneIds = computed(() => orderedLanes.value.filter(({ address }) => selectedLanes.value.has(addressKey(address)))
     .map(({ instance }) => instance.instanceId));
 let laneSelectionAnchor: string | null = null;
-let duplicatingLanes = false;
+let pendingLaneCopies: { requestId: string; states: PresentationStates } | undefined;
 let insertedSelection: string[] = [];
 const selectedWires = shallowRef<SelectedLaneWire[]>([]);
 const movingWireId = computed(() => connectionDrag.value?.edit?.connection.id);
@@ -482,7 +483,7 @@ function placeInsertedLanes(lanes: readonly GraphLaneInsertion[]) {
 provideGraphEditor({ layout, save,
     readPresentationState: (key) => {
         const pending = changedPresentationStates.get(key);
-        const state = pending ? pending() : layout.value.presentationStates[key];
+        const state = pending ? pending() : layout.value.presentationStates[key] ?? pendingLaneCopies?.states[key];
         return state ? JSON.parse(JSON.stringify(state)) : undefined;
     },
     presentationStateChanged: (key, serialize) => changedPresentationStates.set(key, serialize),
@@ -778,9 +779,19 @@ function handleGraphEditorShortcut(event: KeyboardEvent) {
     }
     if (event.repeat || !state.value.scope.editable) return;
     if (action === "addNode") openAddNode();
-    else if (!duplicatingLanes && selectedLaneIds.value.length) {
-        duplicatingLanes = true;
-        webviewApi.postMessage({ type: "duplicateSelectedLanes", instanceIds: selectedLaneIds.value });
+    else if (!pendingLaneCopies && selectedLaneIds.value.length) {
+        const copies = selectedLaneIds.value.map((sourceInstanceId) => ({ sourceInstanceId, instanceId: crypto.randomUUID() }));
+        const states = { ...layout.value.presentationStates };
+        for (const [key, serialize] of changedPresentationStates) {
+            const state = serialize();
+            if (state === null) delete states[key];
+            else states[key] = state;
+        }
+        // The graph can publish new nodes before the edit reply. Stage their
+        // view settings for the first render and persist them on acceptance.
+        const requestId = copies[0].instanceId;
+        pendingLaneCopies = { requestId, states: copyLanePresentationStates(states, copies) };
+        webviewApi.postMessage({ type: "duplicateSelectedLanes", copies, requestId });
     }
 }
 function handleProjectHistory(event: KeyboardEvent) {
@@ -934,7 +945,16 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
         return;
     }
     if (event.data?.type === "graphLanesInserted") {
-        if (event.data.duplicate) duplicatingLanes = false;
+        if (event.data.duplicateRequestId !== undefined) {
+            if (!pendingLaneCopies || pendingLaneCopies.requestId !== event.data.duplicateRequestId) return;
+            if (event.data.lanes.length) {
+                for (const [key, snapshot] of Object.entries(pendingLaneCopies.states)) {
+                    if (!changedPresentationStates.has(key) && !Object.hasOwn(layout.value.presentationStates, key))
+                        changedPresentationStates.set(key, () => snapshot);
+                }
+            }
+            pendingLaneCopies = undefined;
+        }
         if (event.data.lanes.length) placeInsertedLanes(event.data.lanes);
         return;
     }
@@ -950,7 +970,7 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
         manualGestures.cancelEntry();
     if (state.value.sessionStatus !== "running") {
         manualGestures.disconnected();
-        duplicatingLanes = false;
+        pendingLaneCopies = undefined;
         insertedSelection = [];
     }
     const drag = connectionDrag.value;

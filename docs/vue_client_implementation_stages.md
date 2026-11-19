@@ -4444,5 +4444,7 @@ templates capitalize the words in the package name and separate them with spaces
 Shift+A opens the existing Add Node form. The new lane goes after the lowest
 selected lane, or at the bottom without a selection. Ctrl+D sends one revision-
 checked project edit, places each copy directly below its original, and selects
-the copies. Ctrl+A selects the graph lanes or all points in the focused
+the copies. The webview stages presentation state under the new instance IDs
+before the graph publishes them, then saves it with lane order after acceptance.
+Ctrl+A selects the graph lanes or all points in the focused
 Automation Curve editor. Text fields keep their native shortcuts.

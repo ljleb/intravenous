@@ -5,8 +5,6 @@
 #include <intravenous/node/layout.h>
 #include <intravenous/graph/configured_graph.hpp>
 
-#include <cstring>
-
 namespace iv::graph_jit::detail {
 
 struct CoverageManualSource {
@@ -83,18 +81,12 @@ inline void reverse_coverage_manual(void const*, ReflectedNodeReverseCoverageCon
 inline void tock_coverage_manual(void const* data, ReflectedNodeTockCoverageContext const& context)
 {
     auto const value = *static_cast<Sample const*>(data);
-    auto fill = [&](auto&& self, ContinuousRegionStorageView const& region) -> void {
-        if (!region.storage) {
-            for (auto const& window : region.windows) self(self, window);
-            return;
-        }
-        for (std::uint64_t frame = 0; frame < region.range.extent; ++frame) {
-            auto const index = region.range.begin.advanced_by(frame);
-            for (std::size_t channel = 0; channel < channel_count(region.channel_layout); ++channel)
-                std::memcpy(region.value_storage(index, channel, true), &value, sizeof(value));
-        }
-    };
-    for (auto const& region : context.outputs.data()[0].region_views()) fill(fill, region);
+    for (auto run : context.outputs.data()[0].prepared_runs<Sample>()) {
+        auto const channels = channel_count(run.channel_layout());
+        for (std::size_t slot = 0; slot < run.size(); ++slot)
+            for (std::size_t channel = 0; channel < channels; ++channel)
+                run.value(slot, channel) = value;
+    }
 }
 
 inline void forward_coverage_manual_batch(ReflectedNodeForwardCoverageBatchContext const& batch)

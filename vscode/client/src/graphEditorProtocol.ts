@@ -2,7 +2,7 @@ import type { ObservationHostRequest, ObservationResponse } from "./observations
 import type { ObservationDelivery } from "./observationDelivery";
 import type { ObservationProfileSummary } from "./observationProfile";
 import type { ManualControlAction, ManualControlInteractionState, ManualControlLiveValue } from "./manualControls";
-import { readLayout, type GraphLayout, type GraphScope, type GraphViewState, type NodeAddress, type PresentationState } from "./graphScope";
+import { readLayout, type GraphLaneCopy, type GraphLayout, type GraphScope, type GraphViewState, type NodeAddress, type PresentationState } from "./graphScope";
 import type { LiveGraphSessionStatus } from "./liveGraphProtocol";
 import type { GraphConnectionEdit, GraphPortEndpoint } from "./graphConnectionEditing";
 import type { NodeEventHostRequest, NodeEventResponse } from "./nodeEventMessaging";
@@ -59,7 +59,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "manualControlState"; interactions: ManualControlInteractionState[]; live: ManualControlLiveValue[] }
     | { type: "graphWindowFocus"; focused: boolean }
     | { type: "cursorReturnCompleted"; requestId: number }
-    | { type: "graphLanesInserted"; lanes: GraphLaneInsertion[]; duplicate?: true }
+    | { type: "graphLanesInserted"; lanes: GraphLaneInsertion[]; duplicateRequestId?: string }
     | { type: "graphAction"; action: "addNode" | "editNode" | "createPackage"; instanceId?: string };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "setTimelineSnapMode"; mode: TimelineGridMode }
@@ -75,7 +75,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | CursorReturnMessage
     | { type: "manualControlAction"; action: ManualControlAction }
     | { type: "deleteSelectedLanes"; instanceIds: string[] }
-    | { type: "duplicateSelectedLanes"; instanceIds: string[] }
+    | { type: "duplicateSelectedLanes"; copies: GraphLaneCopy[]; requestId: string }
     | { type: "setManualInputEnabled"; target: NodeAddress; inputName: string; enabled: boolean }
     | { type: "projectHistory"; direction: "undo" | "redo" }
     | { type: "copyNodeDebugDetails"; nodeKey: string }

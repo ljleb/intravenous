@@ -1135,6 +1135,8 @@ lane interface. They do not claim that the current client implements them._
 - Ctrl+D duplicates all selected lanes in one undoable action. Place each copy
   directly below its original and select the copies. An empty selection leaves
   the graph alone. Copy authored settings and connections between selected lanes.
+  Give each copy an independent snapshot of its source's lane presentation
+  settings, including changes awaiting a layout save.
 
 ### Node creation and names
 
