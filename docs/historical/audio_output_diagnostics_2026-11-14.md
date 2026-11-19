@@ -87,7 +87,7 @@ the project file was not changed by the agent.
 
 The owner reports advancing render and playback block counts, with zero peak,
 zero `render.generation`, zero Tick calls, and zero binding calls. This remains
-true after “IV package build ready to apply.” The failure is before audio graph
+true after “Package build ready to apply.” The failure is before audio graph
 execution. The detune cancellation candidate cannot explain the lack of Tick.
 
 Source inspection found a reporting defect: `ProjectGraph::rebuild_locked()`

@@ -40,7 +40,7 @@ export class NativeClientHelper {
         let failure = "";
         child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
             const detail = chunk.trim();
-            if (this.running === run && detail) this.log(`Intravenous native helper: ${detail}`);
+            if (this.running === run && detail) this.log(`Native helper: ${detail}`);
         });
         child.on("error", (error) => { failure ||= error.message; });
         child.once("close", (code, signal) => {
@@ -118,7 +118,7 @@ export class NativeClientHelper {
         if (stable) this.restartDelayMs = initialRestartDelayMs;
         const delay = this.restartDelayMs;
         this.restartDelayMs = Math.min(maximumRestartDelayMs, delay * 2);
-        this.log(`Intravenous native helper ${reason}. Restarting in ${delay} ms.`);
+        this.log(`Native helper ${reason}. Restarting in ${delay} ms.`);
         this.restartTimer = setTimeout(() => {
             this.restartTimer = null;
             this.start();

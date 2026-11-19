@@ -680,9 +680,26 @@ public:
                 if (coverage.contains(region.range)) selected_region = region.contiguous_view();
                 else {
                     std::vector<PersistedSampleRegion> windows;
+                    auto const reuse_mapping = PlaybackPreparationMetrics::active_sample_preparation()
+                        != PlaybackPreparationMetrics::SamplePreparation::remap;
                     auto append = [&](PersistedSampleRegion const& window) {
-                        for (auto const part : IndexCoverage{window.range} & coverage)
-                            windows.push_back(window.selected_view(part));
+                        for (auto const part : IndexCoverage{window.range} & coverage) {
+                            if (reuse_mapping && part != window.range && window.values.empty()
+                                && window.buffered_backing && (layout.sample_layout == SampleStreamLayout::interleaved
+                                    || channel_count(layout) == 1)) {
+                                auto const frame_bytes = channel_count(layout) * geometry.value_size_bytes;
+                                PlaybackPreparationMetrics::Interval timing{PlaybackPreparationPhase::reuse_sample_window,
+                                    part.extent * frame_bytes};
+                                auto const first_frame = window.range.begin.forward_distance_to(part.begin);
+                                auto const* storage = window.storage_data() + first_frame * frame_bytes;
+                                windows.push_back({.output = window.output, .range = part, .layout = layout,
+                                    .geometry = geometry, .continuous_values = PersistedContinuousStorage::mapped(
+                                        std::make_shared<PersistedSampleRegion const>(window), storage,
+                                        part.extent * frame_bytes, geometry.element_alignment)});
+                            } else {
+                                windows.push_back(window.selected_view(part));
+                            }
+                        }
                     };
                     if (region.windows) for (auto const& window : *region.windows) append(window);
                     else append(region);

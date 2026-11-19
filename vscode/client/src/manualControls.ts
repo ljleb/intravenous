@@ -115,7 +115,7 @@ export class ManualControlInteractions {
             this.queue(async () => {
                 try {
                     const rpc = this.transport();
-                    if (!rpc) throw new Error("The Intravenous server is unavailable");
+                    if (!rpc) throw new Error("The server is unavailable");
                     // A quick re-grab or another keyboard step can arrive
                     // before the prior begin reply scheduled its end. Close
                     // those gestures before sending this begin; any queued
@@ -155,7 +155,7 @@ export class ManualControlInteractions {
         if (!entry.ending && entry.value === entry.sent) return;
         if (!entry.ending) {
             const rpc = this.transport();
-            if (!rpc) { this.queue(() => this.fail(entry, new Error("The Intravenous server is unavailable"))); return; }
+            if (!rpc) { this.queue(() => this.fail(entry, new Error("The server is unavailable"))); return; }
             try { rpc.updateManualControl(entry.remoteId, entry.value); }
             catch (error) { this.queue(() => this.fail(entry, error)); return; }
             entry.sent = entry.fallbackValue = entry.value;
@@ -167,7 +167,7 @@ export class ManualControlInteractions {
             const value = entry.value;
             try {
                 const rpc = this.transport();
-                if (!rpc) throw new Error("The Intravenous server is unavailable");
+                if (!rpc) throw new Error("The server is unavailable");
                 await rpc.endManualControl(entry.remoteId, value);
                 if (entry.epoch !== this.epoch) return;
                 entry.sent = value; entry.fallbackValue = value;

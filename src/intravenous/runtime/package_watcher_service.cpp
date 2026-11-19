@@ -25,8 +25,8 @@ void publish_build_started(PackageWatcherRefreshPlan const& plan)
                 .level = "info",
                 .code = "rebuildStarted",
                 .message = plan.build_count == 1
-                    ? "Building IV package"
-                    : "Building " + std::to_string(plan.build_count) + " IV packages",
+                    ? "Building package"
+                    : "Building " + std::to_string(plan.build_count) + " Packages",
                 .package_root = plan.single_package_root,
             }));
     }

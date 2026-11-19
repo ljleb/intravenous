@@ -1201,7 +1201,46 @@ public:
 
     BufferedRegionMapping(BufferedRegionMapping const&) = delete;
     BufferedRegionMapping& operator=(BufferedRegionMapping const&) = delete;
+
+    [[nodiscard]] std::byte const* data() const noexcept { return static_cast<std::byte const*>(mapping_); }
 };
+
+#if defined(__linux__)
+// Experiment with one stable virtual address for each offset in the page file.
+// A Region still pins its own pages. Only a single physically contiguous run
+// can use a single pointer into this mapping.
+[[nodiscard]] std::shared_ptr<BufferedRegionMapping const> playback_benchmark_arena(
+    std::shared_ptr<BufferedPageAllocator> const& allocator, std::uint64_t first_byte, std::size_t bytes)
+{
+    static thread_local std::weak_ptr<BufferedRegionMapping const> cached;
+    auto const page = allocator->page_size();
+    auto const& limits = allocator->limits();
+    auto const size = std::min(limits.max_backing_bytes, limits.max_contiguous_mapping_bytes) / page * page;
+    if (first_byte > size || bytes > size - first_byte) return {};
+    if (auto arena = cached.lock(); arena && arena->allocator == allocator) return arena;
+
+    allocator->reserve_mapping(size, 1);
+    auto charge = std::shared_ptr<void>(nullptr, [allocator, size](void*) noexcept {
+        allocator->release_mapping(size, 1);
+    });
+    auto* mapping = measure_playback_preparation(PlaybackPreparationPhase::mmap_backing, [&] {
+        auto* address = ::mmap(nullptr, size, PROT_READ, MAP_SHARED, allocator->file(), 0);
+        if (address == MAP_FAILED)
+            throw std::system_error(errno, std::generic_category(), "cannot map the playback benchmark arena");
+        return address;
+    }, size);
+    auto unmap = [size](void* address) noexcept {
+        persisted_data_store_detail::ProcessVmaBudget::account_for_growth(1);
+        ::munmap(address, size);
+    };
+    std::unique_ptr<void, decltype(unmap)> guard{mapping, unmap};
+    auto arena = std::make_shared<BufferedRegionMapping const>(mapping, size, allocator, std::move(charge),
+        std::vector<std::shared_ptr<void const>>{});
+    (void)guard.release();
+    cached = arena;
+    return arena;
+}
+#endif
 
 [[nodiscard]] std::shared_ptr<BufferedPageNode const> retain_page_range(
     std::shared_ptr<BufferedPageNode const> const& root, BufferedPageKey first, BufferedPageKey last,
@@ -1319,6 +1358,21 @@ void pin_buffered_pages(std::shared_ptr<BufferedPageNode const> const& root,
             ? static_cast<BufferedByteAddress>(range.extent) * geometry.value_size_bytes : 0}) : nullptr;
     auto pins = std::move(extra_pins);
     pin_buffered_pages(pages, first_key, add_buffered_pages(first_key, page_count - 1), pins);
+    auto const use_benchmark_arena = PlaybackPreparationMetrics::active_sample_preparation()
+        == PlaybackPreparationMetrics::SamplePreparation::arena;
+    if (use_benchmark_arena && selected_runs.size() == 1) {
+        auto const offset = selected_runs.front().file_offset;
+        if (auto arena = playback_benchmark_arena(allocator, offset, mapping_size)) {
+            PlaybackPreparationMetrics::Interval timing{PlaybackPreparationPhase::stable_sample_window, mapping_size};
+            auto const* storage = arena->data() + offset + in_page;
+            pins.push_back(std::move(arena));
+            auto owner = std::make_shared<BufferedRegionMapping const>(nullptr, 0, allocator, nullptr, std::move(pins));
+            return {.output = output, .range = range, .layout = layout, .geometry = geometry,
+                .continuous_values = PersistedContinuousStorage::mapped(
+                    std::move(owner), storage, bytes, geometry.element_alignment),
+                .buffered_backing = std::move(backing)};
+        }
+    }
     allocator->reserve_mapping(mapping_size, selected_runs.size());
     // Shared ownership also makes exceptional paths release the mapping charge.
     auto charge = std::shared_ptr<void>(nullptr, [allocator, mapping_size, count = selected_runs.size()](void*) noexcept {

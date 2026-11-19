@@ -1,6 +1,8 @@
 #include <intravenous/runtime/tick_materialization_snapshot.h>
+#include <intravenous/runtime/playback_preparation_metrics.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cassert>
 #include <cstring>
@@ -10,6 +12,52 @@
 #include <utility>
 
 namespace iv {
+namespace {
+// Bounded experimental pool for the playback benchmark's sample handoff.
+class PlaybackBenchmarkPool : public std::enable_shared_from_this<PlaybackBenchmarkPool> {
+    static constexpr std::size_t slot_bytes = 16 * 1024;
+    static constexpr std::size_t slot_count = 64;
+
+    PersistedContinuousStorage storage_;
+    std::shared_ptr<void const> residency_;
+    std::mutex mutex_;
+    std::array<bool, slot_count> occupied_{};
+
+public:
+    explicit PlaybackBenchmarkPool(PersistedDataStore& data)
+        : storage_(slot_bytes * slot_count, data.buffered_storage_usage().page_size)
+        , residency_(data.prepare_resident(std::array{BufferedResidentRange{storage_.data(), storage_.size()}}))
+    {}
+
+    bool contains(std::byte const* storage) const noexcept
+    {
+        auto const address = reinterpret_cast<std::uintptr_t>(storage);
+        auto const begin = reinterpret_cast<std::uintptr_t>(storage_.data());
+        return address >= begin && address - begin < storage_.size();
+    }
+
+    std::shared_ptr<PersistedContinuousStorage const> copy(std::span<std::byte const> bytes, std::size_t alignment)
+    {
+        if (bytes.size() > slot_bytes || slot_bytes % alignment != 0) return {};
+        std::unique_lock lock{mutex_};
+        auto const free = std::ranges::find(occupied_, false);
+        if (free == occupied_.end()) return {};
+        auto const slot = static_cast<std::size_t>(free - occupied_.begin());
+        *free = true;
+        lock.unlock();
+        auto* const storage = storage_.data() + slot * slot_bytes;
+        auto lease = std::shared_ptr<void const>(storage, [pool = shared_from_this(), slot](void const*) {
+            std::lock_guard release_lock{pool->mutex_};
+            pool->occupied_[slot] = false;
+        });
+        PlaybackPreparationMetrics::Interval copy{PlaybackPreparationPhase::resident_pool_copy, bytes.size()};
+        std::memcpy(storage, bytes.data(), bytes.size());
+        return std::make_shared<PersistedContinuousStorage const>(
+            PersistedContinuousStorage::mapped(std::move(lease), storage, bytes.size(), alignment));
+    }
+};
+} // namespace
+
 void TickMaterializationSnapshot::prepare_resident(PersistedDataStore& data)
 {
     std::vector<BufferedResidentRange> ranges;
@@ -18,11 +66,34 @@ void TickMaterializationSnapshot::prepare_resident(PersistedDataStore& data)
             throw std::length_error("prepared resident payload size overflows");
         return left * right;
     };
-    for (auto const& input : samples_) for (auto const& region : input.regions) {
+    auto const use_benchmark_pool = PlaybackPreparationMetrics::active_sample_preparation()
+        == PlaybackPreparationMetrics::SamplePreparation::pool;
+    static thread_local std::shared_ptr<PlaybackBenchmarkPool> benchmark_pool;
+    for (auto& input : samples_) for (auto& region : input.regions) {
         auto const frame_count = static_cast<std::size_t>(region.range.extent);
-        auto const frames = region.storage_frames ? region.storage_frames : frame_count;
+        auto frames = region.storage_frames ? region.storage_frames : frame_count;
         auto const* storage = region.storage_data();
         if (!storage || !frame_count) continue;
+        if (use_benchmark_pool && (input.layout.sample_layout == SampleStreamLayout::interleaved
+                || input.channels.size() == 1)) {
+            if (!benchmark_pool) benchmark_pool = std::make_shared<PlaybackBenchmarkPool>(data);
+            if (!benchmark_pool->contains(storage)) {
+                auto const frame_bytes = product(input.channels.size(), input.geometry.value_size_bytes);
+                auto const bytes = product(frame_count, frame_bytes);
+                auto copy = benchmark_pool->copy({storage + product(region.first_frame, frame_bytes),
+                    bytes}, input.geometry.element_alignment);
+                if (copy) {
+                    region.values.reset();
+                    region.continuous_values = std::move(copy);
+                    region.storage_frames = frame_count;
+                    region.first_frame = 0;
+                    frames = frame_count;
+                    storage = region.storage_data();
+                } else {
+                    PlaybackPreparationMetrics::Interval fallback{PlaybackPreparationPhase::resident_pool_fallback, bytes};
+                }
+            }
+        }
         if (input.layout.sample_layout == SampleStreamLayout::planar) {
             for (std::size_t channel = 0; channel < input.channels.size(); ++channel)
                 ranges.push_back({storage + product(product(channel, frames) + region.first_frame, input.geometry.value_size_bytes),
@@ -32,6 +103,7 @@ void TickMaterializationSnapshot::prepare_resident(PersistedDataStore& data)
             ranges.push_back({storage + product(region.first_frame, frame_bytes), product(frame_count, frame_bytes)});
         }
     }
+    if (use_benchmark_pool) for (auto& input : samples_) input.rebuild_region_views();
     for (auto const& input : events_) {
         for (auto const& chunk : input.chunks) {
             if (chunk.events && chunk.begin < chunk.end)

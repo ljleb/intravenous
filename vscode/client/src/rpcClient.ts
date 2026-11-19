@@ -76,7 +76,7 @@ export class JsonRpcSocketClient {
         socket.on("data", (chunk: Buffer | string) => this.onData(String(chunk)));
         socket.on("error", (error) => this.reportDisconnect(error));
         socket.on("close", () => this.reportDisconnect(
-            new Error("Intravenous server connection closed"),
+            new Error("Server connection closed"),
         ));
     }
 
@@ -90,7 +90,7 @@ export class JsonRpcSocketClient {
         }) + "\n";
 
         if (!this.socket) {
-            throw new Error("Intravenous JSON-RPC client is not connected");
+            throw new Error("JSON-RPC client is not connected");
         }
 
         return await new Promise<T>((resolve, reject) => {
@@ -103,7 +103,7 @@ export class JsonRpcSocketClient {
     // for transient latest values whose loss a later request makes harmless.
     notify(method: string, params: Record<string, unknown>): void {
         if (!this.socket) {
-            throw new Error("Intravenous JSON-RPC client is not connected");
+            throw new Error("JSON-RPC client is not connected");
         }
         this.socket.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n", "utf8");
     }
@@ -174,6 +174,6 @@ export class JsonRpcSocketClient {
             this.socket.destroy();
             this.socket = null;
         }
-        this.failPending(new Error("Intravenous client disposed"));
+        this.failPending(new Error("Client disposed"));
     }
 }

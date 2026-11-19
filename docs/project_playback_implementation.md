@@ -571,3 +571,55 @@ The benchmark assigns a scan to the operation that first needs it. Compare
 the sum of `mapping_vma_check` and `residency_vma_check` with the baseline.
 The allocator still checks its byte, run, and residency limits. The kernel
 checks each mapping and lock request against the current process limits.
+
+### Playback sample storage comparison
+
+`iv_playback_benchmark --sample-preparation` selects a sample preparation
+experiment on its executor. `remap` uses the existing production path.
+`reuse` reuses an already mapped packed window for a strict cached subrange.
+`pool` combines that cache read path with a resident 1 MiB pool of sample
+slots for Tick. A Tick snapshot leases its slots through its existing payload
+owners. A window that cannot fit in a slot keeps its ordinary residency path.
+`arena` combines cached window reuse with stable addresses for contiguous
+file runs in `BufferedPageAllocator`. One mapping of the page file supplies
+those addresses. Fragmented windows use the ordinary mapping path, and each
+window pins its own file pages. These modes leave the production default in place.
+
+Run each mode on the same fixed project with the default two 60-second passes
+and compare the per-pass traces. The first pass computes and caches curve
+values. The second seeks back and reuses them. `--view-limit-kib` also lets
+the benchmark measure the effect of smaller canonical windows. The benchmark
+reports the upper bound of the 100 µs bucket containing the 99th percentile
+transaction, output sample count and digest after each seek, and end-of-run
+backing, mapping, and residency usage. `reuse_sample_window`,
+`resident_pool_copy`, `resident_pool_fallback`, and `stable_sample_window`
+show which operations each run actually exercised.
+
+The sequential comparison on the fixed two-curve project produced the following
+cumulative background transaction times. Each pass ran for 60 seconds at 48 kHz
+with 256-frame blocks. All four modes rendered 11,250 blocks per pass with zero
+underruns and zero missed driver periods. The audio sample count and digest
+after each seek matched across modes. Seeks applied in 5.56–5.64 ms.
+
+| Mode | Cold pass | Warm pass | Total | Transaction p99 upper bound |
+| --- | ---: | ---: | ---: | ---: |
+| `remap` | 3.49 s | 3.36 s | 6.85 s | 2.8 ms |
+| `reuse` | 3.63 s | 3.24 s | 6.87 s | 3.0 ms |
+| `pool` | 3.60 s | 0.27 s | 3.87 s | 3.3 ms |
+| `arena` | 3.95 s | 3.38 s | 7.33 s | 3.8 ms |
+
+`reuse` removed the mapping scans. Preparing newly locked addresses still
+scanned `/proc/self/maps` during both passes. `pool` copied about 20.2 MiB
+across 4,147 windows in 15.2 ms and never fell back from its slots. The warm
+pass spent 1.6 ms on VMA checks, down from 3.01 s in `remap`. The pool kept
+1 MiB resident. Cold cache publication still spent 3.06 s in `store_output`,
+including the mapping checks that now occur there.
+
+`arena` served 28 of 4,055 mapped windows directly. Most windows contained
+several physical file runs and still required a regular mapping. This measures
+the stable-address experiment on the current page layout. A design that
+changes backing placement or lets windowed readers consume fragmented views
+would need its own measurements. The pool is the strongest candidate for
+reducing warm playback cost on this workload. Cold transaction tails and
+performance across live edits remain open measurements. The 77 focused storage
+tests passed, including the arena's pinned-reader page-replacement test.

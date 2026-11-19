@@ -27,7 +27,7 @@ export class ControlCompilationProgress {
         const queued = [...this.active.values()].filter((phase) => phase === "queued").length;
         const compiling = this.active.size - queued;
         const label = `${status.dynamic ? "dynamic" : "settled"}${status.inputs.length ? ` (${status.inputs.join(", ")})` : ""}`;
-        const prefix = `Intravenous control compile #${status.requestId}, generation ${status.projectGeneration}: ${label}`;
+        const prefix = `Control compile #${status.requestId}, generation ${status.projectGeneration}: ${label}`;
         let result: string;
         switch (status.phase) {
             case "queued": result = `queued${status.predictive ? " for predictive preparation" : ""}`; break;

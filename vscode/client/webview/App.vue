@@ -32,9 +32,9 @@ const statusText = computed(() => {
     case "running":
         return "";
     case "restarting":
-        return "The Intravenous server stopped; restarting it…";
+        return "The server stopped; restarting it…";
     case "starting":
-        return "Starting the Intravenous server…";
+        return "Starting the server…";
     }
 });
 

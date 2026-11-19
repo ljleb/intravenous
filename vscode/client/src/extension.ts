@@ -81,7 +81,7 @@ async function configureXWaylandRelaunch(context: vscode.ExtensionContext, folde
             log("The VS Code quit command returned. The launcher is waiting for the editor process to exit.");
         } catch (error) {
             cancel();
-            log(`Intravenous could not arrange an XWayland restart. ${error instanceof Error ? error.message : String(error)}`);
+            log(`Could not arrange an XWayland restart. ${error instanceof Error ? error.message : String(error)}`);
         } finally {
             preparing = false;
         }
@@ -188,23 +188,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         try {
             await session.saveProject();
         } catch (error: any) {
-            outputChannel.appendLine(`Intravenous project save failed: ${error.message}`);
+            outputChannel.appendLine(`Project save failed: ${error.message}`);
         }
     }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.enableProjectAutosave", async () => {
         try {
             await session.enableProjectAutosave();
-            void vscode.window.showInformationMessage("Intravenous project autosave enabled");
+            void vscode.window.showInformationMessage("Project autosave enabled");
         } catch (error: any) {
-            outputChannel.appendLine(`Intravenous autosave enable failed: ${error.message}`);
+            outputChannel.appendLine(`Autosave enable failed: ${error.message}`);
         }
     }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.disableProjectAutosave", async () => {
         try {
             await session.disableProjectAutosave();
-            void vscode.window.showInformationMessage("Intravenous project autosave disabled");
+            void vscode.window.showInformationMessage("Project autosave disabled");
         } catch (error: any) {
-            outputChannel.appendLine(`Intravenous autosave disable failed: ${error.message}`);
+            outputChannel.appendLine(`Autosave disable failed: ${error.message}`);
         }
     }));
 
@@ -224,7 +224,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             void session.updateFromEditor(editor).then((nodes) => {
                 session.updatePrimaryHighlight(nodes);
             }, (error: Error) => {
-                outputChannel.appendLine(`Intravenous editor query failed: ${error.message}`);
+                outputChannel.appendLine(`Editor query failed: ${error.message}`);
             });
         }
     }));
@@ -278,7 +278,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             session.updatePrimaryHighlight(nodes);
         }
     } catch (error: any) {
-        outputChannel.appendLine(`Intravenous startup failed: ${error.message}`);
+        outputChannel.appendLine(`Startup failed: ${error.message}`);
         throw error;
     }
 
@@ -290,7 +290,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             const nodes = await session.updateFromEditor(event.textEditor);
             session.updatePrimaryHighlight(nodes);
         } catch (error: any) {
-            const message = `Intravenous query failed: ${error.message}`;
+            const message = `Query failed: ${error.message}`;
             if (message !== session.lastQueryError) {
                 outputChannel.appendLine(message);
                 session.lastQueryError = message;

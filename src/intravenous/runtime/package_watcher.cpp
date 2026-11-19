@@ -712,7 +712,7 @@ bool PackageWatcher::refresh_pending_packages(
         publication.build_status = ProjectStatusNotification{
             .level = "info",
             .code = "rebuildFinished",
-            .message = "IV package build ready to apply in " + build_duration,
+            .message = "Package build ready to apply in " + build_duration,
             .package_root = built.single_package_root,
         };
     }

@@ -106,7 +106,7 @@ export class WorkspaceSession {
     }
     async playbackCommand(position?: string, drag?: PlaybackDrag): Promise<PlaybackSnapshot | null> {
         const rpc = this.rpc;
-        if (!rpc || this.graphSessionStatus !== "running") throw new Error("The Intravenous server is unavailable");
+        if (!rpc || this.graphSessionStatus !== "running") throw new Error("The server is unavailable");
         const snapshot = await (position === undefined ? rpc.togglePlayback()
             : drag ? rpc.dragPlayback(position, drag) : rpc.seekPlayback(position));
         return this.rpc === rpc && this.graphSessionStatus === "running" ? snapshot : null;
@@ -123,35 +123,35 @@ export class WorkspaceSession {
         begin: (target, id) => this.nodeEventGesture(target, id, true),
         send: (target, event, id) => this.sendNodeEvent(target, event, id),
         end: (target, id) => this.nodeEventGesture(target, id, false),
-        report: (error) => this.outputChannel.appendLine(`Intravenous node gesture cleanup failed: ${String(error)}`),
+        report: (error) => this.outputChannel.appendLine(`Node gesture cleanup failed: ${String(error)}`),
     });
 
     private async nodeEventGesture(target: NodeAddress, id: string, begin: boolean): Promise<number> {
-        if (this.graphSessionStatus !== "running" || !this.rpc) return Promise.reject(new Error("The Intravenous server is unavailable"));
+        if (this.graphSessionStatus !== "running" || !this.rpc) return Promise.reject(new Error("The server is unavailable"));
         await this.rpc.nodeEventGesture(target, id, begin);
         return this.lastSessionRevision;
     }
 
     async describeObservations(nodes: NodeAddress[]) {
-        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         return this.rpc.describeObservations(nodes);
     }
     async reconcileObservations(scopeId: string, interests: ObservationInterest[]) {
-        if (!this.rpc || this.graphSessionStatus !== "running") throw new Error("The Intravenous server is unavailable");
+        if (!this.rpc || this.graphSessionStatus !== "running") throw new Error("The server is unavailable");
         return this.rpc.reconcileObservations(scopeId, interests);
     }
 
     async readGraphScope() {
-        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         return this.rpc.getGraphScope();
     }
 
     async setManualInputEnabled(node: NodeAddress, inputName: string, enabled: boolean): Promise<void> {
         const rpc = this.rpc;
-        if (!rpc || this.graphSessionStatus !== "running") throw new Error("The Intravenous server is unavailable");
+        if (!rpc || this.graphSessionStatus !== "running") throw new Error("The server is unavailable");
         await this.manualControls.settled();
         const scope = await rpc.getGraphScope();
-        if (rpc !== this.rpc) throw new Error("The Intravenous session changed before editing the input");
+        if (rpc !== this.rpc) throw new Error("The session changed before editing the input");
         const control = { node, inputName };
         const descriptor = resolveManualControl(scope, control);
         if (!descriptor?.available || descriptor.live) throw new Error("The manual input is unavailable");
@@ -166,11 +166,11 @@ export class WorkspaceSession {
     async sendNodeEvent(target: NodeAddress, event: SerializedNodeEvent, interactionId?: string): Promise<number> {
         // A semantic edit belongs to the running session that received it.
         // Do not hold it across startup/restart and apply it to a later graph.
-        if (this.graphSessionStatus !== "running" || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        if (this.graphSessionStatus !== "running" || !this.rpc) throw new Error("The server is unavailable");
         const rpc = this.rpc;
         const revision = this.lastSessionRevision;
         const protocol = await rpc.getNodeEventProtocol();
-        if (this.rpc !== rpc) throw new Error("The Intravenous session changed before event dispatch");
+        if (this.rpc !== rpc) throw new Error("The session changed before event dispatch");
         validateNodeEventTarget(protocol, target, event);
         // Standalone edits still use the revision from before the protocol
         // read. An open gesture instead uses the server's conflict check for
@@ -196,7 +196,7 @@ export class WorkspaceSession {
     }
 
     async editGraphConnectionEnd(edit: GraphConnectionEdit): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         const rpc = this.rpc;
         // Bind the mutation to a revision from before the read. A notification
         // arriving between the read and the write must not validate an old edit.
@@ -207,14 +207,14 @@ export class WorkspaceSession {
     }
 
     async graphDefinitions(): Promise<string[]> {
-        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         const result = await this.rpc.getIvPackageDefinitions();
         const packages = this.parseIvPackageDefinitions(result.packages);
         return [...new Set(packages.flatMap((entry) => [...entry.moduleIds, ...entry.nodeTypeIds]))].sort();
     }
 
     async createGraphNode(definitionId: string, displayName: string, configurationSource: string): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         await this.rpc.createNodeInstance(definitionId, displayName, configurationSource);
     }
 
@@ -231,7 +231,7 @@ export class WorkspaceSession {
     }
 
     async deleteGraphNodes(instanceIds: string[]): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         const rpc = this.rpc;
         const revision = this.lastSessionRevision;
         const scope = await rpc.getGraphScope();
@@ -243,7 +243,7 @@ export class WorkspaceSession {
     }
 
     async projectHistory(direction: "undo" | "redo"): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         await this.manualControls.settled();
         await this.rpc.projectHistory(direction);
     }
@@ -258,7 +258,7 @@ export class WorkspaceSession {
     }
 
     async createGraphPackage(name: string): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The Intravenous server is unavailable");
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         const result = await this.rpc.createIvPackage(name);
         const info = this.parseIvPackage(result.package);
         if (info) await this.revealPackageSource(info.packageRoot);
@@ -377,7 +377,7 @@ export class WorkspaceSession {
                 this.lastSessionRevision = params.sessionRevision;
             }
             this.serverReadyReceived = true;
-            this.outputChannel.appendLine("Intravenous server ready");
+            this.outputChannel.appendLine("Server ready");
             this.resolveServerReadyWaiters();
         });
 
@@ -412,21 +412,21 @@ export class WorkspaceSession {
 
         this.notifications.subscribe<ServerStatusNotification>("server.status", async (params) => {
             if (params.code === "startupFailed") {
-                this.lastTerminalStatusMessage = params.message || "Intravenous startup failed";
-                this.logServerState("Intravenous startup failed", params);
+                this.lastTerminalStatusMessage = params.message || "Startup failed";
+                this.logServerState("Startup failed", params);
                 return;
             }
 
             if (params.code === "rebuildStarted") {
                 this.resetCapturedServerLogs();
-                this.logServerState("Intravenous rebuild started", params);
+                this.logServerState("Rebuild started", params);
                 this.showRebuildStatus(params);
                 await this.refreshProjectCatalog();
                 return;
             }
 
             if (params.code === "rebuildFinished") {
-                this.logServerState("Intravenous rebuild finished", params);
+                this.logServerState("Rebuild finished", params);
                 this.rebuildStatusBar.hide();
                 await this.refreshProjectCatalog();
                 return;
@@ -435,13 +435,13 @@ export class WorkspaceSession {
             if (params.code === "rebuildFailed" || params.code === "graphCompilationFailed") {
                 this.logCapturedServerFailureContext();
                 // Keep the actionable failure below compiler output and traces.
-                this.logServerState("Intravenous rebuild failed", params);
+                this.logServerState("Rebuild failed", params);
                 this.showRebuildFailure();
                 await this.refreshProjectCatalog();
                 return;
             }
 
-            this.logServerState("Intravenous status", params);
+            this.logServerState("Status", params);
         });
 
         this.notifications.subscribe<Record<string, never>>("ivPackages.updated", async () => {
@@ -790,7 +790,7 @@ export class WorkspaceSession {
         }
 
         fs.accessSync(resolved.path, fs.constants.X_OK);
-        this.outputChannel.appendLine(`resolved Intravenous server from ${resolved.source}: ${resolved.path}`);
+        this.outputChannel.appendLine(`resolved server from ${resolved.source}: ${resolved.path}`);
         return resolved.path;
     }
 
@@ -842,17 +842,17 @@ export class WorkspaceSession {
                     const stat = fs.statSync(runtimeDir, { throwIfNoEntry: false });
                     if (stat?.isDirectory() && stat.uid === uid) {
                         childEnv.XDG_RUNTIME_DIR = runtimeDir;
-                        this.outputChannel.appendLine(`Intravenous server restored XDG_RUNTIME_DIR: ${runtimeDir}`);
+                        this.outputChannel.appendLine(`Server restored XDG_RUNTIME_DIR: ${runtimeDir}`);
                     }
                 }
             } catch (error) {
-                this.outputChannel.appendLine(`Intravenous server could not restore missing session settings: ${error}`);
+                this.outputChannel.appendLine(`Server could not restore missing session settings: ${error}`);
             }
         }
-        this.outputChannel.appendLine(`starting Intravenous server: ${binary}`);
-        this.outputChannel.appendLine(`Intravenous server cwd: ${this.workspaceRoot()}`);
+        this.outputChannel.appendLine(`Starting server: ${binary}`);
+        this.outputChannel.appendLine(`Server cwd: ${this.workspaceRoot()}`);
         this.outputChannel.appendLine(
-            `Intravenous server diagnostic log: ${this.serverDiagnosticLogPath}`,
+            `Server diagnostic log: ${this.serverDiagnosticLogPath}`,
         );
         const processLog = fs.openSync(this.serverDiagnosticLogPath, "a");
         let spawnedProcess: childProcess.ChildProcess;
@@ -866,21 +866,21 @@ export class WorkspaceSession {
             fs.closeSync(processLog);
         }
         this.process = spawnedProcess;
-        this.outputChannel.appendLine(`Intravenous startup: server process spawned (PID ${spawnedProcess.pid ?? "unavailable"})`);
+        this.outputChannel.appendLine(`Startup: server process spawned (PID ${spawnedProcess.pid ?? "unavailable"})`);
 
         spawnedProcess.on("error", (error) => {
-            this.outputChannel.appendLine(`Intravenous server spawn failed: ${error.message}`);
+            this.outputChannel.appendLine(`Server spawn failed: ${error.message}`);
         });
         spawnedProcess.on("exit", (code, signal) => {
             if (this.process === spawnedProcess) this.process = null;
             this.rebuildStatusBar.hide();
-            this.outputChannel.appendLine(`Intravenous server exited: code=${code} signal=${signal}`);
+            this.outputChannel.appendLine(`Server exited: code=${code} signal=${signal}`);
         });
 
         const socket = spawnedProcess.stdio[3];
         if (!(socket instanceof Duplex)) {
             spawnedProcess.kill();
-            throw new Error("Intravenous server was spawned without its RPC socket");
+            throw new Error("Server was spawned without its RPC socket");
         }
         try {
             await this.connectToServer(socket);
@@ -917,7 +917,7 @@ export class WorkspaceSession {
         await this.rpc.hello(`vscode-${process.pid}-${crypto.randomUUID()}`, "");
         this.connectedAtMs = Date.now();
         this.outputChannel.appendLine(
-            `Intravenous startup: connected at session revision ${this.lastSessionRevision}`,
+            `Startup: connected at session revision ${this.lastSessionRevision}`,
         );
         // Do not delay graph discovery on hardware enumeration. Report the
         // selected device explicitly because the fallback clock keeps Tick
@@ -925,7 +925,7 @@ export class WorkspaceSession {
         void this.rpc.getAudioDevices().then((snapshot) => {
             if (this.client === client) this.outputChannel.appendLine(audioOutputDiagnostic(snapshot.selectedOutput));
         }, (error) => {
-            if (this.client === client) this.outputChannel.appendLine(`Intravenous audio output query failed: ${error.message ?? error}`);
+            if (this.client === client) this.outputChannel.appendLine(`Audio output query failed: ${error.message ?? error}`);
         });
     }
 
@@ -960,7 +960,7 @@ export class WorkspaceSession {
         this.graphSessionStatus = "restarting";
         this.graphChanges.fire();
         this.outputChannel.appendLine(
-            `Intravenous server connection lost: ${error.message}; restarting the server`,
+            `Server connection lost: ${error.message}; restarting the server`,
         );
         void this.restartServer();
     }
@@ -976,7 +976,7 @@ export class WorkspaceSession {
                     await this.start();
                 } catch (error) {
                     this.outputChannel.appendLine(
-                        `Intravenous server restart failed: ${error instanceof Error ? error.message : String(error)}`,
+                        `Server restart failed: ${error instanceof Error ? error.message : String(error)}`,
                     );
                     this.restartDelayMs = Math.min(
                         this.restartDelayMs * 2, this.maxRestartDelayMs);
@@ -989,7 +989,7 @@ export class WorkspaceSession {
             }
         } catch (error) {
             this.outputChannel.appendLine(
-                `Intravenous query after restart failed: ${error instanceof Error ? error.message : String(error)}`,
+                `Query after restart failed: ${error instanceof Error ? error.message : String(error)}`,
             );
         } finally {
             this.restartInFlight = false;
@@ -1006,7 +1006,7 @@ export class WorkspaceSession {
             (instance) => instance.realized,
         ).length;
         this.outputChannel.appendLine(
-            `Intravenous instances after ready: total=${this.ivModuleInstances.length} realized=${realizedCount} selected=${this.selectedInstanceId ?? "[none]"}`,
+            `Instances after ready: total=${this.ivModuleInstances.length} realized=${realizedCount} selected=${this.selectedInstanceId ?? "[none]"}`,
         );
         this.provider.setSessionStatus("running");
         this.graphSessionStatus = "running";
@@ -1022,7 +1022,7 @@ export class WorkspaceSession {
             const timeout = setTimeout(() => {
                 this.serverReadyWaiters = this.serverReadyWaiters.filter((waiter) => waiter.timeout !== timeout);
                 this.logCapturedServerFailureContext();
-                reject(new Error("Intravenous server did not report ready before timeout"));
+                reject(new Error("Server did not report ready before timeout"));
             }, timeoutMs);
             this.serverReadyWaiters.push({ resolve, reject, timeout });
         });
@@ -1374,7 +1374,7 @@ export class WorkspaceSession {
         while (lines.length > 0 && lines[0].length === 0) lines.shift();
         while (lines.length > 0 && lines[lines.length - 1].length === 0) lines.pop();
         if (lines.length > 0) {
-            this.outputChannel.appendLine("Intravenous server failure details:");
+            this.outputChannel.appendLine("Server failure details:");
             for (const line of lines) this.outputChannel.appendLine(`  ${line}`);
         }
         this.resetCapturedServerLogs();
@@ -1382,7 +1382,7 @@ export class WorkspaceSession {
 
     private resetServerReadyState(): void {
         this.serverReadyReceived = false;
-        this.rejectServerReadyWaiters(new Error("Intravenous server startup was restarted"));
+        this.rejectServerReadyWaiters(new Error("Server startup was restarted"));
     }
 
     private resolveServerReadyWaiters(): void {

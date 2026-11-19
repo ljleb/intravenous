@@ -266,6 +266,41 @@ TEST(SharedBufferedStorage, MappingAndResidencyShareOneProcessScanUntilBudgetNee
 #endif
 }
 
+TEST(SharedBufferedStorage, StableMappingExperimentKeepsPinnedVersionAcrossPageReplacement)
+{
+#if defined(__linux__)
+    PlaybackPreparationMetrics metrics{PlaybackPreparationMetrics::SamplePreparation::arena};
+    PlaybackPreparationMetrics::Attachment attachment{&metrics};
+    metrics.enable();
+    BufferedStorageLimits limits;
+    limits.max_backing_bytes = 256 * 1024;
+    PersistedDataStore store{limits};
+    auto const output_id = output(store);
+    auto const range = span(0, 1);
+    auto first = store.begin_candidate(1);
+    first.overwrite(samples(output_id, range, 2));
+    ASSERT_EQ(store.publish(std::move(first)), PersistedDataPublishResult::published);
+    auto old_reader = store.register_reader();
+    auto old = old_reader.pin();
+
+    auto next = store.begin_candidate(2);
+    next.overwrite(samples(output_id, range, 7));
+    ASSERT_EQ(store.publish(std::move(next)), PersistedDataPublishResult::published);
+    auto new_reader = store.register_reader();
+    auto latest = new_reader.pin();
+    auto const* before = old->find_sample_region(output_id, range.begin);
+    auto const* after = latest->find_sample_region(output_id, range.begin);
+    ASSERT_NE(before, nullptr);
+    ASSERT_NE(after, nullptr);
+    EXPECT_EQ(before->at(range.begin, 0).value, 2);
+    EXPECT_EQ(after->at(range.begin, 0).value, 7);
+    EXPECT_EQ(store.buffered_storage_usage().mapped_runs, 1u);
+    EXPECT_EQ(metrics.snapshot()[static_cast<std::size_t>(PlaybackPreparationPhase::mmap_backing)].calls, 1u);
+#else
+    GTEST_SKIP() << "Linux buffered storage backend";
+#endif
+}
+
 TEST(SharedBufferedStorage, EventChunksShareTheBackingBudgetAndRemainAuthoritative)
 {
     BufferedStorageLimits limits;

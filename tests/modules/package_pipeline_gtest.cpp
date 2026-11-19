@@ -239,7 +239,7 @@ TEST(PackagePipeline, SuccessfulRefreshReportsItsBuildOnceWithElapsedTime)
     EXPECT_EQ(publication.build_status->code, "rebuildFinished");
     EXPECT_TRUE(std::regex_match(
         publication.build_status->message,
-        std::regex("IV package build ready to apply in [0-9]+ ms")));
+        std::regex("Package build ready to apply in [0-9]+ ms")));
 }
 
 TEST(PackagePipeline, CompiledModuleDefinitionPublishesConfiguredGraph)

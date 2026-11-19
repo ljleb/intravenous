@@ -2516,7 +2516,7 @@ ghost-cursor fix; not built or tested by the agent):
   `WorkspaceSession.reportGraphInteractionDiagnostic()`), and `KnobPointerLock`'s
   coordinate-drift warning with its `move()` position argument and test. The
   denied-lock note in the knob's status hint remains, as does the connection-time
-  "Intravenous audio output" line, which the owner keeps as useful in normal use.
+  "Audio output" line, which the owner keeps as useful in normal use.
   See [Knob pointer-lock diagnostics](knob_pointer_lock_diagnostics.md).
 
 ### Stage 3 continuation, 2026-11-14

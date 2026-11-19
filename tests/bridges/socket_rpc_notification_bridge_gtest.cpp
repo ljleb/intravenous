@@ -257,7 +257,7 @@ TEST(SocketRpcNotificationBridge, BoundServerPublishesOnePackageRefreshReport)
                 .build_status = ProjectStatusNotification{
                     .level = "info",
                     .code = "rebuildFinished",
-                    .message = "IV package build ready to apply in 5 ms",
+                    .message = "Package build ready to apply in 5 ms",
                 },
                 .package_catalog_changed = true,
                 .project = ProjectGraphPublication{
