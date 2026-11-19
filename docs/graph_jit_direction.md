@@ -2083,11 +2083,13 @@ This is intended behavior, not a current implementation claim; eventual
 verification should inspect emitted code as well as audio values at unity,
 non-unity, and during gesture transitions.
 
-The owner clarified on 2026-11-17 that this is a non-destructive output
-transform for every gain-capable output shape/realization, including buffered
-data already retained before the gain changed. Apply the selected gain on
-consumption without rewriting source backing or node state. Background/replay
-reads and observations must retain coherent gain-version selection.
+Apply the selected gain to authored connection consumers for every gain-capable
+output shape and realization, including buffered data retained before the gain
+changed. Preserve source backing and node state. Direct output observations read
+the node's original value. For Region and Coverage outputs, choose Tick for
+realtime-only connections and Tock for all connections when any path requires
+background preparation. See the [current output gain contract](./output_gain_implementation.md#accepted-contract)
+and the [earlier observation contract](./historical/output_gain_before_connection_observation_2026-11-19.md).
 
 ## Lowering boundary
 

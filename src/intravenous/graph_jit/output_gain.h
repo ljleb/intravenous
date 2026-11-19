@@ -69,7 +69,8 @@ inline OutputGainExpansion expand_output_gains(ConfiguredGraph& graph, NodeDefin
             throw std::invalid_argument("output gain must be finite");
         auto const source = *control.output;
         auto output = graph.node_bundles.resolve_sample_output(source).config;
-        auto const tick = is_sequential_output(output);
+        auto const sequential_source = is_sequential_output(output);
+        auto const tick = sequential_source || !control.requires_preparation;
         auto const domain = continuous_value_type_domain(output);
         auto type = domain.sole_type();
         if (!type) {
@@ -107,7 +108,10 @@ inline OutputGainExpansion expand_output_gains(ConfiguredGraph& graph, NodeDefin
             input.access = std::move(properties);
         }
         output.name = "scaled";
-        if (tick) output.realization = OutputRealization::computed;
+        if (tick) {
+            if (!sequential_source) output.production = default_sequential_output_properties(domain);
+            output.realization = OutputRealization::computed;
+        }
         auto config = std::make_shared<OutputGainConfiguration const>(OutputGainConfiguration{control.settled_value});
         ConcreteNode stage{
             .ports = {.input_configs = {make_input_config(input)}, .output_configs = {make_output_config(output)}},
@@ -142,7 +146,8 @@ inline OutputGainExpansion expand_output_gains(ConfiguredGraph& graph, NodeDefin
         if (!result.outputs.emplace(source, NodeBundlePortId{bundle, PortKind::sample, 0}).second)
             throw std::invalid_argument("two gains resolve to the same concrete output");
         result.stages.push_back({bundle, source, tick, config});
-        if (tick && is_buffered(graph.node_bundles.resolve_sample_output(source).config.realization)) {
+        if (sequential_source && control.requires_preparation
+            && is_buffered(graph.node_bundles.resolve_sample_output(source).config.realization)) {
             // Historical reads are Coverage-shaped, regardless of the live
             // Sequential declaration. Preserve the recording's exact Regions
             // and complete-buffer capability with an ordinary Tock scaling
@@ -170,8 +175,6 @@ inline OutputGainExpansion expand_output_gains(ConfiguredGraph& graph, NodeDefin
             graph.node_bundles.bundle(view).set_output_gain_source(source);
             result.background_outputs.emplace(source, NodeBundlePortId{view, PortKind::sample, 0});
             result.stages.push_back({view, source, false, config});
-        } else if (!tick) {
-            result.background_outputs.emplace(source, NodeBundlePortId{bundle, PortKind::sample, 0});
         }
         if (tick) {
             auto lowered = control;

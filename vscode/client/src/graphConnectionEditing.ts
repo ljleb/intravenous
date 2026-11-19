@@ -130,6 +130,14 @@ export function canMoveConnectionEnd(scope: GraphScope, end: GraphConnectionEnd,
     catch { return false; }
 }
 
+export function canContinuePortConnection(scope: GraphScope | null, port: GraphPortEndpoint, end?: GraphConnectionEnd): boolean {
+    if (!scope?.editable) return false;
+    // Moving back to the pickup port is a no-op after checking the captured connection.
+    if (end) return canMoveConnectionEnd(scope, end, port);
+    try { endpointType(scope, port); return true; }
+    catch { return false; }
+}
+
 export function connectionFromPorts(scope: GraphScope, id: string,
     first: GraphPortEndpoint, second: GraphPortEndpoint): Record<string, unknown> {
     if (!scope.editable) throw new Error("This graph is read-only");

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canMoveConnectionEnd, connectionEndMutation, connectionEndsAtPort, connectionFromPorts, fixedConnectionPorts,
+import { canContinuePortConnection, canMoveConnectionEnd, connectionEndMutation, connectionEndsAtPort, connectionFromPorts, fixedConnectionPorts,
     type GraphConnectionEnd, type GraphPortEndpoint } from "../src/graphConnectionEditing";
 import type { GraphPortMatcher, GraphScope, GraphScopeConnection, GraphScopeNode } from "../src/graphScope";
 import { beginPortConnection, canDropPortConnection, finishPortConnection, movePortConnection } from "../src/portConnectionGesture";
@@ -103,6 +103,28 @@ test("reattachment feedback rejects the original port, stale records and shared 
     const staleGraph = structuredClone(originalGraph);
     staleGraph.connections[0].connection.sourceType = "mono";
     assert.equal(canDropPortConnection(staleGraph, originalDrag, cInput), false);
+});
+
+test("in-progress connection gestures survive unrelated scope updates and reject stale endpoints", () => {
+    const graph = connectedScope();
+    const end = selectedEnd(graph);
+    const rewire = movePortConnection(beginPortConnection(input, 1, 0, { x: 0, y: 0 }, end)!, 1, 1, { x: 100, y: 50 })!;
+    const updated = structuredClone(graph);
+    ++updated.generation;
+    updated.connections[0].applied = false;
+    updated.connections.push({ ...updated.connections[0], id: "unrelated", connection: {
+        ...updated.connections[0].connection, connectionId: "unrelated", inputs: [matcher(cInput)],
+    } });
+    assert.equal(canContinuePortConnection(updated, rewire.port, rewire.edit), true);
+    assert.ok(finishPortConnection(rewire, 1, rewire.end, cInput));
+    assert.equal(canContinuePortConnection(updated, output), true);
+    assert.equal(canContinuePortConnection({ ...updated, editable: false }, rewire.port, rewire.edit), false);
+    assert.equal(canContinuePortConnection({ ...updated, connections: [] }, rewire.port, rewire.edit), false);
+
+    updated.connections[0].connection.inputs.push(matcher(cInput));
+    assert.equal(canContinuePortConnection(updated, rewire.port, rewire.edit), false);
+    updated.nodes[0].sampleOutputs[0].name = "renamed";
+    assert.equal(canContinuePortConnection(updated, output), false);
 });
 
 test("pickup returns all connection choices for the clicked port without selecting one", () => {

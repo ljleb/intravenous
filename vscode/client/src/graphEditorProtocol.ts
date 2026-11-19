@@ -1,4 +1,5 @@
-import type { ObservationHostRequest, ObservationResponse, ObservationUpdate } from "./observations";
+import type { ObservationHostRequest, ObservationResponse } from "./observations";
+import type { ObservationDelivery } from "./observationDelivery";
 import type { ObservationProfileSummary } from "./observationProfile";
 import type { ManualControlAction, ManualControlInteractionState, ManualControlLiveValue } from "./manualControls";
 import { readLayout, type GraphLayout, type GraphScope, type GraphViewState, type NodeAddress, type PresentationState } from "./graphScope";
@@ -42,7 +43,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "playbackUpdate"; snapshot: PlaybackSnapshot | null; requestedPosition: string | null }
     | ObservationResponse
     | { type: "observationVisibility"; visible: boolean }
-    | { type: "observationUpdate"; update: ObservationUpdate }
+    | { type: "observationUpdate"; update: ObservationDelivery; sequence: number; previousSequence?: number }
     | { type: "startObservationProfile"; durationMs: number }
     | NodeEventResponse
     | { type: "manualControlState"; interactions: ManualControlInteractionState[]; live: ManualControlLiveValue[] }
@@ -54,6 +55,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "playbackSeek"; position: string }
     | { type: "playbackDrag"; phase: PlaybackDragPhase; position: string }
     | ObservationHostRequest
+    | { type: "observationResync" }
     | { type: "observationProfile"; summary: ObservationProfileSummary }
     | NodeEventHostRequest
     | { type: "graphInteractionHint"; hint: StatusHint | null }

@@ -9,6 +9,7 @@ type BoundWindowRequest = { window: ObservationWindow; prefetch: boolean };
 
 const automationBoundPrefetchCount = 6;
 export const automationBoundWindowCount = 1 + automationBoundPrefetchCount;
+export const automationBoundVisiblePositions = 1024;
 
 export function automationBoundWindows(visible: ObservationWindow): BoundWindowRequest[] {
     const span = BigInt(visible.length);
@@ -18,18 +19,12 @@ export function automationBoundWindows(visible: ObservationWindow): BoundWindowR
     const alignDown = (position: bigint, step: bigint) =>
         position - (position % step + step) % step;
     const firstTile = alignDown(begin, length) / length;
-    const alignment = length / 8n || 1n;
-    const fineBegin = alignDown(begin, alignment);
-    const fineEnd = alignDown(begin + span + alignment - 1n, alignment);
     const requests = new Array<BoundWindowRequest>(automationBoundWindowCount);
-    requests[0] = {
-        window: { begin: String(fineBegin), length: String(fineEnd - fineBegin), points: visible.points },
-        prefetch: false,
-    };
+    requests[0] = { window: visible, prefetch: false };
     for (let offset = -2; offset <= 3; ++offset) {
         const tile = firstTile + BigInt(offset);
         const far = offset === -2 || offset === 3;
-        const points = Math.max(2, Math.ceil(visible.points * (far ? 8 : 28) / 512));
+        const points = Math.max(2, Math.ceil(Math.min(visible.points, 512) * (far ? 8 : 28) / 512));
         // Six consecutive tiles occupy different slots. Crossing an edge
         // keeps the other five IDs attached to the same spans.
         const slots = BigInt(automationBoundPrefetchCount);
@@ -79,8 +74,8 @@ export function refinedAutomationBoundTracks(results: readonly ObservationWindow
     const projected = new Map<ObservationWindowResult, BoundTrack[]>();
     for (let i = 1; i < edges.length; ++i) {
         const begin = edges[i - 1], end = edges[i];
-        // The current fine reply replaces cached previews, even if its
-        // alignment reduced its point density or it confirms a gap.
+        // The current fine reply replaces cached previews, including when
+        // that reply confirms a gap.
         const selected = windows.find((window) => window.begin <= begin && end <= window.end);
         if (!selected) continue;
         const { result } = selected;

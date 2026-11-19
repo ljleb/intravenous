@@ -699,14 +699,14 @@ is retained for provenance.
 
 _Accepted clarification, 2026-11-14:_ use the available height of the lane's
 left area to show ports directly. Inputs and outputs keep separate columns.
-Each column retains reflected definition order. If every port fits, show all
-of them. Otherwise, reserve one handle for a popover that contains the remaining
-ports. Compute each direction independently. Hidden-port connection indicators
-summarize only that remainder. Existing connections and drag previews attach to
-the direct handle when visible, or to the folded handle when hidden.
-Fitting must account for the complete row height, including its knob. Knobs
-and wire handles keep separate drag targets. In narrow lane labels, keep those
-targets reachable even when names or numeric readouts need to be hidden.
+Each column retains reflected definition order. Fit complete rows using their
+knob heights. Compute each column independently and reserve space for a folded
+socket when some ports are out of view. The folded socket summarizes those
+ports and anchors their cables until the popover reveals their own sockets.
+The owner chose a cropped socket at the header edge and a shared continuation
+on 2026-11-19. See the [header geometry and hover behavior](./vue_presentation_refinement_direction.md#folded-inputs-extend-the-existing-lane-header).
+Knobs and wire handles keep separate drag targets. In narrow lane labels,
+keep those targets reachable when names or numeric readouts are hidden.
 
 The 2026-11-16 [unified input-control direction](./vue_presentation_refinement_direction.md#2-input-knobs-and-ports-as-one-visual-input)
 supersedes the old separate-looking circle/knob/value row: show the knob left

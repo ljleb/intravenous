@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { snapTimelineSample, timelineTicks } from "./geometry";
+import { rulerMarkerPoints, snapTimelineSample, timelineTicks } from "./geometry";
 import RulerGraduations from "./RulerGraduations.vue";
 import TimelinePlayhead from "./TimelinePlayhead.vue";
 import type { PresentationTimeWindow, TimelineMark } from "./timelineContext";
@@ -129,11 +129,11 @@ onBeforeUnmount(() => {
             <line v-for="mark in marks" :key="mark.index.toString()" class="beat-mark"
                 :x1="mark.x" :x2="mark.x" :y1="mark.depth === 0 ? 12 : mark.depth === 1 ? 20 : 27" y2="100%" />
 
-            <TimelinePlayhead v-if="playback" :window="window" />
+            <TimelinePlayhead v-if="playback" :window="window" ruler />
             <line v-if="requestedMarker >= 0 && requestedMarker <= width" class="requested-marker"
                 :x1="requestedMarker" :x2="requestedMarker" y1="0" y2="100%"
                 role="img" aria-label="Requested background playhead position" />
-            <polygon v-if="startMarker >= 0 && startMarker <= width" class="start-marker" points="-5.5,0 5.5,0 0,7"
+            <polygon v-if="startMarker >= 0 && startMarker <= width" class="start-marker" :points="rulerMarkerPoints"
                 :style="{ transform: `translateX(${startMarker}px)` }" role="img" :aria-label="startLabel"
                 :data-status-hint="`Start ${displayedStart} smp`" />
         </svg>

@@ -102,6 +102,10 @@ export class ObservationValues {
         }
         this.activation = activation;
         this.dataVersion = update.dataVersion;
+        const liveIds = new Set(scope.values.map(({ id }) => id));
+        const windowIds = new Set(scope.windows?.map(({ id }) => id));
+        for (const id of this.values.keys()) if (!liveIds.has(id)) this.values.delete(id);
+        for (const id of this.windows.keys()) if (!windowIds.has(id)) this.windows.delete(id);
         for (const item of scope.values) this.values.set(item.id, { activationId: update.activationId,
             available: item.available, ...(item.pending ? { pending: true } : {}), value: item.value });
         for (const item of scope.windows ?? []) {

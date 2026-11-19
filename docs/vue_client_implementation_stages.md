@@ -3869,6 +3869,21 @@ vertical movement and anchors at the cursor's current horizontal position.
 Port popovers forward the same gestures to the timeline. Each pixel of drag
 applies three times the zoom of a pixel of wheel input.
 
+#### Cropped sockets and shared header continuation, 2026-11-19
+
+`NodePorts.vue` places a half socket at the bottom of each editable-height
+port column with folded rows. `lanePortLayout()` reserves space for it only
+when some rows are folded. The socket provides the `data-port-slot` that
+`GraphEditor.vue` uses for folded cable endpoints. Revealed `NodePortRow`
+sockets take precedence when they are in view.
+
+Hover or focus within the lane header opens one continuation beneath it.
+The panel uses the measured column widths and leaves the existing rows in
+place. During a cable drag it shows the compatible destination column. Mini
+headers use their compact port symbols and open the same shared panel with
+full-size knobs. The [previous geometry](./historical/vue_folded_port_layout_before_cropped_sockets_2026-11-19.md)
+is preserved. The client build and visual checks remain owner-run.
+
 ### Automation clip editing, 2026-11-18
 
 `AutomationCurvePresentation.vue` uses the timeline's ruler ticks and adds
@@ -4060,11 +4075,10 @@ work takes priority over prefetched windows.
 
 #### Automation bound preview during panning
 
-`AutomationCurvePresentation.vue` requests one aligned fine waveform window
-and six coarse windows for each connected bound. The outer two are sparser.
-At the widest point budget, the fine window requests 512 positions and the
-coarse windows request 128 in total. The viewport can move within the aligned
-window without changing the request.
+`AutomationCurvePresentation.vue` requests a fine waveform window with a budget
+of 1,024 positions in the visible span for each connected bound. Six aligned
+coarse windows request 128 positions in total. The outer two are sparser.
+[Earlier aligned fine-window policy](./historical/automation_bound_previews_before_visible_sample_budget_2026-11-19.md).
 
 The presentation retains up to 14 nearby completed windows per connected
 bound in the current configured generation. It keeps the last completed
@@ -4078,6 +4092,22 @@ for each result. The background executor can serve one visible sample
 query between successful playback preparation passes. Prefetch and event
 queries wait until the executor has processed pending playback work.
 [Earlier preview policy](./historical/automation_bound_previews_before_playback_refresh_2026-11-19.md).
+
+#### Observation window delivery
+
+`observations.updated` starts with a snapshot and sends a new snapshot when the
+configured generation changes. Other updates carry changes keyed by scope and
+observation ID. A live value change replaces that entry. A window change carries
+changed fields and includes `body` when its Regions, samples, marks, or
+unavailable Regions change. A `null` scope, entry, or optional window field
+removes it. Each update carries the current frame metadata.
+
+The socket writer compares the selected frame with the last frame it wrote.
+That keeps queued observation updates replaceable while preserving changes from
+frames that the writer skipped. The extension applies this patch format and
+forwards it to the graph panel. A new or reloaded panel receives a snapshot. If a
+panel misses a patch, its message sequence tells it to request a fresh snapshot.
+[Earlier body ID protocol](./historical/observation_window_bodies_before_scoped_patches_2026-11-19.md).
 
 ### Event observation for arbitrary beat distributions, 2026-11-19
 

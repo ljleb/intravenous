@@ -1,4 +1,5 @@
 #include <intravenous/graph_jit/output_gain.h>
+#include <intravenous/graph_jit/output_gain_execution.h>
 #include <intravenous/basic_nodes/output_gain.h>
 #include <intravenous/runtime/node_instance_interface.h>
 #include <gtest/gtest.h>
@@ -28,12 +29,13 @@ NodeDefinitionsSnapshot gain_definitions()
     return result;
 }
 
+template<class Production = OutputProduction::Sequential>
 ConfiguredGraph gain_graph(bool dynamic = false, Sample gain = 1,
-    OutputRealization realization = OutputRealization::computed)
+    OutputRealization realization = OutputRealization::computed, Production production = {})
 {
     ConfiguredGraph graph;
     auto source = graph.node_bundles.append_concrete(ConcreteNode{
-        .ports = {.output_configs = {erase_port_config(output<Sample>("out", OutputProduction::sequential, realization))}}});
+        .ports = {.output_configs = {erase_port_config(output<Sample>("out", production, realization))}}});
     graph.manual_controls.push_back({
         .id = {.node = {.instance_id = "source"}, .port_name = "out", .kind = ManualControlKind::output_gain},
         .settled_value = gain, .dynamic = dynamic, .output = NodeBundlePortId{source, PortKind::sample, 0}});
@@ -94,6 +96,53 @@ TEST(OutputGain, InteractiveUnityHasAControlButPreparationFreezesItsValue)
     ASSERT_EQ(expand_output_gains(prepared, gain_definitions()).stages.size(), 1u);
     EXPECT_FALSE(prepared.manual_controls[0].dynamic);
     EXPECT_EQ(prepared.manual_controls[0].settled_value, Sample{.25f});
+}
+
+TEST(OutputGain, CoverageGainUsesTickOnlyUntilAnAuthoredConsumerNeedsBackgroundPreparation)
+{
+    auto graph = gain_graph(true, 2, OutputRealization::computed, OutputProduction::coverage);
+    auto tick = graph.node_bundles.append_concrete(ConcreteNode{
+        .ports = {.input_configs = {erase_port_config(input<Sample>("in"))},
+            .output_configs = {erase_port_config(output<Sample>("out"))}},
+        .operations = {.runtime = {.tick_block = +[](void const*, ReflectedNodeTickContext const&, GlobalIndex, std::size_t) {}}},
+    });
+    auto tock = graph.node_bundles.append_concrete(ConcreteNode{
+        .ports = {.input_configs = {erase_port_config(input<Sample>("in", InputAccess::coverage))}},
+    });
+    std::array<ConfiguredSampleConnection, 3> connections{{
+        {.source_channels = {{.channel = {0, 0, 0}}}, .target_channels = {{tick, 0, 0}}},
+        {.source_channels = {{.channel = {tick, 0, 0}}}, .target_channels = {{tock, 0, 0}}},
+        {.source_channels = {{.channel = {0, 0, 0}}}, .target_channels = {{tock, 0, 0}}},
+    }};
+    auto live = graph;
+    live.connections = GraphBuilderConnections::from_configured_connections(std::span{connections}.first(1), {});
+    classify_output_gain_consumers(live);
+    EXPECT_FALSE(live.manual_controls[0].requires_preparation);
+    auto live_gain = expand_output_gains(live, gain_definitions());
+    ASSERT_EQ(live_gain.stages.size(), 1u);
+    EXPECT_TRUE(live_gain.stages[0].tick);
+    EXPECT_TRUE(live.manual_controls[0].dynamic);
+    EXPECT_TRUE(is_sequential_output(live.node_bundles.resolve_sample_output(
+        {live_gain.stages[0].bundle, PortKind::sample, 0}).config));
+
+    // A Sequential consumer is itself replayed to produce data for Tock.
+    auto replayed = graph;
+    replayed.connections = GraphBuilderConnections::from_configured_connections(std::span{connections}.first(2), {});
+    classify_output_gain_consumers(replayed);
+    EXPECT_TRUE(replayed.manual_controls[0].requires_preparation);
+
+    // A direct Coverage consumer and a Sequential consumer share one Tock gain.
+    graph.connections = GraphBuilderConnections::from_configured_connections(connections, {});
+    classify_output_gain_consumers(graph);
+    EXPECT_TRUE(graph.manual_controls[0].requires_preparation);
+    auto prepared_gain = expand_output_gains(graph, gain_definitions());
+    ASSERT_EQ(prepared_gain.stages.size(), 1u);
+    EXPECT_FALSE(prepared_gain.stages[0].tick);
+    EXPECT_TRUE(graph.manual_controls.empty());
+    EXPECT_EQ(graph.connections.configured_sample_connections()[0].source_channels[0].channel.bundle,
+        prepared_gain.stages[0].bundle);
+    EXPECT_EQ(graph.connections.configured_sample_connections()[2].source_channels[0].channel.bundle,
+        prepared_gain.stages[0].bundle);
 }
 
 TEST(OutputGain, BufferedOutputSeparatesLiveScalingFromHistoricalReads)

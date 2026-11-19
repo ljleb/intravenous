@@ -1,4 +1,5 @@
 #include "test_support.h"
+#include <intravenous/graph_jit/output_gain_execution.h>
 
 #include <chrono>
 #include <thread>
@@ -30,11 +31,13 @@ bool activate(GraphExecutor& executor, GlobalIndex at)
     return false;
 }
 std::shared_ptr<ObservationWindowQuery> query_window(GraphExecutor& executor,
-    CompiledGraph const& graph, NodeBundlePortId port, std::int64_t begin = 4, std::size_t points = 4)
+    CompiledGraph const& graph, NodeBundlePortId port, std::int64_t begin = 4, std::size_t points = 4,
+    ObservationSourceKind kind = ObservationSourceKind::output)
 {
     auto query = std::make_shared<ObservationWindowQuery>();
     query->configured_generation = graph.configured_generation.value_or(graph.project_generation);
     query->port = port;
+    query->kind = kind;
     query->operation = &observation_details::sample_operations.back();
     query->window = {index(begin), 4, points};
     ObservationCollectRequest collection{.windows = {query}};
@@ -56,7 +59,6 @@ TEST_F(GraphJitRuntimeFixture, SettledUnityOutputGainKeepsTheGainFreeLayoutAndSp
     ASSERT_TRUE(before.succeeded()) << before.diagnostics.front().message;
     auto after = compile_graph(unity, 811);
     ASSERT_TRUE(after.succeeded()) << after.diagnostics.front().message;
-    EXPECT_TRUE(after.compiled_graph->output_gain_views.empty());
     EXPECT_TRUE(after.compiled_graph->manual_controls.empty());
     EXPECT_EQ(after.compiled_graph->node_layout.storage_size, before.compiled_graph->node_layout.storage_size);
     EXPECT_EQ(after.compiled_graph->node_layout.nodes.size(), before.compiled_graph->node_layout.nodes.size());
@@ -69,7 +71,7 @@ TEST_F(GraphJitRuntimeFixture, SettledUnityOutputGainKeepsTheGainFreeLayoutAndSp
     EXPECT_GT(after.timings[0].region_specializations_reused, 0u);
 }
 
-TEST_F(GraphJitRuntimeFixture, OutputGainScalesConsumersAndObservationsAfterSpecialization)
+TEST_F(GraphJitRuntimeFixture, OutputGainScalesConsumersAndOutputObservationReadsRawSamples)
 {
     auto graph = std::make_shared<ConfiguredGraph>(*configured_module_graph(*revision,
         "iv.test.graph_jit.state_context.transient_sample_module"));
@@ -81,7 +83,6 @@ TEST_F(GraphJitRuntimeFixture, OutputGainScalesConsumersAndObservationsAfterSpec
             .kind = ObservationSourceKind::output, .bundle = output.node_bundle_handle,
             .port = output.port_index, .available = true}}}});
     ASSERT_TRUE(compiled.succeeded()) << compiled.diagnostics.front().message;
-    ASSERT_EQ(compiled.compiled_graph->output_gain_views.size(), 1u);
     GraphExecutor executor(resources);
     ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
     ASSERT_TRUE(activate(executor, index(3)));
@@ -89,7 +90,7 @@ TEST_F(GraphJitRuntimeFixture, OutputGainScalesConsumersAndObservationsAfterSpec
     auto frame = executor.collect_observations();
     ASSERT_NE(frame, nullptr);
     ASSERT_EQ(frame->count, 1u);
-    EXPECT_DOUBLE_EQ(frame->values[0].value.load<observation_details::SampleLevelState>().peak, 5);
+    EXPECT_DOUBLE_EQ(frame->values[0].value.load<observation_details::SampleLevelState>().peak, 10);
 
     auto storage = compiled.compiled_graph->node_layout.create_storage(resources);
     storage.initialize();
@@ -121,6 +122,63 @@ TEST_F(GraphJitRuntimeFixture, RealtimeOutputGainUsesTheExistingSampleBySampleCo
     EXPECT_FLOAT_EQ(state->first, 4 * .625f);
     EXPECT_FLOAT_EQ(state->last, 7);
     EXPECT_FLOAT_EQ(state->sum, 4*.625f + 5*.75f + 6*.875f + 7);
+}
+
+TEST_F(GraphJitRuntimeFixture, RegionOutputGainRampsInTickAndKeepsDownstreamFallbacks)
+{
+    auto configured = std::make_shared<ConfiguredGraph>(*configured_module_graph(*revision, "iv.test.replay.live_union_fallback"));
+    auto const output = first_output(*configured);
+    ASSERT_FALSE(is_sequential_output(configured->node_bundles.resolve_sample_output(output).config));
+    add_gain(*configured, output, .5f, true);
+    for (NodeBundleHandle bundle = 0; bundle < configured->node_bundles.size(); ++bundle) {
+        if (!configured->node_bundles.bundle(bundle).is_concrete()) continue;
+        for (std::size_t port = 0; port < configured->node_bundles.bundle(bundle).sample_input_count(); ++port) {
+            NodeBundlePortId const id{bundle, PortKind::sample, port};
+            if (configured->node_bundles.resolve_sample_input(id).config.name == "gain")
+                configured->manual_controls.push_back({.id = {.node = {.instance_id = "manual-input"}, .port_name = "gain"},
+                    .input = id, .settled_value = .25f});
+        }
+    }
+    graph_jit::detail::classify_output_gain_consumers(*configured);
+    ASSERT_FALSE(configured->manual_controls.front().requires_preparation);
+    auto compiled = compile_graph(configured, 818);
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    auto const& plan = graph.background_evaluation_plan;
+    PersistedDataStore data;
+    TickMaterializationStore materializations;
+    auto data_reader = data.register_reader();
+    auto materialization_reader = materializations.register_reader();
+    auto tock_states = graph.tock_state_layout.create_storage(resources);
+    tock_states.initialize();
+    BackgroundCoverageState coverage{plan.accumulators.output_change_count};
+    BackgroundPropagationWorkspace propagation{plan, graph.specialization.sample_rate};
+    CoveragePropagationRequest roots;
+    for (std::size_t node = 0; node < plan.nodes.size(); ++node) roots.locally_changed_nodes.push_back(node);
+    for (auto port : plan.tick_sequential_inputs)
+        roots.input_demands.push_back({.port = port, .required = IndexCoverage{range(18, 26)}});
+    BackgroundEvaluationTransaction transaction{graph, tock_states, coverage, propagation, data, materializations,
+        {.semantic_version = 1, .roots = std::move(roots)}};
+    auto prepared = transaction.execute();
+    ASSERT_TRUE(prepared) << prepared.error();
+
+    auto const binding = std::ranges::find_if(graph.manual_controls, [](auto const& control) {
+        return control.configured.id.kind == ManualControlKind::output_gain;
+    });
+    ASSERT_NE(binding, graph.manual_controls.end());
+    ASSERT_TRUE(binding->configured.dynamic);
+    auto storage = graph.node_layout.create_storage(resources);
+    storage.initialize();
+    auto control = reinterpret_cast<ManualControlRuntimeState*>(storage.buffer().data() + binding->state_storage_offset);
+    std::atomic_ref<std::uint32_t>(control->target_bits).store(std::bit_cast<std::uint32_t>(1.f));
+    TickInvocationWorkspace workspace{plan, graph.project_generation, data, graph.specialization.block_size,
+        graph.root_operations.combine_sequential_input, graph.root_operations.initialize_sequential_input};
+    TickInvocationFrame frame{data_reader, materialization_reader, workspace, index(18), 8};
+    graph.root_operations.tick_block(storage.buffer().data(), &frame.call(), index(18), 8);
+    struct State { std::uint64_t calls; std::array<float, 8> values; };
+    auto probe = find_unique_state<State>(graph.node_layout, storage);
+    ASSERT_NE(probe, nullptr);
+    EXPECT_EQ(probe->values, (std::array<float, 8>{1.25f, 1.25f, 4.75f, 5.75f, 6.875f, 8.125f, 1.25f, 1.25f}));
 }
 
 TEST_F(GraphJitRuntimeFixture, FFTOutputGainScalesEveryTransportedValueAtItsOwnPace)
@@ -155,7 +213,7 @@ TEST_F(GraphJitRuntimeFixture, FFTOutputGainScalesEveryTransportedValueAtItsOwnP
     EXPECT_FLOAT_EQ(state->last_bin, 176);
 }
 
-TEST_F(GraphJitRuntimeFixture, BufferedOutputGainRescalesOldRecordingWithoutMutatingItsBacking)
+TEST_F(GraphJitRuntimeFixture, BufferedOutputObservationKeepsRawRecordingWithGain)
 {
     // Generation-local recordings of anonymous nodes intentionally start
     // fresh. This edit retains the source, as a named project node does.
@@ -196,11 +254,11 @@ TEST_F(GraphJitRuntimeFixture, BufferedOutputGainRescalesOldRecordingWithoutMuta
     ASSERT_NE(after_recording, after_ports.end());
     EXPECT_EQ(after_recording->stable_identity, before_recording->stable_identity);
     auto const& plan = after.compiled_graph->background_evaluation_plan;
-    ASSERT_EQ(after.compiled_graph->background_output_gain_views.size(), 1u);
-    auto const view = after.compiled_graph->background_output_gain_views[0].second;
+    auto const view = std::ranges::find_if(after_ports, [](auto const& port) { return port.authored_tock_output; });
+    ASSERT_NE(view, after_ports.end());
     auto const gain_input = std::ranges::find_if(after_ports, [&](auto const& port) {
         return port.direction == graph_jit::PortDirection::input
-            && port.configured_port == NodeBundlePortId{view.node_bundle_handle, PortKind::sample, 0};
+            && port.configured_port == NodeBundlePortId{view->configured_port.node_bundle_handle, PortKind::sample, 0};
     });
     ASSERT_NE(gain_input, after_ports.end());
     ASSERT_EQ(gain_input->incoming_connections.size(), 1u);
@@ -208,13 +266,13 @@ TEST_F(GraphJitRuntimeFixture, BufferedOutputGainRescalesOldRecordingWithoutMuta
         (std::vector<std::size_t>{0}));
     ASSERT_EQ(executor.stage(after.compiled_graph), GraphExecutorStageResult::accepted);
     ASSERT_TRUE(activate(executor, index(32)));
-    auto scaled = query_window(executor, *after.compiled_graph, output);
-    ASSERT_TRUE(scaled->complete.load());
-    ASSERT_EQ(scaled->result.status, ObservationWindowResult::Status::ready) << scaled->result.error;
-    ASSERT_EQ(scaled->result.regions.size(), 1u);
-    ASSERT_EQ(scaled->result.regions[0].values.size(), 4u);
+    auto observed = query_window(executor, *after.compiled_graph, output);
+    ASSERT_TRUE(observed->complete.load());
+    ASSERT_EQ(observed->result.status, ObservationWindowResult::Status::ready) << observed->result.error;
+    ASSERT_EQ(observed->result.regions.size(), 1u);
+    ASSERT_EQ(observed->result.regions[0].values.size(), 4u);
     for (std::size_t i = 0; i < 4; ++i)
-        EXPECT_FLOAT_EQ(scaled->result.regions[0].values[i].second.load<float>(), 2*(static_cast<float>(i) + 4.5f));
+        EXPECT_FLOAT_EQ(observed->result.regions[0].values[i].second.load<float>(), static_cast<float>(i) + 4.5f);
 
     auto absent = query_window(executor, *after.compiled_graph, output, 64);
     ASSERT_TRUE(absent->complete.load());
@@ -248,7 +306,9 @@ TEST_F(GraphJitRuntimeFixture, TockOutputGainPreservesLogicalCoverageAndScalesPr
         ++bundle;
     });
     ASSERT_TRUE(output);
-    add_gain(*graph, *output, 2, true, true);
+    add_gain(*graph, *output, 2, true);
+    graph_jit::detail::classify_output_gain_consumers(*graph);
+    ASSERT_TRUE(graph->manual_controls.back().requires_preparation);
     auto compiled = compile_graph(graph, 817);
     ASSERT_TRUE(compiled.succeeded()) << compiled.diagnostics.front().message;
     GraphExecutor executor(resources);
@@ -269,7 +329,7 @@ TEST_F(GraphJitRuntimeFixture, TockOutputGainPreservesLogicalCoverageAndScalesPr
     EXPECT_EQ(values[1].first, index(3));
     ASSERT_TRUE(values[0].second.captured);
     ASSERT_TRUE(values[1].second.captured);
-    EXPECT_FLOAT_EQ(values[1].second.load<float>(), 3.f);
+    EXPECT_FLOAT_EQ(values[1].second.load<float>(), 1.5f);
 
     auto covered = query_window(executor, *compiled.compiled_graph, *output, 0);
     ASSERT_TRUE(covered->complete.load());
@@ -277,14 +337,19 @@ TEST_F(GraphJitRuntimeFixture, TockOutputGainPreservesLogicalCoverageAndScalesPr
     ASSERT_EQ(covered->result.regions.size(), 1u);
     EXPECT_EQ(covered->result.regions[0].range, range(0, 4));
     ASSERT_EQ(covered->result.regions[0].values.size(), 4u);
-    EXPECT_FLOAT_EQ(covered->result.regions[0].values[3].second.load<float>(), 3.f);
+    EXPECT_FLOAT_EQ(covered->result.regions[0].values[3].second.load<float>(), 1.5f);
     auto const& ports = compiled.compiled_graph->background_evaluation_plan.ports;
-    auto scaled_port = compiled.compiled_graph->output_gain_views.front().second;
-    auto found = std::ranges::find_if(ports, [&](auto const& port) {
-        return port.direction == graph_jit::PortDirection::output && port.configured_port == scaled_port;
+    auto const consumer = std::ranges::find_if(ports, [&](auto const& port) {
+        return port.direction == graph_jit::PortDirection::input && port.name == "gain"
+            && port.configured_port.node_bundle_handle < graph->node_bundles.size();
     });
-    ASSERT_NE(found, ports.end());
-    EXPECT_TRUE(found->authored_tock_output);
+    ASSERT_NE(consumer, ports.end());
+    auto input = query_window(executor, *compiled.compiled_graph, consumer->configured_port, 0, 4, ObservationSourceKind::input);
+    ASSERT_TRUE(input->complete.load());
+    ASSERT_EQ(input->result.status, ObservationWindowResult::Status::ready) << input->result.error;
+    ASSERT_EQ(input->result.regions.size(), 1u);
+    ASSERT_EQ(input->result.regions[0].values.size(), 4u);
+    EXPECT_FLOAT_EQ(input->result.regions[0].values[3].second.load<float>(), 3.f);
     EXPECT_FALSE(executor.background_execution_failures().any());
 }
 } // namespace iv::test::graph_jit_tests

@@ -1,4 +1,5 @@
 #include <intravenous/runtime/observations.h>
+#include <intravenous/runtime/observation_delivery.h>
 #include <intravenous/runtime/project_connection_json.h>
 
 #include <algorithm>
@@ -119,7 +120,6 @@ void Observations::handle_protocol(ObservationProtocolRequest& request)
             scope->interests = request.interests;
             scope->expires = Clock::now() + scope_lease;
         }
-        last_delivered_.erase(request.client_id);
         try {
             std::size_t window_count = 0;
             for (auto const& current : scopes_) for (auto const& interest : current.interests)
@@ -131,6 +131,8 @@ void Observations::handle_protocol(ObservationProtocolRequest& request)
             if (accepted_.revision == previous_revision) scopes_ = std::move(before);
             throw;
         }
+        if (auto delivered = last_delivered_.find(request.client_id); delivered != last_delivered_.end())
+            delivered->second.clear();
         request.result = std::make_shared<Json const>(Json{
             {"revision", std::to_string(accepted_.revision)}, {"leaseMs", 30000},
             {"schedulingUs", last_scheduling_us_}});
@@ -198,7 +200,7 @@ void Observations::collect(Clock::time_point now)
                     || (result.status == ObservationWindowResult::Status::pending_execution && now >= capture.retry_after);
                 if (outdated) {
                     if (capture.query->configured_generation != configured_generation_.value_or(0)) {
-                        capture.payload.reset(); capture.payload_query.reset();
+                        capture.payload.reset(); capture.body.reset(); capture.payload_query.reset();
                     }
                     capture.query->canceled.store(true, std::memory_order_release); capture.query.reset();
                 }
@@ -220,6 +222,7 @@ void Observations::collect(Clock::time_point now)
                 capture.query->canceled.store(true, std::memory_order_release);
                 capture.query.reset();
                 capture.payload.reset();
+                capture.body.reset();
                 capture.payload_query.reset();
                 continue;
             }
@@ -240,10 +243,9 @@ void Observations::collect(Clock::time_point now)
             latest_ = std::move(collection.frame);
         }
         bool const live_current = latest_ && latest_->requirements_revision == accepted_.revision;
-        if (!live_current && windows_.empty()) return;
         bool const current_generation = live_current && (!target.handled || (target.configured_generation
             && *target.configured_generation == latest_->configured_generation));
-        auto window_payload = [](WindowCapture& capture) -> Json const& {
+        auto window_payload = [&](WindowCapture& capture) -> Json const& {
             if (capture.payload_query == capture.query && capture.payload) return *capture.payload;
             capture.payload_query = capture.query;
             auto const& query = *capture.query;
@@ -262,14 +264,14 @@ void Observations::collect(Clock::time_point now)
             auto const status = result.status == ObservationWindowResult::Status::ready ? "ready"
                 : result.status == ObservationWindowResult::Status::pending_execution ? "pending"
                 : result.status == ObservationWindowResult::Status::unavailable ? "unavailable" : "failed";
-            capture.payload = std::make_shared<Json const>(Json{
+            Json payload{
                 {"window", {{"begin", std::to_string(query.window.begin.signed_value())},
                     {"length", std::to_string(query.window.length)}, {"points", query.window.points}}},
                 {"status", status}, {"approximate", true}, {"truncated", result.truncated},
                 {"semanticVersion", std::to_string(result.semantic_version)}, {"dataVersion", std::to_string(result.data_version)},
                 {"sampleRate", result.sample_rate}, {"paceExponent", result.pace_exponent},
-                {"executionGeneration", std::to_string(result.execution_generation)},
-                {"regions", std::move(regions)}, {"error", result.error}});
+                {"executionGeneration", std::to_string(result.execution_generation)}, {"error", result.error}};
+            Json body{{"regions", std::move(regions)}};
             if (query.port.port_kind == PortKind::event || query.window.max_depth) {
                 Json marks = Json::array(), unavailable = Json::array();
                 for (auto const& event : result.events) {
@@ -280,18 +282,29 @@ void Observations::collect(Clock::time_point now)
                     unavailable.push_back({{"begin", std::to_string(range.begin.signed_value())},
                         {"length", std::to_string(range.extent)}});
                 }
-                auto payload = *capture.payload;
                 payload["approximate"] = false;
                 payload["window"]["maxMarks"] = query.window.points;
                 payload["window"]["maxDepth"] = query.window.max_depth.value_or(0);
-                payload["marks"] = std::move(marks);
-                payload["unavailableRegions"] = std::move(unavailable);
-                capture.payload = std::make_shared<Json const>(std::move(payload));
+                body["marks"] = std::move(marks);
+                body["unavailableRegions"] = std::move(unavailable);
             }
+            if (result.status == ObservationWindowResult::Status::ready) {
+                if (!capture.body || capture.body->data != body)
+                    capture.body = std::make_shared<ObservationWindowBody const>(ObservationWindowBody{
+                        std::to_string(next_window_body_id_++), std::move(body)});
+                payload["bodyId"] = capture.body->id;
+            } else capture.body.reset();
+            capture.payload = std::make_shared<Json const>(std::move(payload));
             return *capture.payload;
         };
-        std::map<std::string, Json> batches;
+        struct Batch {
+            Json scopes = Json::array();
+            std::vector<std::shared_ptr<ObservationWindowBody const>> bodies;
+        };
+        std::map<std::string, Batch> batches;
+        for (auto const& [client, signature] : last_delivered_) batches.try_emplace(client);
         for (auto const& scope : scopes_) {
+            auto& batch = batches[scope.client];
             Json values = Json::array(), windows = Json::array();
             for (auto const& interest : scope.interests) {
                 if (interest.window) {
@@ -304,21 +317,25 @@ void Observations::collect(Clock::time_point now)
                         payload["outdated"] = capture->query->result.status == ObservationWindowResult::Status::ready
                             && capture->query->result.data_version < execution_data_version_;
                         windows.push_back(std::move(payload));
+                        if (capture->body) batch.bodies.push_back(capture->body);
                     } else if (capture != windows_.end() && capture->payload
                         && (*capture->payload)["status"] == "ready") {
                         auto payload = *capture->payload;
                         payload["id"] = interest.id;
                         payload["outdated"] = true;
                         windows.push_back(std::move(payload));
+                        batch.bodies.push_back(capture->body);
                     } else {
                         windows.push_back({{"id", interest.id}, {"status", "pending"}, {"approximate", true},
                             {"window", {{"begin", std::to_string(interest.window->begin.signed_value())},
-                                {"length", std::to_string(interest.window->length)}, {"points", interest.window->points}}},
-                            {"regions", Json::array()}});
+                                {"length", std::to_string(interest.window->length)}, {"points", interest.window->points}}}});
                     }
                     continue;
                 }
-                if (!live_current) continue;
+                if (!live_current) {
+                    values.push_back({{"id", interest.id}, {"available", false}, {"pending", true}});
+                    continue;
+                }
                 auto requirement = std::ranges::find_if(accepted_.probes, [&](auto const& probe) { return same_capture(interest, probe); });
                 if (requirement == accepted_.probes.end()) continue;
                 auto const begin = latest_->values.begin();
@@ -334,18 +351,21 @@ void Observations::collect(Clock::time_point now)
                 if (entry["available"].get<bool>()) entry["value"] = project_value(*value);
                 values.push_back(std::move(entry));
             }
-            auto& batch = batches[scope.client];
-            if (batch.is_null()) batch = Json::array();
-            batch.push_back({{"scopeId", scope.scope}, {"values", std::move(values)}, {"windows", std::move(windows)}});
+            batch.scopes.push_back({{"scopeId", scope.scope}, {"values", std::move(values)}, {"windows", std::move(windows)}});
         }
         std::vector<ObservationDelivery> deliveries;
-        for (auto& [client, scopes] : batches) {
+        for (auto& [client, batch] : batches) {
+            auto& scopes = batch.scopes;
             bool const has_windows = std::ranges::any_of(scopes, [](auto const& scope) { return !scope["windows"].empty(); });
             auto const signature = std::to_string(last_activation_) + ":"
                 + std::to_string(target.configured_generation.value_or(0)) + ":"
+                + std::to_string(accepted_.revision) + ":"
                 + std::to_string(has_windows ? execution_data_version_ : 0) + scopes.dump();
-            if (last_delivered_[client] == signature) continue;
-            last_delivered_[client] = signature;
+            if (scopes.empty()) last_delivered_.erase(client);
+            else {
+                if (last_delivered_[client] == signature) continue;
+                last_delivered_[client] = signature;
+            }
             deliveries.push_back({client,
             std::make_shared<Json const>(Json{
                 {"activationId", std::to_string(last_activation_)},
@@ -356,7 +376,7 @@ void Observations::collect(Clock::time_point now)
                 {"index", std::to_string(latest_ ? latest_->sample_index.signed_value() : 0)},
                 {"blockSize", latest_ ? latest_->block_size : 0},
                 {"captureNs", latest_ && latest_->measure_capture ? Json(latest_->capture_ns) : Json(nullptr)},
-                {"scopes", std::move(scopes)}})});
+                {"scopes", std::move(scopes)}}), std::move(batch.bodies)});
         }
         if (!deliveries.empty()) IV_INVOKE_LINKER_EVENT(iv_observations_socket_rpc_event,
             std::span<ObservationDelivery const>{deliveries});

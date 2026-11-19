@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { GraphLayoutStore } from "./graphLayoutStore";
 import { addressKey, readLayout, type GraphScope } from "./graphScope";
 import { nodeDebugDetails } from "./nodeDebugDetails";
+import { ObservationDeliveryState, type ObservationDelivery } from "./observationDelivery";
 import type { GraphEditorAction, GraphEditorHostMessage, GraphEditorState, GraphEditorWebviewMessage } from "./graphEditorProtocol";
 import type { WorkspaceSession } from "./workspaceSession";
 import { formatStatusHint, isStatusHint, playbackShortcut, rightClickHint, type StatusHint } from "./statusBarText";
@@ -20,6 +21,9 @@ export class GraphEditorProvider implements vscode.Disposable {
     private readonly controlOwners = new Map<vscode.WebviewPanel, string>();
     private readonly controlsChanged: vscode.Disposable;
     private readonly observationsChanged: vscode.Disposable;
+    private readonly observations = new ObservationDeliveryState();
+    private readonly panelObservations = new Map<vscode.WebviewPanel, number>();
+    private nextObservationSequence = 0;
     private readonly ready = new Set<vscode.WebviewPanel>();
     private lastActivePanel: vscode.WebviewPanel | null = null;
     private readonly pendingActions = new Map<vscode.WebviewPanel, GraphEditorAction[]>();
@@ -125,16 +129,25 @@ export class GraphEditorProvider implements vscode.Disposable {
                 this.layoutError = `Cannot read graph layout: ${error.message}. Positions will not be saved until the file is repaired and the window reloaded.`;
                 this.state.error = this.layoutError;
             });
-        this.changed = session.onDidChangeGraph(() => { void this.refresh(); });
+        this.changed = session.onDidChangeGraph(() => {
+            if (session.graphSessionStatus !== "running") {
+                this.observations.clear();
+                this.panelObservations.clear();
+            }
+            void this.refresh();
+        });
         this.controlsChanged = session.onDidChangeManualControls(() => {
             for (const panel of this.ready) this.postControls(panel);
         });
         this.observationsChanged = session.onDidChangeObservations((update) => {
+            if (session.graphSessionStatus !== "running") return;
+            this.observations.receive(update);
             for (const panel of this.ready) {
                 const owner = this.controlOwners.get(panel);
-                const scopes = update.scopes.filter((scope) => scope.scopeId === owner)
-                    .map((scope) => ({ ...scope, scopeId: "viewport" }));
-                if (scopes.length) void panel.webview.postMessage({ type: "observationUpdate", update: { ...update, scopes } });
+                if (!owner || !panel.visible) continue;
+                const scope = update.scopes[owner];
+                if (update.snapshot || !this.panelObservations.has(panel)) this.postObservationSnapshot(panel);
+                else this.postObservationUpdate(panel, { ...update, scopes: scope === undefined ? {} : { viewport: scope } });
             }
         });
         this.windowFocusChanged = vscode.window.onDidChangeWindowState(({ focused }) => {
@@ -149,6 +162,24 @@ export class GraphEditorProvider implements vscode.Disposable {
         this.shortcutSettingChanged = vscode.workspace.onDidChangeConfiguration((event) => {
             if (event.affectsConfiguration("intravenous.hideStatusBarShortcuts")) this.updateInteractionStatus();
         });
+    }
+
+    private postObservationUpdate(panel: vscode.WebviewPanel, update: ObservationDelivery): void {
+        const previousSequence = this.panelObservations.get(panel);
+        const sequence = ++this.nextObservationSequence;
+        this.panelObservations.set(panel, sequence);
+        const message: GraphEditorHostMessage = { type: "observationUpdate", update, sequence, previousSequence };
+        const failed = () => {
+            if (this.panelObservations.get(panel) === sequence) this.panelObservations.delete(panel);
+        };
+        void panel.webview.postMessage(message).then((posted) => { if (!posted) failed(); }, failed);
+    }
+
+    private postObservationSnapshot(panel: vscode.WebviewPanel): void {
+        const owner = this.controlOwners.get(panel);
+        if (!owner || !panel.visible || !this.ready.has(panel)) return;
+        const snapshot = this.observations.snapshot(owner, "viewport");
+        if (snapshot) this.postObservationUpdate(panel, snapshot);
     }
 
     private updateInteractionStatus(): void {
@@ -282,10 +313,11 @@ export class GraphEditorProvider implements vscode.Disposable {
         const viewState = panel.onDidChangeViewState(() => {
             void panel.webview.postMessage({ type: "observationVisibility", visible: panel.visible });
             if (!panel.visible) {
+                this.panelObservations.delete(panel);
                 this.finishPlaybackDrag(panel);
                 const owner = this.controlOwners.get(panel);
                 if (owner) void this.session.reconcileObservations(owner, []).catch(() => {});
-            }
+            } else if (!this.panelObservations.has(panel)) this.postObservationSnapshot(panel);
             if (panel.active) this.lastActivePanel = panel;
             else this.interactionHints.delete(panel);
             this.updateInteractionStatus();
@@ -304,6 +336,8 @@ export class GraphEditorProvider implements vscode.Disposable {
                 } catch (error) {
                     if (this.panels.has(panel)) void panel.webview.postMessage({ type: "observationResponse", requestId: message.requestId, error: String(error) });
                 }
+            } else if (message?.type === "observationResync") {
+                this.postObservationSnapshot(panel);
             } else if (message?.type === "observationProfile") {
                 const s = message.summary;
                 const updateRate = (s.updates / s.seconds).toFixed(2);
@@ -311,12 +345,10 @@ export class GraphEditorProvider implements vscode.Disposable {
                 this.log(`Observation profile over ${s.seconds.toFixed(2)} s`);
                 this.log(`  Webview received ${s.updates} updates (${updateRate}/s, about ${dataRate} KiB/s as JSON).`
                     + ` ${s.presentationUpdates} triggered a presentation update.`);
-                this.log(`  ${s.unchangedScopes} updates repeated the entire scope payload, including ${s.unchangedScopesWithNewDataVersion}`
-                    + ` with a changed data version. ${s.repeatedLiveValues}/${s.liveValues} live value entries repeated.`);
-                this.log(`  Received ${s.readyWindows} ready windows (${s.outdatedWindows} outdated), ${s.pendingWindows} pending,`
-                    + ` ${s.unavailableWindows} unavailable, and ${s.failedWindows} failed.`);
-                this.log(`  ${s.repeatedWindows} ready window bodies repeated, including ${s.repeatedWindowsWithNewDataVersion}`
-                    + ` with a changed data version. ${(s.repeatedWindowBytes / 1024).toFixed(2)} of ${(s.windowBytes / 1024).toFixed(2)} KiB repeated.`);
+                this.log(`  ${s.snapshots} snapshots, ${s.metadataOnly} updates with only frame metadata,`
+                    + ` ${s.liveValues} live readings, and ${s.removals} removals.`);
+                this.log(`  ${s.windowChanges} window updates (${s.statusChanges} included status),`
+                    + ` ${s.windowBodies} included sample or event data (${(s.windowBytes / 1024).toFixed(2)} KiB).`);
                 this.log(`  Measurement took ${s.measurementMs.toFixed(2)} ms in the webview.`);
             } else if (isNodeEventRequest(message) || isNodeEventGestureRequest(message)) {
                 const owner = this.controlOwners.get(panel);
@@ -358,10 +390,12 @@ export class GraphEditorProvider implements vscode.Disposable {
                     if (owner) { this.session.manualControls.releaseOwner(owner); this.session.nodeEvents.releaseOwner(owner); }
                 }
                 this.ready.add(panel);
+                this.panelObservations.delete(panel);
                 void panel.webview.postMessage({ type: "observationVisibility", visible: panel.visible });
                 this.postControls(panel);
                 void panel.webview.postMessage({ type: "graphWindowFocus", focused: vscode.window.state.focused });
                 this.post(panel);
+                this.postObservationSnapshot(panel);
                 await this.refresh();
                 const pending = this.pendingActions.get(panel) ?? [];
                 this.pendingActions.delete(panel);
@@ -454,6 +488,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                 void this.session.reconcileObservations(owner, []).catch(() => {});
             }
             this.controlOwners.delete(panel);
+            this.panelObservations.delete(panel);
             this.interactionHints.delete(panel);
             messages.dispose(); viewState.dispose(); this.panels.delete(panel); this.ready.delete(panel);
             this.updateInteractionStatus();

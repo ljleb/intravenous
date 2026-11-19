@@ -7,7 +7,7 @@ import { automationSampleOffset, automationValueFraction, automationValueGuides,
     type AutomationCurveView, type AutomationValueRuler, type AutomationValueZoom, type CurveInterpolation } from "../../src/automationCurveGeometry";
 import { addressKey, type NodeAddress } from "../../src/graphScope";
 import { automationBoundWindowCount, automationBoundWindows, refinedAutomationBoundTracks, retainAutomationBoundWindows,
-    sampleAutomationPreview, type AutomationBoundInput,
+    sampleAutomationPreview, automationBoundVisiblePositions, type AutomationBoundInput,
     type BoundSample } from "../../src/automationBoundInputs";
 import type { ObservationWindowResult } from "../../src/observations";
 import { sampleWindow } from "../../src/sampleWaveform";
@@ -73,7 +73,8 @@ const timelineWindow = computed<{ beginSeconds: number; endSeconds: number; span
 });
 const observationWindow = computed(() => {
     const timeline = timelineWindow.value;
-    return visible.value && timeline && sampleWindow(timeline.beginSeconds, timeline.endSeconds, curve.value?.sampleRate, width.value)
+    return visible.value && timeline && sampleWindow(timeline.beginSeconds, timeline.endSeconds,
+        curve.value?.sampleRate, automationBoundVisiblePositions)
         || undefined;
 });
 const boundWindows = computed(() => observationWindow.value ? automationBoundWindows(observationWindow.value) : []);

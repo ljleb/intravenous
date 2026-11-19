@@ -2332,10 +2332,6 @@ public:
             throw std::invalid_argument("too many executable observation probes");
         for (std::size_t slot = 0; slot < request.observations.probes.size(); ++slot) {
             auto probe = request.observations.probes[slot];
-            if (auto const found = output_gains.outputs.find({probe.bundle, PortKind::sample, probe.port}); found != output_gains.outputs.end()) {
-                probe.bundle = found->second.node_bundle_handle;
-                probe.port = found->second.port_index;
-            }
             if (!probe.available || probe.kind != ObservationSourceKind::output) continue;
             auto const source = resolved_graph.node_bundles.resolve_sample_output(
                 {probe.bundle, PortKind::sample, probe.port}).config;
@@ -2504,8 +2500,6 @@ public:
                 .definitions_generation = request.definitions->generation,
                 .specialization = specialization_,
                 .configured_graph = request.graph,
-                .output_gain_views = {output_gains.outputs.begin(), output_gains.outputs.end()},
-                .background_output_gain_views = {output_gains.background_outputs.begin(), output_gains.background_outputs.end()},
                 .resolved_sample_input_views = std::move(resolved_sample_input_views),
                 .package_revisions = std::move(package_revisions),
                 .port_realization = std::move(lowering->port_realization),

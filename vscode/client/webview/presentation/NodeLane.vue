@@ -34,7 +34,7 @@ const laneStatus = computed(() => node.value.loadState === "waitingForDefinition
                 <button v-if="lane" type="button" tabindex="-1" class="copy-debug" data-status-hint="Copy node debug details"
                     aria-label="Copy node debug details" @click="lane.copyDebugDetails()">⧉</button>
             </div>
-            <NodePorts v-if="node.address" />
+            <NodePorts v-if="node.address" :inline="inlineHeader" />
             <div v-else class="port-summary">
                 <span :aria-label="`${inputs.length} inputs`" :aria-description="inputSummary">→ {{ inputs.length }}</span>
                 <span :aria-label="`${outputs.length} outputs`" :aria-description="outputSummary">{{ outputs.length }} →</span>
@@ -47,11 +47,11 @@ const laneStatus = computed(() => node.value.loadState === "waitingForDefinition
 <style scoped>
 .node-lane { display: grid; grid-template-columns: var(--node-label-width, 220px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); height: 100%; min-height: 0; container: node-lane / size; }
 .lane-label {
-    /* At the editable boundary, leave 32px for a compact knob and its overflow indicator. */
+    /* At the editable boundary, leave 32px for a compact knob and the folded socket. */
     --header-growth: clamp(0px, calc(100cqh - v-bind(editableHeight)), 25px);
     --heading-height: calc(14px + var(--header-growth) * .24);
     display: flex; flex-direction: column; min-width: 0; min-height: 0;
-    padding: calc(1px + var(--header-growth) * .28) 12px; border-right: 1px solid var(--vscode-panel-border);
+    padding: calc(1px + var(--header-growth) * .28) 12px 0; border-right: 1px solid var(--vscode-panel-border);
 }
 .lane-heading { display: flex; flex: 0 0 var(--heading-height); align-items: flex-start; gap: 6px; }
 .lane-label :deep(.node-ports) { flex: 1; min-height: 32px; margin-top: calc(var(--header-growth) * .2); }

@@ -1,4 +1,5 @@
-import type { ObservationInterest, ObservationUpdate } from "./observations";
+import type { ObservationInterest } from "./observations";
+import type { ObservationDelivery } from "./observationDelivery";
 import { ManualControlInteractions, resolveManualControl } from "./manualControls";
 import { ControlCompilationProgress, type ControlCompileStatus } from "./controlCompilation";
 import type { NodeAddress } from "./graphScope";
@@ -109,7 +110,7 @@ export class WorkspaceSession {
             : drag ? rpc.dragPlayback(position, drag) : rpc.seekPlayback(position));
         return this.rpc === rpc && this.graphSessionStatus === "running" ? snapshot : null;
     }
-    private readonly observationChanges = new vscode.EventEmitter<ObservationUpdate>();
+    private readonly observationChanges = new vscode.EventEmitter<ObservationDelivery>();
     readonly onDidChangeObservations = this.observationChanges.event;
     private readonly graphChanges = new vscode.EventEmitter<void>();
     readonly onDidChangeGraph = this.graphChanges.event;
@@ -339,7 +340,7 @@ export class WorkspaceSession {
                 this.controlCompilationTimer = setTimeout(() => this.controlCompilationStatus.hide(), 3000);
             }
         });
-        this.notifications.subscribe<ObservationUpdate>("observations.updated", (update) => this.observationChanges.fire(update));
+        this.notifications.subscribe<ObservationDelivery>("observations.updated", (update) => this.observationChanges.fire(update));
         this.notifications.subscribe("graph.changed", () => this.graphChanges.fire());
         // A committed revision without a graph publication, such as a settled
         // manual value or an audio selection.

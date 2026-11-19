@@ -77,7 +77,7 @@ struct LiveObservationFrame {
     std::array<RawObservationValue, maximum_live_observation_probes> values{};
 };
 
-inline constexpr std::size_t maximum_observation_window_points = 512;
+inline constexpr std::size_t maximum_observation_window_points = 1024;
 inline constexpr std::size_t maximum_observation_window_values = 2048;
 struct ObservationWindow {
     GlobalIndex begin{};

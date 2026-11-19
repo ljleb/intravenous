@@ -2576,16 +2576,9 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
         auto const observing_input = query.kind == ObservationSourceKind::input;
         auto const input_port = observing_input ? observation_input_window_port(graph, query.port) : std::nullopt;
         auto const* public_input = observing_input ? observation_public_coverage_input(graph, query.port) : nullptr;
-        auto selected_output = query.port;
-        if (!observing_input) {
-            for (auto const& [source, view] : graph.background_output_gain_views) if (source == query.port) {
-                selected_output = view;
-                break;
-            }
-        }
         auto found = observing_input ? (input_port ? plan.ports.begin() + *input_port : plan.ports.end())
             : std::ranges::find_if(plan.ports, [&](auto const& port) {
-                return port.direction == graph_jit::PortDirection::output && port.configured_port == selected_output;
+                return port.direction == graph_jit::PortDirection::output && port.configured_port == query.port;
             });
         auto const port_readable = public_input
             ? public_input->reconstructible && query.channel < channel_count(public_input->layout)

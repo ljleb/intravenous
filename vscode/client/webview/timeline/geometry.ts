@@ -2,6 +2,7 @@ import { automationSampleIndex, automationSampleOffset } from "../../src/automat
 import type { TimelineMark } from "./timelineContext";
 
 export type RulerTick = { x: number; label: string; sampleLabel?: string; minor?: boolean };
+export const rulerMarkerPoints = "-5.5,0 5.5,0 0,7";
 
 // Shared numeric graduation geometry. The domain owns its units and labels;
 // timeline and meter renderers share tick placement and visual presentation.

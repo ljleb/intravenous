@@ -3,6 +3,7 @@ import { PresentationObservations, provideObservations } from "../presentation/o
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { saveGraphLayoutMessage, type GraphEditorHostMessage, type GraphEditorState, type GraphEditorWebviewMessage } from "../../src/graphEditorProtocol";
 import { ObservationProfile } from "../../src/observationProfile";
+import { ObservationDeliveryReceiver } from "../../src/observationDelivery";
 import { addressKey, readLayout, type NodeAddress, type Point, type PresentationState } from "../../src/graphScope";
 import type { CurveAxes, CurveDragKind } from "../../src/automationCurveEditing";
 import { webviewApi } from "../host";
@@ -10,7 +11,7 @@ import PresentationHost from "../presentation/PresentationHost.vue";
 import type { SemanticNode } from "../presentation/semanticNode";
 import { provideGraphEditor, type CursorWarpAnchor, type KnobDrag } from "./context";
 import NodeEditor from "./NodeEditor.vue";
-import { fixedConnectionPorts, type GraphConnectionEnd, type GraphPortEndpoint } from "../../src/graphConnectionEditing";
+import { canContinuePortConnection, fixedConnectionPorts, type GraphConnectionEnd, type GraphPortEndpoint } from "../../src/graphConnectionEditing";
 import { beginPortConnection, canDropPortConnection, finishPortConnection, movePortConnection, type PortConnectionDrag } from "../../src/portConnectionGesture";
 import { initialPortHoverShift, keyboardPortHoverShift, pointerPortHoverShift } from "../../src/portHoverShift";
 import { connectionCursorOutputFraction, type PortColorColumns } from "../../src/connectionPreview";
@@ -51,6 +52,7 @@ const observations = new PresentationObservations((request) => webviewApi.postMe
     initial: webviewApi.getState()?.meterModes,
     save: (meterModes) => webviewApi.setState({ ...webviewApi.getState(), meterModes }) });
 provideObservations(observations);
+const observationDelivery = new ObservationDeliveryReceiver();
 let observationProfile: ObservationProfile | undefined;
 let observationProfileTimer: ReturnType<typeof setTimeout> | undefined;
 const layout = ref(readLayout(null));
@@ -851,7 +853,13 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     }
     if (event.data?.type === "observationUpdate") {
         const previousVersion = observationProfile ? observations.version.value : undefined;
-        observations.receive(event.data);
+        const { update, sequence, previousSequence } = event.data;
+        const delivery = observationDelivery.receive(update, sequence, previousSequence);
+        if (delivery === "resync") webviewApi.postMessage({ type: "observationResync" } satisfies GraphEditorWebviewMessage);
+        if (delivery === "applied") {
+            const current = observationDelivery.read("viewport");
+            if (current) observations.receive({ type: "observationUpdate", update: current });
+        }
         observationProfile?.record(event.data, observations.version.value !== previousVersion);
         return;
     }
@@ -887,7 +895,9 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     if (entry && !canEditManualControl(entry.control, resolveManualControl(state.value.scope, entry.control)))
         manualGestures.cancelEntry();
     if (state.value.sessionStatus !== "running") manualGestures.disconnected();
-    cancelConnection(); // A new authoritative scope can change port identities.
+    const drag = connectionDrag.value;
+    if (drag && (state.value.sessionStatus !== "running"
+        || !canContinuePortConnection(state.value.scope, drag.port, drag.edit))) cancelConnection();
     if (selectedLanes.value.size) {
         const addresses = new Set(state.value.scope?.nodes.map((node) => addressKey(node.address)));
         const remaining = new Set([...selectedLanes.value].filter((key) => addresses.has(key)));

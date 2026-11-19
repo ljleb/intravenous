@@ -6,6 +6,7 @@
 #include <intravenous/compat.h>
 #include <intravenous/graph/builder.h>
 #include <intravenous/graph/builder/state.h>
+#include <intravenous/graph_jit/output_gain_execution.h>
 #include <intravenous/module/builder_session.h>
 #include <intravenous/runtime/node_definitions_events.h>
 #include <intravenous/runtime/configuration_expression.h>
@@ -1498,18 +1499,14 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
                     continue;
                 }
                 auto const source = NodeBundlePortId{bundle, PortKind::sample, *port};
-                auto const config = finished_graph.node_bundles.resolve_sample_output(source).config;
                 if (!supports_gain(source)) {
                     if (control.enabled) generation->manual_control_diagnostics.push_back({control.id, "output value type has no scalar gain operation"});
                     continue;
                 }
-                // Random-access readers require a frozen control snapshot.
-                // Dependency analysis below also marks computed Tick fan-out.
                 finished_graph.manual_controls.push_back({.id = control.id,
                     .concrete_selection_index = selection_index,
                     .settled_value = control.enabled ? control.stored_value : Sample{1},
-                    .output = source,
-                    .requires_preparation = !is_sequential_output(config) || is_buffered(config.realization)});
+                    .output = source});
                 continue;
             }
             std::vector<ContinuousInputConfig> sample_inputs;
@@ -1547,55 +1544,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
             });
         }
     }
-    // Propagate the need for a frozen gain snapshot upstream once. Public
-    // module boundaries and tiled aggregates alias their internal endpoints;
-    // event dependencies can also carry the result into background work.
-    std::vector<std::vector<NodeBundleHandle>> preparation_sources(finished_graph.node_bundles.size());
-    std::vector<bool> needs_preparation(finished_graph.node_bundles.size(), false);
-    std::vector<NodeBundleHandle> preparation_work;
-    auto require_preparation = [&](NodeBundleHandle bundle) {
-        if (needs_preparation[bundle]) return;
-        needs_preparation[bundle] = true;
-        preparation_work.push_back(bundle);
-    };
-    auto dependency = [&](NodeBundleHandle source, NodeBundleHandle target) {
-        preparation_sources[target].push_back(source);
-    };
-    finished_graph.node_bundles.for_each_configured_bundle(
-        [&, bundle = NodeBundleHandle{}](ConfiguredNodeBundleView const& view) mutable {
-            if (view.operations && !view.operations->runtime.tick_block) require_preparation(bundle);
-            auto const& node = finished_graph.node_bundles.bundle(bundle);
-            if (auto boundary = node.subgraph_boundary_handle()) {
-                dependency(bundle, *boundary);
-                dependency(*boundary, bundle);
-            }
-            if (node.is_tiled())
-                for (auto member : node.tiled_members()) {
-                    dependency(bundle, member);
-                    dependency(member, bundle);
-                }
-            ++bundle;
-        });
-    for (auto const& connection : finished_graph.connections.configured_sample_connections()) {
-        for (auto const target : connection.target_channels) {
-            auto const config = finished_graph.node_bundles.resolve_sample_input({target.bundle, PortKind::sample, target.port}).config;
-            if (!is_sequential(config)) require_preparation(target.bundle);
-            for (auto const& source : connection.source_channels)
-                dependency(source.channel.bundle, target.bundle);
-        }
-    }
-    for (auto const& connection : finished_graph.connections.configured_event_connections()) {
-        for (auto const target : connection.targets) {
-            auto const config = finished_graph.node_bundles.resolve_event_input({target.bundle, PortKind::event, target.port}).config;
-            if (!is_sequential(config)) require_preparation(target.bundle);
-            for (auto const& source : connection.sources) dependency(source.port.bundle, target.bundle);
-        }
-    }
-    for (std::size_t index = 0; index < preparation_work.size(); ++index)
-        for (auto source : preparation_sources[preparation_work[index]]) require_preparation(source);
-    for (auto& control : finished_graph.manual_controls)
-        if (control.output) control.requires_preparation = control.requires_preparation
-            || needs_preparation[control.output->node_bundle_handle];
+    graph_jit::detail::classify_output_gain_consumers(finished_graph);
     auto next_manual_interactions = manual_interactions_;
     auto next_hovered_controls = hovered_controls_;
     auto next_retained_inputs = hover_retained_inputs_;

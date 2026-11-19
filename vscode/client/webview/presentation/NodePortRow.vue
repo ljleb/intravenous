@@ -6,25 +6,20 @@ import ManualInput from "./ManualInput.vue";
 
 defineProps<{ port: SemanticPort; endpoint: GraphPortEndpoint; height: number; knobSize: number;
     hasKnob: boolean; connected: boolean; pending: boolean; unavailable: boolean;
-    hint: string; overflowSlot?: string; overflowHint?: string; expanded?: boolean }>();
+    hint: string }>();
 const emit = defineEmits<{
-    handleHover: [event: Event]; handleLeave: []; wireStart: [event: PointerEvent]; overflow: [];
+    handleHover: [event: Event]; handleLeave: []; wireStart: [event: PointerEvent];
 }>();
 </script>
 
 <template>
     <div class="control-row" :class="{ unavailable, 'with-knob': hasKnob }" :data-direction="port.direction"
         :data-port-kind="endpoint.kind" :data-port-drop-target="port.direction === 'input' ? '' : undefined"
-        :data-folded-ports="overflowSlot ? port.direction : undefined"
-        :style="{ '--port-row-height': `${height}px`, '--knob-size': `${knobSize}px` }"
-        @iv-hoverenter="overflowSlot && emit('overflow')" @focusin="overflowSlot && emit('overflow')">
+        :style="{ '--port-row-height': `${height}px`, '--knob-size': `${knobSize}px` }">
         <ManualInput v-if="hasKnob" class="port-knob" :name="port.name" :direction="port.direction" port-cutout />
         <button type="button" tabindex="-1" class="port-handle" :class="{ connected, pending }"
-            :data-port-endpoint="JSON.stringify(endpoint)" :data-port-slot="overflowSlot"
-            :data-status-hint="overflowHint ? `${hint} · ${overflowHint}` : hint"
-            :aria-description="overflowHint ? `${portDescription(port)} · ${overflowHint}` : portDescription(port)"
+            :data-port-endpoint="JSON.stringify(endpoint)" :data-status-hint="hint" :aria-description="portDescription(port)"
             :aria-disabled="unavailable" :aria-label="`${port.direction} ${port.name || port.index + 1}`"
-            :aria-expanded="overflowSlot ? expanded : undefined"
             @iv-hoverenter="emit('handleHover', $event)" @pointermove="emit('handleHover', $event)"
             @iv-hoverleave="emit('handleLeave')" @pointerdown="emit('wireStart', $event)">
             <span class="port-circle" />
@@ -32,15 +27,12 @@ const emit = defineEmits<{
         <span class="direct-port-name" :data-status-hint="hint">
             {{ port.name || port.index + 1 }}
         </span>
-        <span v-if="overflowHint" class="port-overflow-indicator" aria-hidden="true">
-            <span v-for="dot in 3" :key="dot" />
-        </span>
     </div>
 </template>
 
 <style scoped>
 .control-row { display: grid; grid-template-columns: var(--knob-size) 24px minmax(0, 1fr);
-    grid-template-rows: var(--port-row-height) auto;
+    grid-template-rows: var(--port-row-height);
     align-items: center; min-width: 0; flex-shrink: 0; --port-color: var(--iv-port-input); }
 .control-row[data-direction="output"] { grid-template-columns: minmax(0, 1fr) 24px var(--output-knob-column);
     --port-color: var(--iv-port-output); }
@@ -54,13 +46,6 @@ const emit = defineEmits<{
     width: 12px; height: 12px; border-radius: 50%; box-sizing: border-box;
     background: var(--port-circle-fill);
 }
-.port-overflow-indicator { grid-column: 2; grid-row: 2; justify-self: center; align-self: end; display: flex; align-items: center; gap: 4px;
-    width: 14px; height: var(--overflow-indicator-height);
-    color: color-mix(in srgb, var(--vscode-descriptionForeground) 45%, var(--vscode-editor-background));
-    pointer-events: none; }
-.port-overflow-indicator > span { width: 2px; height: 2px; background: currentColor; }
-.with-knob .port-overflow-indicator { grid-column: 1; justify-self: start; margin-left: calc(var(--knob-size) / 2 - 7px); }
-[data-direction="output"].with-knob .port-overflow-indicator { grid-column: 3; }
 [data-port-kind="event"] .port-circle { border-radius: 3px; }
 /* Cut past the outer edge of the dial track (12.75 units in its 32-unit viewBox). */
 .control-row.with-knob {
@@ -74,9 +59,6 @@ const emit = defineEmits<{
     grid-template-columns: calc(var(--knob-size) + var(--input-toggle-space)) 24px minmax(0, 1fr);
 }
 .with-knob .port-knob { position: relative; z-index: 1; gap: 0; }
-[data-direction="input"].with-knob .port-overflow-indicator {
-    margin-left: calc(var(--input-toggle-space) + var(--knob-size) / 2 - 7px);
-}
 .with-knob .port-handle { left: -4px; overflow: visible; }
 .with-knob .port-handle::after { content: ""; position: absolute; inset: 0; z-index: 2; }
 .with-knob .port-circle {
@@ -107,6 +89,4 @@ const emit = defineEmits<{
 [data-direction="output"].with-knob .direct-port-name {
     margin-inline-start: 0; margin-inline-end: -17px; padding-right: 0;
 }
-.control-row.wrap-port-name { grid-template-rows: minmax(var(--port-row-height), auto); }
-.wrap-port-name .direct-port-name { white-space: normal; overflow-wrap: anywhere; }
 </style>

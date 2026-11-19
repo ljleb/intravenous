@@ -16,7 +16,7 @@ function result(): ObservationWindowResult {
         ] }] };
 }
 test("waveform requests quantize to project samples and bound the representative point count", () => {
-    assert.deepEqual(sampleWindow(-.5, .5, 48000, 2000), { begin: "-24000", length: "48000", points: 512 });
+    assert.deepEqual(sampleWindow(-.5, .5, 48000, 2000), { begin: "-24000", length: "48000", points: 1024 });
     assert.equal(sampleWindow(0, 1, null, 512), undefined);
     assert.equal(sampleWindow(1, 0, 48000, 512), undefined);
     assert.equal(sampleWindow(Infinity, 0, 48000, 512), undefined);

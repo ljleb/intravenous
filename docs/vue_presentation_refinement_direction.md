@@ -198,44 +198,30 @@ number and preserves the enabled state.
 
 ### Folded inputs extend the existing lane header
 
-When the available lane-header height requires folding inputs, the **last
-visible input remains an ordinary input**: it retains its actual knob, port
-circle, name, connection endpoint, and normal interactions. Do not replace
-that input's knob with a generic stacked-port icon. Hovering or focusing this
-last input also opens the continuation containing the remaining inputs.
-It is both a real control and the expansion anchor; interacting with its knob
-must not accidentally start a connection or discard a live manual gesture.
+The owner chose cropped sockets and a shared continuation on 2026-11-19.
+In editable-height headers, show a half socket at the bottom of each column
+that has hidden ports. Cables for folded ports attach to the half socket
+while those ports are out of view. Visible rows retain their own knobs,
+sockets, names, and interactions. Their geometry stays fixed while opening
+or closing the continuation.
 
-Treat the continuation as the **missing portion of the same lane header**, not
-a freely repositioned dialog. Anchor its first row to the last visible input
-row; use exactly the same knob and port columns, row heights, spacing, and
-input-name alignment as the direct rows. The anchor knob, every already-visible
-knob, and every connection endpoint remain at **identical screen coordinates**
-while opening, navigating, or closing the continuation. The anchor is displayed
-once, not duplicated as two independently interactive controls. Hidden inputs
-appear below the anchor in their definition order. If the viewport cannot show
-the whole continuation, scroll/clip the additional rows or otherwise handle
-the available space **without moving the anchor**, flipping the panel to an
-unrelated location, or changing the lane's permanent height. Keep the extended
-header visually contiguous with the ordinary header and above the lane content;
-avoid covering input labels with cables.
+Hover anywhere in the lane header to open one popover. In editable-height
+headers, each column's hidden rows start at the next position in that column,
+using the same knob size, row heights, and spacing as the visible rows. One
+column can start higher than the other when their visible rows differ. Each
+revealed port uses its own socket for cable endpoints. Scroll the additional
+rows when they exceed the available viewport height. Keep the continuation
+open while the pointer crosses between it and the header or while a knob is
+in use. During a cable drag, reveal the compatible destination column. Shift
+retains the separate per-port connection chooser.
+[Earlier header-bottom placement](./historical/vue_folded_ports_before_row_alignment_2026-11-19.md).
 
-The same positional-continuity principle applies to grouped output ports and
-their eventual gain controls where appropriate. It does not replace the
-separate connection-chooser behavior, hover lifetime, drag-source closing,
-or per-port connection identity. Connection endpoints must follow the visible
-port's actual geometry while the extension is open and collapse coherently
-when it closes. The earlier standalone folded-slot placement is preserved
-[historically](./historical/vue_nested_port_clip_scale_and_ruler_input_before_2026-11-16.md#previous-folded-port-slot-geometry).
-
-When a side has hidden ports, show one dim ellipsis at the bottom of the
-header. Center the three spaced dots below the last visible knob or port.
-The [earlier indicator](./historical/vue_port_overflow_indicator_before_header_footer.md)
-used a vertical stack.
 As the lane shrinks, step from full-size knobs to compact knobs and then to
-the folded port indicators. At mini and smaller heights, show a single port
-symbol or a stack on each side. Each symbol opens a popover with full-size
-controls and enough room for names to wrap.
+folded port symbols. At mini and nano heights, use read-only port symbols or
+stacks to show connection state and anchor cables. Port editing and popovers
+are available at editable height.
+[Earlier mini and nano popovers](./historical/vue_mini_port_popovers_before_read_only_2026-11-19.md).
+[Earlier placement and interactions](./historical/vue_folded_port_layout_before_cropped_sockets_2026-11-19.md).
 
 In `editable`, keep the port rows below the lane name and show meter scale
 labels. At the transition to `mini`, place the port symbols beside the lane

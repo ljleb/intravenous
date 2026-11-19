@@ -1,4 +1,5 @@
 #include <intravenous/runtime/observation_types.h>
+#include <intravenous/runtime/observation_delivery.h>
 #include <intravenous/runtime/event_observation_window.h>
 #include <intravenous/runtime/observation_window.h>
 #include <intravenous/runtime/observations.h>
@@ -496,12 +497,14 @@ TEST_F(ObservationService, WindowScopesShareCancelableQueriesWithoutCreatingLive
     query->complete.store(true, std::memory_order_release);
     collect();
     ASSERT_EQ(delivery.batches.size(), 2u);
-    auto const& result = (*delivery.batches[0].payload)["scopes"][0]["windows"][0];
-    EXPECT_EQ(result["id"], "wave");
+    ObservationDeliveryState connection;
+    auto const payload = connection.payload_for_write(delivery.batches[0]);
+    auto const& result = payload["scopes"]["lane"]["windows"]["wave"];
     EXPECT_EQ(result["status"], "ready");
-    EXPECT_EQ(result["regions"][0]["points"][0]["value"]["value"], 0);
-    EXPECT_EQ(result["regions"][0]["begin"], "0");
-    EXPECT_EQ(result["regions"][0]["length"], "3");
+    auto const& region = result["body"]["regions"][0];
+    EXPECT_EQ(region["points"][0]["value"]["value"], 0);
+    EXPECT_EQ(region["begin"], "0");
+    EXPECT_EQ(region["length"], "3");
     EXPECT_EQ(graph.compilations, 0u);
 
     window.window->begin = GlobalIndex::from_signed(30);
@@ -578,6 +581,84 @@ TEST_F(ObservationService, OnlyNewerExecutionDataInvalidatesWindowContents)
     EXPECT_EQ(graph.compilations, 0u);
 }
 
+TEST_F(ObservationService, WindowBodiesFollowContentIndependentlyOfRefreshStatusAndDataVersion)
+{
+    auto window = interest("wave");
+    window.operation = "waveform";
+    window.window = ObservationWindow{GlobalIndex{}, 32, 8};
+    ASSERT_TRUE(reconcile("a", "lane", {window}).error.empty());
+    auto complete = [](ObservationWindowQuery& query, std::uint64_t version, float value) {
+        query.result.status = ObservationWindowResult::Status::ready;
+        query.result.data_version = version;
+        query.result.regions.push_back({.range = {GlobalIndex{}, 32}});
+        ObservationCaptureState sample;
+        sample.store(value);
+        query.result.regions.back().values.emplace_back(GlobalIndex{}, sample);
+        query.complete.store(true, std::memory_order_release);
+    };
+    ObservationDeliveryState connection;
+    executor.data_version = 1;
+    collect();
+    ASSERT_EQ(executor.windows.size(), 1u);
+    complete(*executor.windows.back(), 1, 0.5f);
+    collect();
+    ASSERT_EQ(delivery.batches.size(), 1u);
+    auto const first = connection.payload_for_write(delivery.batches.front());
+    EXPECT_TRUE(first["scopes"]["lane"]["windows"]["wave"].contains("body"));
+
+    executor.data_version = 2;
+    collect();
+    auto const outdated = connection.payload_for_write(delivery.batches.front());
+    EXPECT_EQ(outdated["scopes"]["lane"]["windows"]["wave"], (Json{{"outdated", true}}));
+    now += std::chrono::milliseconds(300);
+    collect();
+    ASSERT_EQ(executor.windows.size(), 2u);
+    complete(*executor.windows.back(), 2, 0.5f);
+    collect();
+    auto const refreshed = connection.payload_for_write(delivery.batches.front());
+    auto const& changes = refreshed["scopes"]["lane"]["windows"]["wave"];
+    EXPECT_EQ(changes["outdated"], false);
+    EXPECT_EQ(changes["dataVersion"], "2");
+    EXPECT_FALSE(changes.contains("body"));
+
+    executor.data_version = 3;
+    collect();
+    now += std::chrono::milliseconds(300);
+    collect();
+    ASSERT_EQ(executor.windows.size(), 3u);
+    complete(*executor.windows.back(), 3, -0.5f);
+    collect();
+    auto const changed = connection.payload_for_write(delivery.batches.front());
+    EXPECT_EQ(changed["scopes"]["lane"]["windows"]["wave"]["body"]["regions"][0]["points"][0]["value"]["value"], -0.5);
+
+    ASSERT_TRUE(reconcile("a", "lane", {}).error.empty());
+    collect();
+    auto const removed = connection.payload_for_write(delivery.batches.front());
+    EXPECT_TRUE(removed["scopes"]["lane"].is_null());
+}
+
+TEST(ObservationDelivery, CoalescedFramesCanOnlyReferToBodiesFromTheLastWrite)
+{
+    ObservationDeliveryState connection;
+    auto body = std::make_shared<ObservationWindowBody const>(ObservationWindowBody{"1", Json{{"regions", Json::array()}}});
+    auto frame = [](bool outdated) {
+        return Json{{"generation", "0"}, {"scopes", Json::array({{
+            {"scopeId", "lane"}, {"values", Json::array()}, {"windows", Json::array({{
+                {"id", "wave"}, {"status", "ready"}, {"bodyId", "1"}, {"outdated", outdated}}})}}})}};
+    };
+    auto pending = ObservationDelivery{.client_id = "a", .payload = std::make_shared<Json const>(frame(false)), .window_bodies = {body}};
+    auto selected = pending;
+    selected.payload = std::make_shared<Json const>(frame(true));
+    auto const first = connection.payload_for_write(selected);
+    EXPECT_EQ(first["snapshot"], true);
+    EXPECT_TRUE(first["scopes"]["lane"]["windows"]["wave"].contains("body"));
+    auto const unchanged = connection.payload_for_write(selected);
+    EXPECT_TRUE(unchanged["scopes"].empty());
+    auto const delta = connection.payload_for_write(pending);
+    EXPECT_EQ(delta["snapshot"], false);
+    EXPECT_EQ(delta["scopes"]["lane"]["windows"]["wave"], (Json{{"outdated", false}}));
+}
+
 }
 
 
@@ -630,7 +711,7 @@ TEST(Observations, WindowProjectionPreservesGapsOverlapsAndUnavailableValues)
 
 TEST(Observations, WindowRpcPreservesSignedIndicesAndBoundsTheRequest)
 {
-    auto message = nlohmann::ordered_json::parse(R"({"jsonrpc":"2.0","id":1,"method":"observations.reconcile","params":{"scopeId":"viewport","interests":[{"id":"wave","source":{"node":{"instanceId":"node","path":[]},"kind":"output","member":"out"},"operation":"waveform","window":{"begin":"-50","length":"1000000000","points":512}}]}})");
+    auto message = nlohmann::ordered_json::parse(R"({"jsonrpc":"2.0","id":1,"method":"observations.reconcile","params":{"scopeId":"viewport","interests":[{"id":"wave","source":{"node":{"instanceId":"node","path":[]},"kind":"output","member":"out"},"operation":"waveform","window":{"begin":"-50","length":"1000000000","points":1024}}]}})");
     auto parsed = iv::parse_socket_rpc_request(message.dump());
     auto const* request = std::get_if<iv::ReconcileObservationsRequest>(&parsed.payload);
     ASSERT_NE(request, nullptr);
@@ -638,13 +719,14 @@ TEST(Observations, WindowRpcPreservesSignedIndicesAndBoundsTheRequest)
     ASSERT_TRUE(request->interests[0].window);
     EXPECT_EQ(request->interests[0].window->begin.signed_value(), -50);
     EXPECT_EQ(request->interests[0].window->length, 1000000000u);
+    EXPECT_EQ(request->interests[0].window->points, 1024u);
     message["params"]["interests"][0]["prefetch"] = true;
     auto const prefetched = iv::parse_socket_rpc_request(message.dump());
     EXPECT_TRUE(std::get<iv::ReconcileObservationsRequest>(prefetched.payload).interests[0].prefetch);
     message["params"]["interests"][0]["prefetch"] = "true";
     EXPECT_THROW(iv::parse_socket_rpc_request(message.dump()), std::invalid_argument);
     message["params"]["interests"][0]["prefetch"] = true;
-    message["params"]["interests"][0]["window"]["points"] = 513u;
+    message["params"]["interests"][0]["window"]["points"] = 1025u;
     EXPECT_THROW(iv::parse_socket_rpc_request(message.dump()), std::invalid_argument);
     message["params"]["interests"][0]["window"]["points"] = 1u;
     message["params"]["interests"][0]["window"]["length"] = "-1";

@@ -670,12 +670,13 @@ test("crossed manual bounds keep their own traces and preview the midpoint", () 
     assert.equal(preview.authored[0].at(-1)?.value, 8);
 });
 
-test("automation bounds ask for aligned finer and coarse windows with a fixed point budget", () => {
-    const requests = automationBoundWindows({ begin: "-100", length: "1000", points: 512 });
-    const moved = automationBoundWindows({ begin: "-80", length: "1000", points: 512 });
-    assert.deepEqual(requests, moved);
-    assert.deepEqual(requests[0], { window: { begin: "-128", length: "1152", points: 512 }, prefetch: false });
-    assert.equal(requests.reduce((count, request) => count + request.window.points, 0), 640);
+test("automation bounds spend 1024 positions on the viewport and reuse coarse tiles while panning", () => {
+    const requests = automationBoundWindows({ begin: "-100", length: "1000", points: 1024 });
+    const moved = automationBoundWindows({ begin: "-80", length: "1000", points: 1024 });
+    assert.deepEqual(requests.slice(1), moved.slice(1));
+    assert.deepEqual(requests[0], { window: { begin: "-100", length: "1000", points: 1024 }, prefetch: false });
+    assert.deepEqual(moved[0].window, { begin: "-80", length: "1000", points: 1024 });
+    assert.equal(requests.reduce((count, request) => count + request.window.points, 0), 1152);
     const coarse = requests.filter((request) => request.prefetch).sort((a, b) => Number(a.window.begin) - Number(b.window.begin));
     assert.deepEqual(coarse.map(({ window }) => window.points), [8, 28, 28, 28, 28, 8]);
     assert.deepEqual(coarse.map(({ window }) => window.begin), ["-3072", "-2048", "-1024", "0", "1024", "2048"]);

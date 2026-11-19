@@ -1,17 +1,30 @@
-// Fit complete rows in definition order. The last direct row anchors any
-// continuation. A column with no room for a complete row uses a folded handle.
+export const lanePortRowGap = 3;
+
+// Fit complete rows in definition order. Leave space for the folded socket
+// only when the column has more rows than it can show.
 export function lanePortLayout<T>(ports: readonly T[], height: number,
-    portHeight: (port: T) => number = () => 22, gap = 3): {
-    direct: readonly T[]; folded: readonly T[];
+    portHeight: (port: T) => number = () => 22, foldedSocketHeight = 0): {
+    direct: readonly T[]; folded: readonly T[]; continuationOffset: number;
 } {
     const available = Number.isFinite(height) ? Math.max(0, height) : 0;
     let directCount = 0;
+    let countWithSocket = 0;
+    let usedWithSocket = 0;
     let used = 0;
     for (const port of ports) {
-        const next = used + (directCount ? gap : 0) + portHeight(port);
+        const next = used + (directCount ? lanePortRowGap : 0) + portHeight(port);
         if (next > available) break;
         used = next;
         ++directCount;
+        if (next + foldedSocketHeight <= available) {
+            countWithSocket = directCount;
+            usedWithSocket = next;
+        }
     }
-    return { direct: ports.slice(0, directCount), folded: ports.slice(directCount) };
+    if (directCount < ports.length) {
+        directCount = countWithSocket;
+        used = usedWithSocket;
+    }
+    return { direct: ports.slice(0, directCount), folded: ports.slice(directCount),
+        continuationOffset: directCount ? used + lanePortRowGap : 0 };
 }

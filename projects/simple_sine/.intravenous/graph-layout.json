@@ -10,10 +10,10 @@
     }
   },
   "timeline": {
-    "beginSeconds": -12.563191456585646,
-    "secondsPerPixel": 0.038916571881045164,
-    "laneHeight": 271.7565557181071,
-    "scrollTop": 697.9166259765625
+    "beginSeconds": -6.90853116002937,
+    "secondsPerPixel": 0.012326526079450261,
+    "laneHeight": 88.66866614041504,
+    "scrollTop": 0
   },
   "viewport": {
     "x": 215.10152954825116,
@@ -22,16 +22,16 @@
   },
   "presentationStates": {
     "[\"iv.builtin.automation.curve\",\"09d95295-f20b-4a53-8a49-51c5a87e3b7a\",[]]": {
-      "pan": 846.9565774917472,
+      "pan": 819.4787538397592,
       "zoom": {
-        "factor": 0.0029498528241311394,
+        "factor": 0.002932206698501587,
         "center": 0.5
       }
     },
     "[\"iv.builtin.automation.curve\",\"c583a6a6-4cc6-47a0-9f35-f61c45ed5d05\",[]]": {
-      "pan": 956.7736623212146,
+      "pan": 1505.154777344776,
       "zoom": {
-        "factor": 0.0010447266570315064,
+        "factor": 0.0016532702217014435,
         "center": 0.5
       }
     }

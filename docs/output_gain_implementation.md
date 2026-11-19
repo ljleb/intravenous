@@ -7,13 +7,21 @@ staging or commits.
 
 ## Accepted contract
 
-The owner clarifies that gain is a non-destructive `output * scale` transform.
-It applies after the public output, including buffered outputs and previously
-stored contents. Changing gain does not mutate node state or retained source
-bytes. It changes the value consumers read, including background/random-access
-consumers. Output shape, logical Region identity, sparse coverage and source
-materialization validity remain unchanged. Consumer reads must use a coherent
-selected graph/control snapshot.
+The owner clarifies on 2026-11-19 that gain is a port-owned `output * scale`
+transform on authored outgoing connections. Direct output observations read the
+node's original output, including meters and arbitrary-time waveform windows.
+Input observations read the authored connections on that input through the
+normal observation path. Changing gain does not mutate node state or retained
+source bytes. The transform preserves coverage gaps, logical Region identity,
+and source materialization validity. Consumers use a coherent selected gain.
+[Earlier output observation contract](./historical/output_gain_before_connection_observation_2026-11-19.md).
+
+Region and Coverage output gains use a Tick multiplier when their authored
+consumers only require realtime Sequential delivery. The multiplier preserves
+uncovered positions so the destination can apply its existing fallback. If any
+consumer needs background preparation, including through Tick replay, one Tock
+multiplier supplies all branches from the same prepared gain. Observation
+subscriptions do not participate in the choice.
 
 This supersedes the owner's earlier same-session restriction to Sequential /
 computed outputs. That restriction was discussed but not implemented or adopted

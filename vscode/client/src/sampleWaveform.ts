@@ -1,13 +1,13 @@
 import type { ObservationWindow, ObservationWindowResult } from "./observations";
 
 export function sampleWindow(beginSeconds: number, endSeconds: number, sampleRate: number | null | undefined,
-    width: number): ObservationWindow | undefined {
+    points: number): ObservationWindow | undefined {
     if (!sampleRate || sampleRate <= 0 || !Number.isFinite(sampleRate)
         || !Number.isFinite(beginSeconds) || !Number.isFinite(endSeconds) || endSeconds <= beginSeconds) return;
     const begin = Math.floor(beginSeconds * sampleRate), end = Math.ceil(endSeconds * sampleRate);
     if (!Number.isSafeInteger(begin) || !Number.isSafeInteger(end) || !Number.isSafeInteger(end - begin) || end <= begin) return;
     return { begin: String(begin), length: String(end - begin),
-        points: Math.max(2, Math.min(512, Math.ceil(Number.isFinite(width) ? width : 2))) };
+        points: Math.max(2, Math.min(1024, Math.ceil(Number.isFinite(points) ? points : 2))) };
 }
 
 export type SampleWaveformGeometry = { paths: string[]; coverage: Array<{ x: number; width: number }> };

@@ -42,9 +42,11 @@ struct ObservationGraphRequest {
     bool handled = false;
 };
 
+struct ObservationWindowBody;
 struct ObservationDelivery {
     std::string client_id;
     std::shared_ptr<nlohmann::ordered_json const> payload{};
+    std::vector<std::shared_ptr<ObservationWindowBody const>> window_bodies{};
 };
 using SocketRpcObservationEvent = void (*)(ObservationProtocolRequest&);
 using ObservationsProjectGraphEvent = void (*)(ObservationGraphRequest&);

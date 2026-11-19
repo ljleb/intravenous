@@ -19,6 +19,7 @@ class Observations {
         ObservationInterest interest{};
         std::shared_ptr<ObservationWindowQuery> query{};
         std::shared_ptr<nlohmann::ordered_json const> payload{};
+        std::shared_ptr<ObservationWindowBody const> body{};
         std::shared_ptr<ObservationWindowQuery> payload_query{};
         Clock::time_point retry_after{};
         bool submitted = false;
@@ -33,6 +34,7 @@ class Observations {
     bool requirements_dirty_ = false;
     bool compilation_failed_ = false;
     std::uint64_t next_id_ = 1;
+    std::uint64_t next_window_body_id_ = 1;
     std::uint64_t last_activation_ = 0;
     std::optional<LiveObservationFrame> latest_{};
     std::unordered_map<std::string, std::string> last_delivered_;

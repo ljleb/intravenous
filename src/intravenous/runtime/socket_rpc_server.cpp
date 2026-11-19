@@ -1,6 +1,7 @@
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <intravenous/filesystem_paths.h>
+#include <intravenous/runtime/observation_delivery.h>
 #include <intravenous/runtime/package_pipeline_events.h>
 #include <intravenous/runtime/project_connection_json.h>
 #include <intravenous/runtime/project_graph_publication.h>
@@ -238,6 +239,7 @@ struct SocketRpcServer::Impl {
         // live_gesture_key(). Only the newest value of each gesture is kept, and
         // reliable messages are always written first.
         std::map<std::string, std::string> live_frames{};
+        std::optional<ObservationDelivery> pending_observations{};
         std::chrono::steady_clock::time_point live_due{};
         bool closing = false;
         std::optional<std::jthread> reader{};
@@ -562,13 +564,15 @@ struct SocketRpcServer::Impl {
 
     void writer_loop(Client* client)
     {
+        ObservationDeliveryState observation_delivery;
         for (;;) {
             OutboundMessage message;
+            std::optional<ObservationDelivery> observations;
             {
                 std::unique_lock lock(client->mutex);
                 for (;;) {
                     if (!client->outbound.empty() || client->closing) break;
-                    if (client->live_frames.empty()) {
+                    if (client->live_frames.empty() && !client->pending_observations) {
                         client->queue_ready.wait(lock);
                         continue;
                     }
@@ -583,6 +587,7 @@ struct SocketRpcServer::Impl {
                         message.value += std::move(frame);
                     }
                     client->live_frames.clear();
+                    observations = std::exchange(client->pending_observations, std::nullopt);
                     client->live_due = std::chrono::steady_clock::now() + live_frame_interval;
                 } else {
                     message = std::move(client->outbound.front());
@@ -590,6 +595,8 @@ struct SocketRpcServer::Impl {
                     client->outbound_bytes -= message.value.size();
                 }
             }
+            if (observations) message.value += jsonrpc_notification(
+                "observations.updated", observation_delivery.payload_for_write(*observations));
             if (!write_all(client->fd, message.value)) {
                 disconnect(client);
                 return;
@@ -1326,9 +1333,14 @@ void SocketRpcServer::send_observations(std::span<ObservationDelivery const> del
                     targets.push_back(client);
             }
         }
-        auto frame = jsonrpc_notification("observations.updated", *delivery.payload);
-        for (auto const& client : targets)
-            impl_->enqueue_live_frame(client, "observations", frame);
+        for (auto const& client : targets) {
+            {
+                std::scoped_lock lock(client->mutex);
+                if (client->closing) continue;
+                client->pending_observations = delivery;
+            }
+            client->queue_ready.notify_one();
+        }
     }
 }
 
