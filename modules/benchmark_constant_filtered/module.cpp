@@ -21,4 +21,4 @@ void benchmark_constant_filtered(iv::GraphBuilder& g)
     g.outputs("main"_P[stereo::left] = tone, "main"_P[stereo::right] = tone);
 }
 
-IV_MODULE("iv.test.benchmark_constant_filtered", benchmark_constant_filtered);
+IV_MODULE("iv.test.benchmark_constant_filtered", benchmark_constant_filtered, "Benchmark Constant Filtered");

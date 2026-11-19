@@ -2358,7 +2358,9 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
             auto found = existing_instances.find(update.instance_id);
             if (found == existing_instances.end()) throw std::invalid_argument("unknown node instance id: " + update.instance_id);
             auto value = *found->second;
-            if (update.display_name) value.display_name = update.display_name;
+            if (update.display_name) {
+                value.display_name = update.display_name->empty() ? std::nullopt : update.display_name;
+            }
             if (update.configuration_source) value.configuration_source = *update.configuration_source;
             edit.instances.push_back({update.instance_id, std::move(value)});
         }

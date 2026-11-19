@@ -11,4 +11,4 @@ void dc_offset(iv::GraphBuilder& g)
     g.outputs("main"_P[stereo::left] = 0.01, "main"_P[stereo::right] = 0.01);
 }
 
-IV_MODULE("iv.test.dc_offset", dc_offset);
+IV_MODULE("iv.test.dc_offset", dc_offset, "DC Offset");

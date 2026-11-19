@@ -26,5 +26,5 @@ struct InvalidReplayPersistedEvent {
 static_assert(!iv::details::replay_declaration_is_valid_v<InvalidReplayPersistedSample>);
 static_assert(!iv::details::replay_declaration_is_valid_v<InvalidReplayPersistedEvent>);
 
-IV_NODE("iv.test.invalid_replay_persisted_sample", InvalidReplayPersistedSample);
-IV_NODE("iv.test.invalid_replay_persisted_event", InvalidReplayPersistedEvent);
+IV_NODE("iv.test.invalid_replay_persisted_sample", InvalidReplayPersistedSample, "Invalid replay persisted sample");
+IV_NODE("iv.test.invalid_replay_persisted_event", InvalidReplayPersistedEvent, "Invalid replay persisted event");

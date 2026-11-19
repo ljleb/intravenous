@@ -230,8 +230,8 @@ TEST_F(NodeInstancesTest, PackageRegistryListsQueuedPackagesBeforeTheirFirstBuil
         "#include <intravenous/dsl.h>\n\n"
         "void primary(iv::GraphBuilder& g) { g.outputs(); }\n"
         "void secondary(iv::GraphBuilder& g) { g.outputs(); }\n\n"
-        "IV_MODULE(\"iv.test.module\", primary);\n"
-        "IV_MODULE(\"iv.test.module.secondary\", secondary);\n");
+        "IV_MODULE(\"iv.test.module\", primary, \"Module\");\n"
+        "IV_MODULE(\"iv.test.module.secondary\", secondary, \"Secondary\");\n");
 
     iv::NodeDefinitions definitions;
     iv::PackageDefinitions sources(workspace);

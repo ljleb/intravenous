@@ -117,7 +117,7 @@ onBeforeUnmount(() => resize?.disconnect());
 </script>
 
 <template>
-    <NodeLane v-if="time" :mode="mode">
+    <NodeLane v-if="time" :mode="mode" flush-content>
         <div ref="surface" class="beat-grid" :data-status-hint="status" data-status-shortcuts="Click/drag seek · Space ▶/Ⅱ"
             @pointerdown="beginSeek">
             <svg class="beat-grid-marks" role="img" aria-label="Beats grid preview" :aria-description="status">
@@ -154,9 +154,12 @@ onBeforeUnmount(() => resize?.disconnect());
 <style scoped>
 .beat-grid { position: relative; width: 100%; height: 100%; overflow: hidden; user-select: none; touch-action: none; cursor: ew-resize; }
 .beat-grid-marks { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-.beat-grid-marks line:not(.timeline-playhead) { stroke: var(--iv-port-output); stroke-opacity: .32; }
-.beat-grid-marks line.beat { stroke-opacity: .58; }
-.beat-grid-marks line.bar { stroke-opacity: .9; }
+.beat-grid-marks line {
+    --beat-strength: 32%;
+    stroke: color-mix(in srgb, var(--iv-port-output) var(--beat-strength), var(--vscode-editor-background));
+}
+.beat-grid-marks line.beat { --beat-strength: 58%; }
+.beat-grid-marks line.bar { --beat-strength: 90%; }
 .beat-grid-marks text { fill: var(--vscode-descriptionForeground); font-size: 10px; font-variant-numeric: tabular-nums; }
 .beat-grid-settings {
     position: absolute; top: 2px; right: 4px; max-width: calc(100% - 8px); overflow: hidden; text-overflow: ellipsis;

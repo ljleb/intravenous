@@ -16,4 +16,4 @@ struct InvalidReplayWithRandomAccess {
     void tick(iv::TickSampleContext<InvalidReplayWithRandomAccess> const&) const {}
 };
 
-IV_NODE("iv.test.invalid_replay_random_access", InvalidReplayWithRandomAccess);
+IV_NODE("iv.test.invalid_replay_random_access", InvalidReplayWithRandomAccess, "Invalid replay random access");

@@ -144,9 +144,10 @@ export class WorkspaceRpc {
             displayName?: string | null;
             configurationSource?: string | null;
         }>,
+        expectedRevision?: number,
     ): Promise<void> {
         return this.client.request(
-            "nodeInstances.update", this.mutationParams({ updates }));
+            "nodeInstances.update", this.mutationParams({ updates }, expectedRevision));
     }
 
     upsertGraphConnection(connection: Record<string, unknown>, expectedRevision?: number): Promise<void> {

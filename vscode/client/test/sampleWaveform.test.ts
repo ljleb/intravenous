@@ -86,6 +86,21 @@ test("window previews reproject the last ready result while an overlapping viewp
     values.acceptGeneration(8);
     assert.equal(values.windowForDisplay("wave"), undefined);
 });
+
+test("a ready window overlaps a new request across the signed timeline seam", () => {
+    const values = new ObservationValues();
+    const seam = 1n << 63n;
+    const data = { ...result(), window: { begin: String(seam - 8n), length: "32", points: 16 } };
+    const source = { node: { instanceId: "curve" }, kind: "output" as const, member: "value" };
+    const request = { id: "wave", source, operation: "waveform", window: data.window };
+    values.expectWindows([request]);
+    values.receive({ activationId: "0", generation: "7", revision: "0", index: "0", blockSize: 0, dataVersion: "4",
+        scopes: [{ scopeId: "viewport", values: [], windows: [data] }] }, "viewport");
+    const next = { ...data.window, begin: String(5n - seam) };
+    values.expectWindows([{ ...request, window: next }]);
+    assert.equal(values.windowForDisplay("wave")?.outdated, true);
+});
+
 test("bound windows arriving before the matching graph scope are used when it arrives", () => {
     const values = new ObservationValues();
     values.acceptGeneration(7);

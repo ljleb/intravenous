@@ -128,8 +128,8 @@ TEST(ModuleLoaderPackages, CanonicalPackageManifestLoads)
         "#include <intravenous/dsl.h>\n"
         "void module_main(iv::GraphBuilder& g) { g.outputs(); }\n"
         "void module_secondary(iv::GraphBuilder& g) { g.outputs(); }\n"
-        "IV_MODULE(\"iv.test.canonical_source\", module_main);\n"
-        "IV_MODULE(\"iv.test.canonical_source.secondary\", module_secondary);\n");
+        "IV_MODULE(\"iv.test.canonical_source\", module_main, \"Canonical source\");\n"
+        "IV_MODULE(\"iv.test.canonical_source.secondary\", module_secondary, \"Secondary\");\n");
 
     auto loader = iv::test::make_loader();
     auto loaded = iv::test::load_project_package(loader, runtime_root);
@@ -278,7 +278,7 @@ TEST(ModuleLoaderPackages, ScalarSourceOutputResolvesShippedBuiltinConstant)
         "{\n"
         "    g.outputs(0.25f);\n"
         "}\n\n"
-        "IV_MODULE(\"iv.test.scalar_output\", scalar_output);\n");
+        "IV_MODULE(\"iv.test.scalar_output\", scalar_output, \"Scalar output\");\n");
 
     auto loader = iv::test::make_loader();
     auto loaded = iv::test::load_project_package_definitions(loader, package_root);
@@ -306,7 +306,7 @@ TEST(ModuleLoaderPackages, BuiltinNodeShortIdCanConstructATiledRegisteredNode)
         "    oscillator.connect_input(\"frequency\", 440.0f);\n"
         "    g.outputs(oscillator);\n"
         "}\n\n"
-        "IV_MODULE(\"iv.test.builtin_oscillator\", builtin_oscillator);\n");
+        "IV_MODULE(\"iv.test.builtin_oscillator\", builtin_oscillator, \"Builtin oscillator\");\n");
 
     auto loader = iv::test::make_loader();
     auto loaded = iv::test::load_project_package_definitions(loader, package_root);
@@ -332,7 +332,7 @@ void builtin_beats(iv::GraphBuilder& g)
     g.event_outputs("configured"_F = beats.event_port("beats"), "defaults"_F = defaults.event_port("beats"));
 }
 
-IV_MODULE("iv.test.builtin_beats", builtin_beats);
+IV_MODULE("iv.test.builtin_beats", builtin_beats, "Builtin beats");
 )cpp");
     auto loader = iv::test::make_loader();
     auto loaded = iv::test::load_project_package_definitions(loader, package_root);
@@ -374,8 +374,8 @@ TEST(ModuleLoaderPackages, ExactShortRegistrationOverridesBuiltinConvenienceAlia
         "{\n"
         "    g.outputs(g.node<\"saw_oscillator\">(iv::Sample{0.25f}));\n"
         "}\n\n"
-        "IV_NODE(\"saw_oscillator\", LocalShortNameOscillator);\n"
-        "IV_MODULE(\"iv.test.local_short_name_consumer\", local_short_name_consumer);\n");
+        "IV_NODE(\"saw_oscillator\", LocalShortNameOscillator, \"Saw oscillator\");\n"
+        "IV_MODULE(\"iv.test.local_short_name_consumer\", local_short_name_consumer, \"Local short name consumer\");\n");
 
     auto loader = iv::test::make_loader();
     auto loaded = iv::test::load_project_package_definitions(loader, package_root);
@@ -415,8 +415,8 @@ TEST(ModuleLoaderPackages, RegisteredModuleCanConstructATiledMonoInterface)
         "    voice.connect_input(\"frequency\", frequency);\n"
         "    g.outputs(voice);\n"
         "}\n\n"
-        "IV_MODULE(\"iv.test.tiled_mono_voice\", mono_voice);\n"
-        "IV_MODULE(\"iv.test.tiled_stereo_voice\", stereo_voice);\n");
+        "IV_MODULE(\"iv.test.tiled_mono_voice\", mono_voice, \"Tiled mono voice\");\n"
+        "IV_MODULE(\"iv.test.tiled_stereo_voice\", stereo_voice, \"Tiled stereo voice\");\n");
 
     auto loader = iv::test::make_loader();
     auto loaded = iv::test::load_project_package_definitions(loader, package_root);
@@ -460,8 +460,8 @@ TEST(ModuleLoaderFailures, TiledRegisteredModuleRequiresMonoSampleInterface)
         "{\n"
         "    g.outputs(g.node<\"iv.test.stereo_provider\", iv::stereo>());\n"
         "}\n\n"
-        "IV_MODULE(\"iv.test.stereo_provider\", stereo_provider);\n"
-        "IV_MODULE(\"iv.test.invalid_tiled_use\", invalid_tiled_use);\n");
+        "IV_MODULE(\"iv.test.stereo_provider\", stereo_provider, \"Stereo provider\");\n"
+        "IV_MODULE(\"iv.test.invalid_tiled_use\", invalid_tiled_use, \"Invalid tiled use\");\n");
 
     auto loader = iv::test::make_loader();
     expect_failure_contains(
@@ -490,8 +490,8 @@ TEST(ModuleLoaderFailures, TiledRegisteredModuleRequiresMonoSampleOutputs)
         "{\n"
         "    g.outputs(g.node<\"iv.test.stereo_output_provider\", iv::stereo>());\n"
         "}\n\n"
-        "IV_MODULE(\"iv.test.stereo_output_provider\", stereo_output_provider);\n"
-        "IV_MODULE(\"iv.test.invalid_tiled_output_use\", invalid_tiled_use);\n");
+        "IV_MODULE(\"iv.test.stereo_output_provider\", stereo_output_provider, \"Stereo output provider\");\n"
+        "IV_MODULE(\"iv.test.invalid_tiled_output_use\", invalid_tiled_use, \"Invalid tiled output use\");\n");
 
     auto loader = iv::test::make_loader();
     expect_failure_contains(
@@ -525,8 +525,8 @@ TEST(ModuleLoaderPackages, CaughtTiledModuleRejectionStillFailsThePackage)
         "    }\n"
         "    g.outputs(0.25f);\n"
         "}\n\n"
-        "IV_MODULE(\"iv.test.incompatible_provider\", incompatible_provider);\n"
-        "IV_MODULE(\"iv.test.catches_rejected_tile\", catches_rejected_tile);\n");
+        "IV_MODULE(\"iv.test.incompatible_provider\", incompatible_provider, \"Incompatible provider\");\n"
+        "IV_MODULE(\"iv.test.catches_rejected_tile\", catches_rejected_tile, \"Catches rejected tile\");\n");
 
     // The rejected tile failed its session, so catching it cannot resume
     // construction: the catching module fails and the package is rejected.
@@ -587,7 +587,7 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
         "    }\n"
         "};\n"
         "}\n\n"
-        "IV_NODE(\"iv.test.registered_package_node\", RegisteredPackageNode);\n");
+        "IV_NODE(\"iv.test.registered_package_node\", RegisteredPackageNode, \"Test signal\");\n");
     iv::test::write_text(
         consumer_package / "iv_package.json",
         "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
@@ -598,7 +598,7 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
         "{\n"
         "    g.outputs(g.node<\"iv.test.registered_package_node\">());\n"
         "}\n\n"
-        "IV_MODULE(\"iv.test.registered_node_consumer\", registered_node_consumer);\n");
+        "IV_MODULE(\"iv.test.registered_node_consumer\", registered_node_consumer, \"Test signal\");\n");
 
     auto loader = iv::test::make_loader();
     auto batch = loader.load_packages({
@@ -614,10 +614,15 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
     ASSERT_EQ(batch.size(), 2u);
     ASSERT_TRUE(batch[0]) << batch[0].error;
     ASSERT_TRUE(batch[1]) << batch[1].error;
+    ASSERT_EQ(batch[0].package->node_types.size(), 1u);
+    auto const& node_provider = batch[0].package->node_types.front().provider;
+    EXPECT_EQ(std::string_view(node_provider.display_name, node_provider.display_name_size), "Test signal");
     auto loaded = std::move(batch[1].package->definitions);
 
     ASSERT_EQ(loaded.size(), 1);
     EXPECT_EQ(loaded.front().module_id, "iv.test.registered_node_consumer");
+    auto const& module_provider = loaded.front().provider;
+    EXPECT_EQ(std::string_view(module_provider.display_name, module_provider.display_name_size), "Test signal");
     EXPECT_NE(loaded.front().configured_graph, nullptr);
     ASSERT_NE(loaded.front().configured_graph, nullptr);
 
@@ -705,30 +710,30 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "    std::array<double, 2> resonance{};\n"
         "};\n"
         "}\n\n"
-        "IV_NODE(\"iv.test.configured_provider_node\", ConfiguredProviderNode);\n\n"
+        "IV_NODE(\"iv.test.configured_provider_node\", ConfiguredProviderNode, \"Configured provider node\");\n\n"
         "IV_NODE(\"iv.test.required_configured_provider_node\", "
-        "RequiredConfiguredProviderNode);\n\n"
+        "RequiredConfiguredProviderNode, \"Required configured provider node\");\n\n"
         "IV_NODE(\"iv.test.label_configured_provider_node\", "
-        "LabelConfiguredProviderNode);\n\n"
+        "LabelConfiguredProviderNode, \"Label configured provider node\");\n\n"
         "void configured_provider_module(iv::GraphBuilder& g,\n"
         "    iv::Sample gain = iv::Sample{0.5f})\n"
         "{\n"
         "    g.outputs(g.node<\"iv.test.configured_provider_node\">(gain));\n"
         "}\n"
-        "IV_MODULE(\"iv.test.configured_provider_module\", configured_provider_module);\n"
+        "IV_MODULE(\"iv.test.configured_provider_module\", configured_provider_module, \"Configured provider module\");\n"
         "void required_provider_module(iv::GraphBuilder& g, iv::Sample gain)\n"
         "{\n"
         "    g.outputs(g.node<\"iv.test.configured_provider_node\">(gain));\n"
         "}\n"
-        "IV_MODULE(\"iv.test.required_provider_module\", required_provider_module);\n"
+        "IV_MODULE(\"iv.test.required_provider_module\", required_provider_module, \"Required provider module\");\n"
         "void aggregate_provider_module(iv::GraphBuilder& g, FilterOptions)\n"
         "{ g.outputs(); }\n"
-        "IV_MODULE(\"iv.test.aggregate_provider_module\", aggregate_provider_module);\n"
+        "IV_MODULE(\"iv.test.aggregate_provider_module\", aggregate_provider_module, \"Aggregate provider module\");\n"
         "void framework_enum_provider_module(\n"
         "    iv::GraphBuilder& g, iv::SampleStreamLayout)\n"
         "{ g.outputs(); }\n"
         "IV_MODULE(\"iv.test.framework_enum_provider_module\",\n"
-        "    framework_enum_provider_module);\n"
+        "    framework_enum_provider_module, \"Framework enum provider module\");\n"
         "struct ClassProviderModule {\n"
         "    iv::Sample gain;\n"
         "    explicit ClassProviderModule(iv::Sample gain_) : gain(gain_) {}\n"
@@ -742,7 +747,7 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "        iv::Sample const& event) const\n"
         "    { ctx.send(ctx.ref<\"source\">(), event); }\n"
         "};\n"
-        "IV_MODULE_CLASS(\"iv.test.class_provider_module\", ClassProviderModule);\n");
+        "IV_MODULE_CLASS(\"iv.test.class_provider_module\", ClassProviderModule, \"Class provider module\");\n");
     iv::test::write_text(
         consumer_package / "iv_package.json",
         "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
@@ -777,14 +782,14 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "{\n"
         "    g.outputs(g.node<\"iv.test.class_provider_module\">(iv::Sample{0.25f}));\n"
         "}\n"
-        "IV_MODULE(\"iv.test.direct_configured_node\", direct_configured_node);\n"
-        "IV_MODULE(\"iv.test.configured_module_reference\", configured_module_reference);\n"
-        "IV_MODULE(\"iv.test.required_configured_node\", required_configured_node);\n"
-        "IV_MODULE(\"iv.test.required_configured_module\", required_configured_module);\n"
-        "IV_MODULE(\"iv.test.string_literal_configuration\", string_literal_configuration);\n"
+        "IV_MODULE(\"iv.test.direct_configured_node\", direct_configured_node, \"Direct configured node\");\n"
+        "IV_MODULE(\"iv.test.configured_module_reference\", configured_module_reference, \"Configured module reference\");\n"
+        "IV_MODULE(\"iv.test.required_configured_node\", required_configured_node, \"Required configured node\");\n"
+        "IV_MODULE(\"iv.test.required_configured_module\", required_configured_module, \"Required configured module\");\n"
+        "IV_MODULE(\"iv.test.string_literal_configuration\", string_literal_configuration, \"String literal configuration\");\n"
         "IV_MODULE(\"iv.test.default_configured_module_reference\", "
-        "default_configured_module_reference);\n"
-        "IV_MODULE(\"iv.test.class_module_reference\", class_module_reference);\n");
+        "default_configured_module_reference, \"Default configured module reference\");\n"
+        "IV_MODULE(\"iv.test.class_module_reference\", class_module_reference, \"Class module reference\");\n");
 
     auto loader = iv::test::make_loader();
     auto provider_package_revision = iv::test::load_project_package(loader, provider_package);
@@ -1000,7 +1005,7 @@ TEST(ModuleLoaderFailures, RegisteredConfigurationRejectsImplicitConversions)
         "    { ctx.template output<0>().push(iv::Sample{}); }\n"
         "};\n"
         "}\n\n"
-        "IV_NODE(\"iv.test.sample_configured_node\", SampleConfiguredNode);\n");
+        "IV_NODE(\"iv.test.sample_configured_node\", SampleConfiguredNode, \"Sample configured node\");\n");
     iv::test::write_text(
         consumer_package / "iv_package.json",
         "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
@@ -1012,7 +1017,7 @@ TEST(ModuleLoaderFailures, RegisteredConfigurationRejectsImplicitConversions)
         "{\n"
         "    g.outputs(g.node<\"iv.test.sample_configured_node\">(std::size_t{1}));\n"
         "}\n"
-        "IV_MODULE(\"iv.test.mismatched_configuration\", mismatched_configuration);\n");
+        "IV_MODULE(\"iv.test.mismatched_configuration\", mismatched_configuration, \"Mismatched configuration\");\n");
 
     auto loader = iv::test::make_loader();
     ASSERT_NO_THROW((void)iv::test::load_project_package_definitions(loader, provider_package));
@@ -1042,8 +1047,8 @@ TEST(ModuleLoaderFailures, SamePackageNodeAndModuleCannotShareStableId)
         "    { ctx.template output<0>().push(iv::Sample{}); }\n"
         "};\n\n"
         "void duplicate_id_module(iv::GraphBuilder& g) { g.outputs(); }\n\n"
-        "IV_NODE(\"iv.test.duplicate_local_id\", DuplicateIdNode);\n"
-        "IV_MODULE(\"iv.test.duplicate_local_id\", duplicate_id_module);\n");
+        "IV_NODE(\"iv.test.duplicate_local_id\", DuplicateIdNode, \"Duplicate local id\");\n"
+        "IV_MODULE(\"iv.test.duplicate_local_id\", duplicate_id_module, \"Duplicate local id\");\n");
 
     auto loader = iv::test::make_loader();
     // IV_NODE and IV_MODULE share the registered-ID namespace. This must fail

@@ -65,6 +65,8 @@ struct PackageDefinition {
     NodeTypeConfigureFunction node_build = nullptr;
     void const* node_compiler_record = nullptr;
     RegisteredSignatureFunction signature = nullptr;
+    char const* display_name = nullptr;
+    std::size_t display_name_size = 0;
 };
 
 static_assert(std::is_standard_layout_v<PackageDefinition>);
@@ -573,9 +575,9 @@ RegisteredSignature const* node_constructor_signature()
 #define IV_PACKAGE_CONCAT_INNER(a, b) a##b
 #define IV_PACKAGE_CONCAT(a, b) IV_PACKAGE_CONCAT_INNER(a, b)
 
-#define IV_MODULE(Id, Function) \
-    IV_MODULE_IMPL(Id, Function, __COUNTER__)
-#define IV_MODULE_IMPL(Id, Function, Unique) \
+#define IV_MODULE(Id, Function, DisplayName) \
+    IV_MODULE_IMPL(Id, Function, DisplayName, __COUNTER__)
+#define IV_MODULE_IMPL(Id, Function, DisplayName, Unique) \
     namespace { \
     struct IV_PACKAGE_CONCAT(iv_package_module_invoker_, Unique) { \
         template<class... Args> \
@@ -597,12 +599,13 @@ RegisteredSignature const* node_constructor_signature()
                 Function, IV_PACKAGE_CONCAT(iv_package_module_invoker_, Unique)>::configure, \
             nullptr, nullptr, \
             &::iv::details::IvModuleConfigureAdapter< \
-                Function, IV_PACKAGE_CONCAT(iv_package_module_invoker_, Unique)>::signature}; \
+                Function, IV_PACKAGE_CONCAT(iv_package_module_invoker_, Unique)>::signature, \
+            DisplayName, sizeof(DisplayName) - 1}; \
     }
 
-#define IV_MODULE_CLASS(Id, Module) \
-    IV_MODULE_CLASS_IMPL(Id, Module, __COUNTER__)
-#define IV_MODULE_CLASS_IMPL(Id, Module, Unique) \
+#define IV_MODULE_CLASS(Id, Module, DisplayName) \
+    IV_MODULE_CLASS_IMPL(Id, Module, DisplayName, __COUNTER__)
+#define IV_MODULE_CLASS_IMPL(Id, Module, DisplayName, Unique) \
     static_assert(requires(Module const& module, ::iv::GraphBuilder& builder) { \
         { module.build_graph(builder) } -> std::same_as<void>; \
     }, "IV_MODULE_CLASS requires a public const void build_graph(GraphBuilder&) member"); \
@@ -616,11 +619,12 @@ RegisteredSignature const* node_constructor_signature()
             "", 0, \
             &::iv::details::iv_package_module_class_configuration_pending<Module>, \
             nullptr, nullptr, \
-            &::iv::details::iv_package_module_class_signature_pending<Module>}; \
+            &::iv::details::iv_package_module_class_signature_pending<Module>, \
+            DisplayName, sizeof(DisplayName) - 1}; \
     }
 
-#define IV_NODE(Id, Node) \
-    IV_NODE_IMPL(Id, Node, __COUNTER__)
+#define IV_NODE(Id, Node, DisplayName) \
+    IV_NODE_IMPL(Id, Node, DisplayName, __COUNTER__)
 
 #define IV_NODE_VALIDATE_DECLARATION(Node) \
     static_assert(::iv::details::has_constexpr_port_configs<Node>, \
@@ -661,7 +665,7 @@ RegisteredSignature const* node_constructor_signature()
                 && ::iv::details::declares_random_access_inputs_v<Node>), \
         "IV_NODE node type defines propagate_reverse_coverage but requires Tock execution and Random Access inputs.")
 
-#define IV_NODE_IMPL(Id, Node, Unique) \
+#define IV_NODE_IMPL(Id, Node, DisplayName, Unique) \
     namespace { \
     IV_NODE_VALIDATE_DECLARATION(Node); \
     ::iv::NodeRef IV_PACKAGE_CONCAT(iv_package_node_configuration_pending_, Unique)( \
@@ -682,5 +686,6 @@ RegisteredSignature const* node_constructor_signature()
             "", 0, \
             nullptr, &IV_PACKAGE_CONCAT(iv_package_node_configuration_pending_, Unique), \
             &::iv::details::node_compiler_record<Node>, \
-            &IV_PACKAGE_CONCAT(iv_package_node_signature_pending_, Unique)}; \
+            &IV_PACKAGE_CONCAT(iv_package_node_signature_pending_, Unique), \
+            DisplayName, sizeof(DisplayName) - 1}; \
     }

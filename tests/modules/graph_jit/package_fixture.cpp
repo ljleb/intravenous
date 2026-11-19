@@ -26,12 +26,12 @@ std::string_view graph_jit_runtime_package_source()
 
 // This fixture has an independent package catalog. Register the automation
 // implementations here without loading the rest of the builtin package.
-IV_NODE("iv.builtin.automation.point_source", iv::automation::PointSource);
+IV_NODE("iv.builtin.automation.point_source", iv::automation::PointSource, "Automation points");
 IV_REGISTER_OUTPUT_GAIN_NODES();
-IV_NODE("iv.builtin.automation.interpreter", iv::automation::Curve);
-IV_MODULE_CLASS("iv.builtin.automation.curve", iv::automation::AutomationCurve);
-IV_NODE("iv.builtin.beats", iv::Beats);
-IV_MODULE_CLASS("iv.builtin.timeline", iv::Timeline);
+IV_NODE("iv.builtin.automation.interpreter", iv::automation::Curve, "Automation interpreter");
+IV_MODULE_CLASS("iv.builtin.automation.curve", iv::automation::AutomationCurve, "Automation curve");
+IV_NODE("iv.builtin.beats", iv::Beats, "Beats");
+IV_MODULE_CLASS("iv.builtin.timeline", iv::Timeline, "Timeline");
 
 #include <algorithm>
 #include <array>
@@ -1807,19 +1807,19 @@ void event_feedback_module(iv::GraphBuilder& graph, std::size_t latency = 10)
 
 IV_MODULE(
     "iv.test.graph_jit.state_context.revising_tile_rewire_module",
-    revising_tile_rewire_module);
+    revising_tile_rewire_module, "Revising tile rewire module");
 IV_MODULE(
     "iv.test.graph_jit.state_context.event_feedback_module",
-    event_feedback_module);
+    event_feedback_module, "Event feedback module");
 IV_MODULE(
     "iv.test.graph_jit.state_context.shared_neutral_compensated_module",
-    shared_neutral_compensated_module);
+    shared_neutral_compensated_module, "Shared neutral compensated module");
 IV_MODULE(
     "iv.test.graph_jit.state_context.unequal_latency_composition_module",
-    unequal_latency_composition_module);
+    unequal_latency_composition_module, "Unequal latency composition module");
 IV_MODULE(
     "iv.test.graph_jit.state_context.added_feedback_channel_module",
-    added_feedback_channel_module);
+    added_feedback_channel_module, "Added feedback channel module");
 
 )cpp";
     static constexpr std::string_view part_2 = R"cpp(struct LatencyCompensationProbe {
@@ -3340,115 +3340,115 @@ void ported_module(iv::GraphBuilder& graph)
 }
 } // namespace
 
-IV_NODE("iv.test.graph_jit.state_context.stateful", StatefulProbe);
-IV_NODE("iv.test.graph_jit.state_context.state_only", StateOnlyProbe);
-IV_NODE("iv.test.graph_jit.state_context.background_only", BackgroundOnlyProbe);
-IV_NODE("iv.test.graph_jit.state_context.background_evaluation_call", BackgroundExecutionProbe);
-IV_NODE("iv.test.graph_jit.state_context.stateless", StatelessProbe);
-IV_NODE("iv.test.graph_jit.state_context.configured", ConfiguredProbe);
+IV_NODE("iv.test.graph_jit.state_context.stateful", StatefulProbe, "Stateful");
+IV_NODE("iv.test.graph_jit.state_context.state_only", StateOnlyProbe, "State only");
+IV_NODE("iv.test.graph_jit.state_context.background_only", BackgroundOnlyProbe, "Background only");
+IV_NODE("iv.test.graph_jit.state_context.background_evaluation_call", BackgroundExecutionProbe, "Background evaluation call");
+IV_NODE("iv.test.graph_jit.state_context.stateless", StatelessProbe, "Stateless");
+IV_NODE("iv.test.graph_jit.state_context.configured", ConfiguredProbe, "Configured");
 IV_NODE(
     "iv.test.graph_jit.state_context.message_replacement",
-    MessageReplacementProbe);
+    MessageReplacementProbe, "Message replacement");
 IV_NODE(
     "iv.test.graph_jit.state_context.message_successor",
-    MessageSuccessorProbe);
-IV_NODE("iv.test.graph_jit.state_context.pointer_configured", PointerConfiguredProbe);
-IV_NODE("iv.test.graph_jit.state_context.limited_block", LimitedBlockProbe);
-IV_NODE("iv.test.graph_jit.state_context.sample_ramp_source", SampleRampSource);
-IV_NODE("iv.test.graph_jit.state_context.revising_sample_source", RevisingSampleSource);
-IV_NODE("iv.test.graph_jit.state_context.tick_capture_source", TickCaptureSource);
-IV_NODE("iv.test.graph_jit.state_context.persistent_revising_sample_source", PersistentRevisingSampleSource);
-IV_NODE("iv.test.graph_jit.state_context.tick_fallback_sample_source", TickFallbackSampleSource);
-IV_NODE("iv.test.graph_jit.state_context.limited_sample_ramp_source", LimitedSampleRampSource);
-IV_NODE("iv.test.graph_jit.state_context.sample_consumer", SampleConsumerProbe);
-IV_NODE("iv.test.graph_jit.state_context.sample_feedback_a", SampleFeedbackA);
-IV_NODE("iv.test.graph_jit.state_context.sample_feedback_b", SampleFeedbackB);
-IV_NODE("iv.test.graph_jit.state_context.multi_branch_sample_feedback", MultiBranchSampleFeedback);
-IV_NODE("iv.test.graph_jit.state_context.temporal_sample_feedback", TemporalSampleFeedback);
-IV_NODE("iv.test.graph_jit.state_context.revising_sample_feedback", RevisingSampleFeedback);
-IV_NODE("iv.test.graph_jit.state_context.projected_revising_sample_feedback", ProjectedRevisingSampleFeedback);
-IV_NODE("iv.test.graph_jit.state_context.converted_sample_feedback", ConvertedSampleFeedback);
-IV_NODE("iv.test.graph_jit.state_context.mono_interleaved_consumer", MonoInterleavedConsumerProbe);
-IV_NODE("iv.test.graph_jit.state_context.stereo_ramp_source", StereoRampSource);
-IV_NODE("iv.test.graph_jit.state_context.stereo_planar_consumer", StereoPlanarConsumerProbe);
-IV_NODE("iv.test.graph_jit.state_context.stereo_sample_consumer", StereoSampleConsumerProbe);
-IV_NODE("iv.test.graph_jit.state_context.history_ramp_source", HistoryRampSource);
-IV_NODE("iv.test.graph_jit.state_context.history_consumer", HistoryConsumerProbe);
-IV_NODE("iv.test.graph_jit.state_context.stereo_history_consumer", StereoHistoryConsumerProbe);
-IV_NODE("iv.test.graph_jit.state_context.large_history_ramp_source", LargeHistoryRampSource);
-IV_NODE("iv.test.graph_jit.state_context.large_history_consumer", LargeHistoryConsumerProbe);
-IV_NODE("iv.test.graph_jit.state_context.five_sample_delay", FiveSampleDelay);
-IV_NODE("iv.test.graph_jit.state_context.latency_compensation_probe", LatencyCompensationProbe);
-IV_NODE("iv.test.graph_jit.state_context.interleaved_latency_compensation_probe", InterleavedLatencyCompensationProbe);
-IV_NODE("iv.test.graph_jit.state_context.disconnected_sample_input_probe", DisconnectedSampleInputProbe);
-IV_NODE("iv.test.graph_jit.state_context.manual_control_slice_probe", ManualControlSliceProbe);
-IV_NODE("iv.test.graph_jit.state_context.trigger_event_source", TriggerEventSource);
-IV_NODE("iv.test.graph_jit.state_context.midi_event_source", MidiEventSource);
-IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_source", LimitedTriggerEventSource);
-IV_NODE("iv.test.graph_jit.state_context.fan_in_burst_event_source", FanInBurstEventSource);
-IV_NODE("iv.test.graph_jit.state_context.fan_in_sparse_event_source", FanInSparseEventSource);
-IV_NODE("iv.test.graph_jit.state_context.event_feedback_a", EventFeedbackA);
-IV_NODE("iv.test.graph_jit.state_context.retained_fan_in_event_feedback_a", RetainedFanInEventFeedbackA);
-IV_NODE("iv.test.graph_jit.state_context.latent_event_feedback_a", LatentEventFeedbackA);
-IV_NODE("iv.test.graph_jit.state_context.persistent_latent_event_feedback_a", PersistentLatentEventFeedbackA);
-IV_NODE("iv.test.graph_jit.state_context.persistent_latent_boundary_event_feedback_a", PersistentLatentBoundaryEventFeedbackA);
-IV_NODE("iv.test.graph_jit.state_context.event_feedback_b", EventFeedbackB);
-IV_NODE("iv.test.graph_jit.state_context.boundary_event_feedback_a", BoundaryEventFeedbackA);
-IV_NODE("iv.test.graph_jit.state_context.boundary_event_feedback_b", BoundaryEventFeedbackB);
-IV_NODE("iv.test.graph_jit.state_context.event_feedback_burst_a", EventFeedbackBurstA);
-IV_NODE("iv.test.graph_jit.state_context.event_feedback_fanout_a", EventFeedbackFanoutA);
-IV_NODE("iv.test.graph_jit.state_context.retained_dual_event_feedback_a", RetainedDualEventFeedbackA);
-IV_NODE("iv.test.graph_jit.state_context.dual_event_feedback_b", DualEventFeedbackB);
-IV_NODE("iv.test.graph_jit.state_context.trigger_event_consumer", TriggerEventConsumer);
-IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_consumer", LimitedTriggerEventConsumer);
-IV_NODE("iv.test.graph_jit.state_context.retained_trigger_event_source", RetainedTriggerEventSource);
-IV_NODE("iv.test.graph_jit.state_context.retained_trigger_event_consumer", RetainedTriggerEventConsumer);
-IV_NODE("iv.test.graph_jit.state_context.persistent_event_ring_source", PersistentEventRingSource);
-IV_NODE("iv.test.graph_jit.state_context.persistent_event_ring_consumer", PersistentEventRingConsumer);
-IV_NODE("iv.test.graph_jit.state_context.persistent_event_feedback_consumer", PersistentEventFeedbackConsumer);
-IV_NODE("iv.test.graph_jit.state_context.retained_midi_event_consumer", RetainedMidiEventConsumer);
-IV_NODE("iv.test.graph_jit.state_context.ported", PortedProbe);
-IV_MODULE("iv.test.graph_jit.state_context.stateful_module", stateful_module);
-IV_MODULE("iv.test.graph_jit.state_context.state_only_module", state_only_module);
-IV_MODULE("iv.test.graph_jit.state_context.background_only_module", background_only_module);
-IV_MODULE("iv.test.graph_jit.state_context.background_execution_module", background_execution_module);
-IV_MODULE("iv.test.graph_jit.state_context.stateless_module", stateless_module);
-IV_MODULE("iv.test.graph_jit.state_context.configured_module", configured_module);
-IV_MODULE("iv.test.graph_jit.state_context.pointer_configured_module", pointer_configured_module);
-IV_MODULE("iv.test.graph_jit.state_context.multiple_module", multiple_module);
-IV_MODULE("iv.test.graph_jit.state_context.skippable_pair_module", skippable_pair_module);
-IV_MODULE("iv.test.graph_jit.state_context.limited_block_module", limited_block_module);
-IV_MODULE("iv.test.graph_jit.state_context.disconnected_sample_input_module", disconnected_sample_input_module);
-IV_MODULE("iv.test.graph_jit.state_context.manual_control_slice_module", manual_control_slice_module);
-IV_MODULE("iv.test.graph_jit.state_context.disconnected_sample_output_module", disconnected_sample_output_module);
-IV_MODULE("iv.test.graph_jit.state_context.tick_capture_module", tick_capture_module);
-IV_MODULE("iv.test.graph_jit.state_context.direct_sample_module", direct_sample_module);
-IV_MODULE("iv.test.graph_jit.state_context.transient_sample_module", transient_sample_module);
-IV_MODULE("iv.test.graph_jit.state_context.reused_sample_arena_module", reused_sample_arena_module);
-IV_MODULE("iv.test.graph_jit.state_context.sample_fanout_conversion_module", sample_fanout_conversion_module);
-IV_MODULE("iv.test.graph_jit.state_context.sample_revision_module", sample_revision_module);
-IV_MODULE("iv.test.graph_jit.state_context.persistent_sample_revision_module", persistent_sample_revision_module);
-IV_MODULE("iv.test.graph_jit.state_context.composed_sample_revision_module", composed_sample_revision_module);
-IV_MODULE("iv.test.graph_jit.state_context.tick_fallback_sample_module", tick_fallback_sample_module);
-IV_MODULE("iv.test.graph_jit.state_context.stereo_conversion_module", stereo_conversion_module);
-IV_MODULE("iv.test.graph_jit.state_context.stereo_history_conversion_module", stereo_history_conversion_module);
-IV_MODULE("iv.test.graph_jit.state_context.history_fanout_module", history_fanout_module);
-IV_MODULE("iv.test.graph_jit.state_context.persistent_history_module", persistent_history_module);
+    MessageSuccessorProbe, "Message successor");
+IV_NODE("iv.test.graph_jit.state_context.pointer_configured", PointerConfiguredProbe, "Pointer configured");
+IV_NODE("iv.test.graph_jit.state_context.limited_block", LimitedBlockProbe, "Limited block");
+IV_NODE("iv.test.graph_jit.state_context.sample_ramp_source", SampleRampSource, "Sample ramp source");
+IV_NODE("iv.test.graph_jit.state_context.revising_sample_source", RevisingSampleSource, "Revising sample source");
+IV_NODE("iv.test.graph_jit.state_context.tick_capture_source", TickCaptureSource, "Tick capture source");
+IV_NODE("iv.test.graph_jit.state_context.persistent_revising_sample_source", PersistentRevisingSampleSource, "Persistent revising sample source");
+IV_NODE("iv.test.graph_jit.state_context.tick_fallback_sample_source", TickFallbackSampleSource, "Tick fallback sample source");
+IV_NODE("iv.test.graph_jit.state_context.limited_sample_ramp_source", LimitedSampleRampSource, "Limited sample ramp source");
+IV_NODE("iv.test.graph_jit.state_context.sample_consumer", SampleConsumerProbe, "Sample consumer");
+IV_NODE("iv.test.graph_jit.state_context.sample_feedback_a", SampleFeedbackA, "Sample feedback a");
+IV_NODE("iv.test.graph_jit.state_context.sample_feedback_b", SampleFeedbackB, "Sample feedback b");
+IV_NODE("iv.test.graph_jit.state_context.multi_branch_sample_feedback", MultiBranchSampleFeedback, "Multi branch sample feedback");
+IV_NODE("iv.test.graph_jit.state_context.temporal_sample_feedback", TemporalSampleFeedback, "Temporal sample feedback");
+IV_NODE("iv.test.graph_jit.state_context.revising_sample_feedback", RevisingSampleFeedback, "Revising sample feedback");
+IV_NODE("iv.test.graph_jit.state_context.projected_revising_sample_feedback", ProjectedRevisingSampleFeedback, "Projected revising sample feedback");
+IV_NODE("iv.test.graph_jit.state_context.converted_sample_feedback", ConvertedSampleFeedback, "Converted sample feedback");
+IV_NODE("iv.test.graph_jit.state_context.mono_interleaved_consumer", MonoInterleavedConsumerProbe, "Mono interleaved consumer");
+IV_NODE("iv.test.graph_jit.state_context.stereo_ramp_source", StereoRampSource, "Stereo ramp source");
+IV_NODE("iv.test.graph_jit.state_context.stereo_planar_consumer", StereoPlanarConsumerProbe, "Stereo planar consumer");
+IV_NODE("iv.test.graph_jit.state_context.stereo_sample_consumer", StereoSampleConsumerProbe, "Stereo sample consumer");
+IV_NODE("iv.test.graph_jit.state_context.history_ramp_source", HistoryRampSource, "History ramp source");
+IV_NODE("iv.test.graph_jit.state_context.history_consumer", HistoryConsumerProbe, "History consumer");
+IV_NODE("iv.test.graph_jit.state_context.stereo_history_consumer", StereoHistoryConsumerProbe, "Stereo history consumer");
+IV_NODE("iv.test.graph_jit.state_context.large_history_ramp_source", LargeHistoryRampSource, "Large history ramp source");
+IV_NODE("iv.test.graph_jit.state_context.large_history_consumer", LargeHistoryConsumerProbe, "Large history consumer");
+IV_NODE("iv.test.graph_jit.state_context.five_sample_delay", FiveSampleDelay, "Five sample delay");
+IV_NODE("iv.test.graph_jit.state_context.latency_compensation_probe", LatencyCompensationProbe, "Latency compensation probe");
+IV_NODE("iv.test.graph_jit.state_context.interleaved_latency_compensation_probe", InterleavedLatencyCompensationProbe, "Interleaved latency compensation probe");
+IV_NODE("iv.test.graph_jit.state_context.disconnected_sample_input_probe", DisconnectedSampleInputProbe, "Disconnected sample input probe");
+IV_NODE("iv.test.graph_jit.state_context.manual_control_slice_probe", ManualControlSliceProbe, "Manual control slice probe");
+IV_NODE("iv.test.graph_jit.state_context.trigger_event_source", TriggerEventSource, "Trigger event source");
+IV_NODE("iv.test.graph_jit.state_context.midi_event_source", MidiEventSource, "MIDI event source");
+IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_source", LimitedTriggerEventSource, "Limited trigger event source");
+IV_NODE("iv.test.graph_jit.state_context.fan_in_burst_event_source", FanInBurstEventSource, "Fan in burst event source");
+IV_NODE("iv.test.graph_jit.state_context.fan_in_sparse_event_source", FanInSparseEventSource, "Fan in sparse event source");
+IV_NODE("iv.test.graph_jit.state_context.event_feedback_a", EventFeedbackA, "Event feedback a");
+IV_NODE("iv.test.graph_jit.state_context.retained_fan_in_event_feedback_a", RetainedFanInEventFeedbackA, "Retained fan in event feedback a");
+IV_NODE("iv.test.graph_jit.state_context.latent_event_feedback_a", LatentEventFeedbackA, "Latent event feedback a");
+IV_NODE("iv.test.graph_jit.state_context.persistent_latent_event_feedback_a", PersistentLatentEventFeedbackA, "Persistent latent event feedback a");
+IV_NODE("iv.test.graph_jit.state_context.persistent_latent_boundary_event_feedback_a", PersistentLatentBoundaryEventFeedbackA, "Persistent latent boundary event feedback a");
+IV_NODE("iv.test.graph_jit.state_context.event_feedback_b", EventFeedbackB, "Event feedback b");
+IV_NODE("iv.test.graph_jit.state_context.boundary_event_feedback_a", BoundaryEventFeedbackA, "Boundary event feedback a");
+IV_NODE("iv.test.graph_jit.state_context.boundary_event_feedback_b", BoundaryEventFeedbackB, "Boundary event feedback b");
+IV_NODE("iv.test.graph_jit.state_context.event_feedback_burst_a", EventFeedbackBurstA, "Event feedback burst a");
+IV_NODE("iv.test.graph_jit.state_context.event_feedback_fanout_a", EventFeedbackFanoutA, "Event feedback fanout a");
+IV_NODE("iv.test.graph_jit.state_context.retained_dual_event_feedback_a", RetainedDualEventFeedbackA, "Retained dual event feedback a");
+IV_NODE("iv.test.graph_jit.state_context.dual_event_feedback_b", DualEventFeedbackB, "Dual event feedback b");
+IV_NODE("iv.test.graph_jit.state_context.trigger_event_consumer", TriggerEventConsumer, "Trigger event consumer");
+IV_NODE("iv.test.graph_jit.state_context.limited_trigger_event_consumer", LimitedTriggerEventConsumer, "Limited trigger event consumer");
+IV_NODE("iv.test.graph_jit.state_context.retained_trigger_event_source", RetainedTriggerEventSource, "Retained trigger event source");
+IV_NODE("iv.test.graph_jit.state_context.retained_trigger_event_consumer", RetainedTriggerEventConsumer, "Retained trigger event consumer");
+IV_NODE("iv.test.graph_jit.state_context.persistent_event_ring_source", PersistentEventRingSource, "Persistent event ring source");
+IV_NODE("iv.test.graph_jit.state_context.persistent_event_ring_consumer", PersistentEventRingConsumer, "Persistent event ring consumer");
+IV_NODE("iv.test.graph_jit.state_context.persistent_event_feedback_consumer", PersistentEventFeedbackConsumer, "Persistent event feedback consumer");
+IV_NODE("iv.test.graph_jit.state_context.retained_midi_event_consumer", RetainedMidiEventConsumer, "Retained MIDI event consumer");
+IV_NODE("iv.test.graph_jit.state_context.ported", PortedProbe, "Ported");
+IV_MODULE("iv.test.graph_jit.state_context.stateful_module", stateful_module, "Stateful module");
+IV_MODULE("iv.test.graph_jit.state_context.state_only_module", state_only_module, "State only module");
+IV_MODULE("iv.test.graph_jit.state_context.background_only_module", background_only_module, "Background only module");
+IV_MODULE("iv.test.graph_jit.state_context.background_execution_module", background_execution_module, "Background execution module");
+IV_MODULE("iv.test.graph_jit.state_context.stateless_module", stateless_module, "Stateless module");
+IV_MODULE("iv.test.graph_jit.state_context.configured_module", configured_module, "Configured module");
+IV_MODULE("iv.test.graph_jit.state_context.pointer_configured_module", pointer_configured_module, "Pointer configured module");
+IV_MODULE("iv.test.graph_jit.state_context.multiple_module", multiple_module, "Multiple module");
+IV_MODULE("iv.test.graph_jit.state_context.skippable_pair_module", skippable_pair_module, "Skippable pair module");
+IV_MODULE("iv.test.graph_jit.state_context.limited_block_module", limited_block_module, "Limited block module");
+IV_MODULE("iv.test.graph_jit.state_context.disconnected_sample_input_module", disconnected_sample_input_module, "Disconnected sample input module");
+IV_MODULE("iv.test.graph_jit.state_context.manual_control_slice_module", manual_control_slice_module, "Manual control slice module");
+IV_MODULE("iv.test.graph_jit.state_context.disconnected_sample_output_module", disconnected_sample_output_module, "Disconnected sample output module");
+IV_MODULE("iv.test.graph_jit.state_context.tick_capture_module", tick_capture_module, "Tick capture module");
+IV_MODULE("iv.test.graph_jit.state_context.direct_sample_module", direct_sample_module, "Direct sample module");
+IV_MODULE("iv.test.graph_jit.state_context.transient_sample_module", transient_sample_module, "Transient sample module");
+IV_MODULE("iv.test.graph_jit.state_context.reused_sample_arena_module", reused_sample_arena_module, "Reused sample arena module");
+IV_MODULE("iv.test.graph_jit.state_context.sample_fanout_conversion_module", sample_fanout_conversion_module, "Sample fanout conversion module");
+IV_MODULE("iv.test.graph_jit.state_context.sample_revision_module", sample_revision_module, "Sample revision module");
+IV_MODULE("iv.test.graph_jit.state_context.persistent_sample_revision_module", persistent_sample_revision_module, "Persistent sample revision module");
+IV_MODULE("iv.test.graph_jit.state_context.composed_sample_revision_module", composed_sample_revision_module, "Composed sample revision module");
+IV_MODULE("iv.test.graph_jit.state_context.tick_fallback_sample_module", tick_fallback_sample_module, "Tick fallback sample module");
+IV_MODULE("iv.test.graph_jit.state_context.stereo_conversion_module", stereo_conversion_module, "Stereo conversion module");
+IV_MODULE("iv.test.graph_jit.state_context.stereo_history_conversion_module", stereo_history_conversion_module, "Stereo history conversion module");
+IV_MODULE("iv.test.graph_jit.state_context.history_fanout_module", history_fanout_module, "History fanout module");
+IV_MODULE("iv.test.graph_jit.state_context.persistent_history_module", persistent_history_module, "Persistent history module");
 IV_MODULE(
     "iv.test.graph_jit.state_context.large_history_rewire_module",
-    large_history_rewire_module);
-IV_MODULE("iv.test.graph_jit.state_context.latency_compensation_module", latency_compensation_module);
-IV_MODULE("iv.test.graph_jit.state_context.latency_conversion_fanout_module", latency_conversion_fanout_module);
-IV_MODULE("iv.test.graph_jit.state_context.composed_latency_module", composed_latency_module);
-IV_MODULE("iv.test.graph_jit.state_context.composed_history_module", composed_history_module);
-IV_MODULE("iv.test.graph_jit.state_context.projected_composition_module", projected_composition_module);
-IV_MODULE("iv.test.graph_jit.state_context.direct_event_module", direct_event_module);
-IV_MODULE("iv.test.graph_jit.state_context.transient_event_module", transient_event_module);
-IV_MODULE("iv.test.graph_jit.state_context.converted_event_fanout_module", converted_event_fanout_module);
-IV_MODULE("iv.test.graph_jit.state_context.retained_event_module", retained_event_module);
-IV_MODULE("iv.test.graph_jit.state_context.persistent_event_ring_module", persistent_event_ring_module);
-IV_MODULE("iv.test.graph_jit.state_context.retained_converted_event_fanout_module", retained_converted_event_fanout_module);
-IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module);
+    large_history_rewire_module, "Large history rewire module");
+IV_MODULE("iv.test.graph_jit.state_context.latency_compensation_module", latency_compensation_module, "Latency compensation module");
+IV_MODULE("iv.test.graph_jit.state_context.latency_conversion_fanout_module", latency_conversion_fanout_module, "Latency conversion fanout module");
+IV_MODULE("iv.test.graph_jit.state_context.composed_latency_module", composed_latency_module, "Composed latency module");
+IV_MODULE("iv.test.graph_jit.state_context.composed_history_module", composed_history_module, "Composed history module");
+IV_MODULE("iv.test.graph_jit.state_context.projected_composition_module", projected_composition_module, "Projected composition module");
+IV_MODULE("iv.test.graph_jit.state_context.direct_event_module", direct_event_module, "Direct event module");
+IV_MODULE("iv.test.graph_jit.state_context.transient_event_module", transient_event_module, "Transient event module");
+IV_MODULE("iv.test.graph_jit.state_context.converted_event_fanout_module", converted_event_fanout_module, "Converted event fanout module");
+IV_MODULE("iv.test.graph_jit.state_context.retained_event_module", retained_event_module, "Retained event module");
+IV_MODULE("iv.test.graph_jit.state_context.persistent_event_ring_module", persistent_event_ring_module, "Persistent event ring module");
+IV_MODULE("iv.test.graph_jit.state_context.retained_converted_event_fanout_module", retained_converted_event_fanout_module, "Retained converted event fanout module");
+IV_MODULE("iv.test.graph_jit.state_context.ported_module", ported_module, "Ported module");
 )cpp";
     static constexpr std::string_view part_3 = R"cpp(
 #include <intravenous/dsl.h>
@@ -4933,99 +4933,99 @@ void native_batch_reverse_module(iv::GraphBuilder& graph)
 
 } // namespace
 
-IV_NODE("iv.test.graph_jit.state_context.native_batch_tick", NativeBatchTickProbe);
+IV_NODE("iv.test.graph_jit.state_context.native_batch_tick", NativeBatchTickProbe, "Native batch tick");
 IV_NODE(
     "iv.test.graph_jit.state_context.native_batch_aliasing",
-    NativeBatchAliasingProbe);
+    NativeBatchAliasingProbe, "Native batch aliasing");
 IV_NODE(
     "iv.test.graph_jit.state_context.native_batch_replay",
-    NativeBatchReplaySource);
+    NativeBatchReplaySource, "Native batch replay");
 IV_NODE(
     "iv.test.graph_jit.state_context.native_batch_background",
-    NativeBatchBackgroundProbe);
+    NativeBatchBackgroundProbe, "Native batch background");
 IV_NODE(
     "iv.test.graph_jit.state_context.native_batch_tock",
-    NativeBatchTockProbe);
+    NativeBatchTockProbe, "Native batch tock");
 IV_NODE(
     "iv.test.graph_jit.state_context.native_batch_activity",
-    NativeBatchActivityProbe);
+    NativeBatchActivityProbe, "Native batch activity");
 IV_NODE(
     "iv.test.graph_jit.state_context.native_batch_activity_sink",
-    NativeBatchActivitySink);
-IV_NODE("iv.test.graph_jit.state_context.activity_step_source", ActivityStepSource);
-IV_NODE("iv.test.graph_jit.state_context.activity_probe", ActivityProbe);
-IV_NODE("iv.test.graph_jit.state_context.activity_type_default_probe", ActivityTypeDefaultProbe);
-IV_NODE("iv.test.graph_jit.state_context.event_activity_step_source", EventActivityStepSource);
-IV_NODE("iv.test.graph_jit.state_context.event_activity_probe", EventActivityProbe);
-IV_NODE("iv.test.graph_jit.state_context.declaration_layout_parent", DeclarationLayoutParent);
-IV_NODE("iv.test.graph_jit.state_context.declaration_layout_producer", DeclarationLayoutProducer);
-IV_NODE("iv.test.graph_jit.state_context.declaration_layout_consumer", DeclarationLayoutConsumer);
-IV_NODE("iv.test.graph_jit.state_context.fft_value_producer", FFTValueProducer);
-IV_NODE("iv.test.graph_jit.state_context.fft_value_consumer", FFTValueConsumer);
-IV_NODE("iv.test.graph_jit.state_context.fractional_index_producer", FractionalIndexProducer);
-IV_NODE("iv.test.graph_jit.state_context.fractional_index_consumer", FractionalIndexConsumer);
-IV_NODE("iv.test.graph_jit.state_context.persisted_fft_value_producer", PersistedFFTValueProducer);
-IV_NODE("iv.test.graph_jit.state_context.persisted_non_project_rate_sample_producer", PersistedNonProjectRateSampleProducer);
+    NativeBatchActivitySink, "Native batch activity sink");
+IV_NODE("iv.test.graph_jit.state_context.activity_step_source", ActivityStepSource, "Activity step source");
+IV_NODE("iv.test.graph_jit.state_context.activity_probe", ActivityProbe, "Activity probe");
+IV_NODE("iv.test.graph_jit.state_context.activity_type_default_probe", ActivityTypeDefaultProbe, "Activity type default probe");
+IV_NODE("iv.test.graph_jit.state_context.event_activity_step_source", EventActivityStepSource, "Event activity step source");
+IV_NODE("iv.test.graph_jit.state_context.event_activity_probe", EventActivityProbe, "Event activity probe");
+IV_NODE("iv.test.graph_jit.state_context.declaration_layout_parent", DeclarationLayoutParent, "Declaration layout parent");
+IV_NODE("iv.test.graph_jit.state_context.declaration_layout_producer", DeclarationLayoutProducer, "Declaration layout producer");
+IV_NODE("iv.test.graph_jit.state_context.declaration_layout_consumer", DeclarationLayoutConsumer, "Declaration layout consumer");
+IV_NODE("iv.test.graph_jit.state_context.fft_value_producer", FFTValueProducer, "FFT value producer");
+IV_NODE("iv.test.graph_jit.state_context.fft_value_consumer", FFTValueConsumer, "FFT value consumer");
+IV_NODE("iv.test.graph_jit.state_context.fractional_index_producer", FractionalIndexProducer, "Fractional index producer");
+IV_NODE("iv.test.graph_jit.state_context.fractional_index_consumer", FractionalIndexConsumer, "Fractional index consumer");
+IV_NODE("iv.test.graph_jit.state_context.persisted_fft_value_producer", PersistedFFTValueProducer, "Persisted FFT value producer");
+IV_NODE("iv.test.graph_jit.state_context.persisted_non_project_rate_sample_producer", PersistedNonProjectRateSampleProducer, "Persisted non project rate sample producer");
 IV_NODE(
     "iv.test.graph_jit.state_context.multi_region_source",
-    MultiRegionCoverageSource);
+    MultiRegionCoverageSource, "Multi region source");
 IV_NODE(
     "iv.test.graph_jit.state_context.multi_region_coverage_consumer",
-    MultiRegionCoverageConsumer);
+    MultiRegionCoverageConsumer, "Multi region coverage consumer");
 IV_NODE(
     "iv.test.graph_jit.state_context.multi_region_sequential_consumer",
-    MultiRegionSequentialConsumer);
+    MultiRegionSequentialConsumer, "Multi region sequential consumer");
 IV_NODE(
     "iv.test.graph_jit.state_context.multi_region_event_source",
-    MultiRegionEventCoverageSource);
+    MultiRegionEventCoverageSource, "Multi region event source");
 IV_NODE(
     "iv.test.graph_jit.state_context.multi_region_event_coverage_consumer",
-    MultiRegionEventCoverageConsumer);
+    MultiRegionEventCoverageConsumer, "Multi region event coverage consumer");
 IV_NODE(
     "iv.test.graph_jit.state_context.multi_region_sequential_event_consumer",
-    MultiRegionSequentialEventConsumer);
+    MultiRegionSequentialEventConsumer, "Multi region sequential event consumer");
 IV_NODE(
     "iv.test.graph_jit.state_context.single_region_sample_source",
-    SingleRegionSampleSource);
+    SingleRegionSampleSource, "Single region sample source");
 IV_NODE(
     "iv.test.graph_jit.state_context.single_region_sample_consumer",
-    SingleRegionSampleConsumer);
+    SingleRegionSampleConsumer, "Single region sample consumer");
 IV_NODE(
     "iv.test.graph_jit.state_context.single_region_event_source",
-    SingleRegionEventSource);
+    SingleRegionEventSource, "Single region event source");
 IV_NODE(
     "iv.test.graph_jit.state_context.single_region_event_consumer",
-    SingleRegionEventConsumer);
-IV_MODULE("iv.test.graph_jit.state_context.activity_module", activity_module);
-IV_MODULE("iv.test.graph_jit.state_context.activity_disabled_module", activity_disabled_module);
-IV_MODULE("iv.test.graph_jit.state_context.activity_type_default_module", activity_type_default_module);
-IV_MODULE("iv.test.graph_jit.state_context.event_activity_module", event_activity_module);
-IV_MODULE("iv.test.graph_jit.state_context.declaration_layout_module", declaration_layout_module);
-IV_MODULE("iv.test.graph_jit.state_context.fft_value_module", fft_value_module);
-IV_MODULE("iv.test.graph_jit.state_context.fractional_index_value_module", fractional_index_value_module);
-IV_MODULE("iv.test.graph_jit.state_context.persisted_fft_value_module", persisted_fft_value_module);
-IV_MODULE("iv.test.graph_jit.state_context.persisted_non_project_rate_sample_module", persisted_non_project_rate_sample_module);
+    SingleRegionEventConsumer, "Single region event consumer");
+IV_MODULE("iv.test.graph_jit.state_context.activity_module", activity_module, "Activity module");
+IV_MODULE("iv.test.graph_jit.state_context.activity_disabled_module", activity_disabled_module, "Activity disabled module");
+IV_MODULE("iv.test.graph_jit.state_context.activity_type_default_module", activity_type_default_module, "Activity type default module");
+IV_MODULE("iv.test.graph_jit.state_context.event_activity_module", event_activity_module, "Event activity module");
+IV_MODULE("iv.test.graph_jit.state_context.declaration_layout_module", declaration_layout_module, "Declaration layout module");
+IV_MODULE("iv.test.graph_jit.state_context.fft_value_module", fft_value_module, "FFT value module");
+IV_MODULE("iv.test.graph_jit.state_context.fractional_index_value_module", fractional_index_value_module, "Fractional index value module");
+IV_MODULE("iv.test.graph_jit.state_context.persisted_fft_value_module", persisted_fft_value_module, "Persisted FFT value module");
+IV_MODULE("iv.test.graph_jit.state_context.persisted_non_project_rate_sample_module", persisted_non_project_rate_sample_module, "Persisted non project rate sample module");
 IV_MODULE(
     "iv.test.graph_jit.state_context.native_batch_tick_module",
-    native_batch_tick_module);
+    native_batch_tick_module, "Native batch tick module");
 IV_MODULE(
     "iv.test.graph_jit.state_context.native_batch_aliasing_module",
-    native_batch_aliasing_module);
+    native_batch_aliasing_module, "Native batch aliasing module");
 IV_MODULE(
     "iv.test.graph_jit.state_context.native_batch_replay_module",
-    native_batch_replay_module);
+    native_batch_replay_module, "Native batch replay module");
 IV_MODULE(
     "iv.test.graph_jit.state_context.native_batch_background_module",
-    native_batch_background_module);
+    native_batch_background_module, "Native batch background module");
 IV_MODULE(
     "iv.test.graph_jit.state_context.native_batch_activity_module",
-    native_batch_activity_module);
+    native_batch_activity_module, "Native batch activity module");
 IV_MODULE(
     "iv.test.graph_jit.state_context.native_batch_reverse_module",
-    native_batch_reverse_module);
+    native_batch_reverse_module, "Native batch reverse module");
 IV_MODULE(
     "iv.test.graph_jit.state_context.multi_region_module",
-    multi_region_module);
+    multi_region_module, "Multi region module");
 
 namespace {
 // stereo_ramp_source offset by 100000.
@@ -5167,22 +5167,22 @@ void retained_neutral_latency_module(
 
 IV_NODE(
     "iv.test.graph_jit.state_context.offset_stereo_ramp_source",
-    OffsetStereoRampSource);
+    OffsetStereoRampSource, "Offset stereo ramp source");
 IV_MODULE(
     "iv.test.graph_jit.state_context.downmixed_rewire_module",
-    downmixed_rewire_module);
+    downmixed_rewire_module, "Downmixed rewire module");
 IV_MODULE(
     "iv.test.graph_jit.state_context.downmixed_tile_rewire_module",
-    downmixed_tile_rewire_module);
+    downmixed_tile_rewire_module, "Downmixed tile rewire module");
 IV_MODULE(
     "iv.test.graph_jit.state_context.downmixed_compensation_module",
-    downmixed_compensation_module);
+    downmixed_compensation_module, "Downmixed compensation module");
 IV_MODULE(
     "iv.test.graph_jit.state_context.downmixed_tile_compensation_module",
-    downmixed_tile_compensation_module);
+    downmixed_tile_compensation_module, "Downmixed tile compensation module");
 IV_MODULE(
     "iv.test.graph_jit.state_context.retained_neutral_latency_module",
-    retained_neutral_latency_module);
+    retained_neutral_latency_module, "Retained neutral latency module");
 )cpp";
     static constexpr std::string_view part_4 = R"cpp(
 namespace {
@@ -6642,84 +6642,84 @@ void compensated_ramp_history_probe_module(iv::GraphBuilder& graph)
 }
 } // namespace
 
-IV_NODE("iv.test.graph_jit.state_context.playback_sample_source", PlaybackSampleSource);
-IV_NODE("iv.test.graph_jit.state_context.playback_trigger_source", PlaybackTriggerSource);
-IV_NODE("iv.test.graph_jit.state_context.playback_history_consumer", PlaybackHistoryConsumer);
-IV_NODE("iv.test.graph_jit.state_context.playback_history_peer", PlaybackHistoryPeer);
-IV_NODE("iv.test.graph_jit.state_context.playback_stereo_history_consumer", PlaybackStereoHistoryConsumer);
-IV_NODE("iv.test.graph_jit.state_context.playback_event_history_consumer", PlaybackEventHistoryConsumer);
-IV_NODE("iv.test.graph_jit.state_context.playback_event_history_peer", PlaybackEventHistoryPeer);
+IV_NODE("iv.test.graph_jit.state_context.playback_sample_source", PlaybackSampleSource, "Playback sample source");
+IV_NODE("iv.test.graph_jit.state_context.playback_trigger_source", PlaybackTriggerSource, "Playback trigger source");
+IV_NODE("iv.test.graph_jit.state_context.playback_history_consumer", PlaybackHistoryConsumer, "Playback history consumer");
+IV_NODE("iv.test.graph_jit.state_context.playback_history_peer", PlaybackHistoryPeer, "Playback history peer");
+IV_NODE("iv.test.graph_jit.state_context.playback_stereo_history_consumer", PlaybackStereoHistoryConsumer, "Playback stereo history consumer");
+IV_NODE("iv.test.graph_jit.state_context.playback_event_history_consumer", PlaybackEventHistoryConsumer, "Playback event history consumer");
+IV_NODE("iv.test.graph_jit.state_context.playback_event_history_peer", PlaybackEventHistoryPeer, "Playback event history peer");
 IV_NODE(
     "iv.test.graph_jit.state_context.module_boundary_coverage_observer",
-    ModuleBoundaryCoverageObserver);
+    ModuleBoundaryCoverageObserver, "Module boundary coverage observer");
 IV_MODULE(
     "iv.test.graph_jit.state_context.multi_region_boundary_child_module",
-    multi_region_boundary_child_module);
+    multi_region_boundary_child_module, "Multi region boundary child module");
 IV_NODE(
     "iv.test.graph_jit.state_context.persisted_stereo_recording_source",
-    PersistedStereoRecordingSource);
+    PersistedStereoRecordingSource, "Persisted stereo recording source");
 IV_NODE(
     "iv.test.graph_jit.state_context.persisted_recording_coverage_consumer",
-    PersistedRecordingCoverageConsumer);
+    PersistedRecordingCoverageConsumer, "Persisted recording coverage consumer");
 IV_MODULE(
     "iv.test.graph_jit.state_context.persisted_recording_coverage_module",
-    persisted_recording_coverage_module);
-IV_MODULE("iv.test.graph_jit.state_context.playback_sample_history_module", playback_sample_history_module);
-IV_MODULE("iv.test.graph_jit.state_context.playback_sample_history_replacement_module", playback_sample_history_replacement_module);
-IV_MODULE("iv.test.graph_jit.state_context.playback_sample_window_module", playback_sample_window_module);
-IV_MODULE("iv.test.graph_jit.state_context.playback_mixed_sample_module", playback_mixed_sample_module);
-IV_MODULE("iv.test.graph_jit.state_context.playback_event_history_module", playback_event_history_module);
-IV_MODULE("iv.test.graph_jit.state_context.playback_event_history_replacement_module", playback_event_history_replacement_module);
-IV_MODULE("iv.test.graph_jit.state_context.playback_mixed_event_module", playback_mixed_event_module);
-IV_MODULE("iv.test.graph_jit.state_context.playback_sample_rewire_module", playback_sample_rewire_module);
-IV_MODULE("iv.test.graph_jit.state_context.playback_event_rewire_module", playback_event_rewire_module);
-IV_NODE("iv.test.graph_jit.state_context.latent_window_source", LatentWindowSource);
-IV_NODE("iv.test.graph_jit.state_context.large_latent_window_source", LargeLatentWindowSource);
-IV_NODE("iv.test.graph_jit.state_context.latent_window_consumer", LatentWindowConsumer);
-IV_MODULE("iv.test.graph_jit.state_context.latent_window_compact_carry_module", latent_window_compact_carry_module);
-IV_MODULE("iv.test.graph_jit.state_context.latent_window_ring_module", latent_window_ring_module);
-IV_MODULE("iv.test.graph_jit.state_context.latent_window_consumer_compact_carry_module", latent_window_consumer_compact_carry_module);
-IV_MODULE("iv.test.graph_jit.state_context.latent_window_consumer_ring_module", latent_window_consumer_ring_module);
-IV_NODE("iv.test.graph_jit.state_context.compensated_ramp_probe", CompensatedRampProbe);
-IV_NODE("iv.test.graph_jit.state_context.compensated_ramp_history_probe", CompensatedRampHistoryProbe);
-IV_MODULE("iv.test.graph_jit.state_context.compensated_ramp_second_reader_module", compensated_ramp_second_reader_module);
-IV_MODULE("iv.test.graph_jit.state_context.compensated_ramp_history_reader_module", compensated_ramp_history_reader_module);
-IV_MODULE("iv.test.graph_jit.state_context.compensated_ramp_history_probe_module", compensated_ramp_history_probe_module);
-IV_NODE("iv.test.graph_jit.state_context.moving_state_probe", MovingStateProbe);
-IV_MODULE("iv.test.graph_jit.state_context.moving_state_module", moving_state_module);
-IV_NODE("iv.test.graph_jit.state_context.offset_sample_ramp_source", OffsetSampleRampSource);
-IV_NODE("iv.test.graph_jit.state_context.compensated_sequence_probe", CompensatedSequenceProbe);
-IV_MODULE("iv.test.graph_jit.state_context.compensated_sequence_module", compensated_sequence_module);
-IV_MODULE("iv.test.graph_jit.state_context.compensated_sequence_rewire_module", compensated_sequence_rewire_module);
-IV_MODULE("iv.test.graph_jit.state_context.compensated_latent_history_probe_module", compensated_latent_history_probe_module);
-IV_MODULE("iv.test.graph_jit.state_context.compensated_converted_history_reader_module", compensated_converted_history_reader_module);
-IV_NODE("iv.test.graph_jit.state_context.sample_sequence_probe", SampleSequenceProbe);
-IV_NODE("iv.test.graph_jit.state_context.planar_stereo_alignment_probe", PlanarStereoAlignmentProbe);
-IV_NODE("iv.test.graph_jit.state_context.interleaved_stereo_alignment_probe", InterleavedStereoAlignmentProbe);
-IV_NODE("iv.test.graph_jit.state_context.feedback_counter", FeedbackCounter);
-IV_NODE("iv.test.graph_jit.state_context.latency_argument_ramp_source", LatencyArgumentRampSource);
-IV_MODULE("iv.test.graph_jit.state_context.compensated_planar_composition_module", compensated_planar_composition_module);
-IV_MODULE("iv.test.graph_jit.state_context.compensated_interleaved_composition_module", compensated_interleaved_composition_module);
-IV_MODULE("iv.test.graph_jit.state_context.feedback_counter_module", feedback_counter_module);
-IV_MODULE("iv.test.graph_jit.state_context.long_compensation_module", long_compensation_module);
-IV_MODULE("iv.test.graph_jit.state_context.leading_node_module", leading_node_module);
-IV_MODULE("iv.test.graph_jit.state_context.source_latency_module", source_latency_module);
-IV_MODULE("iv.test.graph_jit.state_context.routed_feedback_module", routed_feedback_module);
-IV_NODE("iv.test.graph_jit.state_context.neutral_feedback_counter", NeutralFeedbackCounter);
-IV_NODE("iv.test.graph_jit.state_context.routed_history_probe", RoutedHistoryProbe);
-IV_MODULE("iv.test.graph_jit.state_context.neutral_feedback_counter_module", neutral_feedback_counter_module);
-IV_MODULE("iv.test.graph_jit.state_context.routed_rewire_module", routed_rewire_module);
-IV_NODE("iv.test.graph_jit.state_context.interleaved_left_probe", InterleavedLeftProbe);
-IV_NODE("iv.test.graph_jit.state_context.converted_sequence_probe", ConvertedSequenceProbe);
-IV_NODE("iv.test.graph_jit.state_context.neutral_sequence_probe", NeutralSequenceProbe);
-IV_NODE("iv.test.graph_jit.state_context.neutral_compensated_sequence_probe", NeutralCompensatedSequenceProbe);
-IV_MODULE("iv.test.graph_jit.state_context.tiled_rewire_module", tiled_rewire_module);
-IV_MODULE("iv.test.graph_jit.state_context.interleaved_mono_rewire_module", interleaved_mono_rewire_module);
-IV_MODULE("iv.test.graph_jit.state_context.neutral_latency_module", neutral_latency_module);
-IV_MODULE("iv.test.graph_jit.state_context.neutral_compensated_module", neutral_compensated_module);
-IV_MODULE("iv.test.graph_jit.state_context.connected_input_module", connected_input_module);
-IV_MODULE("iv.test.graph_jit.state_context.tiled_compensation_module", tiled_compensation_module);
-IV_MODULE("iv.test.graph_jit.state_context.detach_feedback_module", detach_feedback_module);
+    persisted_recording_coverage_module, "Persisted recording coverage module");
+IV_MODULE("iv.test.graph_jit.state_context.playback_sample_history_module", playback_sample_history_module, "Playback sample history module");
+IV_MODULE("iv.test.graph_jit.state_context.playback_sample_history_replacement_module", playback_sample_history_replacement_module, "Playback sample history replacement module");
+IV_MODULE("iv.test.graph_jit.state_context.playback_sample_window_module", playback_sample_window_module, "Playback sample window module");
+IV_MODULE("iv.test.graph_jit.state_context.playback_mixed_sample_module", playback_mixed_sample_module, "Playback mixed sample module");
+IV_MODULE("iv.test.graph_jit.state_context.playback_event_history_module", playback_event_history_module, "Playback event history module");
+IV_MODULE("iv.test.graph_jit.state_context.playback_event_history_replacement_module", playback_event_history_replacement_module, "Playback event history replacement module");
+IV_MODULE("iv.test.graph_jit.state_context.playback_mixed_event_module", playback_mixed_event_module, "Playback mixed event module");
+IV_MODULE("iv.test.graph_jit.state_context.playback_sample_rewire_module", playback_sample_rewire_module, "Playback sample rewire module");
+IV_MODULE("iv.test.graph_jit.state_context.playback_event_rewire_module", playback_event_rewire_module, "Playback event rewire module");
+IV_NODE("iv.test.graph_jit.state_context.latent_window_source", LatentWindowSource, "Latent window source");
+IV_NODE("iv.test.graph_jit.state_context.large_latent_window_source", LargeLatentWindowSource, "Large latent window source");
+IV_NODE("iv.test.graph_jit.state_context.latent_window_consumer", LatentWindowConsumer, "Latent window consumer");
+IV_MODULE("iv.test.graph_jit.state_context.latent_window_compact_carry_module", latent_window_compact_carry_module, "Latent window compact carry module");
+IV_MODULE("iv.test.graph_jit.state_context.latent_window_ring_module", latent_window_ring_module, "Latent window ring module");
+IV_MODULE("iv.test.graph_jit.state_context.latent_window_consumer_compact_carry_module", latent_window_consumer_compact_carry_module, "Latent window consumer compact carry module");
+IV_MODULE("iv.test.graph_jit.state_context.latent_window_consumer_ring_module", latent_window_consumer_ring_module, "Latent window consumer ring module");
+IV_NODE("iv.test.graph_jit.state_context.compensated_ramp_probe", CompensatedRampProbe, "Compensated ramp probe");
+IV_NODE("iv.test.graph_jit.state_context.compensated_ramp_history_probe", CompensatedRampHistoryProbe, "Compensated ramp history probe");
+IV_MODULE("iv.test.graph_jit.state_context.compensated_ramp_second_reader_module", compensated_ramp_second_reader_module, "Compensated ramp second reader module");
+IV_MODULE("iv.test.graph_jit.state_context.compensated_ramp_history_reader_module", compensated_ramp_history_reader_module, "Compensated ramp history reader module");
+IV_MODULE("iv.test.graph_jit.state_context.compensated_ramp_history_probe_module", compensated_ramp_history_probe_module, "Compensated ramp history probe module");
+IV_NODE("iv.test.graph_jit.state_context.moving_state_probe", MovingStateProbe, "Moving state probe");
+IV_MODULE("iv.test.graph_jit.state_context.moving_state_module", moving_state_module, "Moving state module");
+IV_NODE("iv.test.graph_jit.state_context.offset_sample_ramp_source", OffsetSampleRampSource, "Offset sample ramp source");
+IV_NODE("iv.test.graph_jit.state_context.compensated_sequence_probe", CompensatedSequenceProbe, "Compensated sequence probe");
+IV_MODULE("iv.test.graph_jit.state_context.compensated_sequence_module", compensated_sequence_module, "Compensated sequence module");
+IV_MODULE("iv.test.graph_jit.state_context.compensated_sequence_rewire_module", compensated_sequence_rewire_module, "Compensated sequence rewire module");
+IV_MODULE("iv.test.graph_jit.state_context.compensated_latent_history_probe_module", compensated_latent_history_probe_module, "Compensated latent history probe module");
+IV_MODULE("iv.test.graph_jit.state_context.compensated_converted_history_reader_module", compensated_converted_history_reader_module, "Compensated converted history reader module");
+IV_NODE("iv.test.graph_jit.state_context.sample_sequence_probe", SampleSequenceProbe, "Sample sequence probe");
+IV_NODE("iv.test.graph_jit.state_context.planar_stereo_alignment_probe", PlanarStereoAlignmentProbe, "Planar stereo alignment probe");
+IV_NODE("iv.test.graph_jit.state_context.interleaved_stereo_alignment_probe", InterleavedStereoAlignmentProbe, "Interleaved stereo alignment probe");
+IV_NODE("iv.test.graph_jit.state_context.feedback_counter", FeedbackCounter, "Feedback counter");
+IV_NODE("iv.test.graph_jit.state_context.latency_argument_ramp_source", LatencyArgumentRampSource, "Latency argument ramp source");
+IV_MODULE("iv.test.graph_jit.state_context.compensated_planar_composition_module", compensated_planar_composition_module, "Compensated planar composition module");
+IV_MODULE("iv.test.graph_jit.state_context.compensated_interleaved_composition_module", compensated_interleaved_composition_module, "Compensated interleaved composition module");
+IV_MODULE("iv.test.graph_jit.state_context.feedback_counter_module", feedback_counter_module, "Feedback counter module");
+IV_MODULE("iv.test.graph_jit.state_context.long_compensation_module", long_compensation_module, "Long compensation module");
+IV_MODULE("iv.test.graph_jit.state_context.leading_node_module", leading_node_module, "Leading node module");
+IV_MODULE("iv.test.graph_jit.state_context.source_latency_module", source_latency_module, "Source latency module");
+IV_MODULE("iv.test.graph_jit.state_context.routed_feedback_module", routed_feedback_module, "Routed feedback module");
+IV_NODE("iv.test.graph_jit.state_context.neutral_feedback_counter", NeutralFeedbackCounter, "Neutral feedback counter");
+IV_NODE("iv.test.graph_jit.state_context.routed_history_probe", RoutedHistoryProbe, "Routed history probe");
+IV_MODULE("iv.test.graph_jit.state_context.neutral_feedback_counter_module", neutral_feedback_counter_module, "Neutral feedback counter module");
+IV_MODULE("iv.test.graph_jit.state_context.routed_rewire_module", routed_rewire_module, "Routed rewire module");
+IV_NODE("iv.test.graph_jit.state_context.interleaved_left_probe", InterleavedLeftProbe, "Interleaved left probe");
+IV_NODE("iv.test.graph_jit.state_context.converted_sequence_probe", ConvertedSequenceProbe, "Converted sequence probe");
+IV_NODE("iv.test.graph_jit.state_context.neutral_sequence_probe", NeutralSequenceProbe, "Neutral sequence probe");
+IV_NODE("iv.test.graph_jit.state_context.neutral_compensated_sequence_probe", NeutralCompensatedSequenceProbe, "Neutral compensated sequence probe");
+IV_MODULE("iv.test.graph_jit.state_context.tiled_rewire_module", tiled_rewire_module, "Tiled rewire module");
+IV_MODULE("iv.test.graph_jit.state_context.interleaved_mono_rewire_module", interleaved_mono_rewire_module, "Interleaved mono rewire module");
+IV_MODULE("iv.test.graph_jit.state_context.neutral_latency_module", neutral_latency_module, "Neutral latency module");
+IV_MODULE("iv.test.graph_jit.state_context.neutral_compensated_module", neutral_compensated_module, "Neutral compensated module");
+IV_MODULE("iv.test.graph_jit.state_context.connected_input_module", connected_input_module, "Connected input module");
+IV_MODULE("iv.test.graph_jit.state_context.tiled_compensation_module", tiled_compensation_module, "Tiled compensation module");
+IV_MODULE("iv.test.graph_jit.state_context.detach_feedback_module", detach_feedback_module, "Detach feedback module");
 
 )cpp";
     static constexpr std::string_view part_5 = R"cpp(
@@ -6790,10 +6790,10 @@ void native_batch_feedback_module(iv::GraphBuilder& graph)
 
 IV_NODE(
     "iv.test.graph_jit.state_context.native_batch_feedback",
-    NativeBatchFeedbackProbe);
+    NativeBatchFeedbackProbe, "Native batch feedback");
 IV_MODULE(
     "iv.test.graph_jit.state_context.native_batch_feedback_module",
-    native_batch_feedback_module);
+    native_batch_feedback_module, "Native batch feedback module");
 
 // A MIDI source read by a MIDI consumer with history 160, and with `added`
 // also by a trigger consumer with history 320, through a conversion.
@@ -6808,7 +6808,7 @@ void added_event_consumer_module(iv::GraphBuilder& graph, bool added = false)
     }
     graph.outputs();
 }
-IV_MODULE("iv.test.graph_jit.state_context.added_event_consumer_module", added_event_consumer_module);
+IV_MODULE("iv.test.graph_jit.state_context.added_event_consumer_module", added_event_consumer_module, "Added event consumer module");
 
 // A sample input and a trigger input, which latency compensation aligns:
 // records the trigger positions each call reads.
@@ -6840,7 +6840,7 @@ struct CompensatedTriggerProbe {
         }
     }
 };
-IV_NODE("iv.test.graph_jit.state_context.compensated_trigger_probe", CompensatedTriggerProbe);
+IV_NODE("iv.test.graph_jit.state_context.compensated_trigger_probe", CompensatedTriggerProbe, "Compensated trigger probe");
 
 // The probe's sample input reads a ramp of latency 7, so its trigger input
 // reads the trigger source with compensation 7.
@@ -6853,7 +6853,7 @@ void compensated_trigger_module(iv::GraphBuilder& graph)
     probe.connect_event_input(0, source.event_port());
     graph.outputs();
 }
-IV_MODULE("iv.test.graph_jit.state_context.compensated_trigger_module", compensated_trigger_module);
+IV_MODULE("iv.test.graph_jit.state_context.compensated_trigger_module", compensated_trigger_module, "Compensated trigger module");
 
 // A trigger source drives a subgraph's event input, which feeds the probe,
 // whose sample input reads a ramp of latency 7, and a consumer (history 8)
@@ -6875,7 +6875,7 @@ void routed_unequal_compensation_module(iv::GraphBuilder& graph)
     routed.connect_event_input(0, source.event_port());
     graph.outputs();
 }
-IV_MODULE("iv.test.graph_jit.state_context.routed_unequal_compensation_module", routed_unequal_compensation_module);
+IV_MODULE("iv.test.graph_jit.state_context.routed_unequal_compensation_module", routed_unequal_compensation_module, "Routed unequal compensation module");
 
 // A trigger output of history 8 and the latency its argument gives. Each
 // block authors one trigger just before itself, in its latency window, one at
@@ -6904,7 +6904,7 @@ struct LatentTriggerSource {
         ctx.output<"trigger">().push(iv::TriggerEvent{}, ctx.block_size - 2);
     }
 };
-IV_NODE("iv.test.graph_jit.state_context.latent_trigger_source", LatentTriggerSource);
+IV_NODE("iv.test.graph_jit.state_context.latent_trigger_source", LatentTriggerSource, "Latent trigger source");
 
 // The latent source read by a consumer of history 8, which reads the
 // source's own retained stream: the source keeps at least that history.
@@ -6915,7 +6915,7 @@ void latent_direct_event_module(iv::GraphBuilder& graph, std::size_t latency = 4
     sink.connect_event_input(0, source.event_port());
     graph.outputs();
 }
-IV_MODULE("iv.test.graph_jit.state_context.latent_direct_event_module", latent_direct_event_module);
+IV_MODULE("iv.test.graph_jit.state_context.latent_direct_event_module", latent_direct_event_module, "Latent direct event module");
 
 // A persisted sample output at pace 2 with latency 1 (one value). Each value is
 // first written as its value index and revised, while the next value is
@@ -6941,13 +6941,13 @@ struct RevisingPacedCaptureSource {
         }
     }
 };
-IV_NODE("iv.test.graph_jit.state_context.revising_paced_capture_source", RevisingPacedCaptureSource);
+IV_NODE("iv.test.graph_jit.state_context.revising_paced_capture_source", RevisingPacedCaptureSource, "Revising paced capture source");
 void revising_paced_capture_module(iv::GraphBuilder& graph)
 {
     (void)graph.node<"iv.test.graph_jit.state_context.revising_paced_capture_source">();
     graph.outputs();
 }
-IV_MODULE("iv.test.graph_jit.state_context.revising_paced_capture_module", revising_paced_capture_module);
+IV_MODULE("iv.test.graph_jit.state_context.revising_paced_capture_module", revising_paced_capture_module, "Revising paced capture module");
 
 // author_latent_window() with latency 2 and the history its argument gives.
 struct LatentWindowHistorySource {
@@ -6974,7 +6974,7 @@ struct LatentWindowHistorySource {
             ctx.state(), ctx.output<"out">(), ctx.index.whole().signed_value(), ctx.block_size);
     }
 };
-IV_NODE("iv.test.graph_jit.state_context.latent_window_history_source", LatentWindowHistorySource);
+IV_NODE("iv.test.graph_jit.state_context.latent_window_history_source", LatentWindowHistorySource, "Latent window history source");
 
 // The source read by LatentWindowConsumer (history 4), which reads its ring.
 void latent_window_growth_module(iv::GraphBuilder& graph, std::size_t history = 3)
@@ -6984,7 +6984,7 @@ void latent_window_growth_module(iv::GraphBuilder& graph, std::size_t history = 
     consumer(source);
     graph.outputs();
 }
-IV_MODULE("iv.test.graph_jit.state_context.latent_window_growth_module", latent_window_growth_module);
+IV_MODULE("iv.test.graph_jit.state_context.latent_window_growth_module", latent_window_growth_module, "Latent window growth module");
 
 // A ramp (value = position) whose input only closes a feedback loop.
 struct LoopRampSource {
@@ -7005,7 +7005,7 @@ struct LoopRampSource {
         }
     }
 };
-IV_NODE("iv.test.graph_jit.state_context.loop_ramp_source", LoopRampSource);
+IV_NODE("iv.test.graph_jit.state_context.loop_ramp_source", LoopRampSource, "Loop ramp source");
 
 // Compares its two inputs at every position and passes the first through.
 struct AlignedPairPassthrough {
@@ -7043,7 +7043,7 @@ struct AlignedPairPassthrough {
         }
     }
 };
-IV_NODE("iv.test.graph_jit.state_context.aligned_pair_passthrough", AlignedPairPassthrough);
+IV_NODE("iv.test.graph_jit.state_context.aligned_pair_passthrough", AlignedPairPassthrough, "Aligned pair passthrough");
 
 // A loop: the passthrough reads a ramp of latency 7 and the loop ramp, which
 // reads the passthrough back through detach(8). A probe after the loop compares
@@ -7060,7 +7060,7 @@ void scc_compensation_module(iv::GraphBuilder& graph)
     probe(plain, passthrough);
     graph.outputs();
 }
-IV_MODULE("iv.test.graph_jit.state_context.scc_compensation_module", scc_compensation_module);
+IV_MODULE("iv.test.graph_jit.state_context.scc_compensation_module", scc_compensation_module, "Scc compensation module");
 
 // Persisted Tick outputs of latency 1. Each sample is first written as its
 // position and then revised, during the next position, to 1000 + its position.
@@ -7096,14 +7096,14 @@ struct RevisingCaptureSource {
         ctx.output<"events">().push(iv::TriggerEvent{}, ctx.block_size - 1);
     }
 };
-IV_NODE("iv.test.graph_jit.state_context.revising_capture_source", RevisingCaptureSource);
+IV_NODE("iv.test.graph_jit.state_context.revising_capture_source", RevisingCaptureSource, "Revising capture source");
 void revising_capture_module(iv::GraphBuilder& graph)
 {
     (void)graph.node<"iv.test.graph_jit.state_context.revising_capture_source">();
     graph.outputs();
 }
-IV_MODULE("iv.test.graph_jit.state_context.revising_capture_module", revising_capture_module);
-IV_NODE("iv.test.graph_jit.state_context.constant", iv::Constant);
+IV_MODULE("iv.test.graph_jit.state_context.revising_capture_module", revising_capture_module, "Revising capture module");
+IV_NODE("iv.test.graph_jit.state_context.constant", iv::Constant, "Constant");
 // A Constant read by a history reader. `raised` selects its value.
 void constant_history_module(iv::GraphBuilder& graph, bool raised = false)
 {
@@ -7113,7 +7113,7 @@ void constant_history_module(iv::GraphBuilder& graph, bool raised = false)
     sink(source);
     graph.outputs();
 }
-IV_MODULE("iv.test.graph_jit.state_context.constant_history_module", constant_history_module);
+IV_MODULE("iv.test.graph_jit.state_context.constant_history_module", constant_history_module, "Constant history module");
 
 // A pointwise node in a feedback loop: out = in * gain + id. Its gain reads a
 // Sequential input without history.
@@ -7165,7 +7165,7 @@ struct FeedbackGain {
         state.last_output = out;
     }
 };
-IV_NODE("iv.test.graph_jit.state_context.feedback_gain", FeedbackGain);
+IV_NODE("iv.test.graph_jit.state_context.feedback_gain", FeedbackGain, "Feedback gain");
 
 // head reads tail one sample later through detach(1); both read a Constant
 // gain. The two nodes form one cyclic region. A non-zero initial value gives
@@ -7188,7 +7188,7 @@ void constant_gain_feedback_module(
 }
 IV_MODULE(
     "iv.test.graph_jit.state_context.constant_gain_feedback_module",
-    constant_gain_feedback_module);
+    constant_gain_feedback_module, "Constant gain feedback module");
 
 // A pointwise node that, like SawOscillator, reads immutable inputs with
 // history: out = in * gain[n - 1] + offset[n - 2] + the sum of gain's
@@ -7244,7 +7244,7 @@ struct ImmutableHistoryReader {
         state.last_output = out;
     }
 };
-IV_NODE("iv.test.graph_jit.state_context.immutable_history_reader", ImmutableHistoryReader);
+IV_NODE("iv.test.graph_jit.state_context.immutable_history_reader", ImmutableHistoryReader, "Immutable history reader");
 
 // A ramp read by two ImmutableHistoryReaders of one Constant gain. Neither
 // reader is in a cycle; offset stays disconnected.
@@ -7265,7 +7265,7 @@ void immutable_history_module(iv::GraphBuilder& graph, float gain = 0.5f)
 }
 IV_MODULE(
     "iv.test.graph_jit.state_context.immutable_history_module",
-    immutable_history_module);
+    immutable_history_module, "Immutable history module");
 
 // Two equal reader shapes with different immutable gain values. GraphJit can
 // share their structure specialization while each invocation still reads its
@@ -7289,7 +7289,7 @@ void distinct_immutable_history_module(iv::GraphBuilder& graph)
 }
 IV_MODULE(
     "iv.test.graph_jit.state_context.distinct_immutable_history_module",
-    distinct_immutable_history_module);
+    distinct_immutable_history_module, "Distinct immutable history module");
 // A tiny Tock consumer forces background replay of the curve without
 // materializing its entire duration. The point source still retains its one
 // complete sparse event Region, including the two points outside this window.
@@ -7322,7 +7322,7 @@ struct AutomationWindow {
         }
     }
 };
-IV_NODE("iv.test.automation.window", AutomationWindow);
+IV_NODE("iv.test.automation.window", AutomationWindow, "Window");
 struct AutomationBoundSignal {
     iv::Sample value;
     explicit AutomationBoundSignal(iv::Sample value_) : value(value_) {}
@@ -7341,7 +7341,7 @@ struct AutomationBoundSignal {
             for (std::size_t slot = 0; slot < run.size(); ++slot) run.value(slot) = value;
     }
 };
-IV_NODE("iv.test.automation.bound_signal", AutomationBoundSignal);
+IV_NODE("iv.test.automation.bound_signal", AutomationBoundSignal, "Bound signal");
 void automation_window_module(iv::GraphBuilder& graph) {
     using namespace iv;
     // Ten hours of sparse coverage, but only three event records. None lies
@@ -7359,7 +7359,7 @@ void automation_window_module(iv::GraphBuilder& graph) {
     live(curve);
     graph.outputs();
 }
-IV_MODULE("iv.test.automation.window_module", automation_window_module);
+IV_MODULE("iv.test.automation.window_module", automation_window_module, "Window module");
 
 // Replayable pointwise Tick nodes whose only input is Sequential. Both compute
 // a value at every position; an input position without upstream coverage
@@ -7376,7 +7376,7 @@ struct ReplayAddOne {
             output[frame] = iv::Sample{static_cast<float>(input.get_value(frame)) + 1.0f};
     }
 };
-IV_NODE("iv.test.replay.add_one", ReplayAddOne);
+IV_NODE("iv.test.replay.add_one", ReplayAddOne, "Add one");
 struct ReplayTenMinus {
     static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
     static constexpr auto inputs() { return std::array{iv::input<iv::Sample>("in")}; }
@@ -7388,7 +7388,7 @@ struct ReplayTenMinus {
             output[frame] = iv::Sample{10.0f - static_cast<float>(input.get_value(frame))};
     }
 };
-IV_NODE("iv.test.replay.ten_minus", ReplayTenMinus);
+IV_NODE("iv.test.replay.ten_minus", ReplayTenMinus, "Ten minus");
 // A persisted Tock window that demands one configured range of its input,
 // forcing background replay of the Tick node that feeds it.
 struct ReplayWindow {
@@ -7426,7 +7426,7 @@ struct ReplayWindow {
         }
     }
 };
-IV_NODE("iv.test.replay.window", ReplayWindow);
+IV_NODE("iv.test.replay.window", ReplayWindow, "Window");
 
 void coverage_manual_window_module(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
@@ -7439,7 +7439,7 @@ void coverage_manual_window_module(iv::GraphBuilder& graph) {
     module(source);
     graph.outputs();
 }
-IV_MODULE("iv.test.replay.coverage_manual_window", coverage_manual_window_module);
+IV_MODULE("iv.test.replay.coverage_manual_window", coverage_manual_window_module, "Coverage manual window");
 
 struct StereoBoundaryCoverageSource {
     static constexpr auto outputs() {
@@ -7462,7 +7462,7 @@ struct StereoBoundaryCoverageSource {
         }
     }
 };
-IV_NODE("iv.test.replay.stereo_boundary_source", StereoBoundaryCoverageSource);
+IV_NODE("iv.test.replay.stereo_boundary_source", StereoBoundaryCoverageSource, "Stereo boundary source");
 
 void stereo_coverage_boundary_module(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.replay.stereo_boundary_source">();
@@ -7475,7 +7475,7 @@ void stereo_coverage_boundary_module(iv::GraphBuilder& graph) {
     module(source);
     graph.outputs();
 }
-IV_MODULE("iv.test.replay.stereo_coverage_boundary", stereo_coverage_boundary_module);
+IV_MODULE("iv.test.replay.stereo_coverage_boundary", stereo_coverage_boundary_module, "Stereo coverage boundary");
 
 void unused_coverage_input_module(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
@@ -7486,7 +7486,7 @@ void unused_coverage_input_module(iv::GraphBuilder& graph) {
     module(source);
     graph.outputs();
 }
-IV_MODULE("iv.test.replay.unused_coverage_input", unused_coverage_input_module);
+IV_MODULE("iv.test.replay.unused_coverage_input", unused_coverage_input_module, "Unused coverage input");
 
 void replay_sequential_resolution_module(iv::GraphBuilder& graph) {
     // The source covers only [20, 24), with values 4, 5, 6 and 7.
@@ -7510,7 +7510,7 @@ void replay_sequential_resolution_module(iv::GraphBuilder& graph) {
     generated(generator);
     graph.outputs();
 }
-IV_MODULE("iv.test.replay.sequential_resolution_module", replay_sequential_resolution_module);
+IV_MODULE("iv.test.replay.sequential_resolution_module", replay_sequential_resolution_module, "Sequential resolution module");
 
 template<bool ModuleChild>
 struct ReplayManualFallback {
@@ -7542,8 +7542,8 @@ struct ReplayManualFallback {
 };
 using ReplayManualFull = ReplayManualFallback<false>;
 using ReplayManualUnion = ReplayManualFallback<true>;
-IV_NODE("iv.test.replay.manual_full", ReplayManualFull);
-IV_NODE("iv.test.replay.manual_union", ReplayManualUnion);
+IV_NODE("iv.test.replay.manual_full", ReplayManualFull, "Manual full");
+IV_NODE("iv.test.replay.manual_union", ReplayManualUnion, "Manual union");
 struct ReplayLiveProbe {
     struct State { std::uint64_t calls = 0; std::array<float, 8> values{}; };
     static constexpr auto inputs() { return std::array{iv::input<iv::Sample>("value")}; }
@@ -7556,7 +7556,7 @@ struct ReplayLiveProbe {
             state.values[frame] = static_cast<float>(input.get_value(frame));
     }
 };
-IV_NODE("iv.test.replay.live_probe", ReplayLiveProbe);
+IV_NODE("iv.test.replay.live_probe", ReplayLiveProbe, "Live probe");
 void live_union_fallback_module(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
     auto sparse = graph.node<"iv.test.replay.add_one">();
@@ -7567,7 +7567,7 @@ void live_union_fallback_module(iv::GraphBuilder& graph) {
     probe(resolved);
     graph.outputs();
 }
-IV_MODULE("iv.test.replay.live_union_fallback", live_union_fallback_module);
+IV_MODULE("iv.test.replay.live_union_fallback", live_union_fallback_module, "Live union fallback");
 
 struct ReplayEventCoverageValue {
     static constexpr auto replay_mode = iv::TickReplayMode::input_union;
@@ -7581,7 +7581,7 @@ struct ReplayEventCoverageValue {
             output[frame] = iv::Sample{3.f};
     }
 };
-IV_NODE("iv.test.replay.event_coverage_value", ReplayEventCoverageValue);
+IV_NODE("iv.test.replay.event_coverage_value", ReplayEventCoverageValue, "Event coverage value");
 
 void live_event_union_fallback_module(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.graph_jit.state_context.single_region_event_source">();
@@ -7593,7 +7593,7 @@ void live_event_union_fallback_module(iv::GraphBuilder& graph) {
     probe(resolved);
     graph.outputs();
 }
-IV_MODULE("iv.test.replay.live_event_union_fallback", live_event_union_fallback_module);
+IV_MODULE("iv.test.replay.live_event_union_fallback", live_event_union_fallback_module, "Live event union fallback");
 
 struct DelayedSparseSampleProbe {
     struct State { std::uint64_t calls = 0; std::array<float, 2> values{}; };
@@ -7610,7 +7610,7 @@ struct DelayedSparseSampleProbe {
             state.values[frame] = static_cast<float>(input.get_value(frame));
     }
 };
-IV_NODE("iv.test.replay.delayed_sparse_probe", DelayedSparseSampleProbe);
+IV_NODE("iv.test.replay.delayed_sparse_probe", DelayedSparseSampleProbe, "Delayed sparse probe");
 
 void delayed_sparse_coverage_module(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
@@ -7623,7 +7623,7 @@ void delayed_sparse_coverage_module(iv::GraphBuilder& graph) {
     probe(pass, alignment);
     graph.outputs();
 }
-IV_MODULE("iv.test.replay.delayed_sparse_coverage", delayed_sparse_coverage_module);
+IV_MODULE("iv.test.replay.delayed_sparse_coverage", delayed_sparse_coverage_module, "Delayed sparse coverage");
 
 void replay_module_manual_resolution(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
@@ -7647,7 +7647,7 @@ void replay_module_manual_resolution(iv::GraphBuilder& graph) {
     live_module(module);
     graph.outputs();
 }
-IV_MODULE("iv.test.replay.module_manual_resolution", replay_module_manual_resolution);
+IV_MODULE("iv.test.replay.module_manual_resolution", replay_module_manual_resolution, "Module manual resolution");
 
 )cpp";
     static constexpr std::string_view internal_nodes = R"cpp(
@@ -7690,14 +7690,14 @@ struct SuspendableCoverageProbe {
                 run.value(slot) = input.value(static_cast<std::size_t>(run.index(slot)));
     }
 };
-IV_NODE("iv.test.graph_jit.suspendable_coverage_probe", SuspendableCoverageProbe);
+IV_NODE("iv.test.graph_jit.suspendable_coverage_probe", SuspendableCoverageProbe, "Suspendable coverage probe");
 void suspendable_coverage_module(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
     auto probe = graph.node<"iv.test.graph_jit.suspendable_coverage_probe">();
     probe(source);
     graph.outputs();
 }
-IV_MODULE("iv.test.graph_jit.suspendable_coverage_module", suspendable_coverage_module);
+IV_MODULE("iv.test.graph_jit.suspendable_coverage_module", suspendable_coverage_module, "Suspendable coverage module");
 
 // Deliberately private: no IV_NODE registration for this concrete type.
 struct PrivateArithmeticProbe {
@@ -7728,7 +7728,7 @@ void private_arithmetic_module(iv::GraphBuilder& graph) {
     probe(ramp * half + two);
     graph.outputs();
 }
-IV_MODULE("iv.test.graph_jit.private_arithmetic_module", private_arithmetic_module);
+IV_MODULE("iv.test.graph_jit.private_arithmetic_module", private_arithmetic_module, "Private arithmetic module");
 void summed_module_boundaries(iv::GraphBuilder& graph) {
     auto voices = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
         for (std::size_t voice = 0; voice < 17; ++voice) {
@@ -7747,7 +7747,7 @@ void summed_module_boundaries(iv::GraphBuilder& graph) {
     probe(pass);
     graph.outputs();
 }
-IV_MODULE("iv.test.graph_jit.summed_module_boundaries", summed_module_boundaries);
+IV_MODULE("iv.test.graph_jit.summed_module_boundaries", summed_module_boundaries, "Summed module boundaries");
 
 struct HugeComputedRegionSource {
     struct State { std::uint64_t values_written = 0; std::uint64_t logical_extent = 0; };
@@ -7770,14 +7770,14 @@ struct HugeComputedRegionSource {
         }
     }
 };
-IV_NODE("iv.test.computed.huge_source", HugeComputedRegionSource);
+IV_NODE("iv.test.computed.huge_source", HugeComputedRegionSource, "Huge source");
 void huge_computed_playback(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.computed.huge_source">();
     auto consumer = graph.node<"iv.test.graph_jit.state_context.manual_control_slice_probe">();
     consumer(source);
     graph.outputs();
 }
-IV_MODULE("iv.test.computed.huge_playback", huge_computed_playback);
+IV_MODULE("iv.test.computed.huge_playback", huge_computed_playback, "Huge playback");
 
 struct CompleteRegionCopy {
     static constexpr auto inputs() {
@@ -7802,14 +7802,14 @@ struct CompleteRegionCopy {
                 run.value(slot) = input.at(run.position(slot));
     }
 };
-IV_NODE("iv.test.computed.complete_copy", CompleteRegionCopy);
+IV_NODE("iv.test.computed.complete_copy", CompleteRegionCopy, "Complete copy");
 void invalid_computed_complete_connection(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.computed.huge_source">();
     auto complete = graph.node<"iv.test.computed.complete_copy">();
     complete(source);
     graph.outputs();
 }
-IV_MODULE("iv.test.computed.invalid_complete_connection", invalid_computed_complete_connection);
+IV_MODULE("iv.test.computed.invalid_complete_connection", invalid_computed_complete_connection, "Invalid complete connection");
 struct BufferedRegionForTick {
     static constexpr auto outputs() {
         return std::array{iv::output<iv::Sample>("buffered", iv::OutputProduction::region, iv::OutputRealization::buffered)};
@@ -7823,7 +7823,7 @@ struct BufferedRegionForTick {
                 run.value(slot) = iv::Sample{static_cast<float>(run.position(slot).signed_value())};
     }
 };
-IV_NODE("iv.test.computed.buffered_for_tick", BufferedRegionForTick);
+IV_NODE("iv.test.computed.buffered_for_tick", BufferedRegionForTick, "Buffered for tick");
 struct CompleteTickRegionSink {
     static constexpr auto inputs() {
         return std::array{iv::input<iv::Sample>("complete", iv::InputAccess::region, iv::InputContentAccess::complete_buffer)};
@@ -7837,7 +7837,7 @@ struct CompleteTickRegionSink {
             "complete-buffer Tick input has incorrect contents");
     }
 };
-IV_NODE("iv.test.computed.complete_tick_sink", CompleteTickRegionSink);
+IV_NODE("iv.test.computed.complete_tick_sink", CompleteTickRegionSink, "Complete tick sink");
 void complete_tick_input_module(iv::GraphBuilder& graph) {
     auto source = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
         boundary.outputs(graph.node<"iv.test.computed.buffered_for_tick">());
@@ -7846,7 +7846,7 @@ void complete_tick_input_module(iv::GraphBuilder& graph) {
     sink(source);
     graph.outputs();
 }
-IV_MODULE("iv.test.computed.complete_tick_input", complete_tick_input_module);
+IV_MODULE("iv.test.computed.complete_tick_input", complete_tick_input_module, "Complete tick input");
 
 struct CurvePointTransform {
     static constexpr auto inputs() {
@@ -7879,7 +7879,7 @@ struct CurvePointTransform {
         });
     }
 };
-IV_NODE("iv.test.automation.transform", CurvePointTransform);
+IV_NODE("iv.test.automation.transform", CurvePointTransform, "Transform");
 void transformed_sparse_curve_module(iv::GraphBuilder& graph) {
     using namespace iv;
     auto points = graph.node<"iv.builtin.automation.point_source">(graph.immutable_array<iv::automation::Point>(
@@ -7896,7 +7896,7 @@ void transformed_sparse_curve_module(iv::GraphBuilder& graph) {
     window(manual);
     graph.outputs();
 }
-IV_MODULE("iv.test.automation.transformed_sparse_curve", transformed_sparse_curve_module);
+IV_MODULE("iv.test.automation.transformed_sparse_curve", transformed_sparse_curve_module, "Transformed sparse curve");
 void project_beat_grid_module(iv::GraphBuilder& graph) {
     auto beats = graph.node<"iv.builtin.beats">();
     auto timeline = graph.node<"iv.builtin.timeline">();
@@ -7909,7 +7909,7 @@ void project_beat_grid_module(iv::GraphBuilder& graph) {
     }, "nested");
     graph.outputs();
 }
-IV_MODULE("iv.test.replay.project_beat_grid", project_beat_grid_module);
+IV_MODULE("iv.test.replay.project_beat_grid", project_beat_grid_module, "Project beat grid");
 void empty_sparse_curve_module(iv::GraphBuilder& graph) {
     auto curve = graph.node<"iv.builtin.automation.curve">(std::vector<iv::automation::Point>{});
     auto manual = graph.node<"iv.test.replay.manual_full">();
@@ -7918,7 +7918,7 @@ void empty_sparse_curve_module(iv::GraphBuilder& graph) {
     window(manual);
     graph.outputs();
 }
-IV_MODULE("iv.test.automation.empty_sparse_curve", empty_sparse_curve_module);
+IV_MODULE("iv.test.automation.empty_sparse_curve", empty_sparse_curve_module, "Empty sparse curve");
 
 void rolling_automation_module(iv::GraphBuilder& graph) {
     auto curve = graph.node<"iv.builtin.automation.curve">(
@@ -7936,7 +7936,7 @@ void rolling_automation_module(iv::GraphBuilder& graph) {
     live(module);
     graph.outputs();
 }
-IV_MODULE("iv.test.automation.rolling", rolling_automation_module);
+IV_MODULE("iv.test.automation.rolling", rolling_automation_module, "Rolling");
 
 )cpp";
     static_assert(part_1.size() < 60 * 1024);

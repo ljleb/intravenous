@@ -13,4 +13,4 @@ struct InvalidTickRegionOutput {
 
 static_assert(iv::details::has_tick_family_v<InvalidTickRegionOutput>);
 
-IV_NODE("iv.test.invalid_tick_region_output", InvalidTickRegionOutput);
+IV_NODE("iv.test.invalid_tick_region_output", InvalidTickRegionOutput, "Invalid tick region output");

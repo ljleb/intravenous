@@ -13,4 +13,4 @@ struct InvalidTockSequentialOutput {
 
 static_assert(iv::details::has_tock_family_v<InvalidTockSequentialOutput>);
 
-IV_NODE("iv.test.invalid_tock_sequential_output", InvalidTockSequentialOutput);
+IV_NODE("iv.test.invalid_tock_sequential_output", InvalidTockSequentialOutput, "Invalid tock sequential output");

@@ -10,4 +10,4 @@ void event_loader_project(iv::GraphBuilder& g)
     g.outputs();
 }
 
-IV_MODULE("iv.test.event_loader_project", event_loader_project);
+IV_MODULE("iv.test.event_loader_project", event_loader_project, "Event loader project");

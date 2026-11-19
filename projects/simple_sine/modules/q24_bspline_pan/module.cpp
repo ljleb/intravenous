@@ -599,8 +599,8 @@ struct BaselineFir256
     }
 };
 
-IV_NODE("iv.project.q24_bspline_pan.learned_hrtf", LearnedHrtfSource);
-IV_NODE("iv.project.q24_bspline_pan.baseline_fir_256", BaselineFir256);
+IV_NODE("iv.project.q24_bspline_pan.learned_hrtf", LearnedHrtfSource, "Learned HRTF");
+IV_NODE("iv.project.q24_bspline_pan.baseline_fir_256", BaselineFir256, "Baseline FIR 256");
 
 
 void single_pan(GraphBuilder& g)
@@ -619,7 +619,7 @@ void single_pan(GraphBuilder& g)
 
     g.outputs(hrtf);
 }
-IV_MODULE("iv.project.q24_bspline_pan.single_pan", single_pan);
+IV_MODULE("iv.project.q24_bspline_pan.single_pan", single_pan, "Single Pan");
 
 void module_main(GraphBuilder& g)
 {
@@ -649,4 +649,4 @@ void module_main(GraphBuilder& g)
 
     g.outputs("main"_P = fir);
 }
-IV_MODULE("iv.project.q24_bspline_pan", module_main);
+IV_MODULE("iv.project.q24_bspline_pan", module_main, "Q24 B-Spline Panner");

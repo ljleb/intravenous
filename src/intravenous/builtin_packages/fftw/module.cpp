@@ -257,5 +257,5 @@ struct InverseRealFFT {
 
 } // namespace
 
-IV_NODE("iv.fftw.real_fft", RealFFT);
-IV_NODE("iv.fftw.inverse_real_fft", InverseRealFFT);
+IV_NODE("iv.fftw.real_fft", RealFFT, "Real FFT");
+IV_NODE("iv.fftw.inverse_real_fft", InverseRealFFT, "Inverse Real FFT");

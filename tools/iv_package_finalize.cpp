@@ -1178,7 +1178,7 @@ void validate_package_definitions(
     std::set<std::pair<std::string, std::string>> runtime_definitions;
     for (auto* global : definitions) {
         auto* record = dyn_cast_or_null<ConstantStruct>(global->getInitializer());
-        if (!record || record->getNumOperands() != 11) {
+        if (!record || record->getNumOperands() != 13) {
             fail("malformed IV package definition record");
         }
         auto const kind_value = constant_u64(record->getOperand(0));
@@ -1193,6 +1193,12 @@ void validate_package_definitions(
         auto const id = constant_string_field(
             record->getOperand(1), record->getOperand(2), "stable ID");
         if (id.empty()) fail("IV package definition has an empty stable ID");
+        auto const display_name = constant_string_field(
+            record->getOperand(11), record->getOperand(12), "display name");
+        if (display_name.find_first_not_of(" \t\r\n\v\f") == std::string::npos
+            || display_name.find('\0') != std::string::npos) {
+            fail("IV package definition '" + id + "' requires a display name");
+        }
         if (!runtime_ids.insert(id).second) {
             fail("duplicate IV package definition ID within one IV package: '"
                  + id + "'");

@@ -27,6 +27,7 @@ export type GraphScopeNode = {
         instanceId: string;
         definitionId: string;
         displayName?: string;
+        defaultDisplayName?: string;
         realized: boolean;
         configurationSource?: string;
         packageRoot?: string;

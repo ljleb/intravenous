@@ -486,13 +486,15 @@ export class GraphEditorProvider implements vscode.Disposable {
                     void vscode.window.showErrorMessage(`Cannot edit connection: ${error.message}`);
                 }
             } else if (message?.type === "createGraphNode" || message?.type === "updateGraphNode"
-                || message?.type === "createGraphPackage") {
+                || message?.type === "renameGraphLane" || message?.type === "createGraphPackage") {
                 try {
                     if (message.type === "createGraphNode") {
                         await this.session.createGraphNode(message.definitionId, message.displayName, message.configurationSource);
                     } else if (message.type === "updateGraphNode") {
-                        await this.session.updateGraphNode(message.instanceId, message.displayName, message.configurationSource,
-                            message.previousDisplayName, message.previousConfigurationSource);
+                        await this.session.updateGraphNode(message.instanceId, message.displayName, message.previousDisplayName,
+                            { source: message.configurationSource, previous: message.previousConfigurationSource });
+                    } else if (message.type === "renameGraphLane") {
+                        await this.session.updateGraphNode(message.instanceId, message.displayName, message.previousDisplayName);
                     } else {
                         await this.session.createGraphPackage(message.name);
                     }

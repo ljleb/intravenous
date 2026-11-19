@@ -6,4 +6,4 @@ void module_main(iv::GraphBuilder& g)
     g.outputs(0.01);
 }
 
-IV_MODULE("iv.project.dc_offset", module_main);
+IV_MODULE("iv.project.dc_offset", module_main, "DC Offset");

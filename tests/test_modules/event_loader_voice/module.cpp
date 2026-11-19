@@ -8,4 +8,4 @@ void event_loader_voice(iv::GraphBuilder& g)
     g.outputs();
 }
 
-IV_MODULE("iv.test.event_loader_voice", event_loader_voice);
+IV_MODULE("iv.test.event_loader_voice", event_loader_voice, "Event loader voice");

@@ -11,7 +11,7 @@ struct InvalidInputOnlyTockCallback {
     void tock_coverage(iv::TockCoverageContext<InvalidInputOnlyTockCallback>&) const {}
 };
 
-IV_NODE("iv.test.invalid_input_only_tock_callback", InvalidInputOnlyTockCallback);
+IV_NODE("iv.test.invalid_input_only_tock_callback", InvalidInputOnlyTockCallback, "Invalid input only tock callback");
 
 struct InvalidInputOnlyForwardCallback {
     static constexpr auto inputs()
@@ -27,7 +27,7 @@ struct InvalidInputOnlyForwardCallback {
 
 IV_NODE(
     "iv.test.invalid_input_only_forward_callback",
-    InvalidInputOnlyForwardCallback);
+    InvalidInputOnlyForwardCallback, "Invalid input only forward callback");
 
 struct InvalidOutputOnlyPropagationCallback {
     static constexpr auto outputs()
@@ -44,4 +44,4 @@ struct InvalidOutputOnlyPropagationCallback {
         iv::PropagateReverseCoverageContext<InvalidOutputOnlyPropagationCallback>&) const {}
 };
 
-IV_NODE("iv.test.invalid_output_only_propagation_callback", InvalidOutputOnlyPropagationCallback);
+IV_NODE("iv.test.invalid_output_only_propagation_callback", InvalidOutputOnlyPropagationCallback, "Invalid output only propagation callback");

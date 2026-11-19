@@ -592,7 +592,8 @@ void add_module_message_handler(
 
 std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_snapshot(
     std::uint64_t generation,
-    iv::details::IvModuleConfigureFunction module_build = &configure_module)
+    iv::details::IvModuleConfigureFunction module_build = &configure_module,
+    std::string display_name = {})
 {
     auto revision = std::make_shared<iv::PackageRevision>();
     revision->package_id = "iv.test.project_graph.package";
@@ -619,6 +620,7 @@ std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_snapshot(
         .version = generation,
         .definition = iv::ModuleNodeDefinition{
             .definition_id = definition_id,
+            .display_name = std::move(display_name),
             .package_id = revision->package_id,
             .package_root = revision->package_root,
             .module_id = definition_id,
@@ -2197,6 +2199,49 @@ TEST_F(ProjectGraphFixture, InvalidUpdateBatchDoesNotPartiallyMutateDesiredState
     ASSERT_EQ(listed.size(), 1u);
     EXPECT_EQ(listed.front().display_name, "Original");
     EXPECT_EQ(project_graph.current_generation()->generation, before->generation);
+}
+
+TEST_F(ProjectGraphFixture, LaneNameOverridesAreDurableAndUndoRestoresTheAuthoredDefault)
+{
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1, &configure_module, "Voice")});
+    iv::ProjectStringBuilder created;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "instance:voice", .definition_id = definition_id,
+    }, created); });
+    (void)created.build();
+    ASSERT_EQ(instances.list_instances().size(), 1u);
+    EXPECT_EQ(instances.list_instances().front().display_name, "Voice");
+    EXPECT_FALSE(instances.desired_instances().front().display_name);
+
+    auto rename = [&](std::string name) {
+        iv::ProjectAckBuilder renamed;
+        in_event_source([&] { project_graph.handle_project_update_node_instances({.updates = {
+            {.instance_id = "instance:voice", .display_name = std::move(name)},
+        }}, renamed); });
+        renamed.build();
+    };
+    rename("Bass");
+    EXPECT_EQ(instances.list_instances().front().display_name, "Bass");
+    EXPECT_EQ(instances.list_instances().front().default_display_name, "Voice");
+    EXPECT_EQ(instances.desired_instances().front().display_name, "Bass");
+
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    undo.build();
+    EXPECT_EQ(instances.list_instances().front().display_name, "Voice");
+    EXPECT_FALSE(instances.desired_instances().front().display_name);
+
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    redo.build();
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(2, &configure_module, "Synth voice")});
+    EXPECT_EQ(instances.list_instances().front().display_name, "Bass");
+    EXPECT_EQ(instances.list_instances().front().default_display_name, "Synth voice");
+    rename("");
+    EXPECT_EQ(instances.list_instances().front().display_name, "Synth voice");
+    EXPECT_FALSE(instances.desired_instances().front().display_name);
 }
 
 

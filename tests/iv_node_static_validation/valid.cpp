@@ -32,7 +32,7 @@ struct ValidBackgroundNode {
     }
 };
 
-IV_NODE("iv.test.valid_background_node", ValidBackgroundNode);
+IV_NODE("iv.test.valid_background_node", ValidBackgroundNode, "Valid background node");
 
 struct ValidBackgroundEventNode {
     static constexpr auto inputs()
@@ -58,7 +58,7 @@ struct ValidBackgroundEventNode {
     }
 };
 
-IV_NODE("iv.test.valid_background_event_node", ValidBackgroundEventNode);
+IV_NODE("iv.test.valid_background_event_node", ValidBackgroundEventNode, "Valid background event node");
 
 struct ValidBackgroundInputOnlyNode {
     static constexpr auto inputs()
@@ -72,7 +72,7 @@ struct ValidBackgroundInputOnlyNode {
     void tick_block(iv::TickBlockContext<ValidBackgroundInputOnlyNode> const&) const {}
 };
 
-IV_NODE("iv.test.valid_background_input_only_node", ValidBackgroundInputOnlyNode);
+IV_NODE("iv.test.valid_background_input_only_node", ValidBackgroundInputOnlyNode, "Valid background input only node");
 
 
 struct ValidPersistedRealtimeNode {
@@ -97,7 +97,7 @@ struct ValidPersistedRealtimeNode {
     }
 };
 
-IV_NODE("iv.test.valid_persisted_realtime_node", ValidPersistedRealtimeNode);
+IV_NODE("iv.test.valid_persisted_realtime_node", ValidPersistedRealtimeNode, "Valid persisted realtime node");
 
 // Intrinsic replayability is an opt-in Tick trait, not a Tock output mode.
 struct ValidReplayableNode {
@@ -117,7 +117,7 @@ static_assert(iv::details::replay_declaration_is_valid_v<ValidReplayableNode>);
 static_assert(iv::details::intrinsically_replayable_v<ValidReplayableNode>);
 static_assert(iv::details::tick_replay_mode_v<ValidReplayableNode>
     == iv::TickReplayMode::full);
-IV_NODE("iv.test.valid_replayable_node", ValidReplayableNode);
+IV_NODE("iv.test.valid_replayable_node", ValidReplayableNode, "Valid replayable node");
 
 struct ValidBatchTickNode {
     static constexpr auto outputs()
@@ -140,7 +140,7 @@ struct ValidBatchTickNode {
     }
 };
 
-IV_NODE("iv.test.valid_batch_tick_node", ValidBatchTickNode);
+IV_NODE("iv.test.valid_batch_tick_node", ValidBatchTickNode, "Valid batch tick node");
 
 struct ValidBatchBackgroundNode {
     static constexpr auto inputs()
@@ -184,7 +184,7 @@ struct ValidBatchBackgroundNode {
     }
 };
 
-IV_NODE("iv.test.valid_batch_background_node", ValidBatchBackgroundNode);
+IV_NODE("iv.test.valid_batch_background_node", ValidBatchBackgroundNode, "Valid batch background node");
 
 struct ValidReplayableBlockNode {
     static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
@@ -200,7 +200,7 @@ struct ValidReplayableBlockNode {
 
 static_assert(iv::details::replay_declaration_is_valid_v<
     ValidReplayableBlockNode>);
-IV_NODE("iv.test.valid_replayable_block_node", ValidReplayableBlockNode);
+IV_NODE("iv.test.valid_replayable_block_node", ValidReplayableBlockNode, "Valid replayable block node");
 
 struct ValidRandomAccessTickNode {
     static constexpr auto inputs()
@@ -214,4 +214,4 @@ struct ValidRandomAccessTickNode {
     void tick_block(iv::TickBlockContext<ValidRandomAccessTickNode> const&) const {}
 };
 
-IV_NODE("iv.test.valid_random_access_tick_node", ValidRandomAccessTickNode);
+IV_NODE("iv.test.valid_random_access_tick_node", ValidRandomAccessTickNode, "Valid random access tick node");

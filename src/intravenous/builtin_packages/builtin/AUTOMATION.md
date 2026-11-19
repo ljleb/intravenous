@@ -19,7 +19,7 @@ void build(iv::GraphBuilder& graph) {
         });
     graph.outputs("value"_P = curve, "points"_F = curve.event_port());
 }
-IV_MODULE("my.automation", build);
+IV_MODULE("my.automation", build, "My Automation");
 ```
 
 Each point stores a unique ID, a time, a Sample value, an outgoing segment

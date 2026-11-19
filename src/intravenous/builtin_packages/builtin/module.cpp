@@ -19,50 +19,50 @@
 #include <intravenous/basic_nodes/system_audio.h>
 #include <intravenous/basic_nodes/timing.h>
 
-IV_NODE("iv.builtin.constant", iv::Constant);
+IV_NODE("iv.builtin.constant", iv::Constant, "Constant");
 IV_REGISTER_OUTPUT_GAIN_NODES();
-IV_NODE("iv.builtin.debug_probe", ::DebugProbe);
+IV_NODE("iv.builtin.debug_probe", ::DebugProbe, "Debug Probe");
 
-IV_NODE("iv.builtin.automation.point_source", iv::automation::PointSource);
-IV_NODE("iv.builtin.automation.interpreter", iv::automation::Curve);
-IV_MODULE_CLASS("iv.builtin.automation.curve", iv::automation::AutomationCurve);
+IV_NODE("iv.builtin.automation.point_source", iv::automation::PointSource, "Automation Points");
+IV_NODE("iv.builtin.automation.interpreter", iv::automation::Curve, "Automation Interpreter");
+IV_MODULE_CLASS("iv.builtin.automation.curve", iv::automation::AutomationCurve, "Automation Curve");
 
-IV_MODULE_CLASS("iv.builtin.timeline", iv::Timeline);
-IV_NODE("iv.builtin.beats", iv::Beats);
+IV_MODULE_CLASS("iv.builtin.timeline", iv::Timeline, "Timeline");
+IV_NODE("iv.builtin.beats", iv::Beats, "Beats");
 
-IV_NODE("iv.builtin.invert", iv::Invert);
-IV_NODE("iv.builtin.power", iv::Power);
-IV_NODE("iv.builtin.subtract", iv::Subtract);
-IV_NODE("iv.builtin.quotient", iv::Quotient);
+IV_NODE("iv.builtin.invert", iv::Invert, "Invert");
+IV_NODE("iv.builtin.power", iv::Power, "Power");
+IV_NODE("iv.builtin.subtract", iv::Subtract, "Subtract");
+IV_NODE("iv.builtin.quotient", iv::Quotient, "Quotient");
 
-IV_NODE("iv.builtin.whack_iir", iv::WhackIirThing);
-IV_NODE("iv.builtin.simple_iir_high_pass", iv::SimpleIirHighPass);
-IV_NODE("iv.builtin.simple_iir_low_pass", iv::SimpleIirLowPass);
+IV_NODE("iv.builtin.whack_iir", iv::WhackIirThing, "Whack IIR");
+IV_NODE("iv.builtin.simple_iir_high_pass", iv::SimpleIirHighPass, "Simple IIR High Pass");
+IV_NODE("iv.builtin.simple_iir_low_pass", iv::SimpleIirLowPass, "Simple IIR Low Pass");
 
-IV_NODE("iv.builtin.uniform_noise", iv::UniformNoise);
-IV_NODE("iv.builtin.deterministic_uniform_noise", iv::DeterministicUniformNoise);
-IV_NODE("iv.builtin.deterministic_uniform_aes_noise", iv::DeterministicUniformAESNoise);
-IV_NODE("iv.builtin.uniform_to_cauchy", iv::UniformToCauchy);
-IV_NODE("iv.builtin.uniform_to_power", iv::UniformToPower);
-IV_NODE("iv.builtin.uniform_to_gaussian", iv::UniformToGaussian);
-IV_NODE("iv.builtin.deterministic_gaussian_aes_noise", iv::DeterministicGaussianAESNoise);
+IV_NODE("iv.builtin.uniform_noise", iv::UniformNoise, "Uniform Noise");
+IV_NODE("iv.builtin.deterministic_uniform_noise", iv::DeterministicUniformNoise, "Deterministic Uniform Noise");
+IV_NODE("iv.builtin.deterministic_uniform_aes_noise", iv::DeterministicUniformAESNoise, "Deterministic Uniform AES Noise");
+IV_NODE("iv.builtin.uniform_to_cauchy", iv::UniformToCauchy, "Uniform To Cauchy");
+IV_NODE("iv.builtin.uniform_to_power", iv::UniformToPower, "Uniform To Power");
+IV_NODE("iv.builtin.uniform_to_gaussian", iv::UniformToGaussian, "Uniform To Gaussian");
+IV_NODE("iv.builtin.deterministic_gaussian_aes_noise", iv::DeterministicGaussianAESNoise, "Deterministic Gaussian AES Noise");
 
-IV_NODE("iv.builtin.dummy_sink", iv::DummySink);
-IV_NODE("iv.builtin.dummy_event_sink", iv::DummyEventSink);
+IV_NODE("iv.builtin.dummy_sink", iv::DummySink, "Dummy Sink");
+IV_NODE("iv.builtin.dummy_event_sink", iv::DummyEventSink, "Dummy Event Sink");
 
-IV_NODE("iv.builtin.warper", iv::Warper);
-IV_NODE("iv.builtin.phase_integrator", iv::PhaseIntegrator);
-IV_NODE("iv.builtin.saw_oscillator", iv::SawOscillator);
-IV_NODE("iv.builtin.sine_oscillator", iv::SineOscillator);
-IV_NODE("iv.builtin.phase_offset_predictor", iv::PhaseOffsetPredictor);
-IV_NODE("iv.builtin.interpolation", iv::Interpolation);
+IV_NODE("iv.builtin.warper", iv::Warper, "Warper");
+IV_NODE("iv.builtin.phase_integrator", iv::PhaseIntegrator, "Phase Integrator");
+IV_NODE("iv.builtin.saw_oscillator", iv::SawOscillator, "Saw Oscillator");
+IV_NODE("iv.builtin.sine_oscillator", iv::SineOscillator, "Sine Oscillator");
+IV_NODE("iv.builtin.phase_offset_predictor", iv::PhaseOffsetPredictor, "Phase Offset Predictor");
+IV_NODE("iv.builtin.interpolation", iv::Interpolation, "Interpolation");
 
-IV_NODE("iv.builtin.latency", iv::Latency);
-IV_NODE("iv.builtin.midi_pitch", iv::MidiPitch);
-IV_NODE("iv.builtin.midi_gate", iv::MidiGate);
+IV_NODE("iv.builtin.latency", iv::Latency, "Latency");
+IV_NODE("iv.builtin.midi_pitch", iv::MidiPitch, "MIDI Pitch");
+IV_NODE("iv.builtin.midi_gate", iv::MidiGate, "MIDI Gate");
 
-IV_NODE("iv.builtin.system_audio_input", iv::SystemAudioInput);
-IV_NODE("iv.builtin.system_audio_output", iv::SystemAudioOutput);
+IV_NODE("iv.builtin.system_audio_input", iv::SystemAudioInput, "System Audio Input");
+IV_NODE("iv.builtin.system_audio_output", iv::SystemAudioOutput, "System Audio Output");
 
 // Generic node families and compiler-inserted dynamic-arity helpers deliberately
 // have no registered ID. Their concrete specializations are internal

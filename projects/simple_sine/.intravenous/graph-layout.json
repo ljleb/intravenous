@@ -10,9 +10,9 @@
     }
   },
   "timeline": {
-    "beginSeconds": 0.030598545692140704,
-    "secondsPerPixel": 0.0020611101202007557,
-    "laneHeight": 93.15268954278139,
+    "beginSeconds": -4.690774516646818,
+    "secondsPerPixel": 0.00781916687613776,
+    "laneHeight": 78.85204984458983,
     "scrollTop": 0
   },
   "timelineGrid": "beats",
@@ -40,9 +40,10 @@
   "laneOrder": [
     "[\"3d2a0dc3-e7cc-4d4d-84af-667bf263b58c\",[]]",
     "[\"90f97cd5-74de-402d-baaa-836b18366871\",[]]",
+    "[\"525d527c-6df1-48c6-b262-7e0837842bf4\",[]]",
     "[\"09d95295-f20b-4a53-8a49-51c5a87e3b7a\",[]]",
-    "[\"c583a6a6-4cc6-47a0-9f35-f61c45ed5d05\",[]]",
     "[\"d585c285-e93b-413e-bb83-3f42303a3e9e\",[]]",
+    "[\"c583a6a6-4cc6-47a0-9f35-f61c45ed5d05\",[]]",
     "[\"c01e1d47-c6fd-4b48-8a1e-ddd2e2a553fb\",[]]",
     "[\"e3d6b9a1-bf5b-44c5-9836-aeb8a82983c6\",[]]"
   ]

@@ -118,6 +118,7 @@ SocketRpcJson iv_module_instance_json(IvModuleInstanceInfo const &instance)
         {"instanceId", instance.instance_id},
         {"definitionId", instance.definition_id},
         {"displayName", display_name},
+        {"defaultDisplayName", instance.default_display_name.empty() ? instance.definition_id : instance.default_display_name},
         {"configurationSource", instance.configuration_source},
         {"packageRoot", instance.package_root.generic_string()},
         {"realized", instance.realized},

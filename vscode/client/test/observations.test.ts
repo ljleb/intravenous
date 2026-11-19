@@ -179,6 +179,28 @@ test("default lane observations subscribe only to the requested first input, wit
     } finally { scope.dispose(); }
 });
 
+test("explicit viewport windows coalesce and send before capability discovery", async () => {
+    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    type Request = import("../src/observations").ObservationHostRequest;
+    let firstRequest!: (request: Request) => void;
+    const first = new Promise<Request>((resolve) => { firstRequest = resolve; });
+    const scope = new PresentationObservations((request) => {
+        firstRequest(request);
+        scope.receive({ type: "observationResponse", requestId: request.requestId, result: { revision: "1" } });
+    });
+    const source = { node: { instanceId: "timeline" }, kind: "input" as const, portKind: "event" as const, member: "beats" };
+    const window = { begin: "0", length: "1000", points: 128, maxDepth: 255 };
+    try {
+        scope.node(Symbol("meter"), { instanceId: "meter" }, true);
+        scope.observePort("beats", { source, operation: "beat-grid", window }, "viewport");
+        const latest = { ...window, begin: "256" };
+        scope.observePort("beats", { source, operation: "beat-grid", window: latest }, "viewport");
+        const request = await first;
+        assert.equal(request.type, "observationReconcile");
+        assert.deepEqual(request.interests, [{ id: "beats", source, operation: "beat-grid", window: latest }]);
+    } finally { scope.dispose(); }
+});
+
 test("viewport observations clone reactive addresses and survive presentation changes", async () => {
     const { PresentationObservations } = await import("../webview/presentation/observationContext");
     const requests: import("../src/observations").ObservationHostRequest[] = [];

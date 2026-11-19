@@ -18,5 +18,5 @@ struct ReverseReplayNode {
     void propagate_reverse_coverage(iv::PropagateReverseCoverageContext<ReverseReplayNode>&) const {}
 };
 
-IV_NODE("iv.test.invalid_replay_forward_coverage", ForwardReplayNode);
-IV_NODE("iv.test.invalid_replay_reverse_coverage", ReverseReplayNode);
+IV_NODE("iv.test.invalid_replay_forward_coverage", ForwardReplayNode, "Invalid replay forward coverage");
+IV_NODE("iv.test.invalid_replay_reverse_coverage", ReverseReplayNode, "Invalid replay reverse coverage");

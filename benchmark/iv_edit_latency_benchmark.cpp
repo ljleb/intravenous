@@ -396,7 +396,7 @@ void feedback_voice(iv::GraphBuilder& g)
     g.outputs(filter);
 }
 
-IV_MODULE("iv.bench.feedback_voice", feedback_voice);
+IV_MODULE("iv.bench.feedback_voice", feedback_voice, "Feedback Voice");
 )";
 
 ShapeProject feedback_project(int loops)
@@ -589,12 +589,12 @@ void storage_voice(iv::GraphBuilder& graph)
     graph.outputs(samples);
 }
 
-IV_NODE("iv.bench.storage_sample_source", StorageSampleSource);
-IV_NODE("iv.bench.storage_history_consumer", StorageHistoryConsumer);
-IV_NODE("iv.bench.storage_stereo_consumer", StorageStereoConsumer);
-IV_NODE("iv.bench.storage_event_source", StorageEventSource);
-IV_NODE("iv.bench.storage_event_consumer", StorageEventConsumer);
-IV_MODULE("iv.bench.storage_voice", storage_voice);
+IV_NODE("iv.bench.storage_sample_source", StorageSampleSource, "Storage Sample Source");
+IV_NODE("iv.bench.storage_history_consumer", StorageHistoryConsumer, "Storage History Consumer");
+IV_NODE("iv.bench.storage_stereo_consumer", StorageStereoConsumer, "Storage Stereo Consumer");
+IV_NODE("iv.bench.storage_event_source", StorageEventSource, "Storage Event Source");
+IV_NODE("iv.bench.storage_event_consumer", StorageEventConsumer, "Storage Event Consumer");
+IV_MODULE("iv.bench.storage_voice", storage_voice, "Storage Voice");
 )";
 
 ShapeProject storage_project(int voices)

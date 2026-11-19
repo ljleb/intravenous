@@ -397,9 +397,10 @@ lane changes described below still require compilation, tests, and UI checks.
   pixels, a tuning value. Overflow uses a vertical scrollbar. The bindings below
   change zoom explicitly. The superseded fit-to-height layout is preserved in
   [Lane Layout Before Fixed Vertical Zoom And Source Selection](./historical/vue_lane_layout_before_fixed_zoom_and_selection_2026-11-12.md).
-- The initial display name is the user label when present, otherwise the last
+- At this stage, the initial display name is the user label when present, otherwise the last
   component of the definition ID. Full IDs remain intact for routing and debug
   details. Ordinary lane text no longer contains the instance UUID.
+  The [authored lane names update](#authored-lane-names) adds definition labels.
 - A red name now requires the scope's classified `failed` state. Pending
   definition availability may still have diagnostic text but does not turn a
   lane red. See [Classified scope state](#classified-scope-state) below.
@@ -4384,5 +4385,24 @@ the query budget.
 
 The editor combines the ready marks that match its current data version.
 The ruler and automation point editing use the same displayed marks.
+The Timeline node uses the generic lane presentation and joins the time-aware
+lane runs that draw the project snapping grid.
+The grid requests padded, aligned event windows and reprojects ready marks
+during navigation. Visible windows use the next viewport update and avoid the
+capability discovery delay. When a full indexed depth exceeds its budget, the
+query can return a strided subset. The ruler, lane grid, and snap targets use
+the same pixel-spaced marks. The Beats preview also applies the spacing rule
+to its generated marks.
 Runtime playback, VS Code interaction, and cold-query costs still need a
 fresh build to verify.
+
+#### Authored lane names
+
+`IV_NODE`, `IV_MODULE`, and `IV_MODULE_CLASS` now carry their third argument
+through the package definition table to the node instance read model. Lanes
+without an instance name use the definition's current display label. Double-click
+the lane name to edit it in place. Enter or clicking away saves the name through
+`nodeInstances.update`. Escape cancels. Clearing the field restores the label
+from the definition. The project file and history store only custom names.
+Built-in and example default labels use Capital Space Case. New package
+templates capitalize the words in the package name and separate them with spaces.

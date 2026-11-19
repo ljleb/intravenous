@@ -63,7 +63,7 @@ using OutputGain = OutputGainNode<ChannelTypeId::mono, SampleStreamLayout::plana
 #define IV_REGISTER_OUTPUT_GAIN_CHANNEL(name, wire_name, ...) \
     using IvOutputGain_##name##_planar = ::iv::OutputGainNode<::iv::ChannelTypeId::name, ::iv::SampleStreamLayout::planar>; \
     using IvOutputGain_##name##_interleaved = ::iv::OutputGainNode<::iv::ChannelTypeId::name, ::iv::SampleStreamLayout::interleaved>; \
-    IV_NODE("iv.builtin.output_gain." wire_name ".planar", IvOutputGain_##name##_planar); \
-    IV_NODE("iv.builtin.output_gain." wire_name ".interleaved", IvOutputGain_##name##_interleaved);
+    IV_NODE("iv.builtin.output_gain." wire_name ".planar", IvOutputGain_##name##_planar, "Output Gain"); \
+    IV_NODE("iv.builtin.output_gain." wire_name ".interleaved", IvOutputGain_##name##_interleaved, "Output Gain");
 #define IV_REGISTER_OUTPUT_GAIN_NODES() IV_CHANNEL_TYPES(IV_REGISTER_OUTPUT_GAIN_CHANNEL)
 

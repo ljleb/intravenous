@@ -77,6 +77,42 @@ TEST(Observations, BeatGridFindsIrregularPositionsByIndexAndKeepsStridePhase)
     if (run.first >= run.step) EXPECT_FALSE(viewport.contains(time_of(run.first - run.step)));
 }
 
+TEST(Observations, BeatGridRetainsSomeSubdivisionMarksWhenAFullLevelExceedsTheBudget)
+{
+    struct PublishedGrid {
+        std::array<iv::GlobalIndexRange, 2> ranges{{{iv::GlobalIndex{}, 200}, {iv::GlobalIndex{}, 200}}};
+        std::array<iv::EventRegionInfo, 2> regions{{
+            {ranges[0], iv::IndexedEventRegionInfo{2, iv::BeatEvent{0}}},
+            {ranges[1], iv::IndexedEventRegionInfo{100, iv::BeatEvent{1}}},
+        }};
+    } grid;
+    iv::BackgroundDemandSelection const candidate{
+        .data = &grid,
+        .output_regions = +[](void const* data, iv::graph_jit::BackgroundPortIndex) -> std::span<iv::GlobalIndexRange const> {
+            return static_cast<PublishedGrid const*>(data)->ranges;
+        },
+        .event_regions = +[](void const* data, iv::graph_jit::BackgroundPortIndex) -> std::span<iv::EventRegionInfo const> {
+            return static_cast<PublishedGrid const*>(data)->regions;
+        },
+    };
+    iv::graph_jit::BackgroundEvaluationPlan const plan;
+    iv::graph_jit::PublicEventCoverageInputView const input{.sources = {{.output = 0}}};
+    iv::ObservationWindowQuery query;
+    query.window = {.begin = iv::GlobalIndex{}, .length = 200, .points = 10, .max_depth = 1};
+    iv::CoveragePropagationRequest demand;
+    iv::BeatGridObservation observation{query, input, plan, query.window.points};
+    observation.select(candidate, demand, 8192, 8192);
+
+    ASSERT_EQ(demand.indexed_output_demands.size(), 2u);
+    auto const bars = demand.indexed_output_demands[0].runs.front();
+    auto const beats = demand.indexed_output_demands[1].runs.front();
+    EXPECT_EQ(bars.count, 2u);
+    EXPECT_EQ(beats.first, 0u);
+    EXPECT_EQ(beats.step, 16u);
+    EXPECT_EQ(beats.count, 7u);
+    EXPECT_TRUE(query.result.truncated);
+}
+
 TEST(Observations, WaveformReuseSeparatesEqualRangeRegionsAndUnavailablePoints)
 {
     auto const first = iv::GlobalIndex::from_bits(10);

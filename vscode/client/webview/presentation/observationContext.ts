@@ -21,6 +21,7 @@ export class PresentationObservations {
     private pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
     private timer: ReturnType<typeof setTimeout> | undefined;
     private windowTimer: ReturnType<typeof setTimeout> | undefined;
+    private viewportWindowScheduled = false;
     private discoveringEpoch: number | undefined;
     private capabilitiesCurrent = false;
     private heartbeat: ReturnType<typeof setInterval>;
@@ -82,18 +83,19 @@ export class PresentationObservations {
     }
     remove(owner: symbol): void { this.nodes.delete(owner); this.schedule(); }
     portObservationId(): string { return `port:${++this.nextExplicitId}`; }
-    observePort(id: string, next: PortObservation | undefined): void {
+    observePort(id: string, next: PortObservation | undefined, scheduling?: "viewport"): void {
         const previous = this.explicit.get(id);
         const sameSource = previous && next && observationSourceKey(previous.source) === observationSourceKey(next.source)
             && previous.operation === next.operation;
         if (sameSource && sameObservationWindow(previous.window, next.window) && previous.prefetch === next.prefetch) return;
         if (next) this.explicit.set(id, next);
         else if (!this.explicit.delete(id)) return;
-        if (sameSource && previous.window && next.window) { this.scheduleWindows(); return; }
+        if (sameSource && previous.window && next.window) { this.scheduleWindows(scheduling); return; }
         this.values.values.delete(id);
         this.values.forgetWindow(id);
         ++this.version.value;
         this.schedule();
+        if (scheduling === "viewport") this.scheduleWindows(scheduling);
     }
     setVisible(visible: boolean): void {
         if (this.visible === visible) return;
@@ -112,18 +114,22 @@ export class PresentationObservations {
         // scroll frame. The host replaces one full viewport interest set.
         this.timer = setTimeout(() => { this.timer = undefined; void this.discover(); }, 200);
     }
-    private scheduleWindows(): void {
-        if (!this.capabilitiesCurrent) {
+    private scheduleWindows(scheduling?: "viewport"): void {
+        const viewport = scheduling === "viewport";
+        if (!this.capabilitiesCurrent && !viewport) {
             if (!this.timer && this.discoveringEpoch !== this.epoch) this.schedule();
             return;
         }
-        if (this.windowTimer) return;
-        // Window-only changes can reuse the capability list. Keep a fixed
-        // deadline so sustained wheel or pointer input cannot postpone a query.
+        if (this.windowTimer && (!viewport || this.viewportWindowScheduled)) return;
+        if (this.windowTimer) clearTimeout(this.windowTimer);
+        this.viewportWindowScheduled = viewport;
+        // Explicit viewport windows can use the current capability list while
+        // discovery runs. Coalesce all windows in a frame, including other
+        // interests already waiting for the normal update deadline.
         this.windowTimer = setTimeout(() => {
             this.windowTimer = undefined;
-            if (this.capabilitiesCurrent) void this.updateInterests(this.explicitInterests());
-        }, 100);
+            if (viewport || this.capabilitiesCurrent) void this.updateInterests(this.explicitInterests());
+        }, viewport ? 16 : 100);
     }
     private explicitInterests(): ObservationInterest[] {
         // Explicit readers can receive an unavailable or pending result even

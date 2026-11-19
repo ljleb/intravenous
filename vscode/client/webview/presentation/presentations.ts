@@ -20,3 +20,5 @@ presentations.register({ presentationId: "iv.builtin.automation.curve", displayN
     initialConfiguration: "{}" });
 presentations.register({ presentationId: "iv.builtin.beats", displayName: "Beats",
     definitionIds: ["iv.builtin.beats"], component: markRaw(BeatsPresentation), timeline: true });
+presentations.register({ presentationId: "iv.builtin.timeline", displayName: "Timeline",
+    definitionIds: ["iv.builtin.timeline"], component: markRaw(GenericPresentation), timeline: true });

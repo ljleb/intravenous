@@ -16,4 +16,4 @@ struct RandomAccessReplayNode {
     void tick_block(iv::TickBlockContext<RandomAccessReplayNode> const&) const {}
 };
 
-IV_NODE("iv.test.invalid_replay_random_access_event", RandomAccessReplayNode);
+IV_NODE("iv.test.invalid_replay_random_access_event", RandomAccessReplayNode, "Invalid replay random access event");

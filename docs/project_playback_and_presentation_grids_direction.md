@@ -426,6 +426,11 @@ For beats, it combines events by sample index and keeps the smallest
 displayed marks for its zoom level. The ruler and the snap gesture use the
 same list.
 
+The viewport picks marks by a minimum horizontal pixel distance at its current
+scale. Closer candidates give way to coarser marks. The Beats preview uses the
+same distance rule. A query may include marks beyond the viewport so the
+editor can redraw and snap immediately during nearby pans and zoom changes.
+
 The timeline draws the ruler's visible beat marks continuously over each run
 of time-aware lanes, including automation lanes. While the viewport changes,
 the editor can project overlapping data from the last ready observation window

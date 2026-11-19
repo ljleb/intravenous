@@ -19,4 +19,4 @@ void behavior_project(iv::GraphBuilder& g)
     g.outputs("main"_P[stereo::left] = probe, "main"_P[stereo::right] = probe);
 }
 
-IV_MODULE("iv.test.behavior_project", behavior_project);
+IV_MODULE("iv.test.behavior_project", behavior_project, "Behavior project");

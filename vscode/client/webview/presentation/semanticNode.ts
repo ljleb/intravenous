@@ -49,6 +49,7 @@ export type SemanticNodeMember = {
 export type SemanticNode = {
     loadState?: GraphScopeNode["loadState"];
     displayName?: string;
+    defaultDisplayName?: string;
     realized?: boolean;
     errorMessage?: string;
     address?: NodeAddress;
@@ -93,6 +94,7 @@ export function semanticNodeFromScopeChild(child: GraphScopeNode, scope: GraphSc
         construction: child.construction,
         constructionError: child.constructionError,
         displayName: child.instance.displayName,
+        defaultDisplayName: child.instance.defaultDisplayName,
         realized: child.instance.realized,
         loadState: child.loadState,
         errorMessage: child.errorMessage,

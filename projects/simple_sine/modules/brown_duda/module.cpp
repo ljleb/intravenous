@@ -893,9 +893,9 @@ void module_main(iv::GraphBuilder& g)
     g.outputs("main"_P = spatialized_left + spatialized_right);
 }
 
-IV_NODE("iv.project.brown_duda.parameters", BrownDudaParameters);
-IV_NODE("iv.project.brown_duda.one_pole_one_zero", OnePoleOneZero);
-IV_NODE("iv.project.brown_duda.sample_delay", SampleDelay);
-IV_NODE("iv.project.brown_duda.pinna", BrownDudaPinna);
-IV_MODULE("iv.project.brown_duda.source", brown_duda_source);
-IV_MODULE("iv.project.brown_duda", module_main);
+IV_NODE("iv.project.brown_duda.parameters", BrownDudaParameters, "Parameters");
+IV_NODE("iv.project.brown_duda.one_pole_one_zero", OnePoleOneZero, "One Pole One Zero");
+IV_NODE("iv.project.brown_duda.sample_delay", SampleDelay, "Sample Delay");
+IV_NODE("iv.project.brown_duda.pinna", BrownDudaPinna, "Pinna");
+IV_MODULE("iv.project.brown_duda.source", brown_duda_source, "Source");
+IV_MODULE("iv.project.brown_duda", module_main, "Brown Duda");

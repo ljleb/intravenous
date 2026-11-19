@@ -13,4 +13,4 @@ struct InvalidConstBackgroundState {
     void tock_coverage(iv::TockCoverageContext<InvalidConstBackgroundState>&) const {}
 };
 
-IV_NODE("iv.test.invalid_const_background_state", InvalidConstBackgroundState);
+IV_NODE("iv.test.invalid_const_background_state", InvalidConstBackgroundState, "Invalid const background state");

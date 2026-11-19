@@ -726,10 +726,25 @@ function keepAltInDetachedGraph(event: KeyboardEvent) {
     event.preventDefault();
     event.stopImmediatePropagation();
 }
+function isTextEditingTarget(event: KeyboardEvent) {
+    return event.target instanceof Element && !!event.target.closest(
+        "input, textarea, select, [contenteditable]:not([contenteditable=false]), [role=textbox]",
+    );
+}
+function handleProjectHistory(event: KeyboardEvent) {
+    const direction = projectHistoryShortcut(event, isTextEditingTarget(event));
+    if (!direction) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    cancelConnection();
+    automation.edits.abandon();
+    beats.edits.abandon();
+    webviewApi.postMessage({ type: "projectHistory", direction });
+}
 function keyDown(event: KeyboardEvent) {
     updateAutomationShift(event.shiftKey);
     const target = event.target instanceof Element ? event.target : null;
-    const editingText = !!target?.closest("input, textarea, select, [contenteditable]:not([contenteditable=false]), [role=textbox]");
+    const editingText = isTextEditingTarget(event);
     const editingLaneItems = !!target?.closest("[data-lane-item-editor]");
     if (!editingText && event.code === "Space" && !event.ctrlKey && !event.metaKey && !event.altKey) {
         event.preventDefault();
@@ -762,16 +777,6 @@ function keyDown(event: KeyboardEvent) {
             event.preventDefault();
             if (!event.repeat) webviewApi.postMessage({ type: "deleteSelectedLanes", instanceIds });
         }
-        return;
-    }
-    const history = projectHistoryShortcut(event, editingText);
-    if (history) {
-        event.preventDefault();
-        event.stopPropagation();
-        cancelConnection();
-        automation.edits.abandon();
-        beats.edits.abandon();
-        webviewApi.postMessage({ type: "projectHistory", direction: history });
         return;
     }
     hoverShift.value = keyboardPortHoverShift(hoverShift.value, event.shiftKey);
@@ -928,6 +933,8 @@ onMounted(() => {
     window.addEventListener("pointerout", pointerLeftWindow, true);
     window.addEventListener("keydown", keepAltInDetachedGraph, true);
     window.addEventListener("keyup", keepAltInDetachedGraph, true);
+    // VS Code cancels and forwards undo/redo from an earlier window bubble listener.
+    window.addEventListener("keydown", handleProjectHistory, true);
     window.addEventListener("keydown", keyDown);
     window.addEventListener("keyup", keyUp);
     stopListeningForFocus = listenPortConnectionFocus(window, windowBlurred, nativeWindowFocusChanged);
@@ -972,6 +979,7 @@ onBeforeUnmount(() => {
     window.removeEventListener("pointerout", pointerLeftWindow, true);
     window.removeEventListener("keydown", keepAltInDetachedGraph, true);
     window.removeEventListener("keyup", keepAltInDetachedGraph, true);
+    window.removeEventListener("keydown", handleProjectHistory, true);
     window.removeEventListener("keydown", keyDown);
     window.removeEventListener("keyup", keyUp);
     stopListeningForFocus?.();

@@ -210,19 +210,30 @@ export class WorkspaceSession {
 
     async createGraphNode(definitionId: string, displayName: string, configurationSource: string): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
-        await this.rpc.createNodeInstance(definitionId, displayName, configurationSource);
+        await this.rpc.createNodeInstance(definitionId, displayName.trim() || null, configurationSource);
     }
 
-    async updateGraphNode(instanceId: string, displayName: string, configurationSource: string,
-        previousDisplayName: string, previousConfigurationSource: string): Promise<void> {
-        const scope = await this.readGraphScope();
+    async updateGraphNode(instanceId: string, displayName: string, previousDisplayName: string,
+        configuration?: { source: string; previous: string }): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+        const rpc = this.rpc;
+        const scope = await rpc.getGraphScope();
+        if (rpc !== this.rpc) throw new Error("The session changed before saving the node");
         const node = scope.nodes.find((entry) => entry.instance.instanceId === instanceId);
         if (!scope.editable || !node) throw new Error("The selected node is no longer available");
-        if ((node.instance.displayName ?? "") !== previousDisplayName
-            || (node.instance.configurationSource ?? "") !== previousConfigurationSource) {
-            throw new Error("The node configuration changed; reopen the editor before saving");
+        if ((node.instance.displayName ?? "") !== previousDisplayName) {
+            throw new Error("The node name changed. Start the edit again to use the current name.");
         }
-        await this.rpc!.updateNodeInstances([{ instanceId, displayName, configurationSource }]);
+        if (configuration && (node.instance.configurationSource ?? "") !== configuration.previous) {
+            throw new Error("The node configuration changed. Reopen the editor before saving.");
+        }
+        const nameChanged = displayName !== previousDisplayName;
+        const configurationChanged = configuration && configuration.source !== configuration.previous;
+        if (!nameChanged && !configurationChanged) return;
+        await rpc.updateNodeInstances([{ instanceId,
+            ...(nameChanged ? { displayName: displayName.trim() } : {}),
+            ...(configurationChanged ? { configurationSource: configuration.source } : {}),
+        }], scope.sessionRevision);
     }
 
     async deleteGraphNodes(instanceIds: string[]): Promise<void> {

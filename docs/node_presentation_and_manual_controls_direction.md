@@ -1131,9 +1131,15 @@ lane interface. They do not claim that the current client implements them._
 
 - `IV_NODE` and `IV_MODULE` take an additional display-name parameter. This name
   supplies the default name when the user creates a node instance.
+  The third argument is a display label, and different definitions can use
+  the same label. Class-based modules use the same argument in `IV_MODULE_CLASS`.
+  Write default labels in Capital Space Case, such as `System Audio Output`.
+  Keep abbreviations such as `MIDI` and `FFT` in their usual form.
 - Always supply a default instance name. If a definition takes no construction
   arguments, create the instance without opening a construction form.
 - Double-clicking a lane's node name starts renaming that node instance.
+  A blank name restores the definition's display label. Custom names are
+  saved on the instance and participate in project undo and redo.
 - Creation must offer a convenient way to find definitions without knowing their
   IDs. Search by display name or ID, tag search, and visual browsing are candidate
   interfaces. The owner has not selected one of these interfaces yet.

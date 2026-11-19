@@ -18,7 +18,7 @@ struct InvalidBackgroundSampleTickOutput {
         iv::PropagateForwardCoverageContext<InvalidBackgroundSampleTickOutput>&) const {}
 };
 
-IV_NODE("iv.test.invalid_background_sample_tick_output", InvalidBackgroundSampleTickOutput);
+IV_NODE("iv.test.invalid_background_sample_tick_output", InvalidBackgroundSampleTickOutput, "Invalid background sample tick output");
 
 struct InvalidBackgroundEventTickOutput {
     static constexpr auto outputs()
@@ -38,4 +38,4 @@ struct InvalidBackgroundEventTickOutput {
         iv::PropagateForwardCoverageContext<InvalidBackgroundEventTickOutput>&) const {}
 };
 
-IV_NODE("iv.test.invalid_background_event_tick_output", InvalidBackgroundEventTickOutput);
+IV_NODE("iv.test.invalid_background_event_tick_output", InvalidBackgroundEventTickOutput, "Invalid background event tick output");

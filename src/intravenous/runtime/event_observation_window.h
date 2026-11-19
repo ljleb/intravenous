@@ -142,7 +142,7 @@ public:
                 return true;
             };
             std::uint64_t stride = 1;
-            if (first == 0)
+            if (remaining)
                 while (!fits(stride) && stride < (std::uint64_t{1} << 63)) stride *= 2;
             if (!fits(stride)) {
                 query_.result.truncated = true;

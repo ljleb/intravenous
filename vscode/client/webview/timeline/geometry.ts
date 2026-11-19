@@ -1,5 +1,5 @@
 import { automationSampleIndex, automationSampleOffset } from "../../src/automationCurveGeometry";
-import type { TimelineMark } from "./timelineContext";
+import type { ObservationWindow } from "../../src/observations";
 
 export type RulerTick = { x: number; label: string; sampleLabel?: string; minor?: boolean };
 export const rulerMarkerPoints = "-5.5,0 5.5,0 0,7";
@@ -60,18 +60,17 @@ export function automationTimelineTicks(window: TimelineWindow & { spanSeconds?:
     return ticks.sort((a, b) => a.x - b.x);
 }
 
-export function selectVisibleTimelineMarks(candidates: readonly TimelineMark[]): TimelineMark[] {
-    const spacing = 8;
-    const displayed = new Map<number, TimelineMark>();
-    for (const mark of [...candidates].sort((a, b) => a.depth - b.depth || a.x - b.x)) {
-        const slot = Math.floor(mark.x / spacing);
-        const overlaps = [slot - 1, slot, slot + 1].some((neighbor) => {
-            const accepted = displayed.get(neighbor);
-            return accepted !== undefined && Math.abs(accepted.x - mark.x) < spacing;
-        });
-        if (!overlaps) displayed.set(slot, mark);
-    }
-    return [...displayed.values()].sort((a, b) => a.x - b.x);
+export function timelineBeatObservationWindow(first: bigint, length: bigint, width: number): ObservationWindow | undefined {
+    if (length <= 0n || length >= (1n << 62n) || !(width > 0) || !Number.isFinite(width)) return;
+    // Keep a margin on each side and move its edge in steps. A small pan or
+    // zoom can reproject the same events without restarting the query.
+    let step = 1n << BigInt(Math.max(0, Math.ceil(Math.log2(Number(length) / 4))));
+    if (4n * step < length) step *= 2n;
+    const begin = first - (first % step + step) % step - step;
+    return {
+        begin: String(BigInt.asIntN(64, begin)), length: String(7n * step),
+        points: Math.max(32, Math.min(1024, Math.ceil(width))), maxDepth: 255,
+    };
 }
 
 export function snapTimelineSample(index: bigint, marks: readonly bigint[], tolerance: number): bigint {

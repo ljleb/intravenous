@@ -13,5 +13,6 @@ struct IvModuleInstanceInfo {
     std::string configuration_source{};
     bool realized = false;
     std::string module_id{};
+    std::string default_display_name{};
 };
 } // namespace iv

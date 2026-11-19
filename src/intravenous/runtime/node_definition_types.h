@@ -56,6 +56,7 @@ struct ModuleNodeDefinition {
     // Published definitions are keyed by stable IV module ID. Package ownership
     // is retained separately and never inferred from the module ID or source path.
     std::string definition_id{};
+    std::string display_name{};
     std::string package_id{};
     std::filesystem::path package_root{};
     std::string module_id{};
@@ -77,6 +78,7 @@ struct ModuleNodeDefinitionsChanged {
 // loaded artifact and stay valid through module_refs.
 struct LeafNodeDefinition {
     std::string definition_id{};
+    std::string display_name{};
     std::string package_id{};
     std::filesystem::path package_root{};
     NodeDefinitionProvider provider{};

@@ -9,6 +9,7 @@ const timelineBegin = -(timelineExtent / 2n);
 
 export const defaultBeatBpm = 120;
 export const minimumBeatBpm = 1 / bpmScale;
+export const minimumBeatMarkSpacing = 8;
 export type BeatGrid = {
     scaledBpm: bigint;
     beatsPerBar: number;
@@ -59,14 +60,37 @@ function floorDivide(value: bigint, divisor: bigint): bigint {
 
 export type BeatGridTick = { x: number; depth: number; sample: bigint; bar?: bigint };
 
+export function selectVisibleBeatMarks<Mark extends { x: number; depth: number }>(
+    candidates: readonly Mark[], width: number, spacing = minimumBeatMarkSpacing,
+): Mark[] {
+    const displayed = new Map<number, Mark>();
+    for (const mark of [...candidates].sort((a, b) => a.depth - b.depth || a.x - b.x)) {
+        const slot = Math.floor(mark.x / spacing);
+        let overlaps = false;
+        for (let neighbor = slot - 1; neighbor <= slot + 1; ++neighbor) {
+            const accepted = displayed.get(neighbor);
+            if (accepted && Math.abs(accepted.x - mark.x) < spacing) {
+                overlaps = true;
+                break;
+            }
+        }
+        if (!overlaps) displayed.set(slot, mark);
+    }
+    // A near-edge mark can suppress another mark without becoming a visible
+    // snap target itself.
+    return [...displayed.values()].filter(({ x }) => x >= 0 && x < width).sort((a, b) => a.x - b.x);
+}
+
 // Preview Beats::tock_coverage using the accepted constructor values. Keep
 // calculation in sample indexes so independently drawn windows share marks.
 export function beatGridTicks(grid: BeatGrid, window: { beginSeconds: number; spanSeconds: number },
     sampleRate: number, width: number): BeatGridTick[] {
     const { beginSeconds, spanSeconds } = window;
     if (!(spanSeconds > 0 && width >= 1) || !Number.isFinite(width)) return [];
-    const begin = automationSampleIndex(beginSeconds, sampleRate);
-    const end = automationSampleIndex(beginSeconds, sampleRate, spanSeconds);
+    const minimumSpacing = Math.max(minimumBeatMarkSpacing, width / 800);
+    const margin = spanSeconds * minimumSpacing / width;
+    const begin = automationSampleIndex(beginSeconds, sampleRate, -margin);
+    const end = automationSampleIndex(beginSeconds, sampleRate, spanSeconds + margin);
     if (begin === undefined || end === undefined || end - begin >= timelineExtent) return [];
 
     // Depth zero marks bars, depth one marks beats, and each following
@@ -81,14 +105,18 @@ export function beatGridTicks(grid: BeatGrid, window: { beginSeconds: number; sp
     if (numerator < denominator) return [];
 
     const spacing = (stride: bigint) => Number(stride * numerator / denominator) / sampleRate / spanSeconds * width;
-    const minimumSpacing = Math.max(8, width / 800);
     let step = barStride;
-    for (const stride of strides) {
-        if (spacing(stride) < minimumSpacing) break;
-        step = stride;
+    if (spacing(barStride) < minimumSpacing) {
+        // Thin dense bars by powers of two, retaining the bar at sample zero.
+        while (spacing(step) < minimumSpacing) step *= 2n;
+    } else {
+        // Include candidates around the visibility threshold so actual sample
+        // positions decide spacing, including the producer's sample rounding.
+        for (const stride of strides) {
+            if (spacing(stride) < minimumSpacing / 2) break;
+            step = stride;
+        }
     }
-    // Thin dense bars by powers of two, retaining the bar at sample zero.
-    while (spacing(step) < minimumSpacing) step *= 2n;
 
     const rounding = denominator / 2n;
     const markAtOrAfter = (sample: bigint) => -floorDivide(rounding - sample * denominator, step * numerator);
@@ -106,10 +134,10 @@ export function beatGridTicks(grid: BeatGrid, window: { beginSeconds: number; sp
             const mark = tick * step;
             const sample = floorDivide(mark * numerator + rounding, denominator);
             const x = automationSampleOffset(sample + offset, beginSeconds, sampleRate) / spanSeconds * width;
-            if (x < 0 || x >= width) continue;
+            if (x < -minimumSpacing || x > width + minimumSpacing) continue;
             const depth = strides.findIndex((stride) => mark % stride === 0n);
             ticks.push({ x, depth, sample, bar: depth === 0 ? mark / barStride + 1n : undefined });
         }
     }
-    return ticks;
+    return selectVisibleBeatMarks(ticks, width, minimumSpacing);
 }

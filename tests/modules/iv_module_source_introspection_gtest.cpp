@@ -358,7 +358,7 @@ namespace {
         auto const az = g.input<"azimuth">(0, -180, 180);
         g.outputs("main"_P = in + az);
     }
-    IV_MODULE("iv.test.source_provenance.child", child_module);
+    IV_MODULE("iv.test.source_provenance.child", child_module, "Child");
 
     void module_main(iv::GraphBuilder& g)
     {
@@ -366,7 +366,7 @@ namespace {
         auto const child = g.node<"iv.test.source_provenance.child">();
         g.outputs("main"_P = child);
     }
-    IV_MODULE("iv.test.source_provenance.main", module_main);
+    IV_MODULE("iv.test.source_provenance.main", module_main, "Main");
 }
 )");
 

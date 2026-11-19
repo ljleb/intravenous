@@ -100,7 +100,7 @@ std::string benchmark_source(size_t voices, SourceShape shape)
 {
     std::ostringstream source;
     auto finish = [&] {
-        source << "\nIV_MODULE(\"iv.benchmark.compile\", module_main);\n";
+        source << "\nIV_MODULE(\"iv.benchmark.compile\", module_main, \"Compile Benchmark\");\n";
         return source.str();
     };
     source << "#include <intravenous/dsl.h>\n";

@@ -12,4 +12,4 @@ void behavior_voice(iv::GraphBuilder& g)
     g.outputs("out"_P = saw * amplitude);
 }
 
-IV_MODULE("iv.test.behavior_voice", behavior_voice);
+IV_MODULE("iv.test.behavior_voice", behavior_voice, "Behavior voice");

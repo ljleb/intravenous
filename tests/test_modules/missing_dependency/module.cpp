@@ -7,4 +7,4 @@ void missing_dependency(GraphBuilder& g)
 }
 }
 
-IV_MODULE("iv.test.missing_dependency", iv::missing_dependency);
+IV_MODULE("iv.test.missing_dependency", iv::missing_dependency, "Missing dependency");

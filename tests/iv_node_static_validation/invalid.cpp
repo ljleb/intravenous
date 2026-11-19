@@ -77,10 +77,10 @@ struct InvalidBackgroundTockSignatureNode {
     }
 };
 
-IV_NODE("iv.test.dynamic_sample_port_node", DynamicSamplePortNode);
-IV_NODE("iv.test.dynamic_event_port_node", DynamicEventPortNode);
-IV_NODE("iv.test.non_constexpr_port_node", NonConstexprPortNode);
-IV_NODE("iv.test.dynamic_port_count_node", DynamicPortCountNode);
-IV_NODE("iv.test.missing_background_tock", MissingBackgroundTockNode);
-IV_NODE("iv.test.missing_background_event_tock", MissingBackgroundEventTockNode);
-IV_NODE("iv.test.invalid_background_tock_signature", InvalidBackgroundTockSignatureNode);
+IV_NODE("iv.test.dynamic_sample_port_node", DynamicSamplePortNode, "Dynamic sample port node");
+IV_NODE("iv.test.dynamic_event_port_node", DynamicEventPortNode, "Dynamic event port node");
+IV_NODE("iv.test.non_constexpr_port_node", NonConstexprPortNode, "Non constexpr port node");
+IV_NODE("iv.test.dynamic_port_count_node", DynamicPortCountNode, "Dynamic port count node");
+IV_NODE("iv.test.missing_background_tock", MissingBackgroundTockNode, "Missing background tock");
+IV_NODE("iv.test.missing_background_event_tock", MissingBackgroundEventTockNode, "Missing background event tock");
+IV_NODE("iv.test.invalid_background_tock_signature", InvalidBackgroundTockSignatureNode, "Invalid background tock signature");

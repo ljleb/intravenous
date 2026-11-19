@@ -37,7 +37,23 @@ std::string module_identifier(std::string const& name)
     return identifier;
 }
 
-std::string package_template(std::string_view module_id)
+std::string package_display_name(std::string_view name)
+{
+    std::string display_name;
+    bool word_start = true;
+    for (unsigned char character : name) {
+        if (character == '_' || character == '-') {
+            word_start = true;
+            continue;
+        }
+        if (word_start && !display_name.empty()) display_name += ' ';
+        display_name += static_cast<char>(word_start ? std::toupper(character) : character);
+        word_start = false;
+    }
+    return display_name.empty() ? "New Module" : display_name;
+}
+
+std::string package_template(std::string_view module_id, std::string const& display_name)
 {
     return "#include <intravenous/dsl.h>\n\n"
         "void module_main(iv::GraphBuilder& g)\n"
@@ -45,7 +61,7 @@ std::string package_template(std::string_view module_id)
         "    using namespace iv;\n"
         "    \n"
         "}\n\n"
-        "IV_MODULE(\"" + std::string(module_id) + "\", module_main);\n";
+        "IV_MODULE(\"" + std::string(module_id) + "\", module_main, \"" + display_name + "\");\n";
 }
 
 std::string command_quote(std::string_view value)
@@ -300,7 +316,7 @@ IvPackageInfo PackageDefinitions::create_project_package(std::string const& name
         }
 
         std::ofstream package(root / "module.cpp", std::ios::binary | std::ios::noreplace);
-        package << package_template(id);
+        package << package_template(id, package_display_name(name));
         if (!package) throw std::runtime_error("cannot write module.cpp");
         write_initial_compile_commands(root, root / "compile_commands.json");
     } catch (...) {

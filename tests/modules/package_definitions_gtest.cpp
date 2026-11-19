@@ -386,7 +386,7 @@ TEST(PackageDefinitions, ProjectPackageCreationWritesSelfConsistentSkeletonAndRe
     EXPECT_NE(manifest.find(R"("schema": 2)"), std::string::npos);
     EXPECT_NE(manifest.find(R"("entry": "module.cpp")"), std::string::npos);
     auto const source = iv::test_support::read_text(expected_root / "module.cpp");
-    EXPECT_NE(source.find("iv.project._voice_bank"), std::string::npos);
+    EXPECT_NE(source.find(R"(IV_MODULE("iv.project._voice_bank", module_main, "Voice Bank");)"), std::string::npos);
     EXPECT_TRUE(std::filesystem::is_regular_file(expected_root / "compile_commands.json"));
 
     auto const source_before = source;

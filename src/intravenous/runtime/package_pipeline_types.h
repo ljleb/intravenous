@@ -17,6 +17,7 @@ namespace iv {
 struct PackageModuleDefinition {
     std::string package_id{};
     std::string definition_id{};
+    std::string display_name{};
     std::filesystem::path package_root{};
     std::string module_id{};
     NodeDefinitionProvider provider{};
@@ -29,6 +30,7 @@ struct PackageModuleDefinition {
 struct PackageLeafDefinition {
     std::string package_id{};
     std::string definition_id{};
+    std::string display_name{};
     std::filesystem::path package_root{};
     NodeDefinitionProvider provider{};
     details::NodeCompilerRecord compiler_record{};

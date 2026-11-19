@@ -14,4 +14,4 @@ void nested_loader_project(iv::GraphBuilder& g)
     g.outputs("main"_P[stereo::left] = tone, "main"_P[stereo::right] = tone);
 }
 
-IV_MODULE("iv.test.nested_loader_project", nested_loader_project);
+IV_MODULE("iv.test.nested_loader_project", nested_loader_project, "Nested loader project");

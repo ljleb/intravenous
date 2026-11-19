@@ -1536,7 +1536,7 @@ private:
         state.elevation = elevation;
     }
 };
-IV_NODE("iv.project.q24_icosphere_pan.learned_hrtf", LearnedHrtfSourceIcosphere);
+IV_NODE("iv.project.q24_icosphere_pan.learned_hrtf", LearnedHrtfSourceIcosphere, "Learned HRTF");
 
 struct BaselineFir256
 {
@@ -1628,7 +1628,7 @@ struct BaselineFir256
         }
     }
 };
-IV_NODE("iv.project.q24_icosphere_pan.baseline_fir_256", BaselineFir256);
+IV_NODE("iv.project.q24_icosphere_pan.baseline_fir_256", BaselineFir256, "Baseline FIR 256");
 
 
 void single_pan(GraphBuilder& g)
@@ -1647,7 +1647,7 @@ void single_pan(GraphBuilder& g)
 
     g.outputs(hrtf);
 }
-IV_MODULE("iv.project.q24_icosphere_pan.single_pan", single_pan);
+IV_MODULE("iv.project.q24_icosphere_pan.single_pan", single_pan, "Single Pan");
 
 
 void module_main(GraphBuilder& g)
@@ -1678,4 +1678,4 @@ void module_main(GraphBuilder& g)
 
     g.outputs("main"_P = fir);
 }
-IV_MODULE("iv.project.q24_icosphere_pan", module_main);
+IV_MODULE("iv.project.q24_icosphere_pan", module_main, "Q24 Icosphere Panner");

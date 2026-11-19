@@ -10,4 +10,4 @@ struct InvalidTickWindowedInput {
 };
 
 static_assert(iv::details::has_tick_family_v<InvalidTickWindowedInput>);
-IV_NODE("iv.test.invalid_tick_windowed_input", InvalidTickWindowedInput);
+IV_NODE("iv.test.invalid_tick_windowed_input", InvalidTickWindowedInput, "Invalid tick windowed input");

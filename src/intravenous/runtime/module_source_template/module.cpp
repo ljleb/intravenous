@@ -6,4 +6,4 @@ void module_main(iv::GraphBuilder& g)
     
 }
 
-IV_MODULE("iv.project.new_module", module_main);
+IV_MODULE("iv.project.new_module", module_main, "New Module");

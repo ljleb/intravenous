@@ -176,6 +176,8 @@ PackageJitBatchResult PackageJit::build(
                 revision.module_definitions.push_back(PackageModuleDefinition{
                     .package_id = declaration.package_id,
                     .definition_id = loaded_definition.module_id,
+                    .display_name = std::string(loaded_definition.provider.display_name,
+                        loaded_definition.provider.display_name_size),
                     .package_root = declaration.package_root,
                     .module_id = std::move(loaded_definition.module_id),
                     .provider = NodeDefinitionProvider{
@@ -193,6 +195,8 @@ PackageJitBatchResult PackageJit::build(
                 revision.leaf_definitions.push_back(PackageLeafDefinition{
                     .package_id = declaration.package_id,
                     .definition_id = std::move(node_type.node_type_id),
+                    .display_name = std::string(node_type.provider.display_name,
+                        node_type.provider.display_name_size),
                     .package_root = declaration.package_root,
                     .provider = NodeDefinitionProvider{
                         .leaf_build = node_type.provider.node_build,

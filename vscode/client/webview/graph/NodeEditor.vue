@@ -45,7 +45,7 @@ function save() {
                         <option v-for="id in definitions" :key="id" :value="id">{{ id }}</option>
                     </select>
                 </label>
-                <label>Name<input v-model="displayName" tabindex="-1" /></label>
+                <label>Name<input v-model="displayName" :placeholder="instance?.defaultDisplayName ?? 'Use definition name'" tabindex="-1" /></label>
                 <label>Construction arguments<textarea v-model="configurationSource" tabindex="-1" rows="6" spellcheck="false" /></label>
                 <footer>
                     <button type="button" tabindex="-1" @click="emit('close')">Cancel</button>

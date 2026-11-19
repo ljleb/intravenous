@@ -92,7 +92,8 @@ export class ObservationValues {
         // absolute positions through the current viewport and clip to overlap.
         if (ready) {
             const begin = BigInt(visible.begin), old = BigInt(ready.window.begin);
-            if (old < begin + BigInt(visible.length) && begin < old + BigInt(ready.window.length))
+            if (BigInt.asUintN(64, old - begin) < BigInt(visible.length)
+                || BigInt.asUintN(64, begin - old) < BigInt(ready.window.length))
                 return ready.outdated ? ready : { ...ready, outdated: true };
         }
         return aligned;

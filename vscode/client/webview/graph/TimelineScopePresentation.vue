@@ -12,7 +12,8 @@ import { nodeDisplayName } from "../presentation/nodeSummary";
 import LaneSettings from "../presentation/LaneSettings.vue";
 import TimeRuler from "../timeline/TimeRuler.vue";
 import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
-import { selectVisibleTimelineMarks } from "../timeline/geometry";
+import { timelineBeatObservationWindow } from "../timeline/geometry";
+import { minimumBeatMarkSpacing, selectVisibleBeatMarks } from "../../src/beatGrid";
 import { provideTimelineMarks, provideTimelineNavigation, provideTimelineWindow, type TimelineMark, type LaneValueGesture, type LaneValueNavigation } from "../timeline/timelineContext";
 import { initialTimelineViewport, isMiddleDoubleClick, middleClickMode, moveMiddleDrag, panTimeline, resetTimelineZoom, timelineMiddleDragAction,
     timelineWheelAction, verticalMiddleDragZoomFactor, wheelPixels, wrapTimelineCursor, zoomAnchorHint, zoomFactorForPixels, zoomMiddleDrag,
@@ -22,7 +23,9 @@ import { useGraphEditor } from "./context";
 import { cursorWarpAnchor, type CursorWarpAnchor } from "./cursorReturn";
 import { usePlayback } from "../timeline/playbackContext";
 import { useObservations } from "../presentation/observationContext";
+import { sameObservationWindow, type ObservationWindow, type ObservationWindowResult } from "../../src/observations";
 import { automationSampleIndex, automationSampleOffset } from "../../src/automationCurveGeometry";
+import { webviewApi } from "../host";
 
 const node = useNode();
 const playback = usePlayback();
@@ -30,15 +33,13 @@ const backgroundPlayheadSeconds = computed(() => playback.backgroundPlayhead.val
     : Number(playback.backgroundPlayhead.value) / (playback.state.value?.sampleRate ?? 48000));
 const scope = computed(() => node.value.scope!);
 const { layout, save, copyNodeDebugDetails, selectedLanes, finishPointerLock, setTimelineZoomHint } = useGraphEditor();
+function renameLane(instanceId: string, displayName: string, previousDisplayName: string) {
+    webviewApi.postMessage({ type: "renameGraphLane", instanceId, displayName, previousDisplayName });
+}
 const children = computed(() => orderLanes(scope.value.nodes, layout.value.laneOrder).map((child) => ({
     child, semantic: semanticNodeFromScopeChild(child, scope.value),
 })));
 const laneOrder = computed(() => children.value.map(({ child }) => addressKey(child.address)));
-const timelineRuns = computed(() => {
-    const timelineLanes = new Set(children.value.filter(({ semantic }) => presentations.select(semantic.definitionId).timeline)
-        .map(({ child }) => addressKey(child.address)));
-    return laneRuns(laneOrder.value, timelineLanes);
-});
 const viewport = computed({ get: () => layout.value.timeline,
     set: (value) => { layout.value.timeline = value; } });
 const gridMode = computed(() => layout.value.timelineGrid);
@@ -48,6 +49,14 @@ function setGridMode(mode: TimelineGridMode) {
     save();
 }
 const laneHeight = computed(() => viewport.value.laneHeight);
+const timelineRuns = computed(() => {
+    const timelineLanes = new Set(children.value.filter(({ semantic }) => presentations.select(semantic.definitionId).timeline)
+        .map(({ child }) => addressKey(child.address)));
+    const height = laneHeight.value;
+    return laneRuns(laneOrder.value, timelineLanes).map(({ begin, end }) => ({
+        begin, style: { top: `${begin * height}px`, height: `${(end - begin) * height}px` },
+    }));
+});
 const headerHeight = 36;
 const scrollbarStyle = computed(() => {
     const contentHeight = headerHeight + scope.value.nodes.length * laneHeight.value;
@@ -72,16 +81,19 @@ const timeWindow = computed(() => {
 provideTimelineWindow(timeWindow);
 const observations = useObservations();
 const timelineInterests = new Map<string, string>();
-const observedTimelineWindow = computed(() => {
+const decodedBeatMarks = new WeakMap<NonNullable<ObservationWindowResult["marks"]>, Array<Pick<TimelineMark, "index" | "depth">>>();
+const beatViewport = computed(() => {
     const { beginSeconds, spanSeconds, sampleRate } = timeWindow.value;
     if (gridMode.value !== "beats" || !sampleRate || timeWidth.value <= 0) return undefined;
     const first = automationSampleIndex(beginSeconds, sampleRate);
     const last = automationSampleIndex(beginSeconds, sampleRate, spanSeconds);
-    return first === undefined || last === undefined || last < first ? undefined : {
-        begin: String(first), length: String(last - first + 1n),
-        points: Math.max(1, Math.min(512, Math.floor(timeWidth.value / 10))),
-        maxDepth: 255,
-    };
+    return first === undefined || last === undefined || last < first ? undefined : { first, length: last - first + 1n };
+});
+const observedTimelineWindow = computed<ObservationWindow | undefined>((previous) => {
+    const visible = beatViewport.value;
+    if (!visible) return;
+    const window = timelineBeatObservationWindow(visible.first, visible.length, timeWidth.value);
+    return sameObservationWindow(window, previous) ? previous : window;
 });
 watch([() => scope.value.timelineNodes, observedTimelineWindow], ([nodes, window]) => {
     if (!observations) return;
@@ -93,11 +105,11 @@ watch([() => scope.value.timelineNodes, observedTimelineWindow], ([nodes, window
         timelineInterests.set(key, id);
         observations.observePort(id, {
             source: { node, kind: "input", member: "beats", portKind: "event" }, operation: "beat-grid", window,
-        });
+        }, "viewport");
     }
     for (const [key, id] of timelineInterests) {
         if (visible.has(key)) continue;
-        observations.observePort(id, undefined);
+        observations.observePort(id, undefined, "viewport");
         timelineInterests.delete(key);
     }
 }, { immediate: true });
@@ -108,19 +120,27 @@ const timelineMarks = computed<readonly TimelineMark[]>((previous) => {
     if (gridMode.value !== "beats" || !observations) return [];
     void observations.version.value;
     const { beginSeconds, spanSeconds, sampleRate } = timeWindow.value;
-    const visible = observedTimelineWindow.value;
-    if (!sampleRate || !visible) return [];
+    const visible = beatViewport.value, window = observedTimelineWindow.value;
+    const width = timeWidth.value;
+    if (!sampleRate || !visible || !window) return [];
+    const pixelsPerSample = width / (spanSeconds * sampleRate);
+    const originX = automationSampleOffset(visible.first, beginSeconds, sampleRate) / spanSeconds * width;
     const candidates: TimelineMark[] = [];
     for (const id of timelineInterests.values()) {
-        const result = observations.values.windowForDisplay(id, visible);
-        if (result?.status !== "ready") continue;
-        for (const mark of result.marks ?? []) {
-            const index = BigInt(mark.index);
-            const x = automationSampleOffset(index, beginSeconds, sampleRate) / spanSeconds * timeWidth.value;
-            if (x >= 0 && x <= timeWidth.value) candidates.push({ index, depth: mark.depth, x });
+        const result = observations.values.windowForDisplay(id, window);
+        if (result?.status !== "ready" || !result.marks) continue;
+        let marks = decodedBeatMarks.get(result.marks);
+        if (!marks) {
+            marks = result.marks.map(({ index, depth }) => ({ index: BigInt(index), depth }));
+            decodedBeatMarks.set(result.marks, marks);
+        }
+        for (const { index, depth } of marks) {
+            const x = originX + Number(BigInt.asIntN(64, index - visible.first)) * pixelsPerSample;
+            if (x >= -minimumBeatMarkSpacing && x <= width + minimumBeatMarkSpacing)
+                candidates.push({ index, depth, x });
         }
     }
-    const displayed = selectVisibleTimelineMarks(candidates);
+    const displayed = selectVisibleBeatMarks(candidates, width);
     if (previous?.length === displayed.length && displayed.every(({ index, depth, x }, i) =>
         index === previous[i].index && depth === previous[i].depth && x === previous[i].x)) return previous;
     return displayed;
@@ -492,19 +512,25 @@ onBeforeUnmount(() => {
             </div>
         </header>
         <div class="lanes">
+            <template v-if="timelineMarks.length">
+                <svg v-for="run in timelineRuns" :key="run.begin" class="lane-timeline-overlay lane-snap-grid" aria-hidden="true"
+                    :style="run.style">
+                    <line v-for="mark in timelineMarks" :key="mark.index.toString()" class="beat-guide"
+                        :class="{ bar: mark.depth === 0, beat: mark.depth === 1 }"
+                        :x1="mark.x" :x2="mark.x" y1="0" y2="100%" vector-effect="non-scaling-stroke" />
+                </svg>
+            </template>
             <section v-for="{ child, semantic } in children" :key="addressKey(child.address)"
                 class="lane" :class="{ selected: selectedLanes.has(addressKey(child.address)) }"
                 :data-lane-key="addressKey(child.address)"
                 :style="{ height: `${laneHeight}px` }" tabindex="-1"
                 :aria-label="nodeDisplayName(semantic) + (selectedLanes.has(addressKey(child.address)) ? ', selected' : '')">
                 <PresentationHost :node="semantic" :region-height="laneHeight - 1" lane
+                    :rename-lane="scope.editable ? (name, previousName) => renameLane(child.instance.instanceId, name, previousName) : undefined"
                     @copy-debug-details="copyNodeDebugDetails(child.address)" />
             </section>
             <svg v-for="run in timelineRuns" :key="run.begin" class="lane-timeline-overlay" aria-hidden="true"
-                :style="{ top: `${run.begin * laneHeight}px`, height: `${(run.end - run.begin) * laneHeight}px` }">
-                <line v-for="mark in timelineMarks" :key="mark.index.toString()" class="beat-guide"
-                    :class="{ bar: mark.depth === 0, beat: mark.depth === 1 }"
-                    :x1="mark.x" :x2="mark.x" y1="0" y2="100%" vector-effect="non-scaling-stroke" />
+                :style="run.style">
                 <TimelinePlayhead />
             </svg>
             <div v-if="!children.length" class="empty">No project instances.</div>
@@ -554,15 +580,21 @@ onBeforeUnmount(() => {
 .timeline-heading { display: grid; grid-template-columns: var(--node-label-width) minmax(0, 1fr); }
 .timeline-heading { box-sizing: border-box; position: sticky; top: 0; z-index: 1; background: var(--vscode-editor-background); flex: 0 0 var(--timeline-header-height); border-bottom: 1px solid var(--vscode-panel-border); }
 .node-column { box-sizing: border-box; min-width: 0; padding: 8px 12px; border-right: 1px solid var(--vscode-panel-border); }
-.lanes { flex: 0 0 auto; min-height: 0; position: relative; }
+.lanes { flex: 0 0 auto; min-height: 0; position: relative; isolation: isolate; }
 .lane-timeline-overlay { position: absolute; inset-inline-start: var(--node-label-width);
     width: calc(100% - var(--node-label-width)); pointer-events: none; }
+.lane-snap-grid { z-index: -1; }
 .beat-guide { stroke: var(--vscode-foreground); stroke-opacity: .09; }
 .beat-guide.beat { stroke-opacity: .15; }
 .beat-guide.bar { stroke-opacity: .23; }
 .playback-position { overflow: hidden; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--iv-lane-title-color); }
 .playback-position small { color: var(--iv-port-label-base); margin-left: 6px; }
-.lane { position: relative; box-sizing: border-box; border-bottom: 1px solid var(--vscode-panel-border); }
+.lane { position: relative; box-sizing: border-box; border-bottom: 1px solid transparent; }
+/* The snap grid passes over lane separators and under their contents. */
+.lane::before {
+    content: ""; position: absolute; z-index: -2; pointer-events: none;
+    inset-inline: 0; inset-block-end: -1px; height: 1px; background: var(--vscode-panel-border);
+}
 .lane.selected::after {
     content: ""; position: absolute; z-index: 0; pointer-events: none;
     inset-inline-start: calc(var(--node-label-width) - 1px); inset-block: 0; width: 2px;

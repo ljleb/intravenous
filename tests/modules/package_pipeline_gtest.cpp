@@ -305,7 +305,7 @@ TEST(PackagePipeline, FailedFirstBuildRemainsWatchedAndCanRecoverAfterSourceEdit
         workspace / "module.cpp",
         "#include <intravenous/dsl.h>\n\n"
         "void recovered(iv::GraphBuilder& g) { g.outputs(); }\n"
-        "IV_MODULE(\"iv.test.recovered\", recovered);\n");
+        "IV_MODULE(\"iv.test.recovered\", recovered, \"Recovered\");\n");
     iv::test::advance_write_time(workspace / "module.cpp");
 
     pipeline.watcher.poll_dependency_changes();
@@ -339,7 +339,7 @@ void node_instances_jit_config(iv::GraphBuilder& g, int value)
     if (value != 37) throw std::runtime_error("typed argument value was corrupted");
     g.outputs();
 }
-IV_MODULE("iv.test.node_instances_jit_config", node_instances_jit_config);
+IV_MODULE("iv.test.node_instances_jit_config", node_instances_jit_config, "Node instances jit config");
 )cpp");
 
     iv::StartupConfig startup_config(workspace, iv::test::repo_root(), {});

@@ -21,5 +21,5 @@ void reload_sample_period(iv::GraphBuilder& g)
     g.outputs(g.node<"iv.test.reload_sample_period.source">());
 }
 
-IV_NODE("iv.test.reload_sample_period.source", SamplePeriodSource);
-IV_MODULE("iv.test.reload_sample_period", reload_sample_period);
+IV_NODE("iv.test.reload_sample_period.source", SamplePeriodSource, "Source");
+IV_MODULE("iv.test.reload_sample_period", reload_sample_period, "Reload sample period");

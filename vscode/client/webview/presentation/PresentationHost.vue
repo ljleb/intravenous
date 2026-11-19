@@ -20,9 +20,14 @@ const props = defineProps<{
     regionHeight?: number;
     scale?: number;
     lane?: boolean;
+    renameLane?: (name: string, previousName: string) => void;
 }>();
 const emit = defineEmits<{ copyDebugDetails: [] }>();
-provideLane(props.lane ? { copyDebugDetails: () => emit("copyDebugDetails"), regionHeight: toRef(() => props.regionHeight) } : null);
+provideLane(props.lane ? {
+    copyDebugDetails: () => emit("copyDebugDetails"),
+    get rename() { return props.renameLane; },
+    regionHeight: toRef(() => props.regionHeight),
+} : null);
 
 const nodeEvents = useNodeEventMessaging();
 const semanticNode = computed(() => {

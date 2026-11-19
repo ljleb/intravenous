@@ -24,4 +24,4 @@ struct InvalidDualExecutionCallbacks {
 
 IV_NODE(
     "iv.test.invalid_dual_execution_callbacks",
-    InvalidDualExecutionCallbacks);
+    InvalidDualExecutionCallbacks, "Invalid dual execution callbacks");

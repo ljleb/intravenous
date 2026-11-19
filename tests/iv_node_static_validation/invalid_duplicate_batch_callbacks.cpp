@@ -60,7 +60,7 @@ struct InvalidScalarAndBatchForward {
             InvalidScalarAndBatchForward>&) {}
 };
 
-IV_NODE("iv.test.invalid_scalar_and_batch_tick", InvalidScalarAndBatchTick);
-IV_NODE("iv.test.invalid_scalar_and_batch_skip", InvalidScalarAndBatchSkip);
-IV_NODE("iv.test.invalid_scalar_and_batch_tock", InvalidScalarAndBatchTock);
-IV_NODE("iv.test.invalid_scalar_and_batch_forward", InvalidScalarAndBatchForward);
+IV_NODE("iv.test.invalid_scalar_and_batch_tick", InvalidScalarAndBatchTick, "Invalid scalar and batch tick");
+IV_NODE("iv.test.invalid_scalar_and_batch_skip", InvalidScalarAndBatchSkip, "Invalid scalar and batch skip");
+IV_NODE("iv.test.invalid_scalar_and_batch_tock", InvalidScalarAndBatchTock, "Invalid scalar and batch tock");
+IV_NODE("iv.test.invalid_scalar_and_batch_forward", InvalidScalarAndBatchForward, "Invalid scalar and batch forward");

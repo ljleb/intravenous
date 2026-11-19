@@ -52,6 +52,7 @@ struct IvModuleInstance {
     std::filesystem::path package_root{};
     std::string configuration_source{};
     std::string module_id{};
+    std::string default_display_name{};
 
     bool operator==(IvModuleInstance const&) const = default;
 };
@@ -300,7 +301,7 @@ private:
     struct DesiredInstance {
         std::string instance_id{};
         std::string definition_id{};
-        std::string display_name{};
+        std::string display_name_override{};
         std::filesystem::path package_root{};
         std::string configuration_source{};
     };

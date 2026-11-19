@@ -1,23 +1,55 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { timelineTimeDrag } from "../src/timelineTimeDrag";
-import { selectVisibleTimelineMarks, snapTimelineSample, timelineTicks } from "../webview/timeline/geometry";
+import { minimumBeatMarkSpacing, selectVisibleBeatMarks } from "../src/beatGrid";
+import { snapTimelineSample, timelineBeatObservationWindow, timelineTicks } from "../webview/timeline/geometry";
 import { compactWidthPx, editableHeightPx, effectiveDisplayMode, nanoHeightPx } from "../webview/presentation/displayMode";
 
 test("the ruler keeps coarser coincident beats and snapping only uses the displayed marks", () => {
-    const displayed = selectVisibleTimelineMarks([
+    const displayed = selectVisibleBeatMarks([
         { index: 160n, x: 16, depth: 3 },
         { index: 110n, x: 11, depth: 2 },
         { index: 240n, x: 24, depth: 1 },
         { index: 160n, x: 16, depth: 0 },
         { index: 60n, x: 6, depth: 1 },
         { index: 0n, x: 0, depth: 2 },
-    ]);
+    ], 40);
     assert.deepEqual(displayed.map(({ index, depth }) => [index, depth]), [[60n, 1], [160n, 0], [240n, 1]]);
     const targets = displayed.map(({ index }) => index);
     assert.equal(snapTimelineSample(112n, targets, 5), 112n);
     assert.equal(snapTimelineSample(165n, targets, 5), 160n);
     assert.equal(snapTimelineSample(166n, targets, 5), 166n);
+});
+
+test("beat subdivision visibility follows current spacing in both zoom directions", () => {
+    const marks = [
+        { index: 0n, x: 0, depth: 0 },
+        { index: 1n, x: 1, depth: 2 },
+        { index: 2n, x: 2, depth: 1 },
+        { index: 3n, x: 3.05, depth: 2 },
+    ];
+    const visible = (scale: number) => selectVisibleBeatMarks(marks.map((mark) => ({ ...mark, x: mark.x * scale })), 80)
+        .map(({ index }) => index);
+    assert.deepEqual(visible(7.9), [0n, 2n, 3n]);
+    assert.deepEqual(visible(minimumBeatMarkSpacing), [0n, 1n, 2n, 3n]);
+    assert.deepEqual(visible(7.9), [0n, 2n, 3n]);
+    assert.deepEqual(selectVisibleBeatMarks([
+        { index: -1n, x: -3, depth: 0 }, { index: 0n, x: 2, depth: 1 }, { index: 1n, x: 14, depth: 2 },
+    ], 20).map(({ index }) => index), [1n]);
+});
+
+test("beat observations share a padded query across nearby pans and zooms", () => {
+    const base = timelineBeatObservationWindow(-2001n, 3000n, 1200)!;
+    assert.deepEqual(timelineBeatObservationWindow(-1200n, 3300n, 1200), base);
+    assert.equal(base.points, 1024);
+    assert.ok(BigInt(base.begin) < -2001n);
+    assert.ok(BigInt(base.begin) + BigInt(base.length) > -1200n + 3300n);
+    assert.notDeepEqual(timelineBeatObservationWindow(50n, 3300n, 1200), base);
+    assert.notDeepEqual(timelineBeatObservationWindow(-1200n, 4300n, 1200), base);
+    const nearSeam = (1n << 63n) + 20n;
+    const wrapped = timelineBeatObservationWindow(nearSeam, 100n, 800)!;
+    const offset = BigInt.asUintN(64, nearSeam - BigInt(wrapped.begin));
+    assert.ok(offset > 0n && offset + 100n < BigInt(wrapped.length));
 });
 
 test("drag detents add pointer travel and keep the adjacent samples reachable in either direction", () => {

@@ -21,4 +21,4 @@ void reload_project(iv::GraphBuilder& g)
             "phase_offset"_P = right_phase));
 }
 
-IV_MODULE("iv.test.reload_project", reload_project);
+IV_MODULE("iv.test.reload_project", reload_project, "Reload project");

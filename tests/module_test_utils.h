@@ -406,7 +406,7 @@ namespace iv::test {
         std::string const& main)
     {
         if (module_text.contains("IV_MODULE(")) return module_text;
-        module_text += "\nIV_MODULE(\"" + id + "\", " + main + ");\n";
+        module_text += "\nIV_MODULE(\"" + id + "\", " + main + ", \"Test module\");\n";
         return module_text;
     }
 

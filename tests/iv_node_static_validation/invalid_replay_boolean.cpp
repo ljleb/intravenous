@@ -13,4 +13,4 @@ struct InvalidReplayBoolean {
     void tick(iv::TickSampleContext<InvalidReplayBoolean> const&) const {}
 };
 
-IV_NODE("iv.test.invalid_replay_boolean", InvalidReplayBoolean);
+IV_NODE("iv.test.invalid_replay_boolean", InvalidReplayBoolean, "Invalid replay boolean");

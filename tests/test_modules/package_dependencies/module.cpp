@@ -20,4 +20,4 @@ void package_dependencies_module(iv::GraphBuilder& g)
 }
 }
 
-IV_MODULE("iv.test.package_dependencies", package_dependencies_module);
+IV_MODULE("iv.test.package_dependencies", package_dependencies_module, "Package dependencies");

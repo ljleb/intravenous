@@ -44,4 +44,4 @@ void module_main(iv::GraphBuilder& g)
     }
 }
 
-IV_MODULE("iv.bench.playback.saw", module_main);
+IV_MODULE("iv.bench.playback.saw", module_main, "Saw");

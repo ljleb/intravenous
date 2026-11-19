@@ -76,16 +76,21 @@ NodeDefinitionProvider const& definition_provider(NodeDefinitionEntry const& def
 IvModuleInstance make_instance(
     NodeDefinitionEntry const& definition,
     std::string const& instance_id,
-    std::string const& display_name,
+    std::string const& display_name_override,
     std::string const& configuration_source)
 {
+    auto const& authored_name = std::visit([](auto const& node) -> std::string const& {
+        return node.display_name;
+    }, definition.definition);
+    auto const& default_name = authored_name.empty() ? definition.definition_id : authored_name;
     return IvModuleInstance{
         .instance_id = instance_id,
         .definition_id = definition.definition_id,
-        .display_name = display_name,
+        .display_name = display_name_override.empty() ? default_name : display_name_override,
         .package_root = definition_package_root(definition),
         .configuration_source = configuration_source,
         .module_id = definition_compatibility_module_id(definition),
+        .default_display_name = default_name,
     };
 }
 
@@ -364,7 +369,7 @@ bool NodeInstances::publish_instance_locked(
     auto instance = make_instance(
         definition,
         desired->second.instance_id,
-        desired->second.display_name,
+        desired->second.display_name_override,
         desired->second.configuration_source);
     auto existing = published_instances_by_id_.find(instance_id);
     if (existing != published_instances_by_id_.end() && existing->second == instance) {
@@ -459,8 +464,6 @@ std::string NodeInstances::create_instance(
         throw std::invalid_argument("node instance id must not be empty");
     }
     auto normalized_root = normalize_path(package_root);
-    auto display_name = requested_display_name.value_or(definition_key);
-    if (display_name.empty()) display_name = definition_key;
     std::string instance_id;
 
     {
@@ -491,7 +494,7 @@ std::string NodeInstances::create_instance(
         desired_instances_by_id_.emplace(instance_id, DesiredInstance{
             .instance_id = instance_id,
             .definition_id = definition_key,
-            .display_name = std::move(display_name),
+            .display_name_override = std::move(requested_display_name).value_or(std::string{}),
             .package_root = normalized_root,
             .configuration_source = std::move(configuration_source),
         });
@@ -564,13 +567,9 @@ void NodeInstances::update_instances(Changes& changes, std::vector<Update> updat
         for (auto const& update : updates) {
             auto desired = desired_instances_by_id_.find(update.instance_id);
             bool changed = false;
-            if (update.display_name.has_value()) {
-                auto next = *update.display_name;
-                if (next.empty()) next = desired->second.definition_id;
-                if (desired->second.display_name != next) {
-                    desired->second.display_name = std::move(next);
-                    changed = true;
-                }
+            if (update.display_name && desired->second.display_name_override != *update.display_name) {
+                desired->second.display_name_override = std::move(*update.display_name);
+                changed = true;
             }
             if (update.configuration_source
                 && desired->second.configuration_source != *update.configuration_source) {
@@ -581,7 +580,9 @@ void NodeInstances::update_instances(Changes& changes, std::vector<Update> updat
             list_changed = true;
             if (auto instance = published_instances_by_id_.find(update.instance_id);
                 instance != published_instances_by_id_.end()) {
-                instance->second.display_name = desired->second.display_name;
+                auto const& override_name = desired->second.display_name_override;
+                instance->second.display_name = override_name.empty()
+                    ? instance->second.default_display_name : override_name;
                 instance->second.configuration_source =
                     desired->second.configuration_source;
             }
@@ -602,15 +603,18 @@ std::vector<IvModuleInstanceInfo> NodeInstances::list_instances() const
         auto info = IvModuleInstanceInfo{
             .instance_id = id,
             .definition_id = desired.definition_id,
-            .display_name = desired.display_name,
+            .display_name = desired.display_name_override.empty() ? desired.definition_id : desired.display_name_override,
             .package_root = desired.package_root,
             .configuration_source = desired.configuration_source,
             .module_id = desired.definition_id,
+            .default_display_name = desired.definition_id,
         };
         if (auto published = published_instances_by_id_.find(id);
             published != published_instances_by_id_.end()) {
             info.realized = true;
             info.module_id = published->second.module_id;
+            info.display_name = published->second.display_name;
+            info.default_display_name = published->second.default_display_name;
         }
         result.push_back(std::move(info));
     }
@@ -630,9 +634,8 @@ std::vector<ProjectNodeInstanceDeclaration> NodeInstances::desired_instances() c
             .package_root = desired.package_root.empty()
                 ? std::nullopt
                 : std::optional<std::filesystem::path>{desired.package_root},
-            .display_name = desired.display_name != desired.definition_id
-                ? std::optional<std::string>{desired.display_name}
-                : std::nullopt,
+            .display_name = desired.display_name_override.empty()
+                ? std::nullopt : std::optional{desired.display_name_override},
             .configuration_source = desired.configuration_source,
         });
     }
@@ -1651,13 +1654,10 @@ void NodeInstances::apply_project_graph_transaction(
                                && !declaration.package_root->empty()) {
                         package_root = normalize_path(*declaration.package_root);
                     }
-                    auto display_name = declaration.display_name.value_or(
-                        declaration.definition_id);
-                    if (display_name.empty()) display_name = declaration.definition_id;
                     desired.emplace(declaration.instance_id, DesiredInstance{
                         .instance_id = declaration.instance_id,
                         .definition_id = declaration.definition_id,
-                        .display_name = std::move(display_name),
+                        .display_name_override = declaration.display_name.value_or(std::string{}),
                         .package_root = package_root,
                         .configuration_source = declaration.configuration_source,
                     });
@@ -1746,7 +1746,7 @@ void NodeInstances::apply_project_graph_transaction(
                             if (current == desired_instances_by_id_.end()
                                 || current->second.instance_id != next.instance_id
                                 || current->second.definition_id != next.definition_id
-                                || current->second.display_name != next.display_name
+                                || current->second.display_name_override != next.display_name_override
                                 || current->second.package_root != next.package_root
                                 || current->second.configuration_source
                                     != next.configuration_source) {
@@ -1778,7 +1778,7 @@ void NodeInstances::apply_project_graph_transaction(
                         auto instance = make_instance(
                             definition->second,
                             instance_id,
-                            next.display_name,
+                            next.display_name_override,
                             next.configuration_source);
                         auto const current = published_instances_by_id_.find(instance_id);
                         if (current == published_instances_by_id_.end()

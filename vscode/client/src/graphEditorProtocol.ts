@@ -74,6 +74,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "setManualInputEnabled"; target: NodeAddress; inputName: string; enabled: boolean }
     | { type: "projectHistory"; direction: "undo" | "redo" }
     | { type: "copyNodeDebugDetails"; nodeKey: string }
+    | { type: "renameGraphLane"; instanceId: string; displayName: string; previousDisplayName: string }
     | { type: "connectGraphPorts"; first: GraphPortEndpoint; second: GraphPortEndpoint }
     | { type: "editGraphConnectionEnd"; edit: GraphConnectionEdit }
     | { type: "createGraphNode"; definitionId: string; displayName: string; configurationSource: string }
