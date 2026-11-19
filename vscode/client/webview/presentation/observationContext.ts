@@ -20,6 +20,9 @@ export class PresentationObservations {
     private visible = true;
     private pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
     private timer: ReturnType<typeof setTimeout> | undefined;
+    private windowTimer: ReturnType<typeof setTimeout> | undefined;
+    private discoveringEpoch: number | undefined;
+    private capabilitiesCurrent = false;
     private heartbeat: ReturnType<typeof setInterval>;
     private sequence = 0;
     private sourceIds = new Map<string, string>();
@@ -70,20 +73,23 @@ export class PresentationObservations {
     }
     node(owner: symbol, node: NodeAddress, visible: boolean, window?: ObservationWindow, firstInput?: string): void {
         const previous = this.nodes.get(owner);
-        if (previous?.visible === visible && addressKey(previous.node) === addressKey(node)
-            && previous.firstInput === firstInput
-            && sameObservationWindow(previous.window, window)) return;
+        const sameLane = previous?.visible === visible && addressKey(previous.node) === addressKey(node)
+            && previous.firstInput === firstInput;
+        if (sameLane && sameObservationWindow(previous.window, window)) return;
         this.nodes.set(owner, { node, visible, window, firstInput });
-        this.schedule();
+        if (sameLane) this.scheduleWindows();
+        else this.schedule();
     }
     remove(owner: symbol): void { this.nodes.delete(owner); this.schedule(); }
     portObservationId(): string { return `port:${++this.nextExplicitId}`; }
     observePort(id: string, next: PortObservation | undefined): void {
         const previous = this.explicit.get(id);
-        if (previous && next && observationSourceKey(previous.source) === observationSourceKey(next.source)
-            && previous.operation === next.operation && sameObservationWindow(previous.window, next.window)) return;
+        const sameSource = previous && next && observationSourceKey(previous.source) === observationSourceKey(next.source)
+            && previous.operation === next.operation;
+        if (sameSource && sameObservationWindow(previous.window, next.window)) return;
         if (next) this.explicit.set(id, next);
         else if (!this.explicit.delete(id)) return;
+        if (sameSource && previous.window && next.window) { this.scheduleWindows(); return; }
         this.values.values.delete(id);
         this.values.windows.delete(id);
         ++this.version.value;
@@ -100,13 +106,33 @@ export class PresentationObservations {
     refresh(): void { this.schedule(); }
     private schedule(): void {
         ++this.epoch;
+        this.capabilitiesCurrent = false;
         if (this.timer) clearTimeout(this.timer);
         // A short grace period avoids compiling a new probe plan on every
         // scroll frame. The host replaces one full viewport interest set.
         this.timer = setTimeout(() => { this.timer = undefined; void this.discover(); }, 200);
     }
+    private scheduleWindows(): void {
+        if (!this.capabilitiesCurrent) {
+            if (!this.timer && this.discoveringEpoch !== this.epoch) this.schedule();
+            return;
+        }
+        if (this.windowTimer) return;
+        // Window-only changes can reuse the capability list. Keep a fixed
+        // deadline so sustained wheel or pointer input cannot postpone a query.
+        this.windowTimer = setTimeout(() => {
+            this.windowTimer = undefined;
+            if (this.capabilitiesCurrent) void this.updateInterests(this.explicitInterests());
+        }, 100);
+    }
+    private explicitInterests(): ObservationInterest[] {
+        // Explicit readers can receive an unavailable or pending result even
+        // when discovery does not advertise a capability.
+        return this.visible ? Array.from(this.explicit, ([id, interest]) => ({ ...interest, id })).slice(0, 64) : [];
+    }
     private async discover(): Promise<void> {
         const epoch = this.epoch;
+        this.discoveringEpoch = epoch;
         const unique = new Map<string, NodeAddress>();
         const firstInputs = new Map<string, string>();
         if (this.visible) {
@@ -117,16 +143,12 @@ export class PresentationObservations {
                 if (entry.firstInput !== undefined) firstInputs.set(key, entry.firstInput);
             }
         }
-        // Explicit readers can receive an unavailable or pending result from
-        // the backend even when discovery does not advertise a capability.
-        const explicit: ObservationInterest[] = this.visible
-            ? Array.from(this.explicit, ([id, interest]) => ({ ...interest, id })).slice(0, 64)
-            : [];
         const nodes = [...unique.values()].slice(0, 64);
         try {
             const response = nodes.length ? await this.request({ type: "observationDescribe", nodes }) as { capabilities: ObservationCapability[] }
                 : { capabilities: [] };
             if (epoch !== this.epoch || this.disposed) return;
+            const explicit = this.explicitInterests();
             const capabilities: Capability[] = [];
             const budget = 64 - explicit.length;
             const stateNodes = new Set<number>();
@@ -156,8 +178,10 @@ export class PresentationObservations {
                 if (capabilities.length === budget) break;
             }
             this.install(capabilities, explicit);
-            await this.reconcile(this.desired);
+            this.capabilitiesCurrent = true;
+            await this.updateInterests(explicit);
         } catch (error) { if (!this.disposed) this.error.value = String(error); }
+        finally { if (this.discoveringEpoch === epoch) this.discoveringEpoch = undefined; }
     }
     private id(source: ObservationSource, operation: string, capability: ObservationCapability): string {
         // Equivalent sources keep their display history across graph revisions.
@@ -192,7 +216,9 @@ export class PresentationObservations {
             for (const key of this.modes.keys()) if (!active.has(key)) this.modes.delete(key);
         }
         this.capabilities.value = capabilities;
-        this.desired = [...explicit, ...capabilities.flatMap<ObservationInterest>((capability) => {
+    }
+    private updateInterests(explicit: ObservationInterest[]): Promise<void> {
+        this.desired = [...explicit, ...this.capabilities.value.flatMap<ObservationInterest>((capability) => {
             if (capability.delivery === "window") {
                 const node = [...this.nodes.values()].find((node) => node.visible
                     && addressKey(node.node) === addressKey(capability.source.node) && node.window);
@@ -201,12 +227,13 @@ export class PresentationObservations {
             }
             return [{ id: capability.id, source: capability.source, operation: capability.operation }];
         })];
-        this.values.expectWindows(this.desired);
-        ++this.version.value;
+        return this.reconcile(this.desired);
     }
     private reconcile(interests: ObservationInterest[]): Promise<void> {
         this.queue = this.queue.catch(() => {}).then(async () => {
             if (this.disposed || interests !== this.desired) return;
+            this.values.expectWindows(interests);
+            ++this.version.value;
             const result = await this.request({ type: "observationReconcile", interests }) as { revision: string };
             if (this.disposed) return;
             this.values.acceptRevision(result.revision);
@@ -216,6 +243,9 @@ export class PresentationObservations {
     }
     disconnect(): void {
         ++this.epoch;
+        this.capabilitiesCurrent = false;
+        if (this.windowTimer) clearTimeout(this.windowTimer);
+        this.windowTimer = undefined;
         this.values.clear();
         this.capabilities.value = [];
         ++this.version.value;
@@ -255,12 +285,14 @@ export function usePortObservation(request: () => PortObservation | undefined) {
         onScopeDispose(() => { if (id.value) observations.observePort(id.value, undefined); });
     }
     return {
-        window: computed(() => {
+        latestWindow: computed(() => {
             const wanted = request()?.window;
             if (!observations || !id.value || !wanted) return undefined;
             void observations.version.value;
-            const result = observations.values.windows.get(id.value);
-            return sameObservationWindow(result?.window, wanted) ? result : undefined;
+            // The scope validates replies against the submitted window. A
+            // presentation that plots absolute time can show those samples
+            // while its next viewport is still being coalesced.
+            return observations.values.windows.get(id.value);
         }),
         value: computed(() => {
             const wanted = request();

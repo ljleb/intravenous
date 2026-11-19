@@ -81,7 +81,7 @@ function observeBound(side: AutomationBoundInput) {
             return { source: { node: address, kind: "input", member: side }, operation: "waveform", window };
     });
     const current = computed(() => {
-        const result = observation.window.value;
+        const result = observation.latestWindow.value;
         return result && !result.outdated && result.status !== "pending" ? result : undefined;
     });
     const retained = computed<{ key: string; result: ObservationWindowResult } | undefined>((previous) => {
@@ -204,8 +204,9 @@ function editSegment(event: MouseEvent | KeyboardEvent, point: AutomationPoint) 
     if (!editable.value) return;
     event.preventDefault();
     event.stopPropagation();
-    menuAnchor = event.currentTarget as SVGElement;
-    const rect = menuAnchor.getBoundingClientRect();
+    const control = event.currentTarget as SVGElement;
+    menuAnchor = event instanceof KeyboardEvent ? control : null;
+    const rect = control.getBoundingClientRect();
     const x = event instanceof MouseEvent ? event.clientX : rect.right;
     const y = event instanceof MouseEvent ? event.clientY : rect.bottom;
     scaleMenu.value = null;
@@ -217,7 +218,7 @@ function changeSegment(point: AutomationPoint, interpolation: CurveInterpolation
     void edits.segment(node.value.address, point.id, interpolation, Math.fround(tension));
 }
 function closeMenus(restoreFocus = false) {
-    if (restoreFocus) (scaleMenu.value ? scaleButton.value : menuAnchor)?.focus({ preventScroll: true });
+    if (restoreFocus) (scaleMenu.value ? scaleButton.value : menuAnchor ?? surface.value)?.focus({ preventScroll: true });
     segmentMenu.value = null;
     scaleMenu.value = null;
     menuAnchor = null;
@@ -303,15 +304,12 @@ function start(event: PointerEvent, id: number, kind: CurveDragKind = "point") {
     const axes = pointerAxes();
     const target = node.value.address;
     if (axes && target) {
-        const control = event.currentTarget as SVGElement | HTMLButtonElement;
-        if (control instanceof SVGElement) control.setAttribute("data-pointer-focus", "");
-        control.focus({ preventScroll: true });
+        const control = event.currentTarget as SVGElement;
+        event.preventDefault();
+        surface.value?.focus({ preventScroll: true });
         editor?.startAutomation(event, target, id, axes, kind,
-            kind === "point" && control instanceof SVGElement ? (pointId) => pointCursorPosition(control, target, pointId) : undefined);
+            kind === "point" ? (pointId) => pointCursorPosition(control, target, pointId) : undefined);
     }
-}
-function clearPointerFocusStyle(event: Event) {
-    if (event.target instanceof SVGElement) event.target.removeAttribute("data-pointer-focus");
 }
 function pressSurface(event: PointerEvent) {
     if (event.button !== 2) { beginSelection(event); return; }
@@ -488,7 +486,6 @@ onBeforeUnmount(() => {
                 :tabindex="editable ? 0 : undefined" :data-lane-item-editor="editable ? '' : undefined"
                 @pointerdown.self="pressSurface" @pointermove="moveSelection" @pointerup="finishSelection"
                 @pointercancel="cancelSelection" @lostpointercapture.self="cancelSelection"
-                @focusout="clearPointerFocusStyle" @keydown.capture="clearPointerFocusStyle"
                 @keydown.delete.self="deleteSelected" @contextmenu.self.prevent>
                 <g class="value-guides" aria-hidden="true">
                     <g v-for="guide in valueGuides" :key="guide.value" :class="{ zero: guide.value === 0, unit: Math.abs(guide.value) === 1 }">
@@ -614,19 +611,18 @@ onBeforeUnmount(() => {
 .curve-tension { cursor: ew-resize; }
 .curve-point:focus, .curve-tension:focus { outline: none; }
 .control-target { fill: transparent; }
+:is(.curve-point, .curve-tension):focus-visible .control-target {
+    stroke: currentColor; stroke-dasharray: 2 2;
+}
 .selected-point-ring {
     fill: var(--vscode-editor-background); stroke: var(--vscode-focusBorder);
     stroke-width: 1.5px; pointer-events: none;
 }
 .point-marker, .tension-marker { fill: currentColor; pointer-events: none; }
-.curve-point:is(:has([data-hovered]), [data-hovered]) .point-marker { r: 3.3px; }
+.curve-point[data-hovered] .point-marker { r: 3.3px; }
 .curve-point[data-selected] .point-marker { r: 3.2px; }
 .tension-stem { fill: none; stroke: currentColor; stroke-opacity: .22; pointer-events: none; }
-.curve-tension:is(:has([data-hovered]), [data-hovered], :active) .tension-marker { fill-opacity: 1; transform: scale(1.27); }
-.curve-tension:focus-visible:not([data-pointer-focus]) .tension-marker { stroke: currentColor; stroke-width: 1.5px; }
-.curve-point:focus-visible:not([data-selected], [data-pointer-focus]) .point-marker {
-    fill: var(--vscode-editor-foreground, currentColor);
-}
+.curve-tension[data-hovered] .tension-marker { fill-opacity: 1; transform: scale(1.27); }
 .automation-scale-button {
     position: absolute; top: 2px; right: 4px; border: 1px solid transparent; padding: 1px 4px; border-radius: 3px;
     color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); font: inherit; font-size: 10px;

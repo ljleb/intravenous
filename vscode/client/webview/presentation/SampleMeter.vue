@@ -48,6 +48,9 @@ const ariaValue = computed(() => reading.value.available && !updating.value
     ? Math.max(domain.value.min, Math.min(domain.value.max, reading.value.displayValue!)) : undefined);
 const meterHint = computed(() => `${props.label} · ${status.value}`);
 const meterShortcuts = `${rightClickHint} scale`;
+function focusLane(event: MouseEvent) {
+    (event.currentTarget as HTMLElement).closest<HTMLElement>(".lane")?.focus({ preventScroll: true });
+}
 let resize: ResizeObserver | undefined;
 onMounted(() => {
     resize = new ResizeObserver(([entry]) => { width.value = entry?.contentRect.width ?? 0; });
@@ -63,7 +66,7 @@ onBeforeUnmount(() => { stopAnimation(); resize?.disconnect(); });
         role="meter" tabindex="0" aria-haspopup="menu" :aria-label="label" :aria-valuemin="domain.min" :aria-valuemax="domain.max"
         :aria-valuenow="ariaValue" :aria-valuetext="status" :aria-busy="updating"
         :data-status-hint="meterHint" :data-status-shortcuts="meterShortcuts"
-        @mousedown.left.prevent @mousedown.right.prevent>
+        @mousedown.left.prevent="focusLane" @mousedown.right.prevent="focusLane">
         <template v-if="reading.available">
             <span class="peak-fill" :style="{ width: `${reading.position * 100}%` }" />
             <span class="reading-mark" :style="{ left: `${reading.heldPosition * 100}%` }" />

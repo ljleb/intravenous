@@ -77,6 +77,63 @@ test("input observations use explicit interests alongside automatic output meter
     } finally { scope.dispose(); }
 });
 
+test("moving the viewport submits window updates before the gesture stops", async (context) => {
+    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    type Request = import("../src/observations").ObservationHostRequest;
+    type Reconcile = Extract<Request, { type: "observationReconcile" }>;
+    context.mock.timers.enable({ apis: ["setTimeout"] });
+    const reconciles: Reconcile[] = [];
+    let descriptions = 0;
+    let revision = 0;
+    const scope = new PresentationObservations((request) => {
+        if (request.type === "observationDescribe") ++descriptions;
+        else reconciles.push(request);
+        queueMicrotask(() => scope.receive({ type: "observationResponse", requestId: request.requestId,
+            result: request.type === "observationDescribe" ? { capabilities: [] } : { revision: String(++revision) } }));
+    });
+    const node = { instanceId: "curve" };
+    const source = { node, kind: "input" as const, member: "min" };
+    const id = scope.portObservationId();
+    const owner = Symbol("lane");
+    const windowAt = (begin: number) => ({ begin: String(begin), length: "64", points: 8 });
+    const move = (begin: number) => {
+        const window = windowAt(begin);
+        scope.node(owner, node, true, window);
+        scope.observePort(id, { source, operation: "waveform", window });
+    };
+    const tick = async (milliseconds: number) => {
+        context.mock.timers.tick(milliseconds);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+    };
+    try {
+        move(0);
+        await tick(200);
+        for (let position = 1; position <= 6; ++position) {
+            move(position);
+            await tick(20);
+        }
+        assert.equal(descriptions, 1);
+        assert.equal(reconciles.length, 2);
+        assert.deepEqual(reconciles[1].interests[0].window, windowAt(5));
+
+        // The current gesture has already moved on, but its most recent
+        // submitted result is still usable until we submit another window.
+        const publish = (begin: number) => scope.receive({ type: "observationUpdate", update: {
+            activationId: "1", generation: "1", revision: String(revision), index: "0", blockSize: 64,
+            scopes: [{ scopeId: "viewport", values: [], windows: [{ id, window: windowAt(begin),
+                status: "ready", approximate: true, regions: [] }] }],
+        } });
+        publish(5);
+        assert.deepEqual(scope.values.windows.get(id)?.window, windowAt(5));
+        await tick(100);
+        assert.deepEqual(reconciles.at(-1)?.interests[0].window, windowAt(6));
+        publish(5);
+        assert.equal(scope.values.windows.get(id), undefined);
+        publish(6);
+        assert.deepEqual(scope.values.windows.get(id)?.window, windowAt(6));
+    } finally { scope.dispose(); }
+});
+
 test("default lane observations subscribe only to the requested first input, with its channels intact", { timeout: 5000 }, async () => {
     const { PresentationObservations } = await import("../webview/presentation/observationContext");
     type Reconcile = Extract<import("../src/observations").ObservationHostRequest, { type: "observationReconcile" }>;
