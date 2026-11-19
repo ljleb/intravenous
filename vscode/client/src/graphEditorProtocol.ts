@@ -12,9 +12,7 @@ export type CursorWarp = {
     screenOrigin?: { x: number; y: number };
     deltaX: number; deltaY: number;
     expiresAt: number;
-    trace?: boolean;
 };
-export type CursorReturnGesture = "automation" | "middleButton";
 
 type SaveGraphLayoutMessage = {
     type: "saveGraphLayout";
@@ -47,8 +45,6 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | NodeEventResponse
     | { type: "manualControlState"; interactions: ManualControlInteractionState[]; live: ManualControlLiveValue[] }
     | { type: "graphWindowFocus"; focused: boolean }
-    | { type: "traceNextCursorReturn"; gesture: CursorReturnGesture }
-    | { type: "traceAutomationBounds" }
     | { type: "cursorReturnCompleted"; requestId: number }
     | { type: "graphAction"; action: "addNode" | "editNode" | "createPackage"; instanceId?: string };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
@@ -60,8 +56,6 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "graphInteractionHint"; hint: StatusHint | null }
     | { type: "warpCursorAfterPointDrag" | "warpCursorAfterMiddleDrag"; warp: CursorWarp; requestId: number }
     | { type: "cursorReturnSkipped"; detail: string }
-    | { type: "cursorReturnTrace"; gesture: CursorReturnGesture; detail: string }
-    | { type: "automationBoundTrace"; detail: string }
     | { type: "manualControlAction"; action: ManualControlAction }
     | { type: "deleteSelectedLanes"; instanceIds: string[] }
     | { type: "setManualInputEnabled"; target: NodeAddress; inputName: string; enabled: boolean }

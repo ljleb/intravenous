@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch, watchEffect } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
 import { automationTensionLimits, automationWindow, type CurveAxes, type CurveDragKind } from "../../src/automationCurveEditing";
 import { automationSampleOffset, automationValueFraction, automationValueGuides, clampAutomationValue,
     compareAutomationTime, panAutomationValueAxis, panCurvedAutomationValueZoom, readAutomationCurveView,
@@ -8,9 +8,9 @@ import { automationSampleOffset, automationValueFraction, automationValueGuides,
 import { addressKey, type NodeAddress } from "../../src/graphScope";
 import { automationBoundTracks, sampleAutomationPreview, type AutomationBoundInput,
     type BoundSample } from "../../src/automationBoundInputs";
-import { summarizeObservationWindow, type ObservationWindowResult } from "../../src/observations";
+import type { ObservationWindowResult } from "../../src/observations";
 import { sampleWindow } from "../../src/sampleWaveform";
-import { useObservations, usePortObservation } from "./observationContext";
+import { usePortObservation } from "./observationContext";
 import { rightClickHint } from "../../src/statusBarText";
 import { useOptionalGraphEditor } from "../graph/context";
 import { automationPointStatus } from "../statusHints";
@@ -37,7 +37,6 @@ const editor = useOptionalGraphEditor();
 const { edits, version } = useAutomationEditing();
 const time = useTimelineWindow();
 const navigation = useTimelineNavigation();
-const observations = useObservations();
 const surface = ref<SVGSVGElement | null>(null);
 const width = ref(1), height = ref(1);
 const key = computed(() => node.value.address ? addressKey(node.value.address) : null);
@@ -92,11 +91,10 @@ function observeBound(side: AutomationBoundInput) {
         if (current.value) return { key: identity, result: current.value };
         return previous?.key === identity ? previous : undefined;
     });
-    const tracks = computed(() => {
+    return computed(() => {
         const origin = timelineWindow.value?.beginSeconds, rate = curve.value?.sampleRate;
         return origin !== undefined && rate ? automationBoundTracks(retained.value?.result, origin, rate) : [];
     });
-    return { observation, retained, tracks };
 }
 const lowerBound = observeBound("min"), upperBound = observeBound("max");
 const view = computed(() => {
@@ -105,8 +103,8 @@ const view = computed(() => {
     return curve.value && timeline && address
         ? automationWindow(curve.value, 0, timeline.spanSeconds, edits.drafts(address), timeline.beginSeconds) : null;
 });
-const preview = computed(() => sampleAutomationPreview(view.value?.paths ?? [], lowerBound.tracks.value,
-    upperBound.tracks.value, manualBounds.value, timelineWindow.value?.spanSeconds ?? 0, width.value));
+const preview = computed(() => sampleAutomationPreview(view.value?.paths ?? [], lowerBound.value,
+    upperBound.value, manualBounds.value, timelineWindow.value?.spanSeconds ?? 0, width.value));
 const curveView = ref<AutomationCurveView>({});
 const viewChanged = usePresentationState({
     serialize() {
@@ -142,29 +140,6 @@ function previewPath(tracks: BoundSample[][]): string {
 const hasOutputBounds = computed(() => preview.value.min.length > 0 || preview.value.max.length > 0);
 const minPath = computed(() => previewPath(preview.value.min));
 const maxPath = computed(() => previewPath(preview.value.max));
-watchEffect(() => {
-    if (!observations?.tracingBounds.value || !key.value) return;
-    for (const side of ["min", "max"] as const) {
-        const port = boundPort(side), manual = manualBounds.value[side];
-        if (!visible.value && port?.connectivity !== "connected" && manual === undefined) continue;
-        const bound = side === "min" ? lowerBound : upperBound;
-        const runs = preview.value[side];
-        let top = Infinity, bottom = -Infinity;
-        for (const run of runs) for (const point of run) {
-            const projected = y(point.value);
-            top = Math.min(top, projected);
-            bottom = Math.max(bottom, projected);
-        }
-        observations.logBoundTrace(`Render ${key.value} ${side}`, {
-            visible: visible.value, connectivity: port?.connectivity, manual,
-            observationId: bound.observation.id.value, requestedWindow: observationWindow.value,
-            latest: summarizeObservationWindow(bound.observation.latestWindow.value),
-            retained: summarizeObservationWindow(bound.retained.value?.result),
-            tracks: bound.tracks.value.length, runs: runs.length, top, bottom, height: height.value,
-            axis: { pan: axes.value?.pan, zoom: axes.value?.zoom, display: axes.value?.display },
-        });
-    }
-}, { flush: "post" });
 const path = computed(() => previewPath(preview.value.authored));
 const outputPath = computed(() => hasOutputBounds.value ? previewPath(preview.value.output) : "");
 const markerY = (point: AutomationPoint) => Math.max(2, Math.min(height.value - 2, y(point.value)));

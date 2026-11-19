@@ -409,9 +409,6 @@ TEST_F(ObservationService, WindowScopesShareCancelableQueriesWithoutCreatingLive
     collect();
     ASSERT_EQ(executor.windows.size(), 1u);
     auto query = executor.windows.front();
-    ASSERT_EQ(delivery.batches.size(), 2u);
-    auto const& pending_result = (*delivery.batches[0].payload)["scopes"][0]["windows"][0];
-    EXPECT_EQ(pending_result["diagnostic"], "waiting for the background observation worker");
     query->result.status = ObservationWindowResult::Status::ready;
     query->result.sample_rate = 48000;
     query->result.regions.push_back({.range = {GlobalIndex::from_signed(0), 3}});

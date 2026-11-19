@@ -29,8 +29,7 @@ type GraphEditorContext = {
     selectLane: (address: NodeAddress, modifiers?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => void;
     portsChanged: () => void;
     elementAtPointer: () => Element | null;
-    beginPointerLockExit: (origin: Point, warp?: CursorWarpAnchor & { destination: Point; trace?: boolean }) => void;
-    takeMiddleCursorTrace: () => ((detail: string) => void) | null;
+    beginPointerLockExit: (origin: Point, warp?: CursorWarpAnchor & { destination: Point }) => void;
     reportCursorReturnSkipped: (detail: string) => void;
     setTimelineZoomHint: (hint: string | null) => void;
     connectionDrag: Ref<PortConnectionDrag | null>;

@@ -11,7 +11,6 @@
 #include <optional>
 #include <memory>
 #include <string>
-#include <string_view>
 #include <vector>
 #include <utility>
 
@@ -100,7 +99,6 @@ struct ObservationWindowResult {
     bool truncated = false;
     std::vector<ObservationWindowRegion> regions{};
     std::string error{};
-    std::string_view diagnostic{};
 };
 // Immutable request, one background writer, one control reader. Cancellation
 // never interrupts an in-progress transaction or destroys borrowed storage.

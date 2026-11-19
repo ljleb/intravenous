@@ -79,10 +79,9 @@ export class NativeClientHelper {
         const run = this.running;
         const now = Date.now();
         if (!request) return;
-        const trace = (detail: string) => { if (request.trace === true) this.log(`Cursor return trace. ${detail}`); };
         const skipped = (detail: string) => this.log(`Cursor return skipped. ${detail}`);
         if (!run?.cursorWarp || !run.rpc || !run.socket?.writable || run.socket.writableNeedDrain) {
-            if (run?.readyAt === undefined || run.cursorWarp || request.trace)
+            if (run?.readyAt === undefined || run.cursorWarp)
                 skipped("The helper is not ready for cursor return.");
             return;
         }
@@ -93,11 +92,9 @@ export class NativeClientHelper {
             skipped(`The native request expired or its coordinates were invalid. Remaining time: ${expiresAt - now} ms.`);
             return;
         }
-        trace("Request dispatched to the native helper.");
         const params = { originX, originY, deltaX, deltaY, expiresAt,
             ...(screenOrigin && { screenOrigin: { x: screenOrigin.x, y: screenOrigin.y } }),
-            ...(hideCursor && { hideCursor: true }),
-            ...(request.trace === true ? { trace: true } : {}) };
+            ...(hideCursor && { hideCursor: true }) };
         if (!completed || !run.cursorWarpResult) { run.rpc.notify("native.warpCursor", params); return; }
         void run.rpc.request<{ moved: boolean }>("native.warpCursor", params).then((result) => {
             if (result?.moved && this.running === run && Date.now() < expiresAt) completed();

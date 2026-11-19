@@ -24,7 +24,7 @@ const playback = usePlayback();
 const backgroundPlayheadSeconds = computed(() => playback.backgroundPlayhead.value === null ? null
     : Number(playback.backgroundPlayhead.value) / (playback.state.value?.sampleRate ?? 48000));
 const scope = computed(() => node.value.scope!);
-const { layout, save, copyNodeDebugDetails, selectedLanes, selectLane, beginPointerLockExit, takeMiddleCursorTrace,
+const { layout, save, copyNodeDebugDetails, selectedLanes, selectLane, beginPointerLockExit,
     reportCursorReturnSkipped, setTimelineZoomHint } = useGraphEditor();
 const children = computed(() => orderLanes(scope.value.nodes, layout.value.laneOrder).map((child) => ({
     child, semantic: semanticNodeFromScopeChild(child, scope.value),
@@ -72,8 +72,6 @@ let middlePress: MiddleClick | null = null;
 let lastMiddleClick: MiddleClick | null = null;
 let middleCursorAnchor: (CursorWarpAnchor & { moved: boolean }) | null = null;
 let middlePointerLockError = "";
-let middleCursorTrace: ReturnType<typeof takeMiddleCursorTrace> = null;
-let tracedLockedMoves = 0;
 const middlePointerLock = new KnobPointerLock<Point>({
     request: () => {
         if (document.pointerLockElement && document.pointerLockElement !== root.value)
@@ -85,23 +83,20 @@ const middlePointerLock = new KnobPointerLock<Point>({
 }, moveLockedMiddleDrag, (id, release, lockOrigin) => {
     const destination = wrappedCursor.value;
     const warp = release && lockOrigin && destination && middleCursorAnchor?.moved
-        ? { ...middleCursorAnchor, destination, trace: !!middleCursorTrace } : undefined;
-    middleCursorTrace?.(`Drag finished. ${JSON.stringify({ release, lockOrigin, destination, lockedMoves: tracedLockedMoves, queued: !!warp })}`);
+        ? { ...middleCursorAnchor, destination } : undefined;
     if (lockOrigin) beginPointerLockExit(lockOrigin, warp);
     if (middleCursorAnchor?.moved && (!release || !lockOrigin || !destination)) {
         reportCursorReturnSkipped(release && !lockOrigin
             ? middlePointerLockError || "The middle-button drag used pointer capture."
             : "The middle-button drag ended before a normal pointer-lock release.");
     }
-    middleCursorTrace = null;
     middleCursorAnchor = null;
     finishMiddleDrag(id);
 }, (message) => {
     middlePointerLockError = message;
-    middleCursorTrace?.(`Pointer lock request failed. ${message}`);
     // If the browser rejects the request after taking capture away, end the drag.
     const drag = middleDrag.value;
-    if (drag && !root.value?.hasPointerCapture(drag.pointerId)) endMiddleDrag("Pointer capture was unavailable after lock failed.");
+    if (drag && !root.value?.hasPointerCapture(drag.pointerId)) endMiddleDrag();
 });
 let middleDragMoved = false;
 let observer: ResizeObserver | null = null;
@@ -173,21 +168,11 @@ function beginMiddleDrag(event: PointerEvent) {
     if (event.button !== 1 || !surface || middleDrag.value) return;
     const targetTimeline = event.target instanceof Element ? event.target.closest(".timeline-scope") : null;
     if (targetTimeline && targetTimeline !== surface) return;
-    const trace = takeMiddleCursorTrace();
-    trace?.(`Press. ${JSON.stringify({ pointerId: event.pointerId, pointerType: event.pointerType, buttons: event.buttons,
-        clientX: event.clientX, clientY: event.clientY, screenX: event.screenX, screenY: event.screenY, scale: window.devicePixelRatio,
-        active: window.navigator?.userActivation?.isActive, shift: event.shiftKey, alt: event.altKey, ctrl: event.ctrlKey })}`);
-    if (document.pointerLockElement && document.pointerLockElement !== surface) {
-        trace?.("Another gesture owns pointer lock.");
-        return;
-    }
+    if (document.pointerLockElement && document.pointerLockElement !== surface) return;
     try {
         surface.setPointerCapture(event.pointerId);
     } catch (error) {
-        if (error instanceof DOMException && error.name === "NotFoundError") {
-            trace?.("The browser refused pointer capture because the pointer was no longer active.");
-            return;
-        }
+        if (error instanceof DOMException && error.name === "NotFoundError") return;
         throw error;
     }
     event.preventDefault();
@@ -203,14 +188,11 @@ function beginMiddleDrag(event: PointerEvent) {
     middleDrag.value = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, action };
     middleDragMoved = false;
     middlePointerLockError = "";
-    middleCursorTrace = trace;
-    tracedLockedMoves = 0;
     middleCursorAnchor = event.pointerType === "mouse" ? {
         screenOrigin: { x: event.screenX, y: event.screenY }, scale: window.devicePixelRatio, moved: false,
     } : null;
     if (laneValueGesture?.gesture.mode === "zoom") setTimelineZoomHint(zoomAnchorHint("valueZoom", { x: 0, y: 0 }));
     else if (action !== "pan") setTimelineZoomHint(zoomAnchorHint(action, { x: 0, y: 0 }));
-    middleCursorTrace?.(`Started ${laneValueGesture ? `lane ${laneMode}` : action}. Pointer capture is ready.`);
     middlePointerLock.start(event.pointerId, { x: event.clientX, y: event.clientY }, event.pointerType === "mouse");
 }
 function updateMiddleDrag(event: PointerEvent) {
@@ -220,12 +202,9 @@ function updateMiddleDrag(event: PointerEvent) {
     const { action } = drag;
     const anchor = action === "pan" ? 0 : zoomAnchor(action, event.clientX, event.clientY);
     const moved = moveMiddleDrag(viewport.value, drag, event.buttons, event.clientX, event.clientY, anchor, laneValueGesture !== null);
-    if (!moved) { endMiddleDrag("A captured move reported the middle button up."); return; }
+    if (!moved) { endMiddleDrag(); return; }
     if (event.clientX === drag.x && event.clientY === drag.y) return;
-    if (middleCursorAnchor && !middleCursorAnchor.moved) {
-        middleCursorTrace?.("The first move used pointer capture.");
-        middleCursorAnchor.moved = true;
-    }
+    if (middleCursorAnchor) middleCursorAnchor.moved = true;
     middleDrag.value = { ...drag, x: event.clientX, y: event.clientY };
     if (laneValueGesture?.gesture.mode !== "zoom") applyMiddleDrag(moved);
     moveLaneValueDrag({ x: event.clientX - drag.x, y: event.clientY - drag.y }, event.clientY);
@@ -260,7 +239,6 @@ function moveLockedMiddleDrag(id: number, delta: Point) {
     const drag = middleDrag.value;
     if (!drag || drag.pointerId !== id || !root.value || !(delta.x || delta.y)) return;
     if (middleCursorAnchor) middleCursorAnchor.moved = true;
-    if (middleCursorTrace && ++tracedLockedMoves === 1) middleCursorTrace(`First locked move. ${JSON.stringify(delta)}`);
     cancelMiddleClick();
     const { action } = drag;
     if (laneValueGesture?.gesture.mode === "zoom") {
@@ -313,18 +291,17 @@ function completeMiddleClick() {
     applyMiddleDrag(axis === "view" ? { ...initialTimelineViewport }
         : resetTimelineZoom(viewport.value, axis, zoomAnchor(axis, click.x, click.y)));
 }
-function endMiddleDrag(reason: string, event?: PointerEvent) {
+function endMiddleDrag(event?: PointerEvent) {
     const pointerId = middleDrag.value?.pointerId;
     if (pointerId === undefined || (event && event.pointerId !== pointerId)) return;
-    middleCursorTrace?.(reason);
     cancelMiddleClick();
     middlePointerLock.cancel();
 }
 function middleCaptureLost(event: PointerEvent) {
-    if (event.target === root.value && !middlePointerLock.suppressPointerCancellation()) endMiddleDrag("The drag lost pointer capture.", event);
+    if (event.target === root.value && !middlePointerLock.suppressPointerCancellation()) endMiddleDrag(event);
 }
 function middlePointerCancelled(event: PointerEvent) {
-    if (event.target === root.value) endMiddleDrag("The browser cancelled the pointer.", event);
+    if (event.target === root.value) endMiddleDrag(event);
 }
 function finishMiddleDrag(pointerId: number) {
     const drag = middleDrag.value;
@@ -343,7 +320,6 @@ function finishMiddleDrag(pointerId: number) {
     save();
 }
 function middleLockChanged() {
-    middleCursorTrace?.(document.pointerLockElement === root.value ? "The timeline acquired pointer lock." : "The timeline lost pointer lock.");
     middlePointerLock.changed();
     const drag = middleDrag.value;
     if (!drag && document.pointerLockElement !== root.value) wrappedCursor.value = null;
@@ -364,7 +340,6 @@ function lockedMiddleMove(event: MouseEvent) {
     if (!(event.buttons & 4) && middlePointerLock.status().granted) {
         // A real move with the button up can stand in for a missing mouseup.
         // Finish through release so the cursor keeps its last wrapped point.
-        middleCursorTrace?.("A locked move reported the middle button up. Releasing the last wrapped position.");
         cancelMiddleClick();
         middlePointerLock.release(drag.pointerId, { x: event.clientX, y: event.clientY });
         event.stopImmediatePropagation();
@@ -373,11 +348,7 @@ function lockedMiddleMove(event: MouseEvent) {
 function releaseMiddleDrag(event: MouseEvent) {
     const drag = middleDrag.value;
     if (!drag || event.button !== 1) return;
-    if ("pointerId" in event && event.pointerId !== drag.pointerId) {
-        middleCursorTrace?.(`Ignored ${event.type} for pointer ${event.pointerId}. Expected ${drag.pointerId}.`);
-        return;
-    }
-    middleCursorTrace?.(`Release event ${event.type}. ${JSON.stringify({ clientX: event.clientX, clientY: event.clientY, buttons: event.buttons })}`);
+    if ("pointerId" in event && event.pointerId !== drag.pointerId) return;
     try {
         completeMiddleClick();
     } finally {
@@ -387,13 +358,13 @@ function releaseMiddleDrag(event: MouseEvent) {
 function nativeFocusChanged(focused: boolean) {
     if (!focused) {
         cancelMiddleClick();
-        endMiddleDrag("The editor window lost native focus.");
+        endMiddleDrag();
     }
 }
 function middleVisibilityChanged() {
     if (document.hidden) {
         cancelMiddleClick();
-        endMiddleDrag("The graph webview was hidden.");
+        endMiddleDrag();
     }
 }
 onMounted(() => {
@@ -426,7 +397,7 @@ onBeforeUnmount(() => {
     document.removeEventListener("pointerlockchange", middleLockChanged);
     document.removeEventListener("pointerlockerror", middleLockFailed);
     document.removeEventListener("visibilitychange", middleVisibilityChanged);
-    if (middleDrag.value) endMiddleDrag("The timeline was removed during the drag.");
+    if (middleDrag.value) endMiddleDrag();
     if (saveTimer) { clearTimeout(saveTimer); save(); }
 });
 </script>

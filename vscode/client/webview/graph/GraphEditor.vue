@@ -59,8 +59,8 @@ let automationPointerId: number | null = null;
 let automationButton = 0;
 let automationShift = false;
 let suppressAutomationContextMenu = false;
-type PointDragWarp = CursorWarpAnchor & { initialCenter: Point | null; destination: () => Point | null; trace: boolean; moved: boolean };
-type PendingCursorWarp = CursorWarpAnchor & { lockOrigin: Point; expiresAt: number; destination: () => Point | null; trace?: boolean } & (
+type PointDragWarp = CursorWarpAnchor & { initialCenter: Point | null; destination: () => Point | null; moved: boolean };
+type PendingCursorWarp = CursorWarpAnchor & { lockOrigin: Point; expiresAt: number; destination: () => Point | null } & (
     { type: "warpCursorAfterPointDrag"; initialCenter: Point | null }
     | { type: "warpCursorAfterMiddleDrag"; initialCenter?: never });
 let pointDragWarp: PointDragWarp | null = null;
@@ -68,16 +68,6 @@ let warpAfterUnlock: PendingCursorWarp | null = null;
 let cursorWarpTimeout: ReturnType<typeof setTimeout> | undefined;
 let nextCursorReturnId = 0;
 let pendingCursorReturnId: number | null = null;
-let traceNextPointDrag = false;
-let traceNextMiddleDrag = false;
-let tracePointDrag = false;
-function traceAutomationCursor(detail: string) { webviewApi.postMessage({ type: "cursorReturnTrace", gesture: "automation", detail }); }
-function traceMiddleCursor(detail: string) { webviewApi.postMessage({ type: "cursorReturnTrace", gesture: "middleButton", detail }); }
-function takeMiddleCursorTrace() {
-    if (!traceNextMiddleDrag) return null;
-    traceNextMiddleDrag = false;
-    return traceMiddleCursor;
-}
 function reportCursorReturnSkipped(detail: string) { webviewApi.postMessage({ type: "cursorReturnSkipped", detail }); }
 function clearPendingCursorWarp() {
     clearTimeout(cursorWarpTimeout);
@@ -137,14 +127,12 @@ const pointerLock = new KnobPointerLock<Point>({
     if (lockOrigin) beginPointerLockExit(lockOrigin);
     if (id === automationPointerId) {
         automationPointerId = null;
-        if (point && lockOrigin && pointDragWarp && (pointDragWarp.moved || pointDragWarp.trace)) {
+        if (point && lockOrigin && pointDragWarp?.moved) {
             queueCursorWarp({ ...pointDragWarp, type: "warpCursorAfterPointDrag", lockOrigin, expiresAt: Date.now() + 100 });
-            if (tracePointDrag) traceAutomationCursor("Released. Waiting for the browser to restore the cursor.");
         } else if (pointDragWarp?.moved) {
             reportCursorReturnSkipped(point ? `The point drag used pointer capture. ${pointerLockError}`
                 : "The point drag ended before a normal release.");
-        } else if (tracePointDrag) traceAutomationCursor(`No warp scheduled. Release: ${!!point}. Pointer lock: ${!!lockOrigin}. ${pointerLockError}`);
-        tracePointDrag = false;
+        }
         pointDragWarp = null;
         document.documentElement.removeAttribute("data-automation-drag");
         if (point && !lockOrigin) automation.edits.move(id, point);
@@ -176,15 +164,9 @@ function startAutomation(event: PointerEvent, target: NodeAddress, pointId: numb
     const destination = visiblePointCenter ? () => visiblePointCenter(id) : undefined;
     const mouse = event.pointerType === "mouse";
     const initialCenter = mouse && pointId !== null ? destination?.() : null;
-    if (kind === "point" && traceNextPointDrag) {
-        traceNextPointDrag = false;
-        tracePointDrag = true;
-        traceAutomationCursor(`Press. ${JSON.stringify({ pointerType: event.pointerType, origin, screenX: event.screenX,
-            screenY: event.screenY, pixelRatio: window.devicePixelRatio, initialCenter })}`);
-    }
     if (mouse && destination) pointDragWarp = {
         screenOrigin: { x: event.screenX, y: event.screenY }, scale: window.devicePixelRatio, initialCenter: initialCenter ?? null,
-        destination, trace: tracePointDrag, moved: false,
+        destination, moved: false,
     };
     suppressAutomationContextMenu = pointId === null;
     captureAutomationPointer(event, element, origin, mouse);
@@ -298,10 +280,8 @@ function controlLockChanged() {
     pointerLock.changed();
     const warp = warpAfterUnlock;
     if (warp && document.pointerLockElement === null) void nextTick(() => {
-        const trace = warp.trace ? (warp.type === "warpCursorAfterMiddleDrag" ? traceMiddleCursor : traceAutomationCursor) : undefined;
         if (warpAfterUnlock !== warp) return;
         clearPendingCursorWarp();
-        trace?.("The browser reported that pointer lock ended.");
         // Chromium can briefly blur the webview while restoring the cursor.
         // The extension host checks the actual VS Code window and panel focus.
         if (Date.now() >= warp.expiresAt || document.pointerLockElement) {
@@ -314,10 +294,7 @@ function controlLockChanged() {
             reportCursorReturnSkipped("The point is no longer visible at release.");
             return;
         }
-        if (center.x === warp.initialCenter?.x && center.y === warp.initialCenter?.y) {
-            trace?.("The point stayed in place.");
-            return;
-        }
+        if (center.x === warp.initialCenter?.x && center.y === warp.initialCenter?.y) return;
         const request = {
             originX: Math.round(warp.screenOrigin.x * warp.scale),
             originY: Math.round(warp.screenOrigin.y * warp.scale),
@@ -326,13 +303,8 @@ function controlLockChanged() {
             deltaX: Math.round((center.x - warp.lockOrigin.x) * warp.scale),
             deltaY: Math.round((center.y - warp.lockOrigin.y) * warp.scale),
             expiresAt: warp.expiresAt,
-            ...(warp.trace ? { trace: true } : {}),
         };
-        trace?.(`Release destination. ${JSON.stringify({ center, lockOrigin: warp.lockOrigin, request })}`);
-        if (!request.deltaX && !request.deltaY) {
-            trace?.("The destination rounds to the press position. No cursor move needed.");
-            return;
-        }
+        if (!request.deltaX && !request.deltaY) return;
         const requestId = ++nextCursorReturnId;
         pendingCursorReturnId = requestId;
         webviewApi.postMessage({ type: warp.type, warp: request, requestId });
@@ -396,7 +368,7 @@ const pointerLockExitTypes = [
     "mouseover", "mouseout", "mouseenter", "mouseleave",
     "pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick", "auxclick", "contextmenu",
 ];
-function beginPointerLockExit(origin: Point, warp?: CursorWarpAnchor & { destination: Point; trace?: boolean }) {
+function beginPointerLockExit(origin: Point, warp?: CursorWarpAnchor & { destination: Point }) {
     pendingCursorReturnId = null;
     pointerLockExit.begin(origin);
     if (warp) queueCursorWarp({ ...warp, type: "warpCursorAfterMiddleDrag", lockOrigin: origin,
@@ -499,7 +471,7 @@ provideGraphEditor({ layout, save,
         return state ? JSON.parse(JSON.stringify(state)) : undefined;
     },
     presentationStateChanged: (key, serialize) => changedPresentationStates.set(key, serialize),
-    beginPointerLockExit, takeMiddleCursorTrace, reportCursorReturnSkipped,
+    beginPointerLockExit, reportCursorReturnSkipped,
     setTimelineZoomHint: (hint) => { timelineZoomHint.value = hint; },
     copyNodeDebugDetails: (address) => webviewApi.postMessage({ type: "copyNodeDebugDetails", nodeKey: addressKey(address) }),
     scope: computed(() => state.value.scope), shiftHeld: computed(() => hoverShift.value.held),
@@ -838,11 +810,6 @@ function createPackage() {
     webviewApi.postMessage({ type: "createGraphPackage", name: packageName.value });
     creatingPackage.value = false;
 }
-function traceScope() {
-    observations.logBoundTrace("Graph scope", {
-        generation: state.value.scope?.generation, execution: state.value.scope?.execution, session: state.value.sessionStatus,
-    });
-}
 function receive(event: MessageEvent<GraphEditorHostMessage>) {
     if (event.data?.type === "cursorReturnCompleted") {
         if (event.data.requestId === pendingCursorReturnId) {
@@ -851,16 +818,6 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
             // place to redirect events while the renderer catches up.
             pointerLockExit.end();
         }
-        return;
-    }
-    if (event.data?.type === "traceNextCursorReturn") {
-        if (event.data.gesture === "middleButton") traceNextMiddleDrag = true;
-        else traceNextPointDrag = true;
-        return;
-    }
-    if (event.data?.type === "traceAutomationBounds") {
-        observations.traceAutomationBounds((detail) => webviewApi.postMessage({ type: "automationBoundTrace", detail }));
-        traceScope();
         return;
     }
     if (event.data?.type === "playbackUpdate") {
@@ -897,7 +854,6 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     manualGestures.configuredGeneration(state.value.scope?.generation ?? null);
     observations.configuredGeneration(state.value.scope?.execution?.phase === "configurationFailed"
         ? null : state.value.scope?.generation ?? null);
-    if (observations.tracingBounds.value) traceScope();
     if (state.value.sessionStatus === "running") observations.refresh();
     else observations.disconnect();
     const entry = manualGestures.numericEntry();

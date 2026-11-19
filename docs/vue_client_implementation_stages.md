@@ -3909,21 +3909,17 @@ are outside the prototype.
 Cursor return is now enabled by default. An explicit `false` setting disables
 it. If the local extension host or native helper lacks platform or display
 support, the Intravenous output channel reports the problem at startup.
-Run **Intravenous: Trace Next Automation Cursor Return** and drag one point
-to log the release coordinates and each decision that can prevent a warp.
-Run **Intravenous: Trace Next Middle-Button Cursor Return** and pan once to
-log pointer lock, the wrapped release position, and the X11 result.
 If XFixes is available, the helper hides the system cursor while it moves the
 cursor to the wrapped position. Some XWayland servers require this step.
 When the desktop process ID is available, middle-button release checks that
 the focused X11 window belongs to VS Code. The helper applies the offset to
 the current cursor position and checks that the move stays in that window.
-The middle-button trace checks the X11 position again after 35 ms.
 The X11 helper checks the result of each cursor move. The output channel
 reports failed requests and explains why they stop. If the dragged automation
 point leaves the visible lane, the editor sends the cursor to the nearest
 visible edge of the lane. It leaves the point at its edited position.
 [Earlier diagnostics](./historical/vue_cursor_return_before_release_diagnostics_2026-11-18.md).
+[Retired trace commands](./historical/vue_cursor_return_trace_commands_before_removal_2026-11-19.md).
 
 On local Linux Wayland, Intravenous can offer automatic restart when a project
 opens and VS Code has no explicit `--ozone-platform` flag. The notification

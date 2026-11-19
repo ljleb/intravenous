@@ -88,9 +88,6 @@
         "commands": [
             { "command": "intravenous.togglePlayback", "title": "Intravenous: Play/Pause" },
             { "command": "intravenous.seekPlayback", "title": "Intravenous: Seek Playback" },
-            { "command": "intravenous.traceAutomationCursorReturn", "title": "Intravenous: Trace Next Automation Cursor Return" },
-            { "command": "intravenous.traceAutomationBounds", "title": "Intravenous: Trace Automation Bounds" },
-            { "command": "intravenous.traceMiddleButtonCursorReturn", "title": "Intravenous: Trace Next Middle-Button Cursor Return" },
             { "command": "intravenous.undo", "title": "Intravenous: Undo Project Edit" },
             { "command": "intravenous.redo", "title": "Intravenous: Redo Project Edit" },
             {

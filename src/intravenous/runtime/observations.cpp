@@ -259,7 +259,7 @@ void Observations::collect(Clock::time_point now)
                 {"semanticVersion", std::to_string(result.semantic_version)}, {"dataVersion", std::to_string(result.data_version)},
                 {"sampleRate", result.sample_rate}, {"paceExponent", result.pace_exponent},
                 {"executionGeneration", std::to_string(result.execution_generation)},
-                {"regions", std::move(regions)}, {"error", result.error}, {"diagnostic", result.diagnostic}});
+                {"regions", std::move(regions)}, {"error", result.error}});
             return *capture.payload;
         };
         std::map<std::string, Json> batches;
@@ -284,8 +284,6 @@ void Observations::collect(Clock::time_point now)
                         windows.push_back(std::move(payload));
                     } else {
                         windows.push_back({{"id", interest.id}, {"status", "pending"}, {"approximate", true},
-                            {"diagnostic", capture != windows_.end() && capture->submitted
-                                ? "waiting for the background observation worker" : "waiting for observation source resolution"},
                             {"window", {{"begin", std::to_string(interest.window->begin.signed_value())},
                                 {"length", std::to_string(interest.window->length)}, {"points", interest.window->points}}},
                             {"regions", Json::array()}});

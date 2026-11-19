@@ -11,7 +11,6 @@
 #include <memory>
 #include <string_view>
 #include <sys/prctl.h>
-#include <thread>
 #include <unistd.h>
 #include <utility>
 
@@ -38,12 +37,6 @@ struct CursorWarpRange {
 
     bool contains(std::int64_t coordinate) const { return coordinate >= begin && coordinate < end; }
 };
-
-#if defined(IV_CLIENT_HELPER_XFIXES)
-constexpr auto cursor_hiding_unavailable = "The X11 server does not provide XFixes 4.0 cursor hiding.";
-#else
-constexpr auto cursor_hiding_unavailable = "The native helper was built without XFixes cursor hiding.";
-#endif
 
 bool supports_cursor_hiding(Display* display)
 {
@@ -113,19 +106,10 @@ bool warp_cursor(Display* display, bool cursor_hiding_supported, int editor_pid,
     }
     const auto delta_x = params->at("deltaX").get<std::int64_t>();
     const auto delta_y = params->at("deltaY").get<std::int64_t>();
-    const auto trace_enabled = params->contains("trace") && params->at("trace") == true;
     const bool hide_cursor = params->contains("hideCursor") && params->at("hideCursor") == true;
     int root_x = 0, root_y = 0, window_x = 0, window_y = 0;
-    const auto trace = [&](const char* result) {
-        if (trace_enabled) std::fprintf(stderr,
-            "Cursor return trace. %s Expected (%lld, %lld) or unscaled (%lld, %lld), observed (%d, %d), delta (%lld, %lld).\n",
-            result, static_cast<long long>(origin_x), static_cast<long long>(origin_y),
-            static_cast<long long>(screen_x), static_cast<long long>(screen_y), root_x, root_y,
-            static_cast<long long>(delta_x), static_cast<long long>(delta_y));
-    };
-    const auto skipped = [&](const char* reason) {
-        trace(reason);
-        if (!trace_enabled) std::fprintf(stderr, "Cursor return skipped. %s\n", reason);
+    const auto skipped = [](const char* reason) {
+        std::fprintf(stderr, "Cursor return skipped. %s\n", reason);
         return false;
     };
     if (expires_at <= received_at || expires_at > received_at + 100) return skipped("The request expired before the native helper received it.");
@@ -140,10 +124,7 @@ bool warp_cursor(Display* display, bool cursor_hiding_supported, int editor_pid,
     unsigned mask = 0;
     if (!XQueryPointer(display, root, &pointer_root, &under_pointer, &root_x, &root_y, &window_x, &window_y, &mask)
         || under_pointer == None) return skipped("No X11 window under the cursor. The editor must use X11 or XWayland.");
-    if (hide_cursor && (mask & (Button1Mask | Button2Mask | Button3Mask))) {
-        trace("A mouse button is down again.");
-        return false;
-    }
+    if (hide_cursor && (mask & (Button1Mask | Button2Mask | Button3Mask))) return false;
     const bool verify_editor_window = hide_cursor && editor_pid > 1;
     const Window source_window = verify_editor_window ? focused_editor_window(display, root, editor_pid) : under_pointer;
     if (source_window == None) return skipped("The focused X11 window does not belong to VS Code.");
@@ -156,12 +137,9 @@ bool warp_cursor(Display* display, bool cursor_hiding_supported, int editor_pid,
     };
     const bool scaled_origin_matches = near(origin_x, root_x) && near(origin_y, root_y);
     if (!verify_editor_window && !scaled_origin_matches && !(near(screen_x, root_x) && near(screen_y, root_y))) {
-        trace("The restored X11 cursor does not match the browser origin.");
-        if (!trace_enabled) {
-            std::fprintf(stderr, "Cursor return skipped. The browser expected (%lld, %lld) or unscaled (%lld, %lld), but X11 reported (%d, %d).\n",
-                static_cast<long long>(origin_x), static_cast<long long>(origin_y),
-                static_cast<long long>(screen_x), static_cast<long long>(screen_y), root_x, root_y);
-        }
+        std::fprintf(stderr, "Cursor return skipped. The browser expected (%lld, %lld) or unscaled (%lld, %lld), but X11 reported (%d, %d).\n",
+            static_cast<long long>(origin_x), static_cast<long long>(origin_y),
+            static_cast<long long>(screen_x), static_cast<long long>(screen_y), root_x, root_y);
         return false;
     }
 
@@ -207,7 +185,6 @@ bool warp_cursor(Display* display, bool cursor_hiding_supported, int editor_pid,
     // Some XWayland servers emulate warps only while the cursor is hidden.
     // Queue hide, warp, and show on the same X connection so a renderer's
     // cursor style cannot restore visibility before the warp is processed.
-    if (hide_cursor) trace(cursor_hiding_supported ? "Hiding the native cursor for the warp." : cursor_hiding_unavailable);
 #if defined(IV_CLIENT_HELPER_XFIXES)
     if (hide_cursor && cursor_hiding_supported) XFixesHideCursor(display, root);
 #endif
@@ -236,28 +213,10 @@ bool warp_cursor(Display* display, bool cursor_hiding_supported, int editor_pid,
         &root_x, &root_y, &window_x, &window_y, &mask);
     if (!read_back || !at_target()) {
         if (read_back && verify_editor_window && relative_warp && (root_x != sampled_x || root_y != sampled_y)
-            && in_source(root_x, root_y) && in_source(root_x - delta_x, root_y - delta_y)) {
-            trace("The pointer moved during the warp. The source and destination both include its current position.");
-            return false;
-        }
-        trace("X11 cursor did not remain at the target.");
-        if (!trace_enabled) std::fprintf(stderr, "Cursor return incomplete. The target was (%lld, %lld), but X11 reported (%d, %d).\n",
+            && in_source(root_x, root_y) && in_source(root_x - delta_x, root_y - delta_y)) return false;
+        std::fprintf(stderr, "Cursor return incomplete. The target was (%lld, %lld), but X11 reported (%d, %d).\n",
             static_cast<long long>(target_x), static_cast<long long>(target_y), root_x, root_y);
         return false;
-    }
-    trace("X11 cursor reached the target.");
-    if (trace_enabled && hide_cursor) {
-        const auto landed_x = root_x, landed_y = root_y;
-        std::this_thread::sleep_for(std::chrono::milliseconds{35});
-        if (!XQueryPointer(display, root, &pointer_root, &under_pointer, &root_x, &root_y, &window_x, &window_y, &mask)) {
-            trace("Could not read back the cursor position after 35 ms.");
-            return false;
-        }
-        if (root_x != landed_x || root_y != landed_y) {
-            trace("X11 reports a different position after 35 ms.");
-            return false;
-        }
-        trace("X11 still reports the target after 35 ms.");
     }
     // Without hiding, XWayland can update its internal position without
     // moving the visible cursor. Do not confirm a middle-button warp in that case.

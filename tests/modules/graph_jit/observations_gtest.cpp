@@ -584,7 +584,7 @@ TEST_F(GraphJitRuntimeFixture, SparseComputedWaveformFitsBelowTheBufferedMapping
     } while (query->result.status == ObservationWindowResult::Status::pending_execution
         && std::chrono::steady_clock::now() < deadline);
     ASSERT_EQ(query->result.status, ObservationWindowResult::Status::ready)
-        << query->result.error << " " << query->result.diagnostic;
+        << query->result.error;
     ASSERT_EQ(query->result.regions.size(), 1u);
     auto const& region = query->result.regions.front();
     EXPECT_EQ(region.range, (GlobalIndexRange{begin, query->window.length}));

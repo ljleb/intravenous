@@ -49,29 +49,17 @@ inline bool resolve_observation_window_source(
     CompiledGraph const* compiled = nullptr)
 {
     if (source.kind == ObservationSourceKind::input) {
-        if (!compiled) {
-            query.result.diagnostic = "input observation requires a compiled graph";
-            return false;
-        }
+        if (!compiled) return false;
         auto const channels = resolve_project_sample_input(graph, placements, source.node, source.member, source.channel);
-        if (channels.size() != 1) {
-            query.result.diagnostic = "input address did not resolve to exactly one sample channel";
-            return false;
-        }
+        if (channels.size() != 1) return false;
         auto const selected = channels.front();
         NodeBundlePortId const port{selected.bundle, PortKind::sample, selected.port};
         auto const* public_input = observation_public_coverage_input(*compiled, port);
-        if (!observation_input_window_port(*compiled, port) && (!public_input || !public_input->reconstructible)) {
-            query.result.diagnostic = public_input ? "public Coverage input is not reconstructible"
-                : "compiled graph has no background view for this input";
+        if (!observation_input_window_port(*compiled, port) && (!public_input || !public_input->reconstructible))
             return false;
-        }
         auto const& operations = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations;
         auto const operation = std::ranges::find(operations, operation_id, &ObservationOperation::id);
-        if (operation == operations.end() || !operation->capture_point || !operation->project) {
-            query.result.diagnostic = "sample input does not support this observation operation";
-            return false;
-        }
+        if (operation == operations.end() || !operation->capture_point || !operation->project) return false;
         query.port = port;
         query.kind = source.kind;
         query.channel = selected.channel;

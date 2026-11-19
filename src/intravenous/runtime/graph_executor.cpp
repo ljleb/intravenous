@@ -2448,21 +2448,12 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
     try {
         (void)owner_.reclaim_retired_snapshots_on_background();
         auto* current = generation_chain_.get();
-        std::string_view pending_reason;
-        if (current) result.execution_generation = current->graph->project_generation;
-        if (!current) pending_reason = "background executor has no graph";
-        else if (prepared_generation_ || !preparation_queue_.empty())
-            pending_reason = "background executor is preparing a graph generation";
-        else if (!current->background_initialized || current->background.has_selected_inputs()
-            || current->background.reconciliation_required || current->background.tick_materialization_required)
-            pending_reason = "background executor has pending graph work";
-        else if (current->graph->configured_generation.value_or(current->graph->project_generation) != query.configured_generation)
-            pending_reason = "background graph does not match the requested configuration";
-        else if (!owner_.published_has_active_generation_.load(std::memory_order_acquire)
-            || owner_.published_active_generation_.load(std::memory_order_acquire) != query.configured_generation)
-            pending_reason = "active graph does not match the requested configuration";
-        if (!pending_reason.empty()) {
-            result.diagnostic = pending_reason;
+        if (!current || prepared_generation_ || !preparation_queue_.empty()
+            || !current->background_initialized || current->background.has_selected_inputs()
+            || current->background.reconciliation_required || current->background.tick_materialization_required
+            || current->graph->configured_generation.value_or(current->graph->project_generation) != query.configured_generation
+            || !owner_.published_has_active_generation_.load(std::memory_order_acquire)
+            || owner_.published_active_generation_.load(std::memory_order_acquire) != query.configured_generation) {
             query.complete.store(true, std::memory_order_release);
             return;
         }
@@ -2491,17 +2482,16 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
                 && (observing_input || found->authored_tock_output || found->persisted_tick_output)
                 && query.channel < channel_count(found->sample_layout);
         if (!port_readable || !query.operation || !query.operation->capture_point) {
-            result.diagnostic = "observation source is unreadable in the active background graph";
             result.status = ObservationWindowResult::Status::unavailable;
             query.complete.store(true, std::memory_order_release);
             return;
         }
         auto const port = static_cast<graph_jit::BackgroundPortIndex>(found - plan.ports.begin());
         auto const pace = public_input ? public_input->pace_exponent : found->absolute_pace_exponent;
+        result.execution_generation = graph.project_generation;
         result.sample_rate = graph.specialization.sample_rate;
         result.pace_exponent = pace;
         if (public_input && public_input->projections.empty()) {
-            result.diagnostic = "public Coverage input has no projections";
             auto reader = owner_.persisted_data_.register_reader();
             auto const version = reader.pin()->version();
             result.semantic_version = version.semantic;

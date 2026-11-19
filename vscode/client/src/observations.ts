@@ -12,7 +12,6 @@ export type ObservationWindowResult = {
     id: string; window: ObservationWindow; status: "pending" | "ready" | "unavailable" | "failed";
     approximate: boolean; truncated?: boolean; outdated?: boolean; semanticVersion?: string; dataVersion?: string;
     sampleRate?: number; paceExponent?: number; executionGeneration?: string; error?: string;
-    diagnostic?: string;
     regions: Array<{ begin: string; length: string;
         points: Array<{ index: string; available: boolean; value?: Record<string, number | string | null> }> }>;
 };
@@ -35,19 +34,6 @@ export function observationSourceKey(source: ObservationSource): string {
     return JSON.stringify([source.node.instanceId, source.node.path ?? [], source.kind, source.member, source.channel ?? null]);
 }
 
-export function summarizeObservationWindow(result: ObservationWindowResult | undefined) {
-    if (!result) return null;
-    const { regions, ...window } = result;
-    let sampled = 0, available = 0, finite = 0;
-    for (const region of regions) for (const point of region.points) {
-        ++sampled;
-        if (!point.available) continue;
-        ++available;
-        if (typeof point.value?.value === "number" && Number.isFinite(point.value.value)) ++finite;
-    }
-    return { ...window, regions: regions.length, sampled, available, finite };
-}
-
 // A host scope replaces its complete desired set. It never lets an older
 // activation or a result from an earlier request revision replace current data.
 export class ObservationValues {
@@ -58,10 +44,6 @@ export class ObservationValues {
     readonly values = new Map<string, ObservationDisplayValue>();
     readonly windows = new Map<string, ObservationWindowResult>();
     private desiredWindows = new Map<string, ObservationWindow>();
-    deliveryState() {
-        return { generation: this.generation, activationId: String(this.activation), revision: String(this.revision),
-            queuedGeneration: this.queuedUpdate?.update.generation };
-    }
     expectWindows(interests: ObservationInterest[]): void {
         this.desiredWindows = new Map(interests.filter((interest) => interest.window)
             .map((interest) => [interest.id, interest.window!]));

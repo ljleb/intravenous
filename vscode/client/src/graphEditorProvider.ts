@@ -3,7 +3,7 @@ import * as vscode from "vscode";
 import { GraphLayoutStore } from "./graphLayoutStore";
 import { addressKey, readLayout, type GraphScope } from "./graphScope";
 import { nodeDebugDetails } from "./nodeDebugDetails";
-import type { CursorReturnGesture, GraphEditorAction, GraphEditorState, GraphEditorWebviewMessage } from "./graphEditorProtocol";
+import type { GraphEditorAction, GraphEditorState, GraphEditorWebviewMessage } from "./graphEditorProtocol";
 import type { WorkspaceSession } from "./workspaceSession";
 import { formatStatusHint, isStatusHint, playbackShortcut, rightClickHint, type StatusHint } from "./statusBarText";
 import { isNodeEventRequest, isNodeEventGestureRequest, replyToNodeEvent, replyToNodeEventGesture } from "./nodeEventMessaging";
@@ -114,40 +114,6 @@ export class GraphEditorProvider implements vscode.Disposable {
                 catch (error) { return String(error); }
             } });
         if (value !== undefined) await this.seekPlayback(playbackSeekPosition(value, state.sampleRate));
-    }
-
-    private tracePanel(): vscode.WebviewPanel | undefined {
-        return [...this.ready].find((panel) => panel.active)
-            ?? (this.lastActivePanel && this.ready.has(this.lastActivePanel) ? this.lastActivePanel : [...this.ready][0]);
-    }
-
-    async traceNextCursorReturn(gesture: CursorReturnGesture): Promise<void> {
-        const label = gesture === "middleButton" ? "Middle-button" : "Automation";
-        const panel = this.tracePanel();
-        if (!panel) {
-            void vscode.window.showInformationMessage("Open the Intravenous graph editor before tracing a drag.");
-            return;
-        }
-        panel.reveal(panel.viewColumn, false);
-        if (!await panel.webview.postMessage({ type: "traceNextCursorReturn", gesture })) {
-            this.log(`${label} cursor trace could not reach the graph editor.`);
-            return;
-        }
-        const instruction = gesture === "middleButton" ? "Pan once with the middle button" : "Drag one automation point";
-        this.log(`${label} cursor trace armed. ${instruction}, then check the Intravenous output channel.`);
-        vscode.window.setStatusBarMessage(`${label} cursor trace armed`, 4500);
-    }
-
-    async traceAutomationBounds(): Promise<void> {
-        const panel = this.tracePanel();
-        if (!panel) {
-            void vscode.window.showInformationMessage("Open the Intravenous graph editor before tracing automation bounds.");
-            return;
-        }
-        panel.reveal(panel.viewColumn, false);
-        if (await panel.webview.postMessage({ type: "traceAutomationBounds" }))
-            vscode.window.setStatusBarMessage("Recording automation bounds for 20 seconds", 4500);
-        else this.log("Automation bound trace could not reach the graph editor.");
     }
 
     constructor(private readonly extensionUri: vscode.Uri,
@@ -326,24 +292,15 @@ export class GraphEditorProvider implements vscode.Disposable {
                         ? this.session.nodeEvents.begin(owner, target, id) : this.session.nodeEvents.end(owner, target, id));
                 if (this.panels.has(panel)) void panel.webview.postMessage(response);
                 if (response.error) void vscode.window.showErrorMessage(`Cannot send node event: ${response.error}`);
-            } else if (message?.type === "cursorReturnTrace" && typeof message.detail === "string") {
-                const label = message.gesture === "middleButton" ? "Middle-button" : "Automation";
-                this.log(`${label} cursor trace. ${message.detail}`);
-            } else if (message?.type === "automationBoundTrace" && typeof message.detail === "string") {
-                this.log(`Automation bound trace. ${message.detail}`);
             } else if (message?.type === "cursorReturnSkipped" && typeof message.detail === "string") {
                 this.log(`Cursor return skipped. ${message.detail}`);
             } else if (message?.type === "warpCursorAfterPointDrag" || message?.type === "warpCursorAfterMiddleDrag") {
-                if (message.warp?.trace && message.type === "warpCursorAfterMiddleDrag") {
-                    this.log(`Middle-button cursor trace. Extension received the request. Panel active: ${panel.active}. `
-                        + `Window focused: ${vscode.window.state.focused}. Native helper available: ${!!this.nativeHelper}.`);
-                }
                 const skipped = !panel.active || !vscode.window.state.focused ? "graph editor lost focus"
                     : message.type === "warpCursorAfterPointDrag"
                         && !vscode.workspace.getConfiguration("intravenous").get("warpCursorAfterPointDrag", true) ? "cursor return is disabled"
                     : !this.nativeHelper ? "no local native helper" : null;
                 if (skipped) {
-                    if (message.warp?.trace || skipped === "graph editor lost focus") this.log(`Cursor return skipped. ${skipped}.`);
+                    if (skipped === "graph editor lost focus") this.log(`Cursor return skipped. ${skipped}.`);
                 } else this.nativeHelper?.warpCursor(message.warp, message.type === "warpCursorAfterMiddleDrag", () => {
                     if (this.panels.has(panel)) void panel.webview.postMessage({ type: "cursorReturnCompleted", requestId: message.requestId });
                 });
