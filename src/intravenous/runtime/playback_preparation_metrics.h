@@ -83,12 +83,12 @@ private:
     inline static thread_local PlaybackPreparationMetrics* active_ = nullptr;
 
 public:
-    explicit PlaybackPreparationMetrics(SamplePreparation sample_preparation = SamplePreparation::remap) noexcept
+    explicit PlaybackPreparationMetrics(SamplePreparation sample_preparation = SamplePreparation::pool) noexcept
         : sample_preparation_(sample_preparation) {}
 
     [[nodiscard]] static SamplePreparation active_sample_preparation() noexcept
     {
-        return active_ ? active_->sample_preparation_ : SamplePreparation::remap;
+        return active_ ? active_->sample_preparation_ : SamplePreparation::pool;
     }
 
     void enable() noexcept { enabled_.store(true, std::memory_order_release); }

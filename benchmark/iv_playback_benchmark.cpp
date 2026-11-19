@@ -57,12 +57,13 @@ using SamplePreparation = Metrics::SamplePreparation;
 struct Options {
     std::filesystem::path workspace = IV_PLAYBACK_BENCHMARK_WORKSPACE;
     std::optional<std::filesystem::path> trace_tsv;
+    std::optional<std::filesystem::path> audio_f32;
     std::int64_t start_sample = -480000;
     std::optional<std::int64_t> seek_sample;
     int seconds = 60;
     int passes = 2;
     bool metrics = true;
-    SamplePreparation sample_preparation = SamplePreparation::remap;
+    SamplePreparation sample_preparation = SamplePreparation::pool;
     std::size_t view_limit_kib = 0;
 };
 
@@ -91,6 +92,7 @@ Options parse(int argc, char** argv)
         else if (option == "--seconds") options.seconds = integer<int>(option, value());
         else if (option == "--passes") options.passes = integer<int>(option, value());
         else if (option == "--trace-tsv") options.trace_tsv.emplace(value());
+        else if (option == "--audio-f32") options.audio_f32.emplace(value());
         else if (option == "--view-limit-kib") options.view_limit_kib = integer<std::size_t>(option, value());
         else if (option == "--sample-preparation") {
             auto const mode = value();
@@ -104,7 +106,7 @@ Options parse(int argc, char** argv)
         else if (option == "--help") {
             std::cout << "Usage: iv_playback_benchmark [--workspace DIR] [--start-sample INDEX]"
                          " [--seek-sample INDEX] [--seconds N] [--passes N] [--trace-tsv PATH] [--no-metrics]\n"
-                         " [--sample-preparation remap|reuse|pool|arena] [--view-limit-kib N]\n"
+                         " [--sample-preparation remap|reuse|pool|arena] [--view-limit-kib N] [--audio-f32 PATH]\n"
                          "By default, use the build-tree copy of the playback fixture.\n"
                          "Each pass runs for --seconds wall seconds. Later passes seek in the same graph.\n";
             std::exit(0);
@@ -242,6 +244,11 @@ void run(Options const& options)
         tsv.open(*options.trace_tsv, std::ios::out | std::ios::noreplace);
         if (!tsv) throw std::runtime_error("cannot create trace TSV " + options.trace_tsv->string());
     }
+    std::ofstream audio_file;
+    if (options.audio_f32) {
+        audio_file.open(*options.audio_f32, std::ios::binary | std::ios::out | std::ios::noreplace);
+        if (!audio_file) throw std::runtime_error("cannot create audio capture " + options.audio_f32->string());
+    }
     ::setenv("INTRAVENOUS_DIR", IV_PLAYBACK_BENCHMARK_INSTALL_DIR, 0);
     auto const startup = iv::StartupConfig(options.workspace, options.workspace).initialize();
     auto const [sample_rate, block_size] = startup.execution;
@@ -320,6 +327,12 @@ void run(Options const& options)
         render();
         std::this_thread::sleep_for(period);
     }
+    if (options.audio_f32) {
+        AudioDigest activation_audio;
+        for (auto const sample : output.samples) activation_audio.add(sample);
+        std::cout << "activation foreground_sample=" << executor.playback_snapshot().foreground_playhead.signed_value()
+                  << " audio_digest=" << std::hex << activation_audio.hash << std::dec << '\n';
+    }
     std::cout << "Playback sample_rate=" << sample_rate << " block_size=" << block_size
               << " background_tick_inputs=" << accepted->background_evaluation_plan.tick_sequential_inputs.size()
               << " seconds_per_pass=" << options.seconds << " passes=" << options.passes
@@ -329,6 +342,10 @@ void run(Options const& options)
     intervals.reserve(static_cast<std::size_t>(options.passes) * (static_cast<std::size_t>(options.seconds) + 1));
     std::vector<double> seek_ms;
     std::vector<AudioDigest> audio(static_cast<std::size_t>(options.passes));
+    std::vector<AudioDigest> pre_seek_audio(options.audio_f32 ? audio.size() : 0);
+    std::vector<float> audio_capture;
+    if (options.audio_f32)
+        audio_capture.reserve((static_cast<std::size_t>(options.seconds) * sample_rate + block_size) * 2);
     seek_ms.reserve(static_cast<std::size_t>(options.passes));
     if (options.metrics) metrics.enable();
     (void)executor.set_playback_running(true);
@@ -371,7 +388,12 @@ void run(Options const& options)
                 seek_ms.back() = std::chrono::duration<double, std::milli>(rendered - start).count();
             for (auto const sample : output.samples) {
                 interval.peak = std::max(interval.peak, std::abs(sample.value));
-                if (seek_ms.back() >= 0) audio[static_cast<std::size_t>(pass)].add(sample);
+                if (seek_ms.back() >= 0) {
+                    audio[static_cast<std::size_t>(pass)].add(sample);
+                    if (options.audio_f32) audio_capture.push_back(sample.value);
+                } else if (options.audio_f32) {
+                    pre_seek_audio[static_cast<std::size_t>(pass)].add(sample);
+                }
             }
             if (rendered >= report_at) {
                 report();
@@ -379,6 +401,12 @@ void run(Options const& options)
             }
         }
         if (interval.callbacks || interval.missed_driver_periods) report();
+        if (!audio_capture.empty()) {
+            audio_file.write(reinterpret_cast<char const*>(audio_capture.data()),
+                static_cast<std::streamsize>(audio_capture.size() * sizeof(float)));
+            if (!audio_file) throw std::runtime_error("could not write the audio capture");
+            audio_capture.clear();
+        }
     }
 
     auto const totals = metrics.snapshot();
@@ -388,6 +416,9 @@ void run(Options const& options)
     for (std::size_t i = 0; i < audio.size(); ++i)
         std::cout << "pass=" << i + 1 << " audio_samples=" << audio[i].samples
                   << " audio_digest=" << std::hex << audio[i].hash << std::dec << '\n';
+    for (std::size_t i = 0; i < pre_seek_audio.size(); ++i)
+        std::cout << "pass=" << i + 1 << " pre_seek_samples=" << pre_seek_audio[i].samples
+                  << " pre_seek_digest=" << std::hex << pre_seek_audio[i].hash << std::dec << '\n';
     auto const usage = executor.buffered_storage_usage();
     std::cout << "storage live_page_bytes=" << usage.live_page_bytes
               << " mapped_bytes=" << usage.reserved_mapping_bytes
@@ -395,6 +426,10 @@ void run(Options const& options)
     if (tsv.is_open()) {
         tsv.close();
         if (!tsv) throw std::runtime_error("could not write the trace TSV");
+    }
+    if (audio_file.is_open()) {
+        audio_file.close();
+        if (!audio_file) throw std::runtime_error("could not close the audio capture");
     }
     if (executor.background_execution_failures().any() || std::ranges::any_of(seek_ms, [](double ms) { return ms < 0; }))
         throw std::runtime_error("background execution failed or a seek did not apply");

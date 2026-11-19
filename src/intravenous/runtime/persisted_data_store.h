@@ -27,8 +27,12 @@
 
 namespace iv {
 struct CompiledGraph;
+class TickMaterializationSnapshot;
 
-namespace persisted_data_store_detail { struct BufferedSampleBacking; }
+namespace persisted_data_store_detail {
+struct BufferedSampleBacking;
+class TickSamplePool;
+}
 
 struct GenerationLocalPersistedOutputId {
     std::uint64_t generation = 0;
@@ -270,6 +274,8 @@ enum class PersistedDataPublishResult : std::uint8_t {
 // Candidate mutation and reclamation are serialized background/control
 // work. ReaderSlot::pin() and ReaderPin destruction are the only realtime APIs.
 class PersistedDataStore {
+    friend class TickMaterializationSnapshot;
+
 public:
     class Candidate;
     class ReaderSlot;
@@ -631,6 +637,9 @@ public:
 
 private:
     std::shared_ptr<persisted_data_store_detail::BufferedPageAllocator> buffered_pages_{};
+    std::mutex tick_sample_pool_mutex_{};
+    std::shared_ptr<persisted_data_store_detail::TickSamplePool> tick_sample_pool_{};
+    std::atomic<bool> tick_sample_pool_disabled_{false};
     std::uint32_t output_owner_token_ = 0;
     std::unique_ptr<Snapshot const> published_owner_{};
     std::atomic<Snapshot const*> published_{nullptr};
@@ -699,6 +708,7 @@ public:
     [[nodiscard]] ReaderSlot register_reader();
     [[nodiscard]] std::size_t reclaim_retired();
     [[nodiscard]] BufferedStorageUsage buffered_storage_usage() const;
+    [[nodiscard]] std::size_t max_pooled_tick_sample_bytes() const noexcept;
     // Cold preparation. The lease must be destroyed before the payload owners;
     // it keeps overlapping selections locked until their last lease retires.
     [[nodiscard]] std::shared_ptr<void const> prepare_resident(std::span<BufferedResidentRange const> ranges);

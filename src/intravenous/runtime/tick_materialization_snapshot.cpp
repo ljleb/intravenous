@@ -1,4 +1,5 @@
 #include <intravenous/runtime/tick_materialization_snapshot.h>
+#include <intravenous/runtime/buffered_storage.h>
 #include <intravenous/runtime/playback_preparation_metrics.h>
 
 #include <algorithm>
@@ -9,25 +10,33 @@
 #include <limits>
 #include <ranges>
 #include <stdexcept>
+#include <system_error>
 #include <utility>
 
 namespace iv {
-namespace {
-// Bounded experimental pool for the playback benchmark's sample handoff.
-class PlaybackBenchmarkPool : public std::enable_shared_from_this<PlaybackBenchmarkPool> {
+namespace persisted_data_store_detail {
+// The store keeps the slab resident. Each snapshot also holds residency for
+// the pages it actually reads, so the slab-wide lease can be dropped under
+// pressure without invalidating published snapshots.
+class TickSamplePool : public std::enable_shared_from_this<TickSamplePool> {
+public:
     static constexpr std::size_t slot_bytes = 16 * 1024;
     static constexpr std::size_t slot_count = 64;
+    static constexpr std::size_t bytes = slot_bytes * slot_count;
 
+private:
     PersistedContinuousStorage storage_;
     std::shared_ptr<void const> residency_;
     std::mutex mutex_;
     std::array<bool, slot_count> occupied_{};
 
 public:
-    explicit PlaybackBenchmarkPool(PersistedDataStore& data)
-        : storage_(slot_bytes * slot_count, data.buffered_storage_usage().page_size)
+    TickSamplePool(PersistedDataStore& data, std::size_t page_size)
+        : storage_(bytes, page_size)
         , residency_(data.prepare_resident(std::array{BufferedResidentRange{storage_.data(), storage_.size()}}))
     {}
+
+    void release_residency() noexcept { residency_.reset(); }
 
     bool contains(std::byte const* storage) const noexcept
     {
@@ -56,54 +65,83 @@ public:
             PersistedContinuousStorage::mapped(std::move(lease), storage, bytes.size(), alignment));
     }
 };
-} // namespace
+} // namespace persisted_data_store_detail
+
+using persisted_data_store_detail::TickSamplePool;
+
+std::size_t PersistedDataStore::max_pooled_tick_sample_bytes() const noexcept
+{
+#if defined(__linux__)
+    return !tick_sample_pool_disabled_.load(std::memory_order_relaxed)
+        && buffered_pages_->limits().max_resident_bytes >= TickSamplePool::bytes
+        ? TickSamplePool::slot_bytes : 0;
+#else
+    return 0;
+#endif
+}
 
 void TickMaterializationSnapshot::prepare_resident(PersistedDataStore& data)
 {
+    std::lock_guard pool_lock{data.tick_sample_pool_mutex_};
+    auto& pool = data.tick_sample_pool_;
+    auto disable_pool = [&] {
+        if (pool) pool->release_residency();
+        pool.reset();
+        data.tick_sample_pool_disabled_.store(true, std::memory_order_relaxed);
+    };
     std::vector<BufferedResidentRange> ranges;
+    struct Replacement {
+        TickMaterializedSampleRegion* region;
+        std::size_t range_index;
+        std::shared_ptr<PersistedContinuousStorage const> storage;
+    };
+    std::vector<Replacement> replacements;
+    std::vector<TickMaterializedSampleInput*> changed_inputs;
     auto product = [](std::size_t left, std::size_t right) {
         if (right && left > std::numeric_limits<std::size_t>::max() / right)
             throw std::length_error("prepared resident payload size overflows");
         return left * right;
     };
-    auto const use_benchmark_pool = PlaybackPreparationMetrics::active_sample_preparation()
+    auto const use_pool = PlaybackPreparationMetrics::active_sample_preparation()
         == PlaybackPreparationMetrics::SamplePreparation::pool;
-    static thread_local std::shared_ptr<PlaybackBenchmarkPool> benchmark_pool;
-    for (auto& input : samples_) for (auto& region : input.regions) {
-        auto const frame_count = static_cast<std::size_t>(region.range.extent);
-        auto frames = region.storage_frames ? region.storage_frames : frame_count;
-        auto const* storage = region.storage_data();
-        if (!storage || !frame_count) continue;
-        if (use_benchmark_pool && (input.layout.sample_layout == SampleStreamLayout::interleaved
-                || input.channels.size() == 1)) {
-            if (!benchmark_pool) benchmark_pool = std::make_shared<PlaybackBenchmarkPool>(data);
-            if (!benchmark_pool->contains(storage)) {
-                auto const frame_bytes = product(input.channels.size(), input.geometry.value_size_bytes);
-                auto const bytes = product(frame_count, frame_bytes);
-                auto copy = benchmark_pool->copy({storage + product(region.first_frame, frame_bytes),
-                    bytes}, input.geometry.element_alignment);
-                if (copy) {
-                    region.values.reset();
-                    region.continuous_values = std::move(copy);
-                    region.storage_frames = frame_count;
-                    region.first_frame = 0;
-                    frames = frame_count;
-                    storage = region.storage_data();
-                } else {
-                    PlaybackPreparationMetrics::Interval fallback{PlaybackPreparationPhase::resident_pool_fallback, bytes};
+    for (auto& input : samples_) {
+        auto const previous_replacements = replacements.size();
+        auto const packed = input.layout.sample_layout == SampleStreamLayout::interleaved || input.channels.size() == 1;
+        for (auto& region : input.regions) {
+            auto const frame_count = static_cast<std::size_t>(region.range.extent);
+            auto const frames = region.storage_frames ? region.storage_frames : frame_count;
+            auto const* storage = region.storage_data();
+            if (!storage || !frame_count) continue;
+            if (!packed) {
+                for (std::size_t channel = 0; channel < input.channels.size(); ++channel)
+                    ranges.push_back({storage + product(product(channel, frames) + region.first_frame, input.geometry.value_size_bytes),
+                        product(frame_count, input.geometry.value_size_bytes)});
+                continue;
+            }
+
+            auto const frame_bytes = product(input.channels.size(), input.geometry.value_size_bytes);
+            BufferedResidentRange const range{storage + product(region.first_frame, frame_bytes), product(frame_count, frame_bytes)};
+            if (use_pool && range.bytes && range.bytes <= data.max_pooled_tick_sample_bytes()
+                && (!pool || !pool->contains(storage))) {
+                if (!pool) {
+                    try {
+                        pool = std::make_shared<TickSamplePool>(data, data.buffered_pages_->page_size());
+                    } catch (std::length_error const&) {
+                        disable_pool();
+                    } catch (std::system_error const&) {
+                        disable_pool();
+                    }
+                }
+                auto copy = pool ? pool->copy({range.data, range.bytes}, input.geometry.element_alignment) : nullptr;
+                if (copy) replacements.push_back({&region, ranges.size(), std::move(copy)});
+                else {
+                    PlaybackPreparationMetrics::Interval fallback{PlaybackPreparationPhase::resident_pool_fallback, range.bytes};
                 }
             }
+            ranges.push_back(range);
         }
-        if (input.layout.sample_layout == SampleStreamLayout::planar) {
-            for (std::size_t channel = 0; channel < input.channels.size(); ++channel)
-                ranges.push_back({storage + product(product(channel, frames) + region.first_frame, input.geometry.value_size_bytes),
-                    product(frame_count, input.geometry.value_size_bytes)});
-        } else {
-            auto const frame_bytes = product(input.channels.size(), input.geometry.value_size_bytes);
-            ranges.push_back({storage + product(region.first_frame, frame_bytes), product(frame_count, frame_bytes)});
-        }
+        if (replacements.size() != previous_replacements) changed_inputs.push_back(&input);
     }
-    if (use_benchmark_pool) for (auto& input : samples_) input.rebuild_region_views();
     for (auto const& input : events_) {
         for (auto const& chunk : input.chunks) {
             if (chunk.events && chunk.begin < chunk.end)
@@ -120,7 +158,41 @@ void TickMaterializationSnapshot::prepare_resident(PersistedDataStore& data)
             ranges.push_back({reinterpret_cast<std::byte const*>(input.merged_semantic_source_indices->data()),
                 product(input.merged_semantic_source_indices->size(), sizeof(std::size_t))});
     }
-    resident_ = data.prepare_resident(ranges);
+    if (!pool) {
+        resident_ = data.prepare_resident(ranges);
+        return;
+    }
+
+    // Retain the original owners until the full selection, including native
+    // sample and event ranges, has successfully acquired residency.
+    auto retry_without_pool = [&] {
+        replacements.clear();
+        disable_pool();
+        resident_ = data.prepare_resident(ranges);
+    };
+    try {
+        if (replacements.empty()) resident_ = data.prepare_resident(ranges);
+        else {
+            auto selected = ranges;
+            for (auto const& replacement : replacements)
+                selected[replacement.range_index].data = replacement.storage->data();
+            resident_ = data.prepare_resident(selected);
+        }
+    } catch (std::length_error const&) {
+        retry_without_pool();
+        return;
+    } catch (std::system_error const&) {
+        retry_without_pool();
+        return;
+    }
+    for (auto& replacement : replacements) {
+        auto& region = *replacement.region;
+        region.values.reset();
+        region.continuous_values = std::move(replacement.storage);
+        region.storage_frames = static_cast<std::size_t>(region.range.extent);
+        region.first_frame = 0;
+    }
+    for (auto* input : changed_inputs) input->rebuild_region_views();
 }
 namespace {
 

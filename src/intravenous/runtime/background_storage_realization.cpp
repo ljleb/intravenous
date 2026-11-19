@@ -654,7 +654,8 @@ public:
         std::span<GlobalIndexRange const> selected_regions,
         ContinuousValueStorageGeometry geometry,
         ChannelLayout layout,
-        std::span<std::size_t const> channels)
+        std::span<std::size_t const> channels,
+        std::size_t reuse_limit)
         : output_(std::move(output))
         , coverage_(&coverage)
         , geometry_(geometry)
@@ -673,21 +674,20 @@ public:
                 }
                 used[index] = true;
                 // Canonical contents may be segmented. A full Region request
-                // gets an actual contiguous, bounded view; a window request
-                // owns only the selected page/view subset, not the old output.
+                // gets an actual contiguous, bounded view. A packed slice can
+                // borrow the existing view while Tick's resident copy is prepared.
                 PersistedSampleRegion selected_region{.output = region.output, .range = region.range,
                     .layout = region.layout, .geometry = region.geometry};
                 if (coverage.contains(region.range)) selected_region = region.contiguous_view();
                 else {
                     std::vector<PersistedSampleRegion> windows;
-                    auto const reuse_mapping = PlaybackPreparationMetrics::active_sample_preparation()
-                        != PlaybackPreparationMetrics::SamplePreparation::remap;
+                    auto const frame_bytes = checked_product(channel_count(layout), geometry.value_size_bytes);
+                    auto const reuse_frames = frame_bytes ? reuse_limit / frame_bytes : 0;
                     auto append = [&](PersistedSampleRegion const& window) {
                         for (auto const part : IndexCoverage{window.range} & coverage) {
-                            if (reuse_mapping && part != window.range && window.values.empty()
+                            if (part.extent <= reuse_frames && part != window.range && window.values.empty()
                                 && window.buffered_backing && (layout.sample_layout == SampleStreamLayout::interleaved
                                     || channel_count(layout) == 1)) {
-                                auto const frame_bytes = channel_count(layout) * geometry.value_size_bytes;
                                 PlaybackPreparationMetrics::Interval timing{PlaybackPreparationPhase::reuse_sample_window,
                                     part.extent * frame_bytes};
                                 auto const first_frame = window.range.begin.forward_distance_to(part.begin);
@@ -1310,6 +1310,13 @@ BackgroundStorageRealization::BackgroundStorageRealization(
         } else if (uses_output_cache(plan, planned, selection_.cache_computed_outputs)
             && selection_.published) {
             if (planned.kind == PortKind::sample) {
+                auto const mode = PlaybackPreparationMetrics::active_sample_preparation();
+                using Mode = PlaybackPreparationMetrics::SamplePreparation;
+                std::size_t reuse_limit = 0;
+                if (mode == Mode::reuse || mode == Mode::arena)
+                    reuse_limit = std::numeric_limits<std::size_t>::max();
+                else if (mode == Mode::pool && selection_.prepares_tick_materialization)
+                    reuse_limit = data.max_pooled_tick_sample_bytes();
                 created->persisted_sample =
                     std::make_unique<PersistedSampleReader>(
                         *selection_.published,
@@ -1318,7 +1325,8 @@ BackgroundStorageRealization::BackgroundStorageRealization(
                         selection_.storage_regions[index],
                         planned.continuous_geometry,
                         planned.sample_layout,
-                        planned.sample_channels);
+                        planned.sample_channels,
+                        reuse_limit);
                 created->sample_read = created->persisted_sample->view();
             } else {
                 created->persisted_event =

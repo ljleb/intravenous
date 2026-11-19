@@ -1177,11 +1177,12 @@ class BackgroundEvaluationTransaction::Impl {
         }
     }
 
-    [[nodiscard]] std::shared_ptr<Evaluation> prepare_evaluation()
+    [[nodiscard]] std::shared_ptr<Evaluation> prepare_evaluation(bool prepares_tick_materialization = false)
     {
         PlaybackPreparationMetrics::Interval timing{PlaybackPreparationPhase::prepare_evaluation};
         auto binding = binding_selection();
         auto storage = storage_selection(binding, *working_data_);
+        storage.prepares_tick_materialization = prepares_tick_materialization;
         expand_output_binding_selection(binding, storage);
         std::vector<PersistedPayloadSelection> needed;
         std::vector<PersistedOutputHandle> accounted;
@@ -1479,7 +1480,7 @@ class BackgroundEvaluationTransaction::Impl {
                                       }));
         }
 
-        auto evaluation = prepare_evaluation();
+        auto evaluation = prepare_evaluation(materializations_ != nullptr);
         auto& realization = evaluation->realization;
         auto& frame = *evaluation->frame;
 

@@ -575,7 +575,7 @@ checks each mapping and lock request against the current process limits.
 ### Playback sample storage comparison
 
 `iv_playback_benchmark --sample-preparation` selects a sample preparation
-experiment on its executor. `remap` uses the existing production path.
+mode on its executor. `remap` uses the production path from before the pool.
 `reuse` reuses an already mapped packed window for a strict cached subrange.
 `pool` combines that cache read path with a resident 1 MiB pool of sample
 slots for Tick. A Tick snapshot leases its slots through its existing payload
@@ -583,7 +583,7 @@ owners. A window that cannot fit in a slot keeps its ordinary residency path.
 `arena` combines cached window reuse with stable addresses for contiguous
 file runs in `BufferedPageAllocator`. One mapping of the page file supplies
 those addresses. Fragmented windows use the ordinary mapping path, and each
-window pins its own file pages. These modes leave the production default in place.
+window pins its own file pages. The comparison used each mode explicitly.
 
 Run each mode on the same fixed project with the default two 60-second passes
 and compare the per-pass traces. The first pass computes and caches curve
@@ -623,3 +623,103 @@ would need its own measurements. The pool is the strongest candidate for
 reducing warm playback cost on this workload. Cold transaction tails and
 performance across live edits remain open measurements. The 77 focused storage
 tests passed, including the arena's pinned-reader page-replacement test.
+
+### Playback across different graph shapes
+
+The standalone playback benchmark also ships these fixed project fixtures.
+All use the builtin automation curve and the same saw module as the original
+fixture. Several saw instances mix through separate `SystemAudioOutput`
+nodes writing to the same stereo device binding.
+
+| Fixture | Graph shape |
+| --- | --- |
+| `independent` | Four saw instances with independent pitch curves. The curves have staggered gaps and the saws use their manual frequency in those gaps. |
+| `stacked` | Four automation curves in series through dynamic `min` and `max` inputs. The last curve drives one saw. |
+| `shared-driver` | One automation curve drives the `min` or `max` input of four separate pitch curves. Each branch drives one saw. The branch curves have distinct points and staggered gaps. |
+
+CMake copies the projects to `benchmark/playback_<fixture>_fixture` in the
+build tree. The original `benchmark/playback_fixture` remains the default.
+Use the same executable and run the modes sequentially. For example, from
+the repository root:
+
+```sh
+results=$(mktemp -d)
+for mode in remap pool reuse arena; do
+    for fixture in independent stacked shared-driver; do
+        build-release/benchmark/iv_playback_benchmark \
+            --workspace "build-release/benchmark/playback_${fixture}_fixture" \
+            --sample-preparation "$mode" --seconds 25 --passes 2 \
+            --trace-tsv "$results/$fixture-$mode.tsv" \
+            > "$results/$fixture-$mode.log" 2>&1
+    done
+done
+```
+
+For output diagnosis, `--audio-f32 PATH` captures interleaved stereo
+float32 samples after each seek applies. Passes are concatenated in order.
+The `audio_samples` count in the log identifies each pass's length. The
+benchmark writes this file between passes. Use the regular trace runs for
+timing comparisons.
+
+The graph-shape comparison used two 25-second passes at 48 kHz and 256 frames
+per block, with a seek back to −10 seconds between passes. Every run rendered
+4,688 blocks per pass with zero underruns and zero missed driver periods.
+Seeks applied in 5.55–6.18 ms.
+
+| Fixture | Mode | Cold transaction time | Warm transaction time | Total | Transaction p99 upper bound |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `independent` | `remap` | 1.76 s | 1.44 s | 3.20 s | 3.4 ms |
+| `independent` | `reuse` | 1.64 s | 1.35 s | 2.99 s | 2.7 ms |
+| `independent` | `pool` | 1.67 s | 0.20 s | 1.87 s | 2.8 ms |
+| `independent` | `arena` | 1.69 s | 1.39 s | 3.08 s | 2.8 ms |
+| `stacked` | `remap` | 2.16 s | 1.52 s | 3.68 s | 3.8 ms |
+| `stacked` | `reuse` | 2.23 s | 1.47 s | 3.70 s | 4.7 ms |
+| `stacked` | `pool` | 2.12 s | 0.14 s | 2.26 s | 3.9 ms |
+| `stacked` | `arena` | 2.20 s | 1.39 s | 3.59 s | 4.1 ms |
+| `shared-driver` | `remap` | 2.20 s | 1.70 s | 3.91 s | 3.7 ms |
+| `shared-driver` | `reuse` | 2.24 s | 1.71 s | 3.95 s | 4.1 ms |
+| `shared-driver` | `pool` | 2.29 s | 0.22 s | 2.51 s | 4.3 ms |
+| `shared-driver` | `arena` | 2.11 s | 1.60 s | 3.72 s | 3.4 ms |
+
+The pool used 1 MiB of resident memory in each fixture and reported zero
+slot fallbacks. It reduced warm transaction time by 86–91% and total
+transaction time by 36–42% relative to `remap`. Cold transaction time moved
+between −5% and +4%. The shared-driver pool run had a higher transaction p99
+bound despite its lower total. In the arena runs, fewer than 1% of sample
+windows fit the direct contiguous-file-run path in each fixture.
+
+Both shared-driver digests matched across all four modes. Independent and
+stacked full-length digests varied in some runs. Short captures reproduced a
+digest difference between two `stacked` runs using `remap`. The variation
+was already present in the graph activation and pre-seek blocks. In one set
+of eight baseline repeats, seven activation blocks were silent and one
+contained audio. The post-seek digest split on the same runs. This points to
+oscillator state at startup and limits unconditional digest comparisons for
+these fixtures. In matched short captures, `independent` produced identical
+samples with `remap` and `pool`, and `stacked` produced identical samples with
+`remap` and `reuse`.
+
+### Resident Tick sample pool
+
+Playback preparation now uses the resident pool by default. Each
+`PersistedDataStore` lazily allocates 64 slots of 16 KiB from the existing
+realtime residency budget. The background transaction can borrow an existing
+packed cache mapping while preparing a Tick snapshot. It copies eligible
+windows into the pool before publication. A snapshot holds immutable slot
+owners and leases only the pages it reads. Carrying a subwindow into a later
+snapshot can keep the same slot and frame offset.
+
+The ordinary residency path handles larger windows, multichannel planar
+windows, events, and windows that cannot get a slot. If the initial slab lock
+fails, the executor uses ordinary residency. If a prepared snapshot hits a
+resource limit with the pool active, preparation releases the slab-wide
+lease, discards its speculative copies, and retries with the original windows.
+Published snapshots keep their page leases throughout. The pool stays
+disabled for that data store after either resource failure.
+
+The server and benchmark rebuilt successfully and all 134 focused storage
+and executor tests passed. All four playback fixtures exercised the pool
+with default settings, with zero underruns, missed driver periods, or slot
+fallbacks. The 25-second shared-driver replay spent 0.21 s in background
+transactions. Explicit `--sample-preparation remap` still ran without the
+pool for comparison.

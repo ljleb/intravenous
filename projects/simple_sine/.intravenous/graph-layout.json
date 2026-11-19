@@ -10,10 +10,10 @@
     }
   },
   "timeline": {
-    "beginSeconds": 8.877549459037603,
-    "secondsPerPixel": 0.00009783996671768653,
-    "laneHeight": 673.1085304069113,
-    "scrollTop": 430.5555419921875
+    "beginSeconds": 80.60779205517106,
+    "secondsPerPixel": 0.0730086351014893,
+    "laneHeight": 150.1908231390384,
+    "scrollTop": 0
   },
   "viewport": {
     "x": 215.10152954825116,

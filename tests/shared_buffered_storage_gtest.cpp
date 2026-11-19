@@ -402,6 +402,84 @@ TEST(SharedBufferedStorage, ResidentSnapshotFailureDoesNotAcquireAPartialLease)
     EXPECT_EQ(store.buffered_storage_usage().resident_bytes, 0u);
 }
 
+TEST(SharedBufferedStorage, TickSamplePoolIsStoreOwnedAndKeepsCarriedWindowsImmutable)
+{
+#if defined(__linux__)
+    constexpr std::size_t pool_bytes = 1024 * 1024;
+    rlimit limit{};
+    ASSERT_EQ(::getrlimit(RLIMIT_MEMLOCK, &limit), 0);
+    if (limit.rlim_cur < 2 * pool_bytes) GTEST_SKIP() << "host cannot lock two Tick sample pools";
+
+    PersistedDataStore store;
+    PersistedDataStore other_store;
+    auto sample_input = [](GlobalIndexRange range, float value) {
+        return make_tick_materialized_sample_input(1, mono_interleaved_channel_layout,
+            {0}, std::vector{range}, std::vector<Sample>(range.extent, Sample{value}));
+    };
+    TickMaterializationSnapshot previous{1, 1, {}, {sample_input(span(0, 4), 2)}, {}};
+    previous.prepare_resident(store);
+    ASSERT_EQ(store.buffered_storage_usage().resident_bytes, pool_bytes);
+    auto const* first = previous.find_sample(1)->regions.front().storage_data();
+
+    TickMaterializationSnapshot current{1, 2, {}, {sample_input(span(3, 1), 7)}, {}};
+    std::array retention{TickMaterializationRetention{.port = 1, .retained = IndexCoverage{span(1, 2)}}};
+    current.carry_forward(previous, retention);
+    current.prepare_resident(store);
+    auto const* current_input = current.find_sample(1);
+    ASSERT_EQ(current_input->regions.size(), 2u);
+    EXPECT_EQ(current_input->regions[0].storage_data(), first);
+    EXPECT_NE(current_input->regions[1].storage_data(), first);
+    EXPECT_EQ(current_input->at(at(1), 0).value, 2);
+    EXPECT_EQ(current_input->at(at(3), 0).value, 7);
+    EXPECT_EQ(previous.find_sample(1)->at(at(3), 0).value, 2);
+
+    TickMaterializationSnapshot other{1, 1, {}, {sample_input(span(0, 4), 9)}, {}};
+    other.prepare_resident(other_store);
+    EXPECT_EQ(other_store.buffered_storage_usage().resident_bytes, pool_bytes);
+    EXPECT_NE(other.find_sample(1)->regions.front().storage_data(), first);
+    EXPECT_EQ(other.find_sample(1)->at(at(0), 0).value, 9);
+#else
+    GTEST_SKIP() << "Linux buffered storage backend";
+#endif
+}
+
+TEST(SharedBufferedStorage, TickSamplePoolReleasesIdleResidencyToFitAnOversizedWindow)
+{
+#if defined(__linux__)
+    constexpr std::size_t pool_bytes = 1024 * 1024;
+    rlimit limit{};
+    ASSERT_EQ(::getrlimit(RLIMIT_MEMLOCK, &limit), 0);
+    if (limit.rlim_cur < pool_bytes) GTEST_SKIP() << "host cannot lock a Tick sample pool";
+
+    BufferedStorageLimits limits;
+    limits.max_resident_bytes = pool_bytes;
+    PersistedDataStore store{limits};
+    auto const page = store.buffered_storage_usage().page_size;
+    auto narrow = make_tick_materialized_sample_input(1, mono_interleaved_channel_layout,
+        {0}, std::vector{span(0, 2)}, {Sample{2}, Sample{3}});
+    TickMaterializationSnapshot previous{1, 1, {}, {narrow}, {}};
+    previous.prepare_resident(store);
+    ASSERT_EQ(store.buffered_storage_usage().resident_bytes, pool_bytes);
+
+    auto const frames = 16 * 1024 / sizeof(Sample) + 1;
+    auto wide = make_tick_materialized_sample_input(2, mono_interleaved_channel_layout,
+        {0}, std::vector{span(0, frames)}, std::vector<Sample>(frames, Sample{7}));
+    auto const* original_narrow = narrow.regions.front().storage_data();
+    TickMaterializationSnapshot next{1, 2, {}, {std::move(narrow), std::move(wide)}, {}};
+    EXPECT_NO_THROW(next.prepare_resident(store));
+    EXPECT_EQ(next.find_sample(1)->regions.front().storage_data(), original_narrow);
+    EXPECT_EQ(next.find_sample(1)->at(at(1), 0).value, 3);
+    EXPECT_EQ(next.find_sample(2)->at(at(frames - 1), 0).value, 7);
+    EXPECT_EQ(previous.find_sample(1)->at(at(1), 0).value, 3);
+    auto const resident = store.buffered_storage_usage().resident_bytes;
+    EXPECT_GE(resident, 2 * page);
+    EXPECT_LT(resident, pool_bytes);
+    EXPECT_EQ(store.max_pooled_tick_sample_bytes(), 0u);
+#else
+    GTEST_SKIP() << "Linux buffered storage backend";
+#endif
+}
+
 TEST(SharedBufferedStorage, OverlappingRealtimeSelectionsKeepResidencyUntilTheirLastLeaseRetires)
 {
 #if defined(__linux__)

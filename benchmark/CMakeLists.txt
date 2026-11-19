@@ -80,14 +80,19 @@ target_include_directories(iv_buffered_storage_benchmark SYSTEM PRIVATE
     ${PROJECT_SOURCE_DIR}/src/intravenous/third_party)
 iv_add_host_runtime_objects(iv_buffered_storage_benchmark)
 
-# Replay a fixed two-curve project. The package loader writes generated
-# artifacts beside this build-tree copy of the fixture.
+# Replay fixed playback projects. The package loader writes generated artifacts
+# beside these build-tree fixture copies.
 set(playback_fixture_dir "${CMAKE_CURRENT_BINARY_DIR}/playback_fixture")
-foreach(playback_fixture_file IN ITEMS iv_project.jsonl saw/iv_package.json saw/module.cpp)
-    configure_file(
-        "fixtures/playback/${playback_fixture_file}"
-        "${playback_fixture_dir}/${playback_fixture_file}"
-        COPYONLY)
+foreach(playback_project IN ITEMS iv_project independent stacked shared-driver)
+    if(playback_project STREQUAL "iv_project")
+        set(playback_project_dir "${playback_fixture_dir}")
+    else()
+        set(playback_project_dir "${CMAKE_CURRENT_BINARY_DIR}/playback_${playback_project}_fixture")
+    endif()
+    configure_file("fixtures/playback/${playback_project}.jsonl" "${playback_project_dir}/iv_project.jsonl" COPYONLY)
+    foreach(playback_package_file IN ITEMS saw/iv_package.json saw/module.cpp)
+        configure_file("fixtures/playback/${playback_package_file}" "${playback_project_dir}/${playback_package_file}" COPYONLY)
+    endforeach()
 endforeach()
 
 add_executable(iv_playback_benchmark

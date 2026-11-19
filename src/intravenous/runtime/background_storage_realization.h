@@ -227,6 +227,7 @@ struct BackgroundStorageSelection {
     std::vector<bool> produce_storage{};
     PersistedDataStore::Snapshot const* published = nullptr;
     bool cache_computed_outputs = false;
+    bool prepares_tick_materialization = false;
 };
 
 // Interprets immutable PortStoragePlan indices into address-stable runtime
