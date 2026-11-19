@@ -1,10 +1,13 @@
 #pragma once
 
 #include <intravenous/coverage.h>
+#include <intravenous/runtime/background_region_routing.h>
+#include <intravenous/runtime/background_sample_demand.h>
 #include <intravenous/runtime/graph_jit.h>
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -26,6 +29,7 @@ struct OutputCoverageChangeRequest {
 struct OutputCoverageRequest {
     graph_jit::BackgroundPortIndex port = 0;
     IndexCoverage required{};
+    BackgroundSampleDemand sample_positions{};
 };
 
 struct InputCoverageChangeRequest {
@@ -38,6 +42,13 @@ struct InputCoverageChangeRequest {
 struct InputCoverageRequest {
     graph_jit::BackgroundPortIndex port = 0;
     IndexCoverage required{};
+    BackgroundSampleDemand sample_positions{};
+};
+
+struct IndexedRegionDemand {
+    graph_jit::BackgroundPortIndex port = 0;
+    std::size_t region_index = 0;
+    std::vector<IndexRun> runs{};
 };
 
 struct CoveragePropagationRequest {
@@ -49,6 +60,8 @@ struct CoveragePropagationRequest {
     std::vector<OutputCoverageChangeRequest> output_changes{};
     std::vector<InputCoverageRequest> input_demands{};
     std::vector<OutputCoverageRequest> output_demands{};
+    std::vector<IndexedRegionDemand> indexed_output_demands{};
+    std::vector<IndexedRegionDemand> indexed_input_demands{};
 };
 
 struct PropagatedOutputChange {
@@ -60,11 +73,13 @@ struct PropagatedOutputChange {
 struct RequiredOutputCoverage {
     graph_jit::BackgroundPortIndex port = 0;
     IndexCoverage required{};
+    BackgroundSampleDemand sample_positions{};
 };
 
 struct RequiredInputCoverage {
     graph_jit::BackgroundPortIndex port = 0;
     IndexCoverage required{};
+    BackgroundSampleDemand sample_positions{};
 };
 
 // Propagation deliberately returns coverage changes and requirements, not
@@ -74,6 +89,8 @@ struct CoveragePropagationResult {
     std::vector<PropagatedOutputChange> output_changes{};
     std::vector<RequiredInputCoverage> input_requirements{};
     std::vector<RequiredOutputCoverage> output_requirements{};
+    std::vector<IndexedRegionDemand> indexed_outputs{};
+    std::vector<IndexedRegionDemand> indexed_inputs{};
 };
 
 // Optional transaction policy invoked after the generated forward traversal
@@ -93,8 +110,17 @@ struct BackgroundForwardOutputChanges {
     }
 };
 
+// Borrowed after forward propagation and before the observation adds demands.
+struct BackgroundDemandSelection {
+    void* data = nullptr;
+    std::span<GlobalIndexRange const> (*output_regions)(void const*, graph_jit::BackgroundPortIndex) = nullptr;
+    std::span<EventRegionInfo const> (*event_regions)(void const*, graph_jit::BackgroundPortIndex) = nullptr;
+    std::vector<std::vector<TimedEvent>> (*read_events)(void*, std::span<IndexedRegionDemand const>) = nullptr;
+};
+
 struct BackgroundCoverageDemandExpansion {
     void* data = nullptr;
+    std::size_t sparse_sample_budget = 0;
     void (*expand_output)(
         void*, graph_jit::BackgroundPortIndex, IndexCoverage const& available,
         std::span<GlobalIndexRange const> regions,
@@ -109,6 +135,7 @@ struct BackgroundCoverageDemandExpansion {
         IndexCoverage& required) = nullptr;
     // Runtime cache admission is independent of the authored realization.
     bool (*cached_output)(void*, graph_jit::BackgroundPortIndex) = nullptr;
+    void (*select_demands)(void*, BackgroundDemandSelection const&, CoveragePropagationRequest&) = nullptr;
 };
 
 class PreparedCoveragePropagation;
@@ -125,6 +152,8 @@ struct BackgroundCoverageDiscovery {
     void* data = nullptr;
     BackgroundDiscoveredInput (*materialize)(void*, PreparedCoveragePropagation&&,
         graph_jit::BackgroundPortIndex) = nullptr;
+    std::vector<std::vector<TimedEvent>> (*read_events)(void*, PreparedCoveragePropagation&&,
+        std::span<IndexedRegionDemand const>) = nullptr;
 };
 
 struct BackgroundCoverageReadDependency {
@@ -148,6 +177,7 @@ public:
 private:
     std::vector<IndexCoverage> output_coverages_{};
     std::vector<std::vector<GlobalIndexRange>> output_region_ranges_{};
+    std::vector<std::vector<EventRegionInfo>> output_event_regions_{};
     std::vector<BackgroundCoverageReadDependency> read_dependencies_{};
 
     friend class BackgroundPropagationWorkspace;
@@ -202,11 +232,14 @@ class PreparedCoveragePropagation {
     CoveragePropagationResult result_{};
     std::vector<IndexCoverage> output_coverages_{};
     std::vector<std::vector<GlobalIndexRange>> output_region_ranges_{};
+    std::vector<std::vector<EventRegionInfo>> output_event_regions_{};
+    std::vector<std::vector<EventRegionInfo>> event_regions_by_port_{};
+    std::uint64_t selection_snapshot_ = 0;
     std::vector<BackgroundCoverageReadDependency> read_dependencies_{};
     std::vector<std::vector<GlobalIndexRange>> output_regions_by_port_{};
-    std::vector<std::vector<GlobalIndexRange>> input_regions_by_port_{};
+    std::vector<std::vector<BackgroundInputRegion>> input_regions_by_port_{};
     std::vector<IndexCoverage> input_coverages_by_port_{};
-    std::vector<std::vector<GlobalIndexRange>> requested_input_regions_by_port_{};
+    std::vector<std::vector<BackgroundInputRegion>> requested_input_regions_by_port_{};
     std::vector<graph_jit::BackgroundNodeActivity> node_activity_{};
 
     PreparedCoveragePropagation() = default;
@@ -249,12 +282,20 @@ public:
         return output_regions_by_port_[port];
     }
 
+    [[nodiscard]] std::span<EventRegionInfo const> event_regions(graph_jit::BackgroundPortIndex port) const noexcept
+    {
+        if (port >= event_regions_by_port_.size()) return {};
+        return event_regions_by_port_[port];
+    }
+
+    [[nodiscard]] std::uint64_t selection_snapshot() const noexcept { return selection_snapshot_; }
+
     [[nodiscard]] std::span<BackgroundCoverageReadDependency const>
     read_dependencies() const noexcept { return read_dependencies_; }
 
     // Intrinsic logical input Regions, before the evaluation request selects
     // any of them. Storage planning may inspect these without exposing them.
-    [[nodiscard]] std::span<GlobalIndexRange const> input_regions(
+    [[nodiscard]] std::span<BackgroundInputRegion const> input_regions(
         graph_jit::BackgroundPortIndex port) const noexcept
     {
         if (port >= input_regions_by_port_.size()) return {};
@@ -274,7 +315,7 @@ public:
 
     // Whole logical Regions selected by the original reverse request, retaining
     // their ordering and multiplicity independently of wider producer work.
-    [[nodiscard]] std::span<GlobalIndexRange const> requested_input_regions(
+    [[nodiscard]] std::span<BackgroundInputRegion const> requested_input_regions(
         graph_jit::BackgroundPortIndex port) const noexcept
     {
         if (port >= requested_input_regions_by_port_.size()) return {};
@@ -320,6 +361,13 @@ class BackgroundPropagationWorkspace {
 
     struct OutputRequirementAccumulator {
         IndexCoverage required{};
+        BackgroundSampleDemand sample_positions{};
+        SamplePositionsView positions_view{};
+        BackgroundSampleDemand positional_sample_positions{};
+        std::vector<IndexedRegionDemand> sample_selections{};
+        bool sample_selections_dirty = false;
+        std::vector<RegionSelection> selection_views{};
+        std::span<RegionSelection const> selections{};
     };
 
     struct NodeCoverageCallData {
@@ -339,11 +387,15 @@ class BackgroundPropagationWorkspace {
     std::size_t sample_rate_ = 0;
     std::vector<IndexCoverage> candidate_output_coverages_{};
     std::vector<std::vector<GlobalIndexRange>> candidate_output_region_ranges_{};
+    std::vector<std::vector<EventRegionInfo>> candidate_output_event_regions_{};
     std::vector<InputChangeAccumulator> input_changes_{};
     std::vector<OutputChangeAccumulator> output_changes_{};
     std::vector<InputRequirementAccumulator> input_requirements_{};
     std::vector<OutputRequirementAccumulator> output_requirements_{};
     std::vector<IndexCoverage> input_requirements_by_port_{};
+    std::vector<BackgroundSampleDemand> input_sample_requirements_by_port_{};
+    std::vector<std::vector<IndexedRegionDemand>> indexed_output_demands_{};
+    std::vector<std::vector<IndexedRegionDemand>> indexed_input_demands_{};
     // Original request positions select logical Regions. Their normalized
     // coverage can overlap other available Regions without selecting them.
     std::vector<IndexCoverage> input_selection_requests_by_port_{};
@@ -365,12 +417,13 @@ class BackgroundPropagationWorkspace {
     void refresh_input(graph_jit::BackgroundPortIndex);
     [[nodiscard]] bool input_information_ready(graph_jit::BackgroundPortIndex) const;
     [[nodiscard]] CoverageRequestId request_information(void* operation, bool event,
-        std::size_t input, CoverageInformation, IndexCoverage const*);
+        std::size_t input, CoverageInformation, CoverageInputDemand);
     void initialize_planning();
     void run_planning(bool reverse);
     void mark_forward_pending(graph_jit::BackgroundNodeIndex);
     [[nodiscard]] PreparedCoveragePropagation prepare_discovery(
-        graph_jit::BackgroundPortIndex, IndexCoverage const&);
+        graph_jit::BackgroundPortIndex, IndexCoverage const&, BackgroundSampleDemand const&, RegionSelection);
+    [[nodiscard]] PreparedCoveragePropagation prepare_discovery(CoveragePropagationRequest const&);
 
 
     [[nodiscard]] graph_jit::BackgroundPortPlan const&
@@ -398,13 +451,20 @@ class BackgroundPropagationWorkspace {
                                  IndexCoverage const& coverage);
     void publish_output_regions(
         graph_jit::BackgroundPortIndex output,
-        std::span<GlobalIndexRange const> regions);
+        std::span<GlobalIndexRange const> regions,
+        std::span<EventRegionInfo const> event_regions = {});
     void publish_output_change(graph_jit::BackgroundPortIndex output,
                                IndexCoverage const& changed);
     void require_output(graph_jit::BackgroundPortIndex output,
                         IndexCoverage const& requested, bool activate_producer);
     void require_input(graph_jit::BackgroundPortIndex input,
                        IndexCoverage const& requested);
+    void require_sample_input(graph_jit::BackgroundPortIndex input, SamplePositionsView);
+    void require_sample_output(graph_jit::BackgroundPortIndex output, BackgroundSampleDemand const&);
+    void require_event_output(graph_jit::BackgroundPortIndex output, std::size_t region, std::span<IndexRun const>);
+    void require_sample_region(graph_jit::BackgroundPortIndex, std::size_t, std::span<IndexRun const>);
+    void update_sample_selections(graph_jit::BackgroundPortIndex);
+    void require_region_selection(graph_jit::BackgroundPortIndex input, RegionSelection);
     void initialize_calls();
     void reset(BackgroundCoverageState const& coverage);
 
@@ -412,10 +472,14 @@ class BackgroundPropagationWorkspace {
                                                  IndexCoverage const& coverage);
     static void publish_output_regions_callback(
         void* accumulator, GlobalIndexRange const* regions, std::size_t count);
+    static void publish_output_event_regions(void*, std::span<EventRegionInfo const>);
     static void publish_output_change_callback(void* accumulator,
                                                IndexCoverage const& changed);
     static void publish_input_requirement_callback(void* accumulator,
                                                    IndexCoverage const& required);
+    static void publish_input_sample_positions(void* accumulator, SamplePositionsView);
+    static void publish_input_region_selection(void* accumulator, RegionSelection);
+    static void publish_corresponding_sample_requirements(void* accumulator, OutputCoverageRequirement const&);
     // Generated input-union and full forward propagation. Both may also
     // describe live Tick coverage without replaying Tick sample values.
     static void replay_forward_coverage(void*, ReflectedNodeForwardCoverageContext const&);

@@ -1,4 +1,5 @@
 import { automationSampleIndex, automationSampleOffset } from "../../src/automationCurveGeometry";
+import type { TimelineMark } from "./timelineContext";
 
 export type RulerTick = { x: number; label: string; sampleLabel?: string; minor?: boolean };
 
@@ -51,4 +52,14 @@ export function automationTimelineTicks(window: TimelineWindow & { spanSeconds?:
             ticks.push({ x: position, label: "", minor: true });
     }
     return ticks.sort((a, b) => a.x - b.x);
+}
+
+export function snapTimelineSample(index: bigint, marks: readonly TimelineMark[], tolerance: number): bigint {
+    let snapped = index;
+    let nearest = tolerance;
+    for (const mark of marks) {
+        const distance = Math.abs(Number(BigInt.asIntN(64, mark.index - index)));
+        if (distance <= nearest) { snapped = mark.index; nearest = distance; }
+    }
+    return snapped;
 }

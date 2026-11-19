@@ -21,8 +21,22 @@ namespace iv {
 // storage slots: direct aliases may shift a source storage domain by their
 // planned read latency, and one logical output may fan out to several stores.
 struct BackgroundEvaluationCallFrameSelection {
+    struct IndexedEventRegion {
+        RegionRef region{};
+        GlobalIndexRange range{};
+        std::vector<IndexRun> runs{};
+        std::optional<Event> constant_value{};
+        std::optional<graph_jit::BackgroundBindingSlot> source{};
+        std::size_t source_region = 0;
+    };
     std::vector<IndexCoverage> binding_coverage{};
+    std::vector<BackgroundSampleDemand> sample_positions{};
+    std::vector<SampleDemandByRegion> sample_region_positions{};
+    std::uint64_t selection_snapshot = 0;
     std::vector<std::vector<GlobalIndexRange>> binding_regions{};
+    std::vector<std::vector<BackgroundInputRegion>> binding_input_regions{};
+    std::vector<std::vector<IndexedEventRegion>> indexed_events{};
+    std::size_t indexed_event_budget = 0;
     // Per binding slot, for Sequential replay inputs: positions where an
     // upstream contribution exists. Replay resolves a scheduled position
     // outside it as known absent, by the input's fallback; a covered position
@@ -67,6 +81,8 @@ public:
         TockStateStorage& tock_states,
         BackgroundEvaluationCallFrameSelection selection);
     ~BackgroundEvaluationCallFrame();
+    [[nodiscard]] std::span<EventRunStorageView const> indexed_events(graph_jit::BackgroundPortIndex) const noexcept;
+    void prepare_indexed_input(graph_jit::BackgroundPortIndex);
 
     BackgroundEvaluationCallFrame(BackgroundEvaluationCallFrame const&) =
         delete;

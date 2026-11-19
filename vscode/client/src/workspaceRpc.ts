@@ -74,7 +74,9 @@ export class WorkspaceRpc {
             scopeId,
             interests: interests.map((interest) => ({ ...interest, source: { ...interest.source,
                 node: { ...interest.source.node, path: interest.source.node.path ?? [] },
-            } })),
+            }, ...(interest.window?.maxDepth === undefined ? {} : {
+                window: { ...interest.window, maxMarks: interest.window.points },
+            }) })),
         });
     }
 

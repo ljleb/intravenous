@@ -4,7 +4,7 @@ import { reactive } from "vue";
 import { ObservationValues, observationSourceKey, type ObservationUpdate } from "../src/observations";
 
 function update(activation: string, revision: string, available = true): ObservationUpdate {
-    return { activationId: activation, revision, generation: "7", index: "-3", blockSize: 64,
+    return { activationId: activation, revision, generation: "7", index: "-3", blockSize: 64, dataVersion: "0",
         scopes: [{ scopeId: "viewport", values: [{ id: "out", available, value: { peak: .5 } }] }] };
 }
 test("observations reject obsolete activations and requirement revisions", () => {
@@ -56,11 +56,12 @@ test("input observations use explicit interests alongside automatic output meter
     const nextRequest = () => new Promise<Reconcile>((resolve) => { publish = resolve; });
     const node = { instanceId: "n" };
     const source = { kind: "input" as const, node, member: "gain" };
-    const live = scope.portObservationId(), range = scope.portObservationId();
+    const live = scope.portObservationId(), range = scope.portObservationId(), prefetch = scope.portObservationId();
     const window = { begin: "0", length: "64", points: 8 };
     try {
         const installed = nextRequest();
         scope.node(Symbol("lane"), node, true);
+        scope.observePort(prefetch, { source, operation: "waveform", window: { ...window, begin: "64" }, prefetch: true });
         scope.observePort(live, { source, operation: "value" });
         scope.observePort(range, { source, operation: "waveform", window });
         const interests = (await installed).interests;
@@ -68,11 +69,14 @@ test("input observations use explicit interests alongside automatic output meter
             { id: live, source, operation: "value" },
             { id: range, source, operation: "waveform", window },
         ]);
-        assert.deepEqual(interests.slice(2).map((interest) => interest.source.kind), ["output"]);
+        assert.equal(interests[2].source.kind, "output");
+        assert.equal(interests[3].id, prefetch);
+        assert.equal(interests[3].prefetch, true);
 
         const removed = nextRequest();
         scope.observePort(live, undefined);
         scope.observePort(range, undefined);
+        scope.observePort(prefetch, undefined);
         assert.deepEqual((await removed).interests.map((interest) => interest.source.kind), ["output"]);
     } finally { scope.dispose(); }
 });
@@ -119,7 +123,7 @@ test("moving the viewport submits window updates before the gesture stops", asyn
         // The current gesture has already moved on, but its most recent
         // submitted result is still usable until we submit another window.
         const publish = (begin: number) => scope.receive({ type: "observationUpdate", update: {
-            activationId: "1", generation: "1", revision: String(revision), index: "0", blockSize: 64,
+            activationId: "1", generation: "1", revision: String(revision), index: "0", blockSize: 64, dataVersion: "0",
             scopes: [{ scopeId: "viewport", values: [], windows: [{ id, window: windowAt(begin),
                 status: "ready", approximate: true, regions: [] }] }],
         } });
@@ -242,7 +246,7 @@ test("stereo meters keep their capture interests and readings across visual scal
         assert.deepEqual(initial.interests.map((entry) => [entry.source.channel, entry.operation]), [[0, "level"], [1, "level"]]);
         assert.notEqual(initial.interests[0].id, initial.interests[1].id);
         assert.deepEqual(scope.capabilities.value.map((entry) => entry.channelName), ["left", "right"]);
-        scope.receive({ type: "observationUpdate", update: { activationId: "1", generation: "1", revision: String(revision), index: "0", blockSize: 64,
+        scope.receive({ type: "observationUpdate", update: { activationId: "1", generation: "1", revision: String(revision), index: "0", blockSize: 64, dataVersion: "0",
             scopes: [{ scopeId: "viewport", values: initial.interests.map((entry) => ({ id: entry.id, available: true,
                 value: { peak: entry.source.channel === 0 ? .5 : .25, rms: .1, samples: "64", nonfinite: "0" } })) }] } });
         assert.equal(scope.values.values.size, 2);
@@ -295,7 +299,7 @@ test("compatible meter schemas retain identities across graph revisions while in
         scope.refresh();
         await settle();
         assert.deepEqual(scope.capabilities.value.map((entry) => entry.id), initial);
-        scope.receive({ type: "observationUpdate", update: { generation: "2", activationId: "2", revision: "1",
+        scope.receive({ type: "observationUpdate", update: { generation: "2", activationId: "2", revision: "1", dataVersion: "0",
             index: "0", blockSize: 64, scopes: [{ scopeId: "viewport", values: initial.map((id) => ({
                 id, available: true, value: { peak: .5, rms: .1, samples: "64", nonfinite: "0" },
             })) }] } });
@@ -371,13 +375,18 @@ test("meter display choices persist as frontend preferences without project muta
 test("configured generation changes clear measurements and reject delayed older executable frames", () => {
     const values = new ObservationValues();
     const update = (generation: string): ObservationUpdate => ({
-        activationId: "1", generation, revision: "1", index: "0", blockSize: 64,
+        activationId: "1", generation, revision: "1", index: "0", blockSize: 64, dataVersion: "0",
         scopes: [{ scopeId: "viewport", values: [{ id: "peak", available: true, value: { peak: .5 } }] }],
     });
     values.acceptGeneration(4);
     assert.equal(values.receive(update("4"), "viewport"), true);
     assert.equal(values.values.get("peak")?.available, true);
+    const first = values.windowSnapshot;
+    assert.equal(first?.dataVersion, "0");
+    assert.equal(values.receive({ ...update("4"), dataVersion: "8" }, "viewport"), true);
+    assert.equal(values.windowSnapshot?.dataVersion, "8");
     assert.equal(values.acceptGeneration(5), true);
+    assert.equal(values.windowSnapshot, undefined);
     assert.equal(values.values.size, 0);
     assert.equal(values.receive(update("4"), "viewport"), false);
     assert.equal(values.receive(update("5"), "viewport"), true);
@@ -385,4 +394,8 @@ test("configured generation changes clear measurements and reject delayed older 
     assert.equal(values.values.get("peak")?.available, true);
     values.acceptGeneration(null);
     assert.equal(values.receive(update("5"), "viewport"), false);
+    values.clear();
+    values.acceptGeneration(4);
+    assert.equal(values.receive(update("4"), "viewport"), true);
+    assert.notEqual(values.windowSnapshot?.epoch, first?.epoch);
 });

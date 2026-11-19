@@ -1,16 +1,104 @@
 import { automationSampleOffset, clampAutomationValue, type AutomationValueBounds, type CurvePath } from "./automationCurveGeometry";
-import type { ObservationWindowResult } from "./observations";
+import { compareObservationWindowVersions, sameObservationWindow, type ObservationWindow, type ObservationWindowResult } from "./observations";
 
 export type AutomationBoundInput = "min" | "max";
 
 export type BoundSample = { seconds: number; value: number };
 type BoundTrack = { begin: number; end: number; samples: BoundSample[] };
+type BoundWindowRequest = { window: ObservationWindow; prefetch: boolean };
+
+const automationBoundPrefetchCount = 6;
+export const automationBoundWindowCount = 1 + automationBoundPrefetchCount;
+
+export function automationBoundWindows(visible: ObservationWindow): BoundWindowRequest[] {
+    const span = BigInt(visible.length);
+    let length = 1n << BigInt(Math.ceil(Math.log2(Number(span))));
+    if (length < span) length *= 2n;
+    const begin = BigInt(visible.begin);
+    const alignDown = (position: bigint, step: bigint) =>
+        position - (position % step + step) % step;
+    const firstTile = alignDown(begin, length) / length;
+    const alignment = length / 8n || 1n;
+    const fineBegin = alignDown(begin, alignment);
+    const fineEnd = alignDown(begin + span + alignment - 1n, alignment);
+    const requests = new Array<BoundWindowRequest>(automationBoundWindowCount);
+    requests[0] = {
+        window: { begin: String(fineBegin), length: String(fineEnd - fineBegin), points: visible.points },
+        prefetch: false,
+    };
+    for (let offset = -2; offset <= 3; ++offset) {
+        const tile = firstTile + BigInt(offset);
+        const far = offset === -2 || offset === 3;
+        const points = Math.max(2, Math.ceil(visible.points * (far ? 8 : 28) / 512));
+        // Six consecutive tiles occupy different slots. Crossing an edge
+        // keeps the other five IDs attached to the same spans.
+        const slots = BigInt(automationBoundPrefetchCount);
+        const slot = Number((tile % slots + slots) % slots);
+        requests[1 + slot] = { window: { begin: String(tile * length), length: String(length), points }, prefetch: true };
+    }
+    return requests;
+}
+
+export function retainAutomationBoundWindows(previous: readonly ObservationWindowResult[],
+    incoming: readonly (ObservationWindowResult | undefined)[],
+    requests: readonly BoundWindowRequest[]): readonly ObservationWindowResult[] {
+    const retained = new Map<string, ObservationWindowResult>();
+    for (const result of [...previous, ...incoming]) {
+        if (!result || result.status !== "ready" || result.truncated || result.dataVersion === undefined) continue;
+        const begin = BigInt(result.window.begin), end = begin + BigInt(result.window.length);
+        const overlaps = requests.some(({ window }) => {
+            const requestedBegin = BigInt(window.begin);
+            return requestedBegin < end && begin < requestedBegin + BigInt(window.length);
+        });
+        if (!overlaps) continue;
+        const key = JSON.stringify([result.window.begin, result.window.length, result.window.points]);
+        const known = retained.get(key);
+        // A playback cache publication can advance the data version while
+        // this window waits to refresh. Keep its last complete preview.
+        if (known && compareObservationWindowVersions(result, known) <= 0) continue;
+        retained.delete(key);
+        retained.set(key, result);
+    }
+    const windows = [...retained.values()].slice(-2 * automationBoundWindowCount);
+    return windows.length === previous.length && windows.every((window, index) => window === previous[index])
+        ? previous : windows;
+}
+
+export function refinedAutomationBoundTracks(results: readonly ObservationWindowResult[],
+    beginSeconds: number, spanSeconds: number, sampleRate: number, fineWindow?: ObservationWindow): BoundTrack[] {
+    const windows = results.map((result) => {
+        const begin = BigInt(result.window.begin), length = BigInt(result.window.length);
+        return { result, begin: Math.max(0, automationSampleOffset(begin, beginSeconds, sampleRate)),
+            end: Math.min(spanSeconds, automationSampleOffset(begin + length, beginSeconds, sampleRate)),
+            fine: sameObservationWindow(result.window, fineWindow),
+            density: result.window.points / Number(length) };
+    }).filter(({ begin, end }) => begin < end).sort((a, b) =>
+        Number(b.fine) - Number(a.fine) || b.density - a.density || compareObservationWindowVersions(b.result, a.result));
+    const edges = [...new Set(windows.flatMap(({ begin, end }) => [begin, end]))].sort((a, b) => a - b);
+    const tracks: BoundTrack[] = [];
+    const projected = new Map<ObservationWindowResult, BoundTrack[]>();
+    for (let i = 1; i < edges.length; ++i) {
+        const begin = edges[i - 1], end = edges[i];
+        // The current fine reply replaces cached previews, even if its
+        // alignment reduced its point density or it confirms a gap.
+        const selected = windows.find((window) => window.begin <= begin && end <= window.end);
+        if (!selected) continue;
+        const { result } = selected;
+        let source = projected.get(result);
+        if (!source) projected.set(result, source = automationBoundTracks(result, beginSeconds, sampleRate));
+        for (const track of source) {
+            const clippedBegin = Math.max(begin, track.begin), clippedEnd = Math.min(end, track.end);
+            if (clippedBegin < clippedEnd) tracks.push({ begin: clippedBegin, end: clippedEnd, samples: track.samples });
+        }
+    }
+    return tracks;
+}
 
 // Use the project timeline for X. The observation can count samples at a
 // different pace, and its Region and sample indices can cross the circle seam.
 export function automationBoundTracks(result: ObservationWindowResult | undefined,
     beginSeconds: number, sampleRate: number): BoundTrack[] {
-    if (!result || result.status !== "ready" || result.outdated) return [];
+    if (!result || result.status !== "ready") return [];
     const pace = result.paceExponent ?? 0;
     const begin = BigInt(result.window.begin);
     const nativeBegin = pace >= 0 ? begin << BigInt(pace) : begin >> BigInt(-pace);
@@ -95,7 +183,8 @@ export function sampleAutomationPreview(paths: readonly CurvePath[], lower: read
     for (const track of [...lower, ...upper]) {
         add(track.begin);
         add(track.end);
-        for (const sample of track.samples) add(sample.seconds);
+        for (const sample of track.samples)
+            if (track.begin < sample.seconds && sample.seconds < track.end) add(sample.seconds);
     }
     const times = [...edges].sort((a, b) => a - b);
     const pixelCount = Math.max(1, Math.min(4096, Math.ceil(width)));

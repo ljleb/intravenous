@@ -437,6 +437,9 @@ lane changes described below still require compilation, tests, and UI checks.
   zoom; and held middle-button movement to pan both axes. Zoom anchors at the
   pointer where scroll bounds allow. Wheel line/page units are normalized.
   When modifiers are combined, Ctrl takes precedence over Alt, then Shift.
+- In a detached editor, `GraphEditor.vue` consumes Alt key presses and releases
+  before the webview forwards them to the VS Code workbench. Graph pointer
+  events still carry Alt for zoom gestures. A docked editor forwards Alt as usual.
 - Middle-button release, cancellation, lost capture, or window blur ends panning.
   A quick middle click neither changes the viewport nor enables a persistent
   movement mode. No clip-editing, node-reordering, or connection gestures were
@@ -4055,6 +4058,27 @@ the visible viewport. Keep the padding and memory bounded, preserve source and d
 versions and coverage gaps, and retain exact event times for snapping. Playback
 work takes priority over prefetched windows.
 
+#### Automation bound preview during panning
+
+`AutomationCurvePresentation.vue` requests one aligned fine waveform window
+and six coarse windows for each connected bound. The outer two are sparser.
+At the widest point budget, the fine window requests 512 positions and the
+coarse windows request 128 in total. The viewport can move within the aligned
+window without changing the request.
+
+The presentation retains up to 14 nearby completed windows per connected
+bound in the current configured generation. It keeps the last completed
+preview for each window while a newer data revision awaits sampling.
+It clips each preview to the visible span and interpolates within that
+window. A completed reply for the requested fine window takes precedence,
+including when that reply confirms a gap.
+
+Playback uses exact samples. Waveform queries still pin one data snapshot
+for each result. The background executor can serve one visible sample
+query between successful playback preparation passes. Prefetch and event
+queries wait until the executor has processed pending playback work.
+[Earlier preview policy](./historical/automation_bound_previews_before_playback_refresh_2026-11-19.md).
+
 ### Event observation for arbitrary beat distributions, 2026-11-19
 
 The owner wants the grid to support noisy and arbitrary BeatEvent patterns
@@ -4106,3 +4130,229 @@ list between the ruler and snap gestures.
 bounded demand and packed storage between continuous values and indexed
 event Regions. Both can produce exact selections before materializing a
 time window. Exact event-range reads remain available for other streams.
+
+### Region routing prerequisite for sparse Tock demand, 2026-11-19
+
+_Implementation friction and accepted resolution. The owner accepted
+shared Region routing for sparse and positional reads on 2026-11-19._
+
+The proposal assumed a receiving `RegionRef` could select the same
+contribution in reverse propagation and in storage materialization.
+`derive_input_regions()` derives Regions from resolved source ports,
+sample projections and read latencies, then returns only
+`GlobalIndexRange` values. `PreparedCoveragePropagation` and
+`BackgroundStorageSelection` carry these ranges. The sample and event
+materializers build their own contribution lists and match the first
+unused contribution with the same range. Equivalent input ports can
+also share one materialization with a representative target port.
+
+Consider two event outputs with identical Region ranges. A time request
+selects both, and consuming the two equal ranges in order works. Selecting
+event indices from just the second contribution requires reverse planning
+to follow its source. It also requires the materializer to bind the
+selected Region to that same source even if the first Region is absent
+from the work request. A range and an index into a filtered list are
+insufficient. A sample Region can be an intersection of several delayed
+channel routes, so one producer port alone is insufficient there as well.
+
+One approach is to add a separate resolver for indexed reads. It would
+have to reproduce Region ordering, clipping, channel projection, and
+coalescing decisions. The positional and indexed paths would then have to
+stay in agreement. Another approach is to give Regions stable identities
+in persisted data and graph files. The sparse API only needs references
+within a pinned snapshot, so persistent identities would add a wider
+publication and migration requirement.
+
+Prefer deriving the source association once per selected snapshot.
+A receiving Region descriptor carries its range and the source Region
+indices on the resolved routes that produced it. For samples preserve
+the projection and read offsets. For events preserve the route and
+conversion. Storage selections refer to those descriptors, including
+when several consumers share a materialization. Keep the existing
+positional `IndexCoverage` semantics. Bound the descriptor work for
+observations as well as the value buffers, since sample projections can
+produce many intersecting Regions.
+
+`TickMaterializationSnapshot` already uses a `logical_region_index` to
+relate each prepared window to its Region. Use the same distinction between
+logical identity and physical windows in the background planner. The
+receiving Region still needs the association to its source Regions before
+it can drive reverse requirements.
+
+Verify this prerequisite with the existing positional path first.
+Include identical ranges from different event sources and sample
+projections with different delays. Then route sparse selections through
+the same descriptors, migrate Tock bindings and callbacks, and add the
+waveform and Timeline consumers.
+
+#### Accepted Region routing change
+
+Derive input Regions from compiled routes and the selected source
+publication. Keep each Region's range and its source references together.
+A source reference names the producing port, the producer's logical
+Region index in this snapshot, and the route entry used to read it. The
+compiled route owns each channel projection, delay, and event conversion.
+The descriptor records which route entries and source Regions apply.
+
+`BackgroundPropagationWorkspace` derives the descriptors when the source
+metadata becomes available. Reverse propagation reads them, and
+`PreparedCoveragePropagation` takes ownership for evaluation.
+Positional requests select every matching Region. Sparse requests name
+one Region through `RegionRef`. Both use the descriptor's source
+references to plan upstream work. Materialization binds those same
+references to storage instead of matching a Region by its range. Shared
+materializations can reuse equivalent reads while the logical Region
+list retains its order and distinct contributions.
+
+Use the same derivation for concrete consumers and passive public input
+observation. The public sample observation path currently computes its
+own Region intersections in `project_public_coverage_input()`. Move
+that work into the shared derivation. Use it for event input observation
+as well. Keep the compiler's routing metadata for structural module
+inputs and use it as input to the same derivation.
+
+Replace the range-only Region lists at the routing boundary and remove
+the materializers' reconstruction of the source association. Update
+in-repository callers and fixtures as part of the change. Keep positional
+`IndexCoverage` for existence, invalidation, and time requests. Region
+references stay within a pinned runtime snapshot.
+
+#### Region routing implementation checkpoint
+
+`BackgroundInputRegion` now retains the connection, projection, and
+logical source Region indices through coverage preparation. The sample
+and event materializers consume these references when they prepare and
+read source storage. A single sample Region intersection routine serves
+coverage propagation, sample materialization, and public sample input
+observation. Public sample observations map a logical Region index to its
+prepared storage index through the same mapping as the materializers.
+The regression fixtures cover equal clipped event ranges, selection of
+one source with the other source absent, and delayed sample projections.
+
+The changed C++ translation units and fixtures pass Clang syntax
+checks. Runtime tests require a rebuilt executable.
+
+The authored Tock call-frame binding still orders positional input views
+against range lists. Carry the Region references into that binding before
+exposing indexed input selection. Packed Tock runs, the callback migration,
+and Timeline event observation follow that change.
+
+#### Aligned waveform refinement friction
+
+The owner reports that all tests pass after the Region routing work.
+`BackgroundInputRegion` retains the logical source Region references
+needed by the planned selection path.
+
+`GraphExecutor::BackgroundExecutor::process_window()` builds
+`CoveragePropagationRequest` before `BackgroundEvaluationTransaction`
+pins the persisted-data snapshot. Its input and output demand records
+contain positional `IndexCoverage`. `project_public_coverage_input()`
+can distinguish routes and logical Regions during projection, but the
+returned `ObservationWindowRegion` contains only the clipped range and
+captured values. Equal clipped ranges can represent different
+contributions. Using these ranges as cache keys would risk combining them,
+and comparing versions at projection time would happen after the demand
+was evaluated.
+
+The dependency for incremental waveform refinement is a selection step
+after the transaction pins its snapshot and resolves forward Region
+metadata, before it submits reverse demand. Use the shared
+`RegionSelection` path to request the missing positions per logical Region,
+then assemble the complete aligned waveform reply under that snapshot.
+The same selection path serves passive public inputs and packed Tock
+evaluation. See [Sparse Tock demand](./sparse_tock_demand_proposal.md).
+
+#### Shared storage prerequisites for sparse Tock
+
+On 2026-11-19 the owner accepted the
+[authored API](./sparse_tock_demand_proposal.md#authored-api) for continuous
+positional demand and Region-relative selection. `SamplePositionRun` and
+`SamplePositionsView` define the borrowed request and its range arithmetic.
+The authored facades, planner, and storage bindings still use the current
+positional APIs.
+
+Implementation friction. `BackgroundEvaluationCallFrame` receives
+`binding_regions` as ranges. It uses range equality to associate input views
+with those entries. `PersistedDataStore::Candidate::replace_sample_regions()`
+and `replace_event_regions()` also place payloads by range equality. Given
+two Regions with the same range, a payload for only the second can be
+assigned to the first. The replacement domain applies to both Regions, so
+it can also remove valid data from a Region the request did not select.
+
+The planned output payload packs only the entries that the request selects.
+`BackgroundStorageSelection::retains_produced_output()` currently sends
+every produced `persisted_data` slot to publication, including buffered Tock
+outputs. `PersistedSampleRegion` describes contiguous windows, and
+`replace_tock_region()` maps those windows at their native positions. If
+each requested sample lies on a different page, publishing the packed
+result through this path requires one page and one window per sample.
+`PersistedEventChunk::prepared_coverage` also describes complete positional
+windows. A selected event index cannot prove completeness at its timestamp
+because other occurrences can share that timestamp.
+
+Two options are open. Extend the published store to hold packed sample runs
+and event indices alongside dense data. This changes cache publication,
+invalidation, and the readers shared with playback. Or prepare sparse
+results in bounded packed storage and reuse them by snapshot, Region, and
+selected positions or indices. Dense playback and authoritative recordings
+can use the existing positional storage.
+
+The owner approved bounded packed storage for sparse Tock results on
+2026-11-19. Dense playback and recordings use the positional store.
+
+The storage realization now retains the link between prepared output slots
+and published Region indices. `PersistedRegionWrite` identifies its Region
+by that index. The persisted store applies positional invalidation and
+per-Region writes separately. Observation-generated Tock payloads stay in
+the transaction. A continuous logical Region uses one allocation for its
+prepared sample values, including when its windows are far apart.
+
+The consumer call frame binds input views using each selected
+`BackgroundInputRegion`. Direct readers use the published Region index.
+For materialized inputs, the transaction records which physical view
+represents each target input Region, including when targets share storage.
+
+Continuous Tock input and output ports expose `prepared_runs()`. Each run
+maps a slot to a timeline position and to an index within its logical Region.
+The automation curve and sample-producing fixtures fill these slots. An
+observation can store evenly spaced sample positions in one packed run.
+Reads still test exact slot membership at a position within that run.
+
+The authored sample reverse API uses `required_positions()` to borrow the
+requested runs and positions. `required_selections()` describes them for
+each Region. The storage preparation step merges overlapping requests within
+each Region. It keeps a regular stride compact through `prepared_runs()`.
+Sequential replay and page-backed readers can still lower demand to time
+ranges at their storage boundaries.
+[Earlier implementation checkpoint](./historical/sparse_tock_before_reverse_transport_and_timeline_2026-11-19.md).
+
+Both sample and event runs expose a `RegionRef` that identifies one logical
+Region in the selected transaction. A Region selection preserves that
+identity even when another Region has the same time range. A complete-buffer
+sample input still requests all frames of its selected Region.
+
+Waveform observation reuses exact captures for authored Tock outputs and
+public inputs fed by those outputs. The transaction selects missing samples
+after it pins the data and resolves the logical Regions. The cache requires
+matching execution, semantic, and data versions. The waveform operation
+keeps its existing sample coordinates.
+
+#### Indexed event observation and Timeline
+
+A producer can publish an exact occurrence count and an optional constant
+payload for each event Region. `request_event_neighbors()` searches indexed
+Regions with bounded probes. `Beats` publishes one Region per depth in each
+signed half of the index circle. It computes selected occurrences by index.
+
+`iv.builtin.timeline` has a public BeatEvent Coverage input and produces no
+signals. The graph scope lists Timeline addresses for the client, including
+addressable module members. The `beat-grid` observation reads these inputs
+through the compiled source routes. Queries for the same viewport can share
+one background transaction. An event source without a usable index can
+answer with a bounded positional read. The reply reports ranges that exceed
+the query budget.
+
+The editor combines the ready marks that match its current data version.
+The ruler and automation point editing use the same displayed marks.
+Runtime playback, VS Code interaction, and cold-query costs still need a
+fresh build to verify.

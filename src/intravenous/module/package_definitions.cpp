@@ -105,7 +105,7 @@ NodeRef construct_package_definition(
             ? std::string{}
             : builder_invocation_qualifier(member_suffix);
         return finish_builder_scope(
-            session, scope, "module", qualifier);
+            session, scope, registered_id, qualifier);
     };
     if (!tiled_layout) {
         return NodeRef(session, construct_body({}, false));

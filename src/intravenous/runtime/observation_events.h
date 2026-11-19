@@ -12,6 +12,7 @@ struct ObservationInterest {
     ObservationSource source{};
     std::string operation;
     std::optional<ObservationWindow> window{};
+    bool prefetch = false;
 };
 struct ObservationProtocolRequest {
     enum class Kind { describe, reconcile } kind = Kind::describe;

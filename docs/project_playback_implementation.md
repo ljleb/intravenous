@@ -385,6 +385,11 @@ is the next foreground Tick index. JSON-RPC carries them in `position` and
 on the ruler, automation curves, and waveform views. The ruler shows the
 selected start as a triangle.
 
+`TimeRuler.vue` uses `TimelinePlayhead.vue`, the same SVG renderer as the
+lane overlays. Both use the same time window and playback sample rate to
+place the strokes at fractional pixel positions. The ruler SVG also draws
+the selected-start triangle and the dashed pending seek line.
+
 Regressions cover startup, running seeks, return to the start, drag command
 ordering, drag release, and Event audition at a held position. Builds and
 UI checks remain owner-run.

@@ -535,6 +535,9 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
             {"applied", entry.applied},
         });
     }
+    auto timelines = Json::array();
+    for (auto const& address : result->timeline_nodes)
+        timelines.push_back(node_address_json(address, ProjectConnectionJsonNames::socket_rpc));
     return jsonrpc_result(request_id, Json{
         {"generation", result->generation ? Json(*result->generation) : Json(nullptr)},
         {"sampleRate", result->sample_rate ? Json(*result->sample_rate) : Json(nullptr)},
@@ -542,6 +545,7 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
             {"preparedGeneration", result->prepared_generation ? Json(*result->prepared_generation) : Json(nullptr)},
             {"activeGeneration", result->active_generation ? Json(*result->active_generation) : Json(nullptr)}}},
         {"editable", result->editable},
+        {"timelineNodes", std::move(timelines)},
         {"nodes", std::move(nodes)},
         {"connections", std::move(connections)},
     });

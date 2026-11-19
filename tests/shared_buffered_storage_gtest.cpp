@@ -34,7 +34,7 @@ void replace(PersistedDataStore::Candidate& candidate, PersistedSampleRegion reg
 {
     auto const range = region.range;
     candidate.replace_sample_regions(region.output, region.layout, region.geometry,
-        IndexCoverage{range}, std::array{range}, {std::move(region)});
+        {}, std::array{range}, {{0, std::move(region)}});
 }
 
 TEST(SharedBufferedStorage, RecordingAndTockReuseOneBoundedBackingAfterSnapshotsRetire)
@@ -564,7 +564,7 @@ TEST(SharedBufferedStorage, TockSamePageAndCrossPagePatchesKeepOnlyCanonicalLive
             incoming.set_prepared_windows({std::move(window)});
             auto update = store.begin_candidate(revision);
             update.replace_sample_regions(id, layout, incoming.geometry, IndexCoverage{changed},
-                std::array{logical}, {std::move(incoming)});
+                std::array{logical}, {{0, std::move(incoming)}});
             ASSERT_EQ(store.publish(std::move(update)), PersistedDataPublishResult::published);
             (void)store.reclaim_retired();
             EXPECT_EQ(store.buffered_storage_usage().live_page_bytes, 2 * page * channel_count(layout));
@@ -594,7 +594,7 @@ TEST(SharedBufferedStorage, MultipleIncomingWindowsCopyOnePageOnceAndKeepSparseV
         samples(id, span(7, 2), 8000, incoming.layout)});
     auto update = store.begin_candidate(2);
     update.replace_sample_regions(id, incoming.layout, incoming.geometry,
-        IndexCoverage{span(5, 1), span(7, 2)}, std::array{logical}, {std::move(incoming)});
+        IndexCoverage{span(5, 1), span(7, 2)}, std::array{logical}, {{0, std::move(incoming)}});
     ASSERT_EQ(store.publish(std::move(update)), PersistedDataPublishResult::published);
     EXPECT_EQ(store.buffered_storage_usage().live_page_bytes, 2 * page);
     EXPECT_FLOAT_EQ(old->sample_regions(id, mono_planar_channel_layout)[0].at(at(5), 0).value, 6);
@@ -641,7 +641,7 @@ TEST(SharedBufferedStorage, PlanarWindowsMapSharedPagesAndRetainOnlyTheirSelecte
     patch.set_prepared_windows({samples(id, span(0, 1), 9000, layout)});
     auto update = store.begin_candidate(2);
     update.replace_sample_regions(id, layout, patch.geometry, IndexCoverage{span(0, 1)},
-        std::array{logical}, {std::move(patch)});
+        std::array{logical}, {{0, std::move(patch)}});
     ASSERT_EQ(store.publish(std::move(update)), PersistedDataPublishResult::published);
     auto another = store.register_reader();
     {
@@ -675,14 +675,16 @@ TEST(SharedBufferedStorage, DuplicateAndOverlappingRegionsKeepIndependentCanonic
     auto seed = store.begin_candidate(1);
     auto geometry = samples(id, order[0], 1, layout).geometry;
     seed.replace_sample_regions(id, layout, geometry, IndexCoverage{span(0, 12)}, order,
-        {samples(id, order[0], 1, layout), samples(id, order[1], 100, layout), samples(id, order[2], 200, layout)});
+        {{0, samples(id, order[0], 1, layout)}, {1, samples(id, order[1], 100, layout)},
+         {2, samples(id, order[2], 200, layout)}});
     ASSERT_EQ(store.publish(std::move(seed)), PersistedDataPublishResult::published);
     auto a = samples(id, order[0], 0, layout), b = samples(id, order[1], 0, layout);
     a.values.clear(); b.values.clear();
     a.set_prepared_windows({samples(id, span(5, 1), 9000, layout)});
     b.set_prepared_windows({samples(id, span(5, 1), 8000, layout)});
     auto update = store.begin_candidate(2);
-    update.replace_sample_regions(id, layout, geometry, IndexCoverage{span(5, 1)}, order, {std::move(a), std::move(b)});
+    update.replace_sample_regions(id, layout, geometry, IndexCoverage{span(5, 1)}, order,
+        {{0, std::move(a)}, {1, std::move(b)}});
     ASSERT_EQ(store.publish(std::move(update)), PersistedDataPublishResult::published);
     (void)store.reclaim_retired();
     auto reader = store.register_reader();
@@ -707,7 +709,7 @@ TEST(SharedBufferedStorage, SparseWindowsShareOnePageAndLeaveUnpreparedPositions
         samples(id, span(20, 1), 20, initial.layout)});
     auto seed = store.begin_candidate(1);
     seed.replace_sample_regions(id, initial.layout, initial.geometry, IndexCoverage{span(10, 1), span(20, 1)},
-        std::array{logical}, {std::move(initial)});
+        std::array{logical}, {{0, std::move(initial)}});
     ASSERT_EQ(store.publish(std::move(seed)), PersistedDataPublishResult::published);
     EXPECT_EQ(store.buffered_storage_usage().live_page_bytes, page);
     auto reader = store.register_reader();
@@ -716,7 +718,7 @@ TEST(SharedBufferedStorage, SparseWindowsShareOnePageAndLeaveUnpreparedPositions
     incoming.set_prepared_windows({samples(id, span(10, 1), 90, incoming.layout)});
     auto update = store.begin_candidate(2);
     update.replace_sample_regions(id, incoming.layout, incoming.geometry, IndexCoverage{span(10, 1)},
-        std::array{logical}, {std::move(incoming)});
+        std::array{logical}, {{0, std::move(incoming)}});
     ASSERT_EQ(store.publish(std::move(update)), PersistedDataPublishResult::published);
     EXPECT_FLOAT_EQ(old->find_sample_region(id, at(10))->at(at(10), 0).value, 10);
     old = {};
@@ -922,7 +924,7 @@ TEST(SharedBufferedStorage, EventEvictionPreservesDuplicateRegionsAndKnownEmptyR
     recorded.events.push_back({.time = at(13), .value = TriggerEvent{}});
     auto seed = store.begin_candidate(1);
     seed.replace_event_regions(events, EventTypeId::trigger, IndexCoverage{span(10, 8)},
-        std::array{span(10, 8), span(10, 8)}, {std::move(active), std::move(empty)});
+        std::array{span(10, 8), span(10, 8)}, {{0, std::move(active)}, {1, std::move(empty)}});
     seed.overwrite(std::move(recorded));
     ASSERT_EQ(store.publish(std::move(seed)), PersistedDataPublishResult::published);
     auto reader = store.register_reader();

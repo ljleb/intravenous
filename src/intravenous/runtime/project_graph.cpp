@@ -3551,6 +3551,19 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
             }
             scope.nodes.push_back(std::move(node));
         }
+        if (generation && !configuration_failure_) {
+            auto const& graph = *generation->graph;
+            for (NodeBundleHandle bundle = 0; bundle < graph.node_bundles.size(); ++bundle) {
+                auto const& candidate = graph.node_bundles.bundle(bundle);
+                if (!candidate.is_subgraph() || candidate.subgraph_kind() != "iv.builtin.timeline") continue;
+                for (auto const& [instance, placement] : generation->placements) {
+                    auto path = project_member_path(graph, placement.root, bundle);
+                    if (!path) continue;
+                    scope.timeline_nodes.push_back({instance, std::move(*path)});
+                    break;
+                }
+            }
+        }
         std::unordered_set<std::string> applied;
         if (generation) {
             applied.insert(

@@ -1214,7 +1214,7 @@ struct BackgroundTransform {
         iv::PropagateReverseCoverageContext<BackgroundTransform>& ctx) const
     {
         reverse_sample_rate = ctx.sample_rate;
-        ctx.input<"samples">().require(ctx.output<"samples-out">().required());
+        ctx.input<"samples">().require(ctx.output<"samples-out">().required_positions());
         ctx.input<"events">().require(ctx.output<"events-out">().required());
     }
 };
@@ -1331,13 +1331,11 @@ struct BackgroundFFTRegionTransform {
         iv::TockCoverageContext<BackgroundFFTRegionTransform>& context) const
     {
         auto input = context.input<"in">().region();
-        auto output = context.output<"out">().region();
-        IV_ASSERT(input.range() == output.range(),
-            "FFT Region test received mismatched ranges");
-        for (std::size_t frame = 0; frame < input.frame_count(); ++frame) {
-            auto source = input.value(frame);
-            auto destination = output.value(frame);
-            std::ranges::copy(source, destination.begin());
+        for (auto run : context.output<"out">().prepared_runs()) {
+            IV_ASSERT(input.range() == run.region_range(),
+                "FFT Region test received mismatched ranges");
+            for (std::size_t slot = 0; slot < run.size(); ++slot)
+                std::ranges::copy(input.at(run.position(slot)), run.value(slot).begin());
         }
     }
 
@@ -1355,7 +1353,7 @@ struct BackgroundFFTRegionTransform {
         iv::PropagateReverseCoverageContext<
             BackgroundFFTRegionTransform>& context) const
     {
-        context.input<"in">().require(context.output<"out">().required());
+        context.input<"in">().require(context.output<"out">().required_positions());
     }
 };
 
@@ -1382,21 +1380,21 @@ static_assert(RegionReverseInputAcceptsRegion<
     BackgroundFFTRegionReverseContext>);
 static_assert(std::same_as<
     decltype(std::declval<BackgroundFFTRegionReverseContext const&>()
-        .template output<"out">().required()),
-    iv::GlobalIndexRange>);
+        .template output<"out">().required_positions()),
+    iv::SamplePositionsView>);
 
 using BackgroundCoverageReverseContext =
     iv::PropagateReverseCoverageContext<BackgroundTransform>;
 
 static_assert(requires(
     BackgroundCoverageReverseContext const& context,
-    iv::IndexCoverage const& coverage) {
-    context.template input<"samples">().require(coverage);
+    iv::SamplePositionsView positions) {
+    context.template input<"samples">().require(positions);
 });
 static_assert(std::same_as<
     decltype(std::declval<BackgroundCoverageReverseContext const&>()
-        .template output<"samples-out">().required()),
-    iv::IndexCoverage const&>);
+        .template output<"samples-out">().required_positions()),
+    iv::SamplePositionsView>);
 
 struct MissingBackgroundTock {
     static constexpr auto outputs()
@@ -2327,6 +2325,8 @@ TEST(BackgroundDspPorts, ForwardAndReverseContextsKeepExactDisjointCoverage)
     EXPECT_EQ(node.forward_sample_rate, 44100u);
 
     auto const sample_demand = index_coverage({{13, 15}, {42, 44}});
+    auto const sample_runs = std::array{iv::SamplePositionRun{index(13), 2}, iv::SamplePositionRun{index(42), 2}};
+    iv::SamplePositionsView const sample_positions{.runs = sample_runs};
     auto const event_demand = index_coverage({{110, 112}});
     RequiredCoverage sample_input;
     RequiredCoverage event_input;
@@ -2334,6 +2334,11 @@ TEST(BackgroundDspPorts, ForwardAndReverseContextsKeepExactDisjointCoverage)
         .data = &sample_input,
         .coverage_value = &sample_coverage,
         .publish_required_value = &publish_required,
+        .publish_sample_positions = +[](void* data, iv::SamplePositionsView positions) {
+            auto& selected = static_cast<RequiredCoverage*>(data)->required;
+            for (auto const run : positions.runs) selected.include({run.first, run.count});
+            for (auto const position : positions.individual_positions) selected.include({position, 1});
+        },
     }};
     std::array event_input_requirements {iv::InputCoverageRequirement{
         .data = &event_input,
@@ -2342,6 +2347,7 @@ TEST(BackgroundDspPorts, ForwardAndReverseContextsKeepExactDisjointCoverage)
     }};
     std::array output_requirements {iv::OutputCoverageRequirement{
         .required_value = &sample_demand,
+        .required_sample_positions = &sample_positions,
     }};
     std::array event_output_requirements {iv::OutputCoverageRequirement{
         .required_value = &event_demand,
@@ -2512,21 +2518,26 @@ TEST(NodeBuildRequest, EmptyPointSourceHasAnEmptyEventGroupWithZeroCapacity)
 namespace {
 using BeatMark = std::pair<std::int64_t, unsigned>;
 
-std::vector<BeatMark> render_beats(
-    iv::Beats const& beats, std::size_t sample_rate, iv::IndexCoverage const& requested)
+std::vector<iv::EventRegionInfo> beat_regions(iv::Beats const& beats, std::size_t sample_rate)
 {
-    std::vector<iv::GlobalIndexRange> regions;
+    std::vector<iv::EventRegionInfo> regions;
     std::array changes{iv::OutputCoverageChange{
         .data = &regions,
-        .publish_regions_value = +[](void* data, iv::GlobalIndexRange const* ranges,
-                                     std::size_t count) {
-            static_cast<std::vector<iv::GlobalIndexRange>*>(data)->assign(ranges, ranges + count);
+        .publish_event_regions_value = +[](void* data, std::span<iv::EventRegionInfo const> published) {
+            static_cast<std::vector<iv::EventRegionInfo>*>(data)->assign(published.begin(), published.end());
         },
     }};
     iv::PropagateForwardCoverageContext<iv::Beats> forward{
         .event_outputs = changes, .sample_rate = sample_rate};
     beats.propagate_forward_coverage(forward);
+    return regions;
+}
 
+std::vector<BeatMark> render_beats(
+    iv::Beats const& beats, std::size_t sample_rate, iv::IndexCoverage const& requested)
+{
+    std::vector<iv::GlobalIndexRange> regions;
+    for (auto const& region : beat_regions(beats, sample_rate)) regions.push_back(region.range);
     std::vector<BeatMark> marks;
     std::array outputs{iv::TockEventOutputPort{
         .data = &marks,
@@ -2541,6 +2552,7 @@ std::vector<BeatMark> render_beats(
     iv::TockCoverageContext<iv::Beats> context{
         .event_outputs = outputs, .sample_rate = sample_rate};
     beats.tock_coverage(context);
+    std::ranges::sort(marks);
     return marks;
 }
 
@@ -2588,10 +2600,39 @@ TEST(Beats, RejectsInvalidTempoMeterAndSubdivisionDensity)
         std::invalid_argument);
 }
 
+TEST(Beats, ComputesSelectedIndicesOfOneSubdivisionWithoutPositionalDemand)
+{
+    iv::Beats beats{120, 4, {2, 2}};
+    auto const regions = beat_regions(beats, 48000);
+    auto const selected = std::ranges::find_if(regions, [](auto const& region) {
+        return region.range.begin == index(0)
+            && std::get<iv::BeatEvent>(*region.index->constant_value).depth == 2;
+    });
+    ASSERT_NE(selected, regions.end());
+    iv::IndexRun const demand{0, 3, 4};
+    EXPECT_TRUE(demand.fits(selected->index->event_count));
+    std::array<iv::TimedEvent, 3> events{};
+    std::array<std::uint8_t, 3> written{};
+    std::array selected_runs{iv::EventRunStorageView{
+        .region = iv::details::RegionRefAccess::make(1, 0, 0),
+        .range = selected->range, .run = demand, .slots = events, .written = written,
+        .constant_value = &*selected->index->constant_value, .type = iv::EventTypeId::beat}};
+    iv::IndexCoverage const empty;
+    std::array outputs{iv::TockEventOutputPort{.requested_coverage_value = &empty, .event_runs = selected_runs}};
+    iv::TockCoverageContext<iv::Beats> context{.event_outputs = outputs, .sample_rate = 48000};
+    beats.tock_coverage(context);
+    EXPECT_EQ(written, (std::array<std::uint8_t, 3>{1, 1, 1}));
+    EXPECT_EQ(events[0].time, index(12000));
+    EXPECT_EQ(events[1].time, index(108000));
+    EXPECT_EQ(events[2].time, index(204000));
+    for (auto const& event : events) EXPECT_EQ(std::get<iv::BeatEvent>(event.value).depth, 2);
+}
+
 // Computes one demanded curve window. The point input has one logical Region, clip,
 // whose events are sorted relative to clip.begin.
 std::array<float, 8> compute_curve(
-    std::vector<iv::TimedEvent> const& events, iv::GlobalIndexRange clip, iv::GlobalIndex begin, std::size_t frames = 8)
+    std::vector<iv::TimedEvent> const& events, iv::GlobalIndexRange clip, iv::GlobalIndex begin,
+    std::size_t frames = 8, std::uint64_t step = 1)
 {
     struct Points {
         std::vector<iv::TimedEvent> const* events;
@@ -2599,13 +2640,16 @@ std::array<float, 8> compute_curve(
     } const points{&events, clip.begin};
     auto const coverage = clip.empty() ? iv::IndexCoverage{} : iv::IndexCoverage{clip};
     std::array<iv::Sample, 8> samples{};
-    iv::GlobalIndexRange const window{begin, frames};
-    iv::IndexCoverage const requested{window};
+    iv::SamplePositionRun const run{begin, frames, step};
+    iv::GlobalIndexRange const window{begin, (frames - 1) * step + 1};
+    iv::IndexCoverage requested;
+    for (std::size_t slot = 0; slot < frames; ++slot) requested.include({run.position(slot), 1});
     iv::ContinuousRegionStorageView descriptor{
         .storage = reinterpret_cast<std::byte*>(samples.data()), .range = window,
         .geometry = *iv::continuous_value_storage_geometry(
             iv::continuous_value_type_id_v<iv::Sample>, std::nullopt),
-        .channel_layout = iv::mono_planar_channel_layout};
+        .channel_layout = iv::mono_planar_channel_layout,
+        .sample_positions = step == 1 ? std::nullopt : std::optional{run}};
     std::array outputs{iv::TockContinuousOutputPort{
         .regions = &descriptor, .region_count = 1, .requested_coverage_value = &requested,
         .geometry = descriptor.geometry}};
@@ -2650,6 +2694,19 @@ TEST(NodeBuildRequest, CurveInterpolatesNeighborsAndHoldsTheLastPointTowardTheDi
     auto const values = compute_curve(events, range(0, 5), index(0));
     for (std::size_t i = 0; i < values.size(); ++i) EXPECT_FLOAT_EQ(values[i], expected[i]) << i;
 
+}
+
+TEST(NodeBuildRequest, CurveRefreshesItsSegmentWhenAStridedRunSkipsAControlPoint)
+{
+    std::vector<iv::TimedEvent> const points{
+        {.time = index(0), .value = iv::CurvePointEvent{iv::Sample{1}, iv::CurveInterpolation::hold, 0}},
+        {.time = index(2), .value = iv::CurvePointEvent{iv::Sample{4}, iv::CurveInterpolation::hold, 0}},
+        {.time = index(5), .value = iv::CurvePointEvent{iv::Sample{7}, iv::CurveInterpolation::hold, 0}},
+    };
+    auto const values = compute_curve(points, range(0, 6), index(0), 3, 3);
+    EXPECT_FLOAT_EQ(values[0], 1);
+    EXPECT_FLOAT_EQ(values[1], 4);
+    EXPECT_FLOAT_EQ(values[2], 7);
 }
 
 TEST(NodeBuildRequest, CurveInterpolatesTheLastPointWithTheFirstAcrossTheWrap)

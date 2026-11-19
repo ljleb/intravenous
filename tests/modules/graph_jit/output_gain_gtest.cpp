@@ -30,13 +30,13 @@ bool activate(GraphExecutor& executor, GlobalIndex at)
     return false;
 }
 std::shared_ptr<ObservationWindowQuery> query_window(GraphExecutor& executor,
-    CompiledGraph const& graph, NodeBundlePortId port, std::int64_t begin = 4)
+    CompiledGraph const& graph, NodeBundlePortId port, std::int64_t begin = 4, std::size_t points = 4)
 {
     auto query = std::make_shared<ObservationWindowQuery>();
     query->configured_generation = graph.configured_generation.value_or(graph.project_generation);
     query->port = port;
     query->operation = &observation_details::sample_operations.back();
-    query->window = {index(begin), 4, 4};
+    query->window = {index(begin), 4, points};
     ObservationCollectRequest collection{.windows = {query}};
     executor.handle_observation_collect(collection);
     auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -259,6 +259,18 @@ TEST_F(GraphJitRuntimeFixture, TockOutputGainPreservesLogicalCoverageAndScalesPr
     ASSERT_EQ(query->result.status, ObservationWindowResult::Status::ready) << query->result.error;
     // [4,8) is genuinely absent: gain must not invent values or Regions.
     EXPECT_TRUE(query->result.regions.empty());
+    auto sparse = query_window(executor, *compiled.compiled_graph, *output, 0, 2);
+    ASSERT_TRUE(sparse->complete.load());
+    ASSERT_EQ(sparse->result.status, ObservationWindowResult::Status::ready) << sparse->result.error;
+    ASSERT_EQ(sparse->result.regions.size(), 1u);
+    auto const& values = sparse->result.regions[0].values;
+    ASSERT_EQ(values.size(), 2u);
+    EXPECT_EQ(values[0].first, index(0));
+    EXPECT_EQ(values[1].first, index(3));
+    ASSERT_TRUE(values[0].second.captured);
+    ASSERT_TRUE(values[1].second.captured);
+    EXPECT_FLOAT_EQ(values[1].second.load<float>(), 3.f);
+
     auto covered = query_window(executor, *compiled.compiled_graph, *output, 0);
     ASSERT_TRUE(covered->complete.load());
     ASSERT_EQ(covered->result.status, ObservationWindowResult::Status::ready) << covered->result.error;

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <iterator>
@@ -48,6 +49,7 @@ namespace iv {
     struct MidiEvent {
         std::array<std::uint8_t, 3> bytes {};
         std::uint8_t size = 0;
+        constexpr bool operator==(MidiEvent const&) const noexcept = default;
 
         static constexpr size_t average_event_size_bytes()
         {
@@ -56,6 +58,7 @@ namespace iv {
     };
 
     struct TriggerEvent {
+        constexpr bool operator==(TriggerEvent const&) const noexcept = default;
         static constexpr size_t average_event_size_bytes()
         {
             return 1;
@@ -64,6 +67,7 @@ namespace iv {
 
     struct BoundaryEvent {
         bool is_begin = false;
+        constexpr bool operator==(BoundaryEvent const&) const noexcept = default;
 
         static constexpr size_t average_event_size_bytes()
         {
@@ -75,6 +79,10 @@ namespace iv {
     // consumer, so ordinary event transformations can operate on these points.
     struct SampleEvent {
         Sample value{};
+        constexpr bool operator==(SampleEvent const& other) const noexcept
+        {
+            return std::bit_cast<std::uint32_t>(value.value) == std::bit_cast<std::uint32_t>(other.value.value);
+        }
         static constexpr size_t average_event_size_bytes() { return sizeof(Sample); }
     };
 
@@ -85,6 +93,12 @@ namespace iv {
         Sample value{};
         CurveInterpolation interpolation = CurveInterpolation::bezier;
         float tension = 1;
+        constexpr bool operator==(CurvePointEvent const& other) const noexcept
+        {
+            return SampleEvent{value} == SampleEvent{other.value}
+                && interpolation == other.interpolation
+                && std::bit_cast<std::uint32_t>(tension) == std::bit_cast<std::uint32_t>(other.tension);
+        }
         static constexpr size_t average_event_size_bytes() { return sizeof(CurvePointEvent); }
     };
 
@@ -92,10 +106,12 @@ namespace iv {
         // Depth zero is a bar line, one is a beat, and higher values are
         // successive subdivisions of the beat.
         std::uint8_t depth = 0;
+        constexpr bool operator==(BeatEvent const&) const noexcept = default;
         static constexpr size_t average_event_size_bytes() { return sizeof(BeatEvent); }
     };
 
     struct EmptyEvent {
+        constexpr bool operator==(EmptyEvent const&) const noexcept = default;
         static constexpr size_t average_event_size_bytes()
         {
             return 0;
@@ -147,6 +163,14 @@ namespace iv {
 
     using Event = std::variant<
         MidiEvent, TriggerEvent, BoundaryEvent, EmptyEvent, SampleEvent, CurvePointEvent, BeatEvent>;
+
+    [[nodiscard]] constexpr bool event_matches_type(Event const& value, EventTypeId type) noexcept
+    {
+        constexpr std::array<EventTypeId, std::variant_size_v<Event>> types{
+            EventTypeId::midi, EventTypeId::trigger, EventTypeId::boundary, EventTypeId::empty,
+            EventTypeId::sample, EventTypeId::curve_point, EventTypeId::beat};
+        return !value.valueless_by_exception() && types[value.index()] == type;
+    }
 
     struct TimedEvent {
         GlobalIndex time{};

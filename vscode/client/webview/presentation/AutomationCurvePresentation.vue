@@ -6,17 +6,18 @@ import { automationSampleOffset, automationValueFraction, automationValueGuides,
     zoomAutomationValueAxis, type AutomationPoint, type AutomationPointPosition, type AutomationValueAxis, type AutomationValueDisplay,
     type AutomationCurveView, type AutomationValueRuler, type AutomationValueZoom, type CurveInterpolation } from "../../src/automationCurveGeometry";
 import { addressKey, type NodeAddress } from "../../src/graphScope";
-import { automationBoundTracks, sampleAutomationPreview, type AutomationBoundInput,
+import { automationBoundWindowCount, automationBoundWindows, refinedAutomationBoundTracks, retainAutomationBoundWindows,
+    sampleAutomationPreview, type AutomationBoundInput,
     type BoundSample } from "../../src/automationBoundInputs";
 import type { ObservationWindowResult } from "../../src/observations";
 import { sampleWindow } from "../../src/sampleWaveform";
-import { usePortObservation } from "./observationContext";
+import { useObservations, usePortObservation } from "./observationContext";
 import { rightClickHint } from "../../src/statusBarText";
 import { useOptionalGraphEditor } from "../graph/context";
 import { automationPointStatus } from "../statusHints";
-import { automationTimelineTicks } from "../timeline/geometry";
+import { automationTimelineTicks, snapTimelineSample } from "../timeline/geometry";
 import RulerGraduations from "../timeline/RulerGraduations.vue";
-import { useTimelineNavigation, useTimelineWindow, type LaneValueNavigation } from "../timeline/timelineContext";
+import { useTimelineMarks, useTimelineNavigation, useTimelineWindow, type LaneValueNavigation } from "../timeline/timelineContext";
 import NodeLane from "./NodeLane.vue";
 import Knob from "./Knob.vue";
 import LaneSettings from "./LaneSettings.vue";
@@ -75,27 +76,32 @@ const observationWindow = computed(() => {
     return visible.value && timeline && sampleWindow(timeline.beginSeconds, timeline.endSeconds, curve.value?.sampleRate, width.value)
         || undefined;
 });
+const boundWindows = computed(() => observationWindow.value ? automationBoundWindows(observationWindow.value) : []);
+const observations = useObservations();
+const observationEpoch = computed(() => {
+    void observations?.version.value;
+    return observations?.values.windowSnapshot?.epoch;
+});
 function observeBound(side: AutomationBoundInput) {
     const sourceKey = computed(() => boundPort(side)?.connectivity === "connected" && curve.value?.sampleRate && key.value
         ? `${key.value}:${curve.value.sampleRate}` : null);
-    const observation = usePortObservation(() => {
-        const address = node.value.address, window = observationWindow.value;
-        if (address && window && sourceKey.value)
-            return { source: { node: address, kind: "input", member: side }, operation: "waveform", window };
-    });
-    const current = computed(() => {
-        const result = observation.latestWindow.value;
-        return result && !result.outdated && result.status !== "pending" ? result : undefined;
-    });
-    const retained = computed<{ key: string; result: ObservationWindowResult } | undefined>((previous) => {
-        const identity = sourceKey.value;
-        if (!identity) return;
-        if (current.value) return { key: identity, result: current.value };
-        return previous?.key === identity ? previous : undefined;
+    const tiles = Array.from({ length: automationBoundWindowCount }, (_, slot) => usePortObservation(() => {
+        const address = node.value.address, request = boundWindows.value[slot];
+        if (address && request && sourceKey.value)
+            return { source: { node: address, kind: "input", member: side }, operation: "waveform", ...request };
+    }));
+    const retained = computed<{ key: string; results: readonly ObservationWindowResult[] } | undefined>((previous) => {
+        const epoch = observationEpoch.value;
+        if (!sourceKey.value || epoch === undefined || !boundWindows.value.length) return;
+        const key = JSON.stringify([sourceKey.value, epoch]);
+        const results = retainAutomationBoundWindows(previous?.key === key ? previous.results : [],
+            tiles.map((tile) => tile.latestWindow.value), boundWindows.value);
+        return previous?.key === key && previous.results === results ? previous : { key, results };
     });
     return computed(() => {
-        const origin = timelineWindow.value?.beginSeconds, rate = curve.value?.sampleRate;
-        return origin !== undefined && rate ? automationBoundTracks(retained.value?.result, origin, rate) : [];
+        const timeline = timelineWindow.value, rate = curve.value?.sampleRate;
+        return timeline && rate ? refinedAutomationBoundTracks(retained.value?.results ?? [],
+            timeline.beginSeconds, timeline.spanSeconds, rate, boundWindows.value[0]?.window) : [];
     });
 }
 const lowerBound = observeBound("min"), upperBound = observeBound("max");
@@ -237,10 +243,15 @@ function pointStatus(point: AutomationPoint) {
     const { id, sampleIndex, seconds, value } = point;
     return automationPointStatus({ id, sampleIndex, seconds, value });
 }
+const timelineMarks = useTimelineMarks();
 function pointerAxes(): CurveAxes | null {
     if (!surface.value || !axes.value) return null;
     const rect = surface.value.getBoundingClientRect();
-    return { ...axes.value, left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+    const marks = timelineMarks?.value ?? [];
+    const tolerance = 6 * (curve.value?.sampleRate ?? 0) * (axes.value.spanSeconds ?? axes.value.end - axes.value.begin)
+        / Math.max(1, rect.width);
+    return { ...axes.value, left: rect.left, top: rect.top, width: rect.width, height: rect.height,
+        snapTime: (index) => snapTimelineSample(index, marks, tolerance) };
 }
 function pointCursorPosition(control: SVGElement | null, target: NodeAddress, id: number) {
     const svg = surface.value;

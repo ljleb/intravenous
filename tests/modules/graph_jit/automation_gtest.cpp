@@ -264,6 +264,40 @@ TEST(AutomationPointSource, MergesExactSampleIndicesWithLegacySecondsAcrossTheSi
     EXPECT_EQ(adjacent.range(rate), (iv::GlobalIndexRange{iv::automation::point_index(inputs[2], rate), 2}));
 }
 
+TEST(AutomationPointSource, IndexedReadKeepsCoincidentPointsInOrderAcrossTheSeam)
+{
+    using Session = std::unique_ptr<iv::details::BuilderSession,
+        decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(iv::details::iv_builder_session_create(), iv::details::iv_builder_session_destroy);
+    iv::GraphBuilder graph(session.get());
+    using iv::automation::Point;
+    using iv::automation::SampleIndex;
+    auto const inputs = std::array{
+        Point{.id = 1, .value = 1, .sample_index = SampleIndex{"-9223372036854775808"}},
+        Point{.id = 2, .value = 2, .sample_index = SampleIndex{"-9223372036854775808"}},
+        Point{.id = 3, .value = 3, .sample_index = SampleIndex{"9223372036854775807"}},
+    };
+    iv::automation::PointSource const source(graph.immutable_array<Point>(inputs));
+    auto const region = source.range(48000);
+    std::array<iv::TimedEvent, 2> events{};
+    std::array<std::uint8_t, 2> written{};
+    std::array runs{iv::EventRunStorageView{
+        .region = iv::details::RegionRefAccess::make(1, 0, 0), .range = region,
+        .run = {1, 2}, .slots = events, .written = written, .type = iv::EventTypeId::curve_point,
+    }};
+    iv::IndexCoverage const positional_demand;
+    std::array outputs{iv::TockEventOutputPort{
+        .requested_coverage_value = &positional_demand, .event_runs = runs,
+    }};
+    iv::TockCoverageContext<iv::automation::PointSource> context{.event_outputs = outputs, .sample_rate = 48000};
+    source.tock_coverage(context);
+    EXPECT_EQ(written, (std::array<std::uint8_t, 2>{1, 1}));
+    EXPECT_EQ(events[0].time, events[1].time);
+    EXPECT_EQ(events[0].time.signed_value(), INT64_MIN);
+    EXPECT_FLOAT_EQ(std::get<iv::CurvePointEvent>(events[0].value).value.value, 1.0f);
+    EXPECT_FLOAT_EQ(std::get<iv::CurvePointEvent>(events[1].value).value.value, 2.0f);
+}
+
 TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPointLists)
 {
     using Session = std::unique_ptr<iv::details::BuilderSession,

@@ -643,6 +643,13 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                 found->target_port = planned.target_port;
             }
             append_unique(found->connections, connection);
+            for (auto& origin : planned.region_projections) {
+                if (std::ranges::none_of(found->region_projections, [&](auto const& existing) {
+                        return existing.connection == origin.connection;
+                    })) {
+                    found->region_projections.push_back(std::move(origin));
+                }
+            }
             auto& storage =
                 result.ports[found->output];
             append_unique(storage.connections, connection);
@@ -1094,6 +1101,13 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                     };
                     materialization.target_channels =
                         materialization_target_channels;
+                    if (target_subset.access == PlannedDestinationAccess::random_access) {
+                        auto& origin = materialization.region_projections.emplace_back(connection_index);
+                        for (auto const* projection : projections) {
+                            origin.projections.push_back(static_cast<std::size_t>(
+                                projection - connection->projection_contributions.data()));
+                        }
+                    }
                     std::vector<std::optional<std::size_t>> local_source_index(
                         connection->source_channel_timings.size());
                     for (auto const source_index : source_indices) {

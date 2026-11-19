@@ -1,4 +1,5 @@
 #include <intravenous/runtime/observation_types.h>
+#include <intravenous/runtime/event_observation_window.h>
 #include <intravenous/runtime/observation_window.h>
 #include <intravenous/runtime/observations.h>
 #include <intravenous/runtime/socket_rpc_routes.h>
@@ -20,6 +21,84 @@ template<class T> T value_at(iv::ObservationResultData const& result, std::size_
     T value;
     std::memcpy(&value, result.bytes.data() + offset, sizeof(value));
     return value;
+}
+
+TEST(Observations, BeatGridFindsIrregularPositionsByIndexAndKeepsStridePhase)
+{
+    struct PublishedGrid {
+        iv::GlobalIndexRange range{iv::GlobalIndex{}, 1000000000000ULL};
+        iv::EventRegionInfo region{range, iv::IndexedEventRegionInfo{1000000, iv::BeatEvent{0}}};
+        std::size_t probes = 0;
+    } grid;
+    // Each pair is coincident and the distance between pairs grows.
+    auto const time_of = [](std::uint64_t index) {
+        return iv::GlobalIndex::from_bits((index / 2) * (index / 2));
+    };
+    iv::BackgroundDemandSelection const candidate{
+        .data = &grid,
+        .output_regions = +[](void const* data, iv::graph_jit::BackgroundPortIndex) {
+            return std::span{&static_cast<PublishedGrid const*>(data)->range, 1};
+        },
+        .event_regions = +[](void const* data, iv::graph_jit::BackgroundPortIndex) {
+            return std::span{&static_cast<PublishedGrid const*>(data)->region, 1};
+        },
+        .read_events = +[](void* data, std::span<iv::IndexedRegionDemand const> requests) {
+            auto& grid = *static_cast<PublishedGrid*>(data);
+            std::vector<std::vector<iv::TimedEvent>> result;
+            for (auto const& request : requests) {
+                auto const index = request.runs.front().first;
+                ++grid.probes;
+                auto const pair = index / 2;
+                result.push_back({{iv::GlobalIndex::from_bits(pair * pair), iv::BeatEvent{0}}});
+            }
+            return result;
+        },
+    };
+    iv::graph_jit::BackgroundEvaluationPlan const plan;
+    iv::graph_jit::PublicEventCoverageInputView const input{.sources = {{.output = 0}}};
+    iv::ObservationWindowQuery query;
+    query.window = {.begin = time_of(16000), .length = 10000000000ULL, .points = 16, .max_depth = 0};
+    iv::CoveragePropagationRequest demand;
+    iv::BeatGridObservation observation{query, input, plan, query.window.points};
+    observation.select(candidate, demand, 8192, 8192);
+
+    ASSERT_TRUE(demand.output_demands.empty());
+    ASSERT_EQ(demand.indexed_output_demands.size(), 1u);
+    auto const run = demand.indexed_output_demands.front().runs.front();
+    ASSERT_GT(run.count, 0u);
+    EXPECT_LE(run.count, query.window.points);
+    EXPECT_LE(grid.probes, 40u);
+    EXPECT_TRUE(std::has_single_bit(run.step));
+    EXPECT_EQ(run.first % run.step, 0u);
+    iv::GlobalIndexRange const viewport{query.window.begin, query.window.length};
+    EXPECT_TRUE(viewport.contains(time_of(run.first)));
+    EXPECT_TRUE(viewport.contains(time_of(run.first + (run.count - 1) * run.step)));
+    if (run.first >= run.step) EXPECT_FALSE(viewport.contains(time_of(run.first - run.step)));
+}
+
+TEST(Observations, WaveformReuseSeparatesEqualRangeRegionsAndUnavailablePoints)
+{
+    auto const first = iv::GlobalIndex::from_bits(10);
+    auto const second = first.advanced_by(1);
+    auto const gap = first.advanced_by(2);
+    iv::ObservationCaptureState value1, value2;
+    value1.store(1.0f);
+    value2.store(2.0f);
+    std::array const regions{
+        iv::ObservationWindowRegion{{first, 2}, {{first, value1}, {second, value1}}, {0}},
+        iv::ObservationWindowRegion{{first, 2}, {{first, value2}, {second, {}}}, {1}},
+    };
+    std::array const positions{first, second, gap};
+    iv::ObservationWindowReuse const cache{{{positions, regions}}};
+    std::array<std::size_t, 1> const first_key{0}, second_key{1};
+    EXPECT_TRUE(cache.contains(first));
+    EXPECT_FALSE(cache.contains(second));
+    EXPECT_TRUE(cache.contains(gap));
+    EXPECT_FALSE(cache.contains(gap.advanced_by(1)));
+    ASSERT_NE(cache.value(first_key, first), nullptr);
+    ASSERT_NE(cache.value(second_key, first), nullptr);
+    EXPECT_FLOAT_EQ(cache.value(first_key, first)->load<float>(), 1.0f);
+    EXPECT_FLOAT_EQ(cache.value(second_key, first)->load<float>(), 2.0f);
 }
 }
 
@@ -442,6 +521,33 @@ TEST_F(ObservationService, WindowScopesShareCancelableQueriesWithoutCreatingLive
     EXPECT_TRUE(pending->canceled.load(std::memory_order_acquire));
 }
 
+TEST_F(ObservationService, VisibleWindowPromotesSharedPrefetchWithoutRestartingIt)
+{
+    auto window = interest("prefetch");
+    window.operation = "waveform";
+    window.window = ObservationWindow{GlobalIndex{}, 64, 16};
+    window.prefetch = true;
+    ASSERT_TRUE(reconcile("a", "lane", {window}).error.empty());
+    collect();
+    ASSERT_EQ(executor.windows.size(), 1u);
+    auto const query = executor.windows.front();
+    EXPECT_TRUE(query->prefetch.load());
+
+    auto visible = window;
+    visible.id = "visible";
+    visible.prefetch = false;
+    ASSERT_TRUE(reconcile("b", "lane", {visible}).error.empty());
+    collect();
+    EXPECT_EQ(executor.windows.size(), 1u);
+    EXPECT_FALSE(query->prefetch.load());
+    EXPECT_FALSE(query->canceled.load());
+
+    ASSERT_TRUE(reconcile("b", "lane", {}).error.empty());
+    collect();
+    EXPECT_EQ(executor.windows.size(), 1u);
+    EXPECT_TRUE(query->prefetch.load());
+}
+
 TEST_F(ObservationService, OnlyNewerExecutionDataInvalidatesWindowContents)
 {
     auto window = interest(); window.operation = "waveform";
@@ -463,6 +569,7 @@ TEST_F(ObservationService, OnlyNewerExecutionDataInvalidatesWindowContents)
 
     executor.data_version = 3;
     collect();
+    EXPECT_EQ((*delivery.batches[0].payload)["dataVersion"], "3");
     EXPECT_EQ((*delivery.batches[0].payload)["scopes"][0]["windows"][0]["status"], "ready");
     EXPECT_EQ((*delivery.batches[0].payload)["scopes"][0]["windows"][0]["outdated"], true);
     collect(); collect(); collect();
@@ -509,6 +616,16 @@ TEST(Observations, WindowProjectionPreservesGapsOverlapsAndUnavailableValues)
     project_observation_window(query, {index(0), 12}, positions, logical, &view);
     EXPECT_FALSE(query.result.regions[0].values[0].second.captured);
     EXPECT_TRUE(query.result.regions[1].values[0].second.captured);
+
+    query.result.regions.clear();
+    view.regions = std::span{views}.last(1);
+    std::array<std::size_t, 1> prepared{2};
+    project_observation_window(query, {index(0), 12}, positions, logical, &view,
+        false, std::span<std::size_t const>{prepared});
+    ASSERT_EQ(query.result.regions.size(), 3u);
+    EXPECT_FALSE(query.result.regions[1].values[0].second.captured);
+    EXPECT_TRUE(query.result.regions[2].values[0].second.captured);
+    EXPECT_FLOAT_EQ(query.result.regions[2].values[0].second.load<float>(), -1);
 }
 
 TEST(Observations, WindowRpcPreservesSignedIndicesAndBoundsTheRequest)
@@ -521,6 +638,12 @@ TEST(Observations, WindowRpcPreservesSignedIndicesAndBoundsTheRequest)
     ASSERT_TRUE(request->interests[0].window);
     EXPECT_EQ(request->interests[0].window->begin.signed_value(), -50);
     EXPECT_EQ(request->interests[0].window->length, 1000000000u);
+    message["params"]["interests"][0]["prefetch"] = true;
+    auto const prefetched = iv::parse_socket_rpc_request(message.dump());
+    EXPECT_TRUE(std::get<iv::ReconcileObservationsRequest>(prefetched.payload).interests[0].prefetch);
+    message["params"]["interests"][0]["prefetch"] = "true";
+    EXPECT_THROW(iv::parse_socket_rpc_request(message.dump()), std::invalid_argument);
+    message["params"]["interests"][0]["prefetch"] = true;
     message["params"]["interests"][0]["window"]["points"] = 513u;
     EXPECT_THROW(iv::parse_socket_rpc_request(message.dump()), std::invalid_argument);
     message["params"]["interests"][0]["window"]["points"] = 1u;

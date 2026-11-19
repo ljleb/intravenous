@@ -86,7 +86,7 @@ export class PresentationObservations {
         const previous = this.explicit.get(id);
         const sameSource = previous && next && observationSourceKey(previous.source) === observationSourceKey(next.source)
             && previous.operation === next.operation;
-        if (sameSource && sameObservationWindow(previous.window, next.window)) return;
+        if (sameSource && sameObservationWindow(previous.window, next.window) && previous.prefetch === next.prefetch) return;
         if (next) this.explicit.set(id, next);
         else if (!this.explicit.delete(id)) return;
         if (sameSource && previous.window && next.window) { this.scheduleWindows(); return; }
@@ -128,7 +128,7 @@ export class PresentationObservations {
     private explicitInterests(): ObservationInterest[] {
         // Explicit readers can receive an unavailable or pending result even
         // when discovery does not advertise a capability.
-        return this.visible ? Array.from(this.explicit, ([id, interest]) => ({ ...interest, id })).slice(0, 64) : [];
+        return this.visible ? Array.from(this.explicit, ([id, interest]) => ({ ...interest, id })) : [];
     }
     private async discover(): Promise<void> {
         const epoch = this.epoch;
@@ -150,7 +150,7 @@ export class PresentationObservations {
             if (epoch !== this.epoch || this.disposed) return;
             const explicit = this.explicitInterests();
             const capabilities: Capability[] = [];
-            const budget = 64 - explicit.length;
+            const budget = Math.max(0, 64 - explicit.filter((interest) => !interest.prefetch).length);
             const stateNodes = new Set<number>();
             for (const capability of response.capabilities) {
                 if (!budget) continue;
@@ -218,7 +218,9 @@ export class PresentationObservations {
         this.capabilities.value = capabilities;
     }
     private updateInterests(explicit: ObservationInterest[]): Promise<void> {
-        this.desired = [...explicit, ...this.capabilities.value.flatMap<ObservationInterest>((capability) => {
+        const visible = explicit.filter((interest) => !interest.prefetch);
+        const prefetch = explicit.filter((interest) => interest.prefetch);
+        this.desired = [...visible, ...this.capabilities.value.flatMap<ObservationInterest>((capability) => {
             if (capability.delivery === "window") {
                 const node = [...this.nodes.values()].find((node) => node.visible
                     && addressKey(node.node) === addressKey(capability.source.node) && node.window);
@@ -226,7 +228,7 @@ export class PresentationObservations {
                     operation: capability.operation, window: node.window }] : [];
             }
             return [{ id: capability.id, source: capability.source, operation: capability.operation }];
-        })];
+        }), ...prefetch].slice(0, 64);
         return this.reconcile(this.desired);
     }
     private reconcile(interests: ObservationInterest[]): Promise<void> {

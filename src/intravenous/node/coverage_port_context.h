@@ -6,6 +6,7 @@
 
 #include <intravenous/coverage.h>
 #include <intravenous/event_sequence.h>
+#include <intravenous/node/region_selection.h>
 #include <intravenous/node/static_port_access.h>
 #include <intravenous/node/traits.h>
 
@@ -84,6 +85,12 @@ struct TockContinuousOutputPort {
     {
         return {regions, region_count};
     }
+
+    template<RegisteredContinuousValue Value>
+    [[nodiscard]] auto prepared_runs() const noexcept
+    {
+        return details::continuous_prepared_runs<Value, true>(region_views());
+    }
 };
 
 // Each entry is one logical Region. Entries may overlap or have identical
@@ -101,6 +108,7 @@ struct RandomAccessEventInputPort {
     ForEachEvent for_each_event = nullptr;
     EventNeighbors (*find_neighbors)(void const*, std::size_t, GlobalIndex, EventNeighborMode) = nullptr;
     IndexCoverage const* prepared_coverage_value = nullptr;
+    std::span<EventRunStorageView const> event_runs{};
 
     [[nodiscard]] IndexCoverage const& prepared_coverage() const noexcept {
         return background_port_details::bound_coverage(
@@ -149,6 +157,7 @@ struct TockEventOutputPort {
     std::size_t region_count = 0;
     IndexCoverage const* requested_coverage_value = nullptr;
     void (*write_event)(void*, std::size_t, TimedEvent const&) = nullptr;
+    std::span<EventRunStorageView const> event_runs{};
 
     [[nodiscard]] IndexCoverage const& requested_coverage() const noexcept
     {
@@ -223,6 +232,7 @@ struct OutputCoverageChange {
     PublishRegions publish_regions_value = nullptr;
     PublishCoverage publish_coverage_value = nullptr;
     PublishChange publish_changed_value = nullptr;
+    void (*publish_event_regions_value)(void*, std::span<EventRegionInfo const>) = nullptr;
 
     [[nodiscard]] IndexCoverage const& previous_coverage() const noexcept
     {
@@ -279,10 +289,19 @@ struct OutputCoverageChange {
 
 struct OutputCoverageRequirement {
     IndexCoverage const* required_value = nullptr;
+    SamplePositionsView const* required_sample_positions = nullptr;
+    std::span<RegionSelection const> const* required_region_selections = nullptr;
+    void* selection_owner = nullptr;
+    std::span<RegionSelection const> (*sample_selections)(void*) = nullptr;
 
     [[nodiscard]] IndexCoverage const& required() const noexcept
     {
         return background_port_details::bound_coverage(required_value);
+    }
+
+    [[nodiscard]] SamplePositionsView required_positions() const noexcept
+    {
+        return required_sample_positions ? *required_sample_positions : SamplePositionsView{};
     }
 };
 
@@ -295,6 +314,10 @@ struct InputCoverageRequirement {
 
     void* read_owner = nullptr;
     void (*before_read)(void*) = nullptr;
+    void (*publish_sample_positions)(void*, SamplePositionsView) = nullptr;
+    void (*publish_region_selection)(void*, RegionSelection) = nullptr;
+    // For generated transforms that publish the input Regions in the same order.
+    void (*publish_corresponding_sample_requirements)(void*, OutputCoverageRequirement const&) = nullptr;
 
     [[nodiscard]] IndexCoverage const& coverage() const
     {
@@ -314,11 +337,18 @@ struct InputCoverageRequirement {
     {
         require(IndexCoverage{required});
     }
+
+    void require_samples(SamplePositionsView required) const
+    {
+        if (required.empty()) return;
+        IV_ASSERT(publish_sample_positions, "background reverse context has no sample requirement sink");
+        publish_sample_positions(data, required);
+    }
 };
 
 namespace details {
 
-template<InputAccessKind Access>
+template<InputAccessKind Access, PortKind Kind = PortKind::event>
 class StaticInputCoverageRequirement {
     InputCoverageRequirement const& requirement_;
 
@@ -339,13 +369,43 @@ public:
     }
 
     void require(IndexCoverage const& required) const
-    requires (Access == InputAccessKind::coverage)
+    requires (Access == InputAccessKind::coverage && Kind == PortKind::event)
     {
         requirement_.require(required);
     }
+
+    void require(SamplePositionsView required) const
+    requires (Kind == PortKind::sample)
+    {
+        requirement_.require_samples(required);
+    }
+
+    void require(SamplePositionRun run) const
+    requires (Kind == PortKind::sample)
+    {
+        require(SamplePositionsView{std::span{&run, 1}, {}});
+    }
+
+    void require(std::span<GlobalIndex const> positions) const
+    requires (Kind == PortKind::sample)
+    {
+        require(SamplePositionsView{{}, positions});
+    }
+
+    void require(GlobalIndex position) const
+    requires (Kind == PortKind::sample)
+    {
+        require(std::span{&position, 1});
+    }
+
+    void require(RegionSelection selection) const
+    {
+        IV_ASSERT(requirement_.publish_region_selection, "reverse context has no Region selection sink");
+        requirement_.publish_region_selection(requirement_.data, selection);
+    }
 };
 
-template<OutputProductionKind Production>
+template<OutputProductionKind Production, PortKind Kind = PortKind::event>
 class StaticOutputCoverageRequirement {
     OutputCoverageRequirement const& requirement_;
 
@@ -356,19 +416,34 @@ public:
     {}
 
     [[nodiscard]] IndexCoverage const& required() const noexcept
-    requires (Production == OutputProductionKind::coverage
-        || Production == OutputProductionKind::sequential)
+    requires (Kind == PortKind::event && (Production == OutputProductionKind::coverage
+        || Production == OutputProductionKind::sequential))
     {
         return requirement_.required();
     }
 
     [[nodiscard]] GlobalIndexRange required() const noexcept
-    requires (Production == OutputProductionKind::region)
+    requires (Kind == PortKind::event && Production == OutputProductionKind::region)
     {
         auto const& coverage = requirement_.required();
         IV_ASSERT(coverage.size() <= 1,
             "background Region output has more than one required Region");
         return coverage.empty() ? GlobalIndexRange{} : *coverage.begin();
+    }
+
+    [[nodiscard]] SamplePositionsView required_positions() const noexcept
+    requires (Kind == PortKind::sample)
+    {
+        return requirement_.required_positions();
+    }
+
+    [[nodiscard]] std::span<RegionSelection const> required_selections() const
+    {
+        if constexpr (Kind == PortKind::sample) {
+            if (requirement_.sample_selections) return requirement_.sample_selections(requirement_.selection_owner);
+        }
+        auto const* selections = requirement_.required_region_selections;
+        return selections ? *selections : std::span<RegionSelection const>{};
     }
 };
 
@@ -548,7 +623,7 @@ public:
     }
 };
 
-template<OutputProductionKind Production>
+template<OutputProductionKind Production, PortKind Kind = PortKind::sample>
 class StaticOutputCoverageChange {
     OutputCoverageChange const& change_;
 
@@ -583,6 +658,20 @@ public:
         change_.publish_regions(regions);
     }
 
+    void publish(std::span<EventRegionInfo const> regions) const
+    requires (Production == OutputProductionKind::coverage && Kind == PortKind::event)
+    {
+        IV_ASSERT(change_.publish_event_regions_value, "coverage context has no indexed event Region sink");
+        change_.publish_event_regions_value(change_.data, regions);
+    }
+
+    void publish(EventRegionInfo const& region) const
+    requires (Production == OutputProductionKind::region && Kind == PortKind::event)
+    {
+        IV_ASSERT(change_.publish_event_regions_value, "coverage context has no indexed event Region sink");
+        change_.publish_event_regions_value(change_.data, std::span{&region, 1});
+    }
+
     void publish(GlobalIndexRange region) const
     requires (Production == OutputProductionKind::region)
     {
@@ -609,6 +698,11 @@ public:
         RandomAccessContinuousInputPort const& port) noexcept
         : port_(&port)
     {}
+
+    [[nodiscard]] auto prepared_runs() const noexcept
+    {
+        return continuous_prepared_runs<Value, false>(port_->region_views());
+    }
 
     [[nodiscard]] constexpr IndexCoverage const& coverage() const noexcept
     {
@@ -672,10 +766,9 @@ public:
         : port_(&port)
     {}
 
-    [[nodiscard]] constexpr IndexCoverage const& requested_coverage()
-        const noexcept
+    [[nodiscard]] auto prepared_runs() const noexcept
     {
-        return port_->requested_coverage();
+        return port_->prepared_runs<Value>();
     }
 
     [[nodiscard]] constexpr auto region() const noexcept
@@ -734,6 +827,13 @@ public:
         : port_(std::addressof(port))
     {}
 
+    [[nodiscard]] auto prepared_runs() const noexcept
+    {
+        return port_->event_runs | std::views::transform([](auto const& run) {
+            return PreparedEventRun<false>{run};
+        });
+    }
+
     [[nodiscard]] IndexCoverage const& coverage() const noexcept
     {
         return port_->coverage();
@@ -762,6 +862,13 @@ public:
     explicit StaticBackgroundEventOutputAccess(TockEventOutputPort& port)
         : port_(std::addressof(port))
     {}
+
+    [[nodiscard]] auto prepared_runs() const noexcept
+    {
+        return port_->event_runs | std::views::transform([](auto const& run) {
+            return PreparedEventRun<true>{run};
+        });
+    }
 
     [[nodiscard]] IndexCoverage const& requested_coverage() const noexcept
     {
@@ -908,8 +1015,22 @@ public:
 };
 
 template<class Node, fixed_string Name>
+[[nodiscard]] auto request_planning_event_neighbors(CoveragePlanningContext planning,
+    RegionRef region, GlobalIndex position, EventNeighborMode mode)
+{
+    constexpr auto input = [] {
+        if constexpr (has_tick_family_v<Node>) return static_event_input_port_index<Node, Name>();
+        else return static_random_access_event_input_port_index<Node, Name>();
+    }();
+    auto const id = planning.request_input(true, input, CoverageInformation::event_neighbors, {
+        .selection = {region, {}}, .neighbor_position = position, .neighbor_mode = mode,
+    });
+    return CoverageRequest<EventNeighbors>{planning.access, id};
+}
+
+template<class Node, fixed_string Name>
 [[nodiscard]] auto request_planning_input(CoveragePlanningContext planning,
-    IndexCoverage const& positions)
+    CoverageInputDemand demand)
 {
     constexpr auto event = static_input_port_kind<Node, Name>() == PortKind::event;
     constexpr auto input = [] {
@@ -925,7 +1046,7 @@ template<class Node, fixed_string Name>
     // inputs. It does not pretend to be a live Sequential Tick binding.
     constexpr auto access = has_tick_family_v<Node>
         ? InputAccessKind::coverage : static_input_port_access<Node, Name>();
-    auto id = planning.request_input(event, input, CoverageInformation::contents, &positions);
+    auto id = planning.request_input(event, input, CoverageInformation::contents, demand);
     if constexpr (event) {
         return CoverageInputRequest<RandomAccessEventInputPort,
             StaticBackgroundEventInputAccess<access>>{planning.access, id};
@@ -982,12 +1103,36 @@ struct PropagateForwardCoverageContext {
     }
 
     template<fixed_string Name>
-    [[nodiscard]] auto request_input(IndexCoverage const& positions) const
-    requires details::has_constexpr_port_configs<Node>
+    [[nodiscard]] auto request_event_neighbors(RegionRef region, GlobalIndex position,
+        EventNeighborMode mode = EventNeighborMode::bounded) const
+    requires (details::has_constexpr_port_configs<Node>
+        && details::static_input_port_kind<Node, Name>() == PortKind::event)
     {
-        return details::request_planning_input<Node, Name>(planning, positions);
+        return details::request_planning_event_neighbors<Node, Name>(planning, region, position, mode);
     }
 
+    template<fixed_string Name>
+    [[nodiscard]] auto request_input(IndexCoverage const& positions) const
+    requires (details::has_constexpr_port_configs<Node>
+        && details::static_input_port_kind<Node, Name>() == PortKind::event)
+    {
+        return details::request_planning_input<Node, Name>(planning, {.positional = &positions});
+    }
+
+    template<fixed_string Name>
+    [[nodiscard]] auto request_input(SamplePositionsView positions) const
+    requires (details::has_constexpr_port_configs<Node>
+        && details::static_input_port_kind<Node, Name>() == PortKind::sample)
+    {
+        return details::request_planning_input<Node, Name>(planning, {.sample_positions = positions});
+    }
+
+    template<fixed_string Name>
+    [[nodiscard]] auto request_input(RegionSelection selection) const
+    requires details::has_constexpr_port_configs<Node>
+    {
+        return details::request_planning_input<Node, Name>(planning, {.selection = selection});
+    }
 
     template<fixed_string Name>
     [[nodiscard]] auto input() const
@@ -1053,7 +1198,7 @@ struct PropagateForwardCoverageContext {
             }();
             IV_ASSERT(index < event_outputs.size(),
                 "background event output is absent from forward context");
-            return details::StaticOutputCoverageChange<production>{
+            return details::StaticOutputCoverageChange<production, PortKind::event>{
                 event_outputs[index]};
         }
     }
@@ -1077,12 +1222,36 @@ struct PropagateReverseCoverageContext {
     }
 
     template<fixed_string Name>
-    [[nodiscard]] auto request_input(IndexCoverage const& positions) const
-    requires details::has_constexpr_port_configs<Node>
+    [[nodiscard]] auto request_event_neighbors(RegionRef region, GlobalIndex position,
+        EventNeighborMode mode = EventNeighborMode::bounded) const
+    requires (details::has_constexpr_port_configs<Node>
+        && details::static_input_port_kind<Node, Name>() == PortKind::event)
     {
-        return details::request_planning_input<Node, Name>(planning, positions);
+        return details::request_planning_event_neighbors<Node, Name>(planning, region, position, mode);
     }
 
+    template<fixed_string Name>
+    [[nodiscard]] auto request_input(IndexCoverage const& positions) const
+    requires (details::has_constexpr_port_configs<Node>
+        && details::static_input_port_kind<Node, Name>() == PortKind::event)
+    {
+        return details::request_planning_input<Node, Name>(planning, {.positional = &positions});
+    }
+
+    template<fixed_string Name>
+    [[nodiscard]] auto request_input(SamplePositionsView positions) const
+    requires (details::has_constexpr_port_configs<Node>
+        && details::static_input_port_kind<Node, Name>() == PortKind::sample)
+    {
+        return details::request_planning_input<Node, Name>(planning, {.sample_positions = positions});
+    }
+
+    template<fixed_string Name>
+    [[nodiscard]] auto request_input(RegionSelection selection) const
+    requires details::has_constexpr_port_configs<Node>
+    {
+        return details::request_planning_input<Node, Name>(planning, {.selection = selection});
+    }
 
     template<fixed_string Name>
     [[nodiscard]] auto output() const
@@ -1103,7 +1272,7 @@ struct PropagateReverseCoverageContext {
             }();
             IV_ASSERT(index < outputs.size(),
                 "background sample output is absent from reverse context");
-            return details::StaticOutputCoverageRequirement<production>{
+            return details::StaticOutputCoverageRequirement<production, PortKind::sample>{
                 outputs[index]};
         } else {
             constexpr auto index = [] {
@@ -1140,7 +1309,7 @@ struct PropagateReverseCoverageContext {
             }();
             IV_ASSERT(index < inputs.size(),
                 "background sample input is absent from reverse context");
-            return details::StaticInputCoverageRequirement<access>{
+            return details::StaticInputCoverageRequirement<access, PortKind::sample>{
                 inputs[index]};
         } else {
             constexpr auto index = [] {

@@ -40,7 +40,7 @@ test("window results reject obsolete viewport positions and data versions withou
     const data = result();
     values.expectWindows([{ id: "wave", source, operation: "waveform", window: data.window }]);
     const update = (window: ObservationWindowResult): ObservationUpdate => ({
-        activationId: "0", generation: "7", revision: "0", index: "0", blockSize: 0,
+        activationId: "0", generation: "7", revision: "0", index: "0", blockSize: 0, dataVersion: "0",
         scopes: [{ scopeId: "viewport", values: [], windows: [window] }],
     });
     assert.equal(values.receive(update(data), "viewport"), true);
@@ -66,7 +66,7 @@ test("bound windows arriving before the matching graph scope are used when it ar
     values.expectWindows(bounds.map((id) => ({ id, window: data.window, operation: "waveform",
         source: { node: { instanceId: "curve" }, kind: "input", member: id } })));
     const update: ObservationUpdate = {
-        activationId: "1", generation: "8", revision: "0", index: "0", blockSize: 0,
+        activationId: "1", generation: "8", revision: "0", index: "0", blockSize: 0, dataVersion: "0",
         scopes: [{ scopeId: "viewport", values: [], windows: bounds.map((id) => ({ ...data, id })) }],
     };
     assert.equal(values.receive(update, "viewport"), false);

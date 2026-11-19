@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, onScopeDispose } from "vue";
 import { addressKey, type Point } from "../../src/graphScope";
 import { orderLanes, laneRuns } from "../../src/laneSelection";
 import { KnobPointerLock } from "../../src/knobPointerLock";
@@ -11,13 +11,15 @@ import { presentations } from "../presentation/presentations";
 import { nodeDisplayName } from "../presentation/nodeSummary";
 import TimeRuler from "../timeline/TimeRuler.vue";
 import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
-import { provideTimelineNavigation, provideTimelineWindow, type LaneValueGesture, type LaneValueNavigation } from "../timeline/timelineContext";
+import { provideTimelineMarks, provideTimelineNavigation, provideTimelineWindow, type TimelineMark, type LaneValueGesture, type LaneValueNavigation } from "../timeline/timelineContext";
 import { initialTimelineViewport, isMiddleDoubleClick, middleClickMode, moveMiddleDrag, panTimeline, resetTimelineZoom, timelineMiddleDragAction,
     timelineWheelAction, verticalMiddleDragZoomFactor, wheelPixels, wrapTimelineCursor, zoomAnchorHint, zoomFactorForPixels, zoomMiddleDrag,
     zoomTimelineHorizontally, zoomTimelineVertically,
     type MiddleClick, type MiddleDrag, type TimelineZoomAction, type TimelineViewport } from "../../src/timelineViewport";
 import { useGraphEditor, type CursorWarpAnchor } from "./context";
 import { usePlayback } from "../timeline/playbackContext";
+import { useObservations } from "../presentation/observationContext";
+import { automationSampleIndex, automationSampleOffset } from "../../src/automationCurveGeometry";
 
 const node = useNode();
 const playback = usePlayback();
@@ -59,6 +61,64 @@ const timeWindow = computed(() => {
     return { beginSeconds, endSeconds: beginSeconds + spanSeconds, spanSeconds, sampleRate: scope.value.sampleRate };
 });
 provideTimelineWindow(timeWindow);
+const observations = useObservations();
+const timelineInterests = new Map<string, string>();
+const observedTimelineWindow = computed(() => {
+    const { beginSeconds, spanSeconds, sampleRate } = timeWindow.value;
+    if (!sampleRate || timeWidth.value <= 0) return undefined;
+    const first = automationSampleIndex(beginSeconds, sampleRate);
+    const last = automationSampleIndex(beginSeconds, sampleRate, spanSeconds);
+    return first === undefined || last === undefined || last < first ? undefined : {
+        begin: String(first), length: String(last - first + 1n),
+        points: Math.max(1, Math.min(512, Math.floor(timeWidth.value / 10))),
+        maxDepth: 255,
+    };
+});
+watch([() => scope.value.timelineNodes, observedTimelineWindow], ([nodes, window]) => {
+    if (!observations) return;
+    const visible = new Set<string>();
+    for (const node of window ? nodes?.slice(0, 32) ?? [] : []) {
+        const key = addressKey(node);
+        visible.add(key);
+        const id = timelineInterests.get(key) ?? observations.portObservationId();
+        timelineInterests.set(key, id);
+        observations.observePort(id, {
+            source: { node, kind: "input", member: "beats", portKind: "event" }, operation: "beat-grid", window,
+        });
+    }
+    for (const [key, id] of timelineInterests) {
+        if (visible.has(key)) continue;
+        observations.observePort(id, undefined);
+        timelineInterests.delete(key);
+    }
+}, { immediate: true });
+onScopeDispose(() => {
+    for (const id of timelineInterests.values()) observations?.observePort(id, undefined);
+});
+const timelineMarks = computed<readonly TimelineMark[]>(() => {
+    if (!observations) return [];
+    void observations.version.value;
+    const snapshot = observations.values.windowSnapshot;
+    if (!snapshot) return [];
+    const { beginSeconds, spanSeconds, sampleRate } = timeWindow.value;
+    if (!sampleRate) return [];
+    const candidates: TimelineMark[] = [];
+    for (const id of timelineInterests.values()) {
+        const result = observations.values.windows.get(id);
+        if (result?.status !== "ready" || result.outdated || result.dataVersion !== snapshot.dataVersion) continue;
+        for (const mark of result.marks ?? []) {
+            const index = BigInt(mark.index);
+            const x = automationSampleOffset(index, beginSeconds, sampleRate) / spanSeconds * timeWidth.value;
+            if (x >= 0 && x <= timeWidth.value) candidates.push({ index, depth: mark.depth, x });
+        }
+    }
+    candidates.sort((a, b) => a.depth - b.depth || a.x - b.x);
+    const displayed: TimelineMark[] = [];
+    for (const mark of candidates)
+        if (!displayed.some((previous) => Math.abs(previous.x - mark.x) < 8)) displayed.push(mark);
+    return displayed.sort((a, b) => a.x - b.x);
+});
+provideTimelineMarks(timelineMarks);
 const valueNavigationTargets = new Map<Element, LaneValueNavigation>();
 provideTimelineNavigation({ wheel, beginMiddleDrag, registerValueNavigation(element, lane) {
     valueNavigationTargets.set(element, lane);
@@ -416,7 +476,7 @@ onBeforeUnmount(() => {
                     <small>{{ playback.backgroundPlayhead.value?.toString() }} smp</small>
                 </template>
             </div>
-            <div ref="timeRegion" class="time-region"><TimeRuler :window="timeWindow" :sample-rate="scope.sampleRate ?? undefined" playback style="height: 100%" /></div>
+            <div ref="timeRegion" class="time-region"><TimeRuler :window="timeWindow" :marks="timelineMarks" playback style="height: 100%" /></div>
         </header>
         <div class="lanes">
             <section v-for="{ child, semantic } in children" :key="addressKey(child.address)"

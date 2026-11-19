@@ -3,7 +3,7 @@ import * as vscode from "vscode";
 import { GraphLayoutStore } from "./graphLayoutStore";
 import { addressKey, readLayout, type GraphScope } from "./graphScope";
 import { nodeDebugDetails } from "./nodeDebugDetails";
-import type { GraphEditorAction, GraphEditorState, GraphEditorWebviewMessage } from "./graphEditorProtocol";
+import type { GraphEditorAction, GraphEditorHostMessage, GraphEditorState, GraphEditorWebviewMessage } from "./graphEditorProtocol";
 import type { WorkspaceSession } from "./workspaceSession";
 import { formatStatusHint, isStatusHint, playbackShortcut, rightClickHint, type StatusHint } from "./statusBarText";
 import { isNodeEventRequest, isNodeEventGestureRequest, replyToNodeEvent, replyToNodeEventGesture } from "./nodeEventMessaging";
@@ -186,6 +186,27 @@ export class GraphEditorProvider implements vscode.Disposable {
         return panel;
     }
 
+    async profileObservations(): Promise<void> {
+        const panel = [...this.ready].find((entry) => entry.active);
+        if (!panel) {
+            void vscode.window.showInformationMessage("Open the Intravenous Graph editor before profiling observation updates.");
+            return;
+        }
+        const durationMs = 10_000;
+        const request: GraphEditorHostMessage = { type: "startObservationProfile", durationMs };
+        try {
+            if (!await panel.webview.postMessage(request)) {
+                void vscode.window.showInformationMessage("The Intravenous Graph editor could not start the observation profile.");
+                return;
+            }
+            const message = `Recording observation updates for ${durationMs / 1000} seconds. See Intravenous output for the report.`;
+            this.log(message);
+            vscode.window.setStatusBarMessage(message, durationMs);
+        } catch (error) {
+            void vscode.window.showErrorMessage(`Cannot profile observation updates: ${error}`);
+        }
+    }
+
     async runAction(action: GraphEditorAction, target?: vscode.WebviewPanel): Promise<void> {
         const panel = target ?? (this.lastActivePanel && this.panels.has(this.lastActivePanel)
             ? this.lastActivePanel : [...this.panels].find((entry) => entry.active) ?? [...this.panels][0] ?? this.open());
@@ -283,6 +304,20 @@ export class GraphEditorProvider implements vscode.Disposable {
                 } catch (error) {
                     if (this.panels.has(panel)) void panel.webview.postMessage({ type: "observationResponse", requestId: message.requestId, error: String(error) });
                 }
+            } else if (message?.type === "observationProfile") {
+                const s = message.summary;
+                const updateRate = (s.updates / s.seconds).toFixed(2);
+                const dataRate = (s.messageBytes / 1024 / s.seconds).toFixed(2);
+                this.log(`Observation profile over ${s.seconds.toFixed(2)} s`);
+                this.log(`  Webview received ${s.updates} updates (${updateRate}/s, about ${dataRate} KiB/s as JSON).`
+                    + ` ${s.presentationUpdates} triggered a presentation update.`);
+                this.log(`  ${s.unchangedScopes} updates repeated the entire scope payload, including ${s.unchangedScopesWithNewDataVersion}`
+                    + ` with a changed data version. ${s.repeatedLiveValues}/${s.liveValues} live value entries repeated.`);
+                this.log(`  Received ${s.readyWindows} ready windows (${s.outdatedWindows} outdated), ${s.pendingWindows} pending,`
+                    + ` ${s.unavailableWindows} unavailable, and ${s.failedWindows} failed.`);
+                this.log(`  ${s.repeatedWindows} ready window bodies repeated, including ${s.repeatedWindowsWithNewDataVersion}`
+                    + ` with a changed data version. ${(s.repeatedWindowBytes / 1024).toFixed(2)} of ${(s.windowBytes / 1024).toFixed(2)} KiB repeated.`);
+                this.log(`  Measurement took ${s.measurementMs.toFixed(2)} ms in the webview.`);
             } else if (isNodeEventRequest(message) || isNodeEventGestureRequest(message)) {
                 const owner = this.controlOwners.get(panel);
                 if (!owner) return;

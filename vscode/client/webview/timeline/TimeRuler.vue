@@ -1,24 +1,24 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { timelineTicks, type TimelineWindow } from "./geometry";
+import { snapTimelineSample, timelineTicks } from "./geometry";
 import RulerGraduations from "./RulerGraduations.vue";
+import TimelinePlayhead from "./TimelinePlayhead.vue";
+import type { PresentationTimeWindow, TimelineMark } from "./timelineContext";
 import { usePlayback } from "./playbackContext";
 import { playbackSampleIndexFromSeconds } from "../../src/playback";
 import { webviewApi } from "../host";
 
 // A presentation can use a time ruler without being a graph or a lane.
 // It makes no assumption about the node's number or kinds of output ports.
-const props = defineProps<{ window: TimelineWindow; playback?: boolean; sampleRate?: number }>();
-const { backgroundPlayhead, foregroundPlayhead, state, requestedPosition, dragPosition } = usePlayback();
-const sampleRate = computed(() => props.sampleRate ?? state.value?.sampleRate ?? 48000);
+const props = defineProps<{ window: PresentationTimeWindow; marks?: readonly TimelineMark[]; playback?: boolean }>();
+const { state, requestedPosition, dragPosition } = usePlayback();
+const sampleRate = computed(() => state.value?.sampleRate ?? props.window.sampleRate ?? 48000);
 const root = ref<HTMLElement | null>(null);
 const width = ref(0);
 const ticks = computed(() => timelineTicks(props.window, width.value));
 const markerPosition = (selected: bigint | null) => selected === null ? -1
     : (Number(selected) / sampleRate.value - props.window.beginSeconds)
         * width.value / (props.window.endSeconds - props.window.beginSeconds);
-const backgroundMarker = computed(() => markerPosition(backgroundPlayhead.value));
-const foregroundMarker = computed(() => markerPosition(foregroundPlayhead.value));
 const displayedStart = computed(() => dragPosition.value ?? state.value?.startPosition);
 const startMarker = computed(() => {
     const start = displayedStart.value;
@@ -35,7 +35,11 @@ function positionAt(clientX: number) {
     const bounds = root.value.getBoundingClientRect();
     const seconds = props.window.beginSeconds + (clientX - bounds.left) / Math.max(1, bounds.width)
         * (props.window.endSeconds - props.window.beginSeconds);
-    try { return playbackSampleIndexFromSeconds(seconds, sampleRate.value); }
+    try {
+        const index = playbackSampleIndexFromSeconds(seconds, sampleRate.value);
+        const tolerance = 6 * sampleRate.value * (props.window.endSeconds - props.window.beginSeconds) / Math.max(1, bounds.width);
+        return snapTimelineSample(BigInt(index), props.marks ?? [], tolerance).toString();
+    }
     catch { return null; }
 }
 
@@ -121,31 +125,26 @@ onBeforeUnmount(() => {
         @pointercancel="cancelSeek" @lostpointercapture="cancelSeek"
         :data-status-shortcuts="playback ? 'Click/drag seek · Space ▶/Ⅱ' : undefined">
         <RulerGraduations :ticks="ticks" />
-        <div v-if="playback && foregroundMarker >= 0 && foregroundMarker <= width && foregroundMarker !== backgroundMarker"
-            class="playhead-marker foreground-playhead" :style="{ left: `${foregroundMarker}px` }"
-            role="img" aria-label="Foreground playhead" />
-        <div v-if="playback && backgroundMarker >= 0 && backgroundMarker <= width"
-            class="playhead-marker background-playhead" :style="{ left: `${backgroundMarker}px` }"
-            role="img" aria-label="Background playhead" />
-        <div v-if="playback && requestedMarker >= 0 && requestedMarker <= width" class="requested-marker"
-            :style="{ left: `${requestedMarker}px` }" aria-label="Requested background playhead position" />
-        <div v-if="playback && startMarker >= 0 && startMarker <= width" class="start-marker"
-            :style="{ left: `${startMarker}px` }" role="img" :aria-label="startLabel" :data-status-hint="`Start ${displayedStart} smp`" />
+        <svg v-if="playback || marks?.length" class="ruler-playheads">
+            <line v-for="mark in marks" :key="mark.index.toString()" class="beat-mark"
+                :x1="mark.x" :x2="mark.x" :y1="mark.depth === 0 ? 12 : mark.depth === 1 ? 20 : 27" y2="100%" />
+
+            <TimelinePlayhead v-if="playback" :window="window" />
+            <line v-if="requestedMarker >= 0 && requestedMarker <= width" class="requested-marker"
+                :x1="requestedMarker" :x2="requestedMarker" y1="0" y2="100%"
+                role="img" aria-label="Requested background playhead position" />
+            <polygon v-if="startMarker >= 0 && startMarker <= width" class="start-marker" points="-5.5,0 5.5,0 0,7"
+                :style="{ transform: `translateX(${startMarker}px)` }" role="img" :aria-label="startLabel"
+                :data-status-hint="`Start ${displayedStart} smp`" />
+        </svg>
     </div>
 </template>
 
 <style scoped>
 .time-ruler { position: relative; min-width: 0; overflow: hidden; }
 .seekable { cursor: ew-resize; touch-action: none; user-select: none; }
-.playhead-marker { position: absolute; top: 0; bottom: 0; width: 1px; pointer-events: none; background: var(--playhead-color); }
-.background-playhead, .start-marker { --playhead-color: var(--iv-background-playhead); }
-.foreground-playhead { --playhead-color: var(--iv-ruler-tick); }
-.requested-marker { position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--vscode-focusBorder, #569cd6); pointer-events: none; }
-.playhead-marker::before { content: ""; left: 0; }
-.playhead-marker::before, .start-marker {
-    position: absolute; top: 0; margin-left: -5px;
-    /* The tip shares the cursor's one-pixel column. */
-    box-sizing: content-box; width: 1px; height: 0;
-    border-inline: 5px solid transparent; border-top: 7px solid var(--playhead-color);
-}
+.ruler-playheads { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.beat-mark { stroke: var(--vscode-editorRuler-foreground, #777); opacity: .75; }
+.requested-marker { stroke: var(--vscode-focusBorder, #569cd6); stroke-dasharray: 3 3; }
+.start-marker { fill: var(--iv-background-playhead); pointer-events: auto; }
 </style>

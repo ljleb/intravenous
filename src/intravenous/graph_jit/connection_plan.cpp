@@ -1843,7 +1843,7 @@ std::expected<void, std::string> append_event_route_edge(
 }
 
 std::expected<std::vector<RoutedEventConnection>, std::string>
-build_structural_event_routes(ConfiguredGraph const& graph)
+build_structural_event_routes(ConfiguredGraph const& graph, bool public_coverage_inputs = false)
 {
     auto const authored = graph.connections.configured_event_connections();
     auto const root_boundary = graph.public_ports.boundary_handle();
@@ -2015,9 +2015,11 @@ build_structural_event_routes(ConfiguredGraph const& graph)
             auto expanded = expand_target(expand_target, target);
             if (!expanded) return std::unexpected(std::move(expanded.error()));
             for (auto const candidate : *expanded) {
-                if (is_terminal_target(candidate)) {
+                auto const passive = public_coverage_inputs && graph.node_bundles.bundle(candidate.bundle).is_subgraph()
+                    && graph.node_bundles.resolve_event_input({candidate.bundle, PortKind::event, candidate.port}).config.access
+                        == InputAccessKind::coverage;
+                if (public_coverage_inputs ? passive : is_terminal_target(candidate))
                     terminal_targets.push_back(candidate);
-                }
             }
         }
         if (terminal_targets.empty()) continue;
@@ -6790,6 +6792,44 @@ void plan_public_coverage_inputs(ConfiguredGraph const& graph, ResolvedPortReali
     }
 }
 
+void plan_public_event_coverage_inputs(ConfiguredGraph const& graph, BackgroundEvaluationPlan& plan)
+{
+    for (NodeBundleHandle bundle = 0; bundle < graph.node_bundles.size(); ++bundle) {
+        auto const& node = graph.node_bundles.bundle(bundle);
+        if (!node.is_subgraph()) continue;
+        for (std::size_t index = 0; index < node.event_input_count(); ++index) {
+            NodeBundlePortId const port{bundle, PortKind::event, index};
+            auto const config = graph.node_bundles.resolve_event_input(port).config;
+            if (config.access == InputAccessKind::coverage)
+                plan.public_event_coverage_inputs.push_back({.port = port, .type = config.type});
+        }
+    }
+    if (plan.public_event_coverage_inputs.empty()) return;
+    auto routes = build_structural_event_routes(graph, true);
+    if (!routes) {
+        for (auto& input : plan.public_event_coverage_inputs) input.reconstructible = false;
+        return;
+    }
+    for (auto const& route : *routes) {
+        for (auto const target : route.connection.targets) {
+            auto const input = std::ranges::find(plan.public_event_coverage_inputs,
+                NodeBundlePortId{target.bundle, PortKind::event, target.port}, &PublicEventCoverageInputView::port);
+            if (input == plan.public_event_coverage_inputs.end()) continue;
+            for (auto const& source : route.sources) {
+                auto const id = NodeBundlePortId{source.source.port.bundle, PortKind::event, source.source.port.port};
+                auto const output = std::ranges::find_if(plan.requestable_outputs,
+                    [&](auto port) { return plan.ports[port].configured_port == id; });
+                auto const conversion = append_event_conversion(source.conversion, route.conversion);
+                if (output == plan.requestable_outputs.end() || !conversion || source.source.detach) {
+                    input->reconstructible = false;
+                    continue;
+                }
+                input->sources.push_back({*output, *conversion});
+            }
+        }
+    }
+}
+
 std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_plan(
     ConfiguredGraph const& graph,
     ResolvedPortRealization const& port_realization,
@@ -6931,6 +6971,7 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
             return std::unexpected(std::move(populated.error()));
         }
         plan_public_coverage_inputs(graph, port_realization, plan);
+        plan_public_event_coverage_inputs(graph, plan.background);
     }
     if (auto acyclic = validate_explicit_graph_is_acyclic(graph, plan); !acyclic) {
         return std::unexpected(std::move(acyclic.error()));

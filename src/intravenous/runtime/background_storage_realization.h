@@ -4,6 +4,8 @@
 #include <intravenous/event_sequence.h>
 #include <intravenous/coverage.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
+#include <intravenous/runtime/background_region_routing.h>
+#include <intravenous/runtime/background_sample_demand.h>
 #include <intravenous/runtime/persisted_data_store.h>
 #include <intravenous/runtime/tick_materialization_snapshot.h>
 
@@ -201,12 +203,38 @@ struct BackgroundEventWriteView {
 // aligned with BackgroundStoragePlan::ports. The published snapshot is
 // non-owning: the surrounding transaction keeps its reader pin alive.
 struct BackgroundStorageSelection {
+    struct RegionSource {
+        std::size_t materialization_source = 0;
+        std::optional<std::size_t> logical_region_index{};
+
+        bool operator==(RegionSource const&) const = default;
+    };
+    struct SampleRegionSources {
+        std::size_t projection = 0;
+        std::vector<RegionSource> sources{};
+
+        bool operator==(SampleRegionSources const&) const = default;
+    };
+
+    struct MaterializedInputRegion {
+        graph_jit::BackgroundPortIndex port = 0;
+        BackgroundInputRegion region{};
+        std::size_t storage_region = 0;
+    };
+
     std::uint64_t generation = 0;
     std::vector<IndexCoverage> storage_coverage{};
+    std::vector<BackgroundSampleDemand> sample_positions{};
+    std::vector<SampleDemandByRegion> sample_region_positions{};
+    std::size_t sample_frame_budget = BufferedStorageLimits{}.max_resident_bytes / sizeof(Sample);
     // Logical Region descriptors for continuous and event storage. Unlike
     // storage_coverage, these lists preserve ordering, overlap, duplicates,
     // and Region count.
     std::vector<std::vector<GlobalIndexRange>> storage_regions{};
+    // Aligned with storage_regions for Region-preserving materializations.
+    std::vector<std::vector<SampleRegionSources>> sample_region_sources{};
+    std::vector<std::vector<RegionSource>> event_region_sources{};
+    std::vector<std::vector<MaterializedInputRegion>> materialized_input_regions{};
     // Complete producer-published logical order for each storage slot that
     // represents an authored Region/Coverage output. storage_regions is the
     // transaction's selected subset; this list is the authoritative shape
@@ -214,12 +242,12 @@ struct BackgroundStorageSelection {
     // publication. Tick outputs leave this empty because their ranges are
     // positional replay/recording windows.
     std::vector<std::vector<GlobalIndexRange>> published_output_regions{};
-    // Domain changed in PersistedDataStore. For authored Region/Coverage
-    // production, the complete logical batch replaces this domain. For Tick
-    // production, selected positional records overwrite only their own ranges.
-    // Old positions removed by a coverage change do not allocate transaction
-    // storage.
-    std::vector<IndexCoverage> persisted_replacement_coverage{};
+    // Per output storage slot, sorted unique indices in the published Region
+    // list. An unset entry uses positional selection.
+    std::vector<std::optional<std::vector<std::size_t>>> output_region_indices{};
+    // Positions invalidated in every Region of an output. The produced
+    // contents of each selected Region replace positions in that Region only.
+    std::vector<IndexCoverage> persisted_invalidations{};
     // Empty preserves the plan-derived default used by direct component tests.
     // A complete transaction supplies one flag per storage slot so a persisted
     // authored output can be read from the pinned base when it is still valid,
@@ -227,14 +255,32 @@ struct BackgroundStorageSelection {
     std::vector<bool> produce_storage{};
     PersistedDataStore::Snapshot const* published = nullptr;
     bool cache_computed_outputs = false;
-    bool retain_computed_outputs = true;
+    bool retain_generated_outputs = true;
     bool prepares_tick_materialization = false;
+
+    [[nodiscard]] bool selects(graph_jit::PortStorageIndex index, GlobalIndexRange range) const
+    {
+        return storage_coverage[index].intersects(range)
+            || (!sample_positions.empty() && sample_positions[index].intersects(range));
+    }
+
+    [[nodiscard]] bool empty(graph_jit::PortStorageIndex index) const
+    {
+        return storage_coverage[index].empty()
+            && (sample_positions.empty() || sample_positions[index].empty())
+            && (sample_region_positions.empty() || sample_region_positions[index].values.empty());
+    }
 
     // Cache reads and invalidations can still use an existing computed
     // output even when the current consumer only needs a temporary view.
-    [[nodiscard]] bool retains_produced_output(graph_jit::PortStoragePlan const& storage) const noexcept
+    [[nodiscard]] bool retains_produced_output(
+        graph_jit::BackgroundEvaluationPlan const& plan,
+        graph_jit::PortStoragePlan const& storage) const noexcept
     {
-        return retain_computed_outputs || storage.storage == graph_jit::PortStorageKind::persisted_data;
+        return retain_generated_outputs
+            || (storage.storage == graph_jit::PortStorageKind::persisted_data
+                && storage.output_port && *storage.output_port < plan.ports.size()
+                && plan.ports[*storage.output_port].output_production == OutputProductionKind::sequential);
     }
 };
 
@@ -277,6 +323,9 @@ public:
 
     [[nodiscard]] std::size_t storage_count() const noexcept;
     [[nodiscard]] std::size_t operation_count() const noexcept;
+    // Map a producer's published Region index to its prepared storage index.
+    [[nodiscard]] std::optional<std::size_t> prepared_region_index(
+        graph_jit::PortStorageIndex storage, std::size_t logical_region) const;
     [[nodiscard]] bool operation_executed(
         graph_jit::BackgroundRuntimeOperationIndex index) const noexcept;
     [[nodiscard]] bool sealed() const noexcept { return sealed_; }

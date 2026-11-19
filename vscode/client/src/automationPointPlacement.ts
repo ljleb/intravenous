@@ -79,7 +79,7 @@ type SampleGroup = { start: number; points: AutomationPoint[] };
 export type PointTime = { sampleIndex: bigint; order?: number; orderedIds: readonly number[]; slot: number };
 
 export function automationTimeDrag(neighbors: readonly AutomationPoint[], anchor: AutomationPoint,
-    secondsPerPixel: number, sampleRate: number): (pixels: number) => PointTime {
+    secondsPerPixel: number, sampleRate: number, snapTime?: (index: bigint) => bigint): (pixels: number) => PointTime {
     const groups = new Map<bigint, SampleGroup>();
     for (const [index, point] of neighbors.entries()) {
         const sample = point.sampleIndex!;
@@ -103,12 +103,14 @@ export function automationTimeDrag(neighbors: readonly AutomationPoint[], anchor
         const detent = scrub.valueAtDetents(pixels, offsets, anchorPlateau);
         const snapped = detent.snappedValue === undefined ? undefined : targets.get(detent.snappedValue);
         const delta = automationSampleIndex(detent.value * secondsPerPixel, sampleRate);
-        const sampleIndex = snapped ?? BigInt.asIntN(64, sample + (delta ?? 0n));
+        const index = BigInt.asIntN(64, sample + (delta ?? 0n));
+        const sampleIndex = snapped ?? (pixels ? snapTime?.(index) : undefined) ?? index;
         const group = groups.get(sampleIndex);
         if (!group) return { sampleIndex, order: anchor.order, orderedIds: [], slot: pointInsertionIndex(neighbors, { ...anchor, sampleIndex }) };
         // The first half places the grabbed point before the coincident group.
         // The second half places it after, using the very same sample index.
-        const beforeGroup = snapped !== undefined ? detent.plateau < 0 : detent.value < Number(delta ?? 0n) / samplesPerPixel;
+        const groupPixels = Number(BigInt.asIntN(64, sampleIndex - sample)) / samplesPerPixel;
+        const beforeGroup = snapped !== undefined ? detent.plateau < 0 : detent.value < groupPixels;
         const order = pixels === 0 ? anchorSlot - group.start : beforeGroup ? 0 : group.points.length;
         const orderedIds = group.points.map(({ id }) => id);
         orderedIds.splice(order, 0, anchor.id);

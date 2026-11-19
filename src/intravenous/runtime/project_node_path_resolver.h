@@ -5,6 +5,7 @@
 #include <intravenous/runtime/project_connection_types.h>
 
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -65,4 +66,7 @@ struct ProjectNodePathGraph {
 [[nodiscard]] ProjectNodePathMatch require_single_project_node_path_match(
     std::span<ProjectNodePathMatch const> matches,
     std::string_view description);
+// Finds a semantic member path when the target belongs to this authored instance.
+[[nodiscard]] std::optional<std::vector<ProjectNodePathSelector>> project_member_path(
+    ConfiguredGraph const&, NodeBundleHandle root, NodeBundleHandle target);
 } // namespace iv

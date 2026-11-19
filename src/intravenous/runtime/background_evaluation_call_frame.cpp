@@ -156,6 +156,7 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
         std::size_t logical_channel = 0;
         std::size_t storage_channel = 0;
         std::size_t read_latency = 0;
+        graph_jit::PortStorageIndex storage = 0;
 
         bool operator==(SampleReadRoute const& other) const noexcept
         {
@@ -163,7 +164,8 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
                    view.regions.data() == other.view.regions.data() &&
                    logical_channel == other.logical_channel &&
                    storage_channel == other.storage_channel &&
-                   read_latency == other.read_latency;
+                   read_latency == other.read_latency &&
+                   storage == other.storage;
         }
     };
 
@@ -184,6 +186,12 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
     std::vector<EventReadRegion> event_input_regions{};
     std::vector<GlobalIndexRange> event_input_ranges{};
     std::vector<GlobalIndexRange> event_output_ranges{};
+    struct EventRunBuffer {
+        std::vector<TimedEvent> slots;
+        std::vector<std::uint8_t> written;
+    };
+    std::vector<EventRunBuffer> event_run_buffers{};
+    std::vector<EventRunStorageView> indexed_events{};
     bool rejected_write = false;
 
     std::optional<Sample> find_sample(GlobalIndex index, std::size_t channel) const noexcept
@@ -343,6 +351,26 @@ struct BackgroundEvaluationCallFrame::NodeFrameStorage {
     std::vector<TockContinuousOutputPort> sample_outputs{};
     std::vector<RandomAccessEventInputPort> event_inputs{};
     std::vector<TockEventOutputPort> event_outputs{};
+    struct IndexedInput {
+        EventRunStorageView const* target = nullptr;
+        std::span<EventRunStorageView const> source{};
+        std::size_t source_region = 0;
+    };
+    std::vector<IndexedInput> indexed_inputs{};
+
+    static void prepare_indexed_inputs(void* opaque)
+    {
+        for (auto const& input : static_cast<NodeFrameStorage*>(opaque)->indexed_inputs) {
+            auto const run = input.target->run;
+            for (std::size_t slot = 0; slot < run.count; ++slot) {
+                auto const occurrence = run.first + slot * run.step;
+                auto const* event = details::read_prepared_event(input.source, input.source_region, occurrence);
+                if (!event) throw std::logic_error("indexed event input has no prepared source occurrence");
+                input.target->slots[slot] = *event;
+                input.target->written[slot] = 1;
+            }
+        }
+    }
 };
 
 struct BackgroundEvaluationCallFrame::ReplayFrameStorage {
@@ -808,6 +836,15 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
         return std::unexpected(
             "background binding Regions are not aligned with the runtime plan");
     }
+    if (!selection_.binding_input_regions.empty()
+        && selection_.binding_input_regions.size() != runtime.bindings.size()) {
+        return std::unexpected("background input Region sources are not aligned with the runtime plan");
+    }
+    if ((!selection_.sample_positions.empty() && selection_.sample_positions.size() != runtime.bindings.size())
+        || (!selection_.sample_region_positions.empty() && selection_.sample_region_positions.size() != runtime.bindings.size()))
+        return std::unexpected("sample positions are not aligned with runtime bindings");
+    if (!selection_.indexed_events.empty() && selection_.indexed_events.size() != runtime.bindings.size())
+        return std::unexpected("indexed event Regions are not aligned with runtime bindings");
     if (runtime.port_bindings.size() != plan.ports.size() ||
         runtime.node_operations.size() != plan.nodes.size() ||
         runtime.node_replay_invocations.size() != plan.nodes.size() ||
@@ -818,6 +855,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
 
     std::vector<std::unique_ptr<BindingAdapter>> adapters;
     adapters.reserve(runtime.bindings.size());
+    auto remaining_event_slots = selection_.indexed_event_budget;
     for (graph_jit::BackgroundBindingSlot slot = 0;
          slot < runtime.bindings.size(); ++slot) {
         auto const& binding = runtime.bindings[slot];
@@ -841,12 +879,98 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
 
         auto adapter = std::make_unique<BindingAdapter>();
         adapter->coverage = &selection_.binding_coverage[slot];
-        if (adapter->coverage->empty()) {
+        BackgroundSampleDemand const no_samples;
+        auto const& samples = selection_.sample_positions.empty() ? no_samples : selection_.sample_positions[slot];
+        if (!selection_.indexed_events.empty()) {
+            for (auto const& region : selection_.indexed_events[slot]) {
+                auto runs = region.runs;
+                std::ranges::sort(runs, {}, &IndexRun::first);
+                std::uint64_t last = 0;
+                bool overlap = false, first = true;
+                std::size_t requested = 0;
+                for (auto const run : runs) {
+                    if (!run.count) continue;
+                    if (run.count > remaining_event_slots - requested)
+                        return std::unexpected("indexed events exceed the background preparation budget");
+                    requested += static_cast<std::size_t>(run.count);
+                    overlap |= !first && last >= run.first;
+                    last = std::max(last, run.first + (run.count - 1) * run.step);
+                    first = false;
+                }
+                if (overlap) {
+                    // Normalize intersecting requests before allocating one
+                    // destination per occurrence. Disjoint runs stay compact.
+                    std::vector<std::uint64_t> indices;
+                    indices.reserve(requested);
+                    for (auto const run : runs)
+                        for (std::uint64_t offset = 0; offset < run.count; ++offset)
+                            indices.push_back(run.first + offset * run.step);
+                    std::ranges::sort(indices);
+                    indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+                    runs.clear();
+                    std::size_t begin = 0;
+                    while (begin < indices.size()) {
+                        auto const step = begin + 1 < indices.size() ? indices[begin + 1] - indices[begin] : 1;
+                        auto end = begin + 1;
+                        while (end < indices.size() && indices[end] - indices[end - 1] == step) ++end;
+                        runs.push_back({indices[begin], end - begin, step});
+                        begin = end;
+                    }
+                }
+                for (auto const run : runs) {
+                    if (!run.count) continue;
+                    auto const size = static_cast<std::size_t>(run.count);
+                    remaining_event_slots -= size;
+                    auto& storage = adapter->event_run_buffers.emplace_back();
+                    storage.slots.resize(size);
+                    storage.written.resize(size);
+                    adapter->indexed_events.push_back({
+                        region.region, region.range, run, storage.slots, storage.written,
+                        region.constant_value ? &*region.constant_value : nullptr,
+                        port.event_type,
+                    });
+                }
+            }
+            std::ranges::stable_sort(adapter->indexed_events, {}, [](auto const& run) {
+                return details::RegionRefAccess::index(run.region);
+            });
+        }
+        SampleDemandByRegion const no_scoped_samples;
+        auto const& scoped_samples = selection_.sample_region_positions.empty() ? no_scoped_samples
+            : selection_.sample_region_positions[slot];
+        if (adapter->coverage->empty() && samples.empty() && scoped_samples.values.empty()) {
             adapters.push_back(std::move(adapter));
             continue;
         }
         auto storage_selected = [&](graph_jit::PortStorageIndex index) {
             return std::ranges::contains(binding.storage, index);
+        };
+        auto const logical_regions = selection_.binding_input_regions.empty()
+            ? std::span<BackgroundInputRegion const>{}
+            : std::span<BackgroundInputRegion const>{selection_.binding_input_regions[slot]};
+        if (!logical_regions.empty()
+            && (selection_.binding_regions.empty() || selection_.binding_regions[slot].size() != logical_regions.size())) {
+            return std::unexpected("background input Region sources do not match the selected ranges");
+        }
+        auto matches_region_source = [&](std::size_t requested, graph_jit::PortStorageIndex storage,
+                                         std::size_t local, std::size_t read_latency = 0) {
+            if (logical_regions.empty()) return true;
+            auto const& logical = logical_regions[requested];
+            auto const& physical = realization_->selection().materialized_input_regions;
+            if (storage < physical.size() && !physical[storage].empty()) {
+                return std::ranges::any_of(physical[storage], [&](auto const& region) {
+                    return region.port == binding.port && region.storage_region == local && region.region == logical;
+                });
+            }
+            if (logical.sources.size() != 1) return false;
+            auto const& source = logical.sources.front();
+            auto const& planned = plan.storage.ports[storage];
+            if (planned.output_port != source.output && planned.source_port != plan.ports[source.output].configured_port)
+                return false;
+            if (binding.kind == PortKind::sample && source.route_index
+                && plan.connections[logical.connection].sample_read_latencies[*source.route_index] != read_latency)
+                return false;
+            return !source.region_index || realization_->prepared_region_index(storage, *source.region_index) == local;
         };
         if (binding.kind == PortKind::sample &&
             binding.direction == graph_jit::PortDirection::input) {
@@ -869,6 +993,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                                   .logical_channel = direct.target_channel,
                                   .storage_channel = direct.source_channel,
                                   .read_latency = direct.read_latency,
+                                  .storage = direct.storage,
                               });
             }
             for (auto const storage_index : binding.storage) {
@@ -899,6 +1024,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                                           .view = *view,
                                           .logical_channel = channel.channel,
                                           .storage_channel = channel.channel,
+                                          .storage = storage_index,
                                       });
                     }
                 }
@@ -918,7 +1044,19 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                                            "has no complete route");
                 }
             }
-            std::vector<std::pair<std::span<ContinuousRegionStorageView const>, std::size_t>> visited_region_views;
+            struct VisitedRegionView {
+                std::span<ContinuousRegionStorageView const> regions;
+                std::size_t read_latency;
+                graph_jit::PortStorageIndex storage;
+            };
+            std::vector<VisitedRegionView> visited_region_views;
+            struct SampleRegionSource {
+                graph_jit::PortStorageIndex storage;
+                std::size_t local;
+                std::size_t read_latency;
+                std::optional<std::size_t> requested;
+            };
+            std::vector<SampleRegionSource> sample_region_sources;
             for (auto const& route : adapter->sample_reads) {
                 if (route.view.geometry != port.continuous_geometry
                     || route.view.layout != port.sample_layout) {
@@ -928,47 +1066,84 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                 // once, while retaining duplicate logical entries inside it,
                 // even if those entries alias the same immutable bytes.
                 if (std::ranges::any_of(visited_region_views, [&](auto const& visited) {
-                    return visited.first.data() == route.view.regions.data()
-                        && visited.first.size() == route.view.regions.size()
-                        && visited.second == route.read_latency;
+                    return visited.regions.data() == route.view.regions.data()
+                        && visited.regions.size() == route.view.regions.size()
+                        && visited.read_latency == route.read_latency
+                        && (logical_regions.empty() || visited.storage == route.storage);
                 })) continue;
-                visited_region_views.emplace_back(route.view.regions, route.read_latency);
-                for (auto const& source : route.view.regions) {
-                    auto region = source;
-                    region.range.begin =
-                        region.range.begin.advanced_by(route.read_latency);
-                    if ((IndexCoverage{region.range} & *adapter->coverage).empty())
-                        continue;
-                    // A cached buffer may be wider than this invocation's
-                    // request. Preserve the logical Region while exposing only
-                    // the explicitly prepared content windows.
-                    auto& windows = adapter->prepared_sample_windows.emplace_back();
-                    auto append_windows = [&](auto&& self, ContinuousRegionStorageView const& source_window) -> void {
-                        if (!source_window.storage) {
-                            for (auto const& window : source_window.windows) self(self, window);
+                visited_region_views.push_back({route.view.regions, route.read_latency, route.storage});
+                for (std::size_t local = 0; local < route.view.regions.size(); ++local) {
+                    auto const& source = route.view.regions[local];
+                    auto const prepare_region = [&](std::optional<std::size_t> requested_region) {
+                        auto const positions = requested_region
+                            ? scoped_samples.including(logical_regions[*requested_region].logical_index, samples)
+                            : samples;
+                        auto region = source;
+                        region.range.begin =
+                            region.range.begin.advanced_by(route.read_latency);
+                        if (!adapter->coverage->intersects(region.range) && !positions.intersects(region.range))
                             return;
+                        // A cached buffer may be wider than this invocation's
+                        // request. Preserve the logical Region while exposing only
+                        // the explicitly prepared content windows.
+                        auto& windows = adapter->prepared_sample_windows.emplace_back();
+                        auto append_windows = [&](auto&& self, ContinuousRegionStorageView const& source_window) -> void {
+                            if (!source_window.storage) {
+                                for (auto const& window : source_window.windows) self(self, window);
+                                return;
+                            }
+                            auto shifted = source_window;
+                            shifted.range.begin = shifted.range.begin.advanced_by(route.read_latency);
+                            auto const storage_frames = source_window.storage_frames
+                                ? source_window.storage_frames : source_window.frame_count();
+                            auto source_positions = shifted.sample_positions.value_or(
+                                SamplePositionRun{shifted.range.begin, shifted.range.extent});
+                            source_positions.first = shifted.range.begin;
+                            auto append = [&](SamplePositionRun part) {
+                                auto window = shifted;
+                                window.storage_frames = storage_frames;
+                                window.first_frame += *source_positions.slot_at(part.first) * window.frame_stride;
+                                window.range = {part.first, (part.count - 1) * part.step + 1};
+                                if (part.count > 1) window.frame_stride *= part.step / source_positions.step;
+                                window.sample_positions = part.step == 1 ? std::nullopt : std::optional{part};
+                                windows.push_back(window);
+                            };
+                            for (auto const requested : positions.prepared_runs(shifted.range, *adapter->coverage,
+                                     BufferedStorageLimits{}.max_resident_bytes / sizeof(Sample))) {
+                                if (auto const common = intersect_clipped_sample_run(source_positions, requested))
+                                    append(*common);
+                            }
+                        };
+                        append_windows(append_windows, source);
+                        std::ranges::sort(windows, {}, [&](auto const& window) {
+                            return region.range.begin.forward_distance_to(window.range.begin);
+                        });
+                        if (windows.empty()) return;
+                        if (windows.size() == 1 && !windows.front().sample_positions && windows.front().range == region.range) {
+                            region = windows.front();
+                        } else {
+                            region.storage = nullptr;
+                            region.written_values = nullptr;
+                            region.windows = windows;
+                            region.sample_positions.reset();
                         }
-                        auto shifted = source_window;
-                        shifted.range.begin = shifted.range.begin.advanced_by(route.read_latency);
-                        auto const storage_frames = source_window.storage_frames
-                            ? source_window.storage_frames : source_window.frame_count();
-                        for (auto const requested : IndexCoverage{shifted.range} & *adapter->coverage) {
-                            auto window = shifted;
-                            window.storage_frames = storage_frames;
-                            window.first_frame += static_cast<std::size_t>(shifted.range.begin.forward_distance_to(requested.begin));
-                            window.range = requested;
-                            windows.push_back(window);
+                        if (requested_region) {
+                            region.region_ref = details::RegionRefAccess::make(selection_.selection_snapshot,
+                                binding.port, logical_regions[*requested_region].logical_index);
                         }
+                        adapter->sample_input_regions.push_back(region);
+                        sample_region_sources.push_back({route.storage, local, route.read_latency, requested_region});
                     };
-                    append_windows(append_windows, source);
-                    if (windows.size() == 1 && windows.front().range == region.range) {
-                        region = windows.front();
+                    if (logical_regions.empty()) {
+                        prepare_region(std::nullopt);
                     } else {
-                        region.storage = nullptr;
-                        region.written_values = nullptr;
-                        region.windows = windows;
+                        auto const shifted = source.range.begin.advanced_by(route.read_latency);
+                        for (std::size_t requested = 0; requested < logical_regions.size(); ++requested) {
+                            if (logical_regions[requested].range == GlobalIndexRange{shifted, source.range.extent}
+                                && matches_region_source(requested, route.storage, local, route.read_latency))
+                                prepare_region(requested);
+                        }
                     }
-                    adapter->sample_input_regions.push_back(region);
                 }
             }
             auto const expected_regions = selection_.binding_regions.empty()
@@ -983,11 +1158,14 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                 auto regions = adapter->sample_input_regions;
                 std::vector<bool> used(regions.size(), false);
                 adapter->sample_input_regions.clear();
-                for (auto const expected : expected_regions) {
+                for (std::size_t requested = 0; requested < expected_regions.size(); ++requested) {
+                    auto const expected = expected_regions[requested];
                     auto found = regions.size();
                     for (std::size_t index = 0; index < regions.size(); ++index) {
-                        if (!used[index]
-                            && regions[index].range == expected) {
+                        auto const& source = sample_region_sources[index];
+                        if (!used[index] && regions[index].range == expected
+                            && (!source.requested || *source.requested == requested)
+                            && matches_region_source(requested, source.storage, source.local, source.read_latency)) {
                             found = index;
                             break;
                         }
@@ -1014,8 +1192,12 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
             }
             if (port.content_access == InputContentAccess::complete_buffer) {
                 for (auto& region : adapter->sample_input_regions) {
-                    if (!adapter->coverage->contains(region.range)) return std::unexpected(
-                        "complete-buffer input Region is not fully prepared");
+                    auto const* scoped = region.region_ref
+                        ? scoped_samples.find(details::RegionRefAccess::index(region.region_ref)) : nullptr;
+                    if (!adapter->coverage->contains(region.range)
+                        && (!scoped || scoped->prepared_runs(region.range, *adapter->coverage,
+                                region.range.extent) != std::vector<SamplePositionRun>{{region.range.begin, region.range.extent}}))
+                        return std::unexpected("complete-buffer input Region is not fully prepared");
                     if (region.storage && region.first_frame == 0
                         && (!region.storage_frames || region.storage_frames == region.frame_count())) continue;
                     auto const frames = region.frame_count();
@@ -1049,7 +1231,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                 if (!contains_coverage(visible, *adapter->coverage)) return std::unexpected(
                     "background continuous input windows lie outside selected logical Regions");
             }
-            if (!adapter->coverage->empty()
+            if ((!adapter->coverage->empty() || !samples.empty() || !scoped_samples.values.empty())
                 && port.input_access == InputAccessKind::region
                 && adapter->sample_input_regions.size() != 1) {
                 return std::unexpected(
@@ -1073,10 +1255,16 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                         && previous.size() == view->regions.size();
                 })) continue;
                 visited.push_back(view->regions);
-                adapter->sample_output_regions.insert(adapter->sample_output_regions.end(),
-                    view->regions.begin(), view->regions.end());
+                for (std::size_t local = 0; local < view->regions.size(); ++local) {
+                    auto region = view->regions[local];
+                    auto const& indices = realization_->selection().output_region_indices[storage_index];
+                    if (indices)
+                        region.region_ref = details::RegionRefAccess::make(selection_.selection_snapshot,
+                            binding.port, (*indices)[local]);
+                    adapter->sample_output_regions.push_back(region);
+                }
             }
-            if (!adapter->coverage->empty()
+            if ((!adapter->coverage->empty() || !samples.empty() || !scoped_samples.values.empty())
                 && port.output_production == OutputProductionKind::region
                 && adapter->sample_output_regions.size() != 1) {
                 return std::unexpected(
@@ -1096,6 +1284,19 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                 }
             }
         } else if (binding.direction == graph_jit::PortDirection::input) {
+            std::vector<graph_jit::PortStorageIndex> event_storage;
+            auto add_event_read = [&](graph_jit::PortStorageIndex storage, BackgroundEventReadView const& view) {
+                if (!logical_regions.empty()) {
+                    if (!std::ranges::contains(event_storage, storage)) {
+                        adapter->event_reads.push_back(view);
+                        event_storage.push_back(storage);
+                    }
+                    return;
+                }
+                auto const previous = adapter->event_reads.size();
+                append_unique_view(adapter->event_reads, view);
+                if (adapter->event_reads.size() != previous) event_storage.push_back(storage);
+            };
             for (auto const& direct : plan.storage.direct_events) {
                 if (!storage_selected(direct.storage) ||
                     direct.target_subset >= plan.event_target_subsets.size())
@@ -1112,7 +1313,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                     return std::unexpected("background event input has no "
                                            "readable direct storage");
                 }
-                append_unique_view(adapter->event_reads, *view);
+                add_event_read(direct.storage, *view);
             }
             for (auto const storage_index : binding.storage) {
                 if (storage_index >= plan.storage.ports.size()) {
@@ -1135,7 +1336,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                     if (target.port.bundle ==
                             port.configured_port.node_bundle_handle &&
                         target.port.port == port.configured_port.port_index) {
-                        append_unique_view(adapter->event_reads, *view);
+                        add_event_read(storage_index, *view);
                     }
                 }
             }
@@ -1182,10 +1383,13 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                 std::vector<bool> used(ranges.size(), false);
                 adapter->event_input_regions.clear();
                 adapter->event_input_ranges.clear();
-                for (auto const expected : expected_regions) {
+                for (std::size_t requested = 0; requested < expected_regions.size(); ++requested) {
+                    auto const expected = expected_regions[requested];
                     auto found = ranges.size();
                     for (std::size_t index = 0; index < ranges.size(); ++index) {
-                        if (!used[index] && ranges[index] == expected) {
+                        auto const& route = routes[index];
+                        if ((!used[index] || !logical_regions.empty()) && ranges[index] == expected
+                            && matches_region_source(requested, event_storage[route.view], route.region)) {
                             found = index;
                             break;
                         }
@@ -1222,7 +1426,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                 if (!contains_coverage(visible, *adapter->coverage)) return std::unexpected(
                     "background event input windows lie outside selected logical Regions");
             }
-            if (!adapter->coverage->empty()
+            if ((!adapter->coverage->empty() || !samples.empty() || !scoped_samples.values.empty())
                 && port.input_access == InputAccessKind::region
                 && adapter->event_input_ranges.size() != 1) {
                 return std::unexpected(
@@ -1270,7 +1474,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                 return std::unexpected(
                     "background event output storage disagrees with its propagated Region list");
             }
-            if (!adapter->coverage->empty()
+            if ((!adapter->coverage->empty() || !samples.empty() || !scoped_samples.values.empty())
                 && port.output_production == OutputProductionKind::region
                 && adapter->event_output_ranges.size() != 1) {
                 return std::unexpected(
@@ -1358,7 +1562,18 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                     .for_each_event = &BindingAdapter::for_each_event_region,
                     .find_neighbors = &BindingAdapter::event_neighbors,
                     .prepared_coverage_value = adapter->coverage,
+                    .event_runs = adapter->indexed_events,
                 });
+                if (!selection_.indexed_events.empty()) {
+                    for (auto const& selected : selection_.indexed_events[*slot]) {
+                        if (!selected.source || *selected.source >= adapters.size())
+                            return std::unexpected("indexed event input has invalid source binding");
+                        for (auto const& target : adapter->indexed_events)
+                            if (target.region == selected.region)
+                                storage->indexed_inputs.push_back({
+                                    &target, adapters[*selected.source]->indexed_events, selected.source_region});
+                    }
+                }
             }
         }
         for (auto const port_index : node_plan.outputs) {
@@ -1390,6 +1605,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                     .region_count = adapter->event_output_ranges.size(),
                     .requested_coverage_value = adapter->coverage,
                     .write_event = &BindingAdapter::write_event_region,
+                    .event_runs = adapter->indexed_events,
                 });
             }
         }
@@ -1403,6 +1619,9 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
         auto operation_frame =
             std::make_unique<BackgroundStorageOperationFrame>(
                 *realization_, placement.before, placement.after);
+        if (!storage->indexed_inputs.empty()) {
+            operation_frame->set_leaf_hooks(storage.get(), &NodeFrameStorage::prepare_indexed_inputs, nullptr);
+        }
         frame.operation_frame = operation_frame.get();
         frame.prepare_operations =
             &BackgroundStorageOperationFrame::prepare_callback;
@@ -1618,7 +1837,14 @@ RandomAccessEventInputPort BackgroundEvaluationCallFrame::discovery_event_input(
         .region_count = adapter->event_input_ranges.size(), .coverage_value = &adapter->logical_coverage,
         .for_each_event = &BindingAdapter::for_each_event_region,
         .find_neighbors = &BindingAdapter::event_neighbors,
-        .prepared_coverage_value = adapter->coverage};
+        .prepared_coverage_value = adapter->coverage,
+        .event_runs = adapter->indexed_events};
+}
+
+void BackgroundEvaluationCallFrame::prepare_indexed_input(graph_jit::BackgroundPortIndex port)
+{
+    if (!indexed_events(port).empty())
+        NodeFrameStorage::prepare_indexed_inputs(node_storage_[plan_->ports[port].node].get());
 }
 
 std::expected<void, std::string>
@@ -1635,7 +1861,32 @@ BackgroundEvaluationCallFrame::validate_evaluation() const
             "background callback attempted a write outside selected output "
             "storage or exceeded an event bound");
     }
+    for (auto const& adapter : binding_adapters_) {
+        RegionRef previous_region;
+        std::uint64_t last_offset = 0;
+        for (auto const& run : adapter->indexed_events) {
+            if (std::ranges::any_of(run.written, [](auto bit) { return bit == 0; }))
+                return std::unexpected("background indexed event run has missing occurrences");
+            if (run.region != previous_region) last_offset = 0;
+            for (auto const& event : run.slots) {
+                auto const offset = run.range.begin.forward_distance_to(event.time);
+                if (offset < last_offset)
+                    return std::unexpected("indexed events are out of semantic order");
+                last_offset = offset;
+            }
+            previous_region = run.region;
+        }
+    }
     return realization_->validate_produced_storage();
+}
+
+std::span<EventRunStorageView const>
+BackgroundEvaluationCallFrame::indexed_events(graph_jit::BackgroundPortIndex port) const noexcept
+{
+    if (!sealed_ || port >= plan_->runtime.port_bindings.size()) return {};
+    auto const slot = plan_->runtime.port_bindings[port];
+    return slot ? std::span<EventRunStorageView const>{binding_adapters_[*slot]->indexed_events}
+                : std::span<EventRunStorageView const>{};
 }
 
 graph_jit::BackgroundEvaluationCall&

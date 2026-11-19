@@ -26,6 +26,16 @@ IV_NODE("iv.builtin.automation.point_source", iv::automation::PointSource);
 IV_NODE("iv.builtin.automation.interpreter", iv::automation::Curve);
 IV_MODULE_CLASS("iv.builtin.automation.curve", iv::automation::AutomationCurve);
 
+namespace iv {
+struct Timeline {
+    void build_graph(GraphBuilder& graph) const
+    {
+        graph.event_input<"beats">(EventTypeId::beat, InputAccess::coverage);
+        graph.outputs();
+    }
+};
+}
+IV_MODULE_CLASS("iv.builtin.timeline", iv::Timeline);
 IV_NODE("iv.builtin.beats", iv::Beats);
 
 IV_NODE("iv.builtin.invert", iv::Invert);

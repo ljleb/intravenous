@@ -2,13 +2,13 @@
 import { computed } from "vue";
 import type { ObservationWindow } from "../../src/observations";
 import { usePlayback } from "./playbackContext";
-import { useTimelineWindow } from "./timelineContext";
+import { useTimelineWindow, type PresentationTimeWindow } from "./timelineContext";
 
-const props = defineProps<{ sampleWindow?: ObservationWindow }>();
+const props = defineProps<{ window?: PresentationTimeWindow; sampleWindow?: ObservationWindow }>();
 const playback = usePlayback();
 const timeline = useTimelineWindow();
 function markerX(position: bigint | null) {
-    const window = timeline?.value;
+    const window = props.window ?? timeline?.value;
     if (position === null || !window) return null;
 
     let fraction: number;
@@ -28,9 +28,9 @@ const foregroundX = computed(() => markerX(playback.foregroundPlayhead.value));
 
 <template>
     <line v-if="foregroundX !== null && foregroundX !== backgroundX" class="timeline-playhead foreground-playhead"
-        :x1="foregroundX" :x2="foregroundX" y1="0" y2="100%" vector-effect="non-scaling-stroke" aria-hidden="true" />
+        :x1="foregroundX" :x2="foregroundX" y1="0" y2="100%" vector-effect="non-scaling-stroke" role="img" aria-label="Foreground playhead" />
     <line v-if="backgroundX !== null" class="timeline-playhead background-playhead" :x1="backgroundX" :x2="backgroundX" y1="0" y2="100%"
-        vector-effect="non-scaling-stroke" aria-hidden="true" />
+        vector-effect="non-scaling-stroke" role="img" aria-label="Background playhead" />
 </template>
 
 <style scoped>

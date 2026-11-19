@@ -1,4 +1,5 @@
 import type { ObservationHostRequest, ObservationResponse, ObservationUpdate } from "./observations";
+import type { ObservationProfileSummary } from "./observationProfile";
 import type { ManualControlAction, ManualControlInteractionState, ManualControlLiveValue } from "./manualControls";
 import { readLayout, type GraphLayout, type GraphScope, type GraphViewState, type NodeAddress, type PresentationState } from "./graphScope";
 import type { LiveGraphSessionStatus } from "./liveGraphProtocol";
@@ -42,6 +43,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | ObservationResponse
     | { type: "observationVisibility"; visible: boolean }
     | { type: "observationUpdate"; update: ObservationUpdate }
+    | { type: "startObservationProfile"; durationMs: number }
     | NodeEventResponse
     | { type: "manualControlState"; interactions: ManualControlInteractionState[]; live: ManualControlLiveValue[] }
     | { type: "graphWindowFocus"; focused: boolean }
@@ -52,6 +54,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "playbackSeek"; position: string }
     | { type: "playbackDrag"; phase: PlaybackDragPhase; position: string }
     | ObservationHostRequest
+    | { type: "observationProfile"; summary: ObservationProfileSummary }
     | NodeEventHostRequest
     | { type: "graphInteractionHint"; hint: StatusHint | null }
     | { type: "warpCursorAfterPointDrag" | "warpCursorAfterMiddleDrag"; warp: CursorWarp; requestId: number }

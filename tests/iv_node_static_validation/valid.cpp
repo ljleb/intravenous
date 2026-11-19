@@ -160,7 +160,7 @@ struct ValidBatchBackgroundNode {
     static void tock_coverage_batch(
         iv::TockCoverageBatchContext<ValidBatchBackgroundNode>& context)
     {
-        for (auto lane : context) (void)lane.template output<"output">();
+        for (auto lane : context) (void)lane.output<"output">().prepared_runs();
     }
 
     static void propagate_forward_coverage_batch(
@@ -179,7 +179,7 @@ struct ValidBatchBackgroundNode {
     {
         for (auto lane : context) {
             lane.template input<"input">().require(
-                lane.template output<"output">().required());
+                lane.output<"output">().required_positions());
         }
     }
 };

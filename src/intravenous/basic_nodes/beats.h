@@ -63,17 +63,6 @@ class Beats {
         return period;
     }
 
-    [[nodiscard]] BeatEvent beat_at(WideIndex mark_index) const noexcept
-    {
-        if (mark_index % subdivisions_per_beat_ == 0) {
-            auto const beat_index = mark_index / subdivisions_per_beat_;
-            return {.depth = static_cast<std::uint8_t>(beat_index % beats_per_bar_ != 0)};
-        }
-        std::size_t level = 0;
-        while (mark_index % subdivision_strides_[level] != 0) ++level;
-        return {.depth = static_cast<std::uint8_t>(level + 2)};
-    }
-
     static WideIndex floor_divide(WideIndex value, WideIndex divisor) noexcept
     {
         return value / divisor - (value % divisor < 0);
@@ -82,6 +71,39 @@ class Beats {
     static WideIndex ceil_divide(WideIndex value, WideIndex divisor) noexcept
     {
         return value / divisor + (value % divisor > 0);
+    }
+
+    struct BeatSequence {
+        WideIndex stride;
+        WideIndex exclude_every;
+
+        [[nodiscard]] WideIndex index_at_or_after(WideIndex sample, SamplePeriod period) const noexcept
+        {
+            auto const mark = ceil_divide(sample * period.denominator - period.denominator / 2, period.numerator);
+            auto const step = ceil_divide(mark, stride);
+            return exclude_every ? step - ceil_divide(step, exclude_every) : step;
+        }
+
+        [[nodiscard]] GlobalIndex position(WideIndex index, SamplePeriod period) const noexcept
+        {
+            auto step = index;
+            if (exclude_every) {
+                auto const block = floor_divide(index, exclude_every - 1);
+                step = block * exclude_every + (index - block * (exclude_every - 1)) + 1;
+            }
+            auto const mark = step * stride;
+            auto const sample = floor_divide(mark * period.numerator + period.denominator / 2, period.denominator);
+            return GlobalIndex::from_signed(static_cast<std::int64_t>(sample));
+        }
+    };
+
+    [[nodiscard]] BeatSequence sequence(std::size_t depth) const noexcept
+    {
+        if (depth == 0) return {WideIndex{beats_per_bar_} * subdivisions_per_beat_, 0};
+        if (depth == 1) return {subdivisions_per_beat_, beats_per_bar_};
+        auto const stride = subdivision_strides_[depth - 2];
+        auto const parent = depth == 2 ? subdivisions_per_beat_ : subdivision_strides_[depth - 3];
+        return {stride, parent / stride};
     }
 
 public:
@@ -126,9 +148,23 @@ public:
 
     void propagate_forward_coverage(PropagateForwardCoverageContext<Beats>& ctx) const
     {
-        (void)sample_period(ctx.sample_rate);
+        auto const period = sample_period(ctx.sample_rate);
+        auto const depths = 2 + static_cast<std::size_t>(
+            std::ranges::find(subdivision_strides_, 0u) - subdivision_strides_.begin());
+        std::vector<EventRegionInfo> published;
+        published.reserve(regions.size() * depths);
+        for (auto const range : regions) {
+            auto const begin = WideIndex{range.begin.signed_value()};
+            for (std::size_t depth = 0; depth < depths; ++depth) {
+                auto const beats = sequence(depth);
+                auto const count = beats.index_at_or_after(begin + range.extent, period)
+                    - beats.index_at_or_after(begin, period);
+                published.push_back({range, IndexedEventRegionInfo{
+                    static_cast<std::uint64_t>(count), BeatEvent{static_cast<std::uint8_t>(depth)}}});
+            }
+        }
         auto const output = ctx.output<"beats">();
-        output.publish(regions);
+        output.publish(published);
         if (ctx.local_state_changed) {
             output.change(IndexCoverage{regions[0], regions[1]});
         }
@@ -138,23 +174,28 @@ public:
     {
         auto const period = sample_period(ctx.sample_rate);
         auto const output = ctx.output<"beats">();
-        auto const rounding = period.denominator / 2;
-        // Invert nearest-sample rounding to find the first mark in the window.
-        // Derive each position from its mark index so partitioning cannot drift.
-        auto const first_mark_at_or_after = [&](WideIndex sample) {
-            return ceil_divide(sample * period.denominator - rounding,
-                period.numerator);
-        };
+        for (auto run : output.prepared_runs()) {
+            auto const depth = std::get<BeatEvent>(*run.constant_value()).depth;
+            auto const beats = sequence(depth);
+            auto const origin = beats.index_at_or_after(run.region_range().begin.signed_value(), period);
+            for (std::size_t slot = 0; slot < run.size(); ++slot)
+                run.write_time(slot, beats.position(origin + run.index(slot), period));
+        }
+
+        std::optional<GlobalIndex> previous_half;
+        std::uint8_t depth = 0;
         for (auto const region : output.regions()) {
+            if (previous_half == region.range().begin) ++depth;
+            else depth = 0;
+            previous_half = region.range().begin;
+            auto const beats = sequence(depth);
             for (auto const window : IndexCoverage{region.range()} & output.requested_coverage()) {
                 WideIndex const begin = window.begin.signed_value();
-                auto const end = first_mark_at_or_after(begin + window.extent);
-                for (auto mark = first_mark_at_or_after(begin); mark < end; ++mark) {
-                    auto const sample = floor_divide(
-                        mark * period.numerator + rounding, period.denominator);
+                auto const end = beats.index_at_or_after(begin + window.extent, period);
+                for (auto event = beats.index_at_or_after(begin, period); event < end; ++event) {
                     region.write({
-                        .time = GlobalIndex::from_signed(static_cast<std::int64_t>(sample)),
-                        .value = beat_at(mark),
+                        .time = beats.position(event, period),
+                        .value = BeatEvent{depth},
                     });
                 }
             }

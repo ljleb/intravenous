@@ -40,6 +40,14 @@ inline graph_jit::PublicCoverageInputView const* observation_public_coverage_inp
     return found == views.end() ? nullptr : &*found;
 }
 
+inline graph_jit::PublicEventCoverageInputView const* observation_public_event_coverage_input(
+    CompiledGraph const& graph, NodeBundlePortId input)
+{
+    auto const& views = graph.background_evaluation_plan.public_event_coverage_inputs;
+    auto const found = std::ranges::find(views, input, &graph_jit::PublicEventCoverageInputView::port);
+    return found == views.end() ? nullptr : &*found;
+}
+
 inline bool resolve_observation_window_source(
     ConfiguredGraph const& graph,
     std::unordered_map<std::string, NodeInstancePlacement> const& placements,
@@ -48,6 +56,26 @@ inline bool resolve_observation_window_source(
     graph_jit::ResolvedPortRealization const* realization = nullptr,
     CompiledGraph const* compiled = nullptr)
 {
+    if (source.port_kind == PortKind::event) {
+        if (!compiled || operation_id != "beat-grid" || source.kind != ObservationSourceKind::input) return false;
+        std::optional<NodeBundlePortId> port;
+        for (auto const& match : resolve_node_address(graph, placements, source.node)) {
+            if (match.kind != ProjectNodePathMatch::Kind::bundle) continue;
+            auto const& bundle = graph.node_bundles.bundle(match.bundle);
+            for (std::size_t index = 0; index < bundle.event_input_count(); ++index) {
+                NodeBundlePortId const candidate{match.bundle, PortKind::event, index};
+                auto const config = graph.node_bundles.resolve_event_input(candidate).config;
+                if (config.name != source.member || config.type != EventTypeId::beat) continue;
+                if (port) return false;
+                port = candidate;
+            }
+        }
+        auto const* input = port ? observation_public_event_coverage_input(*compiled, *port) : nullptr;
+        if (!input || !input->reconstructible) return false;
+        query.port = *port;
+        query.kind = source.kind;
+        return true;
+    }
     if (source.kind == ObservationSourceKind::input) {
         if (!compiled) return false;
         auto const channels = resolve_project_sample_input(graph, placements, source.node, source.member, source.channel);

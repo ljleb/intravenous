@@ -502,6 +502,11 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
                         .member = parse_string_param(source, "member")},
                     .operation = parse_string_param(item, "operation"),
                 };
+                if (source.contains("portKind")) {
+                    auto const selected = source.at("portKind").get<std::string>();
+                    if (selected != "sample" && selected != "event") throw std::invalid_argument("invalid observation port kind");
+                    interest.source.port_kind = selected == "event" ? PortKind::event : PortKind::sample;
+                }
                 if (source.contains("channel")) {
                     if (!source["channel"].is_number_unsigned()) throw std::invalid_argument("observation channel must be unsigned");
                     interest.source.channel = source["channel"].get<std::size_t>();
@@ -517,12 +522,29 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
                     if (parsed_begin.ec != std::errc{} || parsed_begin.ptr != begin_text.data() + begin_text.size()
                         || parsed_length.ec != std::errc{} || parsed_length.ptr != length_text.data() + length_text.size()
                         || !length || length > static_cast<std::uint64_t>(INT64_MAX)
-                        || !window.at("points").is_number_unsigned())
+                        )
                         throw std::invalid_argument("invalid observation window range");
-                    auto points = window.at("points").get<std::uint64_t>();
+                    bool const event = interest.source.port_kind == PortKind::event;
+                    auto const& count = window.at(event ? "maxMarks" : "points");
+                    if (!count.is_number_unsigned()) throw std::invalid_argument("invalid observation window budget");
+                    auto const points = count.get<std::uint64_t>();
                     if (!points || points > maximum_observation_window_points || interest.source.kind == ObservationSourceKind::state_field)
                         throw std::invalid_argument("invalid observation window points or source");
                     interest.window = ObservationWindow{GlobalIndex::from_signed(begin), length, static_cast<std::size_t>(points)};
+                    if (event) {
+                        auto const& depth = window.at("maxDepth");
+                        if (interest.operation != "beat-grid" || interest.source.kind != ObservationSourceKind::input
+                            || interest.source.channel || !depth.is_number_unsigned() || depth.get<std::uint64_t>() > 255)
+                            throw std::invalid_argument("invalid beat-grid observation");
+                        interest.window->max_depth = depth.get<std::uint8_t>();
+                    }
+                }
+                if (interest.source.port_kind == PortKind::event && !interest.window)
+                    throw std::invalid_argument("event observation requires a window");
+                if (item.contains("prefetch")) {
+                    if (!interest.window || !item.at("prefetch").is_boolean())
+                        throw std::invalid_argument("observation prefetch requires a window and a boolean priority flag");
+                    interest.prefetch = item.at("prefetch").get<bool>();
                 }
                 request.interests.push_back(std::move(interest));
             }

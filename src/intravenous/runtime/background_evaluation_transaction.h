@@ -32,6 +32,8 @@ struct BackgroundTransactionProjection {
         PreparedCoveragePropagation const&, BackgroundStorageRealization const&,
         BackgroundEvaluationCallFrame const&, PersistedDataVersion) = nullptr;
     std::optional<graph_jit::BackgroundPortIndex> sample_input{};
+    void (*select_demands)(void*, BackgroundDemandSelection const&, CoveragePropagationRequest&,
+        PersistedDataVersion) = nullptr;
 };
 
 // Generation-local destination metadata aligned with one independently pinned
@@ -61,9 +63,9 @@ struct BackgroundTransactionInputs {
     // Projects only while transaction views and the immutable data pin live.
     // The caller publishes the independently owned result only after commit.
     BackgroundTransactionProjection projection{};
-    // Consumers with transaction-local results can reuse the computed cache
-    // while keeping newly produced windows out of it.
-    bool retain_computed_outputs = true;
+    // Observation reads can reuse retained data without publishing the
+    // temporary buffers generated to answer them.
+    bool retain_generated_outputs = true;
     // Optional background-query budget. Playback retains its normal policy.
     std::optional<std::size_t> maximum_materialized_sample_bytes{};
     // Pins imported code, immutable configuration and resource ownership for

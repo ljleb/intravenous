@@ -1,8 +1,11 @@
 #include <intravenous/runtime/background_coverage_propagation.h>
+#include <atomic>
 #include <intravenous/runtime/background_planning_scheduler.h>
+#include <intravenous/runtime/background_region_routing.h>
 #include <intravenous/graph_jit/sequential_coverage.h>
 
 #include <algorithm>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <numeric>
@@ -68,16 +71,16 @@ std::vector<GlobalIndexRange> coverage_regions(IndexCoverage const& coverage)
     return SignedGlobalIndexOrder{}(left.begin, right.begin);
 }
 
-[[nodiscard]] std::vector<GlobalIndexRange> merge_sorted_region_runs(
-    std::span<std::vector<GlobalIndexRange> const> runs)
+[[nodiscard]] std::vector<BackgroundInputRegion> merge_sorted_region_runs(
+    std::span<std::vector<BackgroundInputRegion>> runs)
 {
     struct Cursor {
         std::size_t run = 0;
         std::size_t offset = 0;
     };
     auto later = [&](Cursor left, Cursor right) {
-        auto const left_region = runs[left.run][left.offset];
-        auto const right_region = runs[right.run][right.offset];
+        auto const left_region = runs[left.run][left.offset].range;
+        auto const right_region = runs[right.run][right.offset].range;
         if (left_region != right_region) {
             return canonical_region_less(right_region, left_region);
         }
@@ -90,38 +93,24 @@ std::vector<GlobalIndexRange> coverage_regions(IndexCoverage const& coverage)
         count += runs[run].size();
         if (!runs[run].empty()) pending.push({.run = run});
     }
-    std::vector<GlobalIndexRange> result;
+    std::vector<BackgroundInputRegion> result;
     result.reserve(count);
     while (!pending.empty()) {
         auto cursor = pending.top();
         pending.pop();
-        result.push_back(runs[cursor.run][cursor.offset]);
+        result.push_back(std::move(runs[cursor.run][cursor.offset]));
         ++cursor.offset;
         if (cursor.offset < runs[cursor.run].size()) pending.push(cursor);
     }
     return result;
 }
 
-template<typename Fn>
-void for_each_range_intersection_preserving_shape(
-    GlobalIndexRange left,
-    GlobalIndexRange right,
-    Fn&& fn)
+std::vector<GlobalIndexRange> input_region_ranges(std::span<BackgroundInputRegion const> regions)
 {
-    if (left.empty() || right.empty()) return;
-    if (auto const offset = left.offset_of(right.begin)) {
-        fn(GlobalIndexRange{
-            .begin = right.begin,
-            .extent = std::min(left.extent - *offset, right.extent),
-        });
-    }
-    if (left.begin == right.begin) return;
-    if (auto const offset = right.offset_of(left.begin)) {
-        fn(GlobalIndexRange{
-            .begin = left.begin,
-            .extent = std::min(right.extent - *offset, left.extent),
-        });
-    }
+    std::vector<GlobalIndexRange> result;
+    result.reserve(regions.size());
+    for (auto const& region : regions) result.push_back(region.range);
+    return result;
 }
 
 bool shares_configuration_identity(
@@ -323,175 +312,171 @@ IndexCoverage derive_input_coverage(
     return result;
 }
 
-std::vector<GlobalIndexRange> derive_input_regions(
+std::vector<BackgroundInputRegion> derive_input_regions(
     graph_jit::BackgroundEvaluationPlan const& plan,
     std::span<std::vector<GlobalIndexRange> const> output_regions,
     graph_jit::BackgroundPortIndex input,
-    IndexCoverage const* requested = nullptr)
+    IndexCoverage const* requested = nullptr,
+    BackgroundSampleDemand const* sample_positions = nullptr,
+    std::size_t sparse_sample_budget = 0)
 {
-    std::vector<GlobalIndexRange> result;
-    std::vector<std::vector<GlobalIndexRange>> sorted_runs;
+    std::vector<BackgroundInputRegion> result;
+    std::vector<std::vector<BackgroundInputRegion>> sorted_runs;
     auto const& planned_input = plan.ports[input];
     auto const source_regions = [&](graph_jit::BackgroundPortIndex output,
                                     std::size_t latency = 0) {
         auto const& source = plan.ports[output];
         auto const& regions = output_regions[*source.accumulators.output_change];
-        // Authored Regions retain membership and complete storage. Tick replay
-        // has no authored Region identity: its finite storage follows demand.
+        // Tick replay windows are determined by the demand. Authored
+        // Regions use their index in the complete published sequence.
         if (!requested || !source.replayed_tick_output)
             return regions;
-        auto selected = region_coverage(regions);
-        selected = selected & shifted_back(*requested, latency);
+        auto selected = region_coverage(regions) & shifted_back(*requested, latency);
+        if (sample_positions && !sample_positions->empty())
+            selected.include(region_coverage(regions)
+                & sample_positions->retreated_by(latency).positional_ranges(sparse_sample_budget));
         return std::vector<GlobalIndexRange>{selected.begin(), selected.end()};
+    };
+    auto const source_ref = [&](graph_jit::BackgroundPortIndex output,
+                                std::size_t index, std::optional<std::size_t> route) {
+        BackgroundInputRegionSource source{.output = output, .route_index = route};
+        auto const& port = plan.ports[output];
+        if (!port.replayed_tick_output && !port.persisted_tick_output)
+            source.region_index = index;
+        return source;
+    };
+    auto const ordered = [](BackgroundInputRegion const& left, BackgroundInputRegion const& right) {
+        return canonical_region_less(left.range, right.range);
     };
 
     for (auto const connection_index : planned_input.incoming_connections) {
         auto const& connection = plan.connections[connection_index];
+        std::vector<BackgroundInputRegion> connection_regions;
 
-        std::vector<GlobalIndexRange> connection_regions;
         if (connection.kind == PortKind::event) {
-            IndexCoverage complete;
-            bool first_source = true;
-            std::vector<std::vector<GlobalIndexRange>> source_runs;
-            for (auto const& delivery : connection.event_deliveries) {
-                if (delivery.target_port != input || !delivery.source_port) {
-                    continue;
-                }
-                auto const& regions = source_regions(*delivery.source_port);
-                auto available_coverage = region_coverage(regions);
-                complete = first_source
-                    ? std::move(available_coverage)
-                    : complete & available_coverage;
-                first_source = false;
-                source_runs.push_back(regions);
+            struct EventSource {
+                graph_jit::BackgroundPortIndex output;
+                std::size_t delivery;
+                std::vector<GlobalIndexRange> regions;
+            };
+            std::optional<IndexCoverage> complete;
+            std::vector<EventSource> sources;
+            for (std::size_t index = 0; index < connection.event_deliveries.size(); ++index) {
+                auto const& delivery = connection.event_deliveries[index];
+                if (delivery.target_port != input || !delivery.source_port) continue;
+                auto const& source = sources.emplace_back(
+                    *delivery.source_port, index, source_regions(*delivery.source_port));
+                auto available = region_coverage(source.regions);
+                complete = complete ? *complete & available : std::move(available);
             }
-            for (auto const& source_run : source_runs) {
-                for (auto const source_region : source_run) {
-                    for (auto const available : complete) {
-                        for_each_range_intersection_preserving_shape(
-                            source_region,
-                            available,
-                            [&](GlobalIndexRange part) {
-                                if (!part.empty()) {
-                                    connection_regions.push_back(part);
-                                }
+            for (auto const& source : sources) {
+                for (std::size_t index = 0; index < source.regions.size(); ++index) {
+                    for (auto const available : *complete) {
+                        for_each_range_intersection(
+                            source.regions[index], available, [&](GlobalIndexRange part) {
+                                connection_regions.push_back({
+                                    .range = part,
+                                    .connection = connection_index,
+                                    .sources = {source_ref(source.output, index, source.delivery)},
+                                });
                             });
                     }
                 }
             }
-            if (planned_input.ordering == CoverageOrdering::sorted) {
-                if (!std::ranges::is_sorted(
-                        connection_regions, canonical_region_less)) {
-                    std::stable_sort(
-                        connection_regions.begin(),
-                        connection_regions.end(),
-                        canonical_region_less);
-                }
-                sorted_runs.push_back(std::move(connection_regions));
-            } else {
-                result.insert(
-                    result.end(),
-                    connection_regions.begin(),
-                    connection_regions.end());
-            }
-            continue;
-        }
-        if (connection.kind != PortKind::sample) continue;
-
-        auto append_contribution = [&] (
-            std::span<std::size_t const> source_indices) {
-            std::vector<std::pair<
-                graph_jit::BackgroundPortIndex, std::size_t>> routes;
-            for (auto const source_index : source_indices) {
-                if (source_index
-                        >= connection.sample_source_port_by_channel.size()
-                    || !connection.sample_source_port_by_channel[source_index]) {
-                    continue;
-                }
-                auto const route = std::pair{
-                    *connection.sample_source_port_by_channel[source_index],
-                    connection.sample_read_latencies[source_index]};
-                if (!std::ranges::contains(routes, route)) {
-                    routes.push_back(route);
-                }
-            }
-
-            std::vector<GlobalIndexRange> contribution_regions;
-            bool first = true;
-            for (auto const [source, latency] : routes) {
-                std::vector<GlobalIndexRange> available;
-                for (auto const range : source_regions(source, latency)) {
-                    available.push_back({
-                        .begin = range.begin.advanced_by(latency),
-                        .extent = range.extent,
-                    });
-                }
-                if (first) {
-                    contribution_regions = std::move(available);
-                } else {
-                    std::vector<GlobalIndexRange> intersections;
-                    for (auto const left : contribution_regions) {
-                        for (auto const right : available) {
-                            for_each_range_intersection_preserving_shape(
-                                left,
-                                right,
-                                [&](GlobalIndexRange part) {
-                                    if (!part.empty()) {
-                                        intersections.push_back(part);
-                                    }
-                                });
-                        }
+        } else if (connection.kind == PortKind::sample) {
+            auto const append_projection = [&](std::span<std::size_t const> source_indices,
+                                               std::optional<std::size_t> projection) {
+                struct SampleRoute {
+                    graph_jit::BackgroundPortIndex output;
+                    std::size_t latency;
+                    std::size_t channel;
+                };
+                std::vector<SampleRoute> routes;
+                for (auto const channel : source_indices) {
+                    if (channel >= connection.sample_source_port_by_channel.size()
+                        || !connection.sample_source_port_by_channel[channel]) continue;
+                    auto const output = *connection.sample_source_port_by_channel[channel];
+                    auto const latency = connection.sample_read_latencies[channel];
+                    if (std::ranges::none_of(routes, [&](auto const& route) {
+                            return route.output == output && route.latency == latency;
+                        })) {
+                        routes.push_back({output, latency, channel});
                     }
-                    contribution_regions = std::move(intersections);
                 }
-                first = false;
-            }
-            connection_regions.insert(
-                connection_regions.end(),
-                contribution_regions.begin(),
-                contribution_regions.end());
-        };
-        if (connection.sample_target_port == input
-            && connection.sample_source_port_by_channel.size()
-                == connection.sample_read_latencies.size()) {
-            if (connection.sample_projections.empty()) {
-                std::vector<std::size_t> source_indices(
-                    connection.sample_source_port_by_channel.size());
-                std::iota(source_indices.begin(), source_indices.end(), 0);
-                append_contribution(source_indices);
+                std::vector<std::vector<GlobalIndexRange>> source_ranges;
+                std::vector<SampleRegionProjectionSource<GlobalIndexRange>> sources;
+                source_ranges.reserve(routes.size());
+                sources.reserve(routes.size());
+                for (auto const& route : routes) {
+                    source_ranges.push_back(source_regions(route.output, route.latency));
+                    sources.push_back({source_ranges.back(), route.latency});
+                }
+                visit_sample_region_projections<GlobalIndexRange>(
+                    sources, [&](auto range, std::span<std::size_t const> indices) {
+                        auto& region = connection_regions.emplace_back(
+                            range, connection_index, projection);
+                        region.sources.reserve(indices.size());
+                        for (std::size_t index = 0; index < indices.size(); ++index) {
+                            auto const& route = routes[index];
+                            region.sources.push_back(source_ref(route.output, indices[index], route.channel));
+                        }
+                        return true;
+                    });
+            };
+            if (connection.sample_target_port == input
+                && connection.sample_source_port_by_channel.size()
+                    == connection.sample_read_latencies.size()) {
+                if (connection.sample_projections.empty()) {
+                    std::vector<std::size_t> source_indices(
+                        connection.sample_source_port_by_channel.size());
+                    std::iota(source_indices.begin(), source_indices.end(), 0);
+                    append_projection(source_indices, std::nullopt);
+                } else {
+                    for (std::size_t index = 0; index < connection.sample_projections.size(); ++index) {
+                        append_projection(connection.sample_projections[index].source_channel_indices, index);
+                    }
+                }
             } else {
-                for (auto const& projection : connection.sample_projections) {
-                    append_contribution(projection.source_channel_indices);
+                for (auto const source : connection.source_coverage_ports) {
+                    auto const regions = source_regions(source);
+                    for (std::size_t index = 0; index < regions.size(); ++index) {
+                        connection_regions.push_back({
+                            .range = regions[index],
+                            .connection = connection_index,
+                            .sources = {source_ref(source, index, std::nullopt)},
+                        });
+                    }
                 }
-            }
-        } else {
-            for (auto const source : connection.source_coverage_ports) {
-                auto const& regions = source_regions(source);
-                connection_regions.insert(
-                    connection_regions.end(), regions.begin(), regions.end());
             }
         }
 
         if (planned_input.ordering == CoverageOrdering::sorted) {
-            if (!std::ranges::is_sorted(
-                    connection_regions, canonical_region_less)) {
-                std::stable_sort(
-                    connection_regions.begin(),
-                    connection_regions.end(),
-                    canonical_region_less);
-            }
+            if (!std::ranges::is_sorted(connection_regions, ordered))
+                std::stable_sort(connection_regions.begin(), connection_regions.end(), ordered);
             sorted_runs.push_back(std::move(connection_regions));
         } else {
-            result.insert(
-                result.end(),
-                connection_regions.begin(),
-                connection_regions.end());
+            result.insert(result.end(),
+                std::make_move_iterator(connection_regions.begin()),
+                std::make_move_iterator(connection_regions.end()));
         }
     }
-    if (planned_input.ordering == CoverageOrdering::sorted) {
+    if (planned_input.ordering == CoverageOrdering::sorted)
         result = merge_sorted_region_runs(sorted_runs);
-    }
+    for (std::size_t index = 0; index < result.size(); ++index)
+        result[index].logical_index = index;
     return result;
+}
+
+bool preserves_event_indices(graph_jit::BackgroundEvaluationPlan const& plan,
+    BackgroundInputRegion const& region, graph_jit::BackgroundPortIndex input)
+{
+    if (region.sources.size() != 1) return false;
+    auto const& source = region.sources.front();
+    auto const& deliveries = plan.connections[region.connection].event_deliveries;
+    if (!source.route_index || *source.route_index >= deliveries.size()) return false;
+    auto const& delivery = deliveries[*source.route_index];
+    return delivery.conversion.step_count == 0
+        && plan.ports[source.output].event_type == plan.ports[input].event_type;
 }
 
 struct StableSampleConnectionSource {
@@ -668,13 +653,20 @@ struct BackgroundPropagationWorkspace::PlanningState {
         graph_jit::BackgroundPortIndex input = 0;
         CoverageInformation information = CoverageInformation::coverage;
         IndexCoverage positions{};
+        BackgroundSampleDemand sample_positions{};
+        RegionRef selected_region{};
+        std::vector<IndexRun> selected_runs{};
         CoverageInputInfo metadata{};
+        GlobalIndex neighbor_position{};
+        EventNeighborMode neighbor_mode = EventNeighborMode::bounded;
+        EventNeighbors neighbors{};
         BackgroundDiscoveredInput contents{};
         CoverageRequestId id = 0;
     };
     BackgroundPlanningScheduler scheduler{};
     ~PlanningState() { scheduler.cancel(); }
     BackgroundPropagationWorkspace* root = nullptr;
+    std::uint64_t snapshot = 0;
     CompiledGraphBackgroundOperations const* operations = nullptr;
     BackgroundCoverageDemandExpansion expansion{};
     BackgroundCoverageDiscovery discovery{};
@@ -748,7 +740,7 @@ void BackgroundPropagationWorkspace::initialize_planning()
                 .owner = &operation,
                 .access = state.scheduler.access(),
                 .request = +[](void* opaque, bool event, std::size_t input,
-                    CoverageInformation information, IndexCoverage const* positions) {
+                    CoverageInformation information, CoverageInputDemand positions) {
                     auto& operation = *static_cast<Operation*>(opaque);
                     auto& workspace = *static_cast<BackgroundPropagationWorkspace*>(operation.group);
                     return workspace.request_information(opaque, event, input, information, positions);
@@ -811,7 +803,7 @@ bool BackgroundPropagationWorkspace::input_information_ready(
 
 CoverageRequestId BackgroundPropagationWorkspace::request_information(
     void* opaque, bool event, std::size_t local_input,
-    CoverageInformation information, IndexCoverage const* positions)
+    CoverageInformation information, CoverageInputDemand demand)
 {
     auto& operation = *static_cast<PlanningState::Operation*>(opaque);
     auto& state = *planning_state_;
@@ -819,10 +811,20 @@ CoverageRequestId BackgroundPropagationWorkspace::request_information(
     auto const& inputs = event ? calls.event_inputs : calls.sample_inputs;
     if (local_input >= inputs.size()) throw std::out_of_range("coverage discovery input is out of range");
     auto const input = inputs[local_input];
-    auto const requested = positions ? *positions : IndexCoverage{};
+    auto const requested = demand.positional ? *demand.positional : IndexCoverage{};
+    BackgroundSampleDemand samples;
+    samples.include(demand.sample_positions);
+    if (demand.selection.region
+        && (details::RegionRefAccess::snapshot(demand.selection.region) != state.snapshot
+            || details::RegionRefAccess::port(demand.selection.region) != input))
+        throw std::invalid_argument("discovery Region reference does not belong to this input and snapshot");
     auto& matching = state.requests_by_input[&operation][{input, information}];
     for (auto const* request : matching) {
-        if (request->positions == requested) return request->id;
+        if (request->positions == requested && request->sample_positions == samples
+            && request->selected_region == demand.selection.region
+            && request->neighbor_position == demand.neighbor_position
+            && request->neighbor_mode == demand.neighbor_mode
+            && std::ranges::equal(request->selected_runs, demand.selection.runs)) return request->id;
     }
     auto owned = std::make_unique<PlanningState::InformationRequest>();
     auto* request = owned.get();
@@ -830,6 +832,11 @@ CoverageRequestId BackgroundPropagationWorkspace::request_information(
     request->input = input;
     request->information = information;
     request->positions = requested;
+    request->sample_positions = std::move(samples);
+    request->selected_region = demand.selection.region;
+    request->neighbor_position = demand.neighbor_position;
+    request->neighbor_mode = demand.neighbor_mode;
+    request->selected_runs.assign(demand.selection.runs.begin(), demand.selection.runs.end());
     auto description = std::string{"input port "} + std::to_string(input)
         + " (" + port(input).name + ") "
         + (information == CoverageInformation::coverage ? "coverage" : "contents");
@@ -844,11 +851,68 @@ CoverageRequestId BackgroundPropagationWorkspace::request_information(
             auto const index = root.input_index(request->input);
             request->metadata.coverage = root.input_changes_[index].coverage;
             request->metadata.regions = root.input_changes_[index].regions;
+            auto const inputs = derive_input_regions(*root.plan_,
+                root.candidate_output_region_ranges_, request->input);
+            request->metadata.resolved_regions.reserve(inputs.size());
+            for (std::size_t i = 0; i < inputs.size(); ++i) {
+                auto const& region = inputs[i];
+                auto& metadata = request->metadata.resolved_regions.emplace_back(
+                    details::RegionRefAccess::make(state.snapshot, request->input, i), region.range);
+                if (root.port(request->input).kind != PortKind::event
+                    || !preserves_event_indices(*root.plan_, region, request->input)) continue;
+                auto const& source = region.sources.front();
+                if (!source.region_index) continue;
+                auto const& publication = root.candidate_output_event_regions_[root.output_index(source.output)];
+                if (*source.region_index < publication.size()
+                    && publication[*source.region_index].range == region.range)
+                    metadata.event_index = publication[*source.region_index].index;
+            }
+            if (request->information == CoverageInformation::event_neighbors) {
+                auto const region_index = details::RegionRefAccess::index(request->selected_region);
+                if (!request->selected_region || region_index >= request->metadata.resolved_regions.size())
+                    throw std::invalid_argument("event neighbor request requires a resolved Region");
+                auto const& region = request->metadata.resolved_regions[region_index];
+                if (!region.event_index)
+                    throw std::invalid_argument("event Region does not support indexed neighbors");
+                if (!state.discovery.materialize)
+                    throw std::logic_error("event neighbor discovery requires a background transaction");
+                if (request->neighbor_mode == EventNeighborMode::bounded
+                    && !region.range.contains(request->neighbor_position))
+                    throw std::invalid_argument("bounded event neighbor lookup is outside its Region");
+                auto const count = region.event_index->event_count;
+                if (count == 0) return true;
+                std::vector<std::pair<std::uint64_t, TimedEvent>> probes;
+                auto const read = [&](std::uint64_t index) {
+                    auto const found = std::ranges::find_if(probes, [&](auto const& probe) { return probe.first == index; });
+                    if (found != probes.end()) return found->second;
+                    IndexRun const run{index, 1};
+                    auto prepared = root.prepare_discovery(request->input, {}, {}, {region.region, std::span{&run, 1}});
+                    auto value = state.discovery.materialize(state.discovery.data, std::move(prepared), request->input);
+                    auto const events = value.events.event_runs;
+                    if (events.size() != 1 || events.front().slots.size() != 1)
+                        throw std::runtime_error("indexed event neighbor is unavailable");
+                    return probes.emplace_back(index, events.front().slots.front()).second;
+                };
+                auto const offset = region.range.begin.forward_distance_to(request->neighbor_position);
+                std::uint64_t first = 0;
+                auto last = count;
+                while (first < last) {
+                    auto const middle = first + (last - first) / 2;
+                    if (region.range.begin.forward_distance_to(read(middle).time) <= offset)
+                        first = middle + 1;
+                    else last = middle;
+                }
+                if (first > 0 || request->neighbor_mode == EventNeighborMode::cyclic)
+                    request->neighbors.at_or_before = read(first ? first - 1 : count - 1);
+                if (first < count || request->neighbor_mode == EventNeighborMode::cyclic)
+                    request->neighbors.after = read(first == count ? 0 : first);
+            }
             if (request->information == CoverageInformation::contents) {
                 if (!state.discovery.materialize) {
                     throw std::logic_error("input-content discovery requires a background transaction");
                 }
-                auto prepared = root.prepare_discovery(request->input, request->positions);
+                auto prepared = root.prepare_discovery(request->input, request->positions, request->sample_positions,
+                    {request->selected_region, request->selected_runs});
                 request->contents = state.discovery.materialize(state.discovery.data,
                     std::move(prepared), request->input);
                 if (!request->contents.owner) {
@@ -872,6 +936,7 @@ CoverageRequestId BackgroundPropagationWorkspace::request_information(
         },
         [&state, request]() -> void const* {
             if (request->information == CoverageInformation::coverage) return &request->metadata;
+            if (request->information == CoverageInformation::event_neighbors) return &request->neighbors;
             return state.root->port(request->input).kind == PortKind::sample
                 ? static_cast<void const*>(&request->contents.continuous)
                 : static_cast<void const*>(&request->contents.events);
@@ -895,7 +960,7 @@ void BackgroundPropagationWorkspace::before_metadata_read(void* opaque)
     auto const& ports = event ? calls.event_inputs : calls.sample_inputs;
     auto const found = std::ranges::find(ports, read.input);
     auto const id = workspace.request_information(&operation, event,
-        static_cast<std::size_t>(found - ports.begin()), CoverageInformation::coverage, nullptr);
+        static_cast<std::size_t>(found - ports.begin()), CoverageInformation::coverage, {});
     (void)workspace.planning_state_->scheduler.read(id);
     workspace.refresh_input(read.input);
 }
@@ -924,21 +989,32 @@ void BackgroundPropagationWorkspace::run_planning(bool reverse)
 }
 
 PreparedCoveragePropagation BackgroundPropagationWorkspace::prepare_discovery(
-    graph_jit::BackgroundPortIndex input, IndexCoverage const& requested)
+    graph_jit::BackgroundPortIndex input, IndexCoverage const& requested, BackgroundSampleDemand const& sample_positions,
+    RegionSelection selection)
+{
+    CoveragePropagationRequest roots;
+    roots.input_demands.push_back({.port = input, .required = requested, .sample_positions = sample_positions});
+    if (selection.region)
+        roots.indexed_input_demands.push_back({input, details::RegionRefAccess::index(selection.region),
+            {selection.runs.begin(), selection.runs.end()}});
+    return prepare_discovery(roots);
+}
+
+PreparedCoveragePropagation BackgroundPropagationWorkspace::prepare_discovery(CoveragePropagationRequest const& roots)
 {
     BackgroundCoverageState snapshot;
     snapshot.output_coverages_ = candidate_output_coverages_;
     snapshot.output_region_ranges_ = candidate_output_region_ranges_;
+    snapshot.output_event_regions_ = candidate_output_event_regions_;
     BackgroundPropagationWorkspace scope{*plan_, sample_rate_};
     scope.planning_state_ = planning_state_;
-    CoveragePropagationRequest roots;
-    roots.input_demands.push_back({.port = input, .required = requested});
     // Discovery completes only its explicit demand. Unrelated stale persisted
     // output completion still belongs to the surrounding final transaction.
     auto expansion = planning_state_->expansion;
     struct Expansion { BackgroundCoverageDemandExpansion original; } selected{expansion};
     expansion.data = &selected;
     expansion.restrict_input = nullptr;
+    expansion.select_demands = nullptr;
     expansion.cached_output = +[](void* opaque, graph_jit::BackgroundPortIndex port) {
         auto const& original = static_cast<Expansion*>(opaque)->original;
         return original.cached_output && original.cached_output(original.data, port);
@@ -986,7 +1062,7 @@ BackgroundPropagationWorkspace::input_regions(
     graph_jit::BackgroundPortIndex input) const
 {
     auto const& source = planning_state_ ? *planning_state_->root : *this;
-    return derive_input_regions(*plan_, source.candidate_output_region_ranges_, input);
+    return input_region_ranges(derive_input_regions(*plan_, source.candidate_output_region_ranges_, input));
 }
 
 void BackgroundPropagationWorkspace::activate_node(
@@ -1124,6 +1200,7 @@ void BackgroundPropagationWorkspace::publish_output_coverage(
         throw std::logic_error("forward planner changed output coverage after publishing it across a suspension");
     }
     candidate_output_region_ranges_[index] = coverage_regions(coverage);
+    candidate_output_event_regions_[index].clear();
     published_outputs_[output] = true;
     output_ready_[output] = true;
     auto& accumulator = output_changes_[index];
@@ -1137,7 +1214,8 @@ void BackgroundPropagationWorkspace::publish_output_coverage(
 
 void BackgroundPropagationWorkspace::publish_output_regions(
     graph_jit::BackgroundPortIndex output,
-    std::span<GlobalIndexRange const> regions)
+    std::span<GlobalIndexRange const> regions,
+    std::span<EventRegionInfo const> event_regions)
 {
     auto const& planned = port(output);
     if (planned.output_production == OutputProductionKind::sequential) {
@@ -1170,14 +1248,20 @@ void BackgroundPropagationWorkspace::publish_output_regions(
     auto next_regions = std::vector<GlobalIndexRange>{
         regions.begin(), regions.end()};
     auto next_coverage = region_coverage(next_regions);
+    std::vector<EventRegionInfo> next_event_regions(event_regions.begin(), event_regions.end());
+    for (auto const& region : event_regions) {
+        if (region.index && region.index->constant_value
+            && !event_matches_type(*region.index->constant_value, planned.event_type))
+            throw std::invalid_argument("indexed event Region payload has the wrong type");
+    }
+    auto const shape_changed = candidate_output_region_ranges_[index] != next_regions
+        || candidate_output_event_regions_[index] != next_event_regions;
     if (planning_state_ && planning_state_->root == this && finalized_outputs_[output]
         && planning_state_->group(this).forward[planned.node]->queued
-        && candidate_output_region_ranges_[index] != next_regions) {
+        && shape_changed) {
         throw std::logic_error("forward planner changed output Regions after publishing them across a suspension");
     }
     auto& accumulator = output_changes_[index];
-    auto const shape_changed =
-        candidate_output_region_ranges_[index] != next_regions;
     auto changed = coverage_difference(
         candidate_output_coverages_[index], next_coverage);
     if (shape_changed) {
@@ -1185,6 +1269,7 @@ void BackgroundPropagationWorkspace::publish_output_regions(
         changed.include(next_coverage);
     }
     candidate_output_region_ranges_[index] = std::move(next_regions);
+    candidate_output_event_regions_[index] = std::move(next_event_regions);
     published_outputs_[output] = true;
     output_ready_[output] = true;
     candidate_output_coverages_[index] = std::move(next_coverage);
@@ -1226,6 +1311,16 @@ void BackgroundPropagationWorkspace::publish_output_regions_callback(
         accumulator.port, {regions, count});
 }
 
+void BackgroundPropagationWorkspace::publish_output_event_regions(
+    void* opaque, std::span<EventRegionInfo const> regions)
+{
+    auto& accumulator = *static_cast<OutputChangeAccumulator*>(opaque);
+    std::vector<GlobalIndexRange> ranges;
+    ranges.reserve(regions.size());
+    for (auto const& region : regions) ranges.push_back(region.range);
+    accumulator.owner->publish_output_regions(accumulator.port, ranges, regions);
+}
+
 void BackgroundPropagationWorkspace::publish_output_change_callback(
     void* opaque, IndexCoverage const& changed)
 {
@@ -1249,7 +1344,8 @@ void BackgroundPropagationWorkspace::require_output(
     if (required.empty())
         return;
     auto const previous = output_requirements_[requirement_index].required;
-    output_requirements_[requirement_index].required.include(required);
+    auto& requirement = output_requirements_[requirement_index];
+    requirement.required.include(required);
     // Reverse callbacks can discover buffered dependencies after the initial
     // demand pass. Resolve missing/stale contents when the requirement arrives,
     // so their producers enter the same reverse-planning schedule.
@@ -1267,6 +1363,11 @@ void BackgroundPropagationWorkspace::require_output(
                 activate_producer = true;
             }
         }
+    }
+    if (planned.kind == PortKind::sample && previous != requirement.required) {
+        requirement.sample_positions.include(requirement.required);
+        requirement.positions_view = requirement.sample_positions.view();
+        requirement.sample_selections_dirty = true;
     }
     if (!activate_producer) return;
     // A repeated requirement, for example from a resumed consumer, does not
@@ -1307,8 +1408,8 @@ void BackgroundPropagationWorkspace::require_input(
         auto const regions = derive_input_regions(
             *plan_, source.candidate_output_region_ranges_, input, &required);
         IndexCoverage selected;
-        for (auto const region : regions) {
-            if (required.intersects(region)) selected.include(region);
+        for (auto const& region : regions) {
+            if (required.intersects(region.range)) selected.include(region.range);
         }
         required = std::move(selected);
     }
@@ -1362,12 +1463,306 @@ void BackgroundPropagationWorkspace::require_input(
     }
 }
 
+void BackgroundPropagationWorkspace::require_sample_output(
+    graph_jit::BackgroundPortIndex output, BackgroundSampleDemand const& requested)
+{
+    auto const& planned = port(output);
+    auto const change_index = output_index(output);
+    if (planning_state_ && planning_state_->root != this) {
+        auto const& root = *planning_state_->root;
+        candidate_output_coverages_[change_index] = root.candidate_output_coverages_[change_index];
+        candidate_output_region_ranges_[change_index] = root.candidate_output_region_ranges_[change_index];
+    }
+    auto selected = requested.intersected(candidate_output_coverages_[change_index]);
+    if (selected.empty()) return;
+    if (planned.output_production == OutputProductionKind::sequential) {
+        auto const& expansion = planning_state_->group(this).expansion;
+        auto const cached = expansion.cached_output && expansion.cached_output(expansion.data, output);
+        require_output(output, selected.positional_ranges(expansion.sparse_sample_budget),
+            !planned.persisted_tick_output && !cached);
+        return;
+    }
+
+    auto& requirement = output_requirements_[*planned.accumulators.output_requirement];
+    IndexCoverage dense;
+    auto const positions = selected.view();
+    for (auto const run : positions.runs)
+        if (run.step == 1) dense.include({run.first, run.count});
+    if (!dense.empty()) {
+        auto const& expansion = planning_state_->group(this).expansion;
+        auto const cached = expansion.cached_output && expansion.cached_output(expansion.data, output);
+        require_output(output, dense, !cached && planned.realization != OutputRealization::buffered);
+    }
+    bool grew = false;
+    for (auto const run : positions.runs) {
+        if (run.step == 1) continue;
+        grew |= requirement.positional_sample_positions.include(run);
+        requirement.sample_positions.include(run);
+    }
+    for (auto const position : positions.individual_positions) {
+        grew |= requirement.positional_sample_positions.include(position);
+        requirement.sample_positions.include(position);
+    }
+    requirement.positions_view = requirement.sample_positions.view();
+    if (grew) {
+        requirement.sample_selections_dirty = true;
+        activate_node(planned.node, graph_jit::BackgroundNodeActivity::reverse);
+    }
+}
+
+void BackgroundPropagationWorkspace::require_sample_input(
+    graph_jit::BackgroundPortIndex input, SamplePositionsView requested)
+{
+    auto const& planned = port(input);
+    IndexCoverage dense;
+    BackgroundSampleDemand sparse;
+    for (auto const run : requested.runs) {
+        if (run.step == 1) dense.include({run.first, run.count});
+        else sparse.include(run);
+    }
+    for (auto const position : requested.individual_positions) sparse.include(position);
+    if (!dense.empty()) require_input(input, dense);
+    if (sparse.empty()) return;
+
+    auto const available = planned.accumulators.input_requirement
+        ? input_requirements_[*planned.accumulators.input_requirement].coverage : input_coverage(input);
+    sparse = sparse.intersected(available);
+    if (sparse.empty()) return;
+    if (planned.content_access == InputContentAccess::complete_buffer) {
+        auto const& source = *planning_state_->root;
+        IndexCoverage complete;
+        for (auto const& region : derive_input_regions(*plan_, source.candidate_output_region_ranges_, input))
+            if (sparse.intersects(region.range)) complete.include(region.range);
+        require_input(input, complete);
+        return;
+    }
+    if (!input_sample_requirements_by_port_[input].include(sparse.view())) return;
+    for (auto const connection_index : planned.incoming_connections) {
+        auto const& connection = plan_->connections[connection_index];
+        if (connection.sample_target_port == input
+            && connection.sample_source_port_by_channel.size() == connection.sample_read_latencies.size()) {
+            for (std::size_t channel = 0; channel < connection.sample_source_port_by_channel.size(); ++channel) {
+                auto const source = connection.sample_source_port_by_channel[channel];
+                if (source) require_sample_output(*source, sparse.retreated_by(connection.sample_read_latencies[channel]));
+            }
+        } else {
+            for (auto const source : connection.source_coverage_ports) require_sample_output(source, sparse);
+        }
+    }
+}
+
 void BackgroundPropagationWorkspace::publish_input_requirement_callback(
     void* opaque, IndexCoverage const& required)
 {
     auto& accumulator = *static_cast<InputRequirementAccumulator*>(opaque);
     before_metadata_read(&accumulator.owner->reverse_reads_[accumulator.port]);
     accumulator.owner->require_input(accumulator.port, required);
+}
+
+void BackgroundPropagationWorkspace::publish_input_sample_positions(
+    void* opaque, SamplePositionsView requested)
+{
+    auto& accumulator = *static_cast<InputRequirementAccumulator*>(opaque);
+    before_metadata_read(&accumulator.owner->reverse_reads_[accumulator.port]);
+    accumulator.owner->require_sample_input(accumulator.port, requested);
+}
+
+namespace {
+bool add_index_runs(std::vector<IndexedRegionDemand>& demands, graph_jit::BackgroundPortIndex port,
+                    std::size_t region, std::span<IndexRun const> runs, std::uint64_t count)
+{
+    for (auto const run : runs)
+        if (!run.fits(count)) throw std::invalid_argument("indices are outside the published Region");
+    if (std::ranges::all_of(runs, [](IndexRun run) { return run.count == 0; })) return false;
+    auto found = std::ranges::find(demands, region, &IndexedRegionDemand::region_index);
+    if (found == demands.end()) {
+        demands.push_back({port, region});
+        found = std::prev(demands.end());
+    }
+    bool grew = false;
+    for (auto const run : runs) {
+        if (run.count == 0 || std::ranges::contains(found->runs, run)) continue;
+        found->runs.push_back(run);
+        grew = true;
+    }
+    return grew;
+}
+} // namespace
+
+void BackgroundPropagationWorkspace::require_event_output(
+    graph_jit::BackgroundPortIndex output, std::size_t region, std::span<IndexRun const> requested)
+{
+    auto const& planned = port(output);
+    auto const& published = planning_state_->root->candidate_output_event_regions_[output_index(output)];
+    if (planned.kind != PortKind::event || region >= published.size() || !published[region].index)
+        throw std::invalid_argument("output Region does not support indexed events");
+    auto& demands = indexed_output_demands_[output];
+    if (!add_index_runs(demands, output, region, requested, published[region].index->event_count)) return;
+    auto& requirement = output_requirements_[*planned.accumulators.output_requirement];
+    requirement.selection_views.clear();
+    for (auto const& demand : demands) {
+        requirement.selection_views.push_back({
+            details::RegionRefAccess::make(planning_state_->snapshot, output, demand.region_index),
+            demand.runs});
+    }
+    requirement.selections = requirement.selection_views;
+    activate_node(planned.node, graph_jit::BackgroundNodeActivity::reverse);
+}
+
+void BackgroundPropagationWorkspace::update_sample_selections(graph_jit::BackgroundPortIndex output)
+{
+    auto const& planned = port(output);
+    if (planned.output_production == OutputProductionKind::sequential) return;
+    auto& required = output_requirements_[*planned.accumulators.output_requirement];
+    if (!required.sample_selections_dirty) return;
+    required.sample_selections_dirty = false;
+    auto const& regions = candidate_output_region_ranges_[output_index(output)];
+    auto const& selected = indexed_output_demands_[output];
+    required.sample_selections.clear();
+    for (std::size_t index = 0; index < regions.size(); ++index) {
+        auto const region = regions[index];
+        IndexCoverage const positions{region};
+        auto sparse = required.positional_sample_positions.intersected(positions);
+        auto const dense = required.required & positions;
+        auto const explicit_runs = std::ranges::find(selected, index, &IndexedRegionDemand::region_index);
+        if (explicit_runs != selected.end()) {
+            for (auto const run : explicit_runs->runs)
+                sparse.include(SamplePositionRun{region.begin.advanced_by(run.first), run.count, run.step});
+        }
+        if (sparse.empty() && dense.empty()) continue;
+        auto& selection = required.sample_selections.emplace_back(output, index);
+        // The borrowed reverse view preserves overlaps. Only the storage
+        // preparation step normalizes them to a unique destination per slot.
+        auto const append = [&](SamplePositionRun run) {
+            selection.runs.push_back({region.begin.forward_distance_to(run.first), run.count, run.step});
+        };
+        for (auto const part : dense) append({part.begin, part.extent});
+        for (auto const run : sparse.view().runs) append(run);
+        for (auto const position : sparse.view().individual_positions) append({position, 1});
+    }
+    required.selection_views.clear();
+    for (auto const& demand : required.sample_selections) {
+        required.selection_views.push_back({
+            details::RegionRefAccess::make(planning_state_->snapshot, output, demand.region_index), demand.runs});
+    }
+    required.selections = required.selection_views;
+}
+
+void BackgroundPropagationWorkspace::require_sample_region(
+    graph_jit::BackgroundPortIndex output, std::size_t region, std::span<IndexRun const> runs)
+{
+    auto const& planned = port(output);
+    auto const change = output_index(output);
+    auto const& root = *planning_state_->root;
+    auto const& regions = root.candidate_output_region_ranges_[change];
+    if (planned.output_production == OutputProductionKind::sequential || region >= regions.size())
+        throw std::invalid_argument("indexed sample output requires a published authored Region");
+    if (&root != this) {
+        candidate_output_coverages_[change] = root.candidate_output_coverages_[change];
+        candidate_output_region_ranges_[change] = regions;
+    }
+    auto const range = regions[region];
+    auto& demands = indexed_output_demands_[output];
+    if (!add_index_runs(demands, output, region, runs, range.extent)) return;
+    auto& requirement = output_requirements_[*planned.accumulators.output_requirement];
+    for (auto const run : runs)
+        if (run.count) requirement.sample_positions.include(SamplePositionRun{
+            range.begin.advanced_by(run.first), run.count, run.step});
+    requirement.positions_view = requirement.sample_positions.view();
+    requirement.sample_selections_dirty = true;
+    activate_node(planned.node, graph_jit::BackgroundNodeActivity::reverse);
+}
+
+void BackgroundPropagationWorkspace::require_region_selection(
+    graph_jit::BackgroundPortIndex input, RegionSelection selection)
+{
+    using Ref = details::RegionRefAccess;
+    if (Ref::port(selection.region) != input || Ref::snapshot(selection.region) != planning_state_->snapshot)
+        throw std::invalid_argument("Region reference does not belong to this input and snapshot");
+    auto const index = Ref::index(selection.region);
+    auto const& root = *planning_state_->root;
+    auto const resolved = derive_input_regions(*plan_, root.candidate_output_region_ranges_, input);
+    if (index >= resolved.size())
+        throw std::invalid_argument("input Region reference is outside the published list");
+    if (port(input).kind == PortKind::sample) {
+        auto const& region = resolved[index];
+        for (auto const run : selection.runs)
+            if (!run.fits(region.range.extent)) throw std::invalid_argument("indices are outside the published Region");
+        if (std::ranges::all_of(selection.runs, [](IndexRun const& run) { return run.count == 0; })) return;
+        IndexRun const complete{0, region.range.extent};
+        if (port(input).content_access == InputContentAccess::complete_buffer)
+            selection.runs = std::span{&complete, 1};
+        if (!add_index_runs(indexed_input_demands_[input], input, index, selection.runs, region.range.extent))
+            return;
+        auto const& connection = plan_->connections[region.connection];
+        for (auto const& source : region.sources) {
+            auto const latency = source.route_index ? connection.sample_read_latencies[*source.route_index] : 0;
+            auto const& planned = port(source.output);
+            auto const& regions = root.candidate_output_region_ranges_[output_index(source.output)];
+            if (!source.region_index || planned.output_production == OutputProductionKind::sequential) {
+                BackgroundSampleDemand demand;
+                for (auto const run : selection.runs) {
+                    if (!run.count) continue;
+                    demand.include(SamplePositionRun{region.range.begin.advanced_by(run.first).retreated_by(latency),
+                        run.count, run.step});
+                }
+                require_sample_output(source.output, demand);
+                continue;
+            }
+            auto const source_index = *source.region_index;
+            auto const source_range = regions[source_index];
+            auto const first = source_range.begin.forward_distance_to(region.range.begin.retreated_by(latency));
+            std::vector<IndexRun> runs;
+            for (auto run : selection.runs) {
+                if (run.count) {
+                    run.first += first;
+                    runs.push_back(run);
+                }
+            }
+            require_sample_region(source.output, source_index, runs);
+        }
+        return;
+    }
+    if (!preserves_event_indices(*plan_, resolved[index], input))
+        throw std::invalid_argument("input route does not preserve event indices");
+    auto const& source = resolved[index].sources.front();
+    auto const& published = root.candidate_output_event_regions_[output_index(source.output)];
+    if (!source.region_index || *source.region_index >= published.size()
+        || published[*source.region_index].range != resolved[index].range
+        || !published[*source.region_index].index)
+        throw std::invalid_argument("input route does not preserve event indices");
+    if (add_index_runs(indexed_input_demands_[input], input, index, selection.runs,
+            published[*source.region_index].index->event_count)) {
+        require_event_output(source.output, *source.region_index, selection.runs);
+    }
+}
+
+void BackgroundPropagationWorkspace::publish_input_region_selection(void* opaque, RegionSelection selection)
+{
+    auto& accumulator = *static_cast<InputRequirementAccumulator*>(opaque);
+    before_metadata_read(&accumulator.owner->reverse_reads_[accumulator.port]);
+    accumulator.owner->require_region_selection(accumulator.port, selection);
+}
+
+void BackgroundPropagationWorkspace::publish_corresponding_sample_requirements(
+    void* opaque, OutputCoverageRequirement const& output)
+{
+    auto const& input = *static_cast<InputRequirementAccumulator*>(opaque);
+    auto const* source = static_cast<OutputChangeAccumulator const*>(output.selection_owner);
+    auto& workspace = *input.owner;
+    if (!source || source->owner != &workspace)
+        throw std::logic_error("corresponding sample demand has no output binding in this workspace");
+    before_metadata_read(&workspace.reverse_reads_[input.port]);
+    workspace.require_input(input.port, output.required());
+    auto const& plan = workspace.port(source->port);
+    auto const& requirements = workspace.output_requirements_[*plan.accumulators.output_requirement];
+    workspace.require_sample_input(input.port, requirements.positional_sample_positions.view());
+    for (auto const& demand : workspace.indexed_output_demands_[source->port]) {
+        workspace.require_region_selection(input.port, {
+            details::RegionRefAccess::make(workspace.planning_state_->snapshot, input.port, demand.region_index),
+            demand.runs,
+        });
+    }
 }
 
 namespace {
@@ -1492,6 +1887,9 @@ void BackgroundPropagationWorkspace::initialize_calls()
                         &publish_input_requirement_callback,
                     .read_owner = &reverse_reads_[index],
                     .before_read = &before_metadata_read,
+                    .publish_sample_positions = &publish_input_sample_positions,
+                    .publish_region_selection = &publish_input_region_selection,
+                    .publish_corresponding_sample_requirements = &publish_corresponding_sample_requirements,
             };
         } else if (planned.direction == graph_jit::PortDirection::output) {
             auto const change_index = *planned.accumulators.output_change;
@@ -1508,11 +1906,22 @@ void BackgroundPropagationWorkspace::initialize_calls()
                 .publish_regions_value = &publish_output_regions_callback,
                 .publish_coverage_value = &publish_output_coverage_callback,
                 .publish_changed_value = &publish_output_change_callback,
+                    .publish_event_regions_value = &publish_output_event_regions,
             };
             callback_output_requirements_[requirement_index] =
                 OutputCoverageRequirement{
                     .required_value =
                         &output_requirements_[requirement_index].required,
+                    .required_sample_positions = &output_requirements_[requirement_index].positions_view,
+                    .required_region_selections = &output_requirements_[requirement_index].selections,
+                    .selection_owner = &change,
+                    .sample_selections = +[](void* opaque) -> std::span<RegionSelection const> {
+                        auto const& output = *static_cast<OutputChangeAccumulator const*>(opaque);
+                        auto& workspace = *output.owner;
+                        workspace.update_sample_selections(output.port);
+                        auto const index = *workspace.port(output.port).accumulators.output_requirement;
+                        return workspace.output_requirements_[index].selections;
+                    },
             };
         }
     }
@@ -1601,6 +2010,7 @@ void BackgroundPropagationWorkspace::initialize_calls()
 BackgroundCoverageState::BackgroundCoverageState(std::size_t output_count)
     : output_coverages_(output_count)
     , output_region_ranges_(output_count)
+    , output_event_regions_(output_count)
 {
 }
 
@@ -1791,6 +2201,8 @@ void BackgroundCoverageState::Migration::commit()
             previous->output_coverages_[output.previous];
         current->output_region_ranges_[output.current] =
             previous->output_region_ranges_[output.previous];
+        current->output_event_regions_[output.current] =
+            previous->output_event_regions_[output.previous];
     }
     for (auto const& input : changed_inputs) {
         auto current_coverage = derive_input_coverage(
@@ -1802,7 +2214,7 @@ void BackgroundCoverageState::Migration::commit()
             *current_plan, current->output_region_ranges_, input.current);
         reconciliation_roots.input_changes.push_back({
             .port = input.current,
-            .regions = std::move(regions),
+            .regions = input_region_ranges(regions),
             .coverage = std::move(current_coverage),
             .changed = std::move(changed),
         });
@@ -1842,6 +2254,7 @@ void BackgroundPropagationWorkspace::reset(
     std::fill(finalized_outputs_.begin(), finalized_outputs_.end(), false);
     candidate_output_coverages_ = coverage.output_coverages_;
     candidate_output_region_ranges_ = coverage.output_region_ranges_;
+    candidate_output_event_regions_ = coverage.output_event_regions_;
     for (std::size_t index = 0; index < candidate_output_coverages_.size();
          ++index) {
         output_changes_[index].previous_coverage =
@@ -1864,6 +2277,10 @@ void BackgroundPropagationWorkspace::reset(
         value = {};
     for (auto& value : input_requirements_by_port_)
         value = {};
+    for (auto& value : input_sample_requirements_by_port_)
+        value = {};
+    for (auto& demands : indexed_input_demands_) demands.clear();
+    for (auto& demands : indexed_output_demands_) demands.clear();
     for (auto& value : input_selection_requests_by_port_)
         value = {};
     for (auto& frame : node_calls_) {
@@ -1895,11 +2312,15 @@ BackgroundPropagationWorkspace::BackgroundPropagationWorkspace(
     : plan_(&plan), sample_rate_(sample_rate),
       candidate_output_coverages_(plan.accumulators.output_change_count),
       candidate_output_region_ranges_(plan.accumulators.output_change_count),
+      candidate_output_event_regions_(plan.accumulators.output_change_count),
       input_changes_(plan.accumulators.input_change_count),
       output_changes_(plan.accumulators.output_change_count),
       input_requirements_(plan.accumulators.input_requirement_count),
       output_requirements_(plan.accumulators.output_requirement_count),
       input_requirements_by_port_(plan.ports.size()),
+      input_sample_requirements_by_port_(plan.ports.size()),
+      indexed_output_demands_(plan.ports.size()),
+      indexed_input_demands_(plan.ports.size()),
       input_selection_requests_by_port_(plan.ports.size()),
       callback_input_changes_(plan.accumulators.input_change_count),
       callback_output_changes_(plan.accumulators.output_change_count),
@@ -1957,6 +2378,8 @@ BackgroundPropagationWorkspace::prepare(
     PlanningState owned;
     auto const root_scope = planning_state_ == nullptr;
     if (root_scope) {
+        static std::atomic<std::uint64_t> next_snapshot{1};
+        owned.snapshot = next_snapshot.fetch_add(1, std::memory_order_relaxed);
         owned.root = this;
         owned.operations = &operations;
         owned.expansion = expansion;
@@ -2026,6 +2449,7 @@ BackgroundPropagationWorkspace::prepare(
         auto const& root = *planning_state_->root;
         candidate_output_coverages_ = root.candidate_output_coverages_;
         candidate_output_region_ranges_ = root.candidate_output_region_ranges_;
+        candidate_output_event_regions_ = root.candidate_output_event_regions_;
         for (std::size_t index = 0; index < output_changes_.size(); ++index) {
             output_changes_[index].changed = root.output_changes_[index].changed;
             output_changes_[index].touched = root.output_changes_[index].touched;
@@ -2047,7 +2471,37 @@ BackgroundPropagationWorkspace::prepare(
                 workspace.output_index(output)].changed;
         },
     };
-    for (auto const& root : request.input_demands) {
+    CoveragePropagationRequest selected;
+    if (expansion.select_demands) {
+        selected = request;
+        BackgroundDemandSelection const candidate{
+            .data = this,
+            .output_regions = +[](void const* data, graph_jit::BackgroundPortIndex port) -> std::span<GlobalIndexRange const> {
+                auto const& workspace = *static_cast<BackgroundPropagationWorkspace const*>(data);
+                return workspace.candidate_output_region_ranges_[workspace.output_index(port)];
+            },
+            .event_regions = +[](void const* data, graph_jit::BackgroundPortIndex port) -> std::span<EventRegionInfo const> {
+                auto const& workspace = *static_cast<BackgroundPropagationWorkspace const*>(data);
+                return workspace.candidate_output_event_regions_[workspace.output_index(port)];
+            },
+            .read_events = +[](void* data, std::span<IndexedRegionDemand const> demands) {
+                auto& workspace = *static_cast<BackgroundPropagationWorkspace*>(data);
+                auto const& discovery = workspace.planning_state_->discovery;
+                if (!discovery.read_events) throw std::logic_error("indexed event read requires a background transaction");
+                CoveragePropagationRequest probe;
+                probe.indexed_output_demands.assign(demands.begin(), demands.end());
+                return discovery.read_events(discovery.data, workspace.prepare_discovery(probe), demands);
+            },
+        };
+        expansion.select_demands(expansion.data, candidate, selected);
+    }
+    auto const& demands = expansion.select_demands ? selected : request;
+    for (auto const& root : demands.input_demands) {
+        if (!root.sample_positions.empty()) {
+            if (port(root.port).kind != PortKind::sample)
+                throw std::invalid_argument("sample position demand requires a continuous input");
+            require_sample_input(root.port, root.sample_positions.view());
+        }
         if (!expansion.restrict_input) {
             require_input(root.port, root.required);
             continue;
@@ -2056,12 +2510,31 @@ BackgroundPropagationWorkspace::prepare(
         expansion.restrict_input(expansion.data, root.port, forward, required);
         require_input(root.port, required);
     }
-    for (auto const& root : request.output_demands) {
+    for (auto const& root : demands.output_demands) {
         auto const& planned = port(root.port);
+        if (!root.sample_positions.empty()) {
+            if (planned.kind != PortKind::sample)
+                throw std::invalid_argument("sample position demand requires a continuous output");
+            require_sample_output(root.port, root.sample_positions);
+        }
         auto const stored_boundary = planned.realization
             && *planned.realization == OutputRealization::buffered;
         auto const cached = expansion.cached_output && expansion.cached_output(expansion.data, root.port);
         require_output(root.port, root.required, !stored_boundary && !cached);
+    }
+    for (auto const& root : demands.indexed_output_demands) {
+        if (root.port >= plan_->ports.size() || port(root.port).direction != graph_jit::PortDirection::output)
+            throw std::invalid_argument("indexed event demand requires an output port");
+        if (port(root.port).kind == PortKind::event)
+            require_event_output(root.port, root.region_index, root.runs);
+        else
+            require_sample_region(root.port, root.region_index, root.runs);
+    }
+    for (auto const& root : demands.indexed_input_demands) {
+        if (root.port >= plan_->ports.size() || port(root.port).direction != graph_jit::PortDirection::input)
+            throw std::invalid_argument("indexed event demand requires an input port");
+        require_region_selection(root.port, {
+            details::RegionRefAccess::make(planning_state_->snapshot, root.port, root.region_index), root.runs});
     }
     if (expansion.expand_output) {
         for (graph_jit::BackgroundPortIndex index = 0;
@@ -2085,6 +2558,10 @@ BackgroundPropagationWorkspace::prepare(
     run_planning(true);
 
     CoveragePropagationResult result;
+    for (auto& demands : indexed_output_demands_)
+        result.indexed_outputs.insert(result.indexed_outputs.end(), demands.begin(), demands.end());
+    for (auto& demands : indexed_input_demands_)
+        result.indexed_inputs.insert(result.indexed_inputs.end(), demands.begin(), demands.end());
     result.output_changes.reserve(output_changes_.size());
     for (std::size_t index = 0; index < output_changes_.size(); ++index) {
         auto const& change = output_changes_[index];
@@ -2100,11 +2577,13 @@ BackgroundPropagationWorkspace::prepare(
     for (graph_jit::BackgroundPortIndex index = 0; index < plan_->ports.size();
          ++index) {
         auto const& required = input_requirements_by_port_[index];
-        if (required.empty())
+        auto const& sample_positions = input_sample_requirements_by_port_[index];
+        if (required.empty() && sample_positions.empty())
             continue;
         result.input_requirements.push_back(RequiredInputCoverage{
             .port = index,
             .required = required,
+            .sample_positions = sample_positions,
         });
     }
     result.output_requirements.reserve(output_requirements_.size());
@@ -2116,12 +2595,13 @@ BackgroundPropagationWorkspace::prepare(
             continue;
         }
         auto const requirement_index = *planned.accumulators.output_requirement;
-        auto const& required = output_requirements_[requirement_index].required;
-        if (required.empty())
+        auto const& demand = output_requirements_[requirement_index];
+        if (demand.required.empty() && demand.positional_sample_positions.empty())
             continue;
         result.output_requirements.push_back(RequiredOutputCoverage{
             .port = index,
-            .required = required,
+            .required = demand.required,
+            .sample_positions = demand.positional_sample_positions,
         });
     }
 
@@ -2159,22 +2639,38 @@ BackgroundPropagationWorkspace::prepare(
          index < plan_->ports.size(); ++index) {
         auto const& planned = plan_->ports[index];
         if (planned.direction == graph_jit::PortDirection::input) {
-            prepared.input_regions_by_port_[index] = derive_input_regions(
-                *plan_, candidate_output_region_ranges_, index, &input_requirements_by_port_[index]);
+            auto const& required = input_requirements_by_port_[index];
+            auto const& sparse = input_sample_requirements_by_port_[index];
+            auto& input_regions = prepared.input_regions_by_port_[index];
+            input_regions = derive_input_regions(
+                *plan_, candidate_output_region_ranges_, index, &required, &sparse, expansion.sparse_sample_budget);
             prepared.input_coverages_by_port_[index] = input_coverage(index);
             auto const& requested = input_selection_requests_by_port_[index];
-            auto const regions = derive_input_regions(
-                *plan_, candidate_output_region_ranges_, index, &requested);
             auto& selected = prepared.requested_input_regions_by_port_[index];
-            for (auto const region : regions) {
-                if (requested.intersects(region)) selected.push_back(region);
+            auto const& scoped = indexed_input_demands_[index];
+            if (requested.empty() && sparse.empty() && scoped.empty()) continue;
+            auto const append_requested = [&](std::span<BackgroundInputRegion const> regions) {
+                for (auto const& region : regions) {
+                    if (requested.intersects(region.range) || sparse.intersects(region.range)
+                        || std::ranges::contains(scoped, region.logical_index, &IndexedRegionDemand::region_index))
+                        selected.push_back(region);
+                }
+            };
+            if (requested == required) {
+                append_requested(input_regions);
+            } else {
+                append_requested(derive_input_regions(
+                    *plan_, candidate_output_region_ranges_, index, &requested, &sparse, expansion.sparse_sample_budget));
             }
         }
     }
     prepared.output_coverages_ = std::move(candidate_output_coverages_);
     prepared.output_region_ranges_ =
         std::move(candidate_output_region_ranges_);
+    prepared.output_event_regions_ = std::move(candidate_output_event_regions_);
+    prepared.selection_snapshot_ = planning_state_->snapshot;
     prepared.output_regions_by_port_.resize(plan_->ports.size());
+    prepared.event_regions_by_port_.resize(plan_->ports.size());
     for (graph_jit::BackgroundPortIndex index = 0;
          index < plan_->ports.size(); ++index) {
         auto const& planned = plan_->ports[index];
@@ -2182,6 +2678,8 @@ BackgroundPropagationWorkspace::prepare(
             && planned.accumulators.output_change) {
             prepared.output_regions_by_port_[index] =
                 prepared.output_region_ranges_[output_index(index)];
+            prepared.event_regions_by_port_[index] =
+                prepared.output_event_regions_[output_index(index)];
         }
     }
     prepared.node_activity_.reserve(node_calls_.size());
@@ -2203,8 +2701,10 @@ CoveragePropagationResult BackgroundPropagationWorkspace::commit(
     coverage.read_dependencies_.swap(prepared.read_dependencies_);
     coverage.output_coverages_.swap(prepared.output_coverages_);
     coverage.output_region_ranges_.swap(prepared.output_region_ranges_);
+    coverage.output_event_regions_.swap(prepared.output_event_regions_);
     candidate_output_coverages_.swap(prepared.output_coverages_);
     candidate_output_region_ranges_.swap(prepared.output_region_ranges_);
+    candidate_output_event_regions_.swap(prepared.output_event_regions_);
     return std::move(prepared.result_);
 }
 
@@ -2213,6 +2713,7 @@ void BackgroundPropagationWorkspace::discard(
 {
     candidate_output_coverages_.swap(prepared.output_coverages_);
     candidate_output_region_ranges_.swap(prepared.output_region_ranges_);
+    candidate_output_event_regions_.swap(prepared.output_event_regions_);
 }
 
 } // namespace iv

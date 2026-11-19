@@ -72,5 +72,6 @@ struct ProjectGraphScope {
     bool editable = true;
     std::vector<ProjectGraphScopeNode> nodes{};
     std::vector<ProjectGraphScopeConnection> connections{};
+    std::vector<NodeAddress> timeline_nodes{};
 };
 } // namespace iv

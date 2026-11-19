@@ -18,6 +18,7 @@
 #include <memory>
 #include <limits>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -397,16 +398,14 @@ void evaluate_persisted_probe(
         auto outputs = static_cast<std::span<iv::TockContinuousOutputPort>>(
             node.tock.outputs);
         ASSERT_EQ(outputs.size(), 1u);
-        for (auto const& descriptor : outputs[0].region_views()) {
-            auto region = iv::WritableContinuousRegion<iv::Sample>{descriptor};
-            for (auto window : region.prepared_windows())
-            for (std::uint64_t offset = 0; offset < window.range().extent; ++offset) {
-                auto const position = window.range().begin.advanced_by(offset);
+        for (auto run : outputs[0].prepared_runs<iv::Sample>()) {
+            for (std::size_t slot = 0; slot < run.size(); ++slot) {
+                auto const position = run.position(slot);
                 if (omit_last_persisted_probe_sample
-                    && offset + 1 == window.range().extent) {
+                    && slot + 1 == run.size()) {
                     continue;
                 }
-                window.at(position) = iv::Sample{
+                run.value(slot) = iv::Sample{
                     100.0f + static_cast<float>(position.signed_value())};
             }
         }
@@ -2942,6 +2941,42 @@ TEST_F(
 
 TEST_F(
     BackgroundCoveragePropagationFixture,
+    SampleReverseCallbackSeesTheSelectedEqualRangeRegion)
+{
+    auto const plan = probe_tock_plan(
+        iv::OutputRealization::computed, iv::graph_jit::PortStorageKind::background);
+    iv::BackgroundCoverageState coverage(plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+    auto const region = range(10, 30);
+    iv::CompiledGraphBackgroundOperations const operations{
+        .propagate_forward = &no_op_background_evaluate,
+        .propagate_reverse = +[](iv::graph_jit::BackgroundEvaluationCall* batch) {
+            auto const nodes = static_cast<std::span<iv::graph_jit::BackgroundNodeCall>>(batch->nodes);
+            ASSERT_EQ(nodes.size(), 1u);
+            auto const outputs = static_cast<std::span<iv::OutputCoverageRequirement const>>(nodes.front().reverse.outputs);
+            ASSERT_EQ(outputs.size(), 1u);
+            iv::details::StaticOutputCoverageRequirement<
+                iv::OutputProductionKind::coverage, iv::PortKind::sample> const output{outputs.front()};
+            auto const selections = output.required_selections();
+            ASSERT_EQ(selections.size(), 1u);
+            EXPECT_TRUE(selections.front().region);
+            EXPECT_EQ(iv::details::RegionRefAccess::index(selections.front().region), 1u);
+            ASSERT_EQ(selections.front().runs.size(), 1u);
+            EXPECT_EQ(selections.front().runs.front(), (iv::IndexRun{1, 3, 4}));
+        },
+        .evaluate = &no_op_background_evaluate,
+    };
+    auto prepared = workspace.prepare(operations, coverage, {
+        .output_changes = {{.port = 0, .coverage = iv::IndexCoverage{region}, .regions = {region, region}}},
+        .indexed_output_demands = {{.port = 0, .region_index = 1, .runs = {{1, 3, 4}}}},
+    });
+    EXPECT_TRUE(iv::graph_jit::has_activity(prepared.node_activity().front(),
+        iv::graph_jit::BackgroundNodeActivity::reverse));
+    workspace.discard(std::move(prepared));
+}
+
+TEST_F(
+    BackgroundCoveragePropagationFixture,
     PreparedCoverageExposesEvaluationActivityWithoutCommitting)
 {
     auto const plan = background_fanin_plan();
@@ -3146,13 +3181,20 @@ TEST_F(BackgroundCoveragePropagationFixture,
         {.locally_changed_nodes = {0, 1}});
 
     EXPECT_EQ(
-        std::vector<iv::GlobalIndexRange>(
-            prepared.input_regions(2).begin(),
-            prepared.input_regions(2).end()),
+        std::ranges::to<std::vector>(
+            prepared.input_regions(2) | std::views::transform(&iv::BackgroundInputRegion::range)),
         (std::vector<iv::GlobalIndexRange>{
             range(10, 13),
             range(20, 22),
         }));
+    auto const regions = prepared.input_regions(2);
+    ASSERT_EQ(regions.size(), 2u);
+    EXPECT_EQ(regions[0].sample_projection, 0u);
+    EXPECT_EQ(regions[1].sample_projection, 1u);
+    EXPECT_EQ(regions[0].sources, (std::vector<iv::BackgroundInputRegionSource>{
+        {.output = 0, .region_index = 0, .route_index = 0}}));
+    EXPECT_EQ(regions[1].sources, (std::vector<iv::BackgroundInputRegionSource>{
+        {.output = 1, .region_index = 0, .route_index = 1}}));
     EXPECT_EQ(
         background_observation.sink_input_coverage,
         index_coverage({{10, 13}, {20, 22}}));
@@ -4049,9 +4091,8 @@ TEST_F(BackgroundCoveragePropagationFixture,
         {.locally_changed_nodes = {0, 1}});
 
     EXPECT_EQ(
-        std::vector<iv::GlobalIndexRange>(
-            prepared.input_regions(2).begin(),
-            prepared.input_regions(2).end()),
+        std::ranges::to<std::vector>(
+            prepared.input_regions(2) | std::views::transform(&iv::BackgroundInputRegion::range)),
         (std::vector<iv::GlobalIndexRange>{
             range(-5, -3),
             range(-4, -2),
@@ -4131,15 +4172,22 @@ TEST_F(BackgroundCoveragePropagationFixture,
     // after clipping to that common completeness, including the duplicate
     // [4, 10) contribution.
     EXPECT_EQ(
-        std::vector<iv::GlobalIndexRange>(
-            prepared.input_regions(2).begin(),
-            prepared.input_regions(2).end()),
+        std::ranges::to<std::vector>(
+            prepared.input_regions(2) | std::views::transform(&iv::BackgroundInputRegion::range)),
         (std::vector<iv::GlobalIndexRange>{
             range(4, 10),
             range(4, 10),
             range(4, 8),
             range(4, 6),
         }));
+    auto const regions = prepared.input_regions(2);
+    ASSERT_EQ(regions.size(), 4u);
+    ASSERT_EQ(regions[0].sources.size(), 1u);
+    ASSERT_EQ(regions[1].sources.size(), 1u);
+    EXPECT_EQ(regions[0].sources.front(), (iv::BackgroundInputRegionSource{
+        .output = 0, .region_index = 0, .route_index = 0}));
+    EXPECT_EQ(regions[1].sources.front(), (iv::BackgroundInputRegionSource{
+        .output = 1, .region_index = 0, .route_index = 1}));
     workspace.discard(std::move(prepared));
 }
 
@@ -4307,9 +4355,14 @@ TEST_F(BackgroundCoveragePropagationFixture,
         });
         ASSERT_EQ(prepared.result().input_requirements.size(), 1u);
         EXPECT_EQ(prepared.result().input_requirements[0].required, index_coverage({{0, 1}}));
-        EXPECT_EQ(std::vector<iv::GlobalIndexRange>(prepared.requested_input_regions(2).begin(),
-            prepared.requested_input_regions(2).end()),
-            (std::vector<iv::GlobalIndexRange>{range(0, 10), range(0, 10)}));
+        auto const selected = prepared.requested_input_regions(2);
+        ASSERT_EQ(selected.size(), 2u);
+        EXPECT_EQ(selected[0].range, range(0, 10));
+        EXPECT_EQ(selected[1].range, range(0, 10));
+        ASSERT_EQ(selected[0].sources.size(), 1u);
+        ASSERT_EQ(selected[1].sources.size(), 1u);
+        EXPECT_EQ(selected[0].sources[0].region_index, 0u);
+        EXPECT_EQ(selected[1].sources[0].region_index, 1u);
         // Logical metadata retains both selected duplicate Regions, while
         // computation stays within the explicitly requested content window.
         auto const producer = std::ranges::find(prepared.result().output_requirements,
@@ -4321,9 +4374,9 @@ TEST_F(BackgroundCoveragePropagationFixture,
         auto retained = workspace.prepare(operations, coverage, {
             .input_demands = {{.port = 2, .required = index_coverage({{20, 21}})}},
         });
-        EXPECT_EQ(std::vector<iv::GlobalIndexRange>(retained.requested_input_regions(2).begin(),
-            retained.requested_input_regions(2).end()),
-            (std::vector<iv::GlobalIndexRange>{range(20, 30)}));
+        auto const retained_regions = retained.requested_input_regions(2);
+        ASSERT_EQ(retained_regions.size(), 1u);
+        EXPECT_EQ(retained_regions.front().range, range(20, 30));
         workspace.discard(std::move(retained));
         auto empty = workspace.prepare(operations, coverage, {});
         EXPECT_TRUE(empty.requested_input_regions(2).empty());
@@ -4348,7 +4401,7 @@ iv::CoverageTask discover_event_control(
     }
     auto positions = index_coverage({{10, 11}});
     auto const contents_id = context.planning.request_input(
-        true, 0, iv::CoverageInformation::contents, &positions);
+        true, 0, iv::CoverageInformation::contents, {.positional = &positions});
     auto const& input = co_await iv::CoverageRequest<iv::RandomAccessEventInputPort>{
         context.planning.access, contents_id};
     bool active = false;
@@ -4438,12 +4491,14 @@ TEST_F(BackgroundCoveragePropagationFixture,
             BackgroundPortIndex input) {
             EXPECT_EQ(input, 2u);
             auto selected = prepared.requested_input_regions(input);
-            EXPECT_EQ(std::vector(selected.begin(), selected.end()),
-                (std::vector{range(10, 14)}));
+            EXPECT_EQ(selected.size(), 1u);
+            if (selected.size() == 1) EXPECT_EQ(selected.front().range, range(10, 14));
             EXPECT_FALSE(has_activity(prepared.node_activity()[2], BackgroundNodeActivity::evaluate));
             auto events = std::make_shared<DiscoveryEvents>();
-            events->regions.assign(selected.begin(), selected.end());
-            for (auto region : selected) events->coverage.include(region);
+            for (auto const& region : selected) {
+                events->regions.push_back(region.range);
+                events->coverage.include(region.range);
+            }
             events->event = {.time = index(10),
                 .value = iv::SampleEvent{iv::Sample{*static_cast<float*>(opaque)}}};
             return iv::BackgroundDiscoveredInput{
@@ -4466,8 +4521,8 @@ TEST_F(BackgroundCoveragePropagationFixture,
         .output_demands = {{.port = 3, .required = index_coverage({{100, 101}})}},
     };
     auto first = workspace.prepare(operations, coverage, request, {}, discovery);
-    EXPECT_EQ(std::vector(first.requested_input_regions(2).begin(),
-        first.requested_input_regions(2).end()), (std::vector{range(0, 4)}));
+    ASSERT_EQ(first.requested_input_regions(2).size(), 1u);
+    EXPECT_EQ(first.requested_input_regions(2).front().range, range(0, 4));
     EXPECT_TRUE(std::ranges::any_of(first.read_dependencies(), [](auto const& dependency) {
         return dependency.node == 2 && !dependency.reverse && dependency.input == 2
             && dependency.information == iv::CoverageInformation::contents
@@ -4498,7 +4553,7 @@ iv::CoverageTask discover_sample_output(iv::ReflectedNodeForwardCoverageContext&
     auto const& metadata = co_await iv::CoverageRequest<iv::CoverageInputInfo>{
         context.planning.access, metadata_id};
     auto const data_id = context.planning.request_input(false, 0,
-        iv::CoverageInformation::contents, &metadata.coverage);
+        iv::CoverageInformation::contents, {.positional = &metadata.coverage});
     auto const& input = co_await iv::CoverageRequest<iv::RandomAccessContinuousInputPort>{
         context.planning.access, data_id};
     auto region = iv::ContinuousRegion<iv::Sample>{input.region_views()[0]};

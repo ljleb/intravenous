@@ -4,6 +4,7 @@
 #include <intravenous/graph_jit/background_storage_plan.h>
 #include <intravenous/graph_jit/sequential_coverage.h>
 #include <intravenous/runtime/observation_window.h>
+#include <intravenous/runtime/event_observation_window.h>
 #include <intravenous/runtime/observation_resolution.h>
 #include <intravenous/runtime/background_evaluation_call_frame.h>
 #include <intravenous/runtime/playback_preparation_metrics.h>
@@ -992,6 +993,7 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
     // sampling the current revision here would incorrectly discard that work.
     std::uint64_t observed_work_revision = 0;
     auto observed_wake_revision = work_signal_.wake_revision();
+    bool serve_visible_waveform = false;
     for (;;) {
         auto* requests = initial_playback_requests_.exchange(nullptr, std::memory_order_acquire);
         ExecutionGeneration* ordered = nullptr;
@@ -1037,34 +1039,52 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
 
         if (!command) {
             auto const current_work_revision = work_signal_.work_revision();
-            if (current_work_revision == observed_work_revision) {
+            bool const caught_up = current_work_revision == observed_work_revision;
+            if (caught_up || serve_visible_waveform) {
+                serve_visible_waveform = false;
                 std::shared_ptr<ObservationWindowQuery> query;
                 {
                     std::lock_guard lock{commands_mutex_};
-                    while (!observation_windows_.empty()) {
-                        query = std::move(observation_windows_.front());
+                    while (!observation_windows_.empty()
+                        && observation_windows_.front()->canceled.load(std::memory_order_acquire))
                         observation_windows_.pop_front();
-                        if (!query->canceled.load(std::memory_order_acquire)) break;
-                        query.reset();
+                    if (!observation_windows_.empty()) {
+                        auto next = std::ranges::find_if(observation_windows_, [caught_up](auto const& pending) {
+                            return !pending->prefetch.load(std::memory_order_relaxed)
+                                && (caught_up || pending->port.port_kind == PortKind::sample)
+                                && !pending->canceled.load(std::memory_order_acquire);
+                        });
+                        if (next == observation_windows_.end() && caught_up)
+                            next = observation_windows_.begin();
+                        if (next != observation_windows_.end()) {
+                            query = std::move(*next);
+                            observation_windows_.erase(next);
+                        }
                     }
                 }
                 if (query) {
-                    process_window(*query);
+                    if (!query->canceled.load(std::memory_order_acquire)) process_window(*query);
                     continue; // Recheck playback and cutover work after each bounded query.
                 }
-                auto const current_wake_revision =
-                    work_signal_.wake_revision();
-                if (current_wake_revision != observed_wake_revision) {
-                    observed_wake_revision = current_wake_revision;
+                if (caught_up) {
+                    auto const current_wake_revision = work_signal_.wake_revision();
+                    if (current_wake_revision != observed_wake_revision) {
+                        observed_wake_revision = current_wake_revision;
+                        continue;
+                    }
+                    work_signal_.wait(observed_wake_revision);
                     continue;
                 }
-                work_signal_.wait(observed_wake_revision);
-                continue;
             }
             observed_work_revision = current_work_revision;
             if (!generation_chain_) continue;
 
             auto progress = process_available_work_safely();
+            // Playback notifications can keep arriving faster than a pass
+            // finishes. Let one visible waveform use the committed snapshot
+            // before another pass. Cutovers and input reconciliation still
+            // gate the query in process_window().
+            serve_visible_waveform = progress && progress->status == BackgroundEvaluationStatus::committed;
             if (!progress || progress->status == BackgroundEvaluationStatus::terminal_preparation_error) {
                 if (!progress_failed_.exchange(true, std::memory_order_acq_rel)) {
                     auto const& message = progress ? progress->preparation_error : progress.error();
@@ -2440,6 +2460,94 @@ void GraphExecutor::BackgroundExecutor::queue_windows(
     work_signal_.notify_control();
 }
 
+void GraphExecutor::BackgroundExecutor::process_event_windows(
+    ExecutionGeneration& current, ObservationWindowQuery& query)
+{
+    auto const& graph = *current.graph;
+    auto const& plan = graph.background_evaluation_plan;
+    std::vector<std::shared_ptr<ObservationWindowQuery>> pending;
+    pending.reserve(31);
+    std::vector<ObservationWindowQuery*> batch;
+    batch.reserve(32);
+    batch.push_back(&query);
+    {
+        std::scoped_lock lock(commands_mutex_);
+        for (auto it = observation_windows_.begin(); it != observation_windows_.end() && pending.size() < 31;) {
+            auto const& next = **it;
+            if (!next.canceled.load(std::memory_order_acquire) && next.port.port_kind == PortKind::event
+                && next.configured_generation == query.configured_generation
+                && next.window.begin == query.window.begin && next.window.length == query.window.length) {
+                pending.push_back(std::move(*it));
+                it = observation_windows_.erase(it);
+            } else ++it;
+        }
+    }
+    for (auto const& item : pending) batch.push_back(item.get());
+    try {
+        CoveragePropagationRequest roots;
+        std::vector<BeatGridObservation> grids;
+        auto const mark_share = std::size_t{4096} / batch.size();
+        for (auto* item : batch) {
+            auto& result = item->result;
+            result.configured_generation = item->configured_generation;
+            result.data_version = owner_.execution_data_version_.load(std::memory_order_acquire);
+            auto const* input = observation_public_event_coverage_input(graph, item->port);
+            if (!input || input->type != EventTypeId::beat || !input->reconstructible || !item->window.max_depth) {
+                result.status = ObservationWindowResult::Status::unavailable;
+                continue;
+            }
+            result.execution_generation = graph.project_generation;
+            result.sample_rate = graph.specialization.sample_rate;
+            grids.emplace_back(*item, *input, plan, std::min(mark_share, item->window.points));
+            for (auto const& source : input->sources) {
+                auto const node = plan.ports[source.output].node;
+                if (!std::ranges::contains(roots.forward_nodes, node)) roots.forward_nodes.push_back(node);
+            }
+        }
+        if (!grids.empty()) {
+            BackgroundEvaluationTransaction transaction{graph, current.background.tock_states,
+                current.background.coverage, current.background.propagation, owner_.persisted_data_,
+                BackgroundTransactionInputs{.roots = std::move(roots), .projection = {
+                    .data = &grids,
+                    .project = +[](void* data, graph_jit::BackgroundEvaluationPlan const&,
+                        PreparedCoveragePropagation const&, BackgroundStorageRealization const& storage,
+                        BackgroundEvaluationCallFrame const& frame, PersistedDataVersion version) {
+                        for (auto& grid : *static_cast<std::vector<BeatGridObservation>*>(data))
+                            grid.project(storage, frame, version);
+                    },
+                    .select_demands = +[](void* data, BackgroundDemandSelection const& candidate,
+                        CoveragePropagationRequest& roots, PersistedDataVersion) {
+                        auto& grids = *static_cast<std::vector<BeatGridObservation>*>(data);
+                        auto const share = std::size_t{8192} / grids.size();
+                        for (auto& grid : grids) grid.select(candidate, roots, share, share);
+                    }},
+                    .retain_generated_outputs = false,
+                    .maximum_materialized_sample_bytes = 16 * 1024 * 1024,
+                    .reconstruction_graph = current.graph}};
+            auto const evaluated = transaction.execute();
+            if (!evaluated) throw std::runtime_error(evaluated.error());
+            if (evaluated->status != BackgroundEvaluationStatus::committed)
+                throw std::runtime_error("event observation snapshot changed before commit");
+        }
+        for (auto* item : batch)
+            if (item->result.status == ObservationWindowResult::Status::pending_execution)
+                item->result.status = ObservationWindowResult::Status::ready;
+    } catch (std::exception const& error) {
+        for (auto* item : batch) {
+            item->result.events.clear();
+            item->result.error = error.what();
+            item->result.status = ObservationWindowResult::Status::failed;
+        }
+    } catch (...) {
+        for (auto* item : batch) {
+            item->result.events.clear();
+            item->result.error = "background event observation failed";
+            item->result.status = ObservationWindowResult::Status::failed;
+        }
+    }
+    for (auto* item : batch) item->complete.store(true, std::memory_order_release);
+}
+
 void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& query) noexcept
 {
     auto& result = query.result;
@@ -2461,6 +2569,10 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
             throw std::invalid_argument("invalid background observation window");
         auto const& graph = *current->graph;
         auto const& plan = graph.background_evaluation_plan;
+        if (query.port.port_kind == PortKind::event) {
+            process_event_windows(*current, query);
+            return;
+        }
         auto const observing_input = query.kind == ObservationSourceKind::input;
         auto const input_port = observing_input ? observation_input_window_port(graph, query.port) : std::nullopt;
         auto const* public_input = observing_input ? observation_public_coverage_input(graph, query.port) : nullptr;
@@ -2505,15 +2617,33 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
         if (!lattice) throw std::invalid_argument("observation window cannot be represented on the port lattice");
         GlobalIndexRange window{GlobalIndex::from_bits(lattice->begin_index_bits), lattice->count};
         auto positions = observation_window_positions(window, query.window.points);
-        IndexCoverage demand;
-        for (auto position : positions) demand.include({position, 1});
+        auto const cacheable = public_input
+            ? std::ranges::all_of(public_input->projections, [&](auto const& projection) {
+                return std::ranges::all_of(projection.sources, [&](auto const& source) {
+                    return plan.ports[source.output].authored_tock_output;
+                });
+            }) : !observing_input && found->authored_tock_output;
+        auto const matches_source = [&](CachedObservationWindow const& previous) {
+            return previous.port == query.port && previous.kind == query.kind
+                && previous.channel == query.channel && previous.operation == query.operation;
+        };
+        std::vector<CachedObservationWindow const*> previous;
+        if (cacheable) {
+            for (auto const& cached : sampled_windows_)
+                if (matches_source(cached)) previous.push_back(&cached);
+        }
+        BackgroundSampleDemand demand;
+        if (!cacheable) demand.include_ordered_positions(positions);
         struct Projection {
             ObservationWindowQuery& query;
             graph_jit::BackgroundPortIndex port;
             graph_jit::PublicCoverageInputView const* public_input;
             GlobalIndexRange window;
             std::span<GlobalIndex const> positions;
-        } projection{query, port, public_input, window, positions};
+            std::span<CachedObservationWindow const* const> previous;
+            ObservationWindowReuse reuse;
+            PersistedDataVersion reuse_version;
+        } projection{query, port, public_input, window, positions, previous, {}, {}};
         CoveragePropagationRequest roots;
         // Forward metadata is semantic, independent of what previous playback
         // happened to materialize. The ordinary transaction discovers dependencies.
@@ -2525,18 +2655,18 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
                     auto required = std::ranges::find(roots.output_demands, source.output, &OutputCoverageRequest::port);
                     if (required == roots.output_demands.end())
                         required = roots.output_demands.insert(roots.output_demands.end(), {.port = source.output});
-                    for (auto const position : positions)
-                        required->required.include({position.retreated_by(source.read_latency), 1});
+                    auto shifted = demand.retreated_by(source.read_latency);
+                    required->sample_positions.include(shifted.view());
                 }
             }
         } else if (observing_input) {
-            roots.input_demands.push_back({port, std::move(demand)});
+            roots.input_demands.push_back({.port = port, .sample_positions = std::move(demand)});
             for (auto const connection : found->incoming_connections)
                 for (auto const source : plan.connections[connection].source_coverage_ports)
                     if (auto const node = plan.ports[source].node; !std::ranges::contains(roots.forward_nodes, node))
                         roots.forward_nodes.push_back(node);
         } else {
-            roots.output_demands.push_back({port, std::move(demand)});
+            roots.output_demands.push_back({.port = port, .sample_positions = std::move(demand)});
             roots.forward_nodes.push_back(found->node);
         }
         BackgroundEvaluationTransaction transaction{graph, current->background.tock_states,
@@ -2547,11 +2677,13 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
                     BackgroundEvaluationCallFrame const& frame, PersistedDataVersion version) {
                     auto& selected = *static_cast<Projection*>(opaque);
                     auto& result = selected.query.result;
+                    if (!selected.reuse.windows.empty() && version != selected.reuse_version)
+                        throw std::runtime_error("observation snapshot changed during sample reuse");
                     result.semantic_version = version.semantic;
                     result.data_version = version.revision;
                     if (selected.public_input) {
                         project_public_coverage_input(selected.query, *selected.public_input, selected.window,
-                            selected.positions, plan, prepared, storage);
+                            selected.positions, plan, prepared, storage, &selected.reuse);
                         return;
                     }
                     auto const& port = plan.ports[selected.port];
@@ -2579,19 +2711,59 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
                         }
                         return;
                     }
-                    auto const* view = observation_output_view(plan, storage, selected.port, selected.query.channel);
+                    auto const slot = observation_output_storage(plan, storage, selected.port, selected.query.channel);
+                    auto const* view = slot ? storage.sample_read(*slot) : nullptr;
                     auto logical = prepared.output_regions(selected.port);
                     std::vector<GlobalIndexRange> recorded_regions;
                     if (logical.empty() && view) {
                         for (auto const& region : view->regions) recorded_regions.push_back(region.range);
                         logical = recorded_regions;
                     }
+                    std::optional<std::span<std::size_t const>> prepared_regions;
+                    if (slot && plan.ports[selected.port].authored_tock_output) {
+                        if (auto const& indices = storage.selection().output_region_indices[*slot])
+                            prepared_regions = std::span<std::size_t const>{*indices};
+                    }
                     project_observation_window(selected.query, selected.window, selected.positions, logical, view,
-                        plan.ports[selected.port].persisted_tick_output);
-                }, .sample_input = input_port},
+                        plan.ports[selected.port].persisted_tick_output, prepared_regions,
+                        &selected.reuse);
+                }, .sample_input = input_port,
+                .select_demands = cacheable ? +[](void* opaque, BackgroundDemandSelection const& candidate,
+                    CoveragePropagationRequest& roots, PersistedDataVersion version) {
+                    auto& selected = *static_cast<Projection*>(opaque);
+                    for (auto const* previous : selected.previous) {
+                        if (previous->result.execution_generation == selected.query.result.execution_generation
+                            && previous->result.semantic_version == version.semantic
+                            && previous->result.data_version == version.revision)
+                            selected.reuse.windows.emplace_back(previous->positions, previous->result.regions);
+                    }
+                    selected.reuse_version = version;
+                    std::vector<GlobalIndex> missing;
+                    for (auto const position : selected.positions)
+                        if (!selected.reuse.contains(position)) missing.push_back(position);
+                    BackgroundSampleDemand demand;
+                    demand.include_ordered_positions(missing);
+                    auto add_runs = [&](graph_jit::BackgroundPortIndex output, BackgroundSampleDemand const& positions) {
+                        auto const regions = candidate.output_regions(candidate.data, output);
+                        for (std::size_t index = 0; index < regions.size(); ++index) {
+                            auto const region = regions[index];
+                            if (!positions.intersects(region)) continue;
+                            auto& selection = roots.indexed_output_demands.emplace_back(output, index);
+                            for (auto const run : positions.prepared_runs(region, {}, maximum_observation_window_points))
+                                selection.runs.push_back({region.begin.forward_distance_to(run.first), run.count, run.step});
+                        }
+                    };
+                    if (selected.public_input) {
+                        for (auto const& projection : selected.public_input->projections)
+                            for (auto const& source : projection.sources)
+                                add_runs(source.output, demand.retreated_by(source.read_latency));
+                    } else {
+                        add_runs(selected.port, demand);
+                    }
+                } : nullptr},
                 // The response owns the sampled values. Sparse viewport
                 // demands should not fill the shared mapped playback cache.
-                .retain_computed_outputs = false,
+                .retain_generated_outputs = false,
                 .maximum_materialized_sample_bytes = 16 * 1024 * 1024,
                 .reconstruction_graph = current->graph}};
         auto evaluated = transaction.execute();
@@ -2599,12 +2771,28 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
         if (evaluated->status != BackgroundEvaluationStatus::committed)
             throw std::runtime_error("background observation snapshot changed before commit");
         result.status = ObservationWindowResult::Status::ready;
+        if (cacheable && !result.truncated && !query.canceled.load(std::memory_order_relaxed)) {
+            std::erase_if(sampled_windows_, [&](auto const& cached) {
+                return cached.result.execution_generation != result.execution_generation
+                    || cached.result.semantic_version != result.semantic_version
+                    || cached.result.data_version != result.data_version
+                    || (matches_source(cached) && cached.positions == positions);
+            });
+            constexpr std::size_t maximum_cached_windows = 16;
+            if (sampled_windows_.size() == maximum_cached_windows) sampled_windows_.pop_front();
+            sampled_windows_.push_back({query.port, query.kind, query.channel, query.operation,
+                std::move(positions), result});
+        }
     } catch (std::exception const& error) {
         result.regions.clear();
+        result.events.clear();
+        result.unavailable_regions.clear();
         result.error = error.what();
         result.status = ObservationWindowResult::Status::failed;
     } catch (...) {
         result.regions.clear();
+        result.events.clear();
+        result.unavailable_regions.clear();
         result.error = "background observation failed";
         result.status = ObservationWindowResult::Status::failed;
     }

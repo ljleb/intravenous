@@ -4,6 +4,8 @@
 #include <intravenous/compat.h>
 #include <intravenous/continuous_value.h>
 #include <intravenous/coverage.h>
+#include <intravenous/sample_positions.h>
+#include <intravenous/node/region_selection.h>
 
 #include <algorithm>
 #include <array>
@@ -68,9 +70,8 @@ struct ContinuousOutputPortBinding {
 };
 
 // One logical random-access Region. A complete buffer uses storage directly.
-// A demand-generated Region retains its full range while windows describes only
-// the prepared contiguous portions. Overlapping logical Regions own independent
-// window lists; a content window never changes their identity or extent.
+// A demand-generated Region retains its full range while its child views
+// describe prepared runs. Overlapping Regions own independent run lists.
 // This is a non-owning reflected ABI record; transaction/snapshot owners keep
 // the storage alive for the callback that receives it.
 struct ContinuousRegionStorageView {
@@ -89,12 +90,17 @@ struct ContinuousRegionStorageView {
     // A retained subwindow can share a larger immutable native-layout owner.
     std::size_t storage_frames = 0;
     std::size_t first_frame = 0;
+    std::size_t frame_stride = 1;
+    // When present, range bounds the run. Only its selected positions
+    // have packed slots in the storage.
+    std::optional<SamplePositionRun> sample_positions{};
+    RegionRef region_ref{};
 
     [[nodiscard]] constexpr ContinuousRegionStorageView const* prepared_window(
         GlobalIndex index) const noexcept
     {
         if (!range.contains(index)) return nullptr;
-        if (storage) return this;
+        if (storage) return (!sample_positions || sample_positions->slot_at(index)) ? this : nullptr;
         for (auto const& window : windows)
             if (auto const* result = window.prepared_window(index)) return result;
         return nullptr;
@@ -105,7 +111,10 @@ struct ContinuousRegionStorageView {
     {
         auto const* window = prepared_window(index);
         if (!window || channel >= channel_count(channel_layout)) return nullptr;
-        auto const frame = window->first_frame + static_cast<std::size_t>(*window->range.offset_of(index));
+        auto const offset = window->sample_positions
+            ? *window->sample_positions->slot_at(index)
+            : *window->range.offset_of(index);
+        auto const frame = window->first_frame + static_cast<std::size_t>(offset) * window->frame_stride;
         auto const frames = window->storage_frames ? window->storage_frames : window->frame_count();
         auto const value = window->channel_layout.sample_layout == SampleStreamLayout::planar
             ? channel * frames + frame
@@ -116,7 +125,12 @@ struct ContinuousRegionStorageView {
 
     [[nodiscard]] constexpr std::size_t frame_count() const noexcept
     {
-        return static_cast<std::size_t>(range.extent);
+        return static_cast<std::size_t>(sample_positions ? sample_positions->count : range.extent);
+    }
+
+    [[nodiscard]] constexpr GlobalIndex position(std::size_t frame) const noexcept
+    {
+        return sample_positions ? sample_positions->position(frame) : range.begin.advanced_by(frame);
     }
 
     [[nodiscard]] constexpr std::size_t storage_size_bytes() const noexcept
@@ -159,7 +173,7 @@ class ContinuousRegionView {
             "continuous Region frame is out of bounds");
         IV_ASSERT(channel < channel_count(region_->channel_layout),
             "continuous Region channel is out of bounds");
-        return region_->value_storage(range().begin.advanced_by(frame), channel);
+        return region_->value_storage(region_->position(frame), channel);
     }
 
     constexpr void mark_value_written(
@@ -167,7 +181,7 @@ class ContinuousRegionView {
         std::size_t channel) const noexcept
     requires Mutable
     {
-        (void)region_->value_storage(range().begin.advanced_by(frame), channel, true);
+        (void)region_->value_storage(region_->position(frame), channel, true);
     }
 
 public:
@@ -210,10 +224,9 @@ public:
     {
         if (!region_->storage) {
             auto const index = range().begin.advanced_by(frame);
-            auto const window = std::ranges::find_if(region_->windows,
-                [&](auto const& view) { return view.range.contains(index); });
-            IV_ASSERT(frame < frame_count() && window != region_->windows.end(),
-                "continuous Region read/write lies outside prepared windows");
+            auto const* window = region_->prepared_window(index);
+            IV_ASSERT(frame < frame_count() && window,
+                "continuous Region read/write lies outside prepared runs");
             return ContinuousRegionView<Value, Mutable>{*window}.at(index, channel);
         }
         auto* bytes = value_storage(frame, channel);
@@ -235,26 +248,18 @@ public:
         GlobalIndex index,
         std::size_t channel = 0) const noexcept
     {
-        auto const offset = range().offset_of(index);
+        auto const offset = region_->sample_positions
+            ? region_->sample_positions->slot_at(index)
+            : range().offset_of(index);
         IV_ASSERT(offset.has_value(),
             "continuous Region index is out of bounds");
         return value(static_cast<std::size_t>(*offset), channel);
     }
 
-    // These are content windows of this logical Region, not new Regions.
-    [[nodiscard]] constexpr auto prepared_windows() const noexcept
-    {
-        auto const views = region_->storage
-            ? std::span<ContinuousRegionStorageView const>{region_, 1}
-            : region_->windows;
-        return views | std::views::transform([](auto const& view) {
-            return ContinuousRegionView<Value, Mutable>{view};
-        });
-    }
-
     [[nodiscard]] constexpr bool has_complete_buffer() const noexcept
     {
-        return region_ && region_->storage && region_->first_frame == 0
+        return region_ && region_->storage && !region_->sample_positions && region_->first_frame == 0
+            && region_->frame_stride == 1
             && (!region_->storage_frames || region_->storage_frames == frame_count());
     }
 
@@ -264,7 +269,7 @@ public:
     [[nodiscard]] constexpr std::span<StorageElement> elements() const noexcept
     {
         if (frame_count() == 0) return {};
-        IV_ASSERT(region_->first_frame == 0
+        IV_ASSERT(region_->first_frame == 0 && region_->frame_stride == 1
                 && (!region_->storage_frames || region_->storage_frames == frame_count()),
             "prepared subwindow has no complete native-layout span");
         IV_ASSERT(region_ != nullptr && region_->storage != nullptr,
@@ -288,7 +293,7 @@ public:
     [[nodiscard]] constexpr std::span<StorageElement> channel_elements(
         std::size_t channel) const noexcept
     {
-        IV_ASSERT(region_ != nullptr && region_->storage != nullptr,
+        IV_ASSERT(region_ != nullptr && region_->storage != nullptr && region_->frame_stride == 1,
             "windowed Region has no complete contiguous channel buffer");
         IV_ASSERT(region_->channel_layout.sample_layout
                 == SampleStreamLayout::planar,
@@ -313,6 +318,59 @@ public:
         };
     }
 };
+
+template<RegisteredContinuousValue Value, bool Mutable>
+class ContinuousPreparedRun {
+    ContinuousRegionStorageView const* storage_;
+    GlobalIndexRange region_range_;
+    std::size_t region_index_;
+    RegionRef region_;
+
+public:
+    constexpr ContinuousPreparedRun(ContinuousRegionStorageView const& storage,
+        GlobalIndexRange region_range, std::size_t region_index, RegionRef region) noexcept
+        : storage_(&storage), region_range_(region_range), region_index_(region_index), region_(region)
+    {}
+
+    [[nodiscard]] constexpr std::size_t size() const noexcept { return storage_->frame_count(); }
+    [[nodiscard]] constexpr GlobalIndex position(std::size_t slot) const noexcept
+    {
+        IV_ASSERT(slot < size(), "prepared run slot is out of bounds");
+        return storage_->position(slot);
+    }
+
+    [[nodiscard]] constexpr std::uint64_t index(std::size_t slot) const noexcept
+    {
+        return region_range_.begin.forward_distance_to(position(slot));
+    }
+
+    [[nodiscard]] constexpr RegionRef region() const noexcept { return region_; }
+    [[nodiscard]] constexpr GlobalIndexRange region_range() const noexcept { return region_range_; }
+    // Index in the port's prepared Region list for this invocation.
+    [[nodiscard]] constexpr std::size_t region_index() const noexcept { return region_index_; }
+
+    [[nodiscard]] constexpr typename ContinuousRegionView<Value, Mutable>::reference
+    value(std::size_t slot, std::size_t channel = 0) const noexcept
+    {
+        return ContinuousRegionView<Value, Mutable>{*storage_}.value(slot, channel);
+    }
+};
+
+template<RegisteredContinuousValue Value, bool Mutable>
+[[nodiscard]] constexpr auto continuous_prepared_runs(std::span<ContinuousRegionStorageView const> regions) noexcept
+{
+    return std::views::iota(std::size_t{0}, regions.size())
+        | std::views::transform([regions](std::size_t index) {
+            auto const& region = regions[index];
+            auto const runs = region.storage
+                ? std::span<ContinuousRegionStorageView const>{&region, 1}
+                : region.windows;
+            return runs | std::views::transform([range = region.range, index, ref = region.region_ref](auto const& run) {
+                return ContinuousPreparedRun<Value, Mutable>{run, range, index, ref};
+            });
+        })
+        | std::views::join;
+}
 
 template<RegisteredContinuousValue Value, bool Mutable>
 class ContinuousCoverageView {

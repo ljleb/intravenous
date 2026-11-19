@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -161,6 +162,27 @@ struct GlobalIndexRange {
 
     constexpr bool operator==(GlobalIndexRange const&) const noexcept = default;
 };
+
+// Each component of the intersection begins at one of the two range origins.
+template<typename Fn>
+constexpr void for_each_range_intersection(
+    GlobalIndexRange left, GlobalIndexRange right, Fn&& fn)
+{
+    if (left.empty() || right.empty()) return;
+    if (auto const offset = left.offset_of(right.begin)) {
+        fn(GlobalIndexRange{
+            .begin = right.begin,
+            .extent = std::min(left.extent - *offset, right.extent),
+        });
+    }
+    if (left.begin == right.begin) return;
+    if (auto const offset = right.offset_of(left.begin)) {
+        fn(GlobalIndexRange{
+            .begin = left.begin,
+            .extent = std::min(right.extent - *offset, left.extent),
+        });
+    }
+}
 
 // Canonical signed presentation/persistence order. The XOR maps INT64_MIN to
 // key zero and preserves increasing int64 order without signed arithmetic.

@@ -283,4 +283,30 @@ ProjectNodePathMatch require_single_project_node_path_match(
     }
     return matches.front();
 }
+std::optional<std::vector<ProjectNodePathSelector>> project_member_path(
+    ConfiguredGraph const& configured, NodeBundleHandle root, NodeBundleHandle target)
+{
+    ProjectNodePathGraph const graph{configured.node_bundles, configured.virtual_nodes};
+    if (root == target) return std::vector<ProjectNodePathSelector>{};
+    auto const parent = immediate_parent_subgraph(graph, target);
+    if (!parent) return std::nullopt;
+    auto path = project_member_path(configured, root, *parent);
+    if (!path) return std::nullopt;
+    for (auto const& record : graph.virtual_nodes.records()) {
+        auto const found = std::ranges::find(record.node_bundle_handles, target);
+        if (found == record.node_bundle_handles.end()) continue;
+        auto const index = std::ranges::count_if(
+            std::ranges::subrange(record.node_bundle_handles.begin(), found), [&](auto member) {
+                return direct_member_of_scope(graph, member, *parent);
+            });
+        auto candidate = *path;
+        candidate.emplace_back(ProjectVirtualNodeSelector{record.source_identity, record.type_identity});
+        candidate.emplace_back(ProjectVirtualMemberSelector{static_cast<std::size_t>(index)});
+        auto const matches = resolve_project_node_path(configured, root, candidate);
+        if (matches.size() == 1 && matches.front().kind == ProjectNodePathMatch::Kind::bundle
+            && matches.front().bundle == target) return candidate;
+    }
+    return std::nullopt;
+}
+
 } // namespace iv

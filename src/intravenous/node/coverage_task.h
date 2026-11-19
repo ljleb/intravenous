@@ -3,6 +3,9 @@
 // Background propagation only. These tasks never run on the audio thread.
 
 #include <intravenous/coverage.h>
+#include <intravenous/event_sequence.h>
+#include <intravenous/node/region_selection.h>
+#include <intravenous/sample_positions.h>
 
 #include <coroutine>
 #include <cstddef>
@@ -101,11 +104,20 @@ struct CoverageRequestAccess {
     void const* (*read)(void*, CoverageRequestId) = nullptr;
 };
 
-enum class CoverageInformation { coverage, contents };
+enum class CoverageInformation { coverage, contents, event_neighbors };
 
 struct CoverageInputInfo {
     IndexCoverage coverage{};
     std::vector<GlobalIndexRange> regions{};
+    std::vector<ResolvedRegionInfo> resolved_regions{};
+};
+
+struct CoverageInputDemand {
+    IndexCoverage const* positional = nullptr;
+    SamplePositionsView sample_positions{};
+    RegionSelection selection{};
+    GlobalIndex neighbor_position{};
+    EventNeighborMode neighbor_mode = EventNeighborMode::bounded;
 };
 
 // One operation's access to its candidate. Port indices are local to the
@@ -114,16 +126,16 @@ struct CoveragePlanningContext {
     void* owner = nullptr;
     CoverageRequestAccess access{};
     CoverageRequestId (*request)(void*, bool event_input, std::size_t input,
-        CoverageInformation, IndexCoverage const*) = nullptr;
+        CoverageInformation, CoverageInputDemand) = nullptr;
     void (*start)(void*, CoverageTaskHandle) = nullptr;
     void (*completed)(void*) = nullptr;
 
     void finish() const { if (completed) completed(owner); }
 
     [[nodiscard]] CoverageRequestId request_input(bool event_input, std::size_t input,
-        CoverageInformation information, IndexCoverage const* positions = nullptr) const {
+        CoverageInformation information, CoverageInputDemand demand = {}) const {
         if (!request) throw std::logic_error("coverage input discovery requires a planning candidate");
-        return request(owner, event_input, input, information, positions);
+        return request(owner, event_input, input, information, demand);
     }
     void submit(CoverageTask task) const {
         if (!start) throw std::logic_error("suspendable propagation requires a planning candidate");

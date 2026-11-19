@@ -1,4 +1,6 @@
-import { automationBoundTracks, sampleAutomationPreview } from "../src/automationBoundInputs";
+import { automationBoundTracks, automationBoundWindows, refinedAutomationBoundTracks, retainAutomationBoundWindows,
+    sampleAutomationPreview } from "../src/automationBoundInputs";
+import type { ObservationWindowResult } from "../src/observations";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { AutomationCurveEditing, automationCycleSeconds, automationWindow, curvePointAt, readAutomationCurve, type CurveAxes } from "../src/automationCurveEditing";
@@ -666,6 +668,53 @@ test("crossed manual bounds keep their own traces and preview the midpoint", () 
     assert.deepEqual(preview.output[0].map(({ value }) => value), [4, 4, 4, 4, 4]);
     assert.equal(preview.authored[0][0].value, -2);
     assert.equal(preview.authored[0].at(-1)?.value, 8);
+});
+
+test("automation bounds ask for aligned finer and coarse windows with a fixed point budget", () => {
+    const requests = automationBoundWindows({ begin: "-100", length: "1000", points: 512 });
+    const moved = automationBoundWindows({ begin: "-80", length: "1000", points: 512 });
+    assert.deepEqual(requests, moved);
+    assert.deepEqual(requests[0], { window: { begin: "-128", length: "1152", points: 512 }, prefetch: false });
+    assert.equal(requests.reduce((count, request) => count + request.window.points, 0), 640);
+    const coarse = requests.filter((request) => request.prefetch).sort((a, b) => Number(a.window.begin) - Number(b.window.begin));
+    assert.deepEqual(coarse.map(({ window }) => window.points), [8, 28, 28, 28, 28, 8]);
+    assert.deepEqual(coarse.map(({ window }) => window.begin), ["-3072", "-2048", "-1024", "0", "1024", "2048"]);
+});
+
+test("automation bounds keep a cached fallback until the fine result can supersede it", () => {
+    const make = (begin: string, length: string, points: number, value?: number): ObservationWindowResult => ({
+        id: begin, window: { begin, length, points }, status: "ready", approximate: true, dataVersion: "3",
+        regions: value === undefined ? [] : [{ begin, length, points: [{ index: begin, available: true, value: { value } }] }],
+    });
+    const coarse = make("0", "64", 4, 2);
+    const fine = make("20", "8", 8, 6);
+    const empty = make("28", "4", 4);
+    const requests = automationBoundWindows({ begin: "20", length: "16", points: 16 });
+    const cached = retainAutomationBoundWindows([], [{ ...coarse, outdated: true }], requests);
+    assert.equal(retainAutomationBoundWindows(cached, [{ ...fine, status: "pending" }], requests), cached);
+    const ahead = { ...fine, dataVersion: "4", outdated: true };
+    const known = retainAutomationBoundWindows(cached, [ahead], requests);
+    assert.equal(known.length, 2);
+    assert.equal(retainAutomationBoundWindows(known, [fine], requests), known);
+    const refined = retainAutomationBoundWindows(known, [empty], requests);
+    const tracks = refinedAutomationBoundTracks(refined, 16, 20, 1);
+    assert.deepEqual(tracks.map(({ begin, end, samples }) => [begin, end, samples[0].value]),
+        [[0, 4, 2], [4, 12, 6], [16, 20, 2]]);
+    const curve = [{ begin: { seconds: 0, value: 0 }, end: { seconds: 20, value: 0 }, first: 0, second: 0 }];
+    assert.deepEqual(sampleAutomationPreview(curve, tracks, [], {}, 20, 20).output.map((run) => run[0].value),
+        [2, 6, 0, 2]);
+
+    const newerCoarse = { ...coarse, dataVersion: "5" };
+    const whileRefreshing = retainAutomationBoundWindows(known, [newerCoarse], requests);
+    assert.deepEqual(refinedAutomationBoundTracks(whileRefreshing, 20, 8, 1, fine.window)
+        .map(({ samples }) => samples[0].value), [6]);
+
+    const newExecution = { ...ahead, executionGeneration: "10" };
+    assert.ok(retainAutomationBoundWindows(whileRefreshing, [newExecution], requests).includes(newExecution));
+
+    const completeGap = { ...empty, window: { begin: "16", length: "32", points: 16 }, dataVersion: "6" };
+    const refreshed = retainAutomationBoundWindows(whileRefreshing, [completeGap], requests);
+    assert.deepEqual(refinedAutomationBoundTracks(refreshed, 20, 8, 1, completeGap.window), []);
 });
 
 test("bound tracks keep unavailable samples and separate Coverage Regions out of the preview", () => {

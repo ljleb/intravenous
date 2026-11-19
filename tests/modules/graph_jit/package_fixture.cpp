@@ -165,11 +165,9 @@ struct BackgroundExecutionProbe {
         auto& state = context.state();
         ++state.calls;
         state.sample_rate = context.sample_rate;
-        auto output = context.template output<"out">().regions();
-        for (auto region : output) for (auto window : region.prepared_windows()) {
-            for (std::uint64_t offset = 0; offset < window.range().extent; ++offset) {
-                auto const position = window.range().begin.advanced_by(offset);
-                window.at(position) = iv::Sample{static_cast<float>(position.signed_value())};
+        for (auto run : context.template output<"out">().prepared_runs()) {
+            for (std::size_t slot = 0; slot < run.size(); ++slot) {
+                run.value(slot) = iv::Sample{static_cast<float>(run.position(slot).signed_value())};
             }
         }
     }
@@ -4347,10 +4345,9 @@ struct MultiRegionCoverageSource {
     void tock_coverage(
         iv::TockCoverageContext<MultiRegionCoverageSource>& ctx) const
     {
-        auto output = ctx.output<"multi-region-source-output">().regions();
-        for (auto region : output) for (auto window : region.prepared_windows())
-            for (std::size_t frame = 0; frame < window.frame_count(); ++frame)
-                window.value(frame) = iv::Sample{region.range().begin == regions()[0].begin ? 1.0f : 2.0f};
+        for (auto run : ctx.output<"multi-region-source-output">().prepared_runs())
+            for (std::size_t slot = 0; slot < run.size(); ++slot)
+                run.value(slot) = iv::Sample{run.region_range().begin == regions()[0].begin ? 1.0f : 2.0f};
     }
 };
 
@@ -4397,7 +4394,6 @@ struct MultiRegionCoverageConsumer {
         iv::TockCoverageContext<MultiRegionCoverageConsumer>& ctx) const
     {
         auto input = ctx.input<"multi-region-coverage-input">().regions();
-        auto output = ctx.output<"multi-region-consumer-output">().regions();
         IV_ASSERT(input.size() == 2,
             "multi-Region consumer lost its explicitly requested inspection inputs");
 
@@ -4410,14 +4406,13 @@ struct MultiRegionCoverageConsumer {
         state.first_overlap_value = static_cast<float>(input[0].at(overlap));
         state.second_overlap_value = static_cast<float>(input[1].at(overlap));
 
-        for (auto destination : output) {
+        for (auto run : ctx.output<"multi-region-consumer-output">().prepared_runs()) {
             auto const source = std::ranges::find_if(input, [&](auto region) {
-                return region.range() == destination.range();
+                return region.range() == run.region_range();
             });
             IV_ASSERT(source != input.end(), "multi-Region output lost its source Region");
-            for (auto window : destination.prepared_windows())
-                for (std::size_t frame = 0; frame < window.frame_count(); ++frame)
-                    window.value(frame) = (*source).at(window.range().begin.advanced_by(frame));
+            for (std::size_t slot = 0; slot < run.size(); ++slot)
+                run.value(slot) = (*source).at(run.position(slot));
         }
     }
 };
@@ -4645,13 +4640,12 @@ struct SingleRegionSampleSource {
     void tock_coverage(
         iv::TockCoverageContext<SingleRegionSampleSource>& ctx) const
     {
-        auto output = ctx.output<"single-region-sample-source-output">().region();
-        IV_ASSERT(output.range() == region(),
+        auto output = ctx.output<"single-region-sample-source-output">();
+        IV_ASSERT(output.region().range() == region(),
             "single sample Region source received the wrong output range");
-        for (auto window : output.prepared_windows())
-            for (std::size_t frame = 0; frame < window.frame_count(); ++frame)
-                window.value(frame) = iv::Sample{static_cast<float>(
-                    output.range().begin.forward_distance_to(window.range().begin) + frame + 4)};
+        for (auto run : output.prepared_runs())
+            for (std::size_t slot = 0; slot < run.size(); ++slot)
+                run.value(slot) = iv::Sample{static_cast<float>(run.index(slot) + 4)};
     }
 };
 
@@ -4699,8 +4693,8 @@ struct SingleRegionSampleConsumer {
         iv::TockCoverageContext<SingleRegionSampleConsumer>& ctx) const
     {
         auto input = ctx.input<"single-region-sample-input">().region();
-        auto output = ctx.output<"single-region-sample-consumer-output">().region();
-        IV_ASSERT(input.range() == output.range(),
+        auto output = ctx.output<"single-region-sample-consumer-output">();
+        IV_ASSERT(input.range() == output.region().range(),
             "single sample Region input and output ranges differ");
         auto& state = ctx.state();
         ++state.calls;
@@ -4709,9 +4703,9 @@ struct SingleRegionSampleConsumer {
         state.first_value = static_cast<float>(input.value(0));
         state.last_value = static_cast<float>(
             input.value(input.frame_count() - 1));
-        for (auto window : output.prepared_windows())
-            for (std::size_t frame = 0; frame < window.frame_count(); ++frame)
-                window.value(frame) = input.at(window.range().begin.advanced_by(frame));
+        for (auto run : output.prepared_runs())
+            for (std::size_t slot = 0; slot < run.size(); ++slot)
+                run.value(slot) = input.at(run.position(slot));
     }
 };
 
@@ -5498,12 +5492,11 @@ struct ModuleBoundaryCoverageObserver {
         iv::TockCoverageContext<ModuleBoundaryCoverageObserver>& ctx) const
     {
         auto samples = ctx.input<"module-boundary-sample-input">().regions();
-        auto sample_outputs =
-            ctx.output<"module-boundary-sample-output">().regions();
+        auto sample_outputs = ctx.output<"module-boundary-sample-output">();
         auto events = ctx.input<"module-boundary-event-input">().regions();
         auto event_outputs =
             ctx.output<"module-boundary-event-output">().regions();
-        IV_ASSERT(samples.size() == 2 && sample_outputs.size() == 2,
+        IV_ASSERT(samples.size() == 2 && sample_outputs.regions().size() == 2,
             "module boundary did not preserve two sample Regions");
         IV_ASSERT(events.size() == 2 && event_outputs.size() == 2,
             "module boundary did not preserve two event Regions");
@@ -5522,10 +5515,10 @@ struct ModuleBoundaryCoverageObserver {
             ++state.second_event_count;
         });
 
-        for (std::size_t region = 0; region < samples.size(); ++region) {
-            for (auto window : sample_outputs[region].prepared_windows())
-                for (std::size_t frame = 0; frame < window.frame_count(); ++frame)
-                    window.value(frame) = samples[region].at(window.range().begin.advanced_by(frame));
+        for (auto run : sample_outputs.prepared_runs())
+            for (std::size_t slot = 0; slot < run.size(); ++slot)
+                run.value(slot) = samples[run.region_index()].at(run.position(slot));
+        for (std::size_t region = 0; region < events.size(); ++region) {
             events[region].for_each([&](iv::TimedEvent const& event) {
                 if (ctx.output<"module-boundary-event-output">().requested_coverage().contains(event.time)) event_outputs[region].write(event);
             });
@@ -5662,13 +5655,12 @@ struct PersistedRecordingCoverageConsumer {
     {
         auto sample_inputs =
             ctx.input<"recorded-sample-coverage">().regions();
-        auto sample_outputs =
-            ctx.output<"observed-sample-coverage">().regions();
+        auto sample_outputs = ctx.output<"observed-sample-coverage">();
         auto event_inputs =
             ctx.input<"recorded-event-coverage">().regions();
         auto event_outputs =
             ctx.output<"observed-event-coverage">().regions();
-        IV_ASSERT(sample_inputs.size() == sample_outputs.size(),
+        IV_ASSERT(sample_inputs.size() == sample_outputs.regions().size(),
             "recorded sample input and output Region counts differ");
         IV_ASSERT(event_inputs.size() == event_outputs.size(),
             "recorded event input and output Region counts differ");
@@ -5698,13 +5690,10 @@ struct PersistedRecordingCoverageConsumer {
             });
         }
 
-        for (std::size_t region = 0; region < sample_inputs.size(); ++region) {
-            for (auto window : sample_outputs[region].prepared_windows())
-                for (std::size_t frame = 0; frame < window.frame_count(); ++frame)
-                    for (std::size_t channel = 0; channel < 2; ++channel)
-                        window.value(frame, channel) = sample_inputs[region].at(
-                            window.range().begin.advanced_by(frame), channel);
-        }
+        for (auto run : sample_outputs.prepared_runs())
+            for (std::size_t slot = 0; slot < run.size(); ++slot)
+                for (std::size_t channel = 0; channel < 2; ++channel)
+                    run.value(slot, channel) = sample_inputs[run.region_index()].at(run.position(slot), channel);
         for (std::size_t region = 0; region < event_inputs.size(); ++region) {
             event_inputs[region].for_each(
                 [&](iv::TimedEvent const& event) {
@@ -7315,17 +7304,16 @@ struct AutomationWindow {
             ctx.output<"window">().change(iv::IndexCoverage{window});
     }
     void propagate_reverse_coverage(iv::PropagateReverseCoverageContext<AutomationWindow>& ctx) const {
-        ctx.input<"curve">().require(ctx.output<"window">().required());
+        ctx.input<"curve">().require(ctx.output<"window">().required_positions());
     }
     void tock_coverage(iv::TockCoverageContext<AutomationWindow>& ctx) const {
         auto inputs = ctx.input<"curve">().regions();
-        auto output = ctx.output<"window">().region();
-        for (auto window : output.prepared_windows()) {
-            for (std::size_t i = 0; i < window.frame_count(); ++i) {
-                auto const index = window.range().begin.advanced_by(i);
+        for (auto run : ctx.output<"window">().prepared_runs()) {
+            for (std::size_t slot = 0; slot < run.size(); ++slot) {
+                auto const index = run.position(slot);
                 iv::Sample value{0};
                 for (auto input : inputs) if (input.range().contains(index)) value.value += input.at(index).value;
-                window.value(i) = value;
+                run.value(slot) = value;
             }
         }
     }
@@ -7345,8 +7333,8 @@ struct AutomationBoundSignal {
         if (ctx.local_state_changed) output.change(range);
     }
     void tock_coverage(iv::TockCoverageContext<AutomationBoundSignal>& ctx) const {
-        for (auto region : ctx.output<"bound">().regions()) for (auto window : region.prepared_windows())
-            for (std::size_t i = 0; i < window.frame_count(); ++i) window.value(i) = value;
+        for (auto run : ctx.output<"bound">().prepared_runs())
+            for (std::size_t slot = 0; slot < run.size(); ++slot) run.value(slot) = value;
     }
 };
 IV_NODE("iv.test.automation.bound_signal", AutomationBoundSignal);
@@ -7420,17 +7408,16 @@ struct ReplayWindow {
             ctx.output<"window">().change(iv::IndexCoverage{window()});
     }
     void propagate_reverse_coverage(iv::PropagateReverseCoverageContext<ReplayWindow>& ctx) const {
-        ctx.input<"in">().require(ctx.output<"window">().required());
+        ctx.input<"in">().require(ctx.output<"window">().required_positions());
     }
     void tock_coverage(iv::TockCoverageContext<ReplayWindow>& ctx) const {
         auto inputs = ctx.input<"in">().regions();
-        auto output = ctx.output<"window">().region();
-        for (auto window : output.prepared_windows()) {
-            for (std::size_t i = 0; i < window.frame_count(); ++i) {
-                auto const index = window.range().begin.advanced_by(i);
+        for (auto run : ctx.output<"window">().prepared_runs()) {
+            for (std::size_t slot = 0; slot < run.size(); ++slot) {
+                auto const index = run.position(slot);
                 iv::Sample value{0};
                 for (auto input : inputs) if (input.range().contains(index)) value.value += input.at(index).value;
-                window.value(i) = value;
+                run.value(slot) = value;
             }
         }
     }
@@ -7462,12 +7449,11 @@ struct StereoBoundaryCoverageSource {
         output.change(SingleRegionSampleSource::region());
     }
     void tock_coverage(iv::TockCoverageContext<StereoBoundaryCoverageSource>& ctx) const {
-        auto output = ctx.output<"stereo">().region();
-        for (auto window : output.prepared_windows()) {
-            for (std::size_t i = 0; i < window.frame_count(); ++i) {
-                auto const sample = static_cast<float>(output.range().begin.forward_distance_to(window.range().begin) + i);
-                window.value(i, 0) = iv::Sample{4 + sample};
-                window.value(i, 1) = iv::Sample{104 + sample};
+        for (auto run : ctx.output<"stereo">().prepared_runs()) {
+            for (std::size_t slot = 0; slot < run.size(); ++slot) {
+                auto const sample = static_cast<float>(run.index(slot));
+                run.value(slot, 0) = iv::Sample{4 + sample};
+                run.value(slot, 1) = iv::Sample{104 + sample};
             }
         }
     }
@@ -7673,7 +7659,9 @@ struct SuspendableCoverageProbe {
     iv::CoverageTask propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<SuspendableCoverageProbe>& ctx) const {
         auto const& metadata = co_await ctx.request_input_coverage<"in">();
-        auto input = co_await ctx.request_input<"in">(metadata.coverage);
+        std::vector<iv::SamplePositionRun> requested;
+        for (auto const range : metadata.coverage) requested.push_back({range.begin, range.extent});
+        auto input = co_await ctx.request_input<"in">(iv::SamplePositionsView{.runs = requested});
         auto const begin = iv::GlobalIndex::from_signed(
             static_cast<std::int64_t>(input.region().value(0).value));
         auto output = ctx.output<"suspendable-output">();
@@ -7684,18 +7672,18 @@ struct SuspendableCoverageProbe {
     iv::CoverageTask propagate_reverse_coverage(
         iv::PropagateReverseCoverageContext<SuspendableCoverageProbe>& ctx) const {
         auto const& metadata = co_await ctx.request_input_coverage<"in">();
-        auto input = co_await ctx.request_input<"in">(metadata.coverage);
+        std::vector<iv::SamplePositionRun> requested;
+        for (auto const range : metadata.coverage) requested.push_back({range.begin, range.extent});
+        auto input = co_await ctx.request_input<"in">(iv::SamplePositionsView{.runs = requested});
         ctx.input<"in">().require(input.region().range());
     }
     void tock_coverage(iv::TockCoverageContext<SuspendableCoverageProbe>& ctx) const {
         auto input = ctx.input<"in">().region();
-        auto output = ctx.output<"suspendable-output">().region();
         ++ctx.state().calls;
         ctx.state().first = input.value(0).value;
-        for (auto window : output.prepared_windows())
-            for (std::size_t frame = 0; frame < window.frame_count(); ++frame)
-                window.value(frame) = input.value(static_cast<std::size_t>(
-                    output.range().begin.forward_distance_to(window.range().begin)) + frame);
+        for (auto run : ctx.output<"suspendable-output">().prepared_runs())
+            for (std::size_t slot = 0; slot < run.size(); ++slot)
+                run.value(slot) = input.value(static_cast<std::size_t>(run.index(slot)));
     }
 };
 IV_NODE("iv.test.graph_jit.suspendable_coverage_probe", SuspendableCoverageProbe);
@@ -7768,12 +7756,11 @@ struct HugeComputedRegionSource {
         if (ctx.local_state_changed) ctx.output<"huge">().change(region);
     }
     void tock_coverage(iv::TockCoverageContext<HugeComputedRegionSource>& ctx) const {
-        auto region = ctx.output<"huge">().region();
-        ctx.state().logical_extent = region.range().extent;
-        for (auto window : region.prepared_windows()) {
-            for (std::size_t frame = 0; frame < window.frame_count(); ++frame) {
-                auto position = window.range().begin.advanced_by(frame);
-                window.at(position) = iv::Sample{static_cast<float>(position.bits() & 1023)};
+        auto output = ctx.output<"huge">();
+        ctx.state().logical_extent = output.region().range().extent;
+        for (auto run : output.prepared_runs()) {
+            for (std::size_t slot = 0; slot < run.size(); ++slot) {
+                run.value(slot) = iv::Sample{static_cast<float>(run.position(slot).bits() & 1023)};
                 ++ctx.state().values_written;
             }
         }
@@ -7802,15 +7789,13 @@ struct CompleteRegionCopy {
         ctx.output<"out">().change(input.changed());
     }
     void propagate_reverse_coverage(iv::PropagateReverseCoverageContext<CompleteRegionCopy>& ctx) const {
-        ctx.input<"in">().require(ctx.output<"out">().required());
+        ctx.input<"in">().require(ctx.output<"out">().required_positions());
     }
     void tock_coverage(iv::TockCoverageContext<CompleteRegionCopy>& ctx) const {
         auto input = ctx.input<"in">().region();
-        for (auto window : ctx.output<"out">().region().prepared_windows())
-            for (std::size_t frame = 0; frame < window.frame_count(); ++frame) {
-                auto index = window.range().begin.advanced_by(frame);
-                window.value(frame) = input.at(index);
-            }
+        for (auto run : ctx.output<"out">().prepared_runs())
+            for (std::size_t slot = 0; slot < run.size(); ++slot)
+                run.value(slot) = input.at(run.position(slot));
     }
 };
 IV_NODE("iv.test.computed.complete_copy", CompleteRegionCopy);
@@ -7829,9 +7814,9 @@ struct BufferedRegionForTick {
         ctx.output<"buffered">().publish({iv::GlobalIndex::from_signed(20), 4});
     }
     void tock_coverage(iv::TockCoverageContext<BufferedRegionForTick>& ctx) const {
-        for (auto window : ctx.output<"buffered">().region().prepared_windows())
-            for (std::size_t frame = 0; frame < window.frame_count(); ++frame)
-                window.value(frame) = iv::Sample{static_cast<float>(window.range().begin.signed_value() + frame)};
+        for (auto run : ctx.output<"buffered">().prepared_runs())
+            for (std::size_t slot = 0; slot < run.size(); ++slot)
+                run.value(slot) = iv::Sample{static_cast<float>(run.position(slot).signed_value())};
     }
 };
 IV_NODE("iv.test.computed.buffered_for_tick", BufferedRegionForTick);

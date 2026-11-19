@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { PresentationObservations, provideObservations } from "../presentation/observationContext";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import { saveGraphLayoutMessage, type GraphEditorHostMessage, type GraphEditorState } from "../../src/graphEditorProtocol";
+import { saveGraphLayoutMessage, type GraphEditorHostMessage, type GraphEditorState, type GraphEditorWebviewMessage } from "../../src/graphEditorProtocol";
+import { ObservationProfile } from "../../src/observationProfile";
 import { addressKey, readLayout, type NodeAddress, type Point, type PresentationState } from "../../src/graphScope";
 import type { CurveAxes, CurveDragKind } from "../../src/automationCurveEditing";
 import { webviewApi } from "../host";
@@ -50,6 +51,8 @@ const observations = new PresentationObservations((request) => webviewApi.postMe
     initial: webviewApi.getState()?.meterModes,
     save: (meterModes) => webviewApi.setState({ ...webviewApi.getState(), meterModes }) });
 provideObservations(observations);
+let observationProfile: ObservationProfile | undefined;
+let observationProfileTimer: ReturnType<typeof setTimeout> | undefined;
 const layout = ref(readLayout(null));
 const manualVersion = ref(0);
 const timelineZoomHint = ref<string | null>(null);
@@ -731,6 +734,13 @@ function focusSurfaceFromPointer(event: PointerEvent) {
 function focusIdleSurface() {
     if (document.hasFocus() && document.activeElement === document.body) surface.value?.focus({ preventScroll: true });
 }
+function keepAltInDetachedGraph(event: KeyboardEvent) {
+    // VS Code opens detached editors in a popup and forwards webview keys
+    // to the workbench from a bubble listener. Keep Alt available to pointer gestures.
+    if (event.key !== "Alt" || !window.top?.opener) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+}
 function keyDown(event: KeyboardEvent) {
     updateAutomationShift(event.shiftKey);
     const target = event.target instanceof Element ? event.target : null;
@@ -828,7 +838,24 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
         observations.setVisible(event.data.visible);
         return;
     }
-    if (event.data?.type === "observationResponse" || event.data?.type === "observationUpdate") {
+    if (event.data?.type === "startObservationProfile") {
+        clearTimeout(observationProfileTimer);
+        const profile = new ObservationProfile();
+        observationProfile = profile;
+        observationProfileTimer = setTimeout(() => {
+            observationProfile = undefined;
+            observationProfileTimer = undefined;
+            webviewApi.postMessage({ type: "observationProfile", summary: profile.summary() } satisfies GraphEditorWebviewMessage);
+        }, event.data.durationMs);
+        return;
+    }
+    if (event.data?.type === "observationUpdate") {
+        const previousVersion = observationProfile ? observations.version.value : undefined;
+        observations.receive(event.data);
+        observationProfile?.record(event.data, observations.version.value !== previousVersion);
+        return;
+    }
+    if (event.data?.type === "observationResponse") {
         observations.receive(event.data);
         return;
     }
@@ -896,6 +923,8 @@ onMounted(() => {
     window.addEventListener("pointerup", releaseConnection, true);
     window.addEventListener("pointercancel", pointerCancelled, true);
     window.addEventListener("pointerout", pointerLeftWindow, true);
+    window.addEventListener("keydown", keepAltInDetachedGraph, true);
+    window.addEventListener("keyup", keepAltInDetachedGraph, true);
     window.addEventListener("keydown", keyDown);
     window.addEventListener("keyup", keyUp);
     stopListeningForFocus = listenPortConnectionFocus(window, windowBlurred, nativeWindowFocusChanged);
@@ -906,6 +935,8 @@ onMounted(() => {
     webviewApi.postMessage({ type: "graphReady" });
 });
 onBeforeUnmount(() => {
+    clearTimeout(observationProfileTimer);
+    observationProfile = undefined;
     observations.dispose();
     disposed = true;
     blurPointerControls();
@@ -934,6 +965,8 @@ onBeforeUnmount(() => {
     window.removeEventListener("pointerup", releaseConnection, true);
     window.removeEventListener("pointercancel", pointerCancelled, true);
     window.removeEventListener("pointerout", pointerLeftWindow, true);
+    window.removeEventListener("keydown", keepAltInDetachedGraph, true);
+    window.removeEventListener("keyup", keepAltInDetachedGraph, true);
     window.removeEventListener("keydown", keyDown);
     window.removeEventListener("keyup", keyUp);
     stopListeningForFocus?.();

@@ -17,7 +17,8 @@ inline void forward_output_gain(void const*, ReflectedNodeForwardCoverageContext
 }
 inline void reverse_output_gain(void const*, ReflectedNodeReverseCoverageContext const& context)
 {
-    context.inputs.data()[0].require(context.outputs.data()[0].required());
+    auto const& input = context.inputs.data()[0];
+    input.publish_corresponding_sample_requirements(input.data, context.outputs.data()[0]);
 }
 inline void tock_output_gain(void const* data, ReflectedNodeTockCoverageContext const& context)
 {
@@ -30,8 +31,8 @@ inline void tock_output_gain(void const* data, ReflectedNodeTockCoverageContext 
     for (std::size_t region = 0; region < targets.size(); ++region) {
         auto process = [&](auto&& self, ContinuousRegionStorageView const& window) -> void {
             if (!window.storage) { for (auto const& part : window.windows) self(self, part); return; }
-            for (std::uint64_t frame = 0; frame < window.range.extent; ++frame) {
-                auto const position = window.range.begin.advanced_by(frame);
+            for (std::size_t frame = 0; frame < window.frame_count(); ++frame) {
+                auto const position = window.position(frame);
                 for (std::size_t channel = 0; channel < channel_count(window.channel_layout); ++channel) {
                     auto const* source = sources[region].value_storage(position, channel);
                     auto* target = window.value_storage(position, channel, true);

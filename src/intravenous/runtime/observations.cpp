@@ -97,6 +97,7 @@ void Observations::handle_protocol(ObservationProtocolRequest& request)
                 || interest.source.member.empty() || interest.source.member.size() > 256
                 || interest.operation.empty() || interest.operation.size() > 128)
                 throw std::invalid_argument("invalid or duplicate observation interest");
+            if (interest.prefetch && !interest.window) throw std::invalid_argument("observation prefetch requires a window");
             if (interest.window && (interest.source.kind == ObservationSourceKind::state_field
                 || !interest.window->length || interest.window->length > static_cast<std::uint64_t>(INT64_MAX)
                 || !interest.window->points || interest.window->points > maximum_observation_window_points))
@@ -167,12 +168,20 @@ void Observations::collect(Clock::time_point now)
         };
         std::vector<WindowCapture> desired_windows;
         for (auto const& scope : scopes_) for (auto const& interest : scope.interests) {
-            if (!interest.window || std::ranges::any_of(desired_windows,
-                [&](auto const& capture) { return same_window(capture.interest, interest); })) continue;
+            if (!interest.window) continue;
+            auto shared = std::ranges::find_if(desired_windows,
+                [&](auto const& capture) { return same_window(capture.interest, interest); });
+            if (shared != desired_windows.end()) {
+                shared->interest.prefetch &= interest.prefetch;
+                continue;
+            }
             auto existing = std::ranges::find_if(windows_,
                 [&](auto const& capture) { return same_window(capture.interest, interest); });
             if (existing == windows_.end()) desired_windows.push_back({.interest = interest});
-            else desired_windows.push_back(std::move(*existing));
+            else {
+                existing->interest.prefetch = interest.prefetch;
+                desired_windows.push_back(std::move(*existing));
+            }
         }
         for (auto const& previous : windows_) {
             if (previous.query) previous.query->canceled.store(true, std::memory_order_release);
@@ -201,6 +210,7 @@ void Observations::collect(Clock::time_point now)
                 capture.retry_after = now + std::chrono::milliseconds(250);
                 target.windows.push_back({capture.interest.source, capture.interest.operation, capture.query});
             }
+            capture.query->prefetch.store(capture.interest.prefetch, std::memory_order_relaxed);
         }
         IV_INVOKE_LINKER_EVENT(iv_observations_project_graph_event, target);
         configured_generation_ = target.configured_generation;
@@ -260,6 +270,24 @@ void Observations::collect(Clock::time_point now)
                 {"sampleRate", result.sample_rate}, {"paceExponent", result.pace_exponent},
                 {"executionGeneration", std::to_string(result.execution_generation)},
                 {"regions", std::move(regions)}, {"error", result.error}});
+            if (query.port.port_kind == PortKind::event || query.window.max_depth) {
+                Json marks = Json::array(), unavailable = Json::array();
+                for (auto const& event : result.events) {
+                    marks.push_back({{"index", std::to_string(event.time.signed_value())},
+                        {"depth", std::get<BeatEvent>(event.value).depth}});
+                }
+                for (auto const& range : result.unavailable_regions) {
+                    unavailable.push_back({{"begin", std::to_string(range.begin.signed_value())},
+                        {"length", std::to_string(range.extent)}});
+                }
+                auto payload = *capture.payload;
+                payload["approximate"] = false;
+                payload["window"]["maxMarks"] = query.window.points;
+                payload["window"]["maxDepth"] = query.window.max_depth.value_or(0);
+                payload["marks"] = std::move(marks);
+                payload["unavailableRegions"] = std::move(unavailable);
+                capture.payload = std::make_shared<Json const>(std::move(payload));
+            }
             return *capture.payload;
         };
         std::map<std::string, Json> batches;
@@ -312,8 +340,10 @@ void Observations::collect(Clock::time_point now)
         }
         std::vector<ObservationDelivery> deliveries;
         for (auto& [client, scopes] : batches) {
+            bool const has_windows = std::ranges::any_of(scopes, [](auto const& scope) { return !scope["windows"].empty(); });
             auto const signature = std::to_string(last_activation_) + ":"
-                + std::to_string(target.configured_generation.value_or(0)) + scopes.dump();
+                + std::to_string(target.configured_generation.value_or(0)) + ":"
+                + std::to_string(has_windows ? execution_data_version_ : 0) + scopes.dump();
             if (last_delivered_[client] == signature) continue;
             last_delivered_[client] = signature;
             deliveries.push_back({client,
@@ -321,6 +351,7 @@ void Observations::collect(Clock::time_point now)
                 {"activationId", std::to_string(last_activation_)},
                 {"generation", std::to_string(target.configured_generation.value_or(latest_ ? latest_->configured_generation : 0))},
                 {"executionGeneration", std::to_string(latest_ ? latest_->project_generation : 0)},
+                {"dataVersion", std::to_string(execution_data_version_)},
                 {"revision", std::to_string(accepted_.revision)},
                 {"index", std::to_string(latest_ ? latest_->sample_index.signed_value() : 0)},
                 {"blockSize", latest_ ? latest_->block_size : 0},

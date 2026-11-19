@@ -15,7 +15,7 @@ import { automationCycleSeconds, automationSampleIndex, automationUnitsPerPixel,
 export { automationCycleSeconds, automationWindow } from "./automationCurveGeometry";
 export type { AutomationCurve, AutomationPoint, CurveInterpolation } from "./automationCurveGeometry";
 export type CurveAxes = { left: number; top: number; width: number; height: number;
-    begin: number; end: number; spanSeconds?: number; ruler?: AutomationValueRuler } & AutomationValueAxis;
+    begin: number; end: number; spanSeconds?: number; ruler?: AutomationValueRuler; snapTime?: (index: bigint) => bigint } & AutomationValueAxis;
 export type CurveDragKind = "point" | "tension";
 export const automationTensionLimits = { min: 0, max: 1, defaultValue: 1 } as const;
 type Transport = { send(target: NodeAddress, event: NodeEvent): Promise<void>; gesture(target: NodeAddress): NodeEventGesture };
@@ -70,7 +70,10 @@ export function curvePointAt(axes: CurveAxes, position: ScreenPoint, sampleRate?
     // the inverse arctangent scale stays finite.
     const inset = axes.display === "cropped" ? 0 : Math.min(.5, .5 / axes.height);
     const fraction = Math.max(inset, Math.min(1 - inset, 1 - (position.y - axes.top) / axes.height));
-    return { seconds: axes.begin + offset, sampleIndex: sampleRate ? automationSampleIndex(axes.begin, sampleRate, offset) : undefined,
+    const index = sampleRate ? automationSampleIndex(axes.begin, sampleRate, offset) : undefined;
+    const sampleIndex = index === undefined ? undefined : axes.snapTime?.(index) ?? index;
+    return { seconds: sampleIndex !== index && sampleIndex !== undefined && sampleRate
+        ? Number(sampleIndex) / sampleRate : axes.begin + offset, sampleIndex,
         value: automationValueAtFraction(fraction, axes) };
 }
 
@@ -263,7 +266,7 @@ export class AutomationCurveEditing {
             neighbors, byId: visiblePoints, base: desired, adding, appeared: !adding && curve.points.some(({ id }) => id === initial.id),
             placing: !shift && !companions.length, deleteOnClick: !adding && shift, moved: false,
             initialSlot, gapAttachment,
-            timeAt: position && !companions.length ? automationTimeDrag(neighbors, initial, secondsPerPixel, curve.sampleRate!) : undefined,
+            timeAt: position && !companions.length ? automationTimeDrag(neighbors, initial, secondsPerPixel, curve.sampleRate!, axes.snapTime) : undefined,
             sentOrder: [],
             limits: companions.length ? orderedTimeLimits(points, new Set([initial.id, ...companions.map((point) => point.id)])) : {},
             segments: placed?.segments ?? new Map(), sentSegments: new Map(), baseSegments: placed?.segments ?? new Map(),
@@ -328,6 +331,7 @@ export class AutomationCurveEditing {
                         const delta = automationSampleIndex(pixels / axes.width * (axes.spanSeconds ?? axes.end - axes.begin), sampleRate);
                         if (delta === undefined) return;
                         index = initial.sampleIndex! + delta;
+                        index = axes.snapTime?.(index) ?? index;
                     }
                 }
                 const vertical = -position.y;

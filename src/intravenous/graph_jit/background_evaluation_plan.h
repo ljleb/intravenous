@@ -406,6 +406,12 @@ struct PortStoragePlan {
 // Tick-time random-access storage may also serve an otherwise-identical
 // sequential use because the former capability subsumes the latter.
 struct SampleMaterializationPlan {
+    struct RegionProjection {
+        BackgroundConnectionIndex connection = 0;
+        // Indices in the connection's projection list, in materializer order.
+        std::vector<std::size_t> projections{};
+    };
+
     PortStorageKind storage = PortStorageKind::background;
     // One logical consumer used to dispatch the value-type operation. It is
     // not part of the sharing key: equivalent consumers share one
@@ -430,6 +436,7 @@ struct SampleMaterializationPlan {
     PortStorageIndex output = 0;
     std::vector<PortSubsetIndex> target_subsets{};
     std::vector<BackgroundConnectionIndex> connections{};
+    std::vector<RegionProjection> region_projections{};
 };
 
 // Event conversion and fan-in are one ordered materialization. Source subsets
@@ -689,6 +696,17 @@ struct PublicCoverageInputView {
     std::vector<Projection> projections{};
 };
 
+struct PublicEventCoverageInputView {
+    struct Source {
+        BackgroundPortIndex output = 0;
+        EventConversionPlan conversion{};
+    };
+    NodeBundlePortId port{};
+    EventTypeId type = EventTypeId::empty;
+    bool reconstructible = true;
+    std::vector<Source> sources{};
+};
+
 // Immutable topology and fixed-layout metadata retained by CompiledGraph. No
 // mutable coverage, data, validity, or transaction state belongs here.
 struct BackgroundEvaluationPlan {
@@ -705,6 +723,7 @@ struct BackgroundEvaluationPlan {
     std::vector<BackgroundPortPlan> ports{};
     std::vector<BackgroundConnectionPlan> connections{};
     std::vector<PublicCoverageInputView> public_coverage_inputs{};
+    std::vector<PublicEventCoverageInputView> public_event_coverage_inputs{};
     // Logical callback/coverage ports above remain whole ports. These
     // partitions are the finer correctness unit used by storage planning.
     // Storage coalescing may combine subsets only after their full requirements

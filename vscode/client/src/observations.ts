@@ -5,22 +5,26 @@ export type ObservationSource = {
     kind: "output" | "input" | "stateField";
     member: string;
     channel?: number;
+    portKind?: "sample" | "event";
 };
 export type MeterMode = "level" | "value";
-export type ObservationWindow = { begin: string; length: string; points: number };
+export type ObservationWindow = { begin: string; length: string; points: number; maxDepth?: number };
+export type ObservationWindowSnapshot = { epoch: number; generation: string; dataVersion: string };
 export type ObservationWindowResult = {
     id: string; window: ObservationWindow; status: "pending" | "ready" | "unavailable" | "failed";
     approximate: boolean; truncated?: boolean; outdated?: boolean; semanticVersion?: string; dataVersion?: string;
     sampleRate?: number; paceExponent?: number; executionGeneration?: string; error?: string;
+    marks?: Array<{ index: string; depth: number }>;
+    unavailableRegions?: Array<{ begin: string; length: string }>;
     regions: Array<{ begin: string; length: string;
         points: Array<{ index: string; available: boolean; value?: Record<string, number | string | null> }> }>;
 };
-export type ObservationInterest = { id: string; source: ObservationSource; operation: string; window?: ObservationWindow };
+export type ObservationInterest = { id: string; source: ObservationSource; operation: string; window?: ObservationWindow; prefetch?: boolean };
 export type ObservationCapability = { nodeIndex: number; kind: ObservationSource["kind"]; member: string; operations: string[];
     delivery?: "window"; channels?: Array<{ index: number; name: string }>;
     resultSchemas?: Array<{ operation: string; fields: Array<{ name: string; type: "float32" | "float64" | "uint64String" }> }> };
 export type ObservationUpdate = {
-    activationId: string; generation: string; revision: string; index: string; blockSize: number;
+    activationId: string; generation: string; revision: string; index: string; blockSize: number; dataVersion: string;
     captureNs?: number | null;
     scopes: Array<{ scopeId: string; values: Array<{ id: string; available: boolean; pending?: boolean; value?: Record<string, number | string | null> }>; windows?: ObservationWindowResult[] }>;
 };
@@ -31,7 +35,15 @@ export type ObservationResponse = { type: "observationResponse"; requestId: stri
 export type ObservationDisplayValue = { activationId?: string; available: boolean; pending?: boolean; value?: Record<string, number | string | null> };
 
 export function observationSourceKey(source: ObservationSource): string {
-    return JSON.stringify([source.node.instanceId, source.node.path ?? [], source.kind, source.member, source.channel ?? null]);
+    return JSON.stringify([source.node.instanceId, source.node.path ?? [], source.kind, source.member, source.channel ?? null, ...(source.portKind === "event" ? ["event"] : [])]);
+}
+
+export function compareObservationWindowVersions(left: ObservationWindowResult, right: ObservationWindowResult): number {
+    for (const field of ["semanticVersion", "dataVersion", "executionGeneration"] as const) {
+        const a = BigInt(left[field] ?? "0"), b = BigInt(right[field] ?? "0");
+        if (a !== b) return a > b ? 1 : -1;
+    }
+    return 0;
 }
 
 // A host scope replaces its complete desired set. It never lets an older
@@ -40,10 +52,16 @@ export class ObservationValues {
     private activation = 0n;
     private revision = 0n;
     private generation: string | null | undefined;
+    private dataVersion: string | undefined;
+    private windowEpoch = 0;
     private queuedUpdate?: { update: ObservationUpdate; scopeId: string };
     readonly values = new Map<string, ObservationDisplayValue>();
     readonly windows = new Map<string, ObservationWindowResult>();
     private desiredWindows = new Map<string, ObservationWindow>();
+    get windowSnapshot(): ObservationWindowSnapshot | undefined {
+        return this.generation != null && this.dataVersion !== undefined
+            ? { epoch: this.windowEpoch, generation: this.generation, dataVersion: this.dataVersion } : undefined;
+    }
     expectWindows(interests: ObservationInterest[]): void {
         this.desiredWindows = new Map(interests.filter((interest) => interest.window)
             .map((interest) => [interest.id, interest.window!]));
@@ -54,6 +72,8 @@ export class ObservationValues {
         const next = generation === null ? null : String(generation);
         if (next === this.generation) return false;
         this.generation = next;
+        this.dataVersion = undefined;
+        ++this.windowEpoch;
         this.values.clear();
         this.windows.clear();
         const queued = this.queuedUpdate;
@@ -81,15 +101,14 @@ export class ObservationValues {
             return false;
         }
         this.activation = activation;
+        this.dataVersion = update.dataVersion;
         for (const item of scope.values) this.values.set(item.id, { activationId: update.activationId,
             available: item.available, ...(item.pending ? { pending: true } : {}), value: item.value });
         for (const item of scope.windows ?? []) {
             if (!sameObservationWindow(item.window, this.desiredWindows.get(item.id))) continue;
             const previous = this.windows.get(item.id);
             if (previous?.status === "ready" && item.status === "ready"
-                && (BigInt(item.semanticVersion ?? "0") < BigInt(previous.semanticVersion ?? "0")
-                    || (item.semanticVersion === previous.semanticVersion
-                        && BigInt(item.dataVersion ?? "0") < BigInt(previous.dataVersion ?? "0")))) continue;
+                && compareObservationWindowVersions(item, previous) < 0) continue;
             this.windows.set(item.id, item);
         }
         return true;
@@ -98,6 +117,8 @@ export class ObservationValues {
         this.activation = 0n;
         this.revision = 0n;
         this.generation = undefined;
+        this.dataVersion = undefined;
+        ++this.windowEpoch;
         this.queuedUpdate = undefined;
         this.values.clear();
         this.windows.clear();
@@ -106,5 +127,5 @@ export class ObservationValues {
 }
 
 export function sameObservationWindow(left: ObservationWindow | undefined, right: ObservationWindow | undefined): boolean {
-    return left?.begin === right?.begin && left?.length === right?.length && left?.points === right?.points;
+    return left?.begin === right?.begin && left?.length === right?.length && left?.points === right?.points && left?.maxDepth === right?.maxDepth;
 }

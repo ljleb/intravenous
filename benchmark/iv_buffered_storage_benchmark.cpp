@@ -65,7 +65,7 @@ void measure_cache(std::size_t pages, std::size_t iterations, std::size_t pinned
         auto candidate = store.begin_candidate(index + 2);
         auto region = payload(output, whole, static_cast<float>(index), mono_planar_channel_layout);
         candidate.replace_sample_regions(output, region.layout, region.geometry, IndexCoverage{whole},
-            std::array{whole}, {std::move(region)});
+            std::array{whole}, {{.region_index = 0, .payload = std::move(region)}});
         if (store.publish(std::move(candidate)) != PersistedDataPublishResult::published)
             throw std::runtime_error("cache benchmark publication became stale");
         (void)store.reclaim_retired();
@@ -135,7 +135,7 @@ void measure(std::string const& name, std::size_t pages, std::size_t iterations,
         }
         region.set_prepared_windows(std::move(windows));
         candidate.replace_sample_regions(output, region.layout, region.geometry,
-            IndexCoverage{range}, std::vector{whole}, {std::move(region)});
+            IndexCoverage{range}, std::vector{whole}, {{.region_index = 0, .payload = std::move(region)}});
     };
     auto seed = store.begin_candidate(1);
     write(seed, whole, 0);

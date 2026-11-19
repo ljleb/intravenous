@@ -171,6 +171,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             catch (error) { void vscode.window.showErrorMessage(`Cannot change playback: ${error.message}`); }
         }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.openGraphEditor", () => graphEditor.open()));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.profileObservations", () => graphEditor.profileObservations()));
     const graphActions: GraphEditorAction[] = ["addNode", "editNode", "deleteNode", "openNodeSource", "createPackage", "deleteConnection", "undo", "redo"];
     for (const action of graphActions) {
         context.subscriptions.push(vscode.commands.registerCommand(`intravenous.${action}`, async () => {

@@ -24,6 +24,7 @@ struct ObservationSource {
     ObservationSourceKind kind = ObservationSourceKind::output;
     std::string member{};
     std::optional<std::size_t> channel{};
+    PortKind port_kind = PortKind::sample;
     bool operator==(ObservationSource const&) const = default;
 };
 struct ObservationRequirement {
@@ -82,11 +83,14 @@ struct ObservationWindow {
     GlobalIndex begin{};
     std::uint64_t length = 0;
     std::size_t points = 0;
+    std::optional<std::uint8_t> max_depth{};
     bool operator==(ObservationWindow const&) const = default;
 };
 struct ObservationWindowRegion {
     GlobalIndexRange range{};
     std::vector<std::pair<GlobalIndex, ObservationCaptureState>> values{};
+    // Projection-local identity within the result's semantic and data version.
+    std::vector<std::size_t> region_key{};
 };
 struct ObservationWindowResult {
     enum class Status { ready, pending_execution, unavailable, failed } status = Status::pending_execution;
@@ -98,10 +102,12 @@ struct ObservationWindowResult {
     std::int32_t pace_exponent = 0;
     bool truncated = false;
     std::vector<ObservationWindowRegion> regions{};
+    std::vector<TimedEvent> events{};
+    std::vector<GlobalIndexRange> unavailable_regions{};
     std::string error{};
 };
-// Immutable request, one background writer, one control reader. Cancellation
-// never interrupts an in-progress transaction or destroys borrowed storage.
+// One background writer and one control reader. Priority and cancellation
+// can change while queued. Cancellation leaves a running transaction intact.
 struct ObservationWindowQuery {
     std::uint64_t configured_generation = 0;
     NodeBundlePortId port{};
@@ -109,6 +115,7 @@ struct ObservationWindowQuery {
     std::size_t channel = 0;
     ObservationOperation const* operation = nullptr;
     ObservationWindow window{};
+    std::atomic<bool> prefetch{false};
     std::atomic<bool> canceled{false};
     std::atomic<bool> complete{false};
     ObservationWindowResult result{};

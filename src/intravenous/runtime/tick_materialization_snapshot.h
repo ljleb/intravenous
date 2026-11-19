@@ -19,29 +19,6 @@
 
 namespace iv {
 
-// Calls fn for each maximal piece of left & right without allocating. On the
-// circular timeline every such piece begins at left.begin or right.begin, so
-// there are at most two.
-template<typename Fn>
-constexpr void for_each_range_intersection(
-    GlobalIndexRange left, GlobalIndexRange right, Fn&& fn)
-{
-    if (left.empty() || right.empty()) return;
-    if (auto const offset = left.offset_of(right.begin)) {
-        fn(GlobalIndexRange{
-            .begin = right.begin,
-            .extent = std::min(left.extent - *offset, right.extent),
-        });
-    }
-    if (left.begin == right.begin) return;
-    if (auto const offset = right.offset_of(left.begin)) {
-        fn(GlobalIndexRange{
-            .begin = left.begin,
-            .extent = std::min(right.extent - *offset, left.extent),
-        });
-    }
-}
-
 // One immutable prepared content window. Its logical_region_index identifies
 // the unchanged logical Region in TickMaterializedSampleInput::logical_regions.
 // Successive snapshots can retain subwindows by sharing their storage owner.

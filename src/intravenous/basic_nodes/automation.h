@@ -107,10 +107,19 @@ inline bool point_order_less(Point const& left, Point const& right) {
 
 struct PointSource {
     ImmutableArray<Point> points;
+    bool indexable = false;
     explicit PointSource(ImmutableArray<Point> points_) : points(points_) {
         for (auto const& point : points) validate_point(point);
         if (!std::ranges::is_sorted(points, point_time_less))
             throw std::invalid_argument("automation source points must be sorted within each time representation");
+        // Exact sample coordinates already have their native time order.
+        // Seconds can collide after rounding at a particular sample rate.
+        indexable = std::ranges::all_of(points, [](Point const& point) { return point.sample_index.present(); })
+            && std::ranges::is_sorted(points, [](Point const& left, Point const& right) {
+                if (point_time_less(left, right)) return true;
+                if (point_time_less(right, left)) return false;
+                return point_order_less(left, right);
+            });
     }
 
     static constexpr auto outputs() {
@@ -161,25 +170,41 @@ struct PointSource {
     }
     void propagate_forward_coverage(PropagateForwardCoverageContext<PointSource>& ctx) const {
         auto region = range(ctx.sample_rate);
-        ctx.output<"points">().publish(region);
+        auto const output = ctx.output<"points">();
+        if (indexable) output.publish(EventRegionInfo{region, IndexedEventRegionInfo{points.size()}});
+        else output.publish(region);
         if (ctx.local_state_changed) ctx.output<"points">().change(IndexCoverage{region});
     }
     void tock_coverage(TockCoverageContext<PointSource>& ctx) const {
-        auto output = ctx.output<"points">().region();
+        auto const port = ctx.output<"points">();
+        auto const event_at = [](GlobalIndex time, Point const& point) {
+            return TimedEvent{time, CurvePointEvent{Sample{point.value}, point.interpolation, point.tension}};
+        };
+        for (auto run : port.prepared_runs()) {
+            auto const first = std::ranges::lower_bound(points, run.region_range().begin.signed_value(), {},
+                [](Point const& point) { return point.sample_index.index().signed_value(); });
+            auto const tail = static_cast<std::size_t>(points.end() - first);
+            for (std::size_t slot = 0; slot < run.size(); ++slot) {
+                auto const index = run.index(slot);
+                auto const& point = index < tail ? first[index] : points.begin()[index - tail];
+                run.write(slot, event_at(point.sample_index.index(), point));
+            }
+        }
+        if (port.requested_coverage().empty()) return;
+        auto output = port.region();
         auto const selected = output.range();
         struct Entry { GlobalIndex time; Point const* point; };
         std::vector<Entry> ordered;
         for (auto const& point : points) {
             auto const time = point_index(point, ctx.sample_rate);
-            if (ctx.output<"points">().requested_coverage().contains(time)) ordered.push_back({time, &point});
+            if (port.requested_coverage().contains(time)) ordered.push_back({time, &point});
         }
         std::ranges::sort(ordered, [&](auto const& left, auto const& right) {
             auto const a = selected.begin.forward_distance_to(left.time);
             auto const b = selected.begin.forward_distance_to(right.time);
             return a != b ? a < b : point_order_less(*left.point, *right.point);
         });
-        for (auto const& entry : ordered) output.write({.time = entry.time,
-            .value = CurvePointEvent{Sample{entry.point->value}, entry.point->interpolation, entry.point->tension}});
+        for (auto const& entry : ordered) output.write(event_at(entry.time, *entry.point));
     }
 };
 
@@ -239,7 +264,7 @@ struct Curve {
     }
 
     void propagate_reverse_coverage(PropagateReverseCoverageContext<Curve>& ctx) const {
-        auto const& wanted = ctx.output<"value">().required();
+        auto const wanted = ctx.output<"value">().required_positions();
         if (wanted.empty()) return;
         // The event Region is sparse. Bound samples are needed only over the
         // covered output positions that this invocation will render.
@@ -267,6 +292,10 @@ struct Curve {
         double first = 0, last = 0, start_delta = 0, end_delta = 0;
         float tension = 1;
         CurveInterpolation interpolation = CurveInterpolation::empty;
+
+        [[nodiscard]] bool contains(GlobalIndex position) const {
+            return begin == end || begin.forward_distance_to(position) < begin.forward_distance_to(end);
+        }
 
         Sample value(GlobalIndex position) const {
             IV_ASSERT(interpolation != CurveInterpolation::empty, "curve read lies in an empty segment");
@@ -352,17 +381,20 @@ struct Curve {
         auto const min = ctx.input<"min">().regions();
         auto const max = ctx.input<"max">().regions();
         auto const bounded = !min.empty() || !max.empty();
-        for (auto region : ctx.output<"value">().regions()) for (auto output : region.prepared_windows()) {
+        for (auto run : ctx.output<"value">().prepared_runs()) {
             Segment current;
             bool initialized = false;
-            for (std::size_t frame = 0; frame < output.frame_count(); ++frame) {
-                auto const position = output.range().begin.advanced_by(frame);
-                if (!initialized || position == current.end) { current = segment(input, position); initialized = true; }
+            for (std::size_t slot = 0; slot < run.size(); ++slot) {
+                auto const position = run.position(slot);
+                if (!initialized || !current.contains(position)) {
+                    current = segment(input, position);
+                    initialized = true;
+                }
                 auto value = current.value(position);
                 if (bounded) value.value = clamp_output_value(value.value,
                     bound_at(min, position, [](float a, float b) { return std::max(a, b); }),
                     bound_at(max, position, [](float a, float b) { return std::min(a, b); }));
-                output.value(frame) = value;
+                run.value(slot) = value;
             }
         }
     }

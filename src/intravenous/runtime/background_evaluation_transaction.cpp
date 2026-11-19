@@ -536,7 +536,7 @@ class BackgroundEvaluationTransaction::Impl {
     static void
     expand_output_demand(void* opaque, graph_jit::BackgroundPortIndex port,
                          IndexCoverage const& available,
-                         std::span<GlobalIndexRange const>,
+                         std::span<GlobalIndexRange const> published_regions,
                          IndexCoverage const& changed,
                          IndexCoverage const& required, IndexCoverage& additional)
     {
@@ -571,8 +571,30 @@ class BackgroundEvaluationTransaction::Impl {
                 existing = *retained;
             }
 
-            auto desired = available & affected;
-            additional.include(desired - (existing - changed));
+            auto const desired = available & affected;
+            auto const cached = desired & (existing - changed);
+            additional.include(desired - cached);
+            if (!cached.empty() && plan.ports[port].output_production != OutputProductionKind::sequential) {
+                // An output's validity union can cover a position while one of
+                // its overlapping Regions at that position is still missing.
+                auto require_missing_regions = [&](auto retained) {
+                    if (published_regions.size() == 1 && retained.size() == 1
+                        && retained.front().range == published_regions.front()) return;
+                    for (std::size_t i = 0; i < published_regions.size(); ++i) {
+                        auto const range = published_regions[i];
+                        if (!cached.intersects(range)) continue;
+                        auto requested = cached & IndexCoverage{range};
+                        if (i < retained.size() && retained[i].range == range) {
+                            requested = requested - retained[i].materialized_coverage();
+                        }
+                        additional.include(requested);
+                    }
+                };
+                if (storage.kind == PortKind::sample)
+                    require_missing_regions(snapshot.sample_regions(output, storage.sample_layout));
+                else
+                    require_missing_regions(snapshot.event_regions(output, storage.event_type));
+            }
 
             auto invalidated = existing & changed;
             if (!invalidated.empty()) {
@@ -668,6 +690,18 @@ class BackgroundEvaluationTransaction::Impl {
         }
     }
 
+    [[nodiscard]] std::size_t sparse_sample_budget() const noexcept
+    {
+        auto const bytes = remaining_materialized_sample_bytes_.value_or(
+            BufferedStorageLimits{}.max_resident_bytes);
+        return bytes / sizeof(Sample);
+    }
+
+    [[nodiscard]] IndexCoverage positional_requirement(auto const& demand) const
+    {
+        return demand.required | demand.sample_positions.positional_ranges(sparse_sample_budget());
+    }
+
     [[nodiscard]] BackgroundEvaluationCallFrameSelection
     binding_selection() const
     {
@@ -675,14 +709,62 @@ class BackgroundEvaluationTransaction::Impl {
         BackgroundEvaluationCallFrameSelection selection{
             .binding_coverage =
                 std::vector<IndexCoverage>(plan.runtime.bindings.size()),
+            .sample_positions = std::vector<BackgroundSampleDemand>(plan.runtime.bindings.size()),
+            .sample_region_positions = std::vector<SampleDemandByRegion>(plan.runtime.bindings.size()),
+            .selection_snapshot = prepared_->selection_snapshot(),
             .binding_regions =
                 std::vector<std::vector<GlobalIndexRange>>(
                     plan.runtime.bindings.size()),
+            .binding_input_regions = std::vector<std::vector<BackgroundInputRegion>>(
+                plan.runtime.bindings.size()),
+            .indexed_events = std::vector<std::vector<BackgroundEvaluationCallFrameSelection::IndexedEventRegion>>(
+                plan.runtime.bindings.size()),
+            .indexed_event_budget = remaining_materialized_sample_bytes_.value_or(
+                BufferedStorageLimits{}.max_resident_bytes) / (sizeof(TimedEvent) + sizeof(std::uint8_t)),
             .binding_upstream_coverage =
                 std::vector<IndexCoverage>(plan.runtime.bindings.size()),
             .combine_sequential_input = graph_->root_operations.combine_sequential_input,
             .sample_rate = graph_->specialization.sample_rate,
         };
+        auto const snapshot = prepared_->selection_snapshot();
+        auto const select_sample_region = [&](IndexedRegionDemand const& demand, GlobalIndexRange range) {
+            auto const binding = plan.runtime.port_bindings[demand.port];
+            if (!binding) throw std::logic_error("selected sample Region has no binding");
+            BackgroundSampleDemand positions;
+            for (auto const run : demand.runs)
+                positions.include(SamplePositionRun{range.begin.advanced_by(run.first), run.count, run.step});
+            selection.sample_region_positions[*binding].include(demand.region_index, positions.view());
+        };
+        for (auto const& demand : prepared_->result().indexed_outputs) {
+            if (plan.ports[demand.port].kind == PortKind::sample) {
+                select_sample_region(demand, prepared_->output_regions(demand.port)[demand.region_index]);
+                continue;
+            }
+            auto const binding = plan.runtime.port_bindings[demand.port];
+            if (!binding) throw std::logic_error("indexed event output has no binding");
+            auto const& info = prepared_->event_regions(demand.port)[demand.region_index];
+            selection.indexed_events[*binding].push_back({
+                .region = details::RegionRefAccess::make(snapshot, demand.port, demand.region_index),
+                .range = info.range, .runs = demand.runs, .constant_value = info.index->constant_value,
+            });
+        }
+        for (auto const& demand : prepared_->result().indexed_inputs) {
+            if (plan.ports[demand.port].kind == PortKind::sample) {
+                select_sample_region(demand, prepared_->input_regions(demand.port)[demand.region_index].range);
+                continue;
+            }
+            auto const binding = plan.runtime.port_bindings[demand.port];
+            if (!binding) throw std::logic_error("indexed event input has no binding");
+            auto const& input = prepared_->input_regions(demand.port)[demand.region_index];
+            auto const& source = input.sources.front();
+            auto const source_binding = plan.runtime.port_bindings[source.output];
+            if (!source_binding) throw std::logic_error("indexed event input source has no binding");
+            selection.indexed_events[*binding].push_back({
+                .region = details::RegionRefAccess::make(snapshot, demand.port, demand.region_index),
+                .range = input.range, .runs = demand.runs, .source = source_binding,
+                .source_region = *source.region_index,
+            });
+        }
         for (graph_jit::BackgroundPortIndex port = 0;
              port < std::min(plan.ports.size(), plan.runtime.port_bindings.size()); ++port) {
             auto const& planned = plan.ports[port];
@@ -692,17 +774,6 @@ class BackgroundEvaluationTransaction::Impl {
                 selection.binding_upstream_coverage[*slot] = prepared_->input_coverage(port);
             }
         }
-        auto assign_intersecting_regions = [](
-            std::vector<GlobalIndexRange>& target,
-            std::span<GlobalIndexRange const> regions,
-            IndexCoverage const& required) {
-            target.clear();
-            for (auto const region : regions) {
-                if (!(IndexCoverage{region} & required).empty()) {
-                    target.push_back(region);
-                }
-            }
-        };
         for (auto const& required : prepared_->result().input_requirements) {
             // A disconnected Random Access input has empty coverage, so its
             // requirement selects nothing.
@@ -712,23 +783,31 @@ class BackgroundEvaluationTransaction::Impl {
             }
             auto const slot = plan.runtime.port_bindings[required.port];
             if (slot) {
-                selection.binding_coverage[*slot].include(required.required);
                 auto const& port = plan.ports[required.port];
                 if (port.input_access == InputAccessKind::sequential) {
+                    selection.binding_coverage[*slot].include(positional_requirement(required));
                     auto const& coverage = selection.binding_coverage[*slot];
                     selection.binding_regions[*slot].assign(
                         coverage.begin(), coverage.end());
                 } else {
                     auto const regions = prepared_->requested_input_regions(required.port);
-                    selection.binding_regions[*slot].assign(regions.begin(), regions.end());
+                    selection.binding_input_regions[*slot].assign(regions.begin(), regions.end());
+                    IndexCoverage logical;
+                    for (auto const& region : regions) {
+                        selection.binding_regions[*slot].push_back(region.range);
+                        logical.include(region.range);
+                    }
+                    selection.binding_coverage[*slot].include(required.required & logical);
+                    selection.sample_positions[*slot].include(required.sample_positions.intersected(logical).view());
                 }
             }
         }
         for (auto const& required : prepared_->result().output_requirements) {
             auto const slot = plan.runtime.port_bindings[required.port];
             if (slot && node_evaluates(plan.ports[required.port].node)) {
-                selection.binding_coverage[*slot].include(required.required);
                 auto const& port = plan.ports[required.port];
+                selection.binding_coverage[*slot].include(required.required);
+                selection.sample_positions[*slot].include(required.sample_positions.view());
                 if (port.output_production == OutputProductionKind::sequential) {
                     auto const& coverage = selection.binding_coverage[*slot];
                     selection.binding_regions[*slot].assign(
@@ -736,18 +815,28 @@ class BackgroundEvaluationTransaction::Impl {
                 } else {
                     auto const regions =
                         prepared_->output_regions(required.port);
-                    assign_intersecting_regions(
-                        selection.binding_regions[*slot],
-                        regions,
-                        selection.binding_coverage[*slot]);
+                    for (auto const region : regions) {
+                        if (selection.binding_coverage[*slot].intersects(region)
+                            || selection.sample_positions[*slot].intersects(region))
+                            selection.binding_regions[*slot].push_back(region);
+                    }
                 }
             }
+        }
+        for (graph_jit::BackgroundBindingSlot slot = 0; slot < plan.runtime.bindings.size(); ++slot) {
+            auto const& binding = plan.runtime.bindings[slot];
+            if (binding.direction != graph_jit::PortDirection::input
+                || selection.sample_region_positions[slot].values.empty()) continue;
+            auto const regions = prepared_->requested_input_regions(binding.port);
+            selection.binding_input_regions[slot].assign(regions.begin(), regions.end());
+            selection.binding_regions[slot].clear();
+            for (auto const& region : regions) selection.binding_regions[slot].push_back(region.range);
         }
         return selection;
     }
 
     [[nodiscard]] BackgroundStorageSelection storage_selection(
-        BackgroundEvaluationCallFrameSelection const& bindings,
+        BackgroundEvaluationCallFrameSelection const& bindings_selection,
         PersistedDataStore::Snapshot const& published) const
     {
         auto const& plan = graph_->background_evaluation_plan;
@@ -755,19 +844,30 @@ class BackgroundEvaluationTransaction::Impl {
             .generation = graph_->project_generation,
             .storage_coverage =
                 std::vector<IndexCoverage>(plan.storage.ports.size()),
+            .sample_positions = std::vector<BackgroundSampleDemand>(plan.storage.ports.size()),
+            .sample_region_positions = std::vector<SampleDemandByRegion>(plan.storage.ports.size()),
+            .sample_frame_budget = sparse_sample_budget(),
             .storage_regions = std::vector<std::vector<GlobalIndexRange>>(
                 plan.storage.ports.size()),
+            .sample_region_sources = std::vector<
+                std::vector<BackgroundStorageSelection::SampleRegionSources>>(
+                plan.storage.ports.size()),
+            .event_region_sources = std::vector<
+                std::vector<BackgroundStorageSelection::RegionSource>>(
+                plan.storage.ports.size()),
+            .materialized_input_regions = std::vector<
+                std::vector<BackgroundStorageSelection::MaterializedInputRegion>>(plan.storage.ports.size()),
             .published_output_regions =
                 std::vector<std::vector<GlobalIndexRange>>(
                     plan.storage.ports.size()),
-            .persisted_replacement_coverage =
+            .persisted_invalidations =
                 std::vector<IndexCoverage>(plan.storage.ports.size()),
             .produce_storage =
                 std::vector<bool>(plan.storage.ports.size(), false),
             .published = &published,
         };
         selection.cache_computed_outputs = bool(inputs_.reconstruction_graph);
-        selection.retain_computed_outputs = inputs_.retain_computed_outputs;
+        selection.retain_generated_outputs = inputs_.retain_generated_outputs;
 
         for (graph_jit::PortStorageIndex index = 0;
              index < plan.storage.ports.size(); ++index) {
@@ -793,9 +893,15 @@ class BackgroundEvaluationTransaction::Impl {
         for (graph_jit::BackgroundBindingSlot slot = 0;
              slot < plan.runtime.bindings.size(); ++slot) {
             auto const& binding = plan.runtime.bindings[slot];
-            auto const& coverage = bindings.binding_coverage[slot];
-            if (coverage.empty()) continue;
+            auto const& coverage = bindings_selection.binding_coverage[slot];
+            auto const& samples = bindings_selection.sample_positions[slot];
+            auto const& scoped = bindings_selection.sample_region_positions[slot];
+            if (coverage.empty() && samples.empty() && scoped.values.empty()) continue;
             for (auto const storage_index : binding.storage) {
+                if (binding.direction == graph_jit::PortDirection::output) {
+                    for (auto const& [region, positions] : scoped.values)
+                        selection.sample_region_positions[storage_index].include(region, positions.view());
+                }
                 bool direct = false;
                 if (binding.kind == PortKind::sample &&
                     binding.direction == graph_jit::PortDirection::input) {
@@ -810,11 +916,14 @@ class BackgroundEvaluationTransaction::Impl {
                         }
                         selection.storage_coverage[storage_index].include(
                             shifted_back(coverage, route.read_latency));
+                        selection.sample_positions[storage_index].include(
+                            samples.retreated_by(route.read_latency).view());
                         direct = true;
                     }
                 }
                 if (!direct) {
                     selection.storage_coverage[storage_index].include(coverage);
+                    selection.sample_positions[storage_index].include(samples.view());
                 }
             }
         }
@@ -826,6 +935,12 @@ class BackgroundEvaluationTransaction::Impl {
             if (required.port >= plan.ports.size()) continue;
             auto const& port = plan.ports[required.port];
             if (!port.random_access_input) continue;
+            auto const& bindings = port.kind == PortKind::sample
+                ? plan.tick_runtime.random_access_sample_inputs
+                : plan.tick_runtime.random_access_event_inputs;
+            if (!std::ranges::any_of(bindings, [&](auto const& binding) { return binding.port == required.port; }))
+                continue;
+            auto const positions = positional_requirement(required);
             auto select_storage = [&](graph_jit::PortStorageIndex storage) {
                 if (storage >= plan.storage.ports.size()) return;
                 bool direct = false;
@@ -840,7 +955,7 @@ class BackgroundEvaluationTransaction::Impl {
                             continue;
                         }
                         selection.storage_coverage[storage].include(
-                            shifted_back(required.required, route.read_latency));
+                            shifted_back(positions, route.read_latency));
                         direct = true;
                     }
                 } else {
@@ -859,18 +974,15 @@ class BackgroundEvaluationTransaction::Impl {
                             continue;
                         }
                         selection.storage_coverage[storage].include(
-                            required.required);
+                            positions);
                         direct = true;
                     }
                 }
                 if (!direct) {
                     selection.storage_coverage[storage].include(
-                        required.required);
+                        positions);
                 }
             };
-            auto const& bindings = port.kind == PortKind::sample
-                ? plan.tick_runtime.random_access_sample_inputs
-                : plan.tick_runtime.random_access_event_inputs;
             for (auto const& binding : bindings) {
                 if (binding.port != required.port) continue;
                 for (auto const storage : binding.storage) {
@@ -889,7 +1001,7 @@ class BackgroundEvaluationTransaction::Impl {
                 if (uses_output_cache(plan, storage, bool(inputs_.reconstruction_graph)) &&
                     storage.output_port == required.port) {
                     selection.storage_coverage[index].include(
-                        required.required);
+                        positional_requirement(required));
                 }
             }
         }
@@ -899,11 +1011,59 @@ class BackgroundEvaluationTransaction::Impl {
             auto const& storage = plan.storage.ports[index];
 
             std::vector<GlobalIndexRange> selected_regions;
+            bool region_materialization = false;
             auto append_intersecting = [&](std::span<GlobalIndexRange const> regions) {
                 for (auto const region : regions) {
-                    if (!(IndexCoverage{region}
-                            & selection.storage_coverage[index]).empty()) {
+                    if (selection.selects(index, region)) {
                         selected_regions.push_back(region);
+                    }
+                }
+            };
+            auto append_input_regions = [&](graph_jit::BackgroundPortIndex port) {
+                for (auto const& region : prepared_->input_regions(port)) {
+                    if (selection.selects(index, region.range))
+                        selected_regions.push_back(region.range);
+                }
+            };
+            auto select_materialized_regions = [&](graph_jit::BackgroundPortIndex primary,
+                                                    auto& bindings, auto&& bind) {
+                bindings.clear();
+                auto& materialized = selection.materialized_input_regions[index];
+                materialized.clear();
+                auto& scoped = selection.sample_region_positions[index];
+                scoped.values.clear();
+                std::vector targets{primary};
+                for (auto const connection : storage.connections) {
+                    for (auto const port : plan.connections[connection].target_coverage_ports) {
+                        if (plan.ports[port].input_access != InputAccessKind::sequential
+                            && !std::ranges::contains(targets, port))
+                            targets.push_back(port);
+                    }
+                }
+                for (auto const port : targets) {
+                    // Equivalent consumers share the same physical read.
+                    // Preserve repeats from any one consumer as distinct Regions.
+                    std::vector<bool> shared(bindings.size());
+                    for (auto const& region : prepared_->input_regions(port)) {
+                        auto const slot = plan.runtime.port_bindings[port];
+                        auto const* selected = slot ? bindings_selection.sample_region_positions[*slot].find(region.logical_index) : nullptr;
+                        if (!selection.selects(index, region.range) && !selected) continue;
+                        auto binding = bind(region);
+                        if (!binding) continue;
+                        std::size_t match = 0;
+                        for (; match < shared.size(); ++match) {
+                            if (!shared[match] && selected_regions[match] == region.range
+                                && bindings[match] == *binding) break;
+                        }
+                        if (match < shared.size()) {
+                            shared[match] = true;
+                        } else {
+                            match = bindings.size();
+                            bindings.push_back(std::move(*binding));
+                            selected_regions.push_back(region.range);
+                        }
+                        materialized.push_back({port, region, match});
+                        if (selected) scoped.include(match, selected->view());
                     }
                 }
             };
@@ -918,7 +1078,7 @@ class BackgroundEvaluationTransaction::Impl {
                 if (storage.kind == PortKind::sample) {
                     for (auto const& region : published.sample_regions(output, storage.sample_layout)) {
                         if (region.geometry == storage.continuous_geometry
-                            && selection.storage_coverage[index].intersects(region.range))
+                            && selection.selects(index, region.range))
                             selected_regions.push_back(region.range);
                     }
                 } else {
@@ -932,8 +1092,43 @@ class BackgroundEvaluationTransaction::Impl {
                     && plan.ports[materialization.target_port].input_access
                         == InputAccessKind::sequential;
                 if (!sequential) {
-                    append_intersecting(prepared_->input_regions(
-                        materialization.target_port));
+                    region_materialization = true;
+                    auto& bindings = selection.sample_region_sources[index];
+                    select_materialized_regions(materialization.target_port, bindings,
+                        [&](BackgroundInputRegion const& region)
+                            -> std::optional<BackgroundStorageSelection::SampleRegionSources> {
+                            auto const origin = std::ranges::find(
+                                materialization.region_projections, region.connection,
+                                &graph_jit::SampleMaterializationPlan::RegionProjection::connection);
+                            if (origin == materialization.region_projections.end()) return std::nullopt;
+                            std::size_t projection = 0;
+                            if (auto const selected = region.sample_projection) {
+                                auto const found = std::ranges::find(origin->projections, *selected);
+                                if (found == origin->projections.end()) return std::nullopt;
+                                projection = static_cast<std::size_t>(found - origin->projections.begin());
+                            }
+                            auto const& connection = plan.connections[region.connection];
+                            BackgroundStorageSelection::SampleRegionSources binding{.projection = projection};
+                            auto append_source = [&](std::size_t input) {
+                                auto const& storage = plan.storage.ports[materialization.inputs[input]];
+                                auto const latency = materialization.source_read_latencies[input];
+                                auto const source = std::ranges::find_if(region.sources, [&](auto const& candidate) {
+                                    return storage.output_port == candidate.output && candidate.route_index
+                                        && connection.sample_read_latencies[*candidate.route_index] == latency;
+                            });
+                            if (source == region.sources.end())
+                                throw std::logic_error("sample input Region has no materialized source");
+                            binding.sources.push_back({input, source->region_index});
+                            };
+                            if (materialization.projections.empty()) {
+                                for (std::size_t input = 0; input < materialization.inputs.size(); ++input)
+                                    append_source(input);
+                            } else {
+                                for (auto const input : materialization.projections[projection].source_channel_indices)
+                                    append_source(input);
+                            }
+                            return binding;
+                        });
                 }
             } else if (storage.event_materialization) {
                 auto const& materialization = plan.storage
@@ -943,16 +1138,39 @@ class BackgroundEvaluationTransaction::Impl {
                     && plan.ports[*materialization.target_port].input_access
                         == InputAccessKind::sequential;
                 if (materialization.target_port && !sequential) {
-                    append_intersecting(prepared_->input_regions(
-                        *materialization.target_port));
+                    region_materialization = true;
+                    auto& sources = selection.event_region_sources[index];
+                    select_materialized_regions(*materialization.target_port, sources,
+                        [&](BackgroundInputRegion const& region)
+                            -> std::optional<BackgroundStorageSelection::RegionSource> {
+                            if (!std::ranges::contains(materialization.connections, region.connection))
+                                return std::nullopt;
+                            if (region.sources.size() != 1 || !region.sources.front().route_index)
+                                throw std::logic_error("event input Region has no source delivery");
+                            auto const& source = region.sources.front();
+                            auto const& delivery = plan.connections[region.connection]
+                                .event_deliveries[*source.route_index];
+                            auto const term = std::ranges::find(
+                                materialization.semantic_source_indices, delivery.semantic_source_index);
+                            if (term == materialization.semantic_source_indices.end())
+                                throw std::logic_error("event input Region has no materialized source");
+                            auto const source_index = static_cast<std::size_t>(
+                                term - materialization.semantic_source_indices.begin());
+                            if (plan.storage.ports[materialization.inputs[source_index]].output_port != source.output)
+                                throw std::logic_error("event input Region source port does not match its materialization");
+                            return BackgroundStorageSelection::RegionSource{source_index, source.region_index};
+                        });
                 }
             } else if (storage.output_port
                 && (plan.ports[*storage.output_port].output_production
                     != OutputProductionKind::sequential
                     || (storage.storage != graph_jit::PortStorageKind::persisted_data
                         && uses_output_cache(plan, storage, bool(inputs_.reconstruction_graph))))) {
-                append_intersecting(
-                    prepared_->output_regions(*storage.output_port));
+                auto const regions = prepared_->output_regions(*storage.output_port);
+                for (std::size_t local = 0; local < regions.size(); ++local) {
+                    if (selection.selects(index, regions[local]) || selection.sample_region_positions[index].find(local))
+                        selected_regions.push_back(regions[local]);
+                }
             } else {
                 // A shared materialization can serve several equivalent target
                 // subsets. Its Region decomposition is the decomposition of
@@ -984,18 +1202,24 @@ class BackgroundEvaluationTransaction::Impl {
                     auto const port_index = static_cast<
                         graph_jit::BackgroundPortIndex>(std::distance(
                             plan.ports.begin(), found));
-                    append_intersecting(
-                        prepared_->input_regions(port_index));
+                    append_input_regions(port_index);
                     if (!selected_regions.empty()) break;
                 }
             }
-            if (selected_regions.empty()) {
+            bool changed = selected_regions != selection.storage_regions[index];
+            if (region_materialization) {
+                IndexCoverage logical;
+                for (auto const range : selected_regions) logical.include(range);
+                auto prepared = logical & selection.storage_coverage[index];
+                changed = changed || prepared != selection.storage_coverage[index];
+                selection.storage_coverage[index] = std::move(prepared);
+            } else if (selected_regions.empty()) {
                 selected_regions.assign(
                     selection.storage_coverage[index].begin(),
                     selection.storage_coverage[index].end());
+                changed = selected_regions != selection.storage_regions[index];
             }
 
-            auto const changed = selected_regions != selection.storage_regions[index];
             selection.storage_regions[index] = std::move(selected_regions);
             return changed;
         };
@@ -1007,40 +1231,59 @@ class BackgroundEvaluationTransaction::Impl {
                  index < plan.storage.ports.size(); ++index) {
                 changed = select_complete_regions(index) || changed;
             }
-            for (auto const& materialization :
-                 plan.storage.sample_materializations) {
-                auto const target =
-                    selection.storage_coverage[materialization.output];
-                if (target.empty()) continue;
-                for (std::size_t source = 0;
-                     source < materialization.inputs.size(); ++source) {
+            auto const require_storage = [&](graph_jit::PortStorageIndex input, IndexCoverage const& required) {
+                auto& selected = selection.storage_coverage[input];
+                auto expanded = selected | required;
+                if (expanded != selected) {
+                    selected = std::move(expanded);
+                    changed = true;
+                }
+            };
+            for (auto const& materialization : plan.storage.sample_materializations) {
+                auto const& target = selection.storage_coverage[materialization.output];
+                auto const& samples = selection.sample_positions[materialization.output];
+                auto const& scoped = selection.sample_region_positions[materialization.output];
+                if (target.empty() && samples.empty() && scoped.values.empty()) continue;
+                auto const require_source = [&](std::size_t source, IndexCoverage const& positions,
+                                                BackgroundSampleDemand const& sparse) {
                     auto const input = materialization.inputs[source];
-                    auto required = shifted_back(target, materialization.source_read_latencies[source]);
-                    // Each projection can cover a different part of the target.
-                    // An authored random-access producer can only write windows
-                    // within its own published Regions.
+                    auto const latency = materialization.source_read_latencies[source];
+                    auto required = shifted_back(positions, latency);
+                    auto requested = sparse.retreated_by(latency);
                     if (auto const output = plan.storage.ports[input].output_port;
                         output && plan.ports[*output].output_production != OutputProductionKind::sequential) {
-                        if (auto const coverage = plan.ports[*output].accumulators.output_change)
+                        if (auto const coverage = plan.ports[*output].accumulators.output_change) {
                             required = required & prepared_->output_coverages()[*coverage];
+                            requested = requested.intersected(prepared_->output_coverages()[*coverage]);
+                        }
                     }
-                    auto& selected = selection.storage_coverage[input];
-                    auto expanded = selected | required;
-                    if (expanded != selected) {
-                        selected = std::move(expanded);
-                        changed = true;
+                    require_storage(input, required);
+                    changed |= selection.sample_positions[input].include(requested.view());
+                };
+                auto const& regions = selection.sample_region_sources[materialization.output];
+                if (regions.empty()) {
+                    for (std::size_t source = 0; source < materialization.inputs.size(); ++source)
+                        require_source(source, target, samples);
+                } else {
+                    for (std::size_t i = 0; i < regions.size(); ++i) {
+                        IndexCoverage const region{selection.storage_regions[materialization.output][i]};
+                        auto const required = region & target;
+                        auto const sparse = samples.intersected(region);
+                        for (auto const& source : regions[i].sources)
+                            require_source(source.materialization_source, required, sparse);
                     }
                 }
             }
-            for (auto const& materialization :
-                 plan.storage.event_materializations) {
-                auto const target =
-                    selection.storage_coverage[materialization.output];
-                for (auto const input : materialization.inputs) {
-                    auto expanded = selection.storage_coverage[input] | target;
-                    if (expanded != selection.storage_coverage[input]) {
-                        selection.storage_coverage[input] = std::move(expanded);
-                        changed = true;
+            for (auto const& materialization : plan.storage.event_materializations) {
+                auto const& target = selection.storage_coverage[materialization.output];
+                if (target.empty()) continue;
+                auto const& regions = selection.event_region_sources[materialization.output];
+                if (regions.empty()) {
+                    for (auto const input : materialization.inputs) require_storage(input, target);
+                } else {
+                    for (std::size_t i = 0; i < regions.size(); ++i) {
+                        auto const required = IndexCoverage{selection.storage_regions[materialization.output][i]} & target;
+                        require_storage(materialization.inputs[regions[i].materialization_source], required);
                     }
                 }
             }
@@ -1049,8 +1292,7 @@ class BackgroundEvaluationTransaction::Impl {
         for (graph_jit::PortStorageIndex index = 0;
              index < plan.storage.ports.size(); ++index) {
             auto const& storage = plan.storage.ports[index];
-            if (!runtime_produced(plan, storage) ||
-                selection.storage_coverage[index].empty()) {
+            if (!runtime_produced(plan, storage) || selection.empty(index)) {
                 continue;
             }
             if (storage.sample_materialization ||
@@ -1068,16 +1310,12 @@ class BackgroundEvaluationTransaction::Impl {
                 || !storage.output_port) {
                 continue;
             }
-            if (selection.produce_storage[index] && selection.retains_produced_output(storage)) {
-                selection.persisted_replacement_coverage[index].include(
-                    selection.storage_coverage[index]);
-            }
             auto const output = data_->resolve_output(persisted_output_id(
                 plan, index, graph_->project_generation));
             auto const mutation = std::ranges::find(
                 data_mutations_, output, &DataMutation::output);
             if (mutation != data_mutations_.end()) {
-                selection.persisted_replacement_coverage[index].include(
+                selection.persisted_invalidations[index].include(
                     mutation->coverage);
             }
         }
@@ -1100,8 +1338,8 @@ class BackgroundEvaluationTransaction::Impl {
             auto selected = bindings.binding_coverage[slot];
             for (auto const storage_index : binding.storage) {
                 if (storage_index < storage.storage_coverage.size()) {
-                    selected.include(
-                        storage.storage_coverage[storage_index]);
+                    selected.include(storage.storage_coverage[storage_index]);
+                    bindings.sample_positions[slot].include(storage.sample_positions[storage_index].view());
                 }
             }
             bindings.binding_coverage[slot] = selected;
@@ -1113,10 +1351,10 @@ class BackgroundEvaluationTransaction::Impl {
                 continue;
             }
             auto const published = prepared_->output_regions(binding.port);
-            for (auto const region : published) {
-                if (!(IndexCoverage{region} & selected).empty()) {
-                    regions.push_back(region);
-                }
+            for (std::size_t index = 0; index < published.size(); ++index) {
+                auto const region = published[index];
+                if (selected.intersects(region) || bindings.sample_positions[slot].intersects(region)
+                    || bindings.sample_region_positions[slot].find(index)) regions.push_back(region);
             }
         }
     }
@@ -1204,10 +1442,13 @@ class BackgroundEvaluationTransaction::Impl {
             auto const& slot = plan.storage.ports[index];
             if (!uses_output_cache(plan, slot, bool(inputs_.reconstruction_graph)) || !slot.output_port) continue;
             auto output = data_->resolve_output(persisted_output_id(plan, index, graph_->project_generation));
-            needed.push_back({output, storage.storage_coverage[index]});
+            auto required = storage.storage_coverage[index];
+            if (!storage.produce_storage[index])
+                required.include(storage.sample_positions[index].positional_ranges(sparse_sample_budget()));
+            needed.push_back({output, std::move(required)});
             auto const& port = plan.ports[*slot.output_port];
             data_->set_cache_realization(output, port.realization.value_or(OutputRealization::buffered));
-            if (!storage.produce_storage[index] || !storage.retains_produced_output(slot)
+            if (!storage.produce_storage[index] || !storage.retains_produced_output(plan, slot)
                 || std::ranges::contains(accounted, output)) continue;
             accounted.push_back(output);
             if (slot.kind == PortKind::sample) {
@@ -1247,12 +1488,16 @@ class BackgroundEvaluationTransaction::Impl {
                 auto const bytes_per_frame = slot.continuous_geometry.value_size_bytes * channel_count(slot.sample_layout);
                 if (!bytes_per_frame) continue;
                 // Logical Regions can overlap; each owns its materialization.
-                for (auto const region : storage.storage_regions[i]) {
-                    auto const selected = storage.storage_coverage[i] & IndexCoverage{region};
-                    for (auto const range : selected) {
-                        if (range.extent > remaining / bytes_per_frame)
+                auto const regions = std::span{storage.storage_regions[i]};
+                auto const published = std::span{storage.published_output_regions[i]};
+                auto const ranges = published.empty() ? regions : published;
+                for (std::size_t region = 0; region < ranges.size(); ++region) {
+                    auto const positions = storage.sample_region_positions[i].including(region, storage.sample_positions[i]);
+                    for (auto const run : positions.prepared_runs(
+                            ranges[region], storage.storage_coverage[i], remaining / bytes_per_frame)) {
+                        if (run.count > remaining / bytes_per_frame)
                             throw std::runtime_error("observation window exceeds its background materialization budget");
-                        remaining -= static_cast<std::size_t>(range.extent) * bytes_per_frame;
+                        remaining -= static_cast<std::size_t>(run.count) * bytes_per_frame;
                     }
                 }
             }
@@ -1310,6 +1555,7 @@ class BackgroundEvaluationTransaction::Impl {
             auto evaluation = self.prepare_evaluation();
             measure_playback_preparation(PlaybackPreparationPhase::evaluate_tock,
                 [&] { self.graph_->background_operations.evaluate(&evaluation->frame->call()); });
+            evaluation->frame->prepare_indexed_input(input);
             if (auto complete = evaluation->frame->validate_evaluation(); !complete) {
                 throw std::runtime_error(complete.error());
             }
@@ -1325,6 +1571,47 @@ class BackgroundEvaluationTransaction::Impl {
             self.prepared_ = std::move(previous);
             throw;
         }
+    }
+
+    static std::vector<std::vector<TimedEvent>> discover_indexed_events(void* opaque,
+        PreparedCoveragePropagation&& request, std::span<IndexedRegionDemand const> demands)
+    {
+        auto& self = *static_cast<Impl*>(opaque);
+        auto previous = std::move(self.prepared_);
+        self.prepared_.emplace(std::move(request));
+        try {
+            auto evaluation = self.prepare_evaluation();
+            self.graph_->background_operations.evaluate(&evaluation->frame->call());
+            if (auto complete = evaluation->frame->validate_evaluation(); !complete)
+                throw std::runtime_error(complete.error());
+            std::vector<std::vector<TimedEvent>> result;
+            result.reserve(demands.size());
+            for (auto const& demand : demands) {
+                auto const prepared = evaluation->frame->indexed_events(demand.port);
+                auto& values = result.emplace_back();
+                for (auto const run : demand.runs) {
+                    for (std::uint64_t slot = 0; slot < run.count; ++slot) {
+                        auto const index = run.first + slot * run.step;
+                        auto const* event = details::read_prepared_event(prepared, demand.region_index, index);
+                        if (!event) throw std::runtime_error("indexed event probe was not prepared");
+                        values.push_back(*event);
+                    }
+                }
+            }
+            self.prepared_ = std::move(previous);
+            return result;
+        } catch (...) {
+            self.prepared_ = std::move(previous);
+            throw;
+        }
+    }
+
+    static void select_projection_demands(void* opaque, BackgroundDemandSelection const& candidate,
+        CoveragePropagationRequest& demand)
+    {
+        auto& self = *static_cast<Impl*>(opaque);
+        auto const& projection = self.inputs_.projection;
+        projection.select_demands(projection.data, candidate, demand, self.working_data_->version());
     }
 
     [[nodiscard]] std::expected<BackgroundEvaluationResult, std::string> run()
@@ -1344,7 +1631,9 @@ class BackgroundEvaluationTransaction::Impl {
             && inputs_.roots.input_changes.empty()
             && inputs_.roots.output_changes.empty()
             && inputs_.roots.input_demands.empty()
-            && inputs_.roots.output_demands.empty();
+            && inputs_.roots.output_demands.empty()
+            && inputs_.roots.indexed_output_demands.empty()
+            && inputs_.roots.indexed_input_demands.empty();
         auto const retirement_only = !graph_->background_operations.valid()
             && plan_is_empty && roots_are_empty
             && produced_routes_.empty() && produced_prefixes_.empty()
@@ -1474,13 +1763,16 @@ class BackgroundEvaluationTransaction::Impl {
                                       *coverage_, inputs_.roots,
                                       BackgroundCoverageDemandExpansion{
                                           .data = this,
+                                          .sparse_sample_budget = sparse_sample_budget(),
                                           .expand_output = &expand_output_demand,
                                           .restrict_input = &restrict_input_demand,
                                           .cached_output = &cached_output,
+                                          .select_demands = inputs_.projection.select_demands ? &select_projection_demands : nullptr,
                                       },
                                       BackgroundCoverageDiscovery{
                                           .data = this,
                                           .materialize = &materialize_discovery,
+                                          .read_events = &discover_indexed_events,
                                       }));
         }
 
@@ -1496,7 +1788,7 @@ class BackgroundEvaluationTransaction::Impl {
             auto const& planned =
                 graph_->background_evaluation_plan.storage.ports[index];
             if (uses_output_cache(plan, planned, bool(inputs_.reconstruction_graph)) &&
-                storage_selection.retains_produced_output(planned) &&
+                storage_selection.retains_produced_output(plan, planned) &&
                 storage_selection.produce_storage[index] &&
                 !storage_selection.storage_coverage[index].empty()) {
                 has_produced_data = true;
@@ -1550,8 +1842,16 @@ class BackgroundEvaluationTransaction::Impl {
         std::unique_ptr<TickMaterializationSnapshot> tick_materialization;
         if (materializations_) {
             std::vector<IndexCoverage> tick_input_requirements(plan.ports.size());
-            for (auto const& input : prepared_->result().input_requirements)
-                tick_input_requirements[input.port].include(input.required);
+            for (auto const& input : prepared_->result().input_requirements) {
+                auto& required = tick_input_requirements[input.port];
+                required.include(input.required);
+                if (input.sample_positions.empty()) continue;
+                auto const binds_input = [&](auto const& binding) { return binding.port == input.port; };
+                if (std::ranges::any_of(plan.tick_runtime.sequential_sample_inputs, binds_input)
+                    || std::ranges::any_of(plan.tick_runtime.random_access_sample_inputs, binds_input)) {
+                    required.include(input.sample_positions.positional_ranges(sparse_sample_budget()));
+                }
+            }
             auto frozen = measure_playback_preparation(PlaybackPreparationPhase::freeze_tick_inputs, [&] {
                 return realization->make_tick_materialization_snapshot(
                     graph_->project_generation,

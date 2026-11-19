@@ -943,9 +943,9 @@ TEST(PersistedDataStore,
         iv::IndexCoverage{range(10, 4)},
         std::array{first, overlap, first},
         {
-            sample_region(output, first, 1.0f, iv::mono_planar_channel_layout),
-            sample_region(output, overlap, 10.0f, iv::mono_planar_channel_layout),
-            sample_region(output, first, 100.0f, iv::mono_planar_channel_layout),
+            {0, sample_region(output, first, 1.0f, iv::mono_planar_channel_layout)},
+            {1, sample_region(output, overlap, 10.0f, iv::mono_planar_channel_layout)},
+            {2, sample_region(output, first, 100.0f, iv::mono_planar_channel_layout)},
         });
     ASSERT_EQ(store.publish(std::move(candidate)),
         iv::PersistedDataPublishResult::published);
@@ -971,6 +971,25 @@ TEST(PersistedDataStore,
     EXPECT_NE(views[0].storage, views[2].storage);
     EXPECT_NE(views[1].storage, views[2].storage);
     EXPECT_EQ(pinned->sample_region_count(), 3u);
+
+    auto selected = store.begin_candidate(1);
+    iv::PersistedSampleRegion patch{.output = output, .range = first,
+        .layout = iv::mono_planar_channel_layout, .geometry = sample_geometry()};
+    patch.set_prepared_windows({
+        sample_region(output, range(11, 1), 200.0f, iv::mono_planar_channel_layout)});
+    selected.replace_sample_regions(output, iv::mono_planar_channel_layout, sample_geometry(),
+        {}, std::array{first, overlap, first}, {{2, std::move(patch)}});
+    ASSERT_EQ(store.publish(std::move(selected)), iv::PersistedDataPublishResult::published);
+    {
+        auto selected_reader = store.register_reader();
+        auto update = selected_reader.pin();
+        auto const selected_regions = update->sample_regions(output, iv::mono_planar_channel_layout);
+        ASSERT_EQ(selected_regions.size(), 3u);
+        EXPECT_FLOAT_EQ(selected_regions[0].at(index(11), 0).value, 2.0f);
+        EXPECT_FLOAT_EQ(selected_regions[1].at(index(11), 0).value, 10.0f);
+        EXPECT_FLOAT_EQ(selected_regions[2].at(index(11), 0).value, 200.0f);
+        EXPECT_FLOAT_EQ(selected_regions[2].at(index(12), 0).value, 102.0f);
+    }
 
     auto clipped = store.begin_candidate(2);
     clipped.replace_sample_regions(output, iv::mono_planar_channel_layout,
@@ -998,7 +1017,7 @@ TEST(PersistedDataStore, HugeLogicalRegionSharesPreparedViewsOnUnchangedPagesAcr
         region.set_prepared_windows({sample_region(output, window, value, iv::mono_planar_channel_layout)});
         auto candidate = store.begin_candidate(revision);
         candidate.replace_sample_regions(output, iv::mono_planar_channel_layout,
-            sample_geometry(), iv::IndexCoverage{window}, std::array{logical}, {std::move(region)});
+            sample_geometry(), {}, std::array{logical}, {{0, std::move(region)}});
         return store.publish(std::move(candidate));
     };
     ASSERT_EQ(fill(1, range(40, 3), 4.0f), iv::PersistedDataPublishResult::published);
@@ -1046,10 +1065,10 @@ TEST(PersistedDataStore,
         iv::mono_planar_channel_layout,
         *iv::continuous_value_storage_geometry(
             iv::continuous_value_type_id_v<iv::Sample>, std::nullopt),
-        iv::IndexCoverage{early},
+        {},
         logical_order,
-        {sample_region(
-            output, early, 1.0f, iv::mono_planar_channel_layout)});
+        {{1, sample_region(
+            output, early, 1.0f, iv::mono_planar_channel_layout)}});
     ASSERT_EQ(store.publish(std::move(first)),
         iv::PersistedDataPublishResult::published);
 
@@ -1059,10 +1078,10 @@ TEST(PersistedDataStore,
         iv::mono_planar_channel_layout,
         *iv::continuous_value_storage_geometry(
             iv::continuous_value_type_id_v<iv::Sample>, std::nullopt),
-        iv::IndexCoverage{late},
+        {},
         logical_order,
-        {sample_region(
-            output, late, 20.0f, iv::mono_planar_channel_layout)});
+        {{0, sample_region(
+            output, late, 20.0f, iv::mono_planar_channel_layout)}});
     ASSERT_EQ(store.publish(std::move(second)),
         iv::PersistedDataPublishResult::published);
 
@@ -1092,9 +1111,9 @@ TEST(PersistedDataStore,
         iv::IndexCoverage{range(10, 4)},
         std::array{first, overlap, first},
         {
-            event_chunk(output, first, {10, 12}),
-            event_chunk(output, overlap, {11}),
-            event_chunk(output, first, {11, 12}),
+            {0, event_chunk(output, first, {10, 12})},
+            {1, event_chunk(output, overlap, {11})},
+            {2, event_chunk(output, first, {11, 12})},
         });
     ASSERT_EQ(store.publish(std::move(candidate)),
         iv::PersistedDataPublishResult::published);
@@ -1122,6 +1141,27 @@ TEST(PersistedDataStore,
     EXPECT_EQ(timeline,
         (std::vector<std::int64_t>{10, 11, 11, 12, 12}));
 
+    auto selected = store.begin_candidate(1);
+    selected.replace_event_regions(output, iv::EventTypeId::trigger, {},
+        std::array{first, overlap, first}, {{2, {
+            .output = output,
+            .range = first,
+            .type = iv::EventTypeId::trigger,
+            .prepared_coverage = iv::IndexCoverage{range(12, 1)},
+        }}});
+    ASSERT_EQ(store.publish(std::move(selected)), iv::PersistedDataPublishResult::published);
+    {
+        auto selected_reader = store.register_reader();
+        auto update = selected_reader.pin();
+        auto const selected_regions = update->event_regions(output, iv::EventTypeId::trigger);
+        ASSERT_EQ(selected_regions.size(), 3u);
+        ASSERT_EQ(selected_regions[0].events.size(), 2u);
+        EXPECT_EQ(selected_regions[0].events.back().time, index(12));
+        ASSERT_EQ(selected_regions[2].events.size(), 1u);
+        EXPECT_EQ(selected_regions[2].events.front().time, index(11));
+        EXPECT_TRUE(selected_regions[2].materialized_coverage().contains(index(12)));
+    }
+
     auto clipped = store.begin_candidate(2);
     clipped.replace_event_regions(output, iv::EventTypeId::trigger,
         iv::IndexCoverage{range(11, 1)}, std::array{first, overlap, first}, {});
@@ -1140,9 +1180,9 @@ TEST(PersistedDataStore, EmptyPreparedEventWindowIsDistinctFromUnpreparedLogical
     auto const logical = range(0, std::uint64_t{1} << 50);
     auto const prepared = iv::IndexCoverage{range(40, 3)};
     auto candidate = store.begin_candidate(1);
-    candidate.replace_event_regions(output, iv::EventTypeId::trigger, prepared, std::array{logical},
-        {{.output = output, .range = logical, .type = iv::EventTypeId::trigger,
-          .prepared_coverage = prepared}});
+    candidate.replace_event_regions(output, iv::EventTypeId::trigger, {}, std::array{logical},
+        {{0, {.output = output, .range = logical, .type = iv::EventTypeId::trigger,
+              .prepared_coverage = prepared}}});
     ASSERT_EQ(store.publish(std::move(candidate)), iv::PersistedDataPublishResult::published);
     auto reader = store.register_reader();
     auto pinned = reader.pin();

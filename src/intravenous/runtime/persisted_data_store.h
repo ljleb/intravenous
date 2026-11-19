@@ -211,6 +211,13 @@ struct PersistedEventChunk {
     }
 };
 
+template<typename Payload>
+struct PersistedRegionWrite {
+    // Index in the logical Region list supplied with this write.
+    std::size_t region_index = 0;
+    Payload payload;
+};
+
 namespace persisted_data_store_detail {
 
 class BufferedPageAllocator;
@@ -551,22 +558,21 @@ public:
         // the signed-order seam without exposing that storage detail to the
         // caller.
         void overwrite(PersistedSampleRegion record);
-        // Replaces every complete old logical Region that intersects domain
-        // with one ordered batch. Every replacement Region must be contained
-        // by domain; overlap and duplicates inside the batch are retained.
+        // Invalidation applies to every contribution at the given positions.
+        // Each write replaces content in its specified Region only.
         void replace_sample_regions(
             PersistedOutputHandle output,
             ChannelLayout layout,
             ContinuousValueStorageGeometry geometry,
-            IndexCoverage const& domain,
+            IndexCoverage const& invalidated,
             std::span<GlobalIndexRange const> logical_order,
-            std::vector<PersistedSampleRegion> regions);
+            std::vector<PersistedRegionWrite<PersistedSampleRegion>> writes);
         void replace_event_regions(
             PersistedOutputHandle output,
             EventTypeId type,
-            IndexCoverage const& domain,
+            IndexCoverage const& invalidated,
             std::span<GlobalIndexRange const> logical_order,
-            std::vector<PersistedEventChunk> regions);
+            std::vector<PersistedRegionWrite<PersistedEventChunk>> writes);
         void overwrite(PersistedEventChunk record);
 
         void erase_sample(

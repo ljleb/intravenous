@@ -1,7 +1,9 @@
 #include <intravenous/global_index.h>
+#include <intravenous/sample_positions.h>
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdint>
 #include <limits>
 
@@ -75,7 +77,7 @@ TEST(FractionalGlobalIndexRange, SlowLatticeCanProduceZeroValuesForAnInvocation)
     EXPECT_EQ(next_position->count, 1u);
 }
 
-TEST(FractionalGlobalIndexRange, EmptyProjectionKeepsItsLatticeInsertionOrdinal)
+TEST(FractionalGlobalIndexRange, EmptyProjectionKeepsItsLatticeInsertionIndex)
 {
     auto const projected =
         iv::FractionalGlobalIndexRange::from_global_range({
@@ -132,6 +134,66 @@ TEST(FractionalGlobalIndexRange, RejectsUnsupportedOrUnrepresentableProjectionCo
     EXPECT_FALSE(one_project_sample.try_project_onto_lattice(65).has_value());
     EXPECT_FALSE(one_project_sample.try_project_onto_lattice(-65).has_value());
     EXPECT_FALSE(one_project_sample.try_project_onto_lattice(64).has_value());
+}
+
+TEST(SamplePositionRun, ClipsALargeRunWithoutChangingItsPhase)
+{
+    iv::SamplePositionRun const run{index(100), 100'000'000, 8};
+    std::size_t intersections = 0;
+    iv::for_each_sample_position_intersection(run, {index(109), 16}, [&](auto result) {
+        ++intersections;
+        EXPECT_EQ(result, (iv::SamplePositionRun{index(116), 2, 8}));
+        EXPECT_EQ(result.position(1), index(124));
+    });
+    EXPECT_EQ(intersections, 1u);
+    iv::for_each_sample_position_intersection(run, {index(109), 7}, [&](auto) {
+        ADD_FAILURE() << "The range contains no selected positions";
+    });
+}
+
+TEST(SamplePositionRun, ClipsACircularIntersectionInRunOrder)
+{
+    constexpr auto max = std::numeric_limits<std::uint64_t>::max();
+    iv::SamplePositionRun const run{index(100), 4, 8};
+    std::array<iv::SamplePositionRun, 2> parts;
+    std::size_t part_count = 0;
+    iv::for_each_sample_position_intersection(run, {index(124), max - 15}, [&](auto part) {
+        ASSERT_LT(part_count, parts.size());
+        parts[part_count++] = part;
+    });
+    ASSERT_EQ(part_count, parts.size());
+    EXPECT_EQ(parts[0], (iv::SamplePositionRun{index(100), 1, 8}));
+    EXPECT_EQ(parts[1], (iv::SamplePositionRun{index(124), 1, 8}));
+}
+
+TEST(SamplePositionRun, ValidatesExtentAndSupportsWrapAndSinglePositions)
+{
+    constexpr auto max = std::numeric_limits<std::uint64_t>::max();
+    EXPECT_FALSE((iv::SamplePositionRun{index(0), 3, max}).valid());
+    EXPECT_FALSE((iv::SamplePositionRun{index(0), 1, 0}).valid());
+    iv::SamplePositionRun const run{index(max - 3), 2, 4};
+    ASSERT_TRUE(run.valid());
+    EXPECT_EQ(run.position(1), index(0));
+    iv::for_each_sample_position_intersection(run, {index(max), 2}, [&](auto part) {
+        EXPECT_EQ(part, (iv::SamplePositionRun{index(0), 1, 4}));
+    });
+
+    std::array const empty_runs{iv::SamplePositionRun{index(0), 0, 8}};
+    std::array const single{index(71)};
+    EXPECT_TRUE((iv::SamplePositionsView{empty_runs}).empty());
+    EXPECT_FALSE((iv::SamplePositionsView{empty_runs, single}).empty());
+}
+
+TEST(SamplePositionRun, IntersectsDifferentStridesAcrossTheSignedSeam)
+{
+    auto const origin = iv::GlobalIndex::from_signed(INT64_MAX - 5);
+    iv::SamplePositionRun const source{origin, 20, 6};
+    iv::SamplePositionRun const requested{origin.advanced_by(3), 12, 9};
+    auto const common = iv::intersect_clipped_sample_run(source, requested);
+    ASSERT_TRUE(common);
+    EXPECT_EQ(*common, (iv::SamplePositionRun{origin.advanced_by(12), 6, 18}));
+    EXPECT_FALSE(iv::intersect_clipped_sample_run(
+        source, {origin.advanced_by(1), 12, 9}));
 }
 
 } // namespace

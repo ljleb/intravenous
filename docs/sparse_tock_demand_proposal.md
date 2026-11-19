@@ -1,8 +1,9 @@
 # Sparse Tock demand for continuous streams and events
 
-_Proposal, 2026-11-19. The owner has accepted
+_API accepted on 2026-11-19 for
 [Timeline nodes and project snapping](./project_playback_and_presentation_grids_direction.md#timeline-nodes-and-project-snapping).
-The API and implementation order below are proposed._
+See the [implementation status](./vue_client_implementation_stages.md#shared-storage-prerequisites-for-sparse-tock)
+for the remaining work._
 
 ## Addressing selected entries by Region
 
@@ -17,11 +18,11 @@ the meaning of an index.
   sequence. Number events from zero in forward order from the Region origin.
   Use the producer's semantic order for events at the same timestamp.
 
-Keep `IndexCoverage` as the set of positions for existence, change, and
-positional demand. A positional event demand selects all occurrences at the
-requested positions. A continuous positional demand selects the frames in the
-specified positions for each affected Region. Region-relative selections
-retain both the individual Region and the exact entries requested within it.
+Keep `IndexCoverage` for existence, invalidation, and positional event
+demand. A positional event demand selects all occurrences at the requested
+positions. A continuous positional demand supplies sample runs and individual
+positions. It selects those frames in each affected Region. Region-relative
+selections retain the Region and the exact entries requested within it.
 Keep stride runs compact throughout planning and storage.
 
 Indices refer to a logical Region in a selected graph and data snapshot.
@@ -32,7 +33,7 @@ Inserting an event in a later snapshot can renumber subsequent events.
 
 ## Authored API
 
-These declarations describe the proposed public surface. The reflected
+These declarations describe the accepted public API. The reflected
 records bind the same operations to a candidate and a prepared Tock call.
 
 ```cpp
@@ -61,6 +62,19 @@ struct RegionSelection {
     RegionRef region;
     std::span<IndexRun const> runs;
 };
+
+struct SamplePositionRun {
+    GlobalIndex first;
+    std::uint64_t count;
+    std::uint64_t step = 1;
+};
+
+struct SamplePositionsView {
+    std::span<SamplePositionRun const> runs;
+    std::span<GlobalIndex const> individual_positions;
+
+    bool empty() const noexcept;
+};
 ```
 
 1. **Forward propagation.** Continuous outputs already publish the logical
@@ -73,45 +87,63 @@ struct RegionSelection {
    without unbounded materialization. The planner can provide indexed reads of
    published recordings with a searchable, countable sequence.
 2. **Demand and discovery.** Both port kinds expose their Region references
-   through `request_input_coverage()`. The planner binds each reference to
-   its port, contribution, and pinned candidate. Both accept
-   `ctx.input<"in">().require(selection)` and
-   `co_await ctx.request_input<"in">(selection)`. A suspended request owns
-   a copy of its runs. Both output facades expose
-   `ctx.output<"out">().required_selections()` alongside positional
-   `required()`. Reverse propagation must account for both. An observation
-   can submit either form as a root demand. Module inputs carry selections
-   through the compiled receiving routes.
-3. **Evaluation.** The logical Region's `prepared_runs()` exposes the
-   selected entries as dense storage. Both run types have `size()` and
-   `index(slot)`, which returns the Region-relative index. A continuous
-   run adds `position(slot)` and typed `value(slot, channel)` access.
-   An indexed event run provides a read-only span of `TimedEvent`s or
-   a writable `write(slot, TimedEvent)` on an output. A constant-payload
-   Region also exposes `write_time(slot, GlobalIndex)`, using its declared
-   payload. A positional event request still calls the Region writer in
-   timestamp order because its occurrence count can be discovered during
-   production.
+   through `request_input_coverage()`. The planner binds each reference to its
+   port, contribution, and pinned candidate. Both input facades accept
+   `require(RegionSelection)`. Both planning contexts accept
+   `request_input<Name>(RegionSelection)`. An observation can submit positional
+   or Region-relative demand. Module inputs carry demand through their compiled
+   receiving routes.
+
+   Continuous output ports replace `required()` with `required_positions()`.
+   This returns a `SamplePositionsView` that includes positions requested
+   through Region-relative selections. The view borrows the runs and the
+   explicit positions. Reading the view does not allocate or enumerate samples.
+   The pieces in the view can overlap. The planner budgets their metadata and
+   prepares each selected sample once per Region and channel.
+
+   Continuous input ports accept `require(GlobalIndex)`,
+   `require(std::span<GlobalIndex const>)`, `require(SamplePositionRun)`,
+   `require(SamplePositionsView)`, and the dense `require(GlobalIndexRange)`.
+   The positional view replaces `require(IndexCoverage const&)` and
+   `request_input<Name>(IndexCoverage const&)` for continuous ports.
+   `request_input<Name>(SamplePositionsView)` copies the data it needs across
+   suspension. The Region-relative overload also copies its runs.
+
+   `required_selections()` exposes demand per Region for both port kinds.
+   A continuous callback can use this when it needs to distinguish output
+   Regions. For events, `required()` retains positional demand and
+   `required_selections()` carries indexed demand.
+3. **Evaluation.** The named port exposes `prepared_runs()`. Use
+   `ctx.input<"in">().prepared_runs()` to read runs and
+   `ctx.output<"out">().prepared_runs()` to fill them. The iterator visits
+   Regions in their existing order and runs in index order within each
+   Region. Each run carries its
+   `RegionRef` through `region()`, so overlapping Regions keep distinct
+   identities. Both kinds of run have `size()` and `index(slot)` for the
+   Region-relative index. A continuous run adds `position(slot)` and typed
+   `value(slot, channel)`. An indexed event run provides a read-only span
+   of `TimedEvent`s or a writable `write(slot, TimedEvent)`. A constant-payload
+   Region also supports `write_time(slot, GlobalIndex)`. A positional event
+   request uses the Region writer in timestamp order. Its occurrence count
+   can be discovered during production.
 
 ```cpp
-// A continuous output evaluates only the selected positions.
-for (auto region : ctx.output<"value">().regions()) {
-    for (auto run : region.prepared_runs()) {
-        for (std::size_t slot = 0; slot < run.size(); ++slot) {
-            run.value(slot, 0) = value_at(run.position(slot), ctx.sample_rate);
-        }
+// A continuous output evaluates each requested sample position.
+for (auto run : ctx.output<"value">().prepared_runs()) {
+    for (std::size_t slot = 0; slot < run.size(); ++slot) {
+        run.value(slot, 0) = value_at(run.position(slot), ctx.sample_rate);
     }
 }
 
-// An indexed event output evaluates only the selected occurrences.
-for (auto region : ctx.output<"events">().regions()) {
-    for (auto run : region.prepared_runs()) {
-        for (std::size_t slot = 0; slot < run.size(); ++slot) {
-            run.write(slot, event_at_index(run.index(slot), ctx.sample_rate));
-        }
+// An indexed event output evaluates each requested occurrence.
+for (auto run : ctx.output<"events">().prepared_runs()) {
+    for (std::size_t slot = 0; slot < run.size(); ++slot) {
+        run.write(slot, event_at_index(run.index(slot), ctx.sample_rate));
     }
 }
 ```
+
+[Earlier run access proposals](./historical/tock_run_access_before_named_port_accessors_2026-11-19.md).
 
 Both forms must fill every requested slot with the same value a full read
 would return. An event write also preserves the payload type, the time within
@@ -182,12 +214,13 @@ for an unsupported route while ordinary connections remain legal.
 
 ## Continuous propagation and storage
 
-`IndexCoverage` continues to describe existence and changes. Put sparse
-sample selections in `RegionSelection`. The planner can intersect a run
-with a positional range using arithmetic on its endpoints. This avoids
-expanding a regular run into a set of one-frame windows and then packing it
-again. Dense positional demands produce step-one runs and keep their
-existing contiguous storage fast path.
+`SamplePositionsView` describes positions in the port's native sample
+lattice. After the transaction pins its snapshot and resolves the input
+Regions, the planner intersects each run with each affected Region. It can
+compute the intersection from the endpoints and stride. It then expresses
+the demand as `RegionSelection` for that Region without expanding the gaps.
+Dense positional demands produce step-one runs and keep their contiguous
+storage fast path.
 
 A pointwise transform can map a selection directly through reverse
 propagation. A constant delay translates its positions and preserves its
@@ -207,21 +240,48 @@ consumer still requires all native frames in one contiguous buffer.
 A run with a step above one exposes its position mapping without acting as
 a contiguous time range.
 
-Migrate continuous Tock kernels to `prepared_runs()` and
-`required_selections()` as part of the shared API change. This can replace
-`prepared_windows()` in kernels that iterate the prepared output. Keep
-whole-Region and explicitly contiguous accessors for consumers whose
-algorithms require them. An algorithm that needs contiguous input can
-request it through reverse propagation. If it also needs contiguous output
-evaluation, the planner can prepare a valid positional window and gather
-the selected frames from it. Apply the observation work budget to the
-whole window in that case.
+An algorithm that needs a contiguous input range requests it in reverse
+propagation. Complete-buffer input declarations still require the whole
+selected Region. The planner applies the work and memory budget to these
+dependencies as well as to the selected output.
 
 Use the waveform observer as the first continuous client. It already picks
 representative sample positions. Preserve the positions it chooses, express
 regular portions as runs, and use shorter runs for irregular spacing.
 The representative waveform remains approximate as a display of the whole
 signal. Each selected sample value is exact.
+
+## Tock callback migration
+
+Every continuous output of `tock_coverage()` and `tock_coverage_batch()`
+uses `prepared_runs()` to enumerate its work. Dense requests use the same
+API with step-one runs. This applies to each port and each lane in a batch.
+A continuous reverse callback can use `required_positions()` for dependencies
+shared by all output Regions, or `required_selections()` for Region-specific
+dependencies. A callback can read positions within the prepared input data.
+
+Remove `prepared_windows()` as an alternative way to enumerate Tock
+output work. Filling the time between sparse positions can turn a small
+request into a large allocation anywhere along the dependency chain.
+The planner must preserve the gaps in demand. Account for any wider
+dependencies explicitly, and report a budget limit if they cannot be
+prepared. A step-one run still gives the callback contiguous storage.
+
+For event outputs, use `prepared_runs()` for indexed demand. A positional
+event request still uses the requested time coverage and an event writer.
+It can produce zero or more events at each requested position. Producers
+that offer only positional reads do not advertise indexed production.
+An indexed read cannot be satisfied by silently widening it into a
+full-Region positional read.
+
+Migrate the authored Tock callbacks across the repository in the same
+change. Include scalar and batch callbacks, builtins, generated node
+bindings, reflected callbacks, and test fixtures. Audit position-only
+event callbacks for bounded generation. Check dense requests and sparse
+requests through a chain of producers and transforms. For a sparse
+request with only two frames far apart, check that each pointwise node
+allocates two frames and that no stage allocates the interval between
+them. Check explicitly widened dependencies separately.
 
 ## Caches, versions, and playback
 
@@ -336,6 +396,7 @@ in a few pixels. The ruler and point editing consume the same list.
 1. Implement the common Region selection, reverse requirements, and packed
    Tock bindings for both port kinds. For continuous samples, verify the
    waveform and a multi-channel transform against an ordinary positional read.
+   Include the [Tock callback migration](#tock-callback-migration).
    Check stride one, overlapping Regions, pace mapping, and a convolution
    whose inputs require a wider range. For events, add exact index publication
    and time seek. Test an authored point list and a time transform. Check

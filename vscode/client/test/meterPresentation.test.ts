@@ -60,7 +60,7 @@ test("compatible graph transitions keep latest and held peaks through pending te
     const meter = new MeterPresentationState(), uninterrupted = new MeterPresentationState();
     const values = new ObservationValues();
     const frame = (generation: string, activationId: string, value: ObservationDisplayValue): ObservationUpdate => ({
-        generation, activationId, revision: "1", index: "0", blockSize: 64,
+        generation, activationId, revision: "1", index: "0", blockSize: 64, dataVersion: "0",
         scopes: [{ scopeId: "viewport", values: [{ id: "meter", ...value }] }],
     });
     const sample = (peak: number, rms: number): ObservationDisplayValue => ({ available: true,

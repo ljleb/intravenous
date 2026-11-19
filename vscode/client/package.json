@@ -88,6 +88,7 @@
         "commands": [
             { "command": "intravenous.togglePlayback", "title": "Intravenous: Play/Pause" },
             { "command": "intravenous.seekPlayback", "title": "Intravenous: Seek Playback" },
+            { "command": "intravenous.profileObservations", "title": "Intravenous: Profile Observation Updates" },
             { "command": "intravenous.undo", "title": "Intravenous: Undo Project Edit" },
             { "command": "intravenous.redo", "title": "Intravenous: Redo Project Edit" },
             {

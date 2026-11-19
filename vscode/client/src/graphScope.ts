@@ -64,6 +64,7 @@ export type GraphScope = {
     editable: boolean;
     nodes: GraphScopeNode[];
     connections: GraphScopeConnection[];
+    timelineNodes?: NodeAddress[];
 };
 export type Point = { x: number; y: number };
 export type PresentationState = { [name: string]: JsonValue };

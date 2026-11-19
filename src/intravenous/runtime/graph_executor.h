@@ -353,8 +353,19 @@ class GraphExecutor {
         bool stopping_ = false;
         std::atomic<bool> progress_failed_{false};
         std::deque<std::shared_ptr<ObservationWindowQuery>> observation_windows_{};
+        struct CachedObservationWindow {
+            NodeBundlePortId port{};
+            ObservationSourceKind kind{};
+            std::size_t channel = 0;
+            ObservationOperation const* operation = nullptr;
+            std::vector<GlobalIndex> positions{};
+            ObservationWindowResult result{};
+        };
+        // The background worker owns this bounded, versioned cache.
+        std::deque<CachedObservationWindow> sampled_windows_{};
         std::jthread worker_{};
         void process_window(ObservationWindowQuery& query) noexcept;
+        void process_event_windows(ExecutionGeneration&, ObservationWindowQuery& query);
 
         [[nodiscard]] ExecutionGeneration& generation();
         [[nodiscard]] bool advance_generation();
