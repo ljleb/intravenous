@@ -63,7 +63,7 @@ onBeforeUnmount(() => { stopAnimation(); resize?.disconnect(); });
     <div ref="root" class="sample-meter" :class="{ unavailable: !reading.available, 'over-reference': reading.overReference,
         'held-over-reference': reading.heldOverReference, 'hide-scale-labels': !showScaleLabels }"
         :data-mode="mode" :data-below="reading.available && reading.below" :data-above="reading.available && reading.above"
-        role="meter" tabindex="0" aria-haspopup="menu" :aria-label="label" :aria-valuemin="domain.min" :aria-valuemax="domain.max"
+        role="meter" tabindex="-1" aria-haspopup="menu" :aria-label="label" :aria-valuemin="domain.min" :aria-valuemax="domain.max"
         :aria-valuenow="ariaValue" :aria-valuetext="status" :aria-busy="updating"
         :data-status-hint="meterHint" :data-status-shortcuts="meterShortcuts"
         @mousedown.left.prevent="focusLane" @mousedown.right.prevent="focusLane">
@@ -84,6 +84,4 @@ onBeforeUnmount(() => { stopAnimation(); resize?.disconnect(); });
 .unavailable { background: repeating-linear-gradient(135deg, transparent, transparent 7px, color-mix(in srgb, var(--vscode-foreground) 4%, transparent) 7px, color-mix(in srgb, var(--vscode-foreground) 4%, transparent) 8px); }
 .unavailable-mark { position: absolute; right: 5px; bottom: 1px; opacity: .6; }
 .hide-scale-labels :deep(.ruler-tick span) { display: none; }
-.sample-meter:focus { outline: none; }
-.sample-meter:focus-visible { box-shadow: inset 0 2px var(--vscode-foreground); }
 </style>

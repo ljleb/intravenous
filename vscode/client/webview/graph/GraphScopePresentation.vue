@@ -111,9 +111,9 @@ onBeforeUnmount(() => {
         <header class="graph-toolbar">
             <strong>Project graph</strong>
             <span>{{ scope.nodes.length }} nodes · {{ scope.connections.length }} connections</span>
-            <button type="button" @click="fit">Fit graph</button>
+            <button type="button" tabindex="-1" @click="fit">Fit graph</button>
         </header>
-        <div ref="canvas" class="canvas" tabindex="0" aria-label="Project graph"
+        <div ref="canvas" class="canvas" tabindex="-1" aria-label="Project graph"
             @pointerdown="down" @pointermove="move" @pointerup="up" @pointercancel="up" @lostpointercapture="up" @wheel="wheel">
             <div class="world" :style="{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})` }">
                 <svg class="wires" aria-hidden="true">
@@ -131,14 +131,14 @@ onBeforeUnmount(() => {
                         :class="port.kind" :style="{ top: `${64 + row * 24}px` }" :data-status-hint="`Input ${portTitle(port)}`" />
                     <div v-for="(port, row) in outputs(child)" :key="`out:${port.kind}:${port.index}`" class="socket output"
                         :class="port.kind" :style="{ top: `${64 + row * 24}px` }" :data-status-hint="`Output ${portTitle(port)}`" />
-                    <div class="node-content">
+                    <div class="node-content" tabindex="-1">
                         <PresentationHost :node="semantic" :view-choice="choice" :scale="viewport.scale" />
                     </div>
                 </article>
             </div>
             <p v-if="!scope.nodes.length" class="empty">No project instances.</p>
-            <details v-if="scope.connections.length" class="connection-list">
-                <summary>Connections ({{ scope.connections.length }})</summary>
+            <details v-if="scope.connections.length" class="connection-list" tabindex="-1">
+                <summary tabindex="-1">Connections ({{ scope.connections.length }})</summary>
                 <div v-for="entry in scope.connections" :key="entry.id" class="connection-record">
                     <strong>{{ entry.id }}</strong> · {{ entry.connection.kind }} · {{ entry.applied ? 'applied' : 'not applied' }}
                     <div v-for="(matcher, index) in entry.connection.outputs" :key="`out:${index}`">From {{ matcherLabel(matcher) }}</div>

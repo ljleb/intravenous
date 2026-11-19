@@ -24,7 +24,7 @@ const playback = usePlayback();
 const backgroundPlayheadSeconds = computed(() => playback.backgroundPlayhead.value === null ? null
     : Number(playback.backgroundPlayhead.value) / (playback.state.value?.sampleRate ?? 48000));
 const scope = computed(() => node.value.scope!);
-const { layout, save, copyNodeDebugDetails, selectedLanes, selectLane, beginPointerLockExit,
+const { layout, save, copyNodeDebugDetails, selectedLanes, beginPointerLockExit,
     reportCursorReturnSkipped, setTimelineZoomHint } = useGraphEditor();
 const children = computed(() => orderLanes(scope.value.nodes, layout.value.laneOrder).map((child) => ({
     child, semantic: semanticNodeFromScopeChild(child, scope.value),
@@ -403,7 +403,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-    <section ref="root" class="timeline-scope"
+    <section ref="root" class="timeline-scope" tabindex="-1"
         :data-middle-drag="middleDrag && (laneValueGesture?.gesture.mode === 'zoom' ? 'valueZoom' : middleDrag.action)" aria-label="Project timeline"
         :style="scrollbarStyle" :data-has-selection="selectedLanes.size > 0"
         @wheel="wheel" @scroll="scrolled" @pointerdown.capture="beginMiddleDrag" @pointermove="updateMiddleDrag"
@@ -422,9 +422,8 @@ onBeforeUnmount(() => {
             <section v-for="{ child, semantic } in children" :key="addressKey(child.address)"
                 class="lane" :class="{ selected: selectedLanes.has(addressKey(child.address)) }"
                 :data-lane-key="addressKey(child.address)"
-                :style="{ height: `${laneHeight}px` }" tabindex="0"
-                :aria-label="nodeDisplayName(semantic) + (selectedLanes.has(addressKey(child.address)) ? ', selected' : '')"
-                @keydown.enter.self="selectLane(child.address, $event)">
+                :style="{ height: `${laneHeight}px` }" tabindex="-1"
+                :aria-label="nodeDisplayName(semantic) + (selectedLanes.has(addressKey(child.address)) ? ', selected' : '')">
                 <PresentationHost :node="semantic" :region-height="laneHeight - 1" lane
                     @copy-debug-details="copyNodeDebugDetails(child.address)" />
             </section>
@@ -478,14 +477,12 @@ onBeforeUnmount(() => {
 .playback-position { overflow: hidden; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--iv-lane-title-color); }
 .playback-position small { color: var(--iv-port-label-base); margin-left: 6px; }
 .lane { position: relative; box-sizing: border-box; border-bottom: 1px solid var(--vscode-panel-border); }
-.lane:focus-visible { outline: none; }
-.lane.selected::after, .lane:focus-visible::after {
+.lane.selected::after {
     content: ""; position: absolute; z-index: 0; pointer-events: none;
     inset-inline-start: calc(var(--node-label-width) - 1px); inset-block: 0; width: 2px;
     background: var(--vscode-tab-activeBorderTop, var(--vscode-tab-activeBorder,
         var(--vscode-panelTitle-activeBorder, var(--vscode-focusBorder))));
 }
-.lane:focus-visible:not(.selected)::after { background: var(--vscode-focusBorder); }
 .lane.selected:has(+ .lane.selected)::after { inset-block-end: -1px; }
 .empty { padding: 12px; }
 </style>

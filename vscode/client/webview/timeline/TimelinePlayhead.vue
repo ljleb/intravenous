@@ -35,6 +35,6 @@ const foregroundX = computed(() => markerX(playback.foregroundPlayhead.value));
 
 <style scoped>
 .timeline-playhead { pointer-events: none; }
-.background-playhead { stroke: var(--vscode-debugIcon-startForeground, #89d185); stroke-opacity: .65; }
+.background-playhead { stroke: var(--iv-background-playhead); stroke-opacity: .65; }
 .foreground-playhead { stroke: var(--iv-lane-ruler-tick); stroke-opacity: 1; }
 </style>

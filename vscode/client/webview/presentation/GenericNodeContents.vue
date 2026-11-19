@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 
-import chevronDownSvg from "../../media/chevron_down.svg?raw";
-import chevronLeftSvg from "../../media/chevron_left.svg?raw";
 import mergedNodeSvg from "../../media/merged_node.svg?raw";
 import singleNodeSvg from "../../media/single_node.svg?raw";
 import type { NodeDisplayMode } from "./displayMode";
 import { useNode } from "./nodeContext";
 import { nodeDescription, nodeDisplayName, portDescription, portGroups, portKey } from "./nodeSummary";
 import PortRow from "./PortRow.vue";
+import DisclosureRow from "./DisclosureRow.vue";
 
 // The presentation every node has. It works from the node's reflected ports
 // alone and shows every port in every mode: compact and nano summarize them,
@@ -19,10 +18,6 @@ defineProps<{
 }>();
 
 const node = useNode();
-
-const currentColor = (svg: string) => svg.replace(/fill="[^"]*"/g, 'fill="currentColor"');
-const collapsedIcon = currentColor(chevronLeftSvg);
-const expandedIcon = currentColor(chevronDownSvg);
 
 const icon = computed(() => node.value.memberCount > 1 ? mergedNodeSvg : singleNodeSvg);
 const description = computed(() => nodeDescription(node.value));
@@ -92,34 +87,16 @@ function toggleMember(index: number): void {
             </div>
 
             <div v-if="node.members.length > 0" class="members">
-                <button
-                    type="button"
-                    class="disclosure-row"
-                    @click="membersExpanded = !membersExpanded"
-                >
-                    <span
-                        class="disclosure"
-                        :class="{ collapsed: !membersExpanded }"
-                        v-html="membersExpanded ? expandedIcon : collapsedIcon"
-                    />
+                <DisclosureRow :expanded="membersExpanded" @click="membersExpanded = !membersExpanded">
                     concrete nodes
-                    <span class="group-count">{{ node.members.length }}</span>
-                </button>
+                    <template #detail>{{ node.members.length }}</template>
+                </DisclosureRow>
                 <template v-if="membersExpanded">
                     <div v-for="member in node.members" :key="member.index" class="member">
-                        <button
-                            type="button"
-                            class="disclosure-row member-row"
-                            @click="toggleMember(member.index)"
-                        >
-                            <span
-                                class="disclosure"
-                                :class="{ collapsed: !expandedMembers.has(member.index) }"
-                                v-html="expandedMembers.has(member.index) ? expandedIcon : collapsedIcon"
-                            />
+                        <DisclosureRow class="member-row" :expanded="expandedMembers.has(member.index)" @click="toggleMember(member.index)">
                             {{ member.kind || "concrete" }}
-                            <span class="group-count">concrete {{ member.index }}</span>
-                        </button>
+                            <template #detail>concrete {{ member.index }}</template>
+                        </DisclosureRow>
                         <template v-if="expandedMembers.has(member.index)">
                             <PortRow
                                 v-for="port in member.ports"
@@ -210,51 +187,7 @@ function toggleMember(index: number): void {
     padding: 0 8px 0 24px;
 }
 
-.disclosure-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
-    min-height: 22px;
-    padding: 0 8px 0 24px;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-}
-
-.disclosure-row[data-hovered] {
-    background: var(--vscode-list-hoverBackground);
-}
-
-.disclosure-row:focus-visible {
-    outline: 1px solid var(--vscode-focusBorder);
-    outline-offset: -1px;
-}
-
-.member-row {
-    padding-left: 42px;
-}
-
-.disclosure {
-    display: inline-flex;
-    width: 12px;
-    height: 12px;
-    flex: 0 0 12px;
-    color: var(--vscode-descriptionForeground);
-}
-
-.disclosure :deep(svg) {
-    width: 12px;
-    height: 12px;
-}
-
-/* chevron_left.svg mirrored points right. */
-.disclosure.collapsed :deep(svg) {
-    transform: scaleX(-1);
-}
+.member-row { --disclosure-indent: 42px; }
 
 .member .member-port {
     padding-left: 60px;

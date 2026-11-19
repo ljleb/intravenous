@@ -8,7 +8,7 @@ defineProps<{ port: SemanticPort; endpoint: GraphPortEndpoint; height: number; k
     hasKnob: boolean; connected: boolean; pending: boolean; unavailable: boolean;
     hint: string; overflowSlot?: string; overflowHint?: string; expanded?: boolean }>();
 const emit = defineEmits<{
-    handleHover: [event: Event]; handleLeave: []; wireStart: [event: PointerEvent]; overflow: []; focusOverflow: [];
+    handleHover: [event: Event]; handleLeave: []; wireStart: [event: PointerEvent]; overflow: [];
 }>();
 </script>
 
@@ -19,13 +19,12 @@ const emit = defineEmits<{
         :style="{ '--port-row-height': `${height}px`, '--knob-size': `${knobSize}px` }"
         @iv-hoverenter="overflowSlot && emit('overflow')" @focusin="overflowSlot && emit('overflow')">
         <ManualInput v-if="hasKnob" class="port-knob" :name="port.name" :direction="port.direction" port-cutout />
-        <button type="button" class="port-handle" :class="{ connected, pending }"
+        <button type="button" tabindex="-1" class="port-handle" :class="{ connected, pending }"
             :data-port-endpoint="JSON.stringify(endpoint)" :data-port-slot="overflowSlot"
             :data-status-hint="overflowHint ? `${hint} · ${overflowHint}` : hint"
             :aria-description="overflowHint ? `${portDescription(port)} · ${overflowHint}` : portDescription(port)"
             :aria-disabled="unavailable" :aria-label="`${port.direction} ${port.name || port.index + 1}`"
             :aria-expanded="overflowSlot ? expanded : undefined"
-            @keydown.down="overflowSlot && ($event.preventDefault(), emit('focusOverflow'))"
             @iv-hoverenter="emit('handleHover', $event)" @pointermove="emit('handleHover', $event)"
             @iv-hoverleave="emit('handleLeave')" @pointerdown="emit('wireStart', $event)">
             <span class="port-circle" />
@@ -96,7 +95,6 @@ const emit = defineEmits<{
 .port-handle[data-hovered] { background: color-mix(in srgb, currentColor 12%, transparent); }
 .with-knob .port-handle[data-hovered] { background: transparent; }
 .with-knob .port-handle[data-hovered] .port-circle { filter: brightness(1.25); }
-.port-handle:focus-visible { outline: 1px solid currentColor; outline-offset: -1px; }
 .direct-port-name { grid-column: 3; grid-row: 1; padding-right: 3px; min-width: 0; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; font-size: 11px;
     color: color-mix(in srgb, var(--port-color) var(--iv-port-label-accent), var(--iv-port-label-base)); }

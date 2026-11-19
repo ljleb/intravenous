@@ -137,14 +137,15 @@ onBeforeUnmount(() => {
 <style scoped>
 .time-ruler { position: relative; min-width: 0; overflow: hidden; }
 .seekable { cursor: ew-resize; touch-action: none; user-select: none; }
-.playhead-marker { position: absolute; top: 0; bottom: 0; width: 1px; pointer-events: none; }
-.background-playhead { background: var(--vscode-debugIcon-startForeground, #89d185); }
-.foreground-playhead { background: var(--iv-ruler-tick); }
+.playhead-marker { position: absolute; top: 0; bottom: 0; width: 1px; pointer-events: none; background: var(--playhead-color); }
+.background-playhead, .start-marker { --playhead-color: var(--iv-background-playhead); }
+.foreground-playhead { --playhead-color: var(--iv-ruler-tick); }
 .requested-marker { position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--vscode-focusBorder, #569cd6); pointer-events: none; }
-.start-marker {
-    position: absolute; bottom: 0; margin-left: -5px;
+.playhead-marker::before { content: ""; left: 0; }
+.playhead-marker::before, .start-marker {
+    position: absolute; top: 0; margin-left: -5px;
     /* The tip shares the cursor's one-pixel column. */
     box-sizing: content-box; width: 1px; height: 0;
-    border-inline: 5px solid transparent; border-bottom: 7px solid var(--vscode-foreground);
+    border-inline: 5px solid transparent; border-top: 7px solid var(--playhead-color);
 }
 </style>

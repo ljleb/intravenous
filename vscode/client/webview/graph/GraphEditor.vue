@@ -492,7 +492,7 @@ provideGraphEditor({ layout, save,
     closeKnobValueWithin(panel) {
         if (panel.contains(valueEntryAnchor.value ?? null)) manualGestures.cancelEntry();
     },
-    selectedLanes, selectLane: (address, modifiers) => selectLaneByKey(addressKey(address), modifiers), portsChanged: scheduleWireUpdate,
+    selectedLanes, portsChanged: scheduleWireUpdate,
     elementAtPointer: () => {
         const element = trustedHover.elementAtPointer();
         return element instanceof Element ? element : null;
@@ -724,7 +724,7 @@ function pointerLeftWindow(event: PointerEvent) {
 }
 function focusSurfaceFromPointer(event: PointerEvent) {
     if (event.target instanceof Element
-        && !event.target.closest("input, textarea, select, button, a, summary, [contenteditable], [tabindex]:not(.graph-editor)")) {
+        && !event.target.closest("input, textarea, select, button, a, summary, [contenteditable], [tabindex]:not(.graph-editor, .timeline-scope)")) {
         surface.value?.focus({ preventScroll: true });
     }
 }
@@ -941,7 +941,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-    <main ref="surface" class="graph-editor" tabindex="0" @pointerdown.capture="focusSurfaceFromPointer"
+    <main ref="surface" class="graph-editor" tabindex="-1" @pointerdown.capture="focusSurfaceFromPointer"
         @lostpointercapture="pointerCancelled">
         <div v-if="state.sessionStatus !== 'running'" class="status" role="status">
             {{ state.sessionStatus === 'starting' ? 'Starting Intravenous…' : 'Restarting Intravenous…' }}
@@ -958,9 +958,9 @@ onBeforeUnmount(() => {
         <Teleport to="body">
             <div v-if="creatingPackage" class="package-dialog-backdrop" @click.self="creatingPackage = false" @keydown.esc.stop="creatingPackage = false">
                 <form class="package-dialog" role="dialog" aria-modal="true" aria-label="New package" @submit.prevent="createPackage">
-                    <label>Package name<input v-model="packageName" autofocus required /></label>
-                    <button type="button" @click="creatingPackage = false">Cancel</button>
-                    <button type="submit" :disabled="!packageName.trim()">Create</button>
+                    <label>Package name<input v-model="packageName" tabindex="-1" autofocus required /></label>
+                    <button type="button" tabindex="-1" @click="creatingPackage = false">Cancel</button>
+                    <button type="submit" tabindex="-1" :disabled="!packageName.trim()">Create</button>
                 </form>
             </div>
         </Teleport>
@@ -1027,7 +1027,6 @@ onBeforeUnmount(() => {
 .graph-editor :deep(> .presentation-host) { flex: 1; min-height: 0; }
 .status, .error { padding: 8px; }
 .error { color: var(--vscode-errorForeground); }
-.graph-editor:focus { outline: none; }
 .connection-wire { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 30; }
 .preview-wire { fill: none; stroke-width: 2; }
 .drop-preview-wire { fill: none; stroke-width: 2; stroke-opacity: .4; }

@@ -133,12 +133,12 @@ onBeforeUnmount(() => resize?.disconnect());
                         :face-limits="{ min: setting.min, defaultValue: setting.defaultValue }"
                         :apply="(value, live) => setValue(setting.key, value, live)" :end-edit="finishEdit"
                         :edit-active="() => !!edits.view(node.address) && !editError" />
-                    <button v-if="typeof setting.key === 'number'" type="button" :aria-label="`Remove ${setting.label.toLowerCase()}`"
+                    <button v-if="typeof setting.key === 'number'" type="button" tabindex="-1" :aria-label="`Remove ${setting.label.toLowerCase()}`"
                         @click="removeSubdivision(setting.key)">×</button>
                 </div>
                 <footer class="beat-settings-actions">
-                    <button type="button" :disabled="divisions * 2 > allowedDivisions" @click="addSubdivision">Add subdivision</button>
-                    <button type="button" @click="close">Done</button>
+                    <button type="button" tabindex="-1" :disabled="divisions * 2 > allowedDivisions" @click="addSubdivision">Add subdivision</button>
+                    <button type="button" tabindex="-1" @click="close">Done</button>
                 </footer>
                 <span v-if="editError" role="alert" class="beat-settings-error">{{ editError }}</span>
             </LaneSettings>

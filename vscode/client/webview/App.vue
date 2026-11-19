@@ -62,6 +62,7 @@ onBeforeUnmount(() => {
                 id="instance-select"
                 v-model="selectedInstanceId"
                 class="toolbar-select"
+                tabindex="-1"
                 aria-label="Selected iv module instance"
                 :disabled="state.instances.length === 0"
             >
@@ -79,6 +80,7 @@ onBeforeUnmount(() => {
             <button
                 class="toolbar-button"
                 type="button"
+                tabindex="-1"
                 :disabled="!state.packageRoot"
                 @click="createInstance"
             >
@@ -87,7 +89,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="toolbar">
             <label class="toolbar-label" for="view-select">view</label>
-            <select id="view-select" v-model="viewChoice" class="toolbar-select">
+            <select id="view-select" v-model="viewChoice" class="toolbar-select" tabindex="-1">
                 <option v-for="choice in nodeViewChoices" :key="choice" :value="choice">
                     {{ choice }}
                 </option>

@@ -26,7 +26,6 @@ type GraphEditorContext = {
     scope: Readonly<Ref<GraphScope | null>>;
     shiftHeld: Readonly<Ref<boolean>>;
     selectedLanes: Readonly<Ref<ReadonlySet<string>>>;
-    selectLane: (address: NodeAddress, modifiers?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => void;
     portsChanged: () => void;
     elementAtPointer: () => Element | null;
     beginPointerLockExit: (origin: Point, warp?: CursorWarpAnchor & { destination: Point }) => void;

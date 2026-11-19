@@ -42,10 +42,10 @@ onBeforeUnmount(() => window.removeEventListener("resize", resize));
 
 <template>
     <Teleport :to="target ?? 'body'">
-        <form v-if="entry" class="manual-value-popover" :style="position" role="dialog"
+        <form v-if="entry" class="manual-value-popover" tabindex="-1" :style="position" role="dialog"
             :aria-label="`${entry.label} value`" :data-lane-key="laneKey" @submit.prevent="close(true)"
             @pointerdown.stop @keydown.esc.stop.prevent="close(false)">
-            <input ref="input" type="text" inputmode="decimal" :value="entry.draft"
+            <input ref="input" type="text" tabindex="-1" inputmode="decimal" :value="entry.draft"
                 :aria-label="`${entry.label} value`" :aria-invalid="!!entry.error"
                 :aria-description="entry.error || undefined"
                 autocomplete="off" spellcheck="false"
@@ -61,7 +61,7 @@ onBeforeUnmount(() => window.removeEventListener("resize", resize));
     border: 1px solid var(--vscode-panel-border); border-radius: 5px;
     background: var(--vscode-editorWidget-background); box-shadow: 0 3px 12px #0005; }
 input { box-sizing: border-box; width: 100%; min-width: 0; padding: 4px;
-    border: 1px solid var(--vscode-focusBorder); outline: none;
+    border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, transparent));
     background: var(--vscode-input-background); color: var(--vscode-input-foreground); }
 input[aria-invalid="true"] { border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)); }
 .entry-error { display: block; margin-top: 4px; font-size: 11px; color: var(--vscode-errorForeground); }

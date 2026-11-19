@@ -280,7 +280,7 @@ optional bounds, and any numeric-entry restrictions with the ordinary exact
 value-edit path; report invalid or unavailable clipboard content in the status
 bar rather than silently normalizing, clamping, or changing the wrong knob.
 Do not intercept plain `c`/`v` when a text field or other editor owns text
-input; preserve native OS shortcuts and accessible keyboard focus behavior.
+input. Preserve native OS shortcuts.
 If webview clipboard access needs extension-host mediation, use the actual
 host/system clipboard rather than a private in-memory copy buffer.
 
@@ -572,8 +572,8 @@ Render points as **small, filled dots on the curve**, not large hollow rings
 that resemble holes or excluded intervals. Keep their existing forgiving
 pointer hit area by separating the visible marker from an invisible/larger
 hit target. Hover or active interaction may subtly enlarge or highlight the
-dot, in the same restrained visual language as knob hover. Preserve clear
-keyboard focus and unambiguous Shift+click/drag/context-menu targets. The
+dot, in the same restrained visual language as knob hover. Preserve
+unambiguous Shift+click, drag, and context-menu targets. The
 nearby tension handle remains distinct from the point and does not need to
 make the point marker larger.
 
@@ -653,11 +653,10 @@ popover or help action may still expose genuinely additional information, and
 an error may warrant a focused diagnostic, but neither should recreate a
 default tooltip on every interactive object.
 
-This is a visual-information policy, **not** a reduction of accessibility:
-retain semantic names, keyboard focus feedback, screen-reader labels and
-accessible descriptions independently of visual tooltip display. Keep the
-status item consistent with the pointer and active gesture, especially while
-moving sample-quantized control points or adjusting knob values.
+Retain semantic names, screen-reader labels and accessible descriptions.
+Follow the [webview focus policy](./node_presentation_and_manual_controls_direction.md#webview-focus-and-keyboard-shortcuts).
+Keep the status item consistent with the pointer and active gesture, especially
+while moving sample-quantized control points or adjusting knob values.
 
 The user setting `intravenous.hideStatusBarShortcuts` hides shortcut reminders
 in the status bar. Values, port details, active gesture readouts, and errors

@@ -4780,10 +4780,9 @@ TEST(GraphJitConnectionPlan, ReusingCoverageOverrideTopologyKeepsAuthoredValidat
     auto source = details::configure_concrete_node<BackgroundSource>(graph);
     auto target = details::configure_concrete_node<BackgroundSamplePass>(graph);
     target(source);
-    target(source);
     graph.outputs();
     auto configured = std::move(graph).finish();
-    ASSERT_EQ(configured.connections.configured_sample_connections().size(), 2u);
+    ASSERT_EQ(configured.connections.configured_sample_connections().size(), 1u);
     configured.manual_controls.push_back({
         .id = {.node = {.instance_id = "target"}, .port_name = "in"},
         .input = {target.node_bundle_handle(), PortKind::sample, 0},
@@ -4795,6 +4794,9 @@ TEST(GraphJitConnectionPlan, ReusingCoverageOverrideTopologyKeepsAuthoredValidat
     ASSERT_EQ(manual.size(), 1u);
     auto first = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(first) << first.error();
+    ASSERT_EQ(first->sample_connections.size(), 1u);
+    ASSERT_EQ(first->sample_connections.front().source_channels.size(), 1u);
+    EXPECT_EQ(first->sample_connections.front().source_channels.front().bundle, manual.front().bundle);
     ASSERT_FALSE(first->background.connections.empty());
     auto realization = iv::graph_jit::resolve_port_realization(configured);
     ASSERT_TRUE(realization) << realization.error();

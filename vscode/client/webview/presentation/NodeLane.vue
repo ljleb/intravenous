@@ -31,7 +31,7 @@ const laneStatus = computed(() => node.value.loadState === "waitingForDefinition
                     :data-status-hint="laneStatus" :aria-description="laneStatus">
                     {{ nodeDisplayName(node) }}
                 </span>
-                <button v-if="lane" type="button" class="copy-debug" data-status-hint="Copy node debug details"
+                <button v-if="lane" type="button" tabindex="-1" class="copy-debug" data-status-hint="Copy node debug details"
                     aria-label="Copy node debug details" @click="lane.copyDebugDetails()">⧉</button>
             </div>
             <NodePorts v-if="node.address" />
@@ -71,7 +71,6 @@ const laneStatus = computed(() => node.value.loadState === "waitingForDefinition
     color: var(--vscode-icon-foreground); background: transparent; cursor: pointer; font-size: min(16px, var(--heading-height)); line-height: 1; }
 .inline-header .copy-debug { height: min(100cqh, var(--heading-height)); font-size: min(100cqh, 14px, var(--heading-height)); }
 .copy-debug[data-hovered] { background: var(--vscode-toolbar-hoverBackground); }
-.copy-debug:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
 .lane-content { min-width: 0; min-height: 0; overflow: hidden; padding: clamp(0px, calc(12.5cqh - 2px), 4px) 0; box-sizing: border-box; }
 .lane-content.meter-content { padding: 0; }
 </style>

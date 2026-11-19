@@ -399,13 +399,6 @@ function viewportChanged(event: Event) {
     if (event.target instanceof Node && panel.value?.contains(event.target)) return;
     closePanel();
 }
-function focusContinuation(direction: SemanticPortDirection) {
-    hoverGroup(direction);
-    void nextTick(async () => {
-        await nextTick();
-        panel.value?.querySelector<HTMLButtonElement>(".port-handle")?.focus({ preventScroll: true });
-    });
-}
 function dismissPanel(event: KeyboardEvent) {
     if (event.key !== "Escape" || editingControl.value) return;
     cancelAnimationFrame(overflowFrame);
@@ -461,9 +454,9 @@ onBeforeUnmount(() => {
                 :overflow-hint="overflowHint(port)"
                 :expanded="expanded === direction && !chooserPort"
                 @handle-hover="enterPort($event, port)" @handle-leave="hoveredPort = null"
-                @wire-start="start($event, port)" @overflow="hoverGroup(direction)" @focus-overflow="focusContinuation(direction)" />
+                @wire-start="start($event, port)" @overflow="hoverGroup(direction)" />
             <div v-if="layout[direction].folded.length && !layout[direction].direct.length" :ref="(element) => setOverflow(direction, element)"
-                class="port-slot" role="button" tabindex="0" :data-folded-ports="direction"
+                class="port-slot" role="button" tabindex="-1" :data-folded-ports="direction"
                 :class="{ single: layout[direction].folded.length === 1,
                     pending: groupConnections[direction].pending, unavailable: destinationDirection === direction && !groupAccepts(direction) }"
                 :data-port-kind="layout[direction].folded.every((port) => port.kind === 'event') ? 'event' : 'sample'"
@@ -472,8 +465,7 @@ onBeforeUnmount(() => {
                 :aria-label="`${layout[direction].folded.length} more ${direction} ports; ${groupConnections[direction].connected} connected`" :aria-expanded="expanded === direction && !chooserPort"
                 :aria-disabled="destinationDirection === direction && !groupAccepts(direction)"
                 :data-status-hint="`${layout[direction].folded.length} more ${direction} ports · ${groupConnections[direction].connected} connected`"
-                @iv-hoverenter="hoverGroup(direction)" @focus="hoverGroup(direction)" @keydown.enter="hoverGroup(direction)"
-                @keydown.down.prevent="focusContinuation(direction)">
+                @iv-hoverenter="hoverGroup(direction)">
                 <span class="port-circle stacked-first" />
                 <span v-if="layout[direction].folded.length > 1" class="port-circle stacked-second" />
             </div>
@@ -487,12 +479,12 @@ onBeforeUnmount(() => {
             :data-port-group="expanded" :data-node-key="nodeKey" :data-direction="expanded"
             @iv-hoverleave="leave" @focusout="leaveFocus" @keydown.esc="closePanel"
             @wheel="timelineNavigation?.wheel($event)" @pointerdown.capture="timelineNavigation?.beginMiddleDrag($event)">
-            <div class="expansion-body">
+            <div class="expansion-body" tabindex="-1">
                 <template v-if="chooserPort">
                     <div v-for="(end, index) in choices" :key="end.connection.id" class="port-row"
                         :data-direction="end.port.direction"
                         :class="{ 'with-knob': index === 0 && popoverHasKnob(chooserPort) }">
-                        <button type="button" class="port-entry connection-choice"
+                        <button type="button" tabindex="-1" class="port-entry connection-choice"
                             :data-port-kind="end.port.kind"
                             :data-connection-end="JSON.stringify({ connectionId: end.connection.id, port: end.port })"
                             :class="{ connected: end.connection.applied, pending: !end.connection.applied }"
@@ -538,7 +530,6 @@ onBeforeUnmount(() => {
 .port-slot[data-connection-state="partial"] .stacked-second,
 .port-slot[data-connection-state="full"] .port-circle { background: var(--port-color); }
 .port-slot[data-hovered] { background: color-mix(in srgb, var(--port-color) 12%, transparent); }
-.port-slot:focus-visible { outline: 1px solid var(--port-color); }
 .port-panel { position: fixed; z-index: 20; display: flex; flex-direction: column; box-sizing: border-box; border: 1px solid var(--vscode-panel-border); border-radius: 7px; background: var(--vscode-editorWidget-background); color: var(--vscode-foreground); box-shadow: 0 3px 12px #0005; }
 .port-panel.continuation { border: 0; border-radius: 0 0 6px 6px; box-shadow: 0 1px var(--vscode-panel-border), 0 3px 10px #0005; }
 .port-panel.positioning { visibility: hidden; pointer-events: none; }

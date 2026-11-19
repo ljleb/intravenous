@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch, type CSSProperties } from "vue";
 import type { Point } from "../../src/graphScope";
+import type { GraphEditorHostMessage } from "../../src/graphEditorProtocol";
 import { fitPopoverAtPoint } from "../../src/popoverPosition";
 import { projectHistoryShortcut } from "../../src/projectHistoryShortcut";
 import { useOptionalGraphEditor } from "../graph/context";
 
 const props = defineProps<{ id?: string; label: string; width?: number; preferredHeight?: number;
-    role?: "dialog" | "menu"; dismissOnViewportChange?: boolean }>();
+    role?: "dialog" | "menu"; contextual?: boolean; dismissOnViewportChange?: boolean }>();
 const emit = defineEmits<{ toggle: [open: boolean]; escape: [] }>();
 const panel = ref<HTMLElement | null>(null);
 const editor = useOptionalGraphEditor();
@@ -68,19 +69,26 @@ function toggled(event: ToggleEvent) {
 }
 watch(open, (visible, _, cleanup) => {
     if (!visible) return;
+    const listeners = new AbortController();
+    const { signal } = listeners;
+    cleanup(() => listeners.abort());
+    const dismissOutside = (event: Event) => {
+        if (event.target instanceof Node && panel.value?.contains(event.target)) return;
+        close();
+    };
+    // A right-click can open a menu before that gesture's pointerup. Use the
+    // next outside press to dismiss it, independent of the opening release.
+    if (props.contextual) window.addEventListener("pointerdown", dismissOutside, { capture: true, signal });
     if (props.dismissOnViewportChange) {
-        const dismiss = (event: Event) => {
-            if (event.target instanceof Node && panel.value?.contains(event.target)) return;
-            close();
-        };
-        window.addEventListener("blur", dismiss);
-        window.addEventListener("resize", dismiss);
-        window.addEventListener("scroll", dismiss, true);
-        cleanup(() => {
-            window.removeEventListener("blur", dismiss);
-            window.removeEventListener("resize", dismiss);
-            window.removeEventListener("scroll", dismiss, true);
-        });
+        if (editor) {
+            // Webview focus can briefly move during native activation.
+            window.addEventListener("message", (event: MessageEvent<GraphEditorHostMessage>) => {
+                if (event.data?.type === "graphWindowFocus" && !event.data.focused) close();
+            }, { signal });
+            document.addEventListener("visibilitychange", () => { if (document.hidden) close(); }, { signal });
+        } else window.addEventListener("blur", dismissOutside, { signal });
+        window.addEventListener("resize", dismissOutside, { signal });
+        window.addEventListener("scroll", dismissOutside, { capture: true, signal });
     } else if (atPoint && panel.value) {
         const resize = new ResizeObserver(positionAtPoint);
         resize.observe(panel.value);
@@ -95,25 +103,16 @@ function keyDown(event: KeyboardEvent) {
         event.preventDefault();
         emit("escape");
         close(true);
-        return;
     }
-    if (props.role !== "menu") return;
-    if (event.key === "Tab") { close(true); return; }
-    const items = Array.from(panel.value?.querySelectorAll<HTMLElement>('[role^="menuitem"]:not([disabled]):not([aria-disabled="true"])') ?? []);
-    if (!items.length) return;
-    const index = items.findIndex((item) => item === document.activeElement);
-    const next = event.key === "ArrowDown" ? (index + 1) % items.length
-        : event.key === "ArrowUp" ? (index < 0 ? items.length - 1 : (index + items.length - 1) % items.length)
-        : event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : -1;
-    if (next >= 0) { event.preventDefault(); items[next].focus(); }
 }
 onBeforeUnmount(() => { if (panel.value) editor?.closeKnobValueWithin(panel.value); });
 defineExpose({ place, showAt, close });
 </script>
 
 <template>
-    <div :id="id" ref="panel" class="anchored-popover" popover="auto" :style="position" :role="role ?? 'dialog'" :aria-label="label"
-        @toggle="toggled" @keydown="keyDown" @pointerdown.stop @wheel.stop>
+    <div :id="id" ref="panel" class="anchored-popover" tabindex="-1" :class="{ 'context-menu': contextual }"
+        :popover="contextual ? 'manual' : 'auto'" :style="position" :role="role ?? 'dialog'" :aria-label="label"
+        @toggle="toggled" @keydown="keyDown" @pointerdown.stop @wheel.stop @contextmenu="contextual && $event.preventDefault()">
         <slot />
     </div>
 </template>
@@ -126,4 +125,14 @@ defineExpose({ place, showAt, close });
     border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); box-shadow: 0 2px 8px var(--vscode-widget-shadow);
 }
 .anchored-popover:popover-open { display: grid; gap: 8px; }
+.context-menu:popover-open {
+    min-width: min(160px, calc(100vw - 8px)); padding: 4px; border-radius: 4px; gap: 0;
+    border-color: var(--vscode-menu-border, var(--vscode-widget-border, var(--vscode-panel-border)));
+    background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+    color: var(--vscode-menu-foreground, var(--vscode-editorWidget-foreground));
+}
+.context-menu :slotted(.context-menu-separator) {
+    height: 0; margin: 4px 8px; border: 0;
+    border-top: 1px solid var(--vscode-menu-separatorBackground, var(--vscode-panel-border));
+}
 </style>

@@ -7,6 +7,7 @@
 }
 
 body {
+    --iv-background-playhead: var(--vscode-debugIcon-startForeground, #89d185);
     --iv-lane-title-color: color-mix(in srgb, var(--vscode-foreground) 85%, var(--vscode-editor-background));
     --iv-port-label-base: var(--vscode-descriptionForeground, var(--vscode-foreground));
     --iv-port-label-accent: 16%;
@@ -27,6 +28,10 @@ body:is(.vscode-high-contrast, .vscode-high-contrast-light) {
     --iv-port-label-accent: 0%;
 }
 
+:focus {
+    outline: none !important;
+}
+
 [data-automation-drag], [data-automation-drag] * {
     cursor: none !important;
 }
@@ -43,9 +48,6 @@ body:is(.vscode-high-contrast, .vscode-high-contrast-light) {
 .knob-side-toggle[data-hovered]:not(:disabled) { color: var(--toggle-accent); }
 .knob-side-toggle[aria-pressed="true"] > span { color: var(--vscode-editor-background); background: var(--toggle-accent); }
 .knob-side-toggle:disabled { opacity: .4; cursor: default; }
-.knob-side-toggle:focus { outline: none; }
-.knob-side-toggle:not(.knob-enable-toggle):focus-visible { outline: 1px solid var(--toggle-accent); outline-offset: 1px; }
-.knob-enable-toggle:focus-visible > span { border-radius: 50%; outline: 1px solid var(--vscode-focusBorder, var(--toggle-accent)); }
 .knob-enable-toggle[aria-pressed="true"] > span { color: var(--toggle-accent); background: transparent; }
 
 .live-graph {
@@ -76,11 +78,6 @@ body:is(.vscode-high-contrast, .vscode-high-contrast-light) {
     color: var(--vscode-dropdown-foreground);
     font: inherit;
     padding: 4px 6px;
-}
-
-.toolbar-select:focus {
-    outline: 1px solid var(--vscode-focusBorder);
-    outline-offset: 0;
 }
 
 .toolbar-button {

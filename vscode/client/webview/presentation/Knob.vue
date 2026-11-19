@@ -6,6 +6,7 @@ import { knobScrubSpeed } from "../../src/knobPresentation";
 import { scrubSensitivityShortcut } from "../../src/scrubSensitivity";
 import { useOptionalGraphEditor, type KnobDrag } from "../graph/context";
 import KnobFace from "./KnobFace.vue";
+import { isContextMenuKey } from "./contextPopover";
 
 defineOptions({ inheritAttrs: false });
 const props = defineProps<{
@@ -95,17 +96,18 @@ function step(direction: number) {
     } else set(value.value + direction * delta);
 }
 function keyboard(event: KeyboardEvent) {
-    if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) entry(event);
+    if (isContextMenuKey(event)) entry(event);
     if (event.key === "Escape" && editor?.cancelKnob()) { event.preventDefault(); event.stopPropagation(); }
 }
 defineExpose({ entry });
 </script>
 
 <template>
-    <button v-bind="$attrs" ref="button" type="button" class="knob-control" role="slider" :aria-label="label" :aria-valuenow="value"
+    <button v-bind="$attrs" ref="button" type="button" tabindex="-1" class="knob-control" role="slider" :aria-label="label" :aria-valuenow="value"
         :aria-valuemin="limits.min" :aria-valuemax="limits.max" :disabled="disabled" :data-activity="activity"
         :data-direction="direction ?? 'input'" :class="{ inactive }" :data-status-hint="hint.text" :data-status-shortcuts="hint.shortcuts"
-        @iv-hoverenter="hovered = true" @iv-hoverleave="hovered = false" @focus="emit('hover', true)" @blur="emit('hover', false)"
+        @iv-hoverenter="hovered = true" @iv-hoverleave="hovered = false" @focus="emit('hover', true)"
+        @blur="emit('hover', false)"
         @pointerdown="press" @click.stop @contextmenu="entry" @dblclick.stop.prevent @keydown="keyboard"
         @keydown.left.stop.prevent="step(-1)" @keydown.down.stop.prevent="step(-1)"
         @keydown.right.stop.prevent="step(1)" @keydown.up.stop.prevent="step(1)"
@@ -137,8 +139,6 @@ defineExpose({ entry });
     fill: color-mix(in srgb, currentColor 20%, var(--vscode-editor-background)); stroke-opacity: 1; }
 [data-activity="active"] :deep(.knob-track) { opacity: .9; }
 [data-activity="active"] :deep(.knob-indicator), [data-activity="retained"] :deep(.knob-indicator) { opacity: 1; }
-.knob-control:focus { outline: none; box-shadow: none; }
-.knob-control:focus-visible { box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 45%, transparent); }
 .knob-control:disabled { cursor: default; opacity: .4; }
 .knob-preview { position: fixed; z-index: 35; transform: translateX(-50%); pointer-events: none;
     display: grid; justify-items: center; gap: 2px; padding: 4px 8px; color: var(--iv-port-input);

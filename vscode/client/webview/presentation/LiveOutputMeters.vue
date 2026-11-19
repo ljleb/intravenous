@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useNode } from "./nodeContext";
 import { useObservations, type PresentedObservation } from "./observationContext";
 import SampleMeter from "./SampleMeter.vue";
 import OutputWaveforms from "./OutputWaveforms.vue";
 import AnchoredPopover from "./AnchoredPopover.vue";
+import ContextMenuItem from "./ContextMenuItem.vue";
 import { useTimelineWindow } from "../timeline/timelineContext";
 import { sampleWindow } from "../../src/sampleWaveform";
 import { addressKey, type NodeAddress } from "../../src/graphScope";
 import { observationSourceKey, type MeterMode, type ObservationSource } from "../../src/observations";
 import type { NodeDisplayMode } from "./displayMode";
+import { isContextMenuKey, useContextPopover } from "./contextPopover";
 
 const props = defineProps<{ mode?: NodeDisplayMode; bounds?: { min: number; max: number } }>();
 const showScaleLabels = computed(() => props.mode === "editable" || props.mode === undefined);
@@ -23,8 +25,7 @@ const owner = Symbol("live port presentation");
 const visualizationModes: Array<{ mode: MeterMode; label: string }> = [
     { mode: "level", label: "Level (dBFS)" }, { mode: "value", label: "Value (linear)" },
 ];
-const menu = ref<{ key: string } | null>(null);
-const menuRoot = ref<InstanceType<typeof AnchoredPopover> | null>(null);
+const { panel: menuRoot, key: menuKey, open: openContext, close: closeMenu, toggled: menuToggled } = useContextPopover<string>();
 let observer: IntersectionObserver | undefined;
 let resize: ResizeObserver | undefined;
 const timeline = useTimelineWindow();
@@ -68,10 +69,10 @@ const meters = computed(() => {
     return [...groups.values()];
 });
 const state = computed(() => items.value.filter((item) => item.kind === "stateField"));
-const selectedMeter = computed(() => meters.value.find((meter) => meter.key === menu.value?.key));
+const selectedMeter = computed(() => meters.value.find((meter) => meter.key === menuKey.value));
 const selectedMode = computed(() => selectedMeter.value?.mode);
 watch(selectedMeter, () => {
-    if (menu.value && !selectedMeter.value) closeMenu();
+    if (menuKey.value !== null && !selectedMeter.value) closeMenu();
 });
 watch(() => node.value.definitionId, () => closeMenu());
 function switchMode(mode: MeterMode): void {
@@ -82,21 +83,11 @@ function channelLabel(item: PresentedObservation): string {
     const name = item.kind === "input" ? `Input ${item.member}` : item.member;
     return item.channels && item.channels.length > 1 ? `${name} · ${item.channelName}` : name;
 }
-function closeMenu(restoreFocus = false): void {
-    menuRoot.value?.close(restoreFocus);
-    menu.value = null;
-}
-async function openMenu(event: MouseEvent | KeyboardEvent, key: string): Promise<void> {
-    if (event instanceof KeyboardEvent && event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
-    event.preventDefault(); event.stopPropagation();
+function openMenu(event: MouseEvent | KeyboardEvent, key: string): void {
+    if (event instanceof KeyboardEvent && !isContextMenuKey(event)) return;
     const meter = event.target instanceof Element ? event.target.closest<HTMLElement>("[role='meter']") : null;
-    const rect = meter?.getBoundingClientRect();
-    const point = event instanceof MouseEvent ? { x: event.clientX, y: event.clientY } : { x: rect?.left ?? 0, y: rect?.bottom ?? 0 };
-    const returnFocus = meter === document.activeElement ? meter : null;
-    menu.value = { key };
-    const opened = menu.value;
-    await nextTick();
-    if (menu.value === opened) void menuRoot.value?.showAt(point, returnFocus, "[aria-checked='true']");
+    openContext(event, key, { anchor: meter, returnFocus: meter === document.activeElement ? meter : null,
+        initialFocus: "[aria-checked='true']" });
 }
 function stateText(value: unknown): string {
     return typeof value === "number" && Number.isFinite(value) ? String(value) : "—";
@@ -139,14 +130,15 @@ onBeforeUnmount(() => {
         </div>
     </div>
     <Teleport to="body">
-        <AnchoredPopover v-if="menu" ref="menuRoot" class="visualization-menu" role="menu" label="Visualization mode"
-            :data-lane-key="node.address ? addressKey(node.address) : undefined" dismiss-on-viewport-change
-            @toggle="(open) => { if (!open) menu = null; }" @contextmenu.prevent>
-            <button v-for="choice in visualizationModes" :key="choice.mode" type="button" role="menuitemradio"
-                :aria-checked="selectedMode === choice.mode" :tabindex="selectedMode === choice.mode ? 0 : -1"
+        <AnchoredPopover v-if="menuKey !== null" ref="menuRoot" role="menu" label="Visualization mode"
+            :data-lane-key="node.address ? addressKey(node.address) : undefined" contextual dismiss-on-viewport-change
+            @toggle="menuToggled">
+            <ContextMenuItem v-for="choice in visualizationModes" :key="choice.mode" role="menuitemradio"
+                :aria-checked="selectedMode === choice.mode"
                 @click.stop="switchMode(choice.mode)">
-                <span aria-hidden="true">{{ selectedMode === choice.mode ? '✓' : '' }}</span>{{ choice.label }}
-            </button>
+                <template #icon>{{ selectedMode === choice.mode ? '✓' : '' }}</template>
+                {{ choice.label }}
+            </ContextMenuItem>
         </AnchoredPopover>
     </Teleport>
 </template>
@@ -162,12 +154,4 @@ output { font-variant-numeric: tabular-nums; }
 :is([data-mode="mini"], [data-mode="nano"]).live-outputs { gap: 0; }
 :is([data-mode="mini"], [data-mode="nano"]) .state-field { display: none; }
 :is([data-mode="mini"], [data-mode="nano"]) .output-channels { gap: 1px; }
-.visualization-menu:popover-open {
-    min-width: min(160px, calc(100vw - 8px)); padding: 4px; border-radius: 4px; gap: 0;
-    border-color: var(--vscode-menu-border, var(--vscode-widget-border)); background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
-    color: var(--vscode-menu-foreground, var(--vscode-editorWidget-foreground));
-}
-.visualization-menu button { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 8px; border: 0; border-radius: 2px; background: transparent; color: inherit; font: inherit; text-align: left; white-space: nowrap; cursor: pointer; }
-.visualization-menu button span { width: 12px; }
-.visualization-menu button:hover, .visualization-menu button:focus { outline: none; color: var(--vscode-menu-selectionForeground, var(--vscode-list-activeSelectionForeground)); background: var(--vscode-menu-selectionBackground, var(--vscode-list-activeSelectionBackground)); }
 </style>

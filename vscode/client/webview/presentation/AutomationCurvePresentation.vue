@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
 import { automationTensionLimits, automationWindow, type CurveAxes, type CurveDragKind } from "../../src/automationCurveEditing";
 import { automationSampleOffset, automationValueFraction, automationValueGuides, clampAutomationValue,
     compareAutomationTime, panAutomationValueAxis, panCurvedAutomationValueZoom, readAutomationCurveView,
@@ -21,6 +21,8 @@ import NodeLane from "./NodeLane.vue";
 import Knob from "./Knob.vue";
 import LaneSettings from "./LaneSettings.vue";
 import AnchoredPopover from "./AnchoredPopover.vue";
+import ContextMenuItem from "./ContextMenuItem.vue";
+import { isContextMenuKey, useContextPopover } from "./contextPopover";
 import { useAutomationEditing } from "./automationEditingContext";
 import { nanoHeightPx, type NodeDisplayMode } from "./displayMode";
 import { useLane } from "./laneContext";
@@ -175,11 +177,10 @@ const handleY = (point: AutomationPoint) => {
     return center + (center < height.value / 2 ? 15 : -15);
 };
 
-const segmentMenu = ref<{ id: number } | null>(null);
-const popover = ref<InstanceType<typeof AnchoredPopover> | null>(null);
+const { panel: popover, key: segmentPoint, open: openContext, close: closeMenus, toggled: menuToggled } = useContextPopover<number>();
 const selected = computed(() => {
     void version.value;
-    const point = curve.value?.points.find(({ id }) => id === segmentMenu.value?.id);
+    const point = curve.value?.points.find(({ id }) => id === segmentPoint.value);
     const target = node.value.address;
     if (!point || !target) return null;
     const draft = edits.drafts(target).find(({ id }) => id === point.id);
@@ -193,29 +194,18 @@ const selectionRect = computed(() => {
         width: Math.abs(drag.x - drag.currentX), height: Math.abs(drag.y - drag.currentY) } : null;
 });
 
-async function editSegment(event: MouseEvent | KeyboardEvent, point: AutomationPoint) {
+function editSegment(event: MouseEvent | KeyboardEvent, point: AutomationPoint) {
     if (!editable.value) return;
-    event.preventDefault();
-    event.stopPropagation();
     const control = event.currentTarget as SVGElement;
-    const rect = control.getBoundingClientRect();
-    const location = event instanceof MouseEvent ? { x: event.clientX, y: event.clientY } : { x: rect.right, y: rect.bottom };
-    const returnFocus = event instanceof KeyboardEvent ? control : surface.value;
-    segmentMenu.value = { id: point.id };
-    const opened = segmentMenu.value;
-    await nextTick();
-    if (segmentMenu.value === opened && editable.value && selected.value) void popover.value?.showAt(location, returnFocus, "select");
+    openContext(event, point.id, { anchor: control, alignRight: true,
+        returnFocus: event instanceof KeyboardEvent ? control : surface.value, initialFocus: "select" });
 }
 function changeSegment(point: AutomationPoint, interpolation: CurveInterpolation, tension: number) {
     if (!editable.value || !node.value.address || !Number.isFinite(tension) || tension < 0 || tension > 1) return;
     void edits.segment(node.value.address, point.id, interpolation, Math.fround(tension));
 }
-function closeMenus(restoreFocus = false) {
-    popover.value?.close(restoreFocus);
-    segmentMenu.value = null;
-}
 function escapeSegment() {
-    if (edits.activePoint()?.id === segmentMenu.value?.id) edits.abandon();
+    if (edits.activePoint()?.id === segmentPoint.value) edits.abandon();
 }
 watch(editable, (enabled) => {
     if (enabled) return;
@@ -343,7 +333,7 @@ function deleteSelected(event: KeyboardEvent) {
 }
 function removePoint(id: number) {
     if (!editable.value || !node.value.address) return;
-    if (segmentMenu.value?.id === id) closeMenus(true);
+    if (segmentPoint.value === id) closeMenus(true);
     void edits.remove(node.value.address, id);
 }
 function pointKey(event: KeyboardEvent, point: AutomationPoint) {
@@ -354,7 +344,7 @@ function pointKey(event: KeyboardEvent, point: AutomationPoint) {
             event.stopPropagation();
             if (!event.repeat) removePoint(point.id);
         }
-    } else if (event.key === "Enter" || event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
+    } else if (event.key === "Enter" || isContextMenuKey(event))
         editSegment(event, point);
 }
 function tensionBinding(point: AutomationPoint) {
@@ -477,7 +467,7 @@ onBeforeUnmount(() => {
             <svg ref="surface" class="automation-curve" :viewBox="`0 0 ${width} ${height}`" preserveAspectRatio="none"
                 :aria-label="node.displayName || 'Automation curve'" :aria-description="curveStatus || curveShortcuts"
                 :data-status-hint="curveStatus" :data-status-shortcuts="curveStatus ? undefined : curveShortcuts"
-                :tabindex="editable ? 0 : undefined" :data-lane-item-editor="editable ? '' : undefined"
+                :tabindex="editable ? -1 : undefined" :data-lane-item-editor="editable ? '' : undefined"
                 @pointerdown.self="pressSurface" @pointermove="moveSelection" @pointerup="finishSelection"
                 @pointercancel="cancelSelection" @lostpointercapture.self="cancelSelection"
                 @keydown.delete.self="deleteSelected" @contextmenu.self.prevent>
@@ -511,7 +501,7 @@ onBeforeUnmount(() => {
                 <rect v-if="selectionRect" v-bind="selectionRect" class="point-selection" aria-hidden="true" />
                 <g v-for="point in handles" :key="`tension-${point.id}`" class="curve-tension"
                     :transform="`translate(${pointX(point)} ${handleY(point)})`"
-                    role="slider" tabindex="0" aria-label="Bézier tension" :aria-valuemin="0" :aria-valuemax="1"
+                    role="slider" tabindex="-1" aria-label="Bézier tension" :aria-valuemin="0" :aria-valuemax="1"
                     :aria-valuenow="point.tension" :data-status-hint="`Tension ${Number(point.tension.toFixed(2))}`" data-status-shortcuts="↔ Drag"
                     @pointerdown="start($event, point.id, 'tension')" @click.stop
                     @keydown="tensionKey($event, point)" @contextmenu.stop="editSegment($event, point)">
@@ -521,7 +511,7 @@ onBeforeUnmount(() => {
                         :fill-opacity=".25 + point.tension * .75" />
                 </g>
                 <g v-for="point in markers" :key="point.id" class="curve-point"
-                    :transform="`translate(${pointX(point)} ${markerY(point)})`" role="button" tabindex="0"
+                    :transform="`translate(${pointX(point)} ${markerY(point)})`" role="button" tabindex="-1"
                     :data-selected="selectedIds.has(point.id) || undefined"
                     :aria-label="`Point at ${point.sampleIndex ?? point.seconds} ${point.sampleIndex === undefined ? 'seconds' : 'samples'}, value ${point.value}${selectedIds.has(point.id) ? ', selected' : ''}`"
                     :data-status-hint="pointStatus(point)" :data-status-shortcuts="pointShortcuts"
@@ -536,11 +526,11 @@ onBeforeUnmount(() => {
             </svg>
             <LaneSettings v-if="editable && editor && curve" label="Scale" dialog-label="Automation value scale"
                 hint="Set value display and snapping" :width="204" :preferred-height="158" @toggle="(open) => open && closeMenus()">
-                <label class="automation-settings-row">Display <select :value="display" @change="changeDisplay">
+                <label class="automation-settings-row">Display <select tabindex="-1" :value="display" @change="changeDisplay">
                     <option value="curved">Curved</option><option value="cropped">Cropped</option>
                 </select></label>
                 <label class="automation-settings-row">Value snapping
-                    <select :value="ruler" data-status-hint="Auto adds finer guides as you zoom in" @change="changeRuler">
+                    <select tabindex="-1" :value="ruler" data-status-hint="Auto adds finer guides as you zoom in" @change="changeRuler">
                         <option value="auto">Auto</option><option value="whole">Whole</option>
                         <option value="half">Halves</option><option value="off">Off</option>
                     </select>
@@ -550,19 +540,22 @@ onBeforeUnmount(() => {
         </div>
     </NodeLane>
     <Teleport to="body">
-        <AnchoredPopover v-if="editable && segmentMenu" ref="popover" class="automation-popover" label="Automation segment"
-            :data-lane-key="key" data-lane-item-editor @escape="escapeSegment" @toggle="(open) => { if (!open) segmentMenu = null; }">
+        <AnchoredPopover v-if="editable && segmentPoint !== null" ref="popover" class="automation-popover" label="Automation segment"
+            :data-lane-key="key" data-lane-item-editor contextual @escape="escapeSegment" @toggle="menuToggled">
             <template v-if="selected">
-                <label>Segment <select :value="selected.interpolation"
-                    @change="changeSegment(selected, ($event.target as HTMLSelectElement).value as CurveInterpolation, selected.tension)">
-                    <option value="empty">Empty</option><option value="hold">Hold</option><option value="bezier">Bézier</option>
-                </select></label>
-                <div v-if="selected.interpolation === 'bezier'" class="automation-popover-control">
-                    <span aria-hidden="true">Tension</span>
-                    <Knob :identity="`${key}:automation:tension:${selected.id}`" label="Bézier tension"
-                        :value="selected.tension" :limits="automationTensionLimits" :step=".05" v-bind="tensionBinding(selected)" />
+                <div class="automation-menu-fields">
+                    <label>Segment <select tabindex="-1" :value="selected.interpolation"
+                        @change="changeSegment(selected, ($event.target as HTMLSelectElement).value as CurveInterpolation, selected.tension)">
+                        <option value="empty">Empty</option><option value="hold">Hold</option><option value="bezier">Bézier</option>
+                    </select></label>
+                    <div v-if="selected.interpolation === 'bezier'" class="automation-popover-control">
+                        <span aria-hidden="true">Tension</span>
+                        <Knob :identity="`${key}:automation:tension:${selected.id}`" label="Bézier tension"
+                            :value="selected.tension" :limits="automationTensionLimits" :step=".05" v-bind="tensionBinding(selected)" />
+                    </div>
                 </div>
-                <button type="button" class="delete-point" @click="removePoint(selected.id)">Delete point</button>
+                <hr class="context-menu-separator" />
+                <ContextMenuItem @click="removePoint(selected.id)">Delete point</ContextMenuItem>
             </template>
         </AnchoredPopover>
     </Teleport>
@@ -589,14 +582,9 @@ onBeforeUnmount(() => {
 .point-selection { pointer-events: none; fill: color-mix(in srgb, var(--vscode-focusBorder) 13%, transparent);
     stroke: var(--vscode-focusBorder); stroke-width: 1; }
 .automation-curve { user-select: none; -webkit-user-select: none; }
-.automation-curve:focus { outline: none; }
 .curve-point { cursor: default; }
 .curve-tension { cursor: ew-resize; }
-.curve-point:focus, .curve-tension:focus { outline: none; }
 .control-target { fill: transparent; }
-:is(.curve-point, .curve-tension):focus-visible .control-target {
-    stroke: currentColor; stroke-dasharray: 2 2;
-}
 .selected-point-ring {
     fill: var(--vscode-editor-background); stroke: var(--vscode-focusBorder);
     stroke-width: 1.5px; pointer-events: none;
@@ -607,13 +595,11 @@ onBeforeUnmount(() => {
 .tension-stem { fill: none; stroke: currentColor; stroke-opacity: .22; pointer-events: none; }
 .curve-tension[data-hovered] .tension-marker { fill-opacity: 1; transform: scale(1.27); }
 .automation-popover { width: min(214px, calc(100vw - 8px)); }
+.automation-menu-fields { display: grid; gap: 4px; padding: 4px 8px; }
 .automation-popover label, .automation-popover-control, .automation-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .automation-popover select, .automation-settings-row select {
     max-width: 100px; color: var(--vscode-input-foreground); background: var(--vscode-input-background);
     border: 1px solid var(--vscode-input-border); font: inherit;
 }
-.automation-popover .delete-point { justify-self: end; color: var(--vscode-errorForeground); background: transparent;
-    border: 0; border-radius: 2px; font: inherit; padding: 3px 8px; cursor: pointer; }
-.automation-popover .delete-point:is(:hover, :focus-visible) { background: var(--vscode-toolbar-hoverBackground); }
 .scale-error { color: var(--vscode-errorForeground); }
 </style>

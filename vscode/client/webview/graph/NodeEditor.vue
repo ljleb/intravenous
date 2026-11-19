@@ -40,16 +40,16 @@ function save() {
         <div class="node-editor-backdrop" @click.self="emit('close')" @keydown.esc.stop="emit('close')">
             <form class="node-editor" role="dialog" aria-modal="true" aria-label="Node configuration" @submit.prevent="save">
                 <label>Definition
-                    <input v-if="instance" :value="definitionId" readonly />
-                    <select v-else v-model="definitionId" autofocus>
+                    <input v-if="instance" :value="definitionId" tabindex="-1" readonly />
+                    <select v-else v-model="definitionId" tabindex="-1" autofocus>
                         <option v-for="id in definitions" :key="id" :value="id">{{ id }}</option>
                     </select>
                 </label>
-                <label>Name<input v-model="displayName" /></label>
-                <label>Construction arguments<textarea v-model="configurationSource" rows="6" spellcheck="false" /></label>
+                <label>Name<input v-model="displayName" tabindex="-1" /></label>
+                <label>Construction arguments<textarea v-model="configurationSource" tabindex="-1" rows="6" spellcheck="false" /></label>
                 <footer>
-                    <button type="button" @click="emit('close')">Cancel</button>
-                    <button type="submit" :disabled="!definitionId">{{ instance ? 'Apply' : 'Create' }}</button>
+                    <button type="button" tabindex="-1" @click="emit('close')">Cancel</button>
+                    <button type="submit" tabindex="-1" :disabled="!definitionId">{{ instance ? 'Apply' : 'Create' }}</button>
                 </footer>
             </form>
         </div>

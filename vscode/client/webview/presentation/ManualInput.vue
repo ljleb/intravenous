@@ -28,7 +28,7 @@ onBeforeUnmount(() => control.hover(false));
         :data-status-hint="description" @pointerdown.stop @click.stop @contextmenu="knob?.entry($event)"
         @iv-hoverenter="control.hover(true)" @iv-hoverleave="control.hover(false)">
         <span v-if="showName" class="manual-name">{{ name }}</span>
-        <button v-if="direction !== 'output'" type="button" class="knob-side-toggle knob-enable-toggle manual-input-toggle"
+        <button v-if="direction !== 'output'" type="button" tabindex="-1" class="knob-side-toggle knob-enable-toggle manual-input-toggle"
             :aria-pressed="!!descriptor?.enabled" :disabled="!descriptor?.available || descriptor.live || control.dragging.value"
             :aria-label="`${name} manual value`" :data-status-hint="descriptor?.enabled ? 'Disable manual value' : 'Enable manual value'"
             @pointerdown.stop @mousedown.left.prevent @click.stop="control.toggleEnabled" @contextmenu.stop.prevent>
@@ -38,7 +38,7 @@ onBeforeUnmount(() => control.hover(false));
             :disabled="!available" :port-cutout="portCutout" :direction="direction" :activity="activity"
             :inactive="inactive" :inverted="control.inverted.value" :description="description"
             :apply="apply" :bind-drag="control.scrub" :bind-value-entry="control.numeric" :reset="control.reset" @hover="control.hover" />
-        <button v-if="direction === 'output'" type="button" class="knob-side-toggle"
+        <button v-if="direction === 'output'" type="button" tabindex="-1" class="knob-side-toggle"
             :aria-pressed="control.inverted.value"
             :disabled="!available" :aria-label="`${name}: invert output polarity`"
             :data-status-hint="control.inverted.value ? 'Restore polarity' : 'Invert polarity'"

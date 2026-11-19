@@ -556,6 +556,8 @@ Use `AnchoredPopover` for lane settings and context popovers. The popover
 handles viewport fitting, keyboard dismissal, and focus restoration. Give a
 popover rendered outside its lane the same `data-lane-key` as the lane so
 pointer selection uses the same modifiers and selection anchor.
+Set `contextual` on context menus and use `ContextMenuItem` for their actions.
+These components use the active VS Code menu colors.
 
 Supply lane-specific values, limits, snapping rules, edit callbacks, and panel
 content as props or slots. Keep the widget's markup, pointer and keyboard
@@ -563,6 +565,20 @@ gestures, exact entry, focus behavior, and status hints in the shared
 implementation. When a new lane needs a variation of an existing control,
 extend the shared component and check its existing callers as part of the same
 change.
+
+### Webview focus and keyboard shortcuts
+
+Keep controls and scrollable regions out of the Tab order with `tabindex="-1"`.
+Menus and folded port lists open and respond to the pointer. Apply the shared
+focus outline rule in `style.css`. Draw hover, drag, and selection feedback
+from those interaction states.
+
+Keep programmatic focus for text entry and for routing commands to the active
+editor. Preserve editing and playback shortcuts, along with semantic control
+names and descriptions.
+
+[Earlier keyboard navigation and focus indicators](./historical/vue_keyboard_navigation_before_removal_2026-11-19.md)
+records the superseded policy.
 
 ## Source navigation uses `NodeAddress` and its selector path
 
@@ -704,8 +720,7 @@ and maximum independently. The replaced wording is preserved in
 _Accepted visual feedback, 2026-11-14:_ distinguish idle, hovered, and dragged
 knobs with subtle stroke and fill changes in the knob's own color. Avoid a blue
 outline around yellow knobs. Drag feedback follows the local pointer gesture,
-independent of server acknowledgement. Keyboard focus remains visible in the
-same color family.
+independent of server acknowledgement.
 
 _Deferred visual refinement requested by the owner on 2026-11-14:_ after the
 current Vue Stage 3, improve magnitude feedback on knobs without finite bounds.
