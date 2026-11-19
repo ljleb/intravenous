@@ -184,7 +184,7 @@ void Observations::collect(Clock::time_point now)
                 auto const& result = capture.query->result;
                 bool const outdated = capture.query->configured_generation != configured_generation_.value_or(0)
                     || ((result.status == ObservationWindowResult::Status::ready || result.status == ObservationWindowResult::Status::failed)
-                        && result.data_version != background_data_version_
+                        && result.data_version < execution_data_version_
                         && now >= capture.retry_after)
                     || (result.status == ObservationWindowResult::Status::pending_execution && now >= capture.retry_after);
                 if (outdated) {
@@ -219,7 +219,7 @@ void Observations::collect(Clock::time_point now)
             }
         }
         IV_INVOKE_LINKER_EVENT(iv_observations_graph_executor_event, collection);
-        background_data_version_ = collection.background_data_version;
+        execution_data_version_ = collection.execution_data_version;
         if (!collection.handled) for (auto const& query : collection.windows) {
             query->result.status = ObservationWindowResult::Status::failed;
             query->result.error = "background observation executor is unavailable";
@@ -259,7 +259,7 @@ void Observations::collect(Clock::time_point now)
                 {"semanticVersion", std::to_string(result.semantic_version)}, {"dataVersion", std::to_string(result.data_version)},
                 {"sampleRate", result.sample_rate}, {"paceExponent", result.pace_exponent},
                 {"executionGeneration", std::to_string(result.execution_generation)},
-                {"regions", std::move(regions)}, {"error", result.error}});
+                {"regions", std::move(regions)}, {"error", result.error}, {"diagnostic", result.diagnostic}});
             return *capture.payload;
         };
         std::map<std::string, Json> batches;
@@ -274,7 +274,7 @@ void Observations::collect(Clock::time_point now)
                         auto payload = window_payload(*capture);
                         payload["id"] = interest.id;
                         payload["outdated"] = capture->query->result.status == ObservationWindowResult::Status::ready
-                            && capture->query->result.data_version != background_data_version_;
+                            && capture->query->result.data_version < execution_data_version_;
                         windows.push_back(std::move(payload));
                     } else if (capture != windows_.end() && capture->payload
                         && (*capture->payload)["status"] == "ready") {
@@ -284,6 +284,8 @@ void Observations::collect(Clock::time_point now)
                         windows.push_back(std::move(payload));
                     } else {
                         windows.push_back({{"id", interest.id}, {"status", "pending"}, {"approximate", true},
+                            {"diagnostic", capture != windows_.end() && capture->submitted
+                                ? "waiting for the background observation worker" : "waiting for observation source resolution"},
                             {"window", {{"begin", std::to_string(interest.window->begin.signed_value())},
                                 {"length", std::to_string(interest.window->length)}, {"points", interest.window->points}}},
                             {"regions", Json::array()}});

@@ -483,6 +483,7 @@ onBeforeUnmount(() => {
         <div v-if="expanded" ref="panel" class="port-panel" :class="{ above, continuation, positioning: !panelPositioned }"
             :style="[panelPosition, { '--output-knob-column': outputKnobColumn(panelKnobSize) }]"
             :aria-hidden="!panelPositioned"
+            :data-lane-key="nodeKey"
             :data-port-group="expanded" :data-node-key="nodeKey" :data-direction="expanded"
             @iv-hoverleave="leave" @focusout="leaveFocus" @keydown.esc="closePanel"
             @wheel="timelineNavigation?.wheel($event)" @pointerdown.capture="timelineNavigation?.beginMiddleDrag($event)">

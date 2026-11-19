@@ -1,6 +1,7 @@
 #include <intravenous/dsl.h>
 #include <intravenous/graph_jit/background_storage_plan.h>
 #include <intravenous/graph_jit/connection_plan.h>
+#include <intravenous/graph_jit/coverage_manual_control.h>
 #include <intravenous/graph_jit/module_input_resolution.h>
 #include <intravenous/graph_jit/sample_storage_plan.h>
 
@@ -4770,6 +4771,36 @@ TEST(GraphJitConnectionPlan, ManualOverrideReplacesOnlyItsSelectedInputSource)
     auto restored = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(restored) << restored.error();
     EXPECT_EQ(restored->sample_connections.size(), 2u);
+}
+
+TEST(GraphJitConnectionPlan, ReusingCoverageOverrideTopologyKeepsAuthoredValidationSeparate)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<BackgroundSource>(graph);
+    auto target = details::configure_concrete_node<BackgroundSamplePass>(graph);
+    target(source);
+    target(source);
+    graph.outputs();
+    auto configured = std::move(graph).finish();
+    ASSERT_EQ(configured.connections.configured_sample_connections().size(), 2u);
+    configured.manual_controls.push_back({
+        .id = {.node = {.instance_id = "target"}, .port_name = "in"},
+        .input = {target.node_bundle_handle(), PortKind::sample, 0},
+        .settled_value = .25f,
+        .dynamic = true,
+        .override_connections = true,
+    });
+    auto const manual = graph_jit::detail::expand_coverage_manual_controls(configured);
+    ASSERT_EQ(manual.size(), 1u);
+    auto first = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(first) << first.error();
+    ASSERT_FALSE(first->background.connections.empty());
+    auto realization = iv::graph_jit::resolve_port_realization(configured);
+    ASSERT_TRUE(realization) << realization.error();
+    auto reused = iv::graph_jit::detail::build_connection_analysis_plan(
+        configured, *realization, 64, {}, &first->background);
+    EXPECT_TRUE(reused) << reused.error();
 }
 
 TEST(GraphJitConnectionPlan, ModuleManualFanoutPreservesDetachAndOrdinarySourcePolicy)

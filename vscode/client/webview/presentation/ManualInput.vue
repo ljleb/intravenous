@@ -7,6 +7,8 @@ import Knob from "./Knob.vue";
 const props = defineProps<{ name: string; showName?: boolean; direction?: "input" | "output"; portCutout?: boolean }>();
 const control = useManualInput(() => props.name, () => props.direction ?? "input");
 const { value, available, limits, state, descriptor, activity } = control;
+const inactive = computed(() => !descriptor.value?.participates
+    || (props.direction === "output" && value.value === 1 && !control.inverted.value));
 const knob = ref<InstanceType<typeof Knob> | null>(null);
 const description = computed(() => [knobPortStatus(control.port.value),
     activity.value === "retained" ? "Override held" : !descriptor.value?.enabled && activity.value !== "active" ? "Manual value off" : "",
@@ -19,7 +21,7 @@ onBeforeUnmount(() => control.hover(false));
 </script>
 
 <template>
-    <div class="manual-input" :class="{ inactive: !descriptor?.participates }"
+    <div class="manual-input" :class="{ inactive }"
         :data-direction="direction ?? 'input'"
         :data-activity="activity"
         :data-manual-control="control.key.value"
@@ -34,7 +36,7 @@ onBeforeUnmount(() => control.hover(false));
         </button>
         <Knob ref="knob" class="manual-knob" :identity="control.key.value" :label="name" :value="value" :limits="limits"
             :disabled="!available" :port-cutout="portCutout" :direction="direction" :activity="activity"
-            :inactive="!descriptor?.participates" :inverted="control.inverted.value" :description="description"
+            :inactive="inactive" :inverted="control.inverted.value" :description="description"
             :apply="apply" :bind-drag="control.scrub" :bind-value-entry="control.numeric" :reset="control.reset" @hover="control.hover" />
         <button v-if="direction === 'output'" type="button" class="knob-side-toggle"
             :aria-pressed="control.inverted.value"

@@ -30,6 +30,7 @@ export class ManualControlGestures {
     private retainedInteraction: string | null = null;
     readonly valueEditing: KnobValueEditing<Hover>;
     private remote: ManualControlInteractionState[] = [];
+    private graphGeneration: number | null = null;
     private live: ManualControlLiveValue[] = [];
     private readonly ending = new Map<string, ManualControlInteractionState>();
     // Zero carries no polarity over JSON. Keep the editor's last choice so
@@ -47,7 +48,9 @@ export class ManualControlGestures {
         if (this.active && manualControlKey(this.active.control) === manualControlKey(control))
             return { ...this.active, phase: "active" };
         return this.ending.get(manualControlKey(control))
-            ?? this.remote.find((entry) => manualControlKey(entry.control) === manualControlKey(control));
+            ?? this.remote.find((entry) => manualControlKey(entry.control) === manualControlKey(control)
+                && (entry.phase !== "failed" || entry.graphGeneration == null || this.graphGeneration == null
+                    || entry.graphGeneration === this.graphGeneration));
     }
     // The value of a gesture held elsewhere: another view or another client.
     // This view's own gesture state takes precedence through state().
@@ -102,6 +105,11 @@ export class ManualControlGestures {
             if ((this.active && manualControlKey(this.active.control) === key) || this.ending.has(key)) continue;
             this.rememberOutputInversion(entry.control, entry.value);
         }
+        this.changed();
+    }
+    configuredGeneration(generation: number | null): void {
+        if (generation === this.graphGeneration) return;
+        this.graphGeneration = generation;
         this.changed();
     }
     hover(control: ManualControlId | null, descriptor?: ManualControlDescriptor, limits: ManualControlLimits = {},
@@ -290,6 +298,6 @@ export class ManualControlGestures {
     }
     disconnected(): void {
         this.active = null; this.hovered = null; this.hoverDetails = null; this.retainedInteraction = null;
-        this.valueEditing.cancel(); this.remote = []; this.live = []; this.ending.clear(); this.changed();
+        this.valueEditing.cancel(); this.remote = []; this.live = []; this.ending.clear(); this.graphGeneration = null; this.changed();
     }
 }

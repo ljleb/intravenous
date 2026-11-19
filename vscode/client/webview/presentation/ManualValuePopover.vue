@@ -1,20 +1,21 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { KnobValueEntry } from "../../src/knobValueEntry";
+import { fitPopoverAtPoint } from "../../src/popoverPosition";
 
 const props = defineProps<{ entry: KnobValueEntry | null; accept: () => boolean; cancel: () => void;
-    setDraft: (draft: string) => void; target?: HTMLElement; returnFocus?: HTMLElement }>();
+    setDraft: (draft: string) => void; target?: HTMLElement; returnFocus?: HTMLElement; laneKey?: string }>();
 const input = ref<HTMLInputElement | null>(null);
 const viewport = ref({ width: window.innerWidth, height: window.innerHeight });
 const position = computed(() => {
     const anchor = props.entry?.anchor;
     if (!anchor) return {};
-    const width = Math.min(190, viewport.value.width - 8);
+    const width = Math.max(0, Math.min(190, viewport.value.width - 8));
     const height = props.entry?.error ? 90 : 42;
     const proposedTop = anchor.bottom + height + 4 <= viewport.value.height ? anchor.bottom + 4 : anchor.top - height - 4;
-    const top = Math.max(4, Math.min(proposedTop, viewport.value.height - height - 4));
-    return { width: `${width}px`, left: `${Math.max(4, Math.min(anchor.left, viewport.value.width - width - 4))}px`,
-        top: `${top}px`, maxHeight: `${Math.max(20, viewport.value.height - top - 4)}px` };
+    const { x, y } = fitPopoverAtPoint({ x: anchor.left, y: proposedTop }, { width, height }, viewport.value);
+    return { width: `${width}px`, left: `${x}px`,
+        top: `${y}px`, maxHeight: `${Math.max(20, viewport.value.height - y - 4)}px` };
 });
 function resize() { viewport.value = { width: window.innerWidth, height: window.innerHeight }; }
 function close(accept: boolean) {
@@ -42,7 +43,7 @@ onBeforeUnmount(() => window.removeEventListener("resize", resize));
 <template>
     <Teleport :to="target ?? 'body'">
         <form v-if="entry" class="manual-value-popover" :style="position" role="dialog"
-            :aria-label="`${entry.label} value`" @submit.prevent="close(true)"
+            :aria-label="`${entry.label} value`" :data-lane-key="laneKey" @submit.prevent="close(true)"
             @pointerdown.stop @keydown.esc.stop.prevent="close(false)">
             <input ref="input" type="text" inputmode="decimal" :value="entry.draft"
                 :aria-label="`${entry.label} value`" :aria-invalid="!!entry.error"

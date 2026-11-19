@@ -163,7 +163,7 @@ struct Executor {
     {
         request.handled = true; request.frame = std::move(frame); frame.reset();
         windows.insert(windows.end(), request.windows.begin(), request.windows.end());
-        request.background_data_version = data_version;
+        request.execution_data_version = data_version;
     }
     void publish(ObservationRequirements const& requirements, std::uint64_t activation, bool available = true)
     {
@@ -409,6 +409,9 @@ TEST_F(ObservationService, WindowScopesShareCancelableQueriesWithoutCreatingLive
     collect();
     ASSERT_EQ(executor.windows.size(), 1u);
     auto query = executor.windows.front();
+    ASSERT_EQ(delivery.batches.size(), 2u);
+    auto const& pending_result = (*delivery.batches[0].payload)["scopes"][0]["windows"][0];
+    EXPECT_EQ(pending_result["diagnostic"], "waiting for the background observation worker");
     query->result.status = ObservationWindowResult::Status::ready;
     query->result.sample_rate = 48000;
     query->result.regions.push_back({.range = {GlobalIndex::from_signed(0), 3}});
@@ -442,19 +445,26 @@ TEST_F(ObservationService, WindowScopesShareCancelableQueriesWithoutCreatingLive
     EXPECT_TRUE(pending->canceled.load(std::memory_order_acquire));
 }
 
-TEST_F(ObservationService, PublishedDataChangeInvalidatesWindowContentsWithoutRecompilation)
+TEST_F(ObservationService, OnlyNewerExecutionDataInvalidatesWindowContents)
 {
     auto window = interest(); window.operation = "waveform";
     window.window = ObservationWindow{GlobalIndex{}, 32, 8};
     ASSERT_TRUE(reconcile("a", "lane", {window}).error.empty());
+    executor.data_version = 1;
     collect();
     ASSERT_EQ(executor.windows.size(), 1u);
     auto query = executor.windows.front();
     query->result.status = ObservationWindowResult::Status::ready;
+    query->result.data_version = 2;
     query->complete.store(true, std::memory_order_release);
     collect();
     EXPECT_EQ((*delivery.batches[0].payload)["scopes"][0]["windows"][0]["status"], "ready");
-    executor.data_version = 1;
+    EXPECT_EQ((*delivery.batches[0].payload)["scopes"][0]["windows"][0]["outdated"], false);
+    collect(); collect(); collect();
+    EXPECT_FALSE(query->canceled.load(std::memory_order_acquire));
+    EXPECT_EQ(executor.windows.size(), 1u);
+
+    executor.data_version = 3;
     collect();
     EXPECT_EQ((*delivery.batches[0].payload)["scopes"][0]["windows"][0]["status"], "ready");
     EXPECT_EQ((*delivery.batches[0].payload)["scopes"][0]["windows"][0]["outdated"], true);

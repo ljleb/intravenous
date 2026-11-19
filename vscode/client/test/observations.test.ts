@@ -38,6 +38,34 @@ test("observation source identity distinguishes channels, inputs, outputs, and s
     assert.notEqual(observationSourceKey(source), observationSourceKey({ ...source, kind: "input" }));
 });
 
+test("automation bound tracing records an existing request and a rejected window without resubscribing", async (context) => {
+    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    context.mock.timers.enable({ apis: ["setTimeout"] });
+    const sent: import("../src/observations").ObservationHostRequest[] = [];
+    const log: string[] = [];
+    const scope = new PresentationObservations((request) => sent.push(request));
+    const id = scope.portObservationId();
+    const source = { kind: "input" as const, node: { instanceId: "curve" }, member: "max" };
+    const window = { begin: "0", length: "64", points: 8 };
+    try {
+        scope.observePort(id, { source, operation: "waveform", window });
+        scope.values.expectWindows([{ id, source, operation: "waveform", window }]);
+        scope.configuredGeneration(7);
+        scope.traceAutomationBounds((detail) => log.push(detail));
+        assert.match(log[0], /"member":"max"/);
+        assert.equal(sent.length, 0);
+
+        const batch = update("1", "0");
+        batch.scopes[0].windows = [{ id, window: { ...window, begin: "1" }, status: "pending",
+            approximate: true, diagnostic: "waiting for the background observation worker", regions: [] }];
+        scope.receive({ type: "observationUpdate", update: batch });
+        assert.match(log[1], /"accepted":false/);
+        assert.match(log[1], /waiting for the background observation worker/);
+        assert.equal(scope.values.windows.has(id), false);
+    } finally { scope.dispose(); }
+    assert.equal(log.at(-1), "Finished.");
+});
+
 test("input observations use explicit interests alongside automatic output meters", { timeout: 5000 }, async () => {
     const { PresentationObservations } = await import("../webview/presentation/observationContext");
     type Reconcile = Extract<import("../src/observations").ObservationHostRequest, { type: "observationReconcile" }>;

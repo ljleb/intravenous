@@ -29,6 +29,7 @@ export type ManualControlInteractionState = {
     value: number;
     phase: "starting" | "active" | "ending" | "settled" | "failed";
     error?: string;
+    graphGeneration?: number | null;
 };
 export interface ManualControlTransport {
     hoverManualControl(control: ManualControlId | null): Promise<void>;
@@ -56,6 +57,7 @@ type Interaction = ManualControlInteractionState & {
     ending: boolean;
     discardAfterEnd: boolean;
     epoch: number;
+    graphGeneration: number | null;
 };
 
 // Workspace-owned, independent of Vue and its component lifetimes. Hover, begin
@@ -78,6 +80,7 @@ export class ManualControlInteractions {
         return [...this.entries.values()].filter((entry) => entry.owner === owner).map((entry) => ({
             interactionId: entry.interactionId, control: entry.control, value: entry.value,
             phase: entry.phase, error: entry.error,
+            ...(entry.phase === "failed" ? { graphGeneration: entry.graphGeneration } : {}),
         }));
     }
     private key(owner: string, id: string) { return JSON.stringify([owner, id]); }
@@ -109,7 +112,8 @@ export class ManualControlInteractions {
                     && manualControlKey(previous.control) === manualControlKey(action.control)) this.entries.delete(previousKey);
             const entry: Interaction = { ...action, owner, remoteId: key,
                 fallbackValue: descriptor.value, sent: action.value, phase: "starting",
-                remoteActive: false, scheduled: false, ending: false, discardAfterEnd: false, epoch: this.epoch };
+                remoteActive: false, scheduled: false, ending: false, discardAfterEnd: false, epoch: this.epoch,
+                graphGeneration: this.scope?.generation ?? null };
             this.entries.set(key, entry);
             this.changed();
             this.queue(async () => {
@@ -191,7 +195,10 @@ export class ManualControlInteractions {
             catch (cleanup) { entry.error += `; ending interaction: ${String(cleanup)}`; }
             entry.remoteActive = false;
         }
-        if (entry.discardAfterEnd) this.entries.delete(this.key(entry.owner, entry.interactionId));
+        if (entry.discardAfterEnd) {
+            const key = this.key(entry.owner, entry.interactionId);
+            if (this.entries.get(key) === entry) this.entries.delete(key);
+        }
         this.changed();
     }
     private hover(owner: string, control: ManualControlId | null): void {
@@ -226,6 +233,7 @@ export class ManualControlInteractions {
     }
     reconcile(scope: GraphScope): void {
         this.scope = scope;
+        let retiredFailure = false;
         for (const node of scope.nodes) {
             for (const { port, control } of [
                 ...node.sampleInputs.map((port) => ({ port, control: { node: node.address, inputName: port.name } as ManualControlId })),
@@ -243,18 +251,26 @@ export class ManualControlInteractions {
             if (!resolveManualControl(scope, this.remoteLive.get(key)!.control)?.live) this.remoteLive.delete(key);
         for (const entry of this.entries.values()) {
             const descriptor = resolveManualControl(scope, entry.control);
+            if (entry.phase === "failed") {
+                if (!descriptor || (scope.generation !== null && entry.graphGeneration !== scope.generation)) {
+                    this.entries.delete(this.key(entry.owner, entry.interactionId));
+                    retiredFailure = true;
+                }
+                continue;
+            }
             if (entry.phase === "settled") {
                 if (descriptor) entry.value = descriptor.value;
                 else this.entries.delete(this.key(entry.owner, entry.interactionId));
                 this.changed();
                 continue;
             }
-            if (!canEditManualControl(entry.control, descriptor) && entry.phase !== "failed") {
+            if (!canEditManualControl(entry.control, descriptor)) {
                 this.queue(() => this.fail(entry, new Error("The manual input was removed or became incompatible")));
             }
         }
         if (this.hovered && !canEditManualControl(this.hovered.control, resolveManualControl(scope, this.hovered.control)))
             this.hover(this.hovered.owner, null);
+        if (retiredFailure) this.changed();
     }
     releaseOwner(owner: string): void {
         this.hover(owner, null);

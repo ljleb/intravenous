@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { addressKey } from "../src/graphScope";
-import { mergeLaneOrder, moveSelectedLanes, orderLanes, selectLaneRange, selectedLaneRuns } from "../src/laneSelection";
+import { mergeLaneOrder, moveSelectedLanes, orderLanes, selectLaneRange, laneRuns } from "../src/laneSelection";
 
 test("Shift-click extends or shrinks an inclusive range from the same lane", () => {
     const order = ["a", "b", "c", "d", "e"];
@@ -24,7 +24,7 @@ test("moving lane runs preserves both relative orders and stops at the boundary"
     assert.deepEqual(moveSelectedLanes(order, selected, 1), ["b", "a", "e", "c", "d", "f"]);
     assert.equal(moveSelectedLanes(order, new Set(["a", "b"]), -1), order);
     assert.equal(moveSelectedLanes(order, new Set(["e", "f"]), 1), order);
-    assert.deepEqual(selectedLaneRuns(order, selected), [{ begin: 0, end: 1 }, { begin: 2, end: 4 }, { begin: 5, end: 6 }]);
+    assert.deepEqual(laneRuns(order, selected), [{ begin: 0, end: 1 }, { begin: 2, end: 4 }, { begin: 5, end: 6 }]);
 });
 
 test("the displayed order keeps saved lanes and appends newly visible lanes", () => {

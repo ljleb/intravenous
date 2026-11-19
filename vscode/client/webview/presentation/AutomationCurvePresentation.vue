@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch, watchEffect } from "vue";
 import { automationTensionLimits, automationWindow, type CurveAxes, type CurveDragKind } from "../../src/automationCurveEditing";
 import { automationSampleOffset, automationValueFraction, automationValueGuides, clampAutomationValue,
     compareAutomationTime, panAutomationValueAxis, panCurvedAutomationValueZoom, readAutomationCurveView,
@@ -8,19 +8,19 @@ import { automationSampleOffset, automationValueFraction, automationValueGuides,
 import { addressKey, type NodeAddress } from "../../src/graphScope";
 import { automationBoundTracks, sampleAutomationPreview, type AutomationBoundInput,
     type BoundSample } from "../../src/automationBoundInputs";
-import type { ObservationWindowResult } from "../../src/observations";
+import { summarizeObservationWindow, type ObservationWindowResult } from "../../src/observations";
 import { sampleWindow } from "../../src/sampleWaveform";
-import { usePortObservation } from "./observationContext";
+import { useObservations, usePortObservation } from "./observationContext";
 import { rightClickHint } from "../../src/statusBarText";
 import { useOptionalGraphEditor } from "../graph/context";
 import { automationPointStatus } from "../statusHints";
 import { automationTimelineTicks } from "../timeline/geometry";
 import RulerGraduations from "../timeline/RulerGraduations.vue";
-import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
 import { useTimelineNavigation, useTimelineWindow, type LaneValueNavigation } from "../timeline/timelineContext";
 import NodeLane from "./NodeLane.vue";
 import Knob from "./Knob.vue";
 import LaneSettings from "./LaneSettings.vue";
+import AnchoredPopover from "./AnchoredPopover.vue";
 import { useAutomationEditing } from "./automationEditingContext";
 import { nanoHeightPx, type NodeDisplayMode } from "./displayMode";
 import { useLane } from "./laneContext";
@@ -37,6 +37,7 @@ const editor = useOptionalGraphEditor();
 const { edits, version } = useAutomationEditing();
 const time = useTimelineWindow();
 const navigation = useTimelineNavigation();
+const observations = useObservations();
 const surface = ref<SVGSVGElement | null>(null);
 const width = ref(1), height = ref(1);
 const key = computed(() => node.value.address ? addressKey(node.value.address) : null);
@@ -91,10 +92,11 @@ function observeBound(side: AutomationBoundInput) {
         if (current.value) return { key: identity, result: current.value };
         return previous?.key === identity ? previous : undefined;
     });
-    return computed(() => {
+    const tracks = computed(() => {
         const origin = timelineWindow.value?.beginSeconds, rate = curve.value?.sampleRate;
         return origin !== undefined && rate ? automationBoundTracks(retained.value?.result, origin, rate) : [];
     });
+    return { observation, retained, tracks };
 }
 const lowerBound = observeBound("min"), upperBound = observeBound("max");
 const view = computed(() => {
@@ -103,8 +105,8 @@ const view = computed(() => {
     return curve.value && timeline && address
         ? automationWindow(curve.value, 0, timeline.spanSeconds, edits.drafts(address), timeline.beginSeconds) : null;
 });
-const preview = computed(() => sampleAutomationPreview(view.value?.paths ?? [], lowerBound.value,
-    upperBound.value, manualBounds.value, timelineWindow.value?.spanSeconds ?? 0, width.value));
+const preview = computed(() => sampleAutomationPreview(view.value?.paths ?? [], lowerBound.tracks.value,
+    upperBound.tracks.value, manualBounds.value, timelineWindow.value?.spanSeconds ?? 0, width.value));
 const curveView = ref<AutomationCurveView>({});
 const viewChanged = usePresentationState({
     serialize() {
@@ -140,6 +142,29 @@ function previewPath(tracks: BoundSample[][]): string {
 const hasOutputBounds = computed(() => preview.value.min.length > 0 || preview.value.max.length > 0);
 const minPath = computed(() => previewPath(preview.value.min));
 const maxPath = computed(() => previewPath(preview.value.max));
+watchEffect(() => {
+    if (!observations?.tracingBounds.value || !key.value) return;
+    for (const side of ["min", "max"] as const) {
+        const port = boundPort(side), manual = manualBounds.value[side];
+        if (!visible.value && port?.connectivity !== "connected" && manual === undefined) continue;
+        const bound = side === "min" ? lowerBound : upperBound;
+        const runs = preview.value[side];
+        let top = Infinity, bottom = -Infinity;
+        for (const run of runs) for (const point of run) {
+            const projected = y(point.value);
+            top = Math.min(top, projected);
+            bottom = Math.max(bottom, projected);
+        }
+        observations.logBoundTrace(`Render ${key.value} ${side}`, {
+            visible: visible.value, connectivity: port?.connectivity, manual,
+            observationId: bound.observation.id.value, requestedWindow: observationWindow.value,
+            latest: summarizeObservationWindow(bound.observation.latestWindow.value),
+            retained: summarizeObservationWindow(bound.retained.value?.result),
+            tracks: bound.tracks.value.length, runs: runs.length, top, bottom, height: height.value,
+            axis: { pan: axes.value?.pan, zoom: axes.value?.zoom, display: axes.value?.display },
+        });
+    }
+}, { flush: "post" });
 const path = computed(() => previewPath(preview.value.authored));
 const outputPath = computed(() => hasOutputBounds.value ? previewPath(preview.value.output) : "");
 const markerY = (point: AutomationPoint) => Math.max(2, Math.min(height.value - 2, y(point.value)));
@@ -175,9 +200,8 @@ const handleY = (point: AutomationPoint) => {
     return center + (center < height.value / 2 ? 15 : -15);
 };
 
-type PopoverPosition = { left: number; top: number };
-const segmentMenu = ref<({ id: number } & PopoverPosition) | null>(null);
-const popover = ref<HTMLElement | null>(null);
+const segmentMenu = ref<{ id: number } | null>(null);
+const popover = ref<InstanceType<typeof AnchoredPopover> | null>(null);
 const selected = computed(() => {
     void version.value;
     const point = curve.value?.points.find(({ id }) => id === segmentMenu.value?.id);
@@ -186,7 +210,6 @@ const selected = computed(() => {
     const draft = edits.drafts(target).find(({ id }) => id === point.id);
     return draft ? { ...point, ...draft } : point;
 });
-let menuAnchor: SVGElement | null = null;
 const marquee = ref<{ pointerId: number; x: number; y: number; currentX: number; currentY: number;
     ctrlKey: boolean; metaKey: boolean; shiftKey: boolean } | null>(null);
 const selectionRect = computed(() => {
@@ -195,38 +218,29 @@ const selectionRect = computed(() => {
         width: Math.abs(drag.x - drag.currentX), height: Math.abs(drag.y - drag.currentY) } : null;
 });
 
-function menuPosition(x: number, y: number, width: number, height: number): PopoverPosition {
-    return { left: Math.max(4, Math.min(window.innerWidth - width, x)),
-        top: Math.max(4, Math.min(window.innerHeight - height, y)) };
-}
-function editSegment(event: MouseEvent | KeyboardEvent, point: AutomationPoint) {
+async function editSegment(event: MouseEvent | KeyboardEvent, point: AutomationPoint) {
     if (!editable.value) return;
     event.preventDefault();
     event.stopPropagation();
     const control = event.currentTarget as SVGElement;
-    menuAnchor = event instanceof KeyboardEvent ? control : null;
     const rect = control.getBoundingClientRect();
-    const x = event instanceof MouseEvent ? event.clientX : rect.right;
-    const y = event instanceof MouseEvent ? event.clientY : rect.bottom;
-    segmentMenu.value = { id: point.id, ...menuPosition(x, y, 220, 145) };
-    void nextTick(() => popover.value?.querySelector("select")?.focus({ preventScroll: true }));
+    const location = event instanceof MouseEvent ? { x: event.clientX, y: event.clientY } : { x: rect.right, y: rect.bottom };
+    const returnFocus = event instanceof KeyboardEvent ? control : surface.value;
+    segmentMenu.value = { id: point.id };
+    const opened = segmentMenu.value;
+    await nextTick();
+    if (segmentMenu.value === opened && editable.value && selected.value) void popover.value?.showAt(location, returnFocus, "select");
 }
 function changeSegment(point: AutomationPoint, interpolation: CurveInterpolation, tension: number) {
     if (!editable.value || !node.value.address || !Number.isFinite(tension) || tension < 0 || tension > 1) return;
     void edits.segment(node.value.address, point.id, interpolation, Math.fround(tension));
 }
 function closeMenus(restoreFocus = false) {
-    if (popover.value) editor?.closeKnobValueWithin(popover.value);
-    if (restoreFocus) (menuAnchor ?? surface.value)?.focus({ preventScroll: true });
+    popover.value?.close(restoreFocus);
     segmentMenu.value = null;
-    menuAnchor = null;
 }
 function escapeSegment() {
     if (edits.activePoint()?.id === segmentMenu.value?.id) edits.abandon();
-    closeMenus(true);
-}
-function outside(event: PointerEvent) {
-    if (!(event.target instanceof Element) || !event.target.closest(".automation-popover")) closeMenus();
 }
 watch(editable, (enabled) => {
     if (enabled) return;
@@ -235,7 +249,7 @@ watch(editable, (enabled) => {
     if (pointerId !== undefined && surface.value?.hasPointerCapture(pointerId)) surface.value.releasePointerCapture(pointerId);
     closeMenus();
 });
-watch(selected, (point) => { if (!point) segmentMenu.value = null; });
+watch(selected, (point) => { if (!point) closeMenus(); });
 
 function changeDisplay(event: Event) {
     if (!editor || key.value === null) return;
@@ -463,7 +477,6 @@ const valueNavigation: LaneValueNavigation = {
     },
 };
 onMounted(() => {
-    window.addEventListener("pointerdown", outside, true);
     observer = new ResizeObserver(([entry]) => {
         if (entry) { width.value = Math.max(1, entry.contentRect.width); height.value = Math.max(1, entry.contentRect.height); }
     });
@@ -479,7 +492,6 @@ onBeforeUnmount(() => {
     unregisterValueNavigation?.();
     observer?.disconnect();
     intersection?.disconnect();
-    window.removeEventListener("pointerdown", outside, true);
 });
 </script>
 
@@ -506,7 +518,6 @@ onBeforeUnmount(() => {
                     <path v-if="minPath" :d="minPath" />
                     <path v-if="maxPath" :d="maxPath" class="upper-bound" />
                 </g>
-                <TimelinePlayhead />
                 <g v-if="snapGuide" class="value-snap-guide" aria-hidden="true">
                     <defs>
                         <linearGradient :id="snapGradientId" gradientUnits="userSpaceOnUse"
@@ -564,20 +575,21 @@ onBeforeUnmount(() => {
         </div>
     </NodeLane>
     <Teleport to="body">
-        <div v-if="editable && segmentMenu && selected" ref="popover" class="automation-popover"
-            :style="{ left: `${segmentMenu.left}px`, top: `${segmentMenu.top}px` }"
-            role="dialog" aria-label="Automation segment" data-lane-item-editor @keydown.esc.stop="escapeSegment" @pointerdown.stop @wheel.stop>
-            <label>Segment <select :value="selected.interpolation"
-                @change="changeSegment(selected, ($event.target as HTMLSelectElement).value as CurveInterpolation, selected.tension)">
-                <option value="empty">Empty</option><option value="hold">Hold</option><option value="bezier">Bézier</option>
-            </select></label>
-            <div v-if="selected.interpolation === 'bezier'" class="automation-popover-control">
-                <span aria-hidden="true">Tension</span>
-                <Knob :identity="`${key}:automation:tension:${selected.id}`" label="Bézier tension"
-                    :value="selected.tension" :limits="automationTensionLimits" :step=".05" v-bind="tensionBinding(selected)" />
-            </div>
-            <button type="button" class="delete-point" @click="removePoint(selected.id)">Delete point</button>
-        </div>
+        <AnchoredPopover v-if="editable && segmentMenu" ref="popover" class="automation-popover" label="Automation segment"
+            :data-lane-key="key" data-lane-item-editor @escape="escapeSegment" @toggle="(open) => { if (!open) segmentMenu = null; }">
+            <template v-if="selected">
+                <label>Segment <select :value="selected.interpolation"
+                    @change="changeSegment(selected, ($event.target as HTMLSelectElement).value as CurveInterpolation, selected.tension)">
+                    <option value="empty">Empty</option><option value="hold">Hold</option><option value="bezier">Bézier</option>
+                </select></label>
+                <div v-if="selected.interpolation === 'bezier'" class="automation-popover-control">
+                    <span aria-hidden="true">Tension</span>
+                    <Knob :identity="`${key}:automation:tension:${selected.id}`" label="Bézier tension"
+                        :value="selected.tension" :limits="automationTensionLimits" :step=".05" v-bind="tensionBinding(selected)" />
+                </div>
+                <button type="button" class="delete-point" @click="removePoint(selected.id)">Delete point</button>
+            </template>
+        </AnchoredPopover>
     </Teleport>
 </template>
 
@@ -619,11 +631,7 @@ onBeforeUnmount(() => {
 .curve-point[data-selected] .point-marker { r: 3.2px; }
 .tension-stem { fill: none; stroke: currentColor; stroke-opacity: .22; pointer-events: none; }
 .curve-tension[data-hovered] .tension-marker { fill-opacity: 1; transform: scale(1.27); }
-.automation-popover {
-    position: fixed; z-index: 1000; display: grid; gap: 8px; padding: 10px; max-width: 192px;
-    color: var(--vscode-editorWidget-foreground); background: var(--vscode-editorWidget-background);
-    border: 1px solid var(--vscode-widget-border); box-shadow: 0 2px 8px var(--vscode-widget-shadow);
-}
+.automation-popover { width: min(214px, calc(100vw - 8px)); }
 .automation-popover label, .automation-popover-control, .automation-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .automation-popover select, .automation-settings-row select {
     max-width: 100px; color: var(--vscode-input-foreground); background: var(--vscode-input-background);

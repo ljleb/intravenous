@@ -595,6 +595,33 @@ test("a queued predecessor end is not sent twice and its final value survives a 
     assert.equal(manager.states("panel")[0].value, 450);
 });
 
+test("a new graph generation retires a knob error and allows another edit", async () => {
+    let begins = 0;
+    const { manager } = harness({ beginManualControl: async () => {
+        if (++begins === 1) throw new Error("Control compilation failed");
+    } });
+    manager.action("panel", { action: "begin", interactionId: "first", control, value: 440 });
+    await manager.settled();
+    assert.equal(manager.states("panel")[0].graphGeneration, 1);
+    manager.reconcile(scope());
+    assert.equal(manager.states("panel")[0].phase, "failed");
+    manager.reconcile({ ...scope(), generation: 2 });
+    assert.deepEqual(manager.states("panel"), []);
+    manager.action("panel", { action: "begin", interactionId: "retry", control, value: 440 });
+    await manager.settled();
+    assert.equal(manager.states("panel")[0].phase, "active");
+});
+
+test("a late failure closes the optimistic gesture without marking the replacement graph", () => {
+    const gestures = new ManualControlGestures(() => {}, () => "old", () => {});
+    gestures.configuredGeneration(1);
+    gestures.edit(control, descriptor);
+    gestures.finish(control);
+    gestures.configuredGeneration(2);
+    gestures.receive([{ interactionId: "old", control, value: 440, phase: "failed", graphGeneration: 1, error: "old graph" }]);
+    assert.equal(gestures.state(control), undefined);
+});
+
 test("metadata refresh changes reset and numeric limits without replacing a typed draft", () => {
     const gestures = new ManualControlGestures(() => {}, () => "entry", () => {});
     gestures.hover(control, descriptor, { defaultValue: 440 });

@@ -48,6 +48,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "manualControlState"; interactions: ManualControlInteractionState[]; live: ManualControlLiveValue[] }
     | { type: "graphWindowFocus"; focused: boolean }
     | { type: "traceNextCursorReturn"; gesture: CursorReturnGesture }
+    | { type: "traceAutomationBounds" }
     | { type: "cursorReturnCompleted"; requestId: number }
     | { type: "graphAction"; action: "addNode" | "editNode" | "createPackage"; instanceId?: string };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
@@ -60,6 +61,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "warpCursorAfterPointDrag" | "warpCursorAfterMiddleDrag"; warp: CursorWarp; requestId: number }
     | { type: "cursorReturnSkipped"; detail: string }
     | { type: "cursorReturnTrace"; gesture: CursorReturnGesture; detail: string }
+    | { type: "automationBoundTrace"; detail: string }
     | { type: "manualControlAction"; action: ManualControlAction }
     | { type: "deleteSelectedLanes"; instanceIds: string[] }
     | { type: "setManualInputEnabled"; target: NodeAddress; inputName: string; enabled: boolean }

@@ -11,6 +11,7 @@
 #include <optional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <utility>
 
@@ -99,6 +100,7 @@ struct ObservationWindowResult {
     bool truncated = false;
     std::vector<ObservationWindowRegion> regions{};
     std::string error{};
+    std::string_view diagnostic{};
 };
 // Immutable request, one background writer, one control reader. Cancellation
 // never interrupts an in-progress transaction or destroys borrowed storage.
@@ -117,7 +119,7 @@ struct ObservationWindowQuery {
 struct ObservationCollectRequest {
     std::optional<LiveObservationFrame> frame{};
     std::vector<std::shared_ptr<ObservationWindowQuery>> windows{};
-    std::uint64_t background_data_version = 0;
+    std::uint64_t execution_data_version = 0;
     bool handled = false;
 };
 

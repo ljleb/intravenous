@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
-import { addressKey, type NodeAddress, type Point } from "../../src/graphScope";
-import { orderLanes, selectedLaneRuns } from "../../src/laneSelection";
+import { addressKey, type Point } from "../../src/graphScope";
+import { orderLanes, laneRuns } from "../../src/laneSelection";
 import { KnobPointerLock } from "../../src/knobPointerLock";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
 import { useNode } from "../presentation/nodeContext";
 import { semanticNodeFromScopeChild } from "../presentation/semanticNode";
 import PresentationHost from "../presentation/PresentationHost.vue";
+import { presentations } from "../presentation/presentations";
 import { nodeDisplayName } from "../presentation/nodeSummary";
 import TimeRuler from "../timeline/TimeRuler.vue";
+import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
 import { provideTimelineNavigation, provideTimelineWindow, type LaneValueGesture, type LaneValueNavigation } from "../timeline/timelineContext";
 import { initialTimelineViewport, isMiddleDoubleClick, middleClickMode, moveMiddleDrag, panTimeline, resetTimelineZoom, timelineMiddleDragAction,
     timelineWheelAction, verticalMiddleDragZoomFactor, wheelPixels, wrapTimelineCursor, zoomAnchorHint, zoomFactorForPixels, zoomMiddleDrag,
@@ -27,9 +29,12 @@ const { layout, save, copyNodeDebugDetails, selectedLanes, selectLane, beginPoin
 const children = computed(() => orderLanes(scope.value.nodes, layout.value.laneOrder).map((child) => ({
     child, semantic: semanticNodeFromScopeChild(child, scope.value),
 })));
-function activateLane(event: PointerEvent, address: NodeAddress) {
-    if (event.button === 0 || event.button === 2) selectLane(address, event);
-}
+const laneOrder = computed(() => children.value.map(({ child }) => addressKey(child.address)));
+const timelineRuns = computed(() => {
+    const timelineLanes = new Set(children.value.filter(({ semantic }) => presentations.select(semantic.definitionId).timeline)
+        .map(({ child }) => addressKey(child.address)));
+    return laneRuns(laneOrder.value, timelineLanes);
+});
 const viewport = computed({ get: () => layout.value.timeline,
     set: (value) => { layout.value.timeline = value; } });
 const laneHeight = computed(() => viewport.value.laneHeight);
@@ -37,7 +42,7 @@ const headerHeight = 36;
 const scrollbarStyle = computed(() => {
     const contentHeight = headerHeight + scope.value.nodes.length * laneHeight.value;
     const accent = "var(--vscode-editorOverviewRuler-selectionHighlightForeground, var(--vscode-focusBorder))";
-    const marks = selectedLaneRuns(children.value.map(({ child }) => addressKey(child.address)), selectedLanes.value).flatMap((run) => {
+    const marks = laneRuns(laneOrder.value, selectedLanes.value).flatMap((run) => {
         const start = 100 * (headerHeight + run.begin * laneHeight.value) / contentHeight;
         const end = 100 * (headerHeight + run.end * laneHeight.value) / contentHeight;
         return [`transparent ${start}%`, `${accent} ${start}% ${end}%`, `transparent ${end}%`];
@@ -445,12 +450,17 @@ onBeforeUnmount(() => {
         <div class="lanes">
             <section v-for="{ child, semantic } in children" :key="addressKey(child.address)"
                 class="lane" :class="{ selected: selectedLanes.has(addressKey(child.address)) }"
+                :data-lane-key="addressKey(child.address)"
                 :style="{ height: `${laneHeight}px` }" tabindex="0"
                 :aria-label="nodeDisplayName(semantic) + (selectedLanes.has(addressKey(child.address)) ? ', selected' : '')"
-                @pointerdown.capture="activateLane($event, child.address)" @keydown.enter.self="selectLane(child.address, $event)">
+                @keydown.enter.self="selectLane(child.address, $event)">
                 <PresentationHost :node="semantic" :region-height="laneHeight - 1" lane
                     @copy-debug-details="copyNodeDebugDetails(child.address)" />
             </section>
+            <svg v-for="run in timelineRuns" :key="run.begin" class="lane-playheads" aria-hidden="true"
+                :style="{ top: `${run.begin * laneHeight}px`, height: `${(run.end - run.begin) * laneHeight}px` }">
+                <TimelinePlayhead />
+            </svg>
             <div v-if="!children.length" class="empty">No project instances.</div>
         </div>
     </section>
@@ -492,6 +502,8 @@ onBeforeUnmount(() => {
 .timeline-heading { box-sizing: border-box; position: sticky; top: 0; z-index: 1; background: var(--vscode-editor-background); flex: 0 0 var(--timeline-header-height); border-bottom: 1px solid var(--vscode-panel-border); }
 .node-column { box-sizing: border-box; min-width: 0; padding: 8px 12px; border-right: 1px solid var(--vscode-panel-border); }
 .lanes { flex: 0 0 auto; min-height: 0; position: relative; }
+.lane-playheads { position: absolute; inset-inline-start: var(--node-label-width);
+    width: calc(100% - var(--node-label-width)); pointer-events: none; }
 .playback-position { overflow: hidden; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--iv-lane-title-color); }
 .playback-position small { color: var(--iv-port-label-base); margin-left: 6px; }
 .lane { position: relative; box-sizing: border-box; border-bottom: 1px solid var(--vscode-panel-border); }

@@ -4,7 +4,6 @@ import { beatBpm, beatGridTicks, defaultBeatBpm, maximumBeatBpm, maximumBeatsPer
     maximumBeatSubdivisionCount, minimumBeatBpm, readBeatGrid } from "../../src/beatGrid";
 import { addressKey } from "../../src/graphScope";
 import { useOptionalGraphEditor } from "../graph/context";
-import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
 import { useTimelineWindow } from "../timeline/timelineContext";
 import type { NodeDisplayMode } from "./displayMode";
 import GenericPresentation from "./GenericPresentation.vue";
@@ -122,7 +121,6 @@ onBeforeUnmount(() => resize?.disconnect());
                 <line v-for="tick in ticks" :key="String(tick.sample)" :x1="tick.x" :x2="tick.x"
                     :y1="tick.depth === 0 ? '0%' : tick.depth === 1 ? '40%' : `${100 - 40 / tick.depth}%`" y2="100%"
                     :class="{ bar: tick.depth === 0, beat: tick.depth === 1 }" />
-                <TimelinePlayhead />
                 <text v-for="tick in labels" :key="String(tick.sample)" :x="tick.x" y="100%" dx="4" dy="-4">{{ tick.bar }}</text>
             </svg>
             <LaneSettings v-if="editable && preview && node.address" :label="`${beatBpm(preview)} BPM`"

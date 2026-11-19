@@ -526,6 +526,8 @@ TEST_F(GraphJitRuntimeFixture, BackgroundWaveformQueriesProjectSparseComputedOut
         ASSERT_EQ(query->result.regions[0].values.size(), 4u);
         EXPECT_FLOAT_EQ(query->result.regions[0].values[0].second.load<float>(), 0);
         EXPECT_FLOAT_EQ(query->result.regions[0].values[3].second.load<float>(), 1.5f);
+        ObservationCollectRequest after_first;
+        executor.handle_observation_collect(after_first);
 
         auto distant = std::make_shared<ObservationWindowQuery>();
         distant->configured_generation = query->configured_generation;
@@ -537,10 +539,63 @@ TEST_F(GraphJitRuntimeFixture, BackgroundWaveformQueriesProjectSparseComputedOut
         ASSERT_EQ(distant->result.regions.size(), 1u);
         ASSERT_EQ(distant->result.regions[0].values.size(), 1u);
         EXPECT_EQ(distant->result.regions[0].values[0].first, index(0));
+        ObservationCollectRequest after;
+        executor.handle_observation_collect(after);
+        EXPECT_EQ(after.execution_data_version, after_first.execution_data_version);
         EXPECT_FALSE(executor.background_execution_failures().any());
     }
     // No transaction view or generation-local storage backs the returned value.
     EXPECT_FLOAT_EQ(query->result.regions[0].values[3].second.load<float>(), 1.5f);
+}
+
+TEST_F(GraphJitRuntimeFixture, SparseComputedWaveformFitsBelowTheBufferedMappingRunLimit)
+{
+    auto compiled = compile("iv.test.computed.huge_playback", 746);
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    auto const& plan = graph.background_evaluation_plan;
+    auto const port = std::ranges::find(plan.ports, std::string{"huge"}, &graph_jit::BackgroundPortPlan::name);
+    ASSERT_NE(port, plan.ports.end());
+    ASSERT_TRUE(port->authored_tock_output);
+    GraphExecutor executor(resources, {}, BufferedStorageLimits{.max_mapping_runs = 64});
+    ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    bool activated = false;
+    while (!(activated = executor.activate_pending(index(0))) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    ASSERT_TRUE(activated);
+
+    // These samples are on separate pages, well outside the initial contiguous
+    // playback window. Caching each observed sample would run out of mappings.
+    auto const begin = index(1 << 20);
+    constexpr std::size_t points = 512, stride = 8193;
+    std::shared_ptr<ObservationWindowQuery> query;
+    do {
+        query = std::make_shared<ObservationWindowQuery>();
+        query->configured_generation = graph.configured_generation.value_or(graph.project_generation);
+        query->port = port->configured_port;
+        query->operation = &observation_details::sample_operations.back();
+        query->window = {begin, 1 + (points - 1) * stride, points};
+        ObservationCollectRequest collection{.windows = {query}};
+        executor.handle_observation_collect(collection);
+        while (!query->complete.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        ASSERT_TRUE(query->complete.load(std::memory_order_acquire));
+    } while (query->result.status == ObservationWindowResult::Status::pending_execution
+        && std::chrono::steady_clock::now() < deadline);
+    ASSERT_EQ(query->result.status, ObservationWindowResult::Status::ready)
+        << query->result.error << " " << query->result.diagnostic;
+    ASSERT_EQ(query->result.regions.size(), 1u);
+    auto const& region = query->result.regions.front();
+    EXPECT_EQ(region.range, (GlobalIndexRange{begin, query->window.length}));
+    ASSERT_EQ(region.values.size(), points);
+    for (std::size_t i = 0; i < points; ++i) {
+        auto const& [position, captured] = region.values[i];
+        EXPECT_EQ(position, begin.advanced_by(i * stride));
+        ASSERT_TRUE(captured.captured);
+        EXPECT_FLOAT_EQ(captured.load<float>(), static_cast<float>(position.bits() & 1023));
+    }
+    EXPECT_FALSE(executor.background_execution_failures().any());
 }
 
 TEST_F(GraphJitRuntimeFixture, BackgroundWaveformReadsPublishedTickRecordingWithoutReplayingTheProducer)

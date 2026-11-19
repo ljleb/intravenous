@@ -1216,7 +1216,9 @@ BackgroundStorageRealization::BackgroundStorageRealization(
             if (!has_explicit_published_output_regions) {
                 selection_.published_output_regions[index] = regions;
             }
-            if (uses_output_cache(plan, plan.storage.ports[index], selection_.cache_computed_outputs)) {
+            auto const& storage = plan.storage.ports[index];
+            if (uses_output_cache(plan, storage, selection_.cache_computed_outputs)
+                && selection_.retains_produced_output(storage)) {
                 selection_.persisted_replacement_coverage[index].include(
                     selected);
             }
@@ -3182,9 +3184,9 @@ BackgroundStorageRealization::stage_persisted_data(
          index < plan_->storage.ports.size(); ++index) {
         auto const& planned = plan_->storage.ports[index];
         auto const& selected = slot(index);
-        auto const produced = selection_.produce_storage.empty()
-            ? storage_is_runtime_produced(*plan_, planned)
-            : selection_.produce_storage[index];
+        auto const produced = selection_.retains_produced_output(planned)
+            && (selection_.produce_storage.empty() ? storage_is_runtime_produced(*plan_, planned)
+                                                   : selection_.produce_storage[index]);
         if (!uses_output_cache(*plan_, planned, selection_.cache_computed_outputs)) {
             continue;
         }

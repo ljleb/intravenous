@@ -3753,11 +3753,12 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
                     continue;
                 if (window.source.kind == ObservationSourceKind::input && !compiled
                     && (current_generation_->execution_phase == "queued" || current_generation_->execution_phase == "compiling")) {
+                    query.result.diagnostic = "configured graph is still compiling";
                     query.result.status = ObservationWindowResult::Status::pending_execution;
                     query.complete.store(true, std::memory_order_release);
                     continue;
                 }
-            }
+            } else query.result.diagnostic = "no valid configured graph";
             query.result.status = ObservationWindowResult::Status::unavailable;
             query.complete.store(true, std::memory_order_release);
         }

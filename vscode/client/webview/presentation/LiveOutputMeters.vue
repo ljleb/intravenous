@@ -4,6 +4,7 @@ import { useNode } from "./nodeContext";
 import { useObservations, type PresentedObservation } from "./observationContext";
 import SampleMeter from "./SampleMeter.vue";
 import OutputWaveforms from "./OutputWaveforms.vue";
+import AnchoredPopover from "./AnchoredPopover.vue";
 import { useTimelineWindow } from "../timeline/timelineContext";
 import { sampleWindow } from "../../src/sampleWaveform";
 import { addressKey, type NodeAddress } from "../../src/graphScope";
@@ -22,9 +23,8 @@ const owner = Symbol("live port presentation");
 const visualizationModes: Array<{ mode: MeterMode; label: string }> = [
     { mode: "level", label: "Level (dBFS)" }, { mode: "value", label: "Value (linear)" },
 ];
-const menu = ref<{ key: string; left: number; top: number; positioned: boolean } | null>(null);
-const menuRoot = ref<HTMLElement | null>(null);
-let returnFocus: HTMLElement | null = null;
+const menu = ref<{ key: string } | null>(null);
+const menuRoot = ref<InstanceType<typeof AnchoredPopover> | null>(null);
 let observer: IntersectionObserver | undefined;
 let resize: ResizeObserver | undefined;
 const timeline = useTimelineWindow();
@@ -83,53 +83,25 @@ function channelLabel(item: PresentedObservation): string {
     return item.channels && item.channels.length > 1 ? `${name} · ${item.channelName}` : name;
 }
 function closeMenu(restoreFocus = false): void {
+    menuRoot.value?.close(restoreFocus);
     menu.value = null;
-    if (restoreFocus && returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
-    returnFocus = null;
 }
 async function openMenu(event: MouseEvent | KeyboardEvent, key: string): Promise<void> {
     if (event instanceof KeyboardEvent && event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
     event.preventDefault(); event.stopPropagation();
     const meter = event.target instanceof Element ? event.target.closest<HTMLElement>("[role='meter']") : null;
-    returnFocus = meter === document.activeElement ? meter : null;
     const rect = meter?.getBoundingClientRect();
-    menu.value = { key, left: event instanceof MouseEvent ? event.clientX : rect?.left ?? 0,
-        top: event instanceof MouseEvent ? event.clientY : rect?.bottom ?? 0, positioned: false };
+    const point = event instanceof MouseEvent ? { x: event.clientX, y: event.clientY } : { x: rect?.left ?? 0, y: rect?.bottom ?? 0 };
+    const returnFocus = meter === document.activeElement ? meter : null;
+    menu.value = { key };
     const opened = menu.value;
     await nextTick();
-    if (menu.value !== opened || !menuRoot.value) return;
-    const size = menuRoot.value.getBoundingClientRect();
-    opened.left = Math.max(4, Math.min(opened.left, window.innerWidth - size.width - 4));
-    opened.top = Math.max(4, Math.min(opened.top, window.innerHeight - size.height - 4));
-    opened.positioned = true;
-    await nextTick();
-    if (menu.value === opened) menuRoot.value?.querySelector<HTMLElement>("[aria-checked='true']")?.focus({ preventScroll: true });
+    if (menu.value === opened) void menuRoot.value?.showAt(point, returnFocus, "[aria-checked='true']");
 }
-function menuKey(event: KeyboardEvent): void {
-    if (event.key === "Escape" || event.key === "Tab") {
-        if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); }
-        closeMenu(true);
-        return;
-    }
-    const buttons = [...menuRoot.value?.querySelectorAll<HTMLButtonElement>("[role='menuitemradio']") ?? []];
-    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
-    const next = event.key === "ArrowDown" ? (index + 1) % buttons.length
-        : event.key === "ArrowUp" ? (index + buttons.length - 1) % buttons.length
-        : event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : -1;
-    if (next >= 0) { event.preventDefault(); event.stopPropagation(); buttons[next]?.focus(); }
-}
-function outsideMenu(event: PointerEvent): void {
-    if (!(event.target instanceof Node) || !menuRoot.value?.contains(event.target)) closeMenu();
-}
-const dismissMenu = () => closeMenu();
 function stateText(value: unknown): string {
     return typeof value === "number" && Number.isFinite(value) ? String(value) : "—";
 }
 onMounted(() => {
-    window.addEventListener("pointerdown", outsideMenu, true);
-    window.addEventListener("blur", dismissMenu);
-    window.addEventListener("resize", dismissMenu);
-    window.addEventListener("scroll", dismissMenu, true);
     document.addEventListener("visibilitychange", updateVisibility);
     observer = new IntersectionObserver(([entry]) => {
         intersecting = !!entry?.isIntersecting;
@@ -142,10 +114,6 @@ onMounted(() => {
     }
 });
 onBeforeUnmount(() => {
-    window.removeEventListener("pointerdown", outsideMenu, true);
-    window.removeEventListener("blur", dismissMenu);
-    window.removeEventListener("resize", dismissMenu);
-    window.removeEventListener("scroll", dismissMenu, true);
     document.removeEventListener("visibilitychange", updateVisibility);
     observer?.disconnect();
     resize?.disconnect();
@@ -171,15 +139,15 @@ onBeforeUnmount(() => {
         </div>
     </div>
     <Teleport to="body">
-        <div v-if="menu" ref="menuRoot" class="visualization-menu" role="menu" aria-label="Visualization mode"
-            :class="{ positioning: !menu.positioned }" :aria-hidden="!menu.positioned"
-            :style="{ left: `${menu.left}px`, top: `${menu.top}px` }" @keydown="menuKey" @contextmenu.prevent>
+        <AnchoredPopover v-if="menu" ref="menuRoot" class="visualization-menu" role="menu" label="Visualization mode"
+            :data-lane-key="node.address ? addressKey(node.address) : undefined" dismiss-on-viewport-change
+            @toggle="(open) => { if (!open) menu = null; }" @contextmenu.prevent>
             <button v-for="choice in visualizationModes" :key="choice.mode" type="button" role="menuitemradio"
                 :aria-checked="selectedMode === choice.mode" :tabindex="selectedMode === choice.mode ? 0 : -1"
                 @click.stop="switchMode(choice.mode)">
                 <span aria-hidden="true">{{ selectedMode === choice.mode ? '✓' : '' }}</span>{{ choice.label }}
             </button>
-        </div>
+        </AnchoredPopover>
     </Teleport>
 </template>
 
@@ -194,8 +162,11 @@ output { font-variant-numeric: tabular-nums; }
 :is([data-mode="mini"], [data-mode="nano"]).live-outputs { gap: 0; }
 :is([data-mode="mini"], [data-mode="nano"]) .state-field { display: none; }
 :is([data-mode="mini"], [data-mode="nano"]) .output-channels { gap: 1px; }
-.visualization-menu { position: fixed; z-index: 1000; min-width: 160px; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border)); border-radius: 4px; background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); color: var(--vscode-menu-foreground, var(--vscode-foreground)); box-shadow: 0 2px 8px var(--vscode-widget-shadow); }
-.visualization-menu.positioning { visibility: hidden; pointer-events: none; }
+.visualization-menu:popover-open {
+    min-width: min(160px, calc(100vw - 8px)); padding: 4px; border-radius: 4px; gap: 0;
+    border-color: var(--vscode-menu-border, var(--vscode-widget-border)); background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+    color: var(--vscode-menu-foreground, var(--vscode-editorWidget-foreground));
+}
 .visualization-menu button { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 8px; border: 0; border-radius: 2px; background: transparent; color: inherit; font: inherit; text-align: left; white-space: nowrap; cursor: pointer; }
 .visualization-menu button span { width: 12px; }
 .visualization-menu button:hover, .visualization-menu button:focus { outline: none; color: var(--vscode-menu-selectionForeground, var(--vscode-list-activeSelectionForeground)); background: var(--vscode-menu-selectionBackground, var(--vscode-list-activeSelectionBackground)); }

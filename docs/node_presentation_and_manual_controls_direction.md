@@ -547,6 +547,15 @@ Build new lanes by composing the shared Vue components. Use `NodeLane` for
 the lane frame, `Knob` for numeric editing, and `LaneSettings` for a button
 with a settings panel in the upper-right corner. Use `RulerGraduations` and
 `TimelinePlayhead` in time-based views where applicable.
+Presentations that use the project timeline across the lane declare
+`timeline: true` in the presentation registry. The timeline draws its
+playheads across each consecutive run of those lanes, including the
+separators between them.
+
+Use `AnchoredPopover` for lane settings and context popovers. The popover
+handles viewport fitting, keyboard dismissal, and focus restoration. Give a
+popover rendered outside its lane the same `data-lane-key` as the lane so
+pointer selection uses the same modifiers and selection anchor.
 
 Supply lane-specific values, limits, snapping rules, edit callbacks, and panel
 content as props or slots. Keep the widget's markup, pointer and keyboard

@@ -61,6 +61,9 @@ struct BackgroundTransactionInputs {
     // Projects only while transaction views and the immutable data pin live.
     // The caller publishes the independently owned result only after commit.
     BackgroundTransactionProjection projection{};
+    // Consumers with transaction-local results can reuse the computed cache
+    // while keeping newly produced windows out of it.
+    bool retain_computed_outputs = true;
     // Optional background-query budget. Playback retains its normal policy.
     std::optional<std::size_t> maximum_materialized_sample_bytes{};
     // Pins imported code, immutable configuration and resource ownership for

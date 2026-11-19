@@ -13,6 +13,7 @@ export type PresentationRegistration<Component> = {
     displayName: string;
     definitionIds: readonly string[];
     component: Component;
+    timeline?: true;
     // Construction source for a new instance, when the presentation edits the
     // node's construction data itself; users need not type it.
     initialConfiguration?: string;
@@ -26,6 +27,7 @@ export type PresentationSelection<Component> = {
     displayName: string;
     component: Component;
     usedGeneric: boolean;
+    timeline?: true;
 };
 
 export class PresentationRegistry<Component> {
@@ -89,6 +91,7 @@ export class PresentationRegistry<Component> {
             displayName: selected.displayName,
             component: selected.component,
             usedGeneric: false,
+            ...(selected.timeline ? { timeline: selected.timeline } : {}),
         };
     }
 

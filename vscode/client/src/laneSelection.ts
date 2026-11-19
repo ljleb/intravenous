@@ -43,10 +43,10 @@ export function mergeLaneOrder(saved: readonly string[], visible: readonly strin
     return result.concat(visible.slice(next));
 }
 
-export function selectedLaneRuns(order: readonly string[], selected: ReadonlySet<string>): Array<{ begin: number; end: number }> {
+export function laneRuns(order: readonly string[], included: ReadonlySet<string>): Array<{ begin: number; end: number }> {
     const runs: Array<{ begin: number; end: number }> = [];
     for (let i = 0; i < order.length; ++i) {
-        if (!selected.has(order[i])) continue;
+        if (!included.has(order[i])) continue;
         const last = runs.at(-1);
         if (last?.end === i) last.end = i + 1;
         else runs.push({ begin: i, end: i + 1 });

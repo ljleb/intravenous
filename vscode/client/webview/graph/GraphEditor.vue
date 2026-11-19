@@ -88,6 +88,19 @@ function cancelPendingCursorWarp(reason: string) {
     if (warpAfterUnlock) reportCursorReturnSkipped(reason);
     clearPendingCursorWarp();
 }
+function selectLaneByKey(key: string, modifiers?: { shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean }) {
+    const order = laneKeys.value;
+    if (!order.includes(key)) return;
+    const selection = selectLaneRange(selectedLanes.value, order, laneSelectionAnchor, key, modifiers);
+    selectedLanes.value = selection.selected;
+    laneSelectionAnchor = selection.anchor;
+}
+function selectLaneAtPointer(event: PointerEvent) {
+    if (event.button !== 0 && event.button !== 2) return;
+    if (!(event.target instanceof Element)) return;
+    const key = event.target.closest<HTMLElement>("[data-lane-key]")?.dataset.laneKey;
+    if (key) selectLaneByKey(key, event);
+}
 function queueCursorWarp(warp: PendingCursorWarp) {
     cancelPendingCursorWarp("Another drag released the cursor.");
     warpAfterUnlock = warp;
@@ -507,11 +520,7 @@ provideGraphEditor({ layout, save,
     closeKnobValueWithin(panel) {
         if (panel.contains(valueEntryAnchor.value ?? null)) manualGestures.cancelEntry();
     },
-    selectedLanes, selectLane: (address, modifiers) => {
-        const selection = selectLaneRange(selectedLanes.value, laneKeys.value, laneSelectionAnchor, addressKey(address), modifiers);
-        selectedLanes.value = selection.selected;
-        laneSelectionAnchor = selection.anchor;
-    }, portsChanged: scheduleWireUpdate,
+    selectedLanes, selectLane: (address, modifiers) => selectLaneByKey(addressKey(address), modifiers), portsChanged: scheduleWireUpdate,
     elementAtPointer: () => {
         const element = trustedHover.elementAtPointer();
         return element instanceof Element ? element : null;
@@ -829,6 +838,11 @@ function createPackage() {
     webviewApi.postMessage({ type: "createGraphPackage", name: packageName.value });
     creatingPackage.value = false;
 }
+function traceScope() {
+    observations.logBoundTrace("Graph scope", {
+        generation: state.value.scope?.generation, execution: state.value.scope?.execution, session: state.value.sessionStatus,
+    });
+}
 function receive(event: MessageEvent<GraphEditorHostMessage>) {
     if (event.data?.type === "cursorReturnCompleted") {
         if (event.data.requestId === pendingCursorReturnId) {
@@ -842,6 +856,11 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     if (event.data?.type === "traceNextCursorReturn") {
         if (event.data.gesture === "middleButton") traceNextMiddleDrag = true;
         else traceNextPointDrag = true;
+        return;
+    }
+    if (event.data?.type === "traceAutomationBounds") {
+        observations.traceAutomationBounds((detail) => webviewApi.postMessage({ type: "automationBoundTrace", detail }));
+        traceScope();
         return;
     }
     if (event.data?.type === "playbackUpdate") {
@@ -875,8 +894,10 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     }
     if (event.data?.type !== "graphState") return;
     state.value = event.data.state;
+    manualGestures.configuredGeneration(state.value.scope?.generation ?? null);
     observations.configuredGeneration(state.value.scope?.execution?.phase === "configurationFailed"
         ? null : state.value.scope?.generation ?? null);
+    if (observations.tracingBounds.value) traceScope();
     if (state.value.sessionStatus === "running") observations.refresh();
     else observations.disconnect();
     const entry = manualGestures.numericEntry();
@@ -910,6 +931,7 @@ onMounted(() => {
     document.addEventListener("pointerlockchange", controlLockChanged);
     document.addEventListener("pointerlockerror", controlLockFailed);
     window.addEventListener("pointerdown", clickOutsideManual, true);
+    window.addEventListener("pointerdown", selectLaneAtPointer, true);
     window.addEventListener("contextmenu", guardAutomationContextMenu, true);
     window.addEventListener("wheel", wheelControl, { capture: true, passive: false });
     window.addEventListener("focus", focusPointerHint);
@@ -947,6 +969,7 @@ onBeforeUnmount(() => {
     document.removeEventListener("pointerlockchange", controlLockChanged);
     document.removeEventListener("pointerlockerror", controlLockFailed);
     window.removeEventListener("pointerdown", clickOutsideManual, true);
+    window.removeEventListener("pointerdown", selectLaneAtPointer, true);
     window.removeEventListener("contextmenu", guardAutomationContextMenu, true);
     window.removeEventListener("wheel", wheelControl, true);
     window.removeEventListener("focus", focusPointerHint);
@@ -971,6 +994,7 @@ onBeforeUnmount(() => {
         <PresentationHost v-if="state.scope" :node="root" view-choice="editable" />
         <ManualValuePopover :entry="manualValueEntry"
             :target="valueEntryAnchor?.closest<HTMLElement>(':popover-open, [role=dialog]') ?? undefined"
+            :lane-key="valueEntryAnchor?.closest<HTMLElement>('[data-lane-key]')?.dataset.laneKey"
             :return-focus="valueEntryAnchor" :accept="() => manualGestures.acceptEntry()"
             :cancel="() => manualGestures.cancelEntry()" :set-draft="(draft) => manualGestures.setEntryDraft(draft)" />
         <NodeEditor v-if="editing !== null" :key="editing" :node="editedNode" :definitions="state.definitions"

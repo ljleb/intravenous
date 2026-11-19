@@ -6806,14 +6806,16 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
 
     auto const has_manual_override = std::ranges::any_of(
         graph.manual_controls, [](auto const& control) { return control.override_connections; });
-    if (has_manual_override) {
+    if (has_manual_override && !retained_background_plan) {
         // detach() is validated against authored topology. A temporary source
         // replacement can open a valid feedback cycle; its remaining delay
         // still belongs to that authored temporal cut.
+        // Only the first analysis needs this validation. Later iterations
+        // carry the retained plan for the override topology alone.
         auto authored = graph;
         for (auto& control : authored.manual_controls) control.override_connections = false;
         auto validated = build_connection_analysis_plan(authored, port_realization,
-            kernel_block_size, cost_model, retained_background_plan,
+            kernel_block_size, cost_model, nullptr,
             callback_batch_classes, callback_elision_candidates);
         if (!validated) return std::unexpected(std::move(validated.error()));
     }

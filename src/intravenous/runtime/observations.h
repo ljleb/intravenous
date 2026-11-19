@@ -25,7 +25,7 @@ class Observations {
     };
     std::vector<WindowCapture> windows_{};
     std::optional<std::uint64_t> configured_generation_{};
-    std::uint64_t background_data_version_ = 0;
+    std::uint64_t execution_data_version_ = 0;
     std::mutex mutex_;
     std::vector<Scope> scopes_;
     ObservationRequirements accepted_{};

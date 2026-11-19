@@ -1,7 +1,7 @@
 import { computed, inject, onScopeDispose, provide, ref, watch, type InjectionKey } from "vue";
 import type { NodeAddress } from "../../src/graphScope";
 import { addressKey } from "../../src/graphScope";
-import { ObservationValues, observationSourceKey, type ObservationCapability, type ObservationHostRequest,
+import { ObservationValues, observationSourceKey, summarizeObservationWindow, type ObservationCapability, type ObservationHostRequest,
     type ObservationInterest, type ObservationResponse, type ObservationSource, type ObservationUpdate, type MeterMode, type ObservationWindow, sameObservationWindow } from "../../src/observations";
 
 type NodeInterest = { node: NodeAddress; visible: boolean; window?: ObservationWindow; firstInput?: string };
@@ -9,11 +9,16 @@ export type PortObservation = Omit<ObservationInterest, "id">;
 export type PresentedObservation = ObservationCapability & { source: ObservationSource; id: string; operation: string; channelName?: string };
 type Capability = PresentedObservation;
 const meterModeKey = ({ node, kind, member }: ObservationSource) => observationSourceKey({ node, kind, member });
+const isBoundWindow = ({ source, window }: PortObservation) => !!window && source.kind === "input"
+    && (source.member === "min" || source.member === "max");
 export class PresentationObservations {
     readonly version = ref(0);
     readonly capabilities = ref<Capability[]>([]);
     readonly values = new ObservationValues();
     readonly error = ref("");
+    readonly tracingBounds = ref(false);
+    private boundTrace?: { write: (detail: string) => void; timer: ReturnType<typeof setTimeout>;
+        last: Map<string, string>; count: number };
     private nodes = new Map<symbol, NodeInterest>();
     private explicit = new Map<string, PortObservation>();
     private nextExplicitId = 0;
@@ -38,6 +43,33 @@ export class PresentationObservations {
             if (mode === "level" || mode === "value") this.modes.set(key, mode);
         this.heartbeat = setInterval(() => { if (this.desired.length) void this.reconcile(this.desired); }, 10000);
     }
+    traceAutomationBounds(write: (detail: string) => void): void {
+        this.stopBoundTrace();
+        this.boundTrace = { write, timer: setTimeout(() => this.stopBoundTrace(), 20000), last: new Map(), count: 0 };
+        this.logBoundTrace("Started for 20 seconds", {
+            visible: this.visible, delivery: this.values.deliveryState(), error: this.error.value,
+            requested: Array.from(this.explicit, ([id, interest]) => ({ id, ...interest })).filter(isBoundWindow),
+            desired: this.desired.filter(isBoundWindow),
+        });
+        this.tracingBounds.value = true;
+    }
+    logBoundTrace(event: string, detail: unknown): void {
+        const trace = this.boundTrace;
+        if (!trace || trace.count >= 160) return;
+        const text = JSON.stringify(detail);
+        if (trace.last.get(event) === text) return;
+        trace.last.set(event, text);
+        ++trace.count;
+        trace.write(`${event} ${text}`);
+    }
+    private stopBoundTrace(): void {
+        const trace = this.boundTrace;
+        if (!trace) return;
+        clearTimeout(trace.timer);
+        this.boundTrace = undefined;
+        this.tracingBounds.value = false;
+        trace.write(trace.count >= 160 ? "Finished. Log limit reached." : "Finished.");
+    }
     private request(value: Omit<Extract<ObservationHostRequest, { type: "observationDescribe" }>, "requestId">
         | Omit<Extract<ObservationHostRequest, { type: "observationReconcile" }>, "requestId">): Promise<unknown> {
         const requestId = `observation:${++this.sequence}`;
@@ -61,7 +93,16 @@ export class PresentationObservations {
     }
     receive(message: ObservationResponse | { type: "observationUpdate"; update: ObservationUpdate }): void {
         if (message.type === "observationUpdate") {
-            if (this.values.receive(message.update, "viewport")) ++this.version.value;
+            const update = message.update;
+            if (this.values.receive(update, "viewport")) ++this.version.value;
+            if (this.boundTrace) for (const result of update.scopes.find((scope) => scope.scopeId === "viewport")?.windows ?? []) {
+                const interest = this.explicit.get(result.id);
+                if (interest && isBoundWindow(interest)) this.logBoundTrace(`Delivery ${result.id}`, {
+                    source: interest.source, generation: update.generation, activationId: update.activationId,
+                    revision: update.revision, delivery: this.values.deliveryState(),
+                    accepted: this.values.windows.get(result.id) === result, result: summarizeObservationWindow(result),
+                });
+            }
             return;
         }
         const pending = this.pending.get(message.requestId);
@@ -101,7 +142,9 @@ export class PresentationObservations {
         this.schedule();
     }
     configuredGeneration(generation: number | null): void {
-        if (this.values.acceptGeneration(generation)) ++this.version.value;
+        if (!this.values.acceptGeneration(generation)) return;
+        ++this.version.value;
+        if (this.boundTrace) this.logBoundTrace("Graph generation", this.values.deliveryState());
     }
     refresh(): void { this.schedule(); }
     private schedule(): void {
@@ -180,7 +223,11 @@ export class PresentationObservations {
             this.install(capabilities, explicit);
             this.capabilitiesCurrent = true;
             await this.updateInterests(explicit);
-        } catch (error) { if (!this.disposed) this.error.value = String(error); }
+        } catch (error) {
+            if (this.disposed) return;
+            this.error.value = String(error);
+            this.logBoundTrace("Discovery failed", this.error.value);
+        }
         finally { if (this.discoveringEpoch === epoch) this.discoveringEpoch = undefined; }
     }
     private id(source: ObservationSource, operation: string, capability: ObservationCapability): string {
@@ -234,11 +281,18 @@ export class PresentationObservations {
             if (this.disposed || interests !== this.desired) return;
             this.values.expectWindows(interests);
             ++this.version.value;
+            const traced = this.boundTrace ? interests.filter(isBoundWindow) : undefined;
+            if (traced) this.logBoundTrace("Reconcile", { visible: this.visible, interests: traced });
             const result = await this.request({ type: "observationReconcile", interests }) as { revision: string };
             if (this.disposed) return;
             this.values.acceptRevision(result.revision);
             this.error.value = "";
-        }).catch((error) => { if (!this.disposed) this.error.value = String(error); });
+            if (traced) this.logBoundTrace("Reconciled", { revision: result.revision });
+        }).catch((error) => {
+            if (this.disposed) return;
+            this.error.value = String(error);
+            this.logBoundTrace("Reconcile failed", this.error.value);
+        });
         return this.queue;
     }
     disconnect(): void {
@@ -259,6 +313,7 @@ export class PresentationObservations {
     dispose(): void {
         if (this.timer) clearTimeout(this.timer);
         clearInterval(this.heartbeat);
+        this.stopBoundTrace();
         this.disconnect();
         this.disposed = true;
     }
@@ -285,6 +340,7 @@ export function usePortObservation(request: () => PortObservation | undefined) {
         onScopeDispose(() => { if (id.value) observations.observePort(id.value, undefined); });
     }
     return {
+        id: computed(() => id.value),
         latestWindow: computed(() => {
             const wanted = request()?.window;
             if (!observations || !id.value || !wanted) return undefined;

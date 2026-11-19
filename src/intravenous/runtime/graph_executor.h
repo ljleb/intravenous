@@ -353,7 +353,6 @@ class GraphExecutor {
         bool stopping_ = false;
         std::atomic<bool> progress_failed_{false};
         std::deque<std::shared_ptr<ObservationWindowQuery>> observation_windows_{};
-        std::atomic<std::uint64_t> observation_data_version_{0};
         std::jthread worker_{};
         void process_window(ObservationWindowQuery& query) noexcept;
 
@@ -387,9 +386,6 @@ class GraphExecutor {
             ExecutionGeneration& target,
             IndexCoverage demand);
         void queue_windows(std::span<std::shared_ptr<ObservationWindowQuery> const> queries);
-        std::uint64_t observation_data_version() const noexcept {
-            return observation_data_version_.load(std::memory_order_acquire);
-        }
         void notify_generation_cutover() noexcept;
         [[nodiscard]] AsyncWorkSignal& work_signal() noexcept;
         [[nodiscard]] std::optional<std::uint64_t>
@@ -409,6 +405,9 @@ class GraphExecutor {
     // Compatible generations will rebind their persisted ports into this one
     // canonical sample/event authority rather than migrate record ownership.
     PersistedDataStore persisted_data_{};
+    // Window queries can publish reusable cache data. Only execution
+    // publications invalidate already sampled windows.
+    std::atomic<std::uint64_t> execution_data_version_{0};
     // Background publication authority for Tick-visible derived/ephemeral
     // storage. Realtime never pins this store independently.
     TickMaterializationStore tick_materializations_{};

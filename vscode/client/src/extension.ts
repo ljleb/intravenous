@@ -172,6 +172,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.openGraphEditor", () => graphEditor.open()));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.traceAutomationCursorReturn", () => graphEditor.traceNextCursorReturn("automation")));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.traceAutomationBounds", () => graphEditor.traceAutomationBounds()));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.traceMiddleButtonCursorReturn", () => graphEditor.traceNextCursorReturn("middleButton")));
     const graphActions: GraphEditorAction[] = ["addNode", "editNode", "deleteNode", "openNodeSource", "createPackage", "deleteConnection", "undo", "redo"];
     for (const action of graphActions) {

@@ -116,10 +116,14 @@ export class GraphEditorProvider implements vscode.Disposable {
         if (value !== undefined) await this.seekPlayback(playbackSeekPosition(value, state.sampleRate));
     }
 
+    private tracePanel(): vscode.WebviewPanel | undefined {
+        return [...this.ready].find((panel) => panel.active)
+            ?? (this.lastActivePanel && this.ready.has(this.lastActivePanel) ? this.lastActivePanel : [...this.ready][0]);
+    }
+
     async traceNextCursorReturn(gesture: CursorReturnGesture): Promise<void> {
         const label = gesture === "middleButton" ? "Middle-button" : "Automation";
-        const panel = [...this.ready].find((panel) => panel.active)
-            ?? (this.lastActivePanel && this.ready.has(this.lastActivePanel) ? this.lastActivePanel : [...this.ready][0]);
+        const panel = this.tracePanel();
         if (!panel) {
             void vscode.window.showInformationMessage("Open the Intravenous graph editor before tracing a drag.");
             return;
@@ -132,6 +136,18 @@ export class GraphEditorProvider implements vscode.Disposable {
         const instruction = gesture === "middleButton" ? "Pan once with the middle button" : "Drag one automation point";
         this.log(`${label} cursor trace armed. ${instruction}, then check the Intravenous output channel.`);
         vscode.window.setStatusBarMessage(`${label} cursor trace armed`, 4500);
+    }
+
+    async traceAutomationBounds(): Promise<void> {
+        const panel = this.tracePanel();
+        if (!panel) {
+            void vscode.window.showInformationMessage("Open the Intravenous graph editor before tracing automation bounds.");
+            return;
+        }
+        panel.reveal(panel.viewColumn, false);
+        if (await panel.webview.postMessage({ type: "traceAutomationBounds" }))
+            vscode.window.setStatusBarMessage("Recording automation bounds for 20 seconds", 4500);
+        else this.log("Automation bound trace could not reach the graph editor.");
     }
 
     constructor(private readonly extensionUri: vscode.Uri,
@@ -313,6 +329,8 @@ export class GraphEditorProvider implements vscode.Disposable {
             } else if (message?.type === "cursorReturnTrace" && typeof message.detail === "string") {
                 const label = message.gesture === "middleButton" ? "Middle-button" : "Automation";
                 this.log(`${label} cursor trace. ${message.detail}`);
+            } else if (message?.type === "automationBoundTrace" && typeof message.detail === "string") {
+                this.log(`Automation bound trace. ${message.detail}`);
             } else if (message?.type === "cursorReturnSkipped" && typeof message.detail === "string") {
                 this.log(`Cursor return skipped. ${message.detail}`);
             } else if (message?.type === "warpCursorAfterPointDrag" || message?.type === "warpCursorAfterMiddleDrag") {
@@ -373,6 +391,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                         type: "manualControlState", interactions: [...this.session.manualControls.states(owner), {
                             interactionId: message.action.interactionId, control: message.action.control,
                             value: message.action.value, phase: "failed", error: error.message,
+                            graphGeneration: this.state.scope?.generation,
                         }], live: this.session.manualControls.live(owner),
                     });
                     void vscode.window.showErrorMessage(`Cannot edit manual input: ${error.message}`);

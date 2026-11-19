@@ -58,6 +58,22 @@ test("window results reject obsolete viewport positions and data versions withou
     values.receive(update({ ...data, window: next }), "viewport");
     assert.equal(values.windows.size, 0);
 });
+test("bound windows arriving before the matching graph scope are used when it arrives", () => {
+    const values = new ObservationValues();
+    values.acceptGeneration(7);
+    const data = result();
+    const bounds = ["min", "max"] as const;
+    values.expectWindows(bounds.map((id) => ({ id, window: data.window, operation: "waveform",
+        source: { node: { instanceId: "curve" }, kind: "input", member: id } })));
+    const update: ObservationUpdate = {
+        activationId: "1", generation: "8", revision: "0", index: "0", blockSize: 0,
+        scopes: [{ scopeId: "viewport", values: [], windows: bounds.map((id) => ({ ...data, id })) }],
+    };
+    assert.equal(values.receive(update, "viewport"), false);
+    assert.equal(values.windows.size, 0);
+    values.acceptGeneration(8);
+    for (const id of bounds) assert.deepEqual(values.windows.get(id)?.regions, data.regions);
+});
 test("viewport Tock interests carry windows and panning never requests live observation operations", async () => {
     const { PresentationObservations } = await import("../webview/presentation/observationContext");
     const requests: import("../src/observations").ObservationHostRequest[] = [];

@@ -227,7 +227,15 @@ struct BackgroundStorageSelection {
     std::vector<bool> produce_storage{};
     PersistedDataStore::Snapshot const* published = nullptr;
     bool cache_computed_outputs = false;
+    bool retain_computed_outputs = true;
     bool prepares_tick_materialization = false;
+
+    // Cache reads and invalidations can still use an existing computed
+    // output even when the current consumer only needs a temporary view.
+    [[nodiscard]] bool retains_produced_output(graph_jit::PortStoragePlan const& storage) const noexcept
+    {
+        return retain_computed_outputs || storage.storage == graph_jit::PortStorageKind::persisted_data;
+    }
 };
 
 // Interprets immutable PortStoragePlan indices into address-stable runtime

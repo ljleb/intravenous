@@ -767,6 +767,7 @@ class BackgroundEvaluationTransaction::Impl {
             .published = &published,
         };
         selection.cache_computed_outputs = bool(inputs_.reconstruction_graph);
+        selection.retain_computed_outputs = inputs_.retain_computed_outputs;
 
         for (graph_jit::PortStorageIndex index = 0;
              index < plan.storage.ports.size(); ++index) {
@@ -1067,7 +1068,7 @@ class BackgroundEvaluationTransaction::Impl {
                 || !storage.output_port) {
                 continue;
             }
-            if (selection.produce_storage[index]) {
+            if (selection.produce_storage[index] && selection.retains_produced_output(storage)) {
                 selection.persisted_replacement_coverage[index].include(
                     selection.storage_coverage[index]);
             }
@@ -1206,7 +1207,8 @@ class BackgroundEvaluationTransaction::Impl {
             needed.push_back({output, storage.storage_coverage[index]});
             auto const& port = plan.ports[*slot.output_port];
             data_->set_cache_realization(output, port.realization.value_or(OutputRealization::buffered));
-            if (!storage.produce_storage[index] || std::ranges::contains(accounted, output)) continue;
+            if (!storage.produce_storage[index] || !storage.retains_produced_output(slot)
+                || std::ranges::contains(accounted, output)) continue;
             accounted.push_back(output);
             if (slot.kind == PortKind::sample) {
                 auto const width = slot.continuous_geometry.value_size_bytes * channel_count(slot.sample_layout);
@@ -1494,6 +1496,7 @@ class BackgroundEvaluationTransaction::Impl {
             auto const& planned =
                 graph_->background_evaluation_plan.storage.ports[index];
             if (uses_output_cache(plan, planned, bool(inputs_.reconstruction_graph)) &&
+                storage_selection.retains_produced_output(planned) &&
                 storage_selection.produce_storage[index] &&
                 !storage_selection.storage_coverage[index].empty()) {
                 has_produced_data = true;
