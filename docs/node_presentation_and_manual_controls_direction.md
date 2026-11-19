@@ -86,9 +86,13 @@ clip editing, or connections.
 
 ### Lanes and reusable timeline display
 
-The owner calls each such row a **lane**. The default lane presents any node
-whose stable definition ID has no specialized presentation. Specialized
-presentations may use the same lane frame or provide a different layout.
+**Terminology clarification (2026-11-19).** A **presentation lane**, or **lane**,
+is the Vue UI of a node. A **node** is the graph entity that the lane presents.
+In the primary timeline layout, each lane occupies its node's row.
+
+The default lane presents any node whose stable definition ID has no specialized
+presentation. Specialized presentations may use the same lane frame or provide
+a different layout.
 
 Vertical zoom stays fixed when the viewport is resized or the visible node list
 changes. If the lanes do not fit, show a vertical scrollbar. Do not change the
@@ -1126,8 +1130,16 @@ lane interface. They do not claim that the current client implements them._
   when its selection is empty. Native text editing owns Delete within its
   controls. This policy applies to all lane editors. As a general policy,
   avoid confirmation dialogs for ordinary reversible project edits.
+- Ctrl+A selects all lanes in the current graph. A focused lane editor that
+  manages a collection selects its own items. Text fields use native text selection.
+- Ctrl+D duplicates all selected lanes in one undoable action. Place each copy
+  directly below its original and select the copies. An empty selection leaves
+  the graph alone. Copy authored settings and connections between selected lanes.
 
 ### Node creation and names
+
+- Shift+A opens Add Node. Put the new lane below the lowest selected lane,
+  or at the bottom of the graph when the selection is empty.
 
 - `IV_NODE` and `IV_MODULE` take an additional display-name parameter. This name
   supplies the default name when the user creates a node instance.

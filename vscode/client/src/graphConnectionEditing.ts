@@ -1,5 +1,6 @@
 import { addressKey, resolveScopePorts, type GraphPortMatcher, type GraphScope,
     type GraphScopeConnection, type NodeAddress } from "./graphScope";
+import { isGeneratedSnapConnection, isTimelineSnapAddress, timelineGridMode } from "./timelineSnap";
 
 export type GraphPortEndpoint = {
     address: NodeAddress;
@@ -75,6 +76,7 @@ export function connectionEndMutation(scope: GraphScope, edit: GraphConnectionEd
     if (!current || connectionKey(current) !== connectionKey(end.connection)) {
         throw new Error("The selected connection changed; select it again");
     }
+    if (isGeneratedSnapConnection(current)) throw new Error("The ruler manages this connection");
     const originalType = endpointType(scope, end.port);
     const connection = current.connection;
     if (connection.kind !== end.port.kind) throw new Error("The selected connection changed; select it again");
@@ -121,6 +123,11 @@ export function connectionEndMutation(scope: GraphScope, edit: GraphConnectionEd
             throw new Error("This connection shares a port type or selects individual channels; choose a port of the same type");
         }
         if (!otherEnds && !selectedChannels) type = targetType;
+        if (target.direction === "input" && isTimelineSnapAddress(target.address)) {
+            requireCustomBeatInput(scope, connection.sourceType);
+        } else if (target.direction === "output" && connection.inputs.some(isTimelineSnapAddress)) {
+            requireCustomBeatInput(scope, type);
+        }
     }
     return { type: "upsert", connection: { ...connection, connectionId: current.id, [side]: matchers, [typeField]: type } };
 }
@@ -132,6 +139,7 @@ export function canMoveConnectionEnd(scope: GraphScope, end: GraphConnectionEnd,
 
 export function canContinuePortConnection(scope: GraphScope | null, port: GraphPortEndpoint, end?: GraphConnectionEnd): boolean {
     if (!scope?.editable) return false;
+    if (isTimelineSnapAddress(port.address) && timelineGridMode(scope) !== "custom") return false;
     // Moving back to the pickup port is a no-op after checking the captured connection.
     if (end) return canMoveConnectionEnd(scope, end, port);
     try { endpointType(scope, port); return true; }
@@ -148,6 +156,13 @@ export function connectionFromPorts(scope: GraphScope, id: string,
     const input = first.direction === "input" ? first : second;
     const sourceType = endpointType(scope, output);
     const targetType = endpointType(scope, input);
+    if (isTimelineSnapAddress(input.address)) requireCustomBeatInput(scope, sourceType);
     return { connectionId: id, kind: output.kind, sourceType, targetType,
         outputs: [matcherFor(output)], inputs: [matcherFor(input)] };
+}
+
+function requireCustomBeatInput(scope: GraphScope, sourceType: string): void {
+    if (timelineGridMode(scope) !== "custom" || sourceType !== "beat") {
+        throw new Error("The ruler Beats input accepts Beat Event outputs in Custom snap mode");
+    }
 }

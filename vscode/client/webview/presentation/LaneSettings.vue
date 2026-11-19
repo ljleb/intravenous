@@ -16,16 +16,22 @@ function toggled(visible: boolean) { open.value = visible; emit("toggle", visibl
 
 <template>
     <button type="button" tabindex="-1" class="lane-settings-button" :popovertarget="id" :aria-label="dialogLabel" aria-haspopup="dialog" :aria-expanded="open"
-        :data-status-hint="hint" @pointerdown.stop @mousedown.left.prevent @click.stop="place" @keydown.space.stop>{{ label }}</button>
+        :data-status-hint="hint" @pointerdown.stop @mousedown.left.prevent @click.stop="place" @keydown.space.stop>
+        <span>{{ label }}</span>
+    </button>
     <AnchoredPopover :id="id" ref="panel" :label="dialogLabel" :width="width" :preferred-height="preferredHeight"
         @toggle="toggled"><slot :close="close" /></AnchoredPopover>
 </template>
 
 <style scoped>
 .lane-settings-button {
-    position: absolute; top: 2px; right: 4px; max-width: calc(100% - 8px); overflow: hidden; text-overflow: ellipsis;
-    border: 1px solid transparent; padding: 1px 4px; border-radius: 3px; white-space: nowrap;
-    color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); font: inherit; font-size: 10px; cursor: pointer;
+    position: absolute; top: 0; right: 0; max-width: 100%; box-sizing: border-box;
+    border: 0; padding: 2px 4px 4px 10px; background: transparent; font: inherit; font-size: 10px; cursor: pointer;
 }
-.lane-settings-button:is(:hover, [aria-expanded="true"]) { color: var(--vscode-foreground); }
+.lane-settings-button span {
+    display: block; overflow: hidden; text-overflow: ellipsis;
+    border: 1px solid transparent; padding: 1px 4px; border-radius: 3px; white-space: nowrap;
+    color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background);
+}
+.lane-settings-button:is(:hover, [aria-expanded="true"]) span { color: var(--vscode-foreground); }
 </style>

@@ -6,16 +6,18 @@ import { useOptionalGraphEditor } from "../graph/context";
 import { useTimelineNavigation } from "../timeline/timelineContext";
 import { useNode } from "./nodeContext";
 import { portDescription, portTypeSummary } from "./nodeSummary";
-import type { SemanticPort, SemanticPortDirection } from "./semanticNode";
-import { acceptsPortConnection } from "../../src/portConnectionGesture";
+import type { SemanticNode, SemanticPort, SemanticPortDirection } from "./semanticNode";
+import { acceptsPortConnection, canDropPortConnection } from "../../src/portConnectionGesture";
+import { isTimelineSnapAddress } from "../../src/timelineSnap";
 import { portSlotKey } from "../../src/selectedLaneConnections";
 import ManualInput from "./ManualInput.vue";
 import NodePortRow from "./NodePortRow.vue";
 import { useOptionalManualControls } from "./manualControlContext";
 import { lanePortLayout, lanePortRowGap } from "../../src/lanePortLayout";
 
-const props = defineProps<{ inline: boolean }>();
-const node = useNode();
+const props = defineProps<{ inline: boolean; node?: SemanticNode }>();
+const presentedNode = useNode();
+const node = computed(() => props.node ?? presentedNode.value);
 const editor = useOptionalGraphEditor();
 const timelineNavigation = useTimelineNavigation();
 const manualControls = useOptionalManualControls();
@@ -261,6 +263,10 @@ function pickConnection(event: PointerEvent, end: GraphConnectionEnd) {
 }
 function accepts(port: SemanticPort) {
     if (!editable.value || !dragPort.value) return false;
+    if ((node.value.address && isTimelineSnapAddress(node.value.address)) || isTimelineSnapAddress(dragPort.value.address)) {
+        const drag = editor?.connectionDrag.value;
+        return !!drag && canDropPortConnection(editor?.scope.value ?? null, drag, endpoint(port));
+    }
     return dragEdit.value ? !!editor?.scope.value && canMoveConnectionEnd(editor.scope.value, dragEdit.value, endpoint(port))
         : acceptsPortConnection(dragPort.value, endpoint(port));
 }

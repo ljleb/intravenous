@@ -49,6 +49,15 @@ test("the Beats preview uses the signed grid phase when the timeline wraps", () 
     ]);
 });
 
+test("an off-screen Beats window retains exact sample positions beyond the precision of seconds", () => {
+    const grid = readBeatGrid([60, 4, []])!;
+    const first = (1n << 53n) + 1n;
+    const ticks = beatGridTicks(grid, { beginSample: first, spanSeconds: 4 }, 1, 80);
+    assert.deepEqual(ticks.map(({ x, sample }) => [x, sample]), [
+        [0, first], [20, first + 1n], [40, first + 2n], [60, first + 3n],
+    ]);
+});
+
 test("the settings limit and grid agree on the finest sample interval", () => {
     assert.equal(maximumBeatBpm(7, 4), 105);
     const grid = readBeatGrid([])!;

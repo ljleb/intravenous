@@ -2,7 +2,8 @@ import { computed, inject, onScopeDispose, provide, ref, watch, type InjectionKe
 import type { NodeAddress } from "../../src/graphScope";
 import { addressKey } from "../../src/graphScope";
 import { ObservationValues, observationSourceKey, type ObservationCapability, type ObservationHostRequest,
-    type ObservationInterest, type ObservationResponse, type ObservationSource, type ObservationUpdate, type MeterMode, type ObservationWindow, sameObservationWindow } from "../../src/observations";
+    type ObservationInterest, type ObservationResponse, type ObservationSource, type ObservationTimeSpan, type ObservationUpdate,
+    type MeterMode, type ObservationWindow, sameObservationWindow } from "../../src/observations";
 
 type NodeInterest = { node: NodeAddress; visible: boolean; window?: ObservationWindow; firstInput?: string };
 export type PortObservation = Omit<ObservationInterest, "id">;
@@ -86,7 +87,7 @@ export class PresentationObservations {
     observePort(id: string, next: PortObservation | undefined, scheduling?: "viewport"): void {
         const previous = this.explicit.get(id);
         const sameSource = previous && next && observationSourceKey(previous.source) === observationSourceKey(next.source)
-            && previous.operation === next.operation;
+            && previous.operation === next.operation && previous.window?.maxDepth === next.window?.maxDepth;
         if (sameSource && sameObservationWindow(previous.window, next.window) && previous.prefetch === next.prefetch) return;
         if (next) this.explicit.set(id, next);
         else if (!this.explicit.delete(id)) return;
@@ -102,8 +103,16 @@ export class PresentationObservations {
         this.visible = visible;
         this.schedule();
     }
-    configuredGeneration(generation: number | null): void {
-        if (this.values.acceptGeneration(generation)) ++this.version.value;
+    configuredGeneration(generation: number | null, sampleRate?: number | null): void {
+        if (this.values.acceptGeneration(generation, sampleRate)) ++this.version.value;
+    }
+    windowForDisplay(id: string, visible?: ObservationTimeSpan) {
+        void this.version.value;
+        return this.values.windowForDisplay(id, visible);
+    }
+    readyWindowsForDisplay(ids: readonly string[], visible: ObservationTimeSpan, completeOnly: boolean) {
+        void this.version.value;
+        return this.values.readyWindowsForDisplay(ids, visible, completeOnly);
     }
     refresh(): void { this.schedule(); }
     private schedule(): void {
@@ -275,35 +284,39 @@ const key: InjectionKey<PresentationObservations> = Symbol("iv.observations");
 export function provideObservations(value: PresentationObservations): void { provide(key, value); }
 export function useObservations(): PresentationObservations | null { return inject(key, null); }
 
-export function usePortObservation(request: () => PortObservation | undefined) {
+type PortObservationWindows = {
+    source: ObservationSource;
+    operation: string;
+    windows: readonly { window: ObservationWindow; prefetch?: boolean }[];
+    visible: ObservationTimeSpan;
+    completeOnly?: boolean;
+};
+
+export function usePortObservationWindows(request: () => PortObservationWindows | undefined) {
     const observations = useObservations();
-    const id = ref<string>();
+    const ids: string[] = [];
+    let source: string | undefined;
     if (observations) {
-        watch(request, (next, previous) => {
-            if (id.value && (!next || !previous || observationSourceKey(next.source) !== observationSourceKey(previous.source)
-                || next.operation !== previous.operation)) {
-                observations.observePort(id.value, undefined);
-                id.value = undefined;
+        watch(request, (next) => {
+            const identity = next ? JSON.stringify([observationSourceKey(next.source), next.operation]) : undefined;
+            // A different source needs new IDs even when its first request
+            // has the same sample window as an old reply still in flight.
+            if (identity !== source) {
+                for (const id of ids.splice(0)) observations.observePort(id, undefined);
+                source = identity;
             }
-            if (next) {
-                id.value ??= observations.portObservationId();
-                observations.observePort(id.value, next);
-            }
+            const windows = next?.windows ?? [];
+            for (const id of ids.splice(windows.length)) observations.observePort(id, undefined);
+            if (!next) return;
+            windows.forEach((window, slot) => {
+                const id = ids[slot] ??= observations.portObservationId();
+                observations.observePort(id, { source: next.source, operation: next.operation, ...window });
+            });
         }, { immediate: true, flush: "sync" });
-        onScopeDispose(() => { if (id.value) observations.observePort(id.value, undefined); });
+        onScopeDispose(() => { for (const id of ids) observations.observePort(id, undefined); });
     }
-    return {
-        latestWindow: computed(() => {
-            const wanted = request()?.window;
-            if (!observations || !id.value || !wanted) return undefined;
-            void observations.version.value;
-            return observations.values.windowForDisplay(id.value, wanted);
-        }),
-        value: computed(() => {
-            const wanted = request();
-            if (!observations || !id.value || !wanted || wanted.window) return undefined;
-            void observations.version.value;
-            return observations.values.values.get(id.value);
-        }),
-    };
+    return computed(() => {
+        const wanted = request();
+        return wanted && observations ? observations.readyWindowsForDisplay(ids, wanted.visible, wanted.completeOnly ?? false) : [];
+    });
 }

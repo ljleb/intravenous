@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { timelineTimeDrag } from "../src/timelineTimeDrag";
+import { playheadTimeDrag, timelineTimeDrag } from "../src/timelineTimeDrag";
 import { minimumBeatMarkSpacing, selectVisibleBeatMarks } from "../src/beatGrid";
-import { snapTimelineSample, timelineBeatObservationWindow, timelineTicks } from "../webview/timeline/geometry";
+import { gridGuideStrengths } from "../src/gridGuideStrength";
+import { seekBeatWindow, snapTimelineSample, timelineBeatObservationWindow, timelineTicks } from "../webview/timeline/geometry";
 import { compactWidthPx, editableHeightPx, effectiveDisplayMode, nanoHeightPx } from "../webview/presentation/displayMode";
 
 test("the ruler keeps coarser coincident beats and snapping only uses the displayed marks", () => {
@@ -38,6 +39,30 @@ test("beat subdivision visibility follows current spacing in both zoom direction
     ], 20).map(({ index }) => index), [1n]);
 });
 
+test("dense bars dim smoothly even when no subdivision is visible", () => {
+    const bars = [{ x: 0, depth: 0 }, { x: 1, depth: 0 }, { x: 4, depth: 0 }];
+    const at = (scale: number) => gridGuideStrengths(bars, ({ x }) => x * scale).get(0)!;
+    assert.ok(at(8) < .07);
+    assert.ok(at(8) < at(16) && at(16) < at(48));
+    assert.ok(Math.abs(at(8 + .001) - at(8 - .001)) < .001);
+    assert.equal(at(8), gridGuideStrengths(bars.slice(0, 2), ({ x }) => x * 8).get(0));
+});
+
+test("guide strengths use the closest pair at each visible depth and adapt to missing levels", () => {
+    const marks = [
+        { x: 96, depth: 3 }, { x: 0, depth: 1 }, { x: 8, depth: 3 },
+        { x: 112, depth: 1 }, { x: 104, depth: 2 }, { x: 56, depth: 2 },
+    ];
+    const strengths = gridGuideStrengths(marks, ({ x }) => x);
+    const falloff = (gap: number) => 1 / (1 + (24 / gap) ** 2);
+    const brightness = .6 + .4 * falloff(8);
+    assert.equal(strengths.get(1), brightness * falloff(112));
+    assert.equal(strengths.get(2), brightness * falloff(8) * .82);
+    assert.equal(strengths.get(3), brightness * falloff(8) * .82 ** 2);
+    const finest = marks.filter(({ depth }) => depth === 3);
+    assert.ok(gridGuideStrengths(finest, ({ x }) => x).get(3)! > strengths.get(3)!);
+});
+
 test("beat observations share a padded query across nearby pans and zooms", () => {
     const base = timelineBeatObservationWindow(-2001n, 3000n, 1200)!;
     assert.deepEqual(timelineBeatObservationWindow(-1200n, 3300n, 1200), base);
@@ -50,6 +75,48 @@ test("beat observations share a padded query across nearby pans and zooms", () =
     const wrapped = timelineBeatObservationWindow(nearSeam, 100n, 800)!;
     const offset = BigInt.asUintN(64, nearSeam - BigInt(wrapped.begin));
     assert.ok(offset > 0n && offset + 100n < BigInt(wrapped.length));
+});
+
+test("playhead seek windows lead past both viewport edges and overlap as they move", () => {
+    const visible = { first: 100n, length: 100n };
+    assert.equal(seekBeatWindow(visible, 150n, true), undefined);
+    assert.equal(seekBeatWindow(visible, 174n, true), undefined);
+    assert.deepEqual(seekBeatWindow(visible, 175n, true), { first: 150n, length: 200n });
+    assert.deepEqual(seekBeatWindow(visible, 275n, true), { first: 250n, length: 200n });
+    assert.deepEqual(seekBeatWindow(visible, 124n, false), { first: -50n, length: 200n });
+    const last = (1n << 63n) - 1n;
+    assert.deepEqual(seekBeatWindow({ first: last - 75n, length: 100n }, -last, true),
+        { first: last - 25n, length: 200n });
+});
+
+test("playhead detents arrive without a jump and retain their remaining travel when a window changes", () => {
+    let loaded: bigint[] | undefined;
+    const drag = playheadTimeDrag(0n, 1, 1, [], () => loaded);
+    assert.equal(drag(124).sampleIndex, 124n);
+    loaded = [110n, 140n];
+    assert.equal(drag(124).sampleIndex, 124n);
+    assert.equal(drag(140).snappedIndex, 140n);
+    assert.equal(drag(146).plateau, -6);
+    loaded = [175n];
+    assert.equal(drag(147).plateau, -5);
+    assert.equal(drag(164).snappedIndex, 140n);
+    assert.equal(drag(165).sampleIndex, 141n);
+    assert.equal(drag(199).snappedIndex, 175n);
+
+    loaded = [160n];
+    assert.equal(drag(173).snappedIndex, 160n);
+});
+
+test("replacing seek targets preserves sub-sample travel", () => {
+    let loaded: bigint[] | undefined;
+    const drag = playheadTimeDrag(0n, .4, 1, [], () => loaded);
+    assert.equal(drag(1).sampleIndex, 0n);
+    loaded = [100n];
+    assert.equal(drag(2).sampleIndex, 1n);
+    loaded = [110n];
+    assert.equal(drag(3).sampleIndex, 1n);
+    loaded = [120n];
+    assert.equal(drag(4).sampleIndex, 2n);
 });
 
 test("drag detents add pointer travel and keep the adjacent samples reachable in either direction", () => {

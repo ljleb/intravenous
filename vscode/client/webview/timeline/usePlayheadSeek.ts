@@ -1,19 +1,25 @@
 import { onBeforeUnmount, type Ref } from "vue";
 import { automationSampleIndex } from "../../src/automationCurveGeometry";
-import { timelineTimeDrag } from "../../src/timelineTimeDrag";
+import { playheadTimeDrag } from "../../src/timelineTimeDrag";
 import { useOptionalGraphEditor } from "../graph/context";
 import { visibleCursorDestination } from "../graph/cursorReturn";
 import { webviewApi } from "../host";
-import { snapTimelineSample, timelineSampleFraction, timelineSnapRadiusPx } from "./geometry";
+import { seekBeatWindow, snapTimelineSample, timelineSampleFraction, timelineSnapRadiusPx, type SeekBeatWindow } from "./geometry";
 import { usePlayback } from "./playbackContext";
 import type { PresentationTimeWindow } from "./timelineContext";
 
+export type SeekBeatReader = {
+    marks: (window: SeekBeatWindow, sampleRate: number, width: number) => readonly bigint[] | undefined;
+    close?: () => void;
+};
+
 export function usePlayheadSeek(surface: Ref<HTMLElement | null>, timeWindow: () => PresentationTimeWindow | undefined,
-    marks: () => readonly bigint[]) {
+    marks: () => readonly bigint[], openBeatReader?: () => SeekBeatReader | undefined) {
     const editor = useOptionalGraphEditor();
     const { backgroundPlayhead, dragPosition, releaseDrag, state } = usePlayback();
     let cancel: (() => void) | undefined;
-    onBeforeUnmount(() => cancel?.());
+    let closeReader: (() => void) | undefined;
+    onBeforeUnmount(() => { cancel?.(); closeReader?.(); });
 
     return function beginSeek(event: PointerEvent) {
         const element = surface.value, time = timeWindow();
@@ -34,7 +40,25 @@ export function usePlayheadSeek(surface: Ref<HTMLElement | null>, timeWindow: ()
         const snapTargets = marks();
         trace?.log("Seek mapping", { anchor: anchor.toString(), sampleRate, secondsPerPixel, detents: snapTargets.length,
             currentPlayhead: backgroundPlayhead.value?.toString(), running: state.value?.running });
-        const atTravel = timelineTimeDrag(anchor, secondsPerPixel, sampleRate, snapTargets);
+        const first = automationSampleIndex(time.beginSeconds, sampleRate);
+        const last = automationSampleIndex(time.beginSeconds, sampleRate, span);
+        const reader = first !== undefined && last !== undefined ? openBeatReader?.() : undefined;
+        const visible = first !== undefined && last !== undefined ? { first, length: last - first + 1n } : undefined;
+        closeReader = reader?.close;
+        let readTargets: readonly bigint[] | undefined;
+        let outsideTargets: readonly bigint[] = [];
+        const atTravel = playheadTimeDrag(anchor, secondsPerPixel, sampleRate, snapTargets, reader && visible ? (sample, forward) => {
+            const window = seekBeatWindow(visible, sample, forward);
+            if (!window) return;
+            const width = Number(window.length) / (secondsPerPixel * sampleRate);
+            const targets = reader.marks(window, sampleRate, width);
+            if (!targets) return;
+            if (targets !== readTargets) {
+                readTargets = targets;
+                outsideTargets = targets.filter((target) => BigInt.asUintN(64, target - visible.first) >= visible.length);
+            }
+            return outsideTargets;
+        } : undefined);
         let travel = 0;
         let position: string | null = null;
         let posted: string | null = null;
@@ -64,6 +88,8 @@ export function usePlayheadSeek(surface: Ref<HTMLElement | null>, timeWindow: ()
             finish(point, lockOrigin) {
                 cancel = undefined;
                 if (point && !lockOrigin) update(point.x - pressX);
+                closeReader?.();
+                closeReader = undefined;
                 cancelAnimationFrame(frame);
                 const finalPosition = position;
                 trace?.log("Seek gesture ended", { finalPosition, travel, release: point, lockOrigin });
@@ -95,5 +121,6 @@ export function usePlayheadSeek(surface: Ref<HTMLElement | null>, timeWindow: ()
                 } };
             },
         });
+        if (!cancel) { closeReader?.(); closeReader = undefined; }
     };
 }

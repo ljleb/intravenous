@@ -4,7 +4,7 @@ import type { GraphScopeNode } from "../../src/graphScope";
 import { webviewApi } from "../host";
 import { presentations } from "../presentation/presentations";
 
-const props = defineProps<{ node?: GraphScopeNode; definitions: string[] }>();
+const props = defineProps<{ node?: GraphScopeNode; definitions: string[]; afterInstanceId?: string }>();
 const emit = defineEmits<{ close: [] }>();
 const instance = props.node?.instance;
 const definitionId = ref(instance?.definitionId ?? props.definitions[0] ?? "");
@@ -29,7 +29,7 @@ function save() {
             previousDisplayName, previousConfigurationSource });
     } else {
         webviewApi.postMessage({ type: "createGraphNode", definitionId: definitionId.value,
-            displayName: displayName.value, configurationSource: configurationSource.value });
+            displayName: displayName.value, configurationSource: configurationSource.value, afterInstanceId: props.afterInstanceId });
     }
     emit("close");
 }

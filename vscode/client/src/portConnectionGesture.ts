@@ -1,5 +1,6 @@
-import { canMoveConnectionEnd, sameGraphPort, type GraphConnectionEnd, type GraphConnectionEdit, type GraphPortEndpoint } from "./graphConnectionEditing";
+import { canMoveConnectionEnd, connectionFromPorts, sameGraphPort, type GraphConnectionEnd, type GraphConnectionEdit, type GraphPortEndpoint } from "./graphConnectionEditing";
 import type { GraphScope } from "./graphScope";
+import { isTimelineSnapAddress } from "./timelineSnap";
 
 export type PortPointerPosition = { x: number; y: number };
 export type PortConnectionDrag = {
@@ -38,7 +39,12 @@ export function acceptsPortConnection(source: GraphPortEndpoint, target: GraphPo
 export function canDropPortConnection(scope: GraphScope | null, drag: PortConnectionDrag,
     target: GraphPortEndpoint | null): boolean {
     if (!scope?.editable || !target || !acceptsPortConnection(drag.port, target, !!drag.edit)) return false;
-    return !drag.edit || (!sameGraphPort(drag.port, target) && canMoveConnectionEnd(scope, drag.edit, target));
+    if (drag.edit) return !sameGraphPort(drag.port, target) && canMoveConnectionEnd(scope, drag.edit, target);
+    if (isTimelineSnapAddress(drag.port.address) || isTimelineSnapAddress(target.address)) {
+        try { connectionFromPorts(scope, "", drag.port, target); }
+        catch { return false; }
+    }
+    return true;
 }
 
 export function finishPortConnection(drag: PortConnectionDrag, pointerId: number,

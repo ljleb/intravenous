@@ -490,10 +490,16 @@ The value anchor continues in the same direction when the pointer wraps.
 The status bar shows how many screens above or below the visible lane the
 anchor has moved.
 
+Horizontal value guides span the full automation content width, with labels
+beside their strokes. Both Curved and Cropped emphasize zero and unit values
+and grade other guides by multiples of the finest displayed value step.
+Opacity uses the same pixel-spacing falloff as the beat grid. The Scale
+button shares the ruler settings button's extended hit area.
+
 While a dragged point is held at a value snap, draw a thin blue guide that is
-brightest under the point and fades horizontally. Brighten the matching value
-label on the left. Clear both highlights when the point leaves the snap or the
-drag ends.
+brightest under the point and fades horizontally to a visible stroke at both
+edges. Brighten the matching value label on the left. Clear both highlights
+when the point leaves the snap or the drag ends.
 
 When signals supply bounds, observe the public `min` and `max` inputs over
 the visible window. Draw the bound traces, the authored curve, and the clamped
@@ -601,7 +607,7 @@ tension handles and the editing controls. Changing zoom level does not change
 point data, bounds or selection identity. Sample-accurate time snapping remains
 required for all edits in `editable`.
 
-The project time ruler uses the inputs of authored Timeline nodes as described
+The project time ruler uses the editor-managed Timeline input as described
 in [Timeline nodes and project snapping](./project_playback_and_presentation_grids_direction.md#timeline-nodes-and-project-snapping).
 The automation editor draws the ruler's visible event marks as vertical guides
 and snaps to those same marks. Use a screen-pixel radius when creating a point

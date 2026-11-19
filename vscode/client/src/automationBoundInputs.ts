@@ -8,7 +8,7 @@ type BoundTrack = { begin: number; end: number; samples: BoundSample[] };
 type BoundWindowRequest = { window: ObservationWindow; prefetch: boolean };
 
 const automationBoundPrefetchCount = 6;
-export const automationBoundWindowCount = 1 + automationBoundPrefetchCount;
+const automationBoundWindowCount = 1 + automationBoundPrefetchCount;
 export const automationBoundVisiblePositions = 1024;
 
 export function automationBoundWindows(visible: ObservationWindow): BoundWindowRequest[] {
@@ -32,31 +32,6 @@ export function automationBoundWindows(visible: ObservationWindow): BoundWindowR
         requests[1 + slot] = { window: { begin: String(tile * length), length: String(length), points }, prefetch: true };
     }
     return requests;
-}
-
-export function retainAutomationBoundWindows(previous: readonly ObservationWindowResult[],
-    incoming: readonly (ObservationWindowResult | undefined)[],
-    requests: readonly BoundWindowRequest[]): readonly ObservationWindowResult[] {
-    const retained = new Map<string, ObservationWindowResult>();
-    for (const result of [...previous, ...incoming]) {
-        if (!result || result.status !== "ready" || result.truncated || result.dataVersion === undefined) continue;
-        const begin = BigInt(result.window.begin), end = begin + BigInt(result.window.length);
-        const overlaps = requests.some(({ window }) => {
-            const requestedBegin = BigInt(window.begin);
-            return requestedBegin < end && begin < requestedBegin + BigInt(window.length);
-        });
-        if (!overlaps) continue;
-        const key = JSON.stringify([result.window.begin, result.window.length, result.window.points]);
-        const known = retained.get(key);
-        // A playback cache publication can advance the data version while
-        // this window waits to refresh. Keep its last complete preview.
-        if (known && compareObservationWindowVersions(result, known) <= 0) continue;
-        retained.delete(key);
-        retained.set(key, result);
-    }
-    const windows = [...retained.values()].slice(-2 * automationBoundWindowCount);
-    return windows.length === previous.length && windows.every((window, index) => window === previous[index])
-        ? previous : windows;
 }
 
 export function refinedAutomationBoundTracks(results: readonly ObservationWindowResult[],

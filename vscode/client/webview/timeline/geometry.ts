@@ -73,6 +73,21 @@ export function timelineBeatObservationWindow(first: bigint, length: bigint, wid
     };
 }
 
+export type SeekBeatWindow = { first: bigint; length: bigint };
+
+export function seekBeatWindow(visible: SeekBeatWindow, sample: bigint, forward: boolean): SeekBeatWindow | undefined {
+    const { first, length } = visible;
+    if (length <= 0n || length >= (1n << 61n)) return;
+    const relative = BigInt.asIntN(64, sample - first);
+    const lead = length / 4n || 1n;
+    const ahead = relative + (forward ? lead : -lead);
+    const tile = ahead - (ahead % length + length) % length;
+    if (tile === 0n) return;
+    // Adjacent windows overlap by one viewport. The window changes before
+    // reaching its edge and still contains recently traversed detents.
+    return { first: first + tile - length / 2n, length: 2n * length };
+}
+
 export function snapTimelineSample(index: bigint, marks: readonly bigint[], tolerance: number): bigint {
     let snapped = index;
     let nearest = tolerance;

@@ -128,13 +128,14 @@ test("moving the viewport submits window updates before the gesture stops", asyn
                 status: "ready", approximate: true, regions: [] }] }],
         } });
         publish(5);
-        assert.deepEqual(scope.values.windows.get(id)?.window, windowAt(5));
+        assert.deepEqual(scope.windowForDisplay(id)?.window, windowAt(5));
         await tick(100);
         assert.deepEqual(reconciles.at(-1)?.interests[0].window, windowAt(6));
         publish(5);
-        assert.equal(scope.values.windows.get(id), undefined);
+        assert.equal(scope.windowForDisplay(id)?.outdated, true);
+        assert.deepEqual(scope.windowForDisplay(id)?.window, windowAt(5));
         publish(6);
-        assert.deepEqual(scope.values.windows.get(id)?.window, windowAt(6));
+        assert.deepEqual(scope.windowForDisplay(id)?.window, windowAt(6));
     } finally { scope.dispose(); }
 });
 
@@ -403,12 +404,7 @@ test("configured generation changes clear measurements and reject delayed older 
     values.acceptGeneration(4);
     assert.equal(values.receive(update("4"), "viewport"), true);
     assert.equal(values.values.get("peak")?.available, true);
-    const first = values.windowSnapshot;
-    assert.equal(first?.dataVersion, "0");
-    assert.equal(values.receive({ ...update("4"), dataVersion: "8" }, "viewport"), true);
-    assert.equal(values.windowSnapshot?.dataVersion, "8");
     assert.equal(values.acceptGeneration(5), true);
-    assert.equal(values.windowSnapshot, undefined);
     assert.equal(values.values.size, 0);
     assert.equal(values.receive(update("4"), "viewport"), false);
     assert.equal(values.receive(update("5"), "viewport"), true);
@@ -417,7 +413,7 @@ test("configured generation changes clear measurements and reject delayed older 
     values.acceptGeneration(null);
     assert.equal(values.receive(update("5"), "viewport"), false);
     values.clear();
+    assert.equal(values.values.size, 0);
     values.acceptGeneration(4);
     assert.equal(values.receive(update("4"), "viewport"), true);
-    assert.notEqual(values.windowSnapshot?.epoch, first?.epoch);
 });

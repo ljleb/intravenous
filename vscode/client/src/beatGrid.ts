@@ -83,14 +83,21 @@ export function selectVisibleBeatMarks<Mark extends { x: number; depth: number }
 
 // Preview Beats::tock_coverage using the accepted constructor values. Keep
 // calculation in sample indexes so independently drawn windows share marks.
-export function beatGridTicks(grid: BeatGrid, window: { beginSeconds: number; spanSeconds: number },
+export function beatGridTicks(grid: BeatGrid, window: { spanSeconds: number } & ({ beginSeconds: number } | { beginSample: bigint }),
     sampleRate: number, width: number): BeatGridTick[] {
-    const { beginSeconds, spanSeconds } = window;
+    const { spanSeconds } = window;
     if (!(spanSeconds > 0 && width >= 1) || !Number.isFinite(width)) return [];
     const minimumSpacing = Math.max(minimumBeatMarkSpacing, width / 800);
     const margin = spanSeconds * minimumSpacing / width;
-    const begin = automationSampleIndex(beginSeconds, sampleRate, -margin);
-    const end = automationSampleIndex(beginSeconds, sampleRate, spanSeconds + margin);
+    const indexAt = (seconds: number) => {
+        if ("beginSeconds" in window) return automationSampleIndex(window.beginSeconds, sampleRate, seconds);
+        const offset = automationSampleIndex(seconds, sampleRate);
+        return offset === undefined ? undefined : window.beginSample + offset;
+    };
+    const secondsAt = (index: bigint) => "beginSeconds" in window
+        ? automationSampleOffset(index, window.beginSeconds, sampleRate) : Number(index - window.beginSample) / sampleRate;
+    const begin = indexAt(-margin);
+    const end = indexAt(spanSeconds + margin);
     if (begin === undefined || end === undefined || end - begin >= timelineExtent) return [];
 
     // Depth zero marks bars, depth one marks beats, and each following
@@ -133,7 +140,7 @@ export function beatGridTicks(grid: BeatGrid, window: { beginSeconds: number; sp
         for (let tick = markAtOrAfter(first); tick < limit; tick++) {
             const mark = tick * step;
             const sample = floorDivide(mark * numerator + rounding, denominator);
-            const x = automationSampleOffset(sample + offset, beginSeconds, sampleRate) / spanSeconds * width;
+            const x = secondsAt(sample + offset) / spanSeconds * width;
             if (x < -minimumSpacing || x > width + minimumSpacing) continue;
             const depth = strides.findIndex((stride) => mark % stride === 0n);
             ticks.push({ x, depth, sample, bar: depth === 0 ? mark / barStride + 1n : undefined });

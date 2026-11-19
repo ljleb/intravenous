@@ -286,6 +286,11 @@ so native cursor return can land on the displayed playhead.
 
 The Beats lane uses the same seek gesture as the ruler. The ruler snaps to its
 displayed beat marks in Beats mode. The Beats lane snaps to its own visible marks.
+In Beats and Custom, a ruler drag reads a rolling beat window ahead of the
+playhead so snapping continues beyond the visible timeline. A drag in a
+Beats lane projects that lane's grid at the same zoom beyond its edges.
+Newly loaded marks take effect from the current drag position and preserve
+any travel already spent on the active detent.
 During a drag, a snap adds physical pointer travel at the selected sample.
 The samples on either side stay reachable. Mouse drags use pointer lock.
 When native cursor return is available, release returns the pointer to the
@@ -407,24 +412,32 @@ grid is a prerequisite.
 
 _Accepted design, 2026-11-19._
 
-A Timeline node represents a connection to the project editor. Its `beats`
-port accepts BeatEvent Coverage. Place Timeline nodes wherever they belong
-in the project graph, including inside subgraphs. Use graph connections to
-route beat generators and transforms to their inputs.
+The ruler's top-right popover selects the project-wide snap mode. Its hit
+area extends to the top and right edges and left of the visible button.
 
-The ruler's top-right popover selects Seconds or Beats and saves the choice in
-the project graph layout. Seconds is the default. It shows time graduations
-and disables grid snapping. Beats shows event marks and snaps to the visible
-marks. The ruler and automation lanes draw only the selected time grid. The
-editor requests Timeline event windows in Beats mode.
+- **Seconds** is the default. It shows time graduations without a beat grid.
+  The graph has no editor-managed snapping nodes.
+- **Beats** creates an editor-managed `iv.builtin.beats` and connects its
+  `beats` output to the editor-managed `iv.builtin.timeline`. The popover
+  exposes the same BPM, beats per bar, and subdivisions as an authored Beats
+  lane.
+- **Custom** uses the editor-managed `iv.builtin.timeline`. Its `beats`
+  input sits below the playback indicator, seconds, and sample count in the
+  ruler's taller left column in a full-height port row. Compatible
+  BeatEvent outputs can connect to it using ordinary graph cables. Multiple
+  sources contribute to the same grid.
 
-The editor observes the resolved inputs of every Timeline node in the
-project. The observation carries event timestamps and payloads, with the
-timing and Coverage of the receiving port. The UI owns the merge rules.
-For beats, it combines events by sample index and keeps the smallest
-`BeatEvent.depth` at each coincident index. Each viewport selects the
-displayed marks for its zoom level. The ruler and the snap gesture use the
-same list.
+[Previous Custom input placement](./historical/custom_beats_input_before_second_row_2026-11-19.md).
+
+The editor owns these internal instances and omits their lanes. Active mode
+follows the graph edit that creates or removes them. Switching modes retains
+the internal Beats settings and Custom connections for the next time that
+mode is selected. Authored Beats and Timeline instances remain in the graph.
+
+In Beats and Custom, observe the resolved `beats` input of the editor-managed
+Timeline. Use its receiving-port timing and Coverage. At coincident sample
+indices, use the smallest `BeatEvent.depth`. Each viewport selects the marks
+at its zoom level and uses the same list for the ruler and snap gestures.
 
 The viewport picks marks by a minimum horizontal pixel distance at its current
 scale. Closer candidates give way to coarser marks. The Beats preview uses the
@@ -432,17 +445,25 @@ same distance rule. A query may include marks beyond the viewport so the
 editor can redraw and snap immediately during nearby pans and zoom changes.
 
 The timeline draws the ruler's visible beat marks continuously over each run
-of time-aware lanes, including automation lanes. While the viewport changes,
-the editor can project overlapping data from the last ready observation window
-until the replacement arrives. A point created within the snap radius starts
+of time-aware lanes, including automation lanes. The ruler, lane grid, and
+Beats preview emphasize bar lines most, then beat lines, then subdivisions.
+Each visible depth uses the minimum pixel gap between guides at that depth
+or coarser. Opacity falls off with that gap and the overall minimum gap, so
+a dense grid of bars alone also dims. The coarsest displayed depth has the
+most emphasis. Guides fade when zoom adds or removes them.
+While the viewport changes, the editor can project overlapping data from
+the last ready observation window until the replacement arrives.
+A point created within the snap radius starts
 at the nearest visible mark. During
 a drag, use the same pointer-travel detents as value snapping. A beat and a
 neighboring point at the same sample share a detent. Highlight the active time
 guide in blue. The displayed background playhead at pickup also provides a
-detent, in both time-grid modes. Between detents, quantize to the nearest
+detent in all snap modes. Between detents, quantize to the nearest
 project sample. A grid change affects subsequent edits. Existing point
 positions are retained.
 [Earlier radius-only drag snapping](./historical/automation_beat_snap_before_detents_2026-11-19.md).
 
 The [previous ruler input and cover selector](./historical/ruler_coverage_input_before_timeline_nodes_2026-11-19.md)
 is preserved with its source-selection rationale.
+The [initial authored Timeline design](./historical/ruler_grid_before_managed_snap_nodes_2026-11-19.md)
+records the previous source and merge rules.

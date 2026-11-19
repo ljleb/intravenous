@@ -15,13 +15,12 @@ const visibleWindow = computed(() => {
     return time ? sampleWindow(time.beginSeconds, time.endSeconds, time.sampleRate, 2) : undefined;
 });
 const waveforms = computed(() => {
-    observations?.version.value;
     const address = node.value.address;
     if (!address || !observations) return [];
     return observations.capabilities.value.filter((entry) => entry.delivery === "window"
         && (props.inputMember === undefined ? entry.kind === "output" : entry.kind === "input" && entry.member === props.inputMember)
         && addressKey(entry.source.node) === addressKey(address)).map((entry) => {
-        const result = observations.values.windowForDisplay(entry.id, visibleWindow.value);
+        const result = observations.windowForDisplay(entry.id, visibleWindow.value);
         const label = entry.kind === "input" ? `Input ${entry.member}` : entry.member;
         return { ...entry, label, result, geometry: sampleWaveform(result, props.bounds, visibleWindow.value) };
     });
@@ -38,7 +37,8 @@ function waveformStatus(item: (typeof waveforms.value)[number]): string {
 <template>
     <div v-if="waveforms.length" class="window-outputs" :data-mode="mode">
         <div v-for="item in waveforms" :key="item.id" class="waveform"
-            :class="{ unavailable: item.result?.status !== 'ready' || item.result?.outdated, failed: item.result?.status === 'failed' }"
+            :class="{ unavailable: item.result?.status !== 'ready' || item.result?.outdated,
+                failed: item.result?.status === 'failed' || !!item.result?.error }"
             :data-status-hint="waveformStatus(item)">
             <svg viewBox="0 0 1000 100" preserveAspectRatio="none" role="img"
                 :aria-label="`${item.label}: ${item.result?.status ?? 'pending'} representative waveform`">

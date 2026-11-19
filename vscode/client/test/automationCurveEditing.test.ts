@@ -1,11 +1,11 @@
-import { automationBoundTracks, automationBoundWindows, refinedAutomationBoundTracks, retainAutomationBoundWindows,
+import { automationBoundTracks, automationBoundWindows, refinedAutomationBoundTracks,
     sampleAutomationPreview } from "../src/automationBoundInputs";
-import type { ObservationWindowResult } from "../src/observations";
+import { ObservationValues, type ObservationWindowResult } from "../src/observations";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { AutomationCurveEditing, automationCycleSeconds, automationWindow, curvePointAt, readAutomationCurve, type CurveAxes } from "../src/automationCurveEditing";
 import { automationSampleOffset, automationValueAtFraction, automationValueFraction, automationValueGuides,
-    panAutomationValueAxis, readAutomationCurveView, zoomAutomationValueAxis } from "../src/automationCurveGeometry";
+    panAutomationValueAxis, rankAutomationValueGuides, readAutomationCurveView, zoomAutomationValueAxis } from "../src/automationCurveGeometry";
 import type { GraphScope, GraphScopeNode, NodeAddress, Point } from "../src/graphScope";
 import { KnobPointerLock } from "../src/knobPointerLock";
 import { knobFraction, valueScaleFraction } from "../src/knobPresentation";
@@ -731,7 +731,7 @@ test("automation bounds spend 1024 positions on the viewport and reuse coarse ti
     assert.deepEqual(coarse.map(({ window }) => window.begin), ["-3072", "-2048", "-1024", "0", "1024", "2048"]);
 });
 
-test("automation bounds keep a cached fallback until the fine result can supersede it", () => {
+test("automation bounds keep their fine outline during successive edits of the connected source", () => {
     const make = (begin: string, length: string, points: number, value?: number): ObservationWindowResult => ({
         id: begin, window: { begin, length, points }, status: "ready", approximate: true, dataVersion: "3",
         regions: value === undefined ? [] : [{ begin, length, points: [{ index: begin, available: true, value: { value } }] }],
@@ -739,32 +739,38 @@ test("automation bounds keep a cached fallback until the fine result can superse
     const coarse = make("0", "64", 4, 2);
     const fine = make("20", "8", 8, 6);
     const empty = make("28", "4", 4);
-    const requests = automationBoundWindows({ begin: "20", length: "16", points: 16 });
-    const cached = retainAutomationBoundWindows([], [{ ...coarse, outdated: true }], requests);
-    assert.equal(retainAutomationBoundWindows(cached, [{ ...fine, status: "pending" }], requests), cached);
-    const ahead = { ...fine, dataVersion: "4", outdated: true };
-    const known = retainAutomationBoundWindows(cached, [ahead], requests);
-    assert.equal(known.length, 2);
-    assert.equal(retainAutomationBoundWindows(known, [fine], requests), known);
-    const refined = retainAutomationBoundWindows(known, [empty], requests);
-    const tracks = refinedAutomationBoundTracks(refined, 16, 20, 1);
+    const values = new ObservationValues();
+    const visible = { begin: "16", length: "20" };
+    const source = { node: { instanceId: "curve" }, kind: "input" as const, member: "max" };
+    const requests = [coarse, fine, empty].map(({ id, window }) => ({ id, source, window, operation: "waveform" }));
+    const publish = (generation: string, ...windows: ObservationWindowResult[]) => values.receive({
+        activationId: "1", generation, revision: "1", index: "0", blockSize: 64, dataVersion: "0",
+        scopes: [{ scopeId: "viewport", values: [], windows }],
+    }, "viewport");
+    const retained = () => values.readyWindowsForDisplay(requests.map(({ id }) => id), visible, true);
+    values.acceptGeneration(7, 1);
+    values.expectWindows(requests);
+    publish("7", coarse, fine, empty);
+    const tracks = refinedAutomationBoundTracks(retained(), 16, 20, 1);
     assert.deepEqual(tracks.map(({ begin, end, samples }) => [begin, end, samples[0].value]),
         [[0, 4, 2], [4, 12, 6], [16, 20, 2]]);
     const curve = [{ begin: { seconds: 0, value: 0 }, end: { seconds: 20, value: 0 }, first: 0, second: 0 }];
     assert.deepEqual(sampleAutomationPreview(curve, tracks, [], {}, 20, 20).output.map((run) => run[0].value),
         [2, 6, 0, 2]);
 
-    const newerCoarse = { ...coarse, dataVersion: "5" };
-    const whileRefreshing = retainAutomationBoundWindows(known, [newerCoarse], requests);
-    assert.deepEqual(refinedAutomationBoundTracks(whileRefreshing, 20, 8, 1, fine.window)
-        .map(({ samples }) => samples[0].value), [6]);
-
-    const newExecution = { ...ahead, executionGeneration: "10" };
-    assert.ok(retainAutomationBoundWindows(whileRefreshing, [newExecution], requests).includes(newExecution));
-
-    const completeGap = { ...empty, window: { begin: "16", length: "32", points: 16 }, dataVersion: "6" };
-    const refreshed = retainAutomationBoundWindows(whileRefreshing, [completeGap], requests);
-    assert.deepEqual(refinedAutomationBoundTracks(refreshed, 20, 8, 1, completeGap.window), []);
+    for (const generation of [8, 9]) {
+        values.acceptGeneration(generation, 1);
+        assert.deepEqual(refinedAutomationBoundTracks(retained(), 20, 8, 1, fine.window)
+            .map(({ samples }) => samples[0].value), [6]);
+        publish(String(generation), { ...coarse, dataVersion: "5" }, { ...fine, status: "pending" });
+        publish(String(generation), { ...fine, truncated: true, regions: [] });
+        assert.deepEqual(refinedAutomationBoundTracks(retained(), 20, 8, 1, fine.window)
+            .map(({ samples }) => samples[0].value), [6]);
+    }
+    publish("9", { ...fine, dataVersion: "1", regions: [] });
+    assert.deepEqual(refinedAutomationBoundTracks(retained(), 20, 8, 1, fine.window), []);
+    values.expectWindows([]);
+    assert.deepEqual(retained(), []);
 });
 
 test("bound tracks keep unavailable samples and separate Coverage Regions out of the preview", () => {
@@ -989,6 +995,19 @@ test("the value ruler keeps adding finer powers of two where the scale has space
     assert.ok(values(600, "half").includes(1.5));
     assert.ok(values(600, "half").every((value) => Number.isInteger(value * 2)));
     assert.deepEqual(values(600, "off"), []);
+});
+
+test("value guide depth follows value subdivisions on both display scales", () => {
+    for (const display of ["cropped", "curved"] as const) {
+        const guides = automationValueGuides({ display }, 480, "half");
+        const ranked = rankAutomationValueGuides(guides);
+        const depths = new Map(ranked.map(({ value, depth }) => [value, depth]));
+        assert.deepEqual(ranked.map(({ value, y }) => ({ value, y })), guides);
+        assert.deepEqual([0, 1, -1, .5, -.5].map((value) => depths.get(value)), [0, 1, 1, 3, 3]);
+    }
+    const guides = automationValueGuides({ display: "cropped", pan: 14, zoom: { factor: 1 / 3, center: .5 } }, 160, "whole");
+    const depths = new Map(rankAutomationValueGuides(guides).map(({ value, depth }) => [value, depth]));
+    assert.deepEqual([12, 14, 13].map((value) => depths.get(value)), [1, 2, 3]);
 });
 
 test("point drags snap to fractional values only when the ruler displays them", async () => {

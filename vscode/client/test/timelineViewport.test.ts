@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { initialTimelineViewport, isMiddleDoubleClick, maximumLaneHeight, middleClickMode, minimumLaneHeight, moveMiddleDrag, panTimeline,
-    readTimelineViewport, resetTimelineZoom, timelineMiddleDragAction, timelineWheelAction, verticalMiddleDragZoomFactor, wheelPixels,
-    wrapTimelineCursor, zoomAnchorHint, zoomMiddleDrag, zoomTimelineHorizontally, zoomTimelineVertically, type MiddleDrag } from "../src/timelineViewport";
+import { initialTimelineViewport, isMiddleDoubleClick, maximumLaneHeight, middleClickMode, middleDragZoomFactor, middleZoomPickup,
+    minimumLaneHeight, moveMiddleDrag, panTimeline, readTimelineViewport, resetTimelineZoom, timelineMiddleDragAction, timelineWheelAction,
+    wheelPixels, wrapTimelineCursor, zoomAnchorHint, zoomMiddleDrag, zoomMiddleDragAtPickup, zoomTimelineAxes,
+    zoomTimelineHorizontally, zoomTimelineVertically, type MiddleDrag } from "../src/timelineViewport";
 
 test("timeline wheel modifiers implement the requested bindings", () => {
     const plain = { ctrlKey: false, altKey: false, shiftKey: false };
@@ -13,7 +14,7 @@ test("timeline wheel modifiers implement the requested bindings", () => {
     const altShift = { ...plain, altKey: true, shiftKey: true };
     assert.equal(timelineWheelAction(altShift), "verticalZoom");
     assert.equal(timelineWheelAction(altShift, true), "laneValueZoom");
-    assert.equal(timelineWheelAction({ ...altShift, ctrlKey: true }, true), "horizontalZoom");
+    assert.equal(timelineWheelAction({ ...altShift, ctrlKey: true }, true), "bothZoom");
     assert.equal(wheelPixels(2, 0, 400), 2);
     assert.equal(wheelPixels(2, 1, 400), 32);
     assert.equal(wheelPixels(2, 2, 400), 800);
@@ -47,21 +48,21 @@ test("vertical zoom preserves the lane position under the pointer within scroll 
 test("middle movement pans both axes only while the middle button is held", () => {
     const view = { ...initialTimelineViewport, beginSeconds: 2, scrollTop: 500 };
     const pan: MiddleDrag = { pointerId: 1, x: 100, y: 100, action: "pan" };
-    assert.equal(moveMiddleDrag(view, pan, 4, 100, 100, 0), view);
-    const moved = moveMiddleDrag(view, pan, 4, 150, 175, 0)!;
+    assert.equal(moveMiddleDrag(view, pan, 4, 100, 100, { x: 0, y: 0 }), view);
+    const moved = moveMiddleDrag(view, pan, 4, 150, 175, { x: 0, y: 0 })!;
     assert.equal(moved.beginSeconds, 1.5);
     assert.equal(moved.scrollTop, 425);
     assert.equal(moved.laneHeight, view.laneHeight);
-    assert.equal(moveMiddleDrag(view, pan, 0, 150, 175, 0), null);
-    assert.equal(moveMiddleDrag(view, pan, 1, 150, 175, 0), null);
+    assert.equal(moveMiddleDrag(view, pan, 0, 150, 175, { x: 0, y: 0 }), null);
+    assert.equal(moveMiddleDrag(view, pan, 1, 150, 175, { x: 0, y: 0 }), null);
 });
 
 test("a lane value pan moves graph time horizontally and leaves graph scroll fixed", () => {
     const view = { ...initialTimelineViewport, beginSeconds: 2, scrollTop: 500 };
     const pan: MiddleDrag = { pointerId: 1, x: 100, y: 100, action: "pan" };
-    assert.deepEqual(moveMiddleDrag(view, pan, 4, 150, 175, 0, true), { ...view, beginSeconds: 1.5 });
-    assert.equal(moveMiddleDrag(view, pan, 4, 100, 175, 0, true), view);
-    assert.equal(moveMiddleDrag(view, pan, 0, 150, 175, 0, true), null);
+    assert.deepEqual(moveMiddleDrag(view, pan, 4, 150, 175, { x: 0, y: 0 }, true), { ...view, beginSeconds: 1.5 });
+    assert.equal(moveMiddleDrag(view, pan, 4, 100, 175, { x: 0, y: 0 }, true), view);
+    assert.equal(moveMiddleDrag(view, pan, 0, 150, 175, { x: 0, y: 0 }, true), null);
 });
 
 test("panning follows mouse travel across a viewport or lane wrap", () => {
@@ -79,41 +80,85 @@ test("middle drag selects the zoom axis with the same modifier precedence as the
     assert.equal(timelineMiddleDragAction({ ctrlKey: false, altKey: false }), "pan");
     assert.equal(timelineMiddleDragAction({ ctrlKey: false, altKey: true }), "verticalZoom");
     assert.equal(timelineMiddleDragAction({ ctrlKey: true, altKey: false }), "horizontalZoom");
-    assert.equal(timelineMiddleDragAction({ ctrlKey: true, altKey: true }), "horizontalZoom");
+    assert.equal(timelineMiddleDragAction({ ctrlKey: true, altKey: true }), "bothZoom");
+});
+
+test("combined middle zoom scales each axis separately at the initial pickup", () => {
+    const view = { ...initialTimelineViewport, beginSeconds: -4, scrollTop: 500 };
+    const point = { x: 300, y: 120 };
+    const pickup = middleZoomPickup(view, point, { x: 450, y: 180 });
+    const axes = { horizontal: true, vertical: true };
+    const horizontal = zoomMiddleDragAtPickup(view, { x: 40, y: 0 }, pickup, axes);
+    assert.ok(horizontal.secondsPerPixel > view.secondsPerPixel);
+    assert.equal(horizontal.laneHeight, view.laneHeight);
+    assert.equal(horizontal.scrollTop, view.scrollTop);
+    const both = zoomMiddleDragAtPickup(horizontal, { x: 0, y: 20 }, pickup, axes);
+    assert.equal(both.beginSeconds, horizontal.beginSeconds);
+    assert.equal(both.secondsPerPixel, horizontal.secondsPerPixel);
+    assert.ok(both.secondsPerPixel > view.secondsPerPixel);
+    assert.ok(both.laneHeight < view.laneHeight);
+    assert.ok(Math.abs(both.beginSeconds + point.x * both.secondsPerPixel - pickup.timeSeconds) < 1e-9);
+    assert.ok(Math.abs((both.scrollTop + point.y) / both.laneHeight - pickup.lanePosition) < 1e-9);
+    assert.deepEqual(zoomMiddleDragAtPickup(view, { x: 40, y: 20 }, pickup, axes), both);
+    assert.deepEqual(zoomMiddleDragAtPickup(view, { x: 40, y: 20 }, pickup, { horizontal: true, vertical: false }), horizontal);
+    assert.deepEqual(zoomMiddleDragAtPickup(view, { x: 40, y: 20 }, pickup, { horizontal: false, vertical: true }),
+        zoomMiddleDragAtPickup(view, { x: 0, y: 20 }, pickup, axes));
+});
+
+test("combined middle zoom keeps the original lane anchor when reversing from the scroll boundary", () => {
+    const view = { ...initialTimelineViewport, scrollTop: 20 };
+    const point = { x: 100, y: 100 };
+    const pickup = middleZoomPickup(view, point, point);
+    const axes = { horizontal: true, vertical: true };
+    const clamped = zoomMiddleDragAtPickup(view, { x: 0, y: 100 }, pickup, axes);
+    assert.equal(clamped.scrollTop, 0);
+    const reversed = zoomMiddleDragAtPickup(clamped, { x: 0, y: -100 }, pickup, axes);
+    assert.ok(Math.abs(reversed.laneHeight - view.laneHeight) < 1e-9);
+    assert.ok(Math.abs(reversed.scrollTop - view.scrollTop) < 1e-9);
+});
+
+test("wheel zoom can scale both project axes with one delta", () => {
+    const view = { ...initialTimelineViewport, beginSeconds: -4, scrollTop: 500 };
+    const anchor = { x: 300, y: 120 };
+    assert.deepEqual(zoomTimelineAxes(view, anchor, 180, { horizontal: true, vertical: true }),
+        zoomTimelineVertically(zoomTimelineHorizontally(view, anchor.x, 180), anchor.y, 180));
+    assert.deepEqual(zoomTimelineAxes(view, anchor, 180, { horizontal: true, vertical: false }), zoomTimelineHorizontally(view, anchor.x, 180));
+    assert.deepEqual(zoomTimelineAxes(view, anchor, 180, { horizontal: false, vertical: true }), zoomTimelineVertically(view, anchor.y, 180));
+    assert.equal(zoomTimelineAxes(view, anchor, 180, { horizontal: false, vertical: false }), view);
 });
 
 test("horizontal middle zoom uses vertical motion and the supplied horizontal anchor", () => {
     const view = { ...initialTimelineViewport, beginSeconds: 2, scrollTop: 500 };
     const drag: MiddleDrag = { pointerId: 1, x: 100, y: 100, action: "horizontalZoom" };
-    assert.equal(moveMiddleDrag(view, drag, 4, 180, 100, 80), view);
-    assert.equal(moveMiddleDrag(view, drag, 0, 180, 150, 80), null);
+    assert.equal(moveMiddleDrag(view, drag, 4, 180, 100, { x: 80, y: 0 }), view);
+    assert.equal(moveMiddleDrag(view, drag, 0, 180, 150, { x: 80, y: 0 }), null);
     for (const dy of [-50, 50]) {
-        assert.deepEqual(moveMiddleDrag(view, drag, 4, 180, 100 + dy, 80), zoomTimelineHorizontally(view, 80, dy * 3));
+        assert.deepEqual(moveMiddleDrag(view, drag, 4, 180, 100 + dy, { x: 80, y: 0 }), zoomTimelineHorizontally(view, 80, dy * 3));
     }
-    const first = moveMiddleDrag(view, drag, 4, 120, 150, 80)!;
-    const second = moveMiddleDrag(first, { ...drag, x: 120, y: 150 }, 4, 140, 175, 140);
+    const first = moveMiddleDrag(view, drag, 4, 120, 150, { x: 80, y: 0 })!;
+    const second = moveMiddleDrag(first, { ...drag, x: 120, y: 150 }, 4, 140, 175, { x: 140, y: 0 });
     assert.deepEqual(second, zoomTimelineHorizontally(first, 140, 75));
 });
 
 test("vertical middle zoom uses horizontal motion and the supplied vertical anchor", () => {
     const view = { ...initialTimelineViewport, beginSeconds: 2, scrollTop: 500 };
     const drag: MiddleDrag = { pointerId: 1, x: 100, y: 100, action: "verticalZoom" };
-    assert.equal(moveMiddleDrag(view, drag, 4, 100, 180, 80), view);
-    assert.equal(moveMiddleDrag(view, drag, 0, 150, 180, 80), null);
+    assert.equal(moveMiddleDrag(view, drag, 4, 100, 180, { y: 80, x: 0 }), view);
+    assert.equal(moveMiddleDrag(view, drag, 0, 150, 180, { y: 80, x: 0 }), null);
     for (const dx of [-50, 50]) {
-        assert.deepEqual(moveMiddleDrag(view, drag, 4, 100 + dx, 180, 80), zoomTimelineVertically(view, 80, dx * 3));
+        assert.deepEqual(moveMiddleDrag(view, drag, 4, 100 + dx, 180, { y: 80, x: 0 }), zoomTimelineVertically(view, 80, dx * 3));
     }
-    const first = moveMiddleDrag(view, drag, 4, 150, 120, 80)!;
-    const second = moveMiddleDrag(first, { ...drag, x: 150, y: 120 }, 4, 175, 140, 140);
+    const first = moveMiddleDrag(view, drag, 4, 150, 120, { y: 80, x: 0 })!;
+    const second = moveMiddleDrag(first, { ...drag, x: 150, y: 120 }, 4, 175, 140, { y: 140, x: 0 });
     assert.deepEqual(second, zoomTimelineVertically(first, 140, 75));
 });
 
 test("lane editors use the same middle drag zoom factor as the graph", () => {
     const view = initialTimelineViewport;
-    const left = verticalMiddleDragZoomFactor(-50), right = verticalMiddleDragZoomFactor(50);
+    const left = middleDragZoomFactor(-50), right = middleDragZoomFactor(50);
     assert.ok(left > 1);
     assert.ok(right < 1);
-    assert.equal(verticalMiddleDragZoomFactor(0), 1);
+    assert.equal(middleDragZoomFactor(0), 1);
     assert.equal(zoomMiddleDrag(view, "verticalZoom", { x: -50, y: 25 }, 80).laneHeight, view.laneHeight * left);
     assert.equal(zoomMiddleDrag(view, "verticalZoom", { x: 50, y: 25 }, 80).laneHeight, view.laneHeight * right);
 });
@@ -121,9 +166,9 @@ test("lane editors use the same middle drag zoom factor as the graph", () => {
 test("vertical middle zoom can reverse immediately after hitting the scale limit", () => {
     const view = { ...initialTimelineViewport, laneHeight: minimumLaneHeight };
     const drag: MiddleDrag = { pointerId: 1, x: 300, y: 100, action: "verticalZoom" };
-    const clamped = moveMiddleDrag(view, drag, 4, 500, 100, 80)!;
+    const clamped = moveMiddleDrag(view, drag, 4, 500, 100, { y: 80, x: 0 })!;
     assert.equal(clamped.laneHeight, minimumLaneHeight);
-    const reversed = moveMiddleDrag(clamped, { ...drag, x: 500 }, 4, 499, 100, 80)!;
+    const reversed = moveMiddleDrag(clamped, { ...drag, x: 500 }, 4, 499, 100, { y: 80, x: 0 })!;
     assert.ok(reversed.laneHeight > minimumLaneHeight);
 });
 

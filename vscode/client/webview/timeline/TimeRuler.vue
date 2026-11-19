@@ -5,19 +5,21 @@ import RulerGraduations from "./RulerGraduations.vue";
 import TimelinePlayhead from "./TimelinePlayhead.vue";
 import type { PresentationTimeWindow, TimelineMark } from "./timelineContext";
 import { usePlayback } from "./playbackContext";
-import { usePlayheadSeek } from "./usePlayheadSeek";
+import { usePlayheadSeek, type SeekBeatReader } from "./usePlayheadSeek";
 
 // A presentation can use a time ruler without being a graph or a lane.
 // It makes no assumption about the node's number or kinds of output ports.
-const props = defineProps<{ window: PresentationTimeWindow; marks?: readonly TimelineMark[]; playback?: boolean }>();
+const props = defineProps<{ window: PresentationTimeWindow; marks?: readonly TimelineMark[];
+    beatStrengths?: ReadonlyMap<number, number>; playback?: boolean; openBeatReader?: () => SeekBeatReader | undefined }>();
 const { state, requestedPosition, dragPreview } = usePlayback();
 const sampleRate = computed(() => state.value?.sampleRate ?? props.window.sampleRate ?? 48000);
 const root = ref<HTMLElement | null>(null);
 const width = ref(0);
-const showBeats = computed(() => props.window.gridMode === "beats");
+const showBeats = computed(() => props.window.gridMode === "beats" || props.window.gridMode === "custom");
 const ticks = computed(() => timelineTicks(props.window, width.value));
 const beginSeek = usePlayheadSeek(root, () => props.playback ? props.window : undefined,
-    () => showBeats.value ? props.marks?.map(({ index }) => index) ?? [] : []);
+    () => showBeats.value ? props.marks?.map(({ index }) => index) ?? [] : [],
+    () => showBeats.value ? props.openBeatReader?.() : undefined);
 const markerPosition = (selected: bigint | null) => selected === null ? -1
     : timelineSampleFraction(selected, props.window, sampleRate.value) * width.value;
 const displayedStart = computed(() => dragPreview.value?.toString() ?? state.value?.startPosition);
@@ -44,8 +46,12 @@ onBeforeUnmount(() => observer?.disconnect());
         :data-status-shortcuts="playback ? 'Click/drag seek · Space ▶/Ⅱ' : undefined">
         <RulerGraduations v-if="!showBeats" :ticks="ticks" />
         <svg v-if="playback || marks?.length" class="ruler-playheads">
-            <line v-for="mark in showBeats ? marks : []" :key="mark.index.toString()" class="beat-mark"
-                :x1="mark.x" :x2="mark.x" :y1="mark.depth === 0 ? 12 : mark.depth === 1 ? 20 : 27" y2="100%" />
+            <TransitionGroup name="iv-grid">
+                <line v-for="mark in showBeats ? marks : []" :key="mark.index.toString()" class="iv-grid-guide"
+                    :style="{ '--iv-grid-strength': beatStrengths?.get(mark.depth) }"
+                    :x1="mark.x" :x2="mark.x" :y1="mark.depth === 0 ? '33%' : mark.depth === 1 ? '56%' : mark.depth === 2 ? '75%' : '83%'"
+                    y2="100%" vector-effect="non-scaling-stroke" />
+            </TransitionGroup>
 
             <TimelinePlayhead v-if="playback" :window="window" ruler />
             <line v-if="requestedMarker >= 0 && requestedMarker <= width" class="requested-marker"
@@ -62,7 +68,7 @@ onBeforeUnmount(() => observer?.disconnect());
 .time-ruler { position: relative; min-width: 0; overflow: hidden; }
 .seekable { cursor: ew-resize; touch-action: none; user-select: none; }
 .ruler-playheads { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-.beat-mark { stroke: var(--vscode-editorRuler-foreground, #777); opacity: .75; }
+.ruler-playheads { --iv-grid-max-opacity: .84; }
 .requested-marker { stroke: var(--vscode-focusBorder, #569cd6); stroke-dasharray: 3 3; }
 .start-marker { fill: var(--iv-background-playhead); pointer-events: auto; }
 </style>

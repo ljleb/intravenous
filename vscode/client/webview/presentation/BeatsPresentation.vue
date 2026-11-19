@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { beatBpm, beatGridTicks, defaultBeatBpm, maximumBeatBpm, maximumBeatsPerBar,
-    maximumBeatSubdivisionCount, minimumBeatBpm, readBeatGrid } from "../../src/beatGrid";
-import { addressKey } from "../../src/graphScope";
+import { beatBpm, beatGridTicks, readBeatGrid } from "../../src/beatGrid";
+import { gridGuideStrengths } from "../../src/gridGuideStrength";
 import { useOptionalGraphEditor } from "../graph/context";
 import { useTimelineWindow } from "../timeline/timelineContext";
 import { usePlayheadSeek } from "../timeline/usePlayheadSeek";
 import type { NodeDisplayMode } from "./displayMode";
 import GenericPresentation from "./GenericPresentation.vue";
-import Knob from "./Knob.vue";
+import BeatsSettings from "./BeatsSettings.vue";
 import LaneSettings from "./LaneSettings.vue";
 import NodeLane from "./NodeLane.vue";
 import { useNode } from "./nodeContext";
@@ -21,10 +20,6 @@ const editor = useOptionalGraphEditor();
 const { edits, version } = useBeatGridEditing();
 const surface = ref<HTMLElement | null>(null);
 const width = ref(0);
-type SettingKey = "bpm" | "beatsPerBar" | number;
-type Setting = {
-    key: SettingKey; label: string; value: number; min: number; max: number; defaultValue: number; integer?: boolean;
-};
 const grid = computed(() => {
     const construction = node.value.construction;
     return construction?.definitionId === "iv.builtin.beats" ? readBeatGrid(construction.arguments) : null;
@@ -39,27 +34,26 @@ const editError = computed(() => {
     void version.value;
     return edits.error(node.value.address);
 });
-const divisions = computed(() => preview.value?.subdivisions.reduce((product, factor) => product * factor, 1) ?? 1);
-const allowedDivisions = computed(() => preview.value ? maximumBeatSubdivisionCount(preview.value, time?.value.sampleRate) : 0);
-const settings = computed<Setting[]>(() => {
-    const value = preview.value;
-    if (!value) return [];
-    return [
-        { key: "bpm", label: "BPM", value: beatBpm(value), min: minimumBeatBpm,
-            max: maximumBeatBpm(time?.value.sampleRate, divisions.value), defaultValue: defaultBeatBpm },
-        { key: "beatsPerBar", label: "Beats per bar", value: value.beatsPerBar, min: 1,
-            max: maximumBeatsPerBar, defaultValue: 4, integer: true },
-        ...value.subdivisions.map((factor, index) => ({ key: index, label: `Subdivision ${index + 1}`, value: factor, min: 2,
-            max: Math.floor(allowedDivisions.value / (divisions.value / factor)), defaultValue: 2, integer: true })),
-    ];
-});
 const ticks = computed(() => {
     const window = time?.value;
     return preview.value && window?.sampleRate ? beatGridTicks(preview.value, {
         beginSeconds: window.beginSeconds, spanSeconds: window.spanSeconds ?? window.endSeconds - window.beginSeconds,
     }, window.sampleRate, width.value) : [];
 });
-const beginSeek = usePlayheadSeek(surface, () => time?.value, () => ticks.value.map(({ sample }) => sample));
+const strengths = computed(() => gridGuideStrengths(ticks.value, ({ x }) => x));
+const beginSeek = usePlayheadSeek(surface, () => time?.value, () => ticks.value.map(({ sample }) => sample), () => {
+    const grid = preview.value;
+    if (!grid) return;
+    let cached: { first: bigint; length: bigint; targets: bigint[] } | undefined;
+    return { marks({ first, length }, sampleRate, width) {
+        if (cached?.first !== first || cached.length !== length) {
+            const targets = beatGridTicks(grid, { beginSample: first, spanSeconds: Number(length) / sampleRate }, sampleRate, width)
+                .map(({ sample }) => sample);
+            cached = { first, length, targets };
+        }
+        return cached.targets;
+    } };
+});
 const labels = computed(() => {
     if (props.mode !== "editable") return [];
     let nextX = 0;
@@ -80,33 +74,6 @@ const status = computed(() => {
         || (node.value.construction ? "Beat grid preview unavailable for these arguments" : "Waiting for accepted Beats arguments");
 });
 
-function updateGrid(bpm: number, beatsPerBar: number, subdivisions: readonly number[], continuous = false) {
-    const target = node.value.address;
-    const next = readBeatGrid([bpm, beatsPerBar, subdivisions]);
-    if (editable.value && target && next) edits.update(target, next, continuous);
-}
-function setValue(key: SettingKey, value: number, continuous = false) {
-    const current = preview.value;
-    const setting = settings.value.find((entry) => entry.key === key);
-    if (!current || !setting || setting.max < setting.min) return;
-    value = Math.max(setting.min, Math.min(setting.max, value));
-    const subdivisions = typeof key === "number"
-        ? current.subdivisions.map((factor, index) => index === key ? value : factor) : current.subdivisions;
-    updateGrid(key === "bpm" ? value : beatBpm(current), key === "beatsPerBar" ? value : current.beatsPerBar, subdivisions, continuous);
-}
-function removeSubdivision(key: SettingKey) {
-    const value = preview.value;
-    if (value) updateGrid(beatBpm(value), value.beatsPerBar, value.subdivisions.filter((_, index) => index !== key));
-}
-function addSubdivision() {
-    const value = preview.value;
-    if (value && divisions.value * 2 <= allowedDivisions.value)
-        updateGrid(beatBpm(value), value.beatsPerBar, [...value.subdivisions, 2]);
-}
-function finishEdit() {
-    if (node.value.address) void edits.finish(node.value.address);
-}
-
 let resize: ResizeObserver | undefined;
 onMounted(() => {
     if (!surface.value) return;
@@ -121,29 +88,17 @@ onBeforeUnmount(() => resize?.disconnect());
         <div ref="surface" class="beat-grid" :data-status-hint="status" data-status-shortcuts="Click/drag seek · Space ▶/Ⅱ"
             @pointerdown="beginSeek">
             <svg class="beat-grid-marks" role="img" aria-label="Beats grid preview" :aria-description="status">
-                <line v-for="tick in ticks" :key="String(tick.sample)" :x1="tick.x" :x2="tick.x"
-                    :y1="tick.depth === 0 ? '0%' : tick.depth === 1 ? '40%' : `${100 - 40 / tick.depth}%`" y2="100%"
-                    :class="{ bar: tick.depth === 0, beat: tick.depth === 1 }" />
+                <TransitionGroup name="iv-grid">
+                    <line v-for="tick in ticks" :key="String(tick.sample)" class="iv-grid-guide"
+                        :style="{ '--iv-grid-strength': strengths.get(tick.depth) }" :x1="tick.x" :x2="tick.x"
+                        :y1="tick.depth === 0 ? '0%' : tick.depth === 1 ? '40%' : `${100 - 40 / tick.depth}%`" y2="100%"
+                        vector-effect="non-scaling-stroke" />
+                </TransitionGroup>
                 <text v-for="tick in labels" :key="String(tick.sample)" :x="tick.x" y="100%" dx="4" dy="-4">{{ tick.bar }}</text>
             </svg>
             <LaneSettings v-if="editable && preview && node.address" :label="`${beatBpm(preview)} BPM`"
                 dialog-label="Beat grid settings" :hint="status" :width="236" :preferred-height="260" v-slot="{ close }">
-                <div v-for="setting in settings" :key="setting.key" class="beat-setting">
-                    <span>{{ setting.label }}</span>
-                    <span class="beat-setting-value">{{ setting.value }}</span>
-                    <Knob :identity="`${addressKey(node.address)}:beats:${setting.key}`" :label="setting.label" :value="setting.value"
-                        :disabled="setting.max < setting.min" :limits="{ ...setting, wholeByDefault: true, scrubSpeed: .5 }"
-                        :face-limits="{ min: setting.min, defaultValue: setting.defaultValue }"
-                        :apply="(value, live) => setValue(setting.key, value, live)" :end-edit="finishEdit"
-                        :edit-active="() => !!edits.view(node.address) && !editError" />
-                    <button v-if="typeof setting.key === 'number'" type="button" tabindex="-1" :aria-label="`Remove ${setting.label.toLowerCase()}`"
-                        @click="removeSubdivision(setting.key)">×</button>
-                </div>
-                <footer class="beat-settings-actions">
-                    <button type="button" tabindex="-1" :disabled="divisions * 2 > allowedDivisions" @click="addSubdivision">Add subdivision</button>
-                    <button type="button" tabindex="-1" @click="close">Done</button>
-                </footer>
-                <span v-if="editError" role="alert" class="beat-settings-error">{{ editError }}</span>
+                <BeatsSettings :target="node.address" :grid="preview" @done="close" />
             </LaneSettings>
             <span v-else-if="mode === 'editable'" class="beat-grid-settings">{{ status }}</span>
         </div>
@@ -153,27 +108,15 @@ onBeforeUnmount(() => resize?.disconnect());
 
 <style scoped>
 .beat-grid { position: relative; width: 100%; height: 100%; overflow: hidden; user-select: none; touch-action: none; cursor: ew-resize; }
-.beat-grid-marks { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-.beat-grid-marks line {
-    --beat-strength: 32%;
-    stroke: color-mix(in srgb, var(--iv-port-output) var(--beat-strength), var(--vscode-editor-background));
+.beat-grid-marks {
+    position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
+    --iv-grid-color: var(--iv-port-output);
+    --iv-grid-max-opacity: .88;
 }
-.beat-grid-marks line.beat { --beat-strength: 58%; }
-.beat-grid-marks line.bar { --beat-strength: 90%; }
 .beat-grid-marks text { fill: var(--vscode-descriptionForeground); font-size: 10px; font-variant-numeric: tabular-nums; }
 .beat-grid-settings {
     position: absolute; top: 2px; right: 4px; max-width: calc(100% - 8px); overflow: hidden; text-overflow: ellipsis;
     border: 1px solid transparent; padding: 1px 4px; border-radius: 3px; white-space: nowrap; font: inherit; font-size: 10px;
     color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background);
 }
-.beat-setting { display: grid; grid-template-columns: 1fr auto 32px 24px; gap: 6px; align-items: center; }
-.beat-setting-value { color: var(--vscode-descriptionForeground); font-variant-numeric: tabular-nums; }
-.beat-setting, .beat-settings-actions { --knob-size: 32px; }
-.beat-setting > button:not(.knob-control), .beat-settings-actions > button {
-    border: 0; border-radius: 3px; padding: 3px 6px; cursor: pointer; font: inherit;
-    background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground);
-}
-.beat-settings-actions button:disabled { opacity: .4; cursor: default; }
-.beat-settings-actions { display: flex; justify-content: flex-end; gap: 6px; }
-.beat-settings-error { color: var(--vscode-errorForeground); }
 </style>

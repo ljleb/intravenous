@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { addressKey } from "../src/graphScope";
-import { mergeLaneOrder, moveSelectedLanes, orderLanes, selectLaneRange, laneRuns } from "../src/laneSelection";
+import { graphEditorShortcut } from "../src/graphEditorShortcuts";
+import { insertLanes, mergeLaneOrder, moveSelectedLanes, orderLanes, selectLaneRange, laneRuns } from "../src/laneSelection";
 
 test("Shift-click extends or shrinks an inclusive range from the same lane", () => {
     const order = ["a", "b", "c", "d", "e"];
@@ -34,4 +35,30 @@ test("the displayed order keeps saved lanes and appends newly visible lanes", ()
     const merged = mergeLaneOrder(saved, [below, above, newLane]);
     assert.deepEqual(merged, [below, "temporarily absent", above, newLane]);
     assert.deepEqual(orderLanes(lanes, merged).map(({ address }) => addressKey(address)), [below, above, newLane]);
+});
+
+test("each duplicate follows its original even when selected lanes are separated", () => {
+    const copies = [{ key: "a-copy", after: "a" }, { key: "c-copy", after: "c" }];
+    const lanes = ["a", "b", "c", "d"];
+    const placed = ["a", "a-copy", "b", "c", "c-copy", "d"];
+    assert.deepEqual(insertLanes(lanes, copies), placed);
+    assert.deepEqual(insertLanes([...lanes, "a-copy", "c-copy"], copies), placed);
+    assert.deepEqual(insertLanes(lanes, []), lanes);
+});
+
+test("adding a lane uses its selected anchor or appends if no anchor remains", () => {
+    const lanes = ["a", "b", "c"];
+    assert.deepEqual(insertLanes(lanes, [{ key: "new", after: "b" }]), ["a", "b", "new", "c"]);
+    assert.deepEqual(insertLanes(lanes, [{ key: "new" }]), ["a", "b", "c", "new"]);
+    assert.deepEqual(insertLanes(lanes, [{ key: "new", after: "deleted" }]), ["a", "b", "c", "new"]);
+});
+
+test("graph shortcuts distinguish add, duplicate, and select all", () => {
+    const key = { key: "a", ctrlKey: false, metaKey: false, altKey: false, shiftKey: false };
+    assert.equal(graphEditorShortcut({ ...key, key: "A", shiftKey: true }), "addNode");
+    assert.equal(graphEditorShortcut({ ...key, ctrlKey: true }), "selectAll");
+    assert.equal(graphEditorShortcut({ ...key, key: "d", ctrlKey: true }), "duplicateLanes");
+    assert.equal(graphEditorShortcut({ ...key, key: "d", metaKey: true }), "duplicateLanes");
+    assert.equal(graphEditorShortcut({ ...key, ctrlKey: true, shiftKey: true }), null);
+    assert.equal(graphEditorShortcut({ ...key, ctrlKey: true, isComposing: true }), null);
 });

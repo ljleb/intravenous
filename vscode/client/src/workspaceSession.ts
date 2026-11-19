@@ -39,6 +39,8 @@ import { WorkspaceNotificationRouter } from "./workspaceNotifications";
 import { WorkspaceRpc } from "./workspaceRpc";
 import { audioOutputDiagnostic } from "./audioOutputDiagnostic";
 import { statusBarText } from "./statusBarText";
+import type { GraphLayoutStore } from "./graphLayoutStore";
+import { isGeneratedSnapConnection, isTimelineSnapInstance, isTimelineSnapNode, planTimelineSnapMode, type TimelineGridMode } from "./timelineSnap";
 
 type LiveGraphProviderLike = {
     setSessionStatus(status: LiveGraphSessionStatus): void;
@@ -145,6 +147,22 @@ export class WorkspaceSession {
         return this.rpc.getGraphScope();
     }
 
+    private timelineSnapChange: Promise<void> = Promise.resolve();
+
+    setTimelineSnapMode(mode: TimelineGridMode, store: GraphLayoutStore): Promise<void> {
+        const change = this.timelineSnapChange.catch(() => {}).then(async () => {
+            if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+            const rpc = this.rpc;
+            const revision = this.lastSessionRevision;
+            const scope = await rpc.getGraphScope();
+            const { operations } = await store.prepareTimelineSnap((memory) => planTimelineSnapMode(scope, mode, memory, crypto.randomUUID));
+            if (rpc !== this.rpc) throw new Error("The session changed before editing the snap mode");
+            if (operations.length) await rpc.applyProjectEdit(operations, scope.sessionRevision ?? revision);
+        });
+        this.timelineSnapChange = change;
+        return change;
+    }
+
     async setManualInputEnabled(node: NodeAddress, inputName: string, enabled: boolean): Promise<void> {
         const rpc = this.rpc;
         if (!rpc || this.graphSessionStatus !== "running") throw new Error("The server is unavailable");
@@ -177,14 +195,17 @@ export class WorkspaceSession {
     }
 
     async connectGraphPorts(id: string, first: GraphPortEndpoint, second: GraphPortEndpoint): Promise<void> {
-        const scope = await this.readGraphScope();
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+        const rpc = this.rpc;
+        const revision = this.lastSessionRevision;
+        const scope = await rpc.getGraphScope();
         const connection = connectionFromPorts(scope, id, first, second);
-        await this.rpc!.upsertGraphConnection(connection);
+        await rpc.upsertGraphConnection(connection, scope.sessionRevision ?? revision);
     }
 
     async deleteGraphConnection(id: string): Promise<void> {
         const scope = await this.readGraphScope();
-        if (!scope.editable || !scope.connections.some((entry) => entry.id === id)) {
+        if (!scope.editable || !scope.connections.some((entry) => entry.id === id && !isGeneratedSnapConnection(entry))) {
             throw new Error("The selected connection is no longer available");
         }
         await this.rpc!.deleteGraphConnection(id);
@@ -208,9 +229,10 @@ export class WorkspaceSession {
         return [...new Set(packages.flatMap((entry) => [...entry.moduleIds, ...entry.nodeTypeIds]))].sort();
     }
 
-    async createGraphNode(definitionId: string, displayName: string, configurationSource: string): Promise<void> {
+    async createGraphNode(definitionId: string, displayName: string, configurationSource: string): Promise<string> {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
-        await this.rpc.createNodeInstance(definitionId, displayName.trim() || null, configurationSource);
+        const { instanceId } = await this.rpc.createNodeInstance(definitionId, displayName.trim() || null, configurationSource);
+        return instanceId;
     }
 
     async updateGraphNode(instanceId: string, displayName: string, previousDisplayName: string,
@@ -220,7 +242,7 @@ export class WorkspaceSession {
         const scope = await rpc.getGraphScope();
         if (rpc !== this.rpc) throw new Error("The session changed before saving the node");
         const node = scope.nodes.find((entry) => entry.instance.instanceId === instanceId);
-        if (!scope.editable || !node) throw new Error("The selected node is no longer available");
+        if (!scope.editable || !node || isTimelineSnapNode(node)) throw new Error("The selected node is no longer available");
         if ((node.instance.displayName ?? "") !== previousDisplayName) {
             throw new Error("The node name changed. Start the edit again to use the current name.");
         }
@@ -241,11 +263,28 @@ export class WorkspaceSession {
         const rpc = this.rpc;
         const revision = this.lastSessionRevision;
         const scope = await rpc.getGraphScope();
-        if (!scope.editable || instanceIds.some((id) => !scope.nodes.some((node) => node.instance.instanceId === id))) {
+        if (!scope.editable || instanceIds.some((id) => !scope.nodes.some((node) => node.instance.instanceId === id && !isTimelineSnapNode(node)))) {
             throw new Error("A selected node is no longer available");
         }
         if (!instanceIds.length) return;
         await rpc.applyProjectEdit(instanceIds.map((instanceId) => ({ method: "nodeInstances.delete", params: { instanceId } })), revision);
+    }
+
+    async duplicateGraphNodes(instanceIds: readonly string[]): Promise<{ sourceInstanceId: string; instanceId: string }[]> {
+        if (!instanceIds.length) return [];
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+        const rpc = this.rpc;
+        await this.manualControls.settled();
+        const revision = this.lastSessionRevision;
+        const scope = await rpc.getGraphScope();
+        if (rpc !== this.rpc) throw new Error("The session changed before duplicating the lanes");
+        const visible = new Set(scope.nodes.filter((node) => !isTimelineSnapNode(node)).map(({ instance }) => instance.instanceId));
+        if (!scope.editable || instanceIds.some((id) => !visible.has(id))) {
+            throw new Error("A selected node is no longer available");
+        }
+        const copies = [...new Set(instanceIds)].map((sourceInstanceId) => ({ sourceInstanceId, instanceId: crypto.randomUUID() }));
+        await rpc.applyProjectEdit([{ method: "nodeInstances.duplicate", params: { copies } }], scope.sessionRevision ?? revision);
+        return copies;
     }
 
     async projectHistory(direction: "undo" | "redo"): Promise<void> {
@@ -1154,10 +1193,7 @@ export class WorkspaceSession {
     }
 
     private visibleInstances(): IvModuleInstanceInfo[] {
-        if (!this.activeSourceFilePath) {
-            return this.ivModuleInstances;
-        }
-        return this.ivModuleInstances;
+        return this.ivModuleInstances.filter((instance) => !isTimelineSnapInstance(instance.instanceId, instance.definitionId));
     }
 
     private refreshVisibleInstances(): void {

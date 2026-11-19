@@ -2250,16 +2250,10 @@ TEST_F(ProjectGraphFixture, ConnectionMutationRebuildsWholeRootAndDanglingIntent
     publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
 
-    for (auto const* instance_id : {"instance:source", "instance:sink"}) {
-        iv::ProjectStringBuilder builder;
-        in_event_source([&] { return project_graph.handle_project_create_node_instance(
-            iv::ProjectCreateNodeInstanceRequest{
-                .instance_id = std::string(instance_id),
-                .definition_id = definition_id,
-            },
-            builder); });
-        EXPECT_EQ(builder.build(), instance_id);
-    }
+    iv::ProjectStringBuilder source_builder;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "instance:source", .definition_id = definition_id}, source_builder); });
+    ASSERT_EQ(source_builder.build(), "instance:source");
 
     iv::ProjectAckBuilder connect_builder;
     in_event_source([&] { return project_graph.handle_project_upsert_graph_connection(
@@ -2280,30 +2274,18 @@ TEST_F(ProjectGraphFixture, ConnectionMutationRebuildsWholeRootAndDanglingIntent
     EXPECT_NO_THROW(connect_builder.build());
     auto generation = project_graph.current_generation();
     ASSERT_TRUE(generation);
-    EXPECT_EQ(generation->applied_connection_ids,
-              std::vector<std::string>{"connection:main"});
-    EXPECT_TRUE(generation->connection_diagnostics.empty());
-    ASSERT_EQ(connections.desired_connections().size(), 1u);
-
-    iv::ProjectAckBuilder delete_builder;
-    in_event_source([&] { return project_graph.handle_project_delete_node_instance(
-        iv::ProjectDeleteNodeInstanceRequest{.instance_id = "instance:sink"},
-        delete_builder); });
-    EXPECT_NO_THROW(delete_builder.build());
-    generation = project_graph.current_generation();
-    ASSERT_TRUE(generation);
     EXPECT_TRUE(generation->applied_connection_ids.empty());
     ASSERT_EQ(generation->connection_diagnostics.size(), 1u);
     EXPECT_EQ(connections.desired_connections().size(), 1u);
 
-    iv::ProjectStringBuilder recreate_builder;
+    iv::ProjectStringBuilder sink_builder;
     in_event_source([&] { return project_graph.handle_project_create_node_instance(
         iv::ProjectCreateNodeInstanceRequest{
             .instance_id = "instance:sink",
             .definition_id = definition_id,
         },
-        recreate_builder); });
-    EXPECT_EQ(recreate_builder.build(), "instance:sink");
+        sink_builder); });
+    EXPECT_EQ(sink_builder.build(), "instance:sink");
     generation = project_graph.current_generation();
     ASSERT_TRUE(generation);
     EXPECT_EQ(generation->applied_connection_ids,
@@ -2504,7 +2486,7 @@ TEST_F(ProjectGraphFixture, GraphScopeListsInstancesWithRealizedPortsAndConnecti
     EXPECT_EQ(scope.at("connections")[0].at("id"), "connection:main");
     EXPECT_TRUE(scope.at("connections")[0].at("applied").get<bool>());
 
-    // Deleting the sink keeps the desired connection, which now dangles.
+    // The single-node route publishes the deletion and wire cleanup together.
     iv::ProjectAckBuilder delete_builder;
     in_event_source([&] { return project_graph.handle_project_delete_node_instance(
         iv::ProjectDeleteNodeInstanceRequest{.instance_id = "instance:sink"},
@@ -2513,8 +2495,7 @@ TEST_F(ProjectGraphFixture, GraphScopeListsInstancesWithRealizedPortsAndConnecti
 
     scope = read_graph_scope(project_graph);
     ASSERT_EQ(scope.at("nodes").size(), 1u);
-    ASSERT_EQ(scope.at("connections").size(), 1u);
-    EXPECT_FALSE(scope.at("connections")[0].at("applied").get<bool>());
+    EXPECT_TRUE(scope.at("connections").empty());
 }
 
 TEST_F(ProjectGraphFixture, RootBuildPublicationMarksTheGraphChanged)
@@ -3552,12 +3533,29 @@ TEST_F(ProjectGraphFixture, InvalidReplacementDoesNotChangeEitherDesiredOwner)
     EXPECT_EQ(connections.desired_connections(), connections_before);
 }
 
-TEST_F(ProjectGraphFixture, HistoryRestoresMultiNodeDeletionAndOwnedRecordsButRetainsDanglingConnections)
+TEST_F(ProjectGraphFixture, HistoryRestoresDeletedNodesAndTheirIncidentConnectionsInOneEdit)
 {
     publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
     iv::ProjectConnection wire = iv::ProjectSampleConnection{
-        .connection_id = "retained-wire",
+        .connection_id = "direct-wire",
         .outputs = {{.instance_id = "a", .port = {.name = "main"}}},
+        .inputs = {{.instance_id = "b", .port = {.name = "main"}}},
+    };
+    iv::ProjectSampleConnection shared_wire{
+        .connection_id = "shared-wire",
+        .outputs = {{.instance_id = "c", .port = {.name = "main"}}},
+        .inputs = {{.instance_id = "a", .port = {.name = "main"}}, {.instance_id = "b", .port = {.name = "main"}}},
+    };
+    iv::ProjectEventConnection child_wire{
+        .connection_id = "child-wire",
+        .source_type = iv::EventTypeId::midi,
+        .outputs = {{.instance_id = "a", .path = {iv::ProjectVirtualMemberSelector{.index = 0}}, .port = {.name = "events"}}},
+        .target_type = iv::EventTypeId::midi,
+        .inputs = {{.instance_id = "b", .port = {.name = "events"}}},
+    };
+    iv::ProjectSampleConnection dangling_wire{
+        .connection_id = "unresolved-wire",
+        .outputs = {{.instance_id = "future", .port = {.name = "main"}}},
         .inputs = {{.instance_id = "b", .port = {.name = "main"}}},
     };
     iv::ProjectAckBuilder load;
@@ -3565,6 +3563,70 @@ TEST_F(ProjectGraphFixture, HistoryRestoresMultiNodeDeletionAndOwnedRecordsButRe
         .instances = {
             {.instance_id = "a", .definition_id = definition_id, .display_name = "Source"},
             {.instance_id = "b", .definition_id = definition_id},
+            {.instance_id = "c", .definition_id = definition_id},
+            {.instance_id = "manual", .definition_id = manual_control_leaf_definition_id},
+        },
+        .node_replacements = {{.address = {.instance_id = "a"},
+            .definition_id = definition_id, .configuration_arguments_json = "[]"}},
+        .connections = {wire, shared_wire, child_wire, dangling_wire},
+        .manual_controls = {{.id = {.node = {.instance_id = "manual"}, .port_name = "gain"}, .stored_value = .75f}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    auto const before_nodes = instances.desired_instances();
+    auto const before_replacements = instances.desired_node_replacements();
+    auto const before_controls = project_graph.manual_controls();
+    auto const before_connections = connections.desired_connections();
+    ASSERT_EQ(before_connections.size(), 4u);
+    auto const generation = project_graph.current_generation()->generation;
+    iv::ProjectEditBatch remove;
+    remove.instances = {{"a", std::nullopt}, {"manual", std::nullopt}};
+    iv::ProjectAckBuilder deleted;
+    // This source's whole propagation includes both owners only once, despite
+    // preparing and committing several records. Re-entry is checked at runtime.
+    in_event_source([&] { project_graph.handle_project_apply_edit(remove, deleted); });
+    ASSERT_NO_THROW(deleted.build());
+    EXPECT_TRUE(deleted.take_publication().graph_changed);
+    EXPECT_EQ(project_graph.current_generation()->generation, generation + 1);
+    ASSERT_EQ(instances.desired_instances().size(), 2u);
+    EXPECT_TRUE(instances.desired_node_replacements().empty());
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    shared_wire.inputs.erase(shared_wire.inputs.begin());
+    auto const after_connections = std::vector<iv::ProjectConnection>{shared_wire, dangling_wire};
+    EXPECT_EQ(connections.desired_connections(), after_connections);
+
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_TRUE(undo.take_publication().graph_changed);
+    EXPECT_EQ(project_graph.current_generation()->generation, generation + 2);
+    EXPECT_EQ(instances.desired_instances(), before_nodes);
+    EXPECT_EQ(instances.desired_node_replacements(), before_replacements);
+    EXPECT_EQ(project_graph.manual_controls(), before_controls);
+    EXPECT_EQ(connections.desired_connections(), before_connections);
+
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    EXPECT_EQ(project_graph.current_generation()->generation, generation + 3);
+    EXPECT_EQ(instances.desired_instances().size(), 2u);
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    EXPECT_EQ(connections.desired_connections(), after_connections);
+}
+
+TEST_F(ProjectGraphFixture, DuplicatingSeveralNodesCopiesOwnedRecordsAndInternalConnectionsInOneEdit)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectConnection wire = iv::ProjectSampleConnection{
+        .connection_id = "fanout",
+        .outputs = {{.instance_id = "a", .port = {.name = "main"}}},
+        .inputs = {{.instance_id = "b", .port = {.name = "main"}}, {.instance_id = "outside", .port = {.name = "main"}}},
+    };
+    iv::ProjectAckBuilder load;
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {
+            {.instance_id = "a", .definition_id = definition_id, .display_name = "Source"},
+            {.instance_id = "b", .definition_id = definition_id},
+            {.instance_id = "outside", .definition_id = definition_id},
             {.instance_id = "manual", .definition_id = manual_control_leaf_definition_id},
         },
         .node_replacements = {{.address = {.instance_id = "a"},
@@ -3576,38 +3638,47 @@ TEST_F(ProjectGraphFixture, HistoryRestoresMultiNodeDeletionAndOwnedRecordsButRe
     auto const before_nodes = instances.desired_instances();
     auto const before_replacements = instances.desired_node_replacements();
     auto const before_controls = project_graph.manual_controls();
-    auto const generation = project_graph.current_generation()->generation;
-    iv::ProjectEditBatch remove;
-    remove.instances = {{"a", std::nullopt}, {"manual", std::nullopt}};
-    iv::ProjectAckBuilder deleted;
-    // This source's whole propagation includes both owners only once, despite
-    // preparing and committing several records. Re-entry is checked at runtime.
-    in_event_source([&] { project_graph.handle_project_apply_edit(remove, deleted); });
-    ASSERT_NO_THROW(deleted.build());
-    EXPECT_TRUE(deleted.take_publication().graph_changed);
-    EXPECT_EQ(project_graph.current_generation()->generation, generation + 1);
-    ASSERT_EQ(instances.desired_instances().size(), 1u);
-    EXPECT_TRUE(instances.desired_node_replacements().empty());
-    EXPECT_TRUE(project_graph.manual_controls().empty());
-    EXPECT_EQ(connections.desired_connections(), std::vector<iv::ProjectConnection>{wire});
+    auto const parsed = iv::parse_socket_rpc_request(R"({"id":1,"method":"project.applyEdit","params":{"operations":[{"method":"nodeInstances.duplicate","params":{"copies":[{"sourceInstanceId":"a","instanceId":"a-copy"},{"sourceInstanceId":"b","instanceId":"b-copy"},{"sourceInstanceId":"manual","instanceId":"manual-copy"}]}}]}})");
+    auto const& batch = std::get<iv::ApplyProjectEditRequest>(parsed.payload).batch;
+    iv::ProjectAckBuilder duplicate;
+    in_event_source([&] { project_graph.handle_project_apply_edit(batch, duplicate); });
+    ASSERT_NO_THROW(duplicate.build());
+
+    auto const after_nodes = instances.desired_instances();
+    auto const after_replacements = instances.desired_node_replacements();
+    auto const after_controls = project_graph.manual_controls();
+    auto const after_wires = connections.desired_connections();
+    ASSERT_EQ(after_nodes.size(), 7u);
+    auto const copied_node = std::ranges::find(after_nodes, "a-copy", &iv::ProjectNodeInstanceDeclaration::instance_id);
+    ASSERT_NE(copied_node, after_nodes.end());
+    EXPECT_EQ(copied_node->display_name, "Source");
+    ASSERT_EQ(after_replacements.size(), 2u);
+    EXPECT_EQ(after_replacements[1].address.instance_id, "a-copy");
+    ASSERT_EQ(after_controls.size(), 2u);
+    EXPECT_EQ(after_controls[1].id.node.instance_id, "manual-copy");
+    EXPECT_EQ(after_controls[1].stored_value, iv::Sample{.75f});
+    ASSERT_EQ(after_wires.size(), 2u);
+    ASSERT_TRUE(std::ranges::contains(after_wires, wire));
+    auto const& copied_wire = std::get<iv::ProjectSampleConnection>(after_wires[after_wires[0] == wire ? 1 : 0]);
+    ASSERT_EQ(copied_wire.outputs.size(), 1u);
+    ASSERT_EQ(copied_wire.inputs.size(), 1u);
+    EXPECT_EQ(copied_wire.outputs.front().instance_id, "a-copy");
+    EXPECT_EQ(copied_wire.inputs.front().instance_id, "b-copy");
 
     iv::ProjectAckBuilder undo;
     in_event_source([&] { project_graph.handle_project_undo(undo); });
     ASSERT_NO_THROW(undo.build());
-    EXPECT_TRUE(undo.take_publication().graph_changed);
-    EXPECT_EQ(project_graph.current_generation()->generation, generation + 2);
     EXPECT_EQ(instances.desired_instances(), before_nodes);
     EXPECT_EQ(instances.desired_node_replacements(), before_replacements);
     EXPECT_EQ(project_graph.manual_controls(), before_controls);
     EXPECT_EQ(connections.desired_connections(), std::vector<iv::ProjectConnection>{wire});
-
     iv::ProjectAckBuilder redo;
     in_event_source([&] { project_graph.handle_project_redo(redo); });
     ASSERT_NO_THROW(redo.build());
-    EXPECT_EQ(project_graph.current_generation()->generation, generation + 3);
-    EXPECT_EQ(instances.desired_instances().size(), 1u);
-    EXPECT_TRUE(project_graph.manual_controls().empty());
-    EXPECT_EQ(connections.desired_connections().size(), 1u);
+    EXPECT_EQ(instances.desired_instances(), after_nodes);
+    EXPECT_EQ(instances.desired_node_replacements(), after_replacements);
+    EXPECT_EQ(project_graph.manual_controls(), after_controls);
+    EXPECT_EQ(connections.desired_connections(), after_wires);
 }
 
 TEST_F(ProjectGraphFixture, HistoryRejectsAnInvalidBatchBeforeAnyOwnerCommits)

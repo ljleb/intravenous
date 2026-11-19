@@ -44,19 +44,19 @@ test("window results reject obsolete viewport positions and data versions withou
         scopes: [{ scopeId: "viewport", values: [], windows: [window] }],
     });
     assert.equal(values.receive(update(data), "viewport"), true);
-    assert.equal(values.windows.get("wave")?.dataVersion, "4");
+    assert.equal(values.windowForDisplay("wave")?.dataVersion, "4");
     values.receive(update({ ...data, dataVersion: "3" }), "viewport");
-    assert.equal(values.windows.get("wave")?.dataVersion, "4");
+    assert.equal(values.windowForDisplay("wave")?.dataVersion, "4");
     const next = { ...data.window, begin: "100" };
     values.expectWindows([{ id: "wave", source, operation: "waveform", window: next }]);
-    assert.equal(values.windows.size, 0);
+    assert.equal(values.windowForDisplay("wave"), undefined);
     values.receive(update(data), "viewport");
-    assert.equal(values.windows.size, 0);
+    assert.equal(values.windowForDisplay("wave"), undefined);
     values.receive(update({ ...data, window: next, regions: [] }), "viewport");
-    assert.equal(values.windows.size, 1);
+    assert.deepEqual(values.windowForDisplay("wave")?.window, next);
     values.acceptGeneration(8);
     values.receive(update({ ...data, window: next }), "viewport");
-    assert.equal(values.windows.size, 0);
+    assert.equal(values.windowForDisplay("wave")?.outdated, true);
 });
 test("window previews reproject the last ready result while an overlapping viewport loads", () => {
     const values = new ObservationValues();
@@ -84,7 +84,7 @@ test("window previews reproject the last ready result while an overlapping viewp
     assert.equal(values.windowForDisplay("wave"), undefined);
     receive({ ...data, window: next });
     values.acceptGeneration(8);
-    assert.equal(values.windowForDisplay("wave"), undefined);
+    assert.equal(values.windowForDisplay("wave")?.outdated, true);
 });
 
 test("a ready window overlaps a new request across the signed timeline seam", () => {
@@ -113,9 +113,51 @@ test("bound windows arriving before the matching graph scope are used when it ar
         scopes: [{ scopeId: "viewport", values: [], windows: bounds.map((id) => ({ ...data, id })) }],
     };
     assert.equal(values.receive(update, "viewport"), false);
-    assert.equal(values.windows.size, 0);
+    assert.equal(values.windowForDisplay("min"), undefined);
     values.acceptGeneration(8);
-    for (const id of bounds) assert.deepEqual(values.windows.get(id)?.regions, data.regions);
+    for (const id of bounds) assert.deepEqual(values.windowForDisplay(id)?.regions, data.regions);
+});
+
+test("window display retains the last compatible samples across graph refreshes", () => {
+    const values = new ObservationValues();
+    const data = { ...result(), sampleRate: 48000 };
+    const source = { node: { instanceId: "curve" }, kind: "input" as const, member: "max" };
+    const request = { id: data.id, source, operation: "waveform", window: data.window };
+    const publish = (generation: string, window: ObservationWindowResult) => values.receive({
+        activationId: "1", generation, revision: "0", index: "0", blockSize: 64, dataVersion: "0",
+        scopes: [{ scopeId: "viewport", values: [], windows: [window] }],
+    }, "viewport");
+    values.acceptGeneration(7, 48000);
+    values.expectWindows([request]);
+    publish("7", data);
+    const geometry = sampleWaveform(data);
+
+    values.acceptGeneration(8, 48000);
+    assert.deepEqual(sampleWaveform(values.windowForDisplay(data.id)), geometry);
+    assert.equal(values.windowForDisplay(data.id)?.outdated, true);
+    publish("8", { ...data, status: "pending", regions: [] });
+    assert.deepEqual(sampleWaveform(values.windowForDisplay(data.id)), geometry);
+    publish("8", { ...data, status: "failed", error: "Snapshot changed", regions: [] });
+    assert.deepEqual(sampleWaveform(values.windowForDisplay(data.id)), geometry);
+    assert.equal(values.windowForDisplay(data.id)?.error, "Snapshot changed");
+    assert.equal(publish("7", { ...data, dataVersion: "30", regions: [] }), false);
+
+    publish("8", { ...data, dataVersion: "1", regions: [] });
+    assert.deepEqual(sampleWaveform(values.windowForDisplay(data.id)).paths, []);
+    assert.equal(values.windowForDisplay(data.id)?.dataVersion, "1");
+    values.acceptGeneration(9, 44100);
+    assert.equal(values.windowForDisplay(data.id), undefined);
+    publish("9", data);
+    assert.equal(values.windowForDisplay(data.id), undefined);
+    publish("9", { ...data, sampleRate: 44100 });
+    assert.equal(values.windowForDisplay(data.id)?.sampleRate, 44100);
+    publish("9", { ...data, status: "unavailable", regions: [] });
+    assert.equal(values.windowForDisplay(data.id)?.status, "unavailable");
+    values.acceptGeneration(10, 44100);
+    assert.equal(values.windowForDisplay(data.id), undefined);
+    publish("10", { ...data, sampleRate: 44100 });
+    values.clear();
+    assert.equal(values.windowForDisplay(data.id), undefined);
 });
 test("viewport Tock interests carry windows and panning never requests live observation operations", async () => {
     const { PresentationObservations } = await import("../webview/presentation/observationContext");

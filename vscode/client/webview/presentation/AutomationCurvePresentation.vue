@@ -2,16 +2,17 @@
 import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
 import { automationTensionLimits, automationWindow, type CurveAxes, type CurveDragKind } from "../../src/automationCurveEditing";
 import { automationSampleOffset, automationValueFraction, automationValueGuides, clampAutomationValue,
-    compareAutomationTime, panAutomationValueAxis, panCurvedAutomationValueZoom, readAutomationCurveView,
+    compareAutomationTime, panAutomationValueAxis, panCurvedAutomationValueZoom, rankAutomationValueGuides, readAutomationCurveView,
     zoomAutomationValueAxis, type AutomationPoint, type AutomationPointPosition, type AutomationValueAxis, type AutomationValueDisplay,
     type AutomationCurveView, type AutomationValueRuler, type AutomationValueZoom, type CurveInterpolation } from "../../src/automationCurveGeometry";
 import { addressKey, type NodeAddress } from "../../src/graphScope";
-import { automationBoundWindowCount, automationBoundWindows, refinedAutomationBoundTracks, retainAutomationBoundWindows,
+import { graphEditorShortcut, isTextEditingTarget } from "../../src/graphEditorShortcuts";
+import { gridGuideStrengths } from "../../src/gridGuideStrength";
+import { automationBoundWindows, refinedAutomationBoundTracks,
     sampleAutomationPreview, automationBoundVisiblePositions, type AutomationBoundInput,
     type BoundSample } from "../../src/automationBoundInputs";
-import type { ObservationWindowResult } from "../../src/observations";
 import { sampleWindow } from "../../src/sampleWaveform";
-import { useObservations, usePortObservation } from "./observationContext";
+import { usePortObservationWindows } from "./observationContext";
 import { rightClickHint } from "../../src/statusBarText";
 import { useOptionalGraphEditor } from "../graph/context";
 import { automationPointStatus } from "../statusHints";
@@ -43,7 +44,7 @@ const { edits, version } = useAutomationEditing();
 const time = useTimelineWindow();
 const timelineMarks = useTimelineMarks();
 const { backgroundPlayhead } = usePlayback();
-const showBeats = computed(() => time?.value.gridMode === "beats");
+const showBeats = computed(() => time?.value.gridMode === "beats" || time?.value.gridMode === "custom");
 const navigation = useTimelineNavigation();
 const surface = ref<SVGSVGElement | null>(null);
 const width = ref(1), height = ref(1);
@@ -83,30 +84,17 @@ const observationWindow = computed(() => {
         || undefined;
 });
 const boundWindows = computed(() => observationWindow.value ? automationBoundWindows(observationWindow.value) : []);
-const observations = useObservations();
-const observationEpoch = computed(() => {
-    void observations?.version.value;
-    return observations?.values.windowSnapshot?.epoch;
-});
 function observeBound(side: AutomationBoundInput) {
-    const sourceKey = computed(() => boundPort(side)?.connectivity === "connected" && curve.value?.sampleRate && key.value
-        ? `${key.value}:${curve.value.sampleRate}` : null);
-    const tiles = Array.from({ length: automationBoundWindowCount }, (_, slot) => usePortObservation(() => {
-        const address = node.value.address, request = boundWindows.value[slot];
-        if (address && request && sourceKey.value)
-            return { source: { node: address, kind: "input", member: side }, operation: "waveform", ...request };
-    }));
-    const retained = computed<{ key: string; results: readonly ObservationWindowResult[] } | undefined>((previous) => {
-        const epoch = observationEpoch.value;
-        if (!sourceKey.value || epoch === undefined || !boundWindows.value.length) return;
-        const key = JSON.stringify([sourceKey.value, epoch]);
-        const results = retainAutomationBoundWindows(previous?.key === key ? previous.results : [],
-            tiles.map((tile) => tile.latestWindow.value), boundWindows.value);
-        return previous?.key === key && previous.results === results ? previous : { key, results };
+    const windows = usePortObservationWindows(() => {
+        const address = node.value.address, visible = observationWindow.value;
+        if (address && visible && boundPort(side)?.connectivity === "connected") return {
+            source: { node: address, kind: "input", member: side }, operation: "waveform",
+            windows: boundWindows.value, visible, completeOnly: true,
+        };
     });
     return computed(() => {
         const timeline = timelineWindow.value, rate = curve.value?.sampleRate;
-        return timeline && rate ? refinedAutomationBoundTracks(retained.value?.results ?? [],
+        return timeline && rate ? refinedAutomationBoundTracks(windows.value,
             timeline.beginSeconds, timeline.spanSeconds, rate, boundWindows.value[0]?.window) : [];
     });
 }
@@ -158,10 +146,12 @@ const maxPath = computed(() => previewPath(preview.value.max));
 const path = computed(() => previewPath(preview.value.authored));
 const outputPath = computed(() => hasOutputBounds.value ? previewPath(preview.value.output) : "");
 const markerY = (point: AutomationPoint) => Math.max(2, Math.min(height.value - 2, y(point.value)));
-const valueGuides = computed(() => axes.value ? automationValueGuides(axes.value, height.value, axes.value.ruler) : []);
+const valueGuides = computed(() => axes.value
+    ? rankAutomationValueGuides(automationValueGuides(axes.value, height.value, axes.value.ruler)) : []);
+const valueStrengths = computed(() => gridGuideStrengths(valueGuides.value, ({ y }) => y));
 const valueLabelInset = computed(() => hideLabels.value || !valueGuides.value.length ? 0
     : 9 + 6 * Math.max(...valueGuides.value.map(({ value }) => String(value).length)));
-const valueLabelY = (guideY: number) => Math.min(height.value - 1, Math.max(8, guideY + 3));
+const valueLabelY = (guideY: number) => guideY >= 12 ? guideY - 3 : Math.min(height.value - 1, guideY + 10);
 const snapGradientId = useId();
 const snapFadeLength = 144;
 const snapGuide = computed(() => {
@@ -171,13 +161,13 @@ const snapGuide = computed(() => {
     if (!snap) return null;
     const guideY = y(snap.value);
     if (!(guideY >= 0 && guideY <= height.value)) return null;
-    return { value: snap.value, y: guideY, x: Math.max(valueLabelInset.value, Math.min(width.value, pointX(snap.point))) };
+    return { value: snap.value, y: guideY, x: Math.max(0, Math.min(width.value, pointX(snap.point))) };
 });
 const snapLines = computed(() => {
     void version.value;
     const lines: Array<{ axis: "value" | "time"; start: number; end: number; transform: string }> = [];
     const value = snapGuide.value;
-    if (value) lines.push({ axis: "value", start: valueLabelInset.value - value.x, end: width.value - value.x,
+    if (value) lines.push({ axis: "value", start: -value.x, end: width.value - value.x,
         transform: `translate(${value.x} ${value.y})` });
     const address = node.value.address;
     const time = editable.value && address ? edits.activeTimeSnap(address) : null;
@@ -355,6 +345,16 @@ function deleteSelected(event: KeyboardEvent) {
     event.stopPropagation();
     if (editable.value && node.value.address && !event.repeat) void edits.removeSelection(node.value.address);
 }
+function selectAllPoints(event: KeyboardEvent) {
+    if (graphEditorShortcut(event) !== "selectAll" || isTextEditingTarget(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const address = node.value.address;
+    if (!event.repeat && editable.value && address && curve.value) {
+        const points = [...curve.value.points, ...edits.drafts(address)];
+        edits.selectPoints(address, points.map(({ id }) => id));
+    }
+}
 function removePoint(id: number) {
     if (!editable.value || !node.value.address) return;
     if (segmentPoint.value === id) closeMenus(true);
@@ -494,12 +494,15 @@ onBeforeUnmount(() => {
                 :tabindex="editable ? -1 : undefined" :data-lane-item-editor="editable ? '' : undefined"
                 @pointerdown.self="pressSurface" @pointermove="moveSelection" @pointerup="finishSelection"
                 @pointercancel="cancelSelection" @lostpointercapture.self="cancelSelection"
-                @keydown.delete.self="deleteSelected" @contextmenu.self.prevent>
+                @keydown="selectAllPoints" @keydown.delete.self="deleteSelected" @contextmenu.self.prevent>
                 <g class="value-guides" aria-hidden="true">
-                    <g v-for="guide in valueGuides" :key="guide.value" :class="{ zero: guide.value === 0, unit: Math.abs(guide.value) === 1 }">
-                        <line :x1="valueLabelInset" :x2="width" :y1="guide.y" :y2="guide.y" />
-                        <text v-if="!hideLabels && guide.value !== snapGuide?.value" x="4" :y="valueLabelY(guide.y)">{{ guide.value }}</text>
-                    </g>
+                    <TransitionGroup name="iv-grid">
+                        <g v-for="guide in valueGuides" :key="guide.value">
+                            <line class="iv-grid-guide" :style="{ '--iv-grid-strength': valueStrengths.get(guide.depth) }"
+                                x1="0" :x2="width" :y1="guide.y" :y2="guide.y" vector-effect="non-scaling-stroke" />
+                            <text v-if="!hideLabels && guide.value !== snapGuide?.value" x="4" :y="valueLabelY(guide.y)">{{ guide.value }}</text>
+                        </g>
+                    </TransitionGroup>
                 </g>
                 <path :d="path" class="curve-line" :class="{ 'authored-curve': hasOutputBounds }" />
                 <path v-if="outputPath" :d="outputPath" class="curve-line" />
@@ -518,6 +521,8 @@ onBeforeUnmount(() => {
                             <stop offset="1" stop-opacity="0" />
                         </linearGradient>
                     </defs>
+                    <line v-if="snapGuide" x1="0" :x2="width" :y1="snapGuide.y" :y2="snapGuide.y"
+                        stroke="currentColor" stroke-opacity=".35" vector-effect="non-scaling-stroke" />
                     <line v-for="guide in snapLines" :key="guide.axis" :x1="guide.start" :x2="guide.end" y1="0" y2="0" :transform="guide.transform"
                         :stroke="`url(#${snapGradientId})`" stroke-width="1.25" vector-effect="non-scaling-stroke" />
                     <text v-if="snapGuide && !hideLabels" x="4" :y="valueLabelY(snapGuide.y)">{{ snapGuide.value }}</text>
@@ -565,7 +570,7 @@ onBeforeUnmount(() => {
     </NodeLane>
     <Teleport to="body">
         <AnchoredPopover v-if="editable && segmentPoint !== null" ref="popover" class="automation-popover" label="Automation segment"
-            :data-lane-key="key" data-lane-item-editor contextual @escape="escapeSegment" @toggle="menuToggled">
+            :data-lane-key="key" data-lane-item-editor contextual @escape="escapeSegment" @toggle="menuToggled" @keydown="selectAllPoints">
             <template v-if="selected">
                 <div class="automation-menu-fields">
                     <label>Segment <select tabindex="-1" :value="selected.interpolation"
@@ -587,12 +592,9 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .automation-surface { position: relative; width: 100%; height: 100%; min-height: 1px; color: var(--iv-port-input); }
-.clip-ruler { opacity: .55; }
+.clip-ruler { --iv-lane-ruler-tick: color-mix(in srgb, var(--vscode-foreground) 30%, transparent); }
 .automation-curve { position: relative; display: block; width: 100%; height: 100%; overflow: hidden; touch-action: none; }
 .value-guides { pointer-events: none; }
-.value-guides line { stroke: var(--vscode-foreground); stroke-opacity: .08; }
-.value-guides .unit line { stroke-opacity: .15; }
-.value-guides .zero line { stroke-opacity: .22; }
 :is(.value-guides, .snap-guides) text { font-size: 9px; font-variant-numeric: tabular-nums; }
 .value-guides text { fill: var(--vscode-descriptionForeground); opacity: .75; }
 .snap-guides { pointer-events: none; color: var(--vscode-charts-blue, #3794ff); }

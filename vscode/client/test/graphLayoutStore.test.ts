@@ -8,6 +8,7 @@ import { readAutomationCurveView, zoomAutomationValueAxis } from "../src/automat
 import { saveGraphLayoutMessage } from "../src/graphEditorProtocol";
 import { GraphLayoutStore } from "../src/graphLayoutStore";
 import { addressKey, placeNodes, presentationStateKey, readLayout } from "../src/graphScope";
+import type { TimelineSnapMemory } from "../src/timelineSnap";
 
 test("graph layout saves serialize, survive a new store, and leave project intent untouched", async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "iv-graph-layout-"));
@@ -20,11 +21,9 @@ test("graph layout saves serialize, survive a new store, and leave project inten
         const key = addressKey({ instanceId: "curve" });
         const last = readLayout({ positions: { node: { x: 200, y: -300 } }, viewport: { x: 10, y: 20, scale: 0.5 },
             automationBounds: { [key]: { min: -2 }, inverted: { min: 1, max: 0 } },
-            timeline: { beginSeconds: -5, secondsPerPixel: 0.02, laneHeight: 640, scrollTop: 123 }, timelineGrid: "beats" });
+            timeline: { beginSeconds: -5, secondsPerPixel: 0.02, laneHeight: 640, scrollTop: 123 } });
         await Promise.all([store.save(first), store.save(last)]);
         assert.deepEqual(await new GraphLayoutStore(directory).load(), last);
-        assert.equal(readLayout(null).timelineGrid, "seconds");
-        assert.equal(readLayout({ timelineGrid: "invalid" }).timelineGrid, "seconds");
         assert.deepEqual(placeNodes([], last).automationBounds, { [key]: { min: -2 } });
         assert.equal(await fs.readFile(project, "utf8"), "project intent\n");
         assert.deepEqual(await fs.readdir(path.dirname(store.filePath)), ["graph-layout.json"]);
@@ -53,6 +52,22 @@ test("the project layout round trips lane order and independent presentation sta
         await store.save(layout, { [curve]: null });
         assert.deepEqual((await store.load()).presentationStates, { [custom]: second });
         assert.deepEqual((await store.load()).laneOrder, order);
+    } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test("viewport saves preserve snap settings written before a graph transaction", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "iv-timeline-snap-"));
+    try {
+        const store = new GraphLayoutStore(directory);
+        const memory: TimelineSnapMemory = { beats: [95, 3, [2, 3]] };
+        await Promise.all([
+            store.prepareTimelineSnap(() => ({ memory })),
+            store.save(readLayout({ timeline: { beginSeconds: 5 } })),
+        ]);
+        const reloaded = new GraphLayoutStore(directory);
+        assert.equal((await reloaded.load()).timeline.beginSeconds, 5);
+        const saved = await reloaded.prepareTimelineSnap((memory) => ({ memory }));
+        assert.deepEqual(saved.memory.beats, [95, 3, [2, 3]]);
     } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 

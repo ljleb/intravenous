@@ -319,6 +319,19 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
             auto const operation_method = parse_string_param(operation, "method");
             if (operation_method == "project.applyEdit" || operation_method == "project.undo" || operation_method == "project.redo")
                 throw std::invalid_argument("project batches cannot contain history or nested batches");
+            if (operation_method == "nodeInstances.duplicate") {
+                auto const duplicate_params = operation.value("params", Json::object());
+                auto const copies = duplicate_params.find("copies");
+                if (copies == duplicate_params.end() || !copies->is_array() || copies->empty())
+                    throw std::invalid_argument("nodeInstances.duplicate requires a nonempty copies array");
+                for (auto const& copy : *copies) {
+                    batch.instance_duplicates.push_back({
+                        .source_instance_id = parse_string_param(copy, "sourceInstanceId"),
+                        .instance_id = parse_string_param(copy, "instanceId"),
+                    });
+                }
+                continue;
+            }
             auto const nested = parse_socket_rpc_request(Json{{"id", 0}, {"method", operation_method},
                 {"params", operation.value("params", Json::object())}}.dump());
             std::visit([&](auto const& value) {

@@ -1011,6 +1011,9 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
         }
 
         Command* command = nullptr;
+        std::shared_ptr<ObservationWindowQuery> query;
+        std::uint64_t current_work_revision;
+        bool caught_up;
         {
             std::lock_guard lock{commands_mutex_};
             if (stopping_ || stop.stop_requested()) {
@@ -1029,52 +1032,49 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
                 }
                 return;
             }
+            // Sample the work revision under the queue lock so a request
+            // queued after activation cannot overtake its notification.
+            current_work_revision = work_signal_.work_revision();
+            caught_up = current_work_revision == observed_work_revision;
             if (first_command_) {
                 command = first_command_;
                 first_command_ = command->next;
                 if (!first_command_) last_command_ = nullptr;
                 command->next = nullptr;
+            } else if (caught_up || (serve_visible_waveform && !prepared_generation_ && preparation_queue_.empty())) {
+                while (!observation_windows_.empty()
+                    && observation_windows_.front()->canceled.load(std::memory_order_acquire))
+                    observation_windows_.pop_front();
+                if (!observation_windows_.empty()) {
+                    auto next = std::ranges::find_if(observation_windows_, [caught_up](auto const& pending) {
+                        return !pending->prefetch.load(std::memory_order_relaxed)
+                            && (caught_up || pending->port.port_kind == PortKind::sample)
+                            && !pending->canceled.load(std::memory_order_acquire);
+                    });
+                    if (next == observation_windows_.end() && caught_up)
+                        next = observation_windows_.begin();
+                    if (next != observation_windows_.end()) {
+                        query = std::move(*next);
+                        observation_windows_.erase(next);
+                    }
+                }
             }
         }
 
         if (!command) {
-            auto const current_work_revision = work_signal_.work_revision();
-            bool const caught_up = current_work_revision == observed_work_revision;
-            if (caught_up || serve_visible_waveform) {
-                serve_visible_waveform = false;
-                std::shared_ptr<ObservationWindowQuery> query;
-                {
-                    std::lock_guard lock{commands_mutex_};
-                    while (!observation_windows_.empty()
-                        && observation_windows_.front()->canceled.load(std::memory_order_acquire))
-                        observation_windows_.pop_front();
-                    if (!observation_windows_.empty()) {
-                        auto next = std::ranges::find_if(observation_windows_, [caught_up](auto const& pending) {
-                            return !pending->prefetch.load(std::memory_order_relaxed)
-                                && (caught_up || pending->port.port_kind == PortKind::sample)
-                                && !pending->canceled.load(std::memory_order_acquire);
-                        });
-                        if (next == observation_windows_.end() && caught_up)
-                            next = observation_windows_.begin();
-                        if (next != observation_windows_.end()) {
-                            query = std::move(*next);
-                            observation_windows_.erase(next);
-                        }
-                    }
-                }
-                if (query) {
-                    if (!query->canceled.load(std::memory_order_acquire)) process_window(*query);
-                    continue; // Recheck playback and cutover work after each bounded query.
-                }
-                if (caught_up) {
-                    auto const current_wake_revision = work_signal_.wake_revision();
-                    if (current_wake_revision != observed_wake_revision) {
-                        observed_wake_revision = current_wake_revision;
-                        continue;
-                    }
-                    work_signal_.wait(observed_wake_revision);
+            serve_visible_waveform = false;
+            if (query) {
+                if (!query->canceled.load(std::memory_order_acquire)) process_window(*query);
+                continue; // Recheck playback and cutover work after each bounded query.
+            }
+            if (caught_up) {
+                auto const current_wake_revision = work_signal_.wake_revision();
+                if (current_wake_revision != observed_wake_revision) {
+                    observed_wake_revision = current_wake_revision;
                     continue;
                 }
+                work_signal_.wait(observed_wake_revision);
+                continue;
             }
             observed_work_revision = current_work_revision;
             if (!generation_chain_) continue;
@@ -1082,8 +1082,8 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
             auto progress = process_available_work_safely();
             // Playback notifications can keep arriving faster than a pass
             // finishes. Let one visible waveform use the committed snapshot
-            // before another pass. Cutovers and input reconciliation still
-            // gate the query in process_window().
+            // before another pass, after any prepared cutover has been
+            // reconciled on this worker.
             serve_visible_waveform = progress && progress->status == BackgroundEvaluationStatus::committed;
             if (!progress || progress->status == BackgroundEvaluationStatus::terminal_preparation_error) {
                 if (!progress_failed_.exchange(true, std::memory_order_acq_rel)) {

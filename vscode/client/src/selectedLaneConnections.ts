@@ -29,7 +29,7 @@ export function connectionEndKey(connectionId: string, port: GraphPortEndpoint):
 export function selectedLaneConnections(scope: GraphScope, selected: ReadonlySet<string>,
     anchorFor: (port: GraphPortEndpoint, connectionId: string) => PortWireAnchor | null,
     revealedEnds: readonly RevealedConnectionEnd[] = [],
-    context?: { top: number; bottom: number }): SelectedLaneWire[] {
+    context?: { top: number; bottom: number; headerTarget?: { left: number; right: number; top: number; bottom: number } }): SelectedLaneWire[] {
     const selectedInstances = new Set(scope.nodes.filter((node) => selected.has(addressKey(node.address)))
         .map((node) => node.instance.instanceId));
     if (!selectedInstances.size && !revealedEnds.length && !context) return [];
@@ -75,8 +75,10 @@ export function selectedLaneConnections(scope: GraphScope, selected: ReadonlySet
                 const source = output.anchor;
                 const target = input.anchor;
                 const emphasized = output.selected || input.selected;
+                const header = context?.headerTarget;
+                const inHeader = header && target.x >= header.left && target.x <= header.right && target.y >= header.top && target.y <= header.bottom;
                 if (!emphasized && !output.revealed && !input.revealed && (!context || source.y < context.top || source.y > context.bottom
-                    || target.y < context.top || target.y > context.bottom)) continue;
+                    || (!inHeader && (target.y < context.top || target.y > context.bottom)))) continue;
                 const key = JSON.stringify([source.id, target.id]);
                 const existing = wires.get(key);
                 if (existing) {

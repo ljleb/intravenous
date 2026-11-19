@@ -1,5 +1,5 @@
 import { inject, provide, type InjectionKey, type Ref } from "vue";
-import type { TimelineGridMode } from "../../src/graphScope";
+import type { TimelineGridMode } from "../../src/timelineSnap";
 
 export type PresentationTimeWindow = { beginSeconds: number; endSeconds: number; spanSeconds?: number; sampleRate?: number | null;
     gridMode?: TimelineGridMode };
@@ -16,8 +16,10 @@ export type LaneValueGesture = { content: Element; changed: () => boolean } & (
     { mode: "pan"; pan: (deltaY: number) => void }
     | { mode: "zoom"; zoom: (factor: number, cursorY: number) => void }
 );
+export type LaneHorizontalZoomGesture = { content: Element; changed: () => boolean; zoom: (factor: number, cursorX: number) => void };
 export type LaneValueNavigation = {
     begin: (mode: "pan" | "zoom") => LaneValueGesture | null;
+    beginHorizontalZoom?: () => LaneHorizontalZoomGesture | null;
     zoom: (factor: number, cursorY: number) => boolean;
     reset: () => void;
 };

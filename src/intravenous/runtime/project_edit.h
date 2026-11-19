@@ -37,10 +37,15 @@ struct ProjectInstanceUpdate {
     std::optional<std::string> display_name{};
     std::optional<std::string> configuration_source{};
 };
+struct ProjectInstanceDuplicate {
+    std::string source_instance_id{};
+    std::string instance_id{};
+};
 struct ProjectEditBatch {
     // Existing create/update RPC semantics, resolved inside the same batch.
     std::vector<std::string> require_absent_instances{};
     std::vector<ProjectInstanceUpdate> instance_updates{};
+    std::vector<ProjectInstanceDuplicate> instance_duplicates{};
     std::vector<ProjectRecordEdit<ProjectNodeInstanceDeclaration, std::string>> instances{};
     std::vector<ProjectRecordEdit<ProjectNodeReplacement, NodeAddress>> replacements{};
     std::vector<ProjectRecordEdit<ProjectConnection, std::string>> connections{};

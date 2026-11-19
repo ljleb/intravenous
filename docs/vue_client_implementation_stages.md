@@ -2903,6 +2903,15 @@ implementing the change, update the conflicting deletion passages in
 `docs/historical/` as required by the development workflow. No deletion behavior
 is changed by this note.
 
+Implementation update, 2026-11-19. The single-node delete route delegates to
+`ProjectGraph::handle_project_apply_edit()`. The batch removes input and output
+matchers rooted at the deleted instances before validation and realization.
+Shared connections keep their surviving matchers and identity. Undo and redo
+restore the exact connection records as part of the node edit. When switching
+back to Custom ruler snapping, the editor restores routes from source instances
+that still exist. Regression fixtures cover single-node deletion, child paths,
+shared routes, and undo/redo. Build and test execution remain owner-run.
+
 Owner verification update: all 1,062 backend tests pass after the observation
 fixture corrections. The main graph's missing meters exposed a frontend gap:
 reactive Vue addresses were passed directly to `postMessage`. Observation
@@ -4368,6 +4377,13 @@ after it pins the data and resolves the logical Regions. The cache requires
 matching execution, semantic, and data versions. The waveform operation
 keeps its existing sample coordinates.
 
+`ObservationValues` retains compatible ready windows for display while a new
+configured graph or viewport prepares data. The display API labels those
+windows as outdated. A ready reply, including an empty window, replaces its
+older result. Unsubscribing or changing the source, session, or sample rate
+discards incompatible windows. Automation bounds use the shared port-window
+hook to read both their visible window and prefetched tiles.
+
 #### Indexed event observation and Timeline
 
 A producer can publish an exact occurrence count and an optional constant
@@ -4396,6 +4412,24 @@ to its generated marks.
 Runtime playback, VS Code interaction, and cold-query costs still need a
 fresh build to verify.
 
+#### Editor-managed ruler snapping and combined zoom
+
+`WorkspaceSession.setTimelineSnapMode()` uses `project.applyEdit` for the
+hidden `iv.builtin.beats` and `iv.builtin.timeline` instances and their
+connections. The graph read determines the active mode in each editor.
+`GraphLayoutStore` saves the inactive Beats arguments and Custom routes
+before the edit. `TimelineScopePresentation.vue` observes only the
+editor-managed Timeline and exposes that node's Beats input in Custom mode.
+`BeatsSettings.vue` serves both the ruler popover and authored Beats lanes.
+
+Ctrl+Alt+wheel scales both project axes about the pointer. Ctrl+Alt+middle
+drag uses horizontal motion for time zoom and vertical motion for lane
+height zoom. Both axes anchor at the pickup point for the whole drag.
+Moving right or down zooms out along that axis. Adding Shift at pickup uses
+the same motion and anchor rules, choosing lane zoom on each supported axis
+and project zoom on the others. Automation lanes supply vertical value zoom.
+[Previous combined drag behavior](./historical/combined_zoom_before_fixed_pickup_2026-11-19.md).
+
 #### Authored lane names
 
 `IV_NODE`, `IV_MODULE`, and `IV_MODULE_CLASS` now carry their third argument
@@ -4406,3 +4440,9 @@ the lane name to edit it in place. Enter or clicking away saves the name through
 from the definition. The project file and history store only custom names.
 Built-in and example default labels use Capital Space Case. New package
 templates capitalize the words in the package name and separate them with spaces.
+
+Shift+A opens the existing Add Node form. The new lane goes after the lowest
+selected lane, or at the bottom without a selection. Ctrl+D sends one revision-
+checked project edit, places each copy directly below its original, and selects
+the copies. Ctrl+A selects the graph lanes or all points in the focused
+Automation Curve editor. Text fields keep their native shortcuts.

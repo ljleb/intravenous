@@ -1,5 +1,8 @@
 #include "test_support.h"
 
+#include <algorithm>
+#include <array>
+
 // Authored package source and its shared build/load path. CTest builds this
 // package once before running the independent GraphJitRuntimeFixture tests.
 
@@ -897,7 +900,8 @@ struct ProjectedRevisingSampleFeedback {
     }
 };
 
-struct ConvertedSampleFeedback {
+)cpp";
+    static constexpr std::string_view part_1_tail = R"cpp(struct ConvertedSampleFeedback {
     struct State {
         std::uint64_t calls = 0;
         std::uint64_t scc_feedback_latency = 0;
@@ -2502,7 +2506,8 @@ struct EventFeedbackB {
     }
 };
 
-struct RetainedDualEventFeedbackA {
+)cpp";
+    static constexpr std::string_view part_2_tail = R"cpp(struct RetainedDualEventFeedbackA {
     struct State {
         std::uint64_t calls = 0;
         std::uint64_t scc_feedback_latency = 0;
@@ -5901,7 +5906,8 @@ struct LatentWindowSource {
     }
 };
 
-struct LargeLatentWindowSource {
+)cpp";
+    static constexpr std::string_view part_4_tail = R"cpp(struct LargeLatentWindowSource {
     struct State {
         std::uint64_t calls = 0;
         std::uint64_t checked = 0;
@@ -7939,24 +7945,17 @@ void rolling_automation_module(iv::GraphBuilder& graph) {
 IV_MODULE("iv.test.automation.rolling", rolling_automation_module, "Rolling");
 
 )cpp";
-    static_assert(part_1.size() < 60 * 1024);
-    static_assert(part_2.size() < 60 * 1024);
-    static_assert(part_3.size() < 60 * 1024);
-    static_assert(background_region_nodes.size() < 60 * 1024);
-    static_assert(part_4.size() < 60 * 1024);
-    static_assert(part_5.size() < 60 * 1024);
+    static constexpr std::array parts{
+        part_1, part_1_tail, part_2, part_2_tail, part_3, background_region_nodes,
+        part_4, part_4_tail, part_5, internal_nodes,
+    };
+    static_assert(std::ranges::all_of(parts, [](auto part) { return part.size() < 60 * 1024; }));
     static std::string const source = [] {
         std::string result;
-        result.reserve(
-            part_1.size() + part_2.size() + part_3.size() + part_4.size()
-            + part_5.size() + background_region_nodes.size() + internal_nodes.size());
-        result.append(part_1);
-        result.append(part_2);
-        result.append(part_3);
-        result.append(background_region_nodes);
-        result.append(part_4);
-        result.append(part_5);
-        result.append(internal_nodes);
+        std::size_t size = 0;
+        for (auto part : parts) size += part.size();
+        result.reserve(size);
+        for (auto part : parts) result.append(part);
         return result;
     }();
     return std::string_view{source};

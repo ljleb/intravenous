@@ -36,9 +36,8 @@ Examples:
 - Deleting several nodes is one action. Its reverse restores the affected complete
   `ProjectNodeInstanceDeclaration`, `ProjectNodeReplacement`,
   `ProjectConnection`, and `ProjectManualControl` records **that actually changed**,
-  preserving stable identities. Do not infer deletion of connections merely from
-  losing an endpoint: `GraphConnections` intentionally retains dangling desired
-  matchers where applicable.
+  preserving stable identities. See [explicit instance deletion](#explicit-instance-deletion)
+  for how the action treats connection matchers.
 - An ordered `nodeMessages.dispatch` interaction may make several provisional
   replacements. History records the resulting *committed durable state difference*,
   not a fabricated inverse C++ node-message type, and not its provisional previews.
@@ -176,6 +175,13 @@ package creation or save are excluded. The internal typed batch also supports
 complete replacement-record edits. Node messages continue to establish those
 records through their normal semantic interaction path.
 
+The `nodeInstances.duplicate` batch operation takes source and destination
+instance IDs. `ProjectGraph` copies the source declarations, their owned
+replacement records, and stored controls from the accepted state before the
+batch. It copies the parts of connections with both endpoints in the copied
+selection. Authored constructor arguments retain their values, including any
+explicit node references. The resulting records enter history as one edit.
+
 `project.undo` and `project.redo` apply the next applicable record difference
 through one normal realization. All three routes require `project.write` and
 use the existing `expectedRevision` check. History also verifies each changed
@@ -185,10 +191,20 @@ normal graph publication; settings-only actions do not rebuild or publish a new
 graph generation.
 Project replay clears session history rather than entering it.
 
-Deleting an instance removes its owned replacement records and manual values.
-Desired connections retain their matchers, including dangling ones, unless
-the same action explicitly changes them. Undo restores the exact records that
-changed rather than deleting or recreating inferred connections.
+### Explicit instance deletion
+
+An explicit instance deletion removes its owned replacement records and manual
+values. In the same batch, `ProjectGraph` removes input and output matchers
+rooted at the deleted instance, including matchers with a child path. It retains
+the connection record and identity if both sides still have matchers. If either
+side loses all its matchers, it removes the connection record.
+
+Temporary resolution failures and definition reloads retain desired matchers.
+Undo and redo apply the recorded differences, including the exact connection
+records before and after deletion. The [prior deletion policy](./historical/desired_connections_before_explicit_node_deletion_cleanup_2026-11-19.md)
+is preserved.
+
+### Manual-control gestures
 
 A manual-control gesture changes no durable record until it ends. Its end records
 one history entry from the stored value before the end to the final value, appended

@@ -1,6 +1,7 @@
 import * as crypto from "node:crypto";
 import * as vscode from "vscode";
 import { GraphLayoutStore } from "./graphLayoutStore";
+import { isGeneratedSnapConnection, isTimelineSnapNode } from "./timelineSnap";
 import { addressKey, readLayout, type GraphScope } from "./graphScope";
 import { nodeDebugDetails } from "./nodeDebugDetails";
 import { ObservationDeliveryState, type ObservationDelivery } from "./observationDelivery";
@@ -288,7 +289,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                 const instance = scope.nodes.find((node) => node.instance.instanceId === matcher.instanceId)?.instance;
                 return `${instance?.displayName || instance?.definitionId.split(".").pop() || "Unavailable node"}.${matcher.port.name ?? matcher.port.index ?? "*"}`;
             };
-            const selected = await vscode.window.showQuickPick(scope.connections.map((entry) => ({
+            const selected = await vscode.window.showQuickPick(scope.connections.filter((entry) => !isGeneratedSnapConnection(entry)).map((entry) => ({
                 label: `${entry.connection.outputs.map(label).join(", ")} → ${entry.connection.inputs.map(label).join(", ")}`,
                 description: entry.applied ? "" : "Not applied", id: entry.id,
             })), { title: "Intravenous: Delete Connection", placeHolder: "Select a connection" });
@@ -296,7 +297,7 @@ export class GraphEditorProvider implements vscode.Disposable {
             return;
         }
         if (action === "deleteNode") {
-            const selected = await vscode.window.showQuickPick(scope.nodes.map((node) => ({
+            const selected = await vscode.window.showQuickPick(scope.nodes.filter((node) => !isTimelineSnapNode(node)).map((node) => ({
                 label: node.instance.displayName || node.instance.definitionId.split(".").pop() || node.instance.definitionId,
                 description: node.instance.definitionId, instanceId: node.instance.instanceId,
             })), { title: "Intravenous: Delete Nodes", placeHolder: "Select nodes to delete", canPickMany: true });
@@ -306,7 +307,7 @@ export class GraphEditorProvider implements vscode.Disposable {
             }
             return;
         }
-        const selected = await vscode.window.showQuickPick(scope.nodes.map((node, index) => ({
+        const selected = await vscode.window.showQuickPick(scope.nodes.filter((node) => !isTimelineSnapNode(node)).map((node, index) => ({
             label: node.instance.displayName || node.instance.definitionId.split(".").pop() || node.instance.definitionId,
             description: node.instance.definitionId, instanceId: node.instance.instanceId,
             detail: `Lane ${index + 1}${node.instance.configurationSource ? ` · ${node.instance.configurationSource}` : ""}`,
@@ -462,6 +463,16 @@ export class GraphEditorProvider implements vscode.Disposable {
                     await this.session.deleteGraphNodes(message.instanceIds);
                     await this.refresh();
                 } catch (error) { void vscode.window.showErrorMessage(`Cannot delete lanes: ${error.message}`); }
+            } else if (message?.type === "duplicateSelectedLanes") {
+                try {
+                    const copies = await this.session.duplicateGraphNodes(message.instanceIds);
+                    void panel.webview.postMessage({ type: "graphLanesInserted", duplicate: true,
+                        lanes: copies.map(({ sourceInstanceId, instanceId }) => ({ instanceId, afterInstanceId: sourceInstanceId })) });
+                    await this.refresh();
+                } catch (error) {
+                    void panel.webview.postMessage({ type: "graphLanesInserted", duplicate: true, lanes: [] });
+                    void vscode.window.showErrorMessage(`Cannot duplicate lanes: ${error.message}`);
+                }
             } else if (message?.type === "setManualInputEnabled") {
                 try { await this.session.setManualInputEnabled(message.target, message.inputName, message.enabled); }
                 catch (error) { void vscode.window.showErrorMessage(`Cannot change manual input: ${error.message}`); }
@@ -476,6 +487,12 @@ export class GraphEditorProvider implements vscode.Disposable {
                 if (!scope || !node) return;
                 try { await vscode.env.clipboard.writeText(nodeDebugDetails(scope, node)); }
                 catch (error) { void vscode.window.showErrorMessage(`Cannot copy node details: ${error.message}`); }
+            } else if (message?.type === "setTimelineSnapMode") {
+                if (message.mode !== "seconds" && message.mode !== "beats" && message.mode !== "custom") return;
+                try {
+                    await this.session.setTimelineSnapMode(message.mode, this.store);
+                    await this.refresh();
+                } catch (error) { void vscode.window.showErrorMessage(`Cannot change timeline snapping: ${error.message}`); }
             } else if (message?.type === "connectGraphPorts" || message?.type === "editGraphConnectionEnd") {
                 try {
                     if (message.type === "connectGraphPorts") {
@@ -489,7 +506,9 @@ export class GraphEditorProvider implements vscode.Disposable {
                 || message?.type === "renameGraphLane" || message?.type === "createGraphPackage") {
                 try {
                     if (message.type === "createGraphNode") {
-                        await this.session.createGraphNode(message.definitionId, message.displayName, message.configurationSource);
+                        const instanceId = await this.session.createGraphNode(message.definitionId, message.displayName, message.configurationSource);
+                        void panel.webview.postMessage({ type: "graphLanesInserted",
+                            lanes: [{ instanceId, afterInstanceId: message.afterInstanceId }] });
                     } else if (message.type === "updateGraphNode") {
                         await this.session.updateGraphNode(message.instanceId, message.displayName, message.previousDisplayName,
                             { source: message.configurationSource, previous: message.previousConfigurationSource });

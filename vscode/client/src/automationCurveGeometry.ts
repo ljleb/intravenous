@@ -194,6 +194,22 @@ export function automationValueGuides(axis: AutomationValueAxis, height: number,
     return guides.sort((a, b) => a.value - b.value);
 }
 
+export function rankAutomationValueGuides(guides: ReturnType<typeof automationValueGuides>) {
+    // The displayed Sample values are exact multiples of a power of two.
+    // Use their finest step so whole-number grids and zoomed-in grids both have tiers.
+    let step = Infinity;
+    for (const { value } of guides) {
+        if (value === 0) continue;
+        step = Math.min(step, 2 ** Math.floor(Math.log2(Math.abs(value))));
+        while (!Number.isInteger(value / step)) step /= 2;
+    }
+    return guides.map((guide) => {
+        const index = guide.value / step;
+        const depth = guide.value === 0 ? 0 : Math.abs(guide.value) === 1 || index % 4 === 0 ? 1 : index % 2 === 0 ? 2 : 3;
+        return { ...guide, depth };
+    });
+}
+
 // Only the viewport and its neighboring point groups are visited. Extra end
 // groups supply tangents across the cyclic seam; drafts replace point identity.
 export function automationWindow(curve: AutomationCurve, begin: number, end: number,

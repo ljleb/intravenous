@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { PresentationObservations, provideObservations } from "../presentation/observationContext";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import { saveGraphLayoutMessage, type GraphEditorHostMessage, type GraphEditorState, type GraphEditorWebviewMessage } from "../../src/graphEditorProtocol";
+import { saveGraphLayoutMessage, type GraphEditorHostMessage, type GraphEditorState, type GraphEditorWebviewMessage,
+    type GraphLaneInsertion } from "../../src/graphEditorProtocol";
 import { ObservationProfile } from "../../src/observationProfile";
 import { ObservationDeliveryReceiver } from "../../src/observationDelivery";
 import { addressKey, readLayout, type NodeAddress, type Point, type PresentationState } from "../../src/graphScope";
+import { isTimelineSnapNode } from "../../src/timelineSnap";
 import type { CurveAxes, CurveDragKind } from "../../src/automationCurveEditing";
 import { webviewApi } from "../host";
 import PresentationHost from "../presentation/PresentationHost.vue";
@@ -32,8 +34,9 @@ import { automationPointStatus, useElementStatusHint } from "../statusHints";
 import { scrubSensitivityShortcut } from "../../src/scrubSensitivity";
 import type { StatusHint } from "../../src/statusBarText";
 import { projectHistoryShortcut } from "../../src/projectHistoryShortcut";
+import { graphEditorShortcut, isTextEditingTarget } from "../../src/graphEditorShortcuts";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
-import { mergeLaneOrder, moveSelectedLanes, orderLanes, selectLaneRange } from "../../src/laneSelection";
+import { insertLanes, mergeLaneOrder, moveSelectedLanes, orderLanes, selectLaneRange } from "../../src/laneSelection";
 import { connectionEndKey, connectionWirePath, portEndpointKey, portSlotKey, selectedLaneConnections, selectedLaneWirePath,
     type PortWireAnchor, type RevealedConnectionEnd, type SelectedLaneWire } from "../../src/selectedLaneConnections";
 
@@ -385,9 +388,14 @@ const hoveredPortGroup = shallowRef<HoveredPortGroup | null>(null);
 const previewColorColumns = shallowRef<PortColorColumns[]>([]);
 let sourceGroupToLeave: HoveredPortGroup | null = null;
 const selectedLanes = shallowRef<ReadonlySet<string>>(new Set());
-const laneKeys = computed(() => orderLanes(state.value.scope?.nodes ?? [], layout.value.laneOrder)
-    .map(({ address }) => addressKey(address)));
+const visibleNodes = computed(() => state.value.scope?.nodes.filter((node) => !isTimelineSnapNode(node)) ?? []);
+const orderedLanes = computed(() => orderLanes(visibleNodes.value, layout.value.laneOrder));
+const laneKeys = computed(() => orderedLanes.value.map(({ address }) => addressKey(address)));
+const selectedLaneIds = computed(() => orderedLanes.value.filter(({ address }) => selectedLanes.value.has(addressKey(address)))
+    .map(({ instance }) => instance.instanceId));
 let laneSelectionAnchor: string | null = null;
+let duplicatingLanes = false;
+let insertedSelection: string[] = [];
 const selectedWires = shallowRef<SelectedLaneWire[]>([]);
 const movingWireId = computed(() => connectionDrag.value?.edit?.connection.id);
 const wireLayers = computed(() => {
@@ -450,6 +458,26 @@ function save() {
     webviewApi.postMessage(saveGraphLayoutMessage(layout.value, Object.fromEntries(changed), laneOrderChanged));
     changedPresentationStates.clear();
     laneOrderChanged = false;
+}
+
+function selectInsertedLanes() {
+    if (!insertedSelection.length) return;
+    const visible = new Set(laneKeys.value);
+    if (!insertedSelection.every((key) => visible.has(key))) return;
+    selectedLanes.value = new Set(insertedSelection);
+    laneSelectionAnchor = insertedSelection.at(-1)!;
+    insertedSelection = [];
+}
+
+function placeInsertedLanes(lanes: readonly GraphLaneInsertion[]) {
+    const insertions = lanes.map(({ instanceId, afterInstanceId }) => ({
+        key: addressKey({ instanceId }), after: afterInstanceId === undefined ? undefined : addressKey({ instanceId: afterInstanceId }),
+    }));
+    layout.value.laneOrder = mergeLaneOrder(layout.value.laneOrder, insertLanes(laneKeys.value, insertions));
+    laneOrderChanged = true;
+    save();
+    insertedSelection = insertions.map(({ key }) => key);
+    selectInsertedLanes();
 }
 provideGraphEditor({ layout, save,
     readPresentationState: (key) => {
@@ -584,9 +612,13 @@ function updateWires() {
         ?? exact.get(portEndpointKey(port)) ?? slots.get(portSlotKey(port.address, port.direction)) ?? null;
     const timeline = surface.value.querySelector(".timeline-scope");
     const viewport = (timeline ?? surface.value).getBoundingClientRect();
-    const heading = timeline?.querySelector(".timeline-heading")?.getBoundingClientRect();
+    const header = timeline?.querySelector(".timeline-heading");
+    const heading = header?.getBoundingClientRect();
+    const snapInput = header?.querySelector(".timeline-snap-input [data-port-endpoint]")
+        ?.closest(".timeline-snap-input")?.getBoundingClientRect();
     const top = heading ? Math.max(viewport.top, heading.bottom) : viewport.top;
-    selectedWires.value = selectedLaneConnections(scope, selectedLanes.value, anchorFor, revealedEnds, { top, bottom: viewport.bottom });
+    selectedWires.value = selectedLaneConnections(scope, selectedLanes.value, anchorFor, revealedEnds,
+        { top, bottom: viewport.bottom, headerTarget: snapInput });
     wireOcclusions.value = measureWireOcclusions(top, viewport.bottom);
     const drag = connectionDrag.value;
     connectionStartAnchor.value = drag && !drag.edit ? anchorFor(drag.port, "") : null;
@@ -598,6 +630,7 @@ function updateWires() {
     }).filter((anchor): anchor is PreviewAnchor => !!anchor) : [];
     dragAnchors.value = [...new Map(anchors.map((anchor) => [anchor.id, anchor])).values()];
     wireClips.value = [{ x: viewport.left, y: top, width: viewport.width, height: Math.max(0, viewport.bottom - top) },
+        ...(snapInput ? [{ x: snapInput.x, y: snapInput.y, width: snapInput.width, height: snapInput.height }] : []),
         ...[...document.querySelectorAll(".port-panel")].map((element) => {
             const rect = element.getBoundingClientRect();
             return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
@@ -726,13 +759,32 @@ function keepAltInDetachedGraph(event: KeyboardEvent) {
     event.preventDefault();
     event.stopImmediatePropagation();
 }
-function isTextEditingTarget(event: KeyboardEvent) {
-    return event.target instanceof Element && !!event.target.closest(
-        "input, textarea, select, [contenteditable]:not([contenteditable=false]), [role=textbox]",
-    );
+function openAddNode() {
+    cancelConnection();
+    blurPointerControls();
+    editing.value = "";
+}
+function handleGraphEditorShortcut(event: KeyboardEvent) {
+    if (!state.value.scope || editing.value !== null || creatingPackage.value || isTextEditingTarget(event.target)) return;
+    const action = graphEditorShortcut(event);
+    if (!action || (action === "selectAll" && event.target instanceof Element
+        && event.target.closest("[data-lane-item-editor]"))) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (action === "selectAll") {
+        selectedLanes.value = new Set(laneKeys.value);
+        if (!laneSelectionAnchor || !selectedLanes.value.has(laneSelectionAnchor)) laneSelectionAnchor = laneKeys.value[0] ?? null;
+        return;
+    }
+    if (event.repeat || !state.value.scope.editable) return;
+    if (action === "addNode") openAddNode();
+    else if (!duplicatingLanes && selectedLaneIds.value.length) {
+        duplicatingLanes = true;
+        webviewApi.postMessage({ type: "duplicateSelectedLanes", instanceIds: selectedLaneIds.value });
+    }
 }
 function handleProjectHistory(event: KeyboardEvent) {
-    const direction = projectHistoryShortcut(event, isTextEditingTarget(event));
+    const direction = projectHistoryShortcut(event, isTextEditingTarget(event.target));
     if (!direction) return;
     event.preventDefault();
     event.stopImmediatePropagation();
@@ -744,7 +796,7 @@ function handleProjectHistory(event: KeyboardEvent) {
 function keyDown(event: KeyboardEvent) {
     updateAutomationShift(event.shiftKey);
     const target = event.target instanceof Element ? event.target : null;
-    const editingText = isTextEditingTarget(event);
+    const editingText = isTextEditingTarget(event.target);
     const editingLaneItems = !!target?.closest("[data-lane-item-editor]");
     if (!editingText && event.code === "Space" && !event.ctrlKey && !event.metaKey && !event.altKey) {
         event.preventDefault();
@@ -771,8 +823,8 @@ function keyDown(event: KeyboardEvent) {
     if (event.key === "Delete" && !event.defaultPrevented && !editingText
         && !editingLaneItems
         && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-        const instanceIds = state.value.scope?.nodes
-            .filter((node) => selectedLanes.value.has(addressKey(node.address))).map((node) => node.instance.instanceId) ?? [];
+        const instanceIds = visibleNodes.value.filter((node) => selectedLanes.value.has(addressKey(node.address)))
+            .map((node) => node.instance.instanceId);
         if (instanceIds.length) {
             event.preventDefault();
             if (!event.repeat) webviewApi.postMessage({ type: "deleteSelectedLanes", instanceIds });
@@ -870,10 +922,10 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
         return;
     }
     if (event.data?.type === "graphAction") {
+        if (event.data.action === "addNode") { openAddNode(); return; }
         cancelConnection();
         blurPointerControls();
         const action = event.data;
-        if (action.action === "addNode") editing.value = "";
         if (action.action === "editNode" && action.instanceId
             && state.value.scope?.nodes.some((node) => node.instance.instanceId === action.instanceId)) {
             editing.value = action.instanceId;
@@ -881,22 +933,31 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
         if (action.action === "createPackage") { packageName.value = ""; creatingPackage.value = true; }
         return;
     }
+    if (event.data?.type === "graphLanesInserted") {
+        if (event.data.duplicate) duplicatingLanes = false;
+        if (event.data.lanes.length) placeInsertedLanes(event.data.lanes);
+        return;
+    }
     if (event.data?.type !== "graphState") return;
     state.value = event.data.state;
     manualGestures.configuredGeneration(state.value.scope?.generation ?? null);
     observations.configuredGeneration(state.value.scope?.execution?.phase === "configurationFailed"
-        ? null : state.value.scope?.generation ?? null);
+        ? null : state.value.scope?.generation ?? null, state.value.scope?.sampleRate);
     if (state.value.sessionStatus === "running") observations.refresh();
     else observations.disconnect();
     const entry = manualGestures.numericEntry();
     if (entry && !canEditManualControl(entry.control, resolveManualControl(state.value.scope, entry.control)))
         manualGestures.cancelEntry();
-    if (state.value.sessionStatus !== "running") manualGestures.disconnected();
+    if (state.value.sessionStatus !== "running") {
+        manualGestures.disconnected();
+        duplicatingLanes = false;
+        insertedSelection = [];
+    }
     const drag = connectionDrag.value;
     if (drag && (state.value.sessionStatus !== "running"
         || !canContinuePortConnection(state.value.scope, drag.port, drag.edit))) cancelConnection();
     if (selectedLanes.value.size) {
-        const addresses = new Set(state.value.scope?.nodes.map((node) => addressKey(node.address)));
+        const addresses = new Set(visibleNodes.value.map((node) => addressKey(node.address)));
         const remaining = new Set([...selectedLanes.value].filter((key) => addresses.has(key)));
         if (remaining.size !== selectedLanes.value.size) selectedLanes.value = remaining;
     }
@@ -907,6 +968,7 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
         layout.value = readLayout(state.value.layout);
         initializedLayout = true;
     }
+    selectInsertedLanes();
 }
 onMounted(() => {
     // Give VS Code a persisted panel state so its serializer can restore
@@ -935,6 +997,7 @@ onMounted(() => {
     window.addEventListener("keyup", keepAltInDetachedGraph, true);
     // VS Code cancels and forwards undo/redo from an earlier window bubble listener.
     window.addEventListener("keydown", handleProjectHistory, true);
+    window.addEventListener("keydown", handleGraphEditorShortcut, true);
     window.addEventListener("keydown", keyDown);
     window.addEventListener("keyup", keyUp);
     stopListeningForFocus = listenPortConnectionFocus(window, windowBlurred, nativeWindowFocusChanged);
@@ -980,6 +1043,7 @@ onBeforeUnmount(() => {
     window.removeEventListener("keydown", keepAltInDetachedGraph, true);
     window.removeEventListener("keyup", keepAltInDetachedGraph, true);
     window.removeEventListener("keydown", handleProjectHistory, true);
+    window.removeEventListener("keydown", handleGraphEditorShortcut, true);
     window.removeEventListener("keydown", keyDown);
     window.removeEventListener("keyup", keyUp);
     stopListeningForFocus?.();
@@ -1000,6 +1064,7 @@ onBeforeUnmount(() => {
             :return-focus="valueEntryAnchor" :accept="() => manualGestures.acceptEntry()"
             :cancel="() => manualGestures.cancelEntry()" :set-draft="(draft) => manualGestures.setEntryDraft(draft)" />
         <NodeEditor v-if="editing !== null" :key="editing" :node="editedNode" :definitions="state.definitions"
+            :after-instance-id="selectedLaneIds.at(-1)"
             @close="editing = null" />
         <Teleport to="body">
             <div v-if="creatingPackage" class="package-dialog-backdrop" @click.self="creatingPackage = false" @keydown.esc.stop="creatingPackage = false">

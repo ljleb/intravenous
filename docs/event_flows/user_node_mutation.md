@@ -42,6 +42,11 @@ root-build transaction. `NodeInstances` owns and updates the desired instance se
 `GraphConnections` independently owns the desired connection set. `ProjectGraph`
 does not retain duplicate copies of either domain.
 
+For an explicit deletion, `ProjectGraph` edits both owners in one batch. It
+removes matchers rooted at the deleted instance and preserves connections with
+surviving matchers on both sides. The history entry captures those connection
+changes along with the deleted node. See [explicit instance deletion](../project_undo_redo_and_backups_direction.md#explicit-instance-deletion).
+
 The transaction uses the latest immutable `NodeDefinitionsSnapshot` already
 delivered to `ProjectGraph` by the package/definition flow.
 

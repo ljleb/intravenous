@@ -43,6 +43,23 @@ export function mergeLaneOrder(saved: readonly string[], visible: readonly strin
     return result.concat(visible.slice(next));
 }
 
+export function insertLanes(order: readonly string[], insertions: readonly { key: string; after?: string }[]): string[] {
+    const inserted = new Set(insertions.map(({ key }) => key));
+    const existing = order.filter((key) => !inserted.has(key));
+    const anchors = new Set(existing);
+    const following = new Map<string, string[]>();
+    const end: string[] = [];
+    for (const { key, after } of insertions) {
+        if (after === undefined || !anchors.has(after)) end.push(key);
+        else {
+            const group = following.get(after) ?? [];
+            group.push(key);
+            following.set(after, group);
+        }
+    }
+    return existing.flatMap((key) => [key, ...(following.get(key) ?? [])]).concat(end);
+}
+
 export function laneRuns(order: readonly string[], included: ReadonlySet<string>): Array<{ begin: number; end: number }> {
     const runs: Array<{ begin: number; end: number }> = [];
     for (let i = 0; i < order.length; ++i) {

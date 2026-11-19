@@ -8,6 +8,7 @@ import type { GraphConnectionEdit, GraphPortEndpoint } from "./graphConnectionEd
 import type { NodeEventHostRequest, NodeEventResponse } from "./nodeEventMessaging";
 import type { PlaybackDragPhase, PlaybackSnapshot } from "./playback";
 import type { StatusHint } from "./statusBarText";
+import type { TimelineGridMode } from "./timelineSnap";
 
 export type CursorWarp = {
     originX: number; originY: number;
@@ -45,6 +46,7 @@ export type GraphEditorState = {
     error: string;
 };
 export type GraphEditorAction = "addNode" | "editNode" | "deleteNode" | "openNodeSource" | "createPackage" | "deleteConnection" | "undo" | "redo";
+export type GraphLaneInsertion = { instanceId: string; afterInstanceId?: string };
 export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorState }
     | { type: "playbackUpdate"; snapshot: PlaybackSnapshot | null; requestedPosition: string | null;
         releasedDragPosition: string | null; dragReleaseId?: string }
@@ -57,8 +59,10 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "manualControlState"; interactions: ManualControlInteractionState[]; live: ManualControlLiveValue[] }
     | { type: "graphWindowFocus"; focused: boolean }
     | { type: "cursorReturnCompleted"; requestId: number }
+    | { type: "graphLanesInserted"; lanes: GraphLaneInsertion[]; duplicate?: true }
     | { type: "graphAction"; action: "addNode" | "editNode" | "createPackage"; instanceId?: string };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
+    | { type: "setTimelineSnapMode"; mode: TimelineGridMode }
     | { type: "playbackToggle" }
     | { type: "playbackSeek"; position: string }
     | { type: "playbackDrag"; phase: PlaybackDragPhase; position: string; releaseId?: string }
@@ -71,13 +75,14 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | CursorReturnMessage
     | { type: "manualControlAction"; action: ManualControlAction }
     | { type: "deleteSelectedLanes"; instanceIds: string[] }
+    | { type: "duplicateSelectedLanes"; instanceIds: string[] }
     | { type: "setManualInputEnabled"; target: NodeAddress; inputName: string; enabled: boolean }
     | { type: "projectHistory"; direction: "undo" | "redo" }
     | { type: "copyNodeDebugDetails"; nodeKey: string }
     | { type: "renameGraphLane"; instanceId: string; displayName: string; previousDisplayName: string }
     | { type: "connectGraphPorts"; first: GraphPortEndpoint; second: GraphPortEndpoint }
     | { type: "editGraphConnectionEnd"; edit: GraphConnectionEdit }
-    | { type: "createGraphNode"; definitionId: string; displayName: string; configurationSource: string }
+    | { type: "createGraphNode"; definitionId: string; displayName: string; configurationSource: string; afterInstanceId?: string }
     | { type: "updateGraphNode"; instanceId: string; displayName: string; configurationSource: string;
         previousDisplayName: string; previousConfigurationSource: string }
     | { type: "createGraphPackage"; name: string }

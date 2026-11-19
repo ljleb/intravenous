@@ -17,6 +17,7 @@
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_requests.h>
 #include <intravenous/runtime/socket_rpc_response_builders.h>
+#include <intravenous/runtime/uuid.h>
 
 #include <nlohmann/json.hpp>
 
@@ -1344,8 +1345,8 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         throw std::runtime_error("ProjectGraph cannot rebuild without GraphConnections");
     }
     if (capture_effect) {
-        // Removing an instance removes its owned replacements (NodeInstances)
-        // and manual values. Cross-node connections deliberately remain desired.
+        // NodeInstances owns replacement removal. Explicit project deletion
+        // prunes connection matchers in apply_edit_locked before realization.
         std::unordered_set<std::string> remaining_instances;
         for (auto const& value : request.after.instances) remaining_instances.insert(value.instance_id);
         std::unordered_set<std::string> removed_instances;
@@ -2297,6 +2298,89 @@ void ProjectGraph::open_transactions_locked(InteractionTransactions& transaction
     transactions.graph_connections = std::move(connections.interaction);
 }
 
+namespace {
+void remove_deleted_instance_endpoints(std::vector<ProjectConnection>& connections,
+    std::unordered_set<std::string> const& removed_instances)
+{
+    auto const removed = [&](ProjectNodePortMatcher const& matcher) {
+        return removed_instances.contains(matcher.instance_id);
+    };
+    auto const loses_side = [&](std::vector<ProjectNodePortMatcher> const& matchers) {
+        return !matchers.empty() && std::ranges::all_of(matchers, removed);
+    };
+    std::erase_if(connections, [&](ProjectConnection const& connection) {
+        return std::visit([&](auto const& value) {
+            return loses_side(value.outputs) || loses_side(value.inputs);
+        }, connection);
+    });
+    for (auto& connection : connections) {
+        std::visit([&](auto& value) {
+            std::erase_if(value.outputs, removed);
+            std::erase_if(value.inputs, removed);
+        }, connection);
+    }
+}
+
+void append_project_instance_duplicates(ProjectEditBatch& edit,
+    std::unordered_map<std::string, ProjectNodeInstanceDeclaration const*> const& existing_instances,
+    ProjectInstanceRecords const& instances, std::span<ProjectConnection const> connections,
+    std::span<ProjectManualControl const> controls)
+{
+    if (edit.instance_duplicates.empty()) return;
+    std::unordered_map<std::string, std::string> copies;
+    for (auto const& [source_instance_id, instance_id] : edit.instance_duplicates) {
+        auto const source = existing_instances.find(source_instance_id);
+        if (source == existing_instances.end())
+            throw std::invalid_argument("unknown node instance id: " + source_instance_id);
+        if (instance_id.empty()) throw std::invalid_argument("duplicate instance id must not be empty");
+        if (!copies.emplace(source_instance_id, instance_id).second)
+            throw std::invalid_argument("project batch duplicates the same node instance twice");
+        auto instance = *source->second;
+        instance.instance_id = instance_id;
+        edit.require_absent_instances.push_back(instance_id);
+        edit.instances.push_back({instance_id, std::move(instance)});
+    }
+    for (auto const& original : instances.replacements) {
+        auto const copy = copies.find(original.address.instance_id);
+        if (copy == copies.end()) continue;
+        auto replacement = original;
+        replacement.address.instance_id = copy->second;
+        edit.replacements.push_back({replacement.address, std::move(replacement)});
+    }
+    for (auto const& original : controls) {
+        auto const copy = copies.find(original.id.node.instance_id);
+        if (copy == copies.end()) continue;
+        auto control = original;
+        control.id.node.instance_id = copy->second;
+        edit.manual_controls.push_back({control.id, std::move(control)});
+    }
+    auto duplicate_matchers = [&](std::span<ProjectNodePortMatcher const> matchers) {
+        std::vector<ProjectNodePortMatcher> result;
+        for (auto const& original : matchers) {
+            auto const copy = copies.find(original.instance_id);
+            if (copy == copies.end()) continue;
+            auto& matcher = result.emplace_back(original);
+            matcher.instance_id = copy->second;
+        }
+        return result;
+    };
+    for (auto const& connection : connections) {
+        std::visit([&](auto const& original) {
+            auto outputs = duplicate_matchers(original.outputs);
+            if (outputs.empty()) return;
+            auto inputs = duplicate_matchers(original.inputs);
+            if (inputs.empty()) return;
+            auto copy = original;
+            copy.connection_id = generate_uuid_v4().str();
+            copy.outputs = std::move(outputs);
+            copy.inputs = std::move(inputs);
+            auto id = copy.connection_id;
+            edit.connections.push_back({std::move(id), std::move(copy)});
+        }, connection);
+    }
+}
+} // namespace
+
 ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
     ProjectEditBatch const& batch, bool record_history, std::optional<bool> history_undo,
     std::function<void()> const& authorize_audio)
@@ -2331,7 +2415,7 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
         ? !historical->instances.empty() || !historical->replacements.empty()
             || !historical->connections.empty() || !historical->manual_controls.empty()
         : !edit.instances.empty() || !edit.instance_updates.empty() || !edit.replacements.empty()
-            || !edit.connections.empty() || !edit.manual_controls.empty();
+            || !edit.connections.empty() || !edit.manual_controls.empty() || !edit.instance_duplicates.empty();
     RebuildResult rebuilt;
     ProjectEditEffect effect;
     if (needs_graph) {
@@ -2350,6 +2434,7 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
         }
         std::unordered_map<std::string, ProjectNodeInstanceDeclaration const*> existing_instances;
         for (auto const& value : instances.instances) existing_instances.emplace(value.instance_id, &value);
+        append_project_instance_duplicates(edit, existing_instances, instances, connections, controls);
         for (auto const& id : edit.require_absent_instances) {
             if (existing_instances.contains(id))
                 throw std::invalid_argument("duplicate node instance id: " + id);
@@ -2378,6 +2463,8 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
         }
         std::erase_if(instances.replacements, [&](auto const& value) { return removed_instances.contains(value.address.instance_id); });
         std::erase_if(controls, [&](auto const& value) { return removed_instances.contains(value.id.node.instance_id); });
+        // History already supplies the exact connection records for this edit.
+        if (!historical && !removed_instances.empty()) remove_deleted_instance_endpoints(connections, removed_instances);
         for (auto const& control : controls) {
             if (control.id.port_name.empty() || control.id.node.instance_id.empty())
                 throw std::invalid_argument("project manual control requires a node address and input name");
@@ -2491,15 +2578,9 @@ void ProjectGraph::handle_project_delete_node_instance(
     ProjectDeleteNodeInstanceRequest const& request,
     ProjectAckBuilder& builder)
 {
-    {
-        std::scoped_lock lock(mutex_);
-        auto rebuilt = rebuild_locked(NodeInstanceDeleteMutation{
-            .instance_id = request.instance_id,
-        }, std::monostate{});
-        builder.set_publication(std::move(rebuilt.publication));
-    }
-    builder.succeed();
-    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+    ProjectEditBatch batch;
+    batch.instances.push_back({request.instance_id, std::nullopt});
+    handle_project_apply_edit(batch, builder);
 }
 
 void ProjectGraph::handle_project_update_node_instances(
