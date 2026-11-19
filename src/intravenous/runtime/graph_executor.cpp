@@ -1937,7 +1937,9 @@ GraphExecutor::BackgroundExecutor::prepare_playback(ExecutionGeneration& target)
     }
     auto const& plan = target.graph->background_evaluation_plan;
     auto const demand = owner_.read_playback_demand();
+    IndexCoverage refill_demand = background.tick_materialization_demand;
     auto update_demand = [&](std::span<PlaybackDemand const> selections, bool speculate) {
+        if (background.explicit_playback_demand) return;
         // Default reserve, not a compilation-latency promise. An explicit
         // set_tick_materialization_demand() retains caller-selected extents.
         constexpr std::size_t lookahead_blocks = 8;
@@ -1945,24 +1947,33 @@ GraphExecutor::BackgroundExecutor::prepare_playback(ExecutionGeneration& target)
         if (block > std::numeric_limits<std::size_t>::max() / lookahead_blocks)
             throw std::length_error("automatic background playback reserve overflows");
         auto const lookahead = block * lookahead_blocks;
-        if (!background.explicit_playback_demand) {
-            background.tick_materialization_demand = {};
-            if (!plan.tick_sequential_inputs.empty()) {
-                for (auto const& entry : selections) {
-                    if (!entry.execution.empty()) background.tick_materialization_demand.include(
-                        {entry.project, entry.paused ? 1 : speculate ? lookahead : entry.execution.extent});
-                }
-                if (background.tick_materialization_demand.empty()) {
-                    background.tick_materialization_demand.include({
-                        GlobalIndex::from_bits(owner_.requested_playback_index_.load(std::memory_order_acquire)),
-                        lookahead});
-                }
-            }
+        background.tick_materialization_demand = {};
+        refill_demand = {};
+        if (plan.tick_sequential_inputs.empty()) return;
+        for (auto const& entry : selections) {
+            if (entry.execution.empty()) continue;
+            auto const extent = entry.paused ? 1 : entry.execution.extent;
+            auto const reserve = speculate && !entry.paused;
+            background.tick_materialization_demand.include(
+                {entry.project, reserve ? std::max(extent, lookahead) : extent});
+            // A moving playhead uses the ready reserve until less than half
+            // remains. Refill both running and pending seek windows in one
+            // transaction when either reaches that threshold.
+            refill_demand.include(
+                {entry.project, reserve ? std::max(extent, lookahead / 2) : extent});
+        }
+        if (background.tick_materialization_demand.empty()) {
+            background.tick_materialization_demand.include({
+                GlobalIndex::from_bits(owner_.requested_playback_index_.load(std::memory_order_acquire)),
+                lookahead});
+            refill_demand = background.tick_materialization_demand;
         }
     };
     auto prepare = [&]() -> Result {
-        auto const missing = background.tick_materialization_demand - background.materialized_tick_coverage;
-        background.tick_materialization_required = !missing.empty() && !plan.tick_sequential_inputs.empty();
+        background.tick_materialization_required = !plan.tick_sequential_inputs.empty()
+            && std::ranges::any_of(refill_demand, [&](auto range) {
+                return !background.materialized_tick_coverage.contains(range);
+            });
         background.select_inputs();
         if (!background.has_selected_inputs() && !background.reconciliation_required
             && !background.tick_materialization_required) {

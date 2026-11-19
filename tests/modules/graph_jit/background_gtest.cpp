@@ -1826,6 +1826,28 @@ TEST_F(GraphJitRuntimeFixture, ReplayResolvesStoredManualFallbackBeforeModuleFan
         states.initialize();
         iv::BackgroundCoverageState coverage{plan.accumulators.output_change_count};
         iv::BackgroundPropagationWorkspace propagation{plan, graph.specialization.sample_rate};
+        auto expect_live_values = [&](std::int64_t begin, std::vector<std::vector<float>> expected) {
+            auto live_storage = graph.node_layout.create_storage(resources);
+            live_storage.initialize();
+            iv::TickInvocationWorkspace tick_workspace{plan, graph.project_generation, data,
+                graph.specialization.block_size, graph.root_operations.combine_sequential_input,
+                graph.root_operations.initialize_sequential_input};
+            iv::TickInvocationFrame frame{tick_reader, materialization_reader, tick_workspace, index(begin), 8};
+            graph.root_operations.tick_block(live_storage.buffer().data(), &frame.call(), index(begin), 8);
+            struct LiveProbeState { std::uint64_t calls; std::array<float, 8> values; };
+            std::vector<std::vector<float>> live;
+            for (std::size_t node = 0; node < graph.node_layout.nodes.size(); ++node) {
+                if (graph.node_layout.nodes[node].state_size != sizeof(LiveProbeState)) continue;
+                auto const* state = static_cast<LiveProbeState const*>(live_storage.state_ptr(node));
+                ASSERT_NE(state, nullptr);
+                EXPECT_EQ(state->calls, 1u);
+                live.emplace_back(state->values.begin(), state->values.end());
+            }
+            ASSERT_EQ(live.size(), 2u);
+            std::ranges::sort(live);
+            std::ranges::sort(expected);
+            EXPECT_EQ(live, expected);
+        };
         for (auto port : plan.tick_sequential_inputs)
             roots.input_demands.push_back({.port = port, .required = index_coverage({{18, 26}})});
         iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data, materializations,
@@ -1862,25 +1884,21 @@ TEST_F(GraphJitRuntimeFixture, ReplayResolvesStoredManualFallbackBeforeModuleFan
         std::ranges::sort(expected);
         EXPECT_EQ(actual, expected);
 
-        auto live_storage = graph.node_layout.create_storage(resources);
-        live_storage.initialize();
-        iv::TickInvocationWorkspace tick_workspace{plan, graph.project_generation, data,
-            graph.specialization.block_size, graph.root_operations.combine_sequential_input,
-            graph.root_operations.initialize_sequential_input};
-        iv::TickInvocationFrame frame{tick_reader, materialization_reader, tick_workspace, index(18), 8};
-        graph.root_operations.tick_block(live_storage.buffer().data(), &frame.call(), index(18), 8);
-        struct LiveProbeState { std::uint64_t calls; std::array<float, 8> values; };
-        std::vector<std::vector<float>> live;
-        for (std::size_t node = 0; node < graph.node_layout.nodes.size(); ++node) {
-            if (graph.node_layout.nodes[node].state_size != sizeof(LiveProbeState)) continue;
-            auto const* state = static_cast<LiveProbeState const*>(live_storage.state_ptr(node));
-            ASSERT_NE(state, nullptr);
-            EXPECT_EQ(state->calls, 1u);
-            live.emplace_back(state->values.begin(), state->values.end());
-        }
-        ASSERT_EQ(live.size(), 2u);
-        std::ranges::sort(live);
-        EXPECT_EQ(live, expected);
+        expect_live_values(18, expected);
+
+        // Seek into a block wholly outside the source Region. Coverage
+        // metadata must resolve the gap even when there are no sample windows.
+        constexpr auto gap_begin = -480000;
+        iv::CoveragePropagationRequest gap_roots;
+        for (auto port : plan.tick_sequential_inputs)
+            gap_roots.input_demands.push_back({
+                .port = port, .required = index_coverage({{gap_begin, gap_begin + 8}})});
+        iv::BackgroundEvaluationTransaction gap{graph, states, coverage, propagation, data, materializations,
+            {.semantic_version = 2, .roots = std::move(gap_roots)}};
+        auto gap_result = gap.execute();
+        ASSERT_TRUE(gap_result) << gap_result.error();
+        ASSERT_EQ(gap_result->status, iv::BackgroundEvaluationStatus::committed);
+        expect_live_values(gap_begin, {std::vector<float>(8, 1.75f), std::vector<float>(8, 2.25f)});
     }
 }
 

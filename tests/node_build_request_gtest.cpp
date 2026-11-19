@@ -441,7 +441,7 @@ std::vector<iv::Sample> render_sine(
     std::vector<iv::Sample> frequencies,
     float phase_offset,
     std::size_t block_size,
-    std::uint64_t preceding_samples = 0)
+    std::int64_t seek_displacement = 0)
 {
     std::vector<iv::Sample> phases(frequencies.size(), iv::Sample{phase_offset});
     std::vector<iv::Sample> output(frequencies.size());
@@ -457,9 +457,8 @@ std::vector<iv::Sample> render_sine(
         },
         48000, 0, std::as_writable_bytes(std::span{&state, 1}),
     };
-    if (preceding_samples != 0) {
-        // Establish real oscillator state, then jump to a later callback.
-        // A constant frequency permits this without rendering minutes of audio.
+    if (seek_displacement != 0) {
+        // Establish real oscillator state before relocating Tick.
         iv::do_tick_block(node, iv::TickBlockContext<iv::SineOscillator>{
             context, iv::FractionalGlobalIndex::from_global(index(12345)), 1,
         });
@@ -469,7 +468,7 @@ std::vector<iv::Sample> render_sine(
         outputs[0].sequential_begin_index = begin;
         iv::do_tick_block(node, iv::TickBlockContext<iv::SineOscillator>{
             context,
-            iv::FractionalGlobalIndex::from_global(index(12345 + preceding_samples + begin)),
+            iv::FractionalGlobalIndex::from_global(index(12345 + seek_displacement).advanced_by(begin)),
             std::min(block_size, frequencies.size() - begin),
         });
     }
@@ -511,7 +510,7 @@ TEST(SineOscillator, FrequencyRampsPreservePhaseAcrossWrapsAndCallbackBoundaries
 
 TEST(SineOscillator, LongHeldFrequencyKeepsItsWaveformWhenItStartsChanging)
 {
-    for (auto const elapsed : {std::uint64_t{48000 * 60}, std::uint64_t{48000 * 3600}}) {
+    for (auto const elapsed : {std::int64_t{48000 * 60}, std::int64_t{48000 * 3600}}) {
         std::vector<iv::Sample> frequencies(4096, 440.0f);
         for (std::size_t i = 2048; i < frequencies.size(); ++i) {
             frequencies[i] = 440.0f + (i - 2048) * (200.0f / 2048);
@@ -525,6 +524,21 @@ TEST(SineOscillator, LongHeldFrequencyKeepsItsWaveformWhenItStartsChanging)
             ASSERT_NEAR(output[i].value, std::sin(phase), 1e-6)
                 << "elapsed samples " << elapsed << ", sample " << i;
         }
+    }
+}
+
+TEST(SineOscillator, BackwardSeekKeepsProducingTheHeldFrequency)
+{
+    constexpr std::int64_t seek_displacement = -480000 - 12345;
+    constexpr float frequency = 3000.0f;
+    constexpr float phase_offset = 0.25f;
+    auto const output = render_sine(
+        std::vector<iv::Sample>(512, frequency), phase_offset, 256, seek_displacement);
+    for (std::size_t i = 0; i < output.size(); ++i) {
+        auto const elapsed = seek_displacement + static_cast<std::int64_t>(i) + 1;
+        auto const phase = 2.0 * frequency * elapsed / 48000.0 + phase_offset;
+        ASSERT_NEAR(output[i].value, std::sin(std::numbers::pi * phase), 1e-6)
+            << "sample " << i;
     }
 }
 

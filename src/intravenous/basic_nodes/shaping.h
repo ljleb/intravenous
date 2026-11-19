@@ -5,7 +5,9 @@
 #include <intravenous/math/polyblep.h>
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <numbers>
 
 namespace iv {
@@ -281,11 +283,14 @@ namespace iv {
                 state.initialized = true;
             }
 
-            // Re-anchor if frequency changed.
-            if (f != state.frequency) {
-                double const elapsed = state.anchor_index
-                    .forward_distance_to(ctx.index).project_samples();
-
+            auto const forward = state.anchor_index.forward_distance_to(ctx.index);
+            // A seek can place Tick before the anchor on the circular timeline.
+            // Project its short displacement before converting to double.
+            bool const backwards = std::bit_cast<std::int64_t>(forward.whole) < 0;
+            auto elapsed = backwards
+                ? -ctx.index.forward_distance_to(state.anchor_index).project_samples()
+                : forward.project_samples();
+            if (backwards || f != state.frequency) {
                 state.anchor_phase = wrap(
                     state.anchor_phase +
                     state.frequency * 2.0 * elapsed * dt
@@ -293,10 +298,8 @@ namespace iv {
 
                 state.anchor_index = ctx.index;
                 state.frequency = f;
+                elapsed = 0.0;
             }
-
-            auto const elapsed = state.anchor_index
-                .forward_distance_to(ctx.index).project_samples();
 
             auto const phase =
                 state.anchor_phase +
