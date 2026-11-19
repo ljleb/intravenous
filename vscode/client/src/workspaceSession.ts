@@ -1,9 +1,7 @@
 import type { ObservationInterest, ObservationUpdate } from "./observations";
 import { ManualControlInteractions, resolveManualControl } from "./manualControls";
 import { ControlCompilationProgress, type ControlCompileStatus } from "./controlCompilation";
-import { addressKey, type NodeAddress } from "./graphScope";
-import { oppositeAutomationBound, pairedAutomationBoundLimits } from "./automationBoundInputs";
-import { clampAutomationValue } from "./automationCurveGeometry";
+import type { NodeAddress } from "./graphScope";
 import { validateNodeEventTarget, type SerializedNodeEvent } from "./nodeEvents";
 import { NodeEventInteractions } from "./nodeEventInteractions";
 import type { PlaybackDrag, PlaybackSnapshot } from "./playback";
@@ -156,11 +154,7 @@ export class WorkspaceSession {
         const descriptor = resolveManualControl(scope, control);
         if (!descriptor?.available || descriptor.live) throw new Error("The manual input is unavailable");
         if (descriptor.enabled === enabled) return;
-        const instance = scope.nodes.find((item) => addressKey(item.address) === addressKey(node));
-        const opposite = oppositeAutomationBound(instance?.construction?.definitionId ?? instance?.definitionId, inputName);
-        const limits = enabled && opposite ? pairedAutomationBoundLimits(opposite, resolveManualControl(scope, { node, inputName: opposite })) : {};
-        const value = clampAutomationValue(descriptor.value, limits);
-        await rpc.setManualInputEnabled(control, value, enabled, descriptor.participation, scope.sessionRevision);
+        await rpc.setManualInputEnabled(control, descriptor.value, enabled, descriptor.participation, scope.sessionRevision);
     }
 
     async sendNodeEvent(target: NodeAddress, event: SerializedNodeEvent, interactionId?: string): Promise<number> {

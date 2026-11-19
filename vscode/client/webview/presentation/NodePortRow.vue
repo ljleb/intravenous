@@ -49,7 +49,11 @@ const emit = defineEmits<{
 .port-handle { position: relative; grid-column: 2; grid-row: 1; display: grid; place-items: center; width: 24px; height: 22px;
     padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--port-color); cursor: crosshair; touch-action: none; }
 [data-direction="output"] .port-knob { grid-column: 3; }
-.port-circle { width: 12px; height: 12px; border: 2px solid currentColor; border-radius: 50%; box-sizing: border-box; }
+.port-circle {
+    --port-circle-fill: color-mix(in srgb, currentColor var(--iv-disconnected-port-strength), var(--vscode-editor-background));
+    width: 12px; height: 12px; border-radius: 50%; box-sizing: border-box;
+    background: var(--port-circle-fill);
+}
 .port-overflow-indicator { grid-column: 2; grid-row: 2; justify-self: center; align-self: end; display: flex; align-items: center; gap: 4px;
     width: 14px; height: var(--overflow-indicator-height);
     color: color-mix(in srgb, var(--vscode-descriptionForeground) 45%, var(--vscode-editor-background));
@@ -61,7 +65,7 @@ const emit = defineEmits<{
 /* Cut past the outer edge of the dial track (12.75 units in its 32-unit viewBox). */
 .control-row.with-knob {
     isolation: isolate;
-    --socket-tuck: 7px;
+    --socket-tuck: 10px;
     --cutout-center: calc(var(--socket-tuck) - var(--knob-size) / 2);
     --cutout-radius: calc(var(--knob-size) * .3984375 + 1.5px);
 }
@@ -78,7 +82,6 @@ const emit = defineEmits<{
 .with-knob .port-circle {
     justify-self: start;
     transform: translateX(calc(4px - var(--socket-tuck)));
-    background: var(--vscode-editor-background);
     --socket-mask: radial-gradient(circle at var(--cutout-center) 50%,
         transparent calc(var(--cutout-radius) - .5px), #000 calc(var(--cutout-radius) + .5px));
     -webkit-mask-image: var(--socket-mask);
@@ -90,8 +93,8 @@ const emit = defineEmits<{
     justify-self: end;
     transform: translateX(calc(var(--socket-tuck) - 4px));
 }
-.connected .port-circle { background: currentColor; }
-.pending .port-circle { border-style: dashed; }
+.connected .port-circle { --port-circle-fill: currentColor; }
+.pending .port-circle { border: 2px dashed currentColor; }
 .port-handle[data-hovered] { background: color-mix(in srgb, currentColor 12%, transparent); }
 .with-knob .port-handle[data-hovered] { background: transparent; }
 .with-knob .port-handle[data-hovered] .port-circle { filter: brightness(1.25); }

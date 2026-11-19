@@ -3,18 +3,6 @@ import type { ObservationWindowResult } from "./observations";
 
 export type AutomationBoundInput = "min" | "max";
 
-export function oppositeAutomationBound(definition: string | undefined, input: string): AutomationBoundInput | undefined {
-    if (definition !== "iv.builtin.automation.curve") return;
-    if (input === "min") return "max";
-    if (input === "max") return "min";
-}
-
-export function pairedAutomationBoundLimits(opposite: AutomationBoundInput | undefined,
-    control?: { enabled: boolean; value: number; liveValue?: number }): AutomationValueBounds {
-    if (!opposite || !control?.enabled) return {};
-    return { [opposite]: control.liveValue ?? control.value };
-}
-
 export type BoundSample = { seconds: number; value: number };
 type BoundTrack = { begin: number; end: number; samples: BoundSample[] };
 

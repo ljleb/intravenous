@@ -11,6 +11,7 @@ body {
     --iv-lane-title-color: color-mix(in srgb, var(--vscode-foreground) 85%, var(--vscode-editor-background));
     --iv-port-label-base: var(--vscode-descriptionForeground, var(--vscode-foreground));
     --iv-port-label-accent: 16%;
+    --iv-disconnected-port-strength: 55%;
     margin: 0;
     padding: 0;
     background: var(--vscode-sideBar-background);
@@ -26,6 +27,7 @@ body:is(.vscode-high-contrast, .vscode-high-contrast-light) {
     --iv-lane-title-color: var(--vscode-foreground);
     --iv-port-label-base: var(--vscode-foreground);
     --iv-port-label-accent: 0%;
+    --iv-disconnected-port-strength: 75%;
 }
 
 :focus {

@@ -241,8 +241,9 @@ muted during the drag, using a blend of their normal colour and the theme's
 disabled grey. Candidate ports and ports on the other side retain their normal
 colour. For example, dragging a new connection from an output leaves other
 outputs blue; incompatible inputs are muted. A destination-side grouped icon
-is muted when none of its ports is a candidate. Filled and dashed connection states remain visible through
-the colour change. This feedback uses the existing direction/kind and
+is muted when none of its ports is a candidate. The difference between
+connected and disconnected fills and the pending dashes remain visible
+through the colour change. This feedback uses the existing direction/kind and
 reattachment checks; it does not add converter discovery. The preceding ring
 and automatic opposite-side expansion are retained in
 [Vue Port Targets Before Muted Unavailable Ports](./historical/vue_port_targets_before_muted_unavailable_ports_2026-11-13.md).
@@ -1146,9 +1147,11 @@ lane interface. They do not claim that the current client implements them._
   Preserve the existing independence from wheel sensitivity changes.
 - Enlarge port handles so that grabbing them requires less precise aiming.
   Provide visible hover feedback as already requested.
-- A port popover containing exactly one port uses a single-circle icon. The
-  circle is empty when disconnected and filled when connected. Hover still opens
-  the popover. This changes the icon, not the popover interaction.
+- Fill the port connector in both connection states. Use the full port colour
+  when connected and a dimmer tint when disconnected. Keep pending outlines
+  dashed and keep the adjacent knob's brightness independent. A port popover
+  containing exactly one port still uses a single-circle icon and opens on hover.
+  See the [earlier hollow connector rule](./historical/vue_port_connectors_before_solid_fills_2026-11-19.md).
 - Size port popovers to fit their longest port name with the required padding.
   Remove unnecessary horizontal space.
 

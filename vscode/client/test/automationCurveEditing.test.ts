@@ -1,5 +1,4 @@
-import { automationBoundTracks, oppositeAutomationBound, pairedAutomationBoundLimits,
-    sampleAutomationPreview } from "../src/automationBoundInputs";
+import { automationBoundTracks, sampleAutomationPreview } from "../src/automationBoundInputs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { AutomationCurveEditing, automationCycleSeconds, automationWindow, curvePointAt, readAutomationCurve, type CurveAxes } from "../src/automationCurveEditing";
@@ -659,13 +658,14 @@ test("output bounds leave interpolation and point edits in the authored domain",
     assert.deepEqual(sent, [{ id: 1, seconds: 0, sample_index: "96000", value: -2 }]);
 });
 
-test("an automation input respects an enabled opposite knob", () => {
-    const opposite = oppositeAutomationBound(construction.definitionId, "min");
-    assert.equal(opposite, "max");
-    assert.deepEqual(pairedAutomationBoundLimits(opposite, { enabled: false, value: .5 }), {});
-    assert.deepEqual(pairedAutomationBoundLimits(opposite, { enabled: true, value: .5 }), { max: .5 });
-    assert.deepEqual(pairedAutomationBoundLimits("min", { enabled: true, value: .5, liveValue: .25 }), { min: .25 });
-    assert.equal(oppositeAutomationBound("iv.other", "min"), undefined);
+test("crossed manual bounds keep their own traces and preview the midpoint", () => {
+    const paths = [{ begin: { seconds: 0, value: -2 }, end: { seconds: 1, value: 8 }, first: 0, second: 6 }];
+    const preview = sampleAutomationPreview(paths, [], [], { min: 6, max: 2 }, 1, 4);
+    assert.deepEqual(preview.min[0].map(({ value }) => value), [6, 6, 6, 6, 6]);
+    assert.deepEqual(preview.max[0].map(({ value }) => value), [2, 2, 2, 2, 2]);
+    assert.deepEqual(preview.output[0].map(({ value }) => value), [4, 4, 4, 4, 4]);
+    assert.equal(preview.authored[0][0].value, -2);
+    assert.equal(preview.authored[0].at(-1)?.value, 8);
 });
 
 test("bound tracks keep unavailable samples and separate Coverage Regions out of the preview", () => {

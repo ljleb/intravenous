@@ -517,18 +517,26 @@ onBeforeUnmount(() => {
 .port-group > .control-row[data-folded-ports] { flex-grow: 1; }
 [data-direction="input"] { --port-base-color: var(--iv-port-input); --port-color: var(--port-base-color); }
 [data-direction="output"] { --port-base-color: var(--iv-port-output); --port-color: var(--port-base-color); }
-.port-circle { display: inline-block; flex: 0 0 12px; width: 12px; height: 12px; box-sizing: border-box; border: 2px solid var(--port-color); border-radius: 50%; }
+.port-circle {
+    --port-circle-muted: color-mix(in srgb, var(--port-color) var(--iv-disconnected-port-strength), var(--vscode-editor-background));
+    --port-circle-fill: var(--port-circle-muted);
+    display: inline-block; flex: 0 0 12px; width: 12px; height: 12px; box-sizing: border-box;
+    border-radius: 50%; background: var(--port-circle-fill);
+}
 [data-port-kind="event"]:not(.single) .port-circle { border-radius: 3px; }
-.connected .port-circle { background: var(--port-color); }
-.pending .port-circle { border-style: dashed; }
+.pending .port-circle { border: 2px dashed var(--port-circle-outline, var(--port-color)); }
 .port-slot { position: relative; flex: 0 0 var(--port-slot-height, 22px); width: 28px; height: var(--port-slot-height, 22px);
     box-sizing: border-box; border: 1px solid transparent; border-radius: 7px; }
 .port-slot .port-circle { width: min(12px, calc(var(--port-slot-height, 22px) - 2px)); height: auto; aspect-ratio: 1; }
 .stacked-first { position: absolute; left: 4px; top: 50%; transform: translateY(-50%); }
-.stacked-second { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); background: var(--vscode-editor-background); }
+.stacked-second { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); }
 .single .stacked-first { left: 7px; }
+.connected .port-circle,
 .port-slot[data-connection-state="partial"] .stacked-second,
-.port-slot[data-connection-state="full"] .port-circle { background: var(--port-color); }
+.port-slot[data-connection-state="full"] .port-circle {
+    --port-circle-fill: var(--port-color);
+    --port-circle-outline: var(--port-circle-muted);
+}
 .port-slot[data-hovered] { background: color-mix(in srgb, var(--port-color) 12%, transparent); }
 .port-panel { position: fixed; z-index: 20; display: flex; flex-direction: column; box-sizing: border-box; border: 1px solid var(--vscode-panel-border); border-radius: 7px; background: var(--vscode-editorWidget-background); color: var(--vscode-foreground); box-shadow: 0 3px 12px #0005; }
 .port-panel.continuation { border: 0; border-radius: 0 0 6px 6px; box-shadow: 0 1px var(--vscode-panel-border), 0 3px 10px #0005; }

@@ -581,10 +581,10 @@ make the point marker larger.
 
 The lane header shows the connectable `min` and `max` knobs. Each knob has an
 enable button. Both knobs start disabled. Their reset values are 0 and 1.
-An enabled minimum limits the maximum knob from below, and an
-enabled maximum limits the minimum knob from above. If enabling a knob would
-cross the opposite side, move the knob being enabled to the opposite value.
+Set each knob independently. Enabling a knob uses its stored value. When the
+effective `min` exceeds `max`, the output at that sample is their midpoint.
 The project stores the manual input values and their enabled states.
+[Previous linked knob limits](./historical/automation_knobs_before_independent_bounds_2026-11-19.md).
 
 The Scale panel controls display and snapping.
 
@@ -611,35 +611,12 @@ tension handles and the editing controls. Changing zoom level does not change
 point data, bounds or selection identity. Sample-accurate time snapping remains
 required for all edits in `editable`.
 
-The top timeline ruler's **fixed-height header** exposes a graph-connectable
-**event snapping input**. This is a project-owned snapping connection, not a
-client-side selection that merely watches one arbitrary output. The preferred
-input shape is **Coverage**, so multiple compatible event producers can connect
-to the ruler; the ruler exposes a dropdown to choose the particular **cover /
-source contribution** whose event timestamps are the current snap targets.
-The selector must preserve source and cover identity even when several
-contributions overlap. Do not union all event timestamps into one anonymous
-stream and then present an illusory per-cover selector. Keep the header's
-existing non-resizable height and its ordinary port/wire hit targets.
-A small dedicated graph node may own the exposed input and selection if that
-fits the established project-graph model; the exact ownership is an
-implementation design decision, not a reason to invent an unrelated UI-only
-source registry.
-
-**Every event payload type can project to a trigger occurrence at the event's
-existing global timestamp.** The snapping input accepts event streams through
-this explicit event-to-`TriggerEvent` projection, discarding payload without
-inventing a new time; this does **not** imply universal conversions among
-arbitrary event payload types. The runtime must distinguish multiple covers
-within Coverage and perform bounded queries for marks relevant to the viewport
-and pending drag. Live/non-replayable producers only supply marks actually
-available through their declared observation/execution path; the ruler must
-not claim unlimited future event history. No event source means sample-grid
-quantization only. The selected cover adds snapping positions without silently
-repositioning already-authored control points. Snap distance, bypass modifier,
-and what happens when a connected cover becomes unavailable remain choices for
-the end-to-end implementation. The previous output-selector-only plan is
-preserved [historically](./historical/vue_nested_port_clip_scale_and_ruler_input_before_2026-11-16.md#previous-output-selector-project-grid).
+The project time ruler uses the inputs of authored Timeline nodes as described
+in [Timeline nodes and project snapping](./project_playback_and_presentation_grids_direction.md#timeline-nodes-and-project-snapping).
+The editor uses the same visible event marks for drawing and snapping.
+Keep the radius in screen pixels across horizontal zoom levels. The beat
+source supplies timestamps in project samples. The point editor applies
+snapping during creation and drag and saves the chosen sample index.
 
 ## 6. Contextual information: status bar before tooltips
 
@@ -671,9 +648,10 @@ and observing the same live-graph activation and settled specialization as a
 completed drag; rejected clipboard content must not modify the graph. Test pan
 and zoom with either bound, both bounds, and neither bound. Test scaled read-only
 curve paths in `nano` and `mini`, and editable points and handles in `editable`.
-For the ruler-header snap input, test multi-source covers, the selected cover,
-timestamp projection from different event payload types, and unavailable
-window requests before claiming graph-authored snapping is complete.
+For Timeline inputs, test multiple nodes inside different subgraphs,
+shared timestamps at different depths, and unavailable windows.
+Check that hiding marks at a coarser zoom also removes their snap targets,
+and that adding or dragging a point commits the displayed sample index.
 
 Acceptance checks for the coherent UI implementation should verify that a
 sample-aligned draft visibly changes at a one-sample pointer movement when

@@ -258,15 +258,11 @@ and [Vue Output Observation](./vue_output_observation_direction.md).
    clip-local zoom. Retain small filled points, generous hit targets,
    Shift+click deletion, right-click segment menus/creation and status-first
    information. These are independent of the later graph-event snap input.
-4. **Add the top-ruler header's event snap input.** After basic sample-
-   aligned editing, expose a **non-resizable header input** connected to graph
-   event streams. Prefer a Coverage input with multiple incoming contributions
-   and a dropdown selecting the specific cover to use for snapping. Define
-   timestamp-only projection from every event payload type to `TriggerEvent`
-   without inventing conversions between unrelated event payloads. Preserve
-   selected-cover identity, bounded graph queries, unavailability reporting,
-   editing history, and project sample-grid fallback. This is a whole
-   graph/connection-planning, observation, ruler, and automation feature.
+4. **Add Timeline nodes and event-grid snapping.** Establish a bounded
+   exact event-range query through the graph first. Observe the Timeline
+   inputs project-wide and let the UI combine their events. Drive ruler marks
+   and automation snapping from the same zoom-dependent list.
+   See [Timeline nodes and project snapping](./project_playback_and_presentation_grids_direction.md#timeline-nodes-and-project-snapping).
 5. **Implement output gain end to end as a separate control/GraphJit feature.**
    Add unbounded default-`1` gain knobs for gain-capable output ports; specialize
    unity to **zero gain-related generated instructions** and implement non-unity
@@ -3845,6 +3841,11 @@ At mini heights, both single and grouped ports fold into port symbols. The
 standalone popover shows full-size knobs and wraps long port names. It can
 shift inside the viewport to retain room for the names near an edge.
 
+Port connectors now use a solid fill in both connection states.
+`NodePortRow.vue` and `NodePorts.vue` use the full port colour for connected
+handles and a dimmer fill for disconnected handles. Pending outlines stay
+dashed. The knob still shows its own participation independently.
+
 `NodeLane.vue`, `LiveOutputMeters.vue`, and automation editing use the
 same `editable` to `mini` transition. Knob rows stay beneath the lane name
 throughout `editable`. The stereo channel height no longer sets an earlier
@@ -3890,6 +3891,11 @@ pending. [Automation and graph-authored snapping](./vue_presentation_refinement_
 The owner later chose left-click creation in empty space and added Delete
 point to the segment menu. The Scale panel contains the value snapping
 selector. [Current automation gestures](./vue_presentation_refinement_direction.md#5-automation-editing-and-graph-authored-snapping)
+
+`useManualInput` reads each knob's own declared limits.
+`WorkspaceSession.setManualInputEnabled` sends the stored value when toggling
+the input. Crossed bounds reach the existing midpoint calculation in the
+sampler and the Vue output preview.
 
 ### Native client helper, 2026-11-18
 
@@ -3960,7 +3966,9 @@ archive. The GraphJit and archive suites still need a full build and test run.
 
 ### Ruler cover selection friction, 2026-11-18
 
-The [ruler input contract](./project_playback_and_presentation_grids_direction.md#project-ruler-input-for-graph-authored-snapping-accepted-2026-11-16)
+_Superseded on 2026-11-19 by observations of every Timeline node's input._
+
+The [earlier ruler input contract](./historical/ruler_coverage_input_before_timeline_nodes_2026-11-19.md#project-ruler-input-for-graph-authored-snapping-accepted-2026-11-16)
 requires a persistent selection that can distinguish overlapping contributions.
 The assumption was that the existing Coverage input could supply those keys
 alongside the timestamp projection. `ProjectEventConnection::connection_id`
@@ -4046,3 +4054,55 @@ when zoom calls for finer data. Presentations still draw and handle edits agains
 the visible viewport. Keep the padding and memory bounded, preserve source and data
 versions and coverage gaps, and retain exact event times for snapping. Playback
 work takes priority over prefetched windows.
+
+### Event observation for arbitrary beat distributions, 2026-11-19
+
+The owner wants the grid to support noisy and arbitrary BeatEvent patterns
+through ordinary graph connections. The editor must see the BeatEvents
+that arrive at each Timeline input after graph routing and filtering.
+
+**Implementation friction.** `observation_window_positions()` selects exact
+indices for the Sample `waveform` operation. Reading occurrences between those
+indices requires an event-range operation. The current
+`resolve_observation_window_source()` resolves only Sample ports.
+`Beats::tock_coverage()` writes every subdivision in the requested
+`IndexCoverage`, and `TransactionEventStorage` grows with the events it
+receives. A finite reply limit bounds transfer size. Backend evaluation can
+still grow with the number of events generated, including events a downstream
+filter discards. A passive Timeline input also needs its resolved graph
+routes to be readable independently of a scheduled Tick consumer.
+
+**Proposed query.** Observe exact events in small, aligned time windows.
+Read searchable published events when available. For computed events,
+evaluate the receiving input through the existing background transaction and
+retain reusable results for the same graph and data versions. Respect both
+the input's Coverage and the timestamps produced by its sources and filters.
+A source that requires history can use its recorded data or supported replay.
+Return completed ranges separately from pending or unavailable ranges so the
+UI can distinguish empty coverage from a read that has yet to complete.
+
+For a wide view, request windows progressively within a finite work budget.
+As the viewport changes, reuse completed overlapping windows and cancel queued
+work for ranges that left the view. Schedule playback preparation ahead of
+these reads. A cold read of an arbitrary stream may still need to evaluate
+every event in range, including the dependencies needed to reconstruct it.
+Smaller windows limit work per request when the graph permits it. Budget
+enforcement also needs to account for upstream materialization.
+
+Keep merge and display decisions in the UI. It draws and snaps to marks derived
+from completed windows. If exact windows become expensive to transfer at wide
+zoom, measure a summary cache built from evaluated events. A summary can return
+a real occurrence, with its timestamp and depth, for the display operation
+requested by the UI. Keep the source versions and ranges used to construct it.
+
+**Dependency order.** Verify bounded exact reads of irregular, overlapping and
+filtered events. Add reuse and progressive reads for large viewports. Observe
+the passive Timeline input through these routes, then share the displayed mark
+list between the ruler and snap gestures.
+
+[Earlier coarse producer query proposal](./historical/coarse_event_query_before_arbitrary_beat_distributions_2026-11-19.md).
+
+[Proposed sparse Tock demand API](./sparse_tock_demand_proposal.md) shares
+bounded demand and packed storage between continuous values and indexed
+event Regions. Both can produce exact selections before materializing a
+time window. Exact event-range reads remain available for other streams.

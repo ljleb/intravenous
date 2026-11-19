@@ -10,9 +10,9 @@
     }
   },
   "timeline": {
-    "beginSeconds": -7.890239825932298,
-    "secondsPerPixel": 0.0169157387014953,
-    "laneHeight": 107.61642876540202,
+    "beginSeconds": -38.33440560071638,
+    "secondsPerPixel": 0.09963348009540518,
+    "laneHeight": 135.08532958801493,
     "scrollTop": 0
   },
   "viewport": {
@@ -29,7 +29,7 @@
       }
     },
     "[\"iv.builtin.automation.curve\",\"c583a6a6-4cc6-47a0-9f35-f61c45ed5d05\",[]]": {
-      "pan": -331.02329770847734,
+      "pan": 956.7736623212146,
       "zoom": {
         "factor": 0.0010447266570315064,
         "center": 0.5

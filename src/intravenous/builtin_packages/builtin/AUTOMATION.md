@@ -83,7 +83,8 @@ curve's edge. The old neighbor becomes the end of the first curve.
 Use the `min` and `max` inputs in the lane header to set or connect bounds.
 Both knobs start disabled and reset to 0 and 1, respectively. Double-click
 to reset the knob value. Use the enable button to change its enabled state.
-If enabling one knob would cross the other, it moves to the opposite value.
+Set each knob independently. Enabling a knob uses its stored value.
+[Previous linked knob limits](../../../../docs/historical/automation_knobs_before_independent_bounds_2026-11-19.md).
 
 The sampler first interpolates the authored curve. It then clamps each
 output sample using the bounds at that sample. An uncovered side supplies

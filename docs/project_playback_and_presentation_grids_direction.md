@@ -4,8 +4,8 @@ _Status: normative project transport and foreground/background binding contract.
 The initial playback design was agreed on 2026-11-13; the owner clarified and
 replaced its paused-delivery, coordinate-relocation, recording and readiness
 semantics on 2026-11-17. This is intended behavior, not a claim that the staged
-playback implementation already realizes it. The generated-grid section
-remains a proposed presentation feature._
+playback implementation already realizes it. The owner accepted the Timeline
+node design on 2026-11-19._
 
 Related contracts are [Global Indexing](./global_indexing.md),
 [Coverage And Background Evaluation](./coverage_and_background_evaluation.md),
@@ -391,53 +391,28 @@ transition metadata and update frequency follow the complete feature
 implementation. No output-observation feature, tempo map or generated beat
 grid is a prerequisite.
 
-## Project ruler input for graph-authored snapping (accepted 2026-11-16)
+## Timeline nodes and project snapping
 
-The **fixed-height header of the top project time ruler** exposes an **event
-input**. A graph connection to this header configures the time marks used for
-presentation snapping, particularly automation control-point editing. Its
-header need not be resizable. This replaces the earlier proposal to select
-one output through a menu with no graph connection; that proposal is retained
-[historically](./historical/vue_nested_port_clip_scale_and_ruler_input_before_2026-11-16.md#previous-output-selector-project-grid).
+_Accepted design, 2026-11-19._
 
-A **Coverage input** is the preferred design because it can accept multiple
-compatible incoming event contributions. The ruler provides a dropdown to
-choose the particular **cover/contribution** whose timestamps are snap marks.
-The selected cover is an explicit project-level setting, keyed to stable
-connection/cover identity, not the order of a transient materialized Region
-list. The compiler and UI must retain enough provenance to distinguish covers
-after input fan-in. A Coverage output never becomes a Region input merely
-because its current payload contains one cover; existing connection shape
-rules remain intact. The input may be implemented through a dedicated
-project-owned node if that best fits normal graph ownership. Such a node must
-not create a second independent snapping-data model.
+A Timeline node represents a connection to the project editor. Its `beats`
+port accepts BeatEvent Coverage. Place Timeline nodes wherever they belong
+in the project graph, including inside subgraphs. Use graph connections to
+route beat generators and transforms to their inputs.
 
-Every registered event type has a meaningful **timestamp-only projection to
-`TriggerEvent`**: preserve each occurrence's global sample position and drop
-the payload. This is a specific event-to-trigger conversion, **not** a claim
-that arbitrary event payload types can all convert to each other. The input
-may use this projection to accept event streams of different payload types;
-if the execution/conversion planner cannot yet preserve this contract, that
-is a dependency to implement, not permission to treat event values as times.
-The grid need not require a regular beat spacing or a built-in tempo map.
+The editor observes the resolved inputs of every Timeline node in the
+project. The observation carries event timestamps and payloads, with the
+timing and Coverage of the receiving port. The UI owns the merge rules.
+For beats, it combines events by sample index and keeps the smallest
+`BeatEvent.depth` at each coincident index. Each viewport selects the
+displayed marks for its zoom level. The ruler and the snap gesture use the
+same list.
 
-Use bounded viewport-relevant graph/observation queries and coherent versions
-to populate the ruler and point-snap candidates. An unrecorded live stream
-cannot promise unavailable past or future events; absence of available marks
-must be presented truthfully. The always-on nearest-project-sample grid is
-the fallback and minimum granularity of authored point positions. Snapping to
-one selected event cover is an explicit edit; moving the connected stream or
-switching covers never silently changes already stored points. The exact
-bypass modifier, snap radius, and transition when a cover disappears remain
-implementation decisions. The corresponding curve-editor requirements are in
-[Vue Presentation Refinement](./vue_presentation_refinement_direction.md#5-automation-editing-and-graph-authored-snapping).
+When creating or dragging an automation control point, quantize to integer
+project samples while the pointer moves. Use a visible beat mark within
+the snap radius when available. With no eligible mark, use the nearest
+project sample. A change to the grid affects subsequent edits. Existing
+point positions are retained.
 
-### Automation point placement
-
-Every point drag and creation operation quantizes to integer project samples
-**while the pointer moves**, not only on release. When a connected ruler cover
-is selected and its marks are available, the additional snap rule selects
-among those sample indices. Without one, it uses nearest-sample positions.
-The curve's vertical bounds and `nano`/`mini`/`editable` rendering levels are
-specified in
-[Explicit value bounds and lane zoom categories](./vue_presentation_refinement_direction.md#explicit-value-bounds-and-lane-zoom-categories).
+The [previous ruler input and cover selector](./historical/ruler_coverage_input_before_timeline_nodes_2026-11-19.md)
+is preserved with its source-selection rationale.
