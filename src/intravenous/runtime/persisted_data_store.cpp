@@ -1,5 +1,6 @@
 #include <intravenous/runtime/persisted_data_store.h>
 #include <intravenous/runtime/buffered_storage.h>
+#include <intravenous/runtime/playback_preparation_metrics.h>
 
 #include <algorithm>
 #include <array>
@@ -1190,7 +1191,11 @@ public:
     ~BufferedRegionMapping()
     {
 #if defined(__linux__)
-        if (mapping_) ::munmap(mapping_, mapping_size_);
+        if (mapping_) {
+            PlaybackPreparationMetrics::Interval timing{PlaybackPreparationPhase::munmap_call, mapping_size_};
+            persisted_data_store_detail::ProcessVmaBudget::account_for_growth(1);
+            ::munmap(mapping_, mapping_size_);
+        }
 #endif
     }
 
@@ -1274,6 +1279,7 @@ void pin_buffered_pages(std::shared_ptr<BufferedPageNode const> const& root,
     std::optional<BufferedByteAddress> byte_begin = {},
     std::vector<std::shared_ptr<void const>> extra_pins = {})
 {
+    PlaybackPreparationMetrics::Interval timing{PlaybackPreparationPhase::map_sample_view};
     auto const bytes_per_frame = buffered_bytes_per_frame(layout, geometry);
     auto const bytes = checked_product(
         checked_frame_count(range), bytes_per_frame);
@@ -1287,6 +1293,7 @@ void pin_buffered_pages(std::shared_ptr<BufferedPageNode const> const& root,
     auto const page_count = occupied / page_size
         + static_cast<std::size_t>(occupied % page_size != 0);
     auto const mapping_size = checked_product(page_count, page_size);
+    timing.set_work(mapping_size);
     if (mapping_size > allocator->limits().max_contiguous_mapping_bytes)
         throw std::length_error("buffered contiguous view requires " + std::to_string(mapping_size)
             + " bytes; limit " + std::to_string(allocator->limits().max_contiguous_mapping_bytes));
@@ -1317,18 +1324,16 @@ void pin_buffered_pages(std::shared_ptr<BufferedPageNode const> const& root,
     auto charge = std::shared_ptr<void>(nullptr, [allocator, mapping_size, count = selected_runs.size()](void*) noexcept {
         allocator->release_mapping(mapping_size, count);
     });
-    auto* mapping = ::mmap(
-        nullptr,
-        mapping_size,
-        PROT_NONE,
-        MAP_PRIVATE | MAP_ANONYMOUS,
-        -1,
-        0);
-    if (mapping == MAP_FAILED) {
-        throw std::system_error(
-            errno, std::generic_category(), "cannot reserve a buffered Region mapping");
-    }
-    auto unmap = [mapping_size](void* address) noexcept { ::munmap(address, mapping_size); };
+    auto* mapping = measure_playback_preparation(PlaybackPreparationPhase::mmap_reserve, [&] {
+        auto* const reservation = ::mmap(nullptr, mapping_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (reservation == MAP_FAILED)
+            throw std::system_error(errno, std::generic_category(), "cannot reserve a buffered Region mapping");
+        return reservation;
+    }, mapping_size);
+    auto unmap = [mapping_size](void* address) noexcept {
+        persisted_data_store_detail::ProcessVmaBudget::account_for_growth(1);
+        ::munmap(address, mapping_size);
+    };
     std::unique_ptr<void, decltype(unmap)> mapping_guard{mapping, unmap};
     std::size_t mapped_pages = 0;
     for (auto const& run : selected_runs) {
@@ -1336,6 +1341,7 @@ void pin_buffered_pages(std::shared_ptr<BufferedPageNode const> const& root,
         auto const run_size = checked_product(run_pages, page_size);
         auto* const target = static_cast<std::byte*>(mapping)
             + mapped_pages * page_size;
+        PlaybackPreparationMetrics::Interval map_run{PlaybackPreparationPhase::mmap_backing, run_size};
         if (::mmap(
                 target,
                 run_size,
@@ -3301,6 +3307,7 @@ void PersistedDataStore::Candidate::replace_sample_regions(
     std::span<GlobalIndexRange const> logical_order,
     std::vector<PersistedSampleRegion> regions)
 {
+    PlaybackPreparationMetrics::Interval timing{PlaybackPreparationPhase::replace_sample_regions};
     if (!successor_) throw std::logic_error("persisted data candidate is empty");
     if (!store_->owns_output(output) || output.kind() != PortKind::sample) {
         throw std::invalid_argument(
@@ -3368,6 +3375,7 @@ void PersistedDataStore::Candidate::replace_sample_regions(
     for_each_record(root, [&](PersistedSampleRegion const&) {
         ++physical_count;
     });
+    timing.set_work(physical_count);
     auto region_views = make_sample_region_views(logical);
     successor_->sample_region_count_ =
         successor_->sample_region_count_ - previous_size + logical_count;

@@ -1,4 +1,5 @@
 #include <intravenous/runtime/buffered_storage.h>
+#include <intravenous/runtime/playback_preparation_metrics.h>
 
 #include <algorithm>
 #include <cassert>
@@ -95,6 +96,60 @@ void delete_free_pages(BufferedPage* root) noexcept
 }
 } // namespace
 
+using persisted_data_store_detail::ProcessVmaBudget;
+
+thread_local ProcessVmaBudget* ProcessVmaBudget::active_ = nullptr;
+
+ProcessVmaBudget::ProcessVmaBudget() noexcept
+{
+    if (!active_) active_ = this;
+}
+
+ProcessVmaBudget::~ProcessVmaBudget()
+{
+    if (active_ == this) active_ = nullptr;
+}
+
+void ProcessVmaBudget::reserve(std::size_t headroom, std::size_t growth, Operation operation)
+{
+    // A standalone operation gets a fresh count. Nested work shares the
+    // estimate of the outer transaction.
+    ProcessVmaBudget standalone;
+    auto& available = active_->available_;
+    auto fits = [&] {
+        return available && headroom <= *available && growth <= *available - headroom;
+    };
+    if (!fits()) {
+        auto const mapping = operation == Operation::mapping;
+        PlaybackPreparationMetrics::Interval scan{mapping
+            ? PlaybackPreparationPhase::mapping_vma_check
+            : PlaybackPreparationPhase::residency_vma_check};
+        std::ifstream maps{"/proc/self/maps"}, maximum{"/proc/sys/vm/max_map_count"};
+        std::size_t count = 0, limit = 0;
+        std::string line;
+        while (std::getline(maps, line)) ++count;
+        if (!maps.eof() || !(maximum >> limit))
+            throw std::runtime_error(mapping
+                ? "cannot inspect process VMA budget for buffered mapping"
+                : "cannot inspect residency VMA headroom");
+        scan.set_work(count);
+        available = limit - std::min(limit, count);
+    }
+    if (!fits())
+        throw std::length_error(operation == Operation::mapping
+            ? "buffered mapping would exceed process VMA headroom"
+            : "buffered residency would exceed process VMA headroom");
+    *available -= growth;
+}
+
+void ProcessVmaBudget::account_for_growth(std::size_t growth) noexcept
+{
+    if (active_ && active_->available_) {
+        auto& available = *active_->available_;
+        available -= std::min(available, growth);
+    }
+}
+
 persisted_data_store_detail::BufferedPageAllocator::BufferedPageAllocator(BufferedStorageLimits limits)
     : limits_(limits)
 {
@@ -180,16 +235,11 @@ void persisted_data_store_detail::BufferedPageAllocator::reserve_mapping(std::si
     require_room(mapped_bytes_, bytes, limits_.max_total_mapping_bytes, "aggregate mapping bytes");
     require_room(mapped_runs_, runs, limits_.max_mapping_runs, "mapping runs");
 #if defined(__linux__)
-    // Count real VMAs, including unrelated libraries/threads. File-run count is
-    // a mapping estimate, never a proxy for page count or virtual byte usage.
-    std::ifstream maps{"/proc/self/maps"}, maximum{"/proc/sys/vm/max_map_count"};
-    std::size_t process_maps = 0, max_maps = 0;
-    std::string line;
-    while (std::getline(maps, line)) ++process_maps;
-    if (!maps.eof() || !(maximum >> max_maps))
-        throw std::runtime_error("cannot inspect process VMA budget for buffered mapping");
-    require_room(process_maps, limits_.process_vma_headroom, max_maps, "process VMA headroom");
-    require_room(process_maps + limits_.process_vma_headroom, runs + 2, max_maps, "process VMA count");
+    // Each backing run can add a VMA. Leave room for the reservation and
+    // boundary splits while the backing runs replace it.
+    if (runs > std::numeric_limits<std::size_t>::max() - 2)
+        throw std::length_error("buffered process VMA growth overflows");
+    ProcessVmaBudget::reserve(limits_.process_vma_headroom, runs + 2, ProcessVmaBudget::Operation::mapping);
     rlimit address_limit{};
     if (::getrlimit(RLIMIT_AS, &address_limit) != 0)
         throw std::system_error(errno, std::generic_category(), "cannot inspect buffered address-space limit");
@@ -252,14 +302,8 @@ std::shared_ptr<void const> persisted_data_store_detail::BufferedPageAllocator::
             previous = page;
         }
         if (groups) {
-            std::ifstream maps{"/proc/self/maps"}, maximum{"/proc/sys/vm/max_map_count"};
-            std::size_t count = 0, limit = 0;
-            std::string line;
-            while (std::getline(maps, line)) ++count;
-            if (!maps.eof() || !(maximum >> limit)) throw std::runtime_error("cannot inspect residency VMA headroom");
-            if (count > limit || limits_.process_vma_headroom > limit - count
-                || groups > (limit - count - limits_.process_vma_headroom) / 2)
-                throw std::length_error("buffered residency would exceed process VMA headroom");
+            // A newly locked run can split a VMA at its two ends.
+            ProcessVmaBudget::reserve(limits_.process_vma_headroom, 2 * groups, ProcessVmaBudget::Operation::residency);
         }
 #endif
         std::size_t acquired = 0;
@@ -268,6 +312,7 @@ std::shared_ptr<void const> persisted_data_store_detail::BufferedPageAllocator::
                 auto [entry, inserted] = resident_pages_.try_emplace(page, 0);
                 if (inserted) {
 #if defined(__linux__)
+                    PlaybackPreparationMetrics::Interval lock_page{PlaybackPreparationPhase::mlock_call, page_size_};
                     if (::mlock(reinterpret_cast<void*>(page), page_size_) != 0) {
                         auto const error = errno;
                         resident_pages_.erase(entry);
@@ -283,6 +328,8 @@ std::shared_ptr<void const> persisted_data_store_detail::BufferedPageAllocator::
                 auto entry = resident_pages_.find((*selected)[index]);
                 if (!--entry->second) {
 #if defined(__linux__)
+                    PlaybackPreparationMetrics::Interval unlock_page{PlaybackPreparationPhase::munlock_call, page_size_};
+                    ProcessVmaBudget::account_for_growth(2);
                     ::munlock(reinterpret_cast<void*>(entry->first), page_size_);
 #endif
                     resident_pages_.erase(entry);
@@ -303,6 +350,8 @@ void persisted_data_store_detail::BufferedPageAllocator::release_resident(std::s
         assert(entry != resident_pages_.end());
         if (!--entry->second) {
 #if defined(__linux__)
+            PlaybackPreparationMetrics::Interval unlock_page{PlaybackPreparationPhase::munlock_call, page_size_};
+            ProcessVmaBudget::account_for_growth(2);
             ::munlock(reinterpret_cast<void*>(page), page_size_);
 #endif
             resident_pages_.erase(entry);
@@ -329,6 +378,7 @@ void persisted_data_store_detail::BufferedPageAllocator::read(
     BufferedPage const& page,
     std::span<std::byte> target) const
 {
+    PlaybackPreparationMetrics::Interval timing{PlaybackPreparationPhase::read_backing_page, target.size()};
     if (target.size() != page_size_) {
         throw std::invalid_argument("buffered page read has the wrong size");
     }
@@ -359,6 +409,7 @@ std::shared_ptr<persisted_data_store_detail::BufferedPage const>
 persisted_data_store_detail::BufferedPageAllocator::allocate(
     std::span<std::byte const> contents)
 {
+    PlaybackPreparationMetrics::Interval timing{PlaybackPreparationPhase::allocate_backing_page, contents.size()};
     if (contents.size() != page_size_) {
         throw std::invalid_argument("buffered page write has the wrong size");
     }
@@ -398,6 +449,7 @@ persisted_data_store_detail::BufferedPageAllocator::allocate(
         }
         ++live_pages_;
         try {
+            PlaybackPreparationMetrics::Interval write{PlaybackPreparationPhase::write_backing_page, contents.size()};
             std::size_t written = 0;
             while (written != contents.size()) {
                 auto const result = ::pwrite(file_, contents.data() + written, contents.size() - written,

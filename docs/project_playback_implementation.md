@@ -430,3 +430,144 @@ that value on an existing Sample port. The gate can read it through an
 ordinary connection using the current node API and port types. The
 [optional Tick playback context](./project_playback_and_presentation_grids_direction.md#node-visible-playback-state)
 is another option for supplying the same state.
+
+### Playback preparation profile, 2026-11-18
+
+A 45-second userspace profile of `simple_sine` recorded 14 background
+underrun blocks. The background worker accounted for 198 of the 830 CPU
+samples. Frequent sample locations included the allocator,
+`IndexCoverage` updates, and `PersistedDataStore::Candidate::replace_sample_regions()`.
+The capture leaves kernel wait time and most JIT symbol names unresolved.
+It establishes where sampled CPU work occurs. It cannot assign each
+missed deadline to a specific operation.
+
+The two curves in the saved reproduction total about 12.7 MiB of raw mono
+Sample values at 48 kHz. This excludes intermediate data and mappings.
+`BackgroundEvaluationTransaction` retains unchanged playback windows and
+requests missing values. `Candidate::replace_sample_regions()` receives the
+replacement domain, the logical Region list, and newly produced windows.
+It rebuilds the physical index from all retained windows.
+`replace_tock_region()` matches mappings by
+start and extent. Extending the trailing window can remap its unchanged
+prefix. These publication costs can grow as playback fills the cache.
+
+The proposed optimization has three steps.
+
+1. Publish the applied or requested playback window as soon as its required
+   data are ready. Track the ready interval and measure preparation time from
+   request through publication. Use those measurements to tune the reserve.
+2. Reuse mappings and index entries for unchanged cached windows. Preserve
+   logical Regions, overlapping Regions, and existing reader leases when a
+   replacement changes part of the payload.
+3. Use the existing output cache to warm finite, inexpensive coverage in
+   bounded batches after urgent playback preparation. Yield between batches
+   for transport commands and edits. Admit this work within the cache's
+   memory and preparation budgets. Cache validity follows the selected graph
+   and input versions. Foreground snapshots lease the payload required for
+   their prepared windows.
+
+Compare cold seeks, repeated playback from warm cache, and playback during
+edits. Record time to first ready block, underruns, newly evaluated frames,
+mapping work, and retained bytes. No reserve or cache policy changed in this
+investigation.
+
+The owner reproduced the slowdown during a second 60-second capture. The
+server logged 6,337 underrun blocks. The background thread spent 37.17
+seconds in the kernel and 6.95 seconds in userspace. Kernel time rose from
+8.63 seconds in the first 20 seconds to 15.00 seconds in the last 20 seconds.
+The thread waited about 0.08 seconds while ready to run.
+
+A four-second follow-up observed the process maps file open in 206 of 230
+polls. The background thread read 2.17 GB through 545,571 read calls. Its
+counters reported zero bytes read from storage. One process maps listing
+was about 723 kB. The read volume was equivalent to about 750 full listings
+per second. The read counters report totals for all files.
+
+`BufferedPageAllocator::reserve_mapping()` scans `/proc/self/maps` for each
+new mapping. `prepare_resident()` scans it again when the selection includes
+newly locked pages. This evidence puts repeated mapping checks and mapping
+reuse ahead of reserve tuning. Measure the number and cost of these scans
+per transaction. Evaluate sharing the process-wide check across a batch,
+with accounting for new mappings and page locks within the batch. Preserve
+headroom for mappings outside the allocator and keep the existing failure
+handling for kernel resource limits.
+
+### Standalone playback reproduction
+
+`iv_playback_benchmark` loads the checked-in project under
+`benchmark/fixtures/playback` through the normal project and package loaders.
+CMake copies the fixture into the build directory, where the package loader
+writes generated artifacts. The fixture captures the two automation curves
+from the November 18 live project and includes its own copy of the saw module.
+It uses a benchmark package ID and sets the saw output gain to one.
+
+The benchmark runs `GraphExecutor::render_block()` at the configured block
+period. The existing stereo output node writes to a preallocated buffer.
+Package and graph preparation finish before timing starts.
+
+The owner observed that underruns build up during uninterrupted playback and
+stop after a seek. The benchmark runs for 60 seconds, then seeks back to the
+same start and runs for another 60 seconds. Both passes share the same
+executor and cache. Use `--seek-sample` to select a different destination.
+
+```sh
+cmake --build build-release --target iv_playback_benchmark
+build-release/benchmark/iv_playback_benchmark --trace-tsv /tmp/iv-playback.tsv
+```
+
+The benchmark reports the applied project position, underruns, and seek
+latency. It reports missed periods in its own block driver separately.
+The per-second rows and phase totals include the work to propagate coverage,
+evaluate the graph, publish buffers, scan process mappings, and lock pages.
+Timings include work in nested phases. For the mapping scans, `work` counts
+mapping entries read. For sample index replacement, it counts indexed
+windows. For mapping, page locking, and backing I/O, it counts bytes.
+Use `--no-metrics` to compare the run with the timers disabled.
+
+The package loader can rebuild stale package artifacts during startup.
+The timed run measures playback and background preparation with the
+in-memory output buffer.
+
+### Standalone benchmark results
+
+The owner ran two 60-second passes on the checked-in fixture. Both passes
+completed 11,250 callbacks with zero underruns and zero missed driver periods.
+The seek applied in 5.70 ms on the first pass and 5.62 ms on the second.
+The standalone run reproduced the rising preparation cost seen in the live
+profile. The live profile remains the reproduction for missed deadlines.
+
+The mapping and residency checks made 12,366 scans of `/proc/self/maps`.
+They read about 43.9 million entries and took 10.01 seconds in total.
+This was 82.5% of the 12.12 seconds spent in background transactions.
+The mapping and residency system calls together took about 0.97 seconds.
+Graph evaluation took 0.17 seconds.
+
+Replaying the same range after the seek reduced graph evaluation from
+about 166 ms to 0.7 ms. The mapping and residency scans still took 6.61
+seconds during that pass. `PersistedSampleReader` selects an intersection
+of a cached window and the requested range. For a strict slice,
+`PersistedSampleRegion::selected_view()` creates another mapping of the
+page-backed data. A cache hit can avoid evaluation and still require
+mapping and residency work.
+
+Test a process-wide mapping check shared by each preparation transaction
+before changing the reserve. Account for new mappings and page locks against
+the sampled budget, and keep the existing limit checks and failure paths.
+Then test passing clipped views of existing mappings to
+`PersistedSampleReader`. Keep each view's visible range at the requested
+intersection. Account for the backing pages that a shared mapping keeps
+alive. Complete-buffer requests still require a contiguous view. Compare
+both passes against the scan baseline before raising the playback reserve.
+
+`BackgroundEvaluationTransaction::execute()` now shares a process mapping
+budget across the mappings and page locks it prepares. The first operation
+reads the process mapping count. Later operations charge their possible
+growth against that estimate. Unmapping and unlocking can split an existing
+mapping, so cleanup also charges possible growth. If the estimate cannot fit
+the next request and the reserved headroom, the allocator reads a fresh count.
+An operation outside a transaction reads a fresh count.
+
+The benchmark assigns a scan to the operation that first needs it. Compare
+the sum of `mapping_vma_check` and `residency_vma_check` with the baseline.
+The allocator still checks its byte, run, and residency limits. The kernel
+checks each mapping and lock request against the current process limits.

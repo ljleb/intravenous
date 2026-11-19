@@ -29,6 +29,8 @@
 
 namespace iv {
 
+class PlaybackPreparationMetrics;
+
 enum class GraphExecutorStageResult : std::uint8_t {
     accepted,
     ignored_stale,
@@ -472,6 +474,7 @@ class GraphExecutor {
     std::mutex live_targets_mutex_{};
     std::vector<std::pair<ManualControlId, std::weak_ptr<ManualControlLiveTarget>>>
         live_targets_{};
+    PlaybackPreparationMetrics* preparation_metrics_ = nullptr;
     // Declared last so its worker stops and its generation chain is destroyed
     // before the stores and capacity manager used by those generations.
     BackgroundExecutor background_executor_;
@@ -528,7 +531,8 @@ public:
     explicit GraphExecutor(
         ResourceContext resources = {},
         RealtimeProducerCapacityConfig producer_capacity = {},
-        BufferedStorageLimits buffered_storage = {});
+        BufferedStorageLimits buffered_storage = {},
+        PlaybackPreparationMetrics* preparation_metrics = nullptr);
     ~GraphExecutor();
 
     GraphExecutor(GraphExecutor const&) = delete;

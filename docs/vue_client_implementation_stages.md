@@ -3925,14 +3925,21 @@ point leaves the visible lane, the editor sends the cursor to the nearest
 visible edge of the lane. It leaves the point at its edited position.
 [Earlier diagnostics](./historical/vue_cursor_return_before_release_diagnostics_2026-11-18.md).
 
-**Intravenous: Enable Automatic XWayland Restart** sets
-`intravenous.autoRelaunchWithXWayland` in User Settings. The setting defaults to
-off. On a local Linux Wayland session, the extension checks the desktop
-process at activation and when the setting is enabled. If the process has no
-explicit `--ozone-platform` flag, the extension requests the normal VS Code
-quit action. A short-lived launcher waits for that process to exit and starts
-the same editor with `--ozone-platform=x11`. An explicit graphics backend is
-preserved. The normal quit action applies to the entire editor instance.
+On local Linux Wayland, Intravenous can offer automatic restart when a project
+opens and VS Code has no explicit `--ozone-platform` flag. The notification
+explains how XWayland improves cursor wrapping and cursor return after a drag.
+It warns that enabling automatic restart restarts all open VS Code windows.
+
+**Enable Auto-Restart** saves the enabled preference in User Settings and
+requests a restart. **Keep Disabled** saves the disabled preference. Closing
+the notification leaves the preference unset so it can appear the next time a
+project opens. Use User Settings under Intravenous to change
+`intravenous.autoRelaunchWithXWayland`.
+
+When automatic restart is enabled, a short-lived launcher waits for the normal
+VS Code quit action to finish. It starts the same editor with
+`--ozone-platform=x11`. An explicit graphics backend takes precedence.
+[Earlier Command Palette action](./historical/vue_xwayland_restart_before_notification_2026-11-18.md).
 
 The Intravenous output channel records each restart check and why it stops.
 It also gives the path to `xwayland-restart.log`. The launcher uses that file

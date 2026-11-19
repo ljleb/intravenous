@@ -58,10 +58,12 @@
                     "description": "Hide keyboard and mouse shortcut hints in the Intravenous status bar while showing values, states, and errors."
                 },
                 "intravenous.autoRelaunchWithXWayland": {
-                    "type": "boolean",
-                    "default": false,
+                    "type": ["boolean", "null"],
+                    "enum": [null, true, false],
+                    "enumItemLabels": ["Ask on Project Open", "Enabled", "Disabled"],
+                    "default": null,
                     "scope": "application",
-                    "description": "On a local Linux Wayland session, restart the entire editor through XWayland when the Intravenous extension starts or this setting is enabled. Applies only when the editor was launched without an explicit --ozone-platform flag."
+                    "description": "Use XWayland for better cursor wrapping and cursor return after dragging. On local Linux Wayland sessions without an explicit --ozone-platform flag, enabling this restarts all open VS Code windows."
                 }
             }
         },
@@ -88,7 +90,6 @@
             { "command": "intravenous.seekPlayback", "title": "Intravenous: Seek Playback" },
             { "command": "intravenous.traceAutomationCursorReturn", "title": "Intravenous: Trace Next Automation Cursor Return" },
             { "command": "intravenous.traceMiddleButtonCursorReturn", "title": "Intravenous: Trace Next Middle-Button Cursor Return" },
-            { "command": "intravenous.enableXWaylandRelaunch", "title": "Intravenous: Enable Automatic XWayland Restart" },
             { "command": "intravenous.undo", "title": "Intravenous: Undo Project Edit" },
             { "command": "intravenous.redo", "title": "Intravenous: Redo Project Edit" },
             {

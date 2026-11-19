@@ -6,6 +6,7 @@
 #include <intravenous/runtime/observation_window.h>
 #include <intravenous/runtime/observation_resolution.h>
 #include <intravenous/runtime/background_evaluation_call_frame.h>
+#include <intravenous/runtime/playback_preparation_metrics.h>
 
 #include <algorithm>
 #include <atomic>
@@ -985,6 +986,7 @@ GraphExecutor::BackgroundExecutor::reclaim_snapshots()
 
 void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
 {
+    PlaybackPreparationMetrics::Attachment preparation_metrics{owner_.preparation_metrics_};
     // Revision zero means no domain work has been consumed. The worker may be
     // scheduled for the first time after realtime has already published, so
     // sampling the current revision here would incorrectly discard that work.
@@ -1165,10 +1167,12 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
 GraphExecutor::GraphExecutor(
     ResourceContext resources,
     RealtimeProducerCapacityConfig producer_capacity,
-    BufferedStorageLimits buffered_storage)
+    BufferedStorageLimits buffered_storage,
+    PlaybackPreparationMetrics* preparation_metrics)
     : resources_(std::move(resources))
     , producer_capacity_(producer_capacity)
     , persisted_data_(buffered_storage)
+    , preparation_metrics_(preparation_metrics)
     , background_executor_(*this)
 {
     measure_observation_capture_ = diagnostic_flag_enabled("IV_OBSERVATION_TIMING");
@@ -1824,7 +1828,8 @@ GraphExecutor::evaluate_generation(
         background.input_routes,
         background.input_selections,
     };
-    auto result = transaction.execute();
+    auto result = measure_playback_preparation(PlaybackPreparationPhase::transaction,
+        [&] { return transaction.execute(); });
     if (!result || result->status != BackgroundEvaluationStatus::committed) {
         // Preserve every selected producer-queue prefix exactly as pinned so a
         // retry cannot accidentally absorb later realtime publications.
@@ -1837,8 +1842,11 @@ GraphExecutor::evaluate_generation(
         background.prepared_materialization = std::move(result->prepared_materialization);
         auto selected = RealtimePersistedState::prepare_owned(generation.graph->project_generation,
             background.prepared_data, background.prepared_materialization);
-        if (auto leased = selected->select_payload(generation.graph->background_evaluation_plan, persisted_data_); !leased)
+        if (auto leased = measure_playback_preparation(PlaybackPreparationPhase::select_foreground_payload, [&] {
+                return selected->select_payload(generation.graph->background_evaluation_plan, persisted_data_);
+            }); !leased)
             return std::unexpected(std::move(leased.error()));
+        PlaybackPreparationMetrics::Interval publish{PlaybackPreparationPhase::publish_foreground_snapshot};
         selected->set_prepared_playback(background.tick_materialization_demand);
         generation.prepared_initial_states.publish(std::move(selected));
     }
@@ -1846,10 +1854,12 @@ GraphExecutor::evaluate_generation(
     if (published_state) {
         if (auto captured = published_state->capture_current(); !captured) {
             persisted_state_error.emplace(std::move(captured.error()));
-        } else if (auto leased = published_state->select_payload(
-                generation.graph->background_evaluation_plan, persisted_data_); !leased) {
+        } else if (auto leased = measure_playback_preparation(PlaybackPreparationPhase::select_foreground_payload, [&] {
+                return published_state->select_payload(generation.graph->background_evaluation_plan, persisted_data_);
+            }); !leased) {
             persisted_state_error.emplace(std::move(leased.error()));
         } else {
+            PlaybackPreparationMetrics::Interval publish{PlaybackPreparationPhase::publish_foreground_snapshot};
             published_state->set_prepared_playback(background.tick_materialization_demand);
             if (requires_prepared_playback(*generation.graph)
                 && generation.activation.load(std::memory_order_acquire) != ExecutionGeneration::Activation::active)
@@ -1923,6 +1933,7 @@ bool GraphExecutor::BackgroundExecutor::advance_generation()
 GraphExecutor::BackgroundExecutor::Result
 GraphExecutor::BackgroundExecutor::prepare_playback(ExecutionGeneration& target)
 {
+    PlaybackPreparationMetrics::Interval preparation{PlaybackPreparationPhase::prepare_playback};
     auto& background = target.background;
     if (!target.background_initialized) {
         if (target.preparation_predecessor) target.commit_background_migration();
@@ -2062,11 +2073,14 @@ GraphExecutor::BackgroundExecutor::prepare_pending_playback(ExecutionGeneration&
 GraphExecutor::BackgroundExecutor::Result
 GraphExecutor::BackgroundExecutor::process_available_work_safely() noexcept
 {
+    PlaybackPreparationMetrics::Interval pass{PlaybackPreparationPhase::background_pass};
     try {
         // Retired snapshots must release obsolete pages before this pass tests
         // physical/residency budgets. Reclamation stays on the same writer.
-        (void)owner_.reclaim_retired_snapshots_on_background();
-        owner_.persisted_data_.prepare_cache(0, {}, [](auto) {});
+        measure_playback_preparation(PlaybackPreparationPhase::reclaim_snapshots,
+            [&] { (void)owner_.reclaim_retired_snapshots_on_background(); });
+        measure_playback_preparation(PlaybackPreparationPhase::cache_maintenance,
+            [&] { owner_.persisted_data_.prepare_cache(0, {}, [](auto) {}); });
         auto result = process_available_work();
         if (result && result->published_data)
             observation_data_version_.store(result->published_data->revision, std::memory_order_release);

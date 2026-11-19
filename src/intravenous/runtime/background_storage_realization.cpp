@@ -1,4 +1,5 @@
 #include <intravenous/runtime/background_storage_realization.h>
+#include <intravenous/runtime/playback_preparation_metrics.h>
 
 #include <intravenous/compat.h>
 #include <intravenous/graph_jit/event_conversion_runtime.h>
@@ -3138,6 +3139,7 @@ std::expected<void, std::string>
 BackgroundStorageRealization::stage_persisted_data(
     PersistedDataStore::Candidate& candidate) const
 {
+    PlaybackPreparationMetrics::Interval timing{PlaybackPreparationPhase::store_output};
     if (auto complete = validate_produced_storage(); !complete)
         return complete;
 

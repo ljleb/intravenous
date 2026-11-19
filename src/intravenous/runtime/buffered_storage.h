@@ -3,8 +3,30 @@
 #include <intravenous/runtime/persisted_data_store.h>
 #include <map>
 #include <mutex>
+#include <optional>
 
 namespace iv::persisted_data_store_detail {
+
+// Share a process mapping count across buffered operations on this thread.
+// The outermost scope samples on demand and discards the estimate on exit.
+class ProcessVmaBudget {
+    static thread_local ProcessVmaBudget* active_;
+    std::optional<std::size_t> available_;
+
+public:
+    enum class Operation { mapping, residency };
+
+    ProcessVmaBudget() noexcept;
+    ~ProcessVmaBudget();
+    ProcessVmaBudget(ProcessVmaBudget const&) = delete;
+    ProcessVmaBudget& operator=(ProcessVmaBudget const&) = delete;
+
+    static void reserve(std::size_t headroom, std::size_t growth, Operation operation);
+    // Removing or unlocking part of a VMA can split it. Charge the worst
+    // case without acquiring a fresh count or throwing during cleanup.
+    static void account_for_growth(std::size_t growth) noexcept;
+};
+
 // Shared physical backing and resource accounting. All mutation, mapping and
 // lease destruction are background/control work; no authored node owns this.
 struct BufferedPage {

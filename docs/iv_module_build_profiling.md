@@ -13,7 +13,7 @@ scripts/profile_module_reload.sh
 ```
 
 It builds only `iv_module_build_benchmark`, snapshots
-`projects/simple_sine/modules/saw` into a managed temporary workspace, then
+`benchmark/fixtures/playback/saw` into a managed temporary workspace, then
 measures the initial package compile and a source-only reload. The benchmark
 still labels these phases `cold` and `hot`; those labels now describe package
 workspace reuse, not PCH generation. The shared DSL PCH is an application
@@ -25,10 +25,11 @@ To use another module or workspace:
 
 ```text
 scripts/profile_module_reload.sh \
-  --module projects/simple_sine/modules/saw \
+  --module benchmark/fixtures/playback/saw \
   --workspace /tmp/iv-module-reload-profile
 ```
 
+Use `--modules-dir PATH` to profile packages in the immediate subdirectories.
 The wrapper accepts `--skip-build`. Set `IV_BUILD_DIR` or `IV_BUILD_JOBS` when
 the release build directory or parallelism differs from the defaults. Package
 LLVM is intentionally fixed at O0; optimization is no longer a benchmark
@@ -81,9 +82,9 @@ largest measured stage:
 - high load/configuration timings: profile ORC loading and graph configuration
   separately.
 
-The broader `scripts/verify_release_performance.sh` is for release validation,
-not the quick investigation loop: it builds the full release tree, runs all
-release tests, and also runs the execution benchmark.
+`scripts/verify_release_performance.sh` builds the release tree and runs
+the release tests. It then runs the module-build benchmark and
+`iv_playback_benchmark` with the checked-in saw fixture.
 
 ## Simple-sine measurements, 2026-11-14
 

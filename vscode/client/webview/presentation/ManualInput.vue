@@ -82,7 +82,7 @@ function step(direction: number) {
             :disabled="!available" :aria-label="`${name}: invert output polarity`"
             :data-status-hint="control.inverted.value ? 'Restore polarity' : 'Invert polarity'"
             aria-description="Changes the sign and keeps the magnitude"
-            @pointerdown.stop @click.stop="control.invert" @contextmenu.stop.prevent
+            @pointerdown.stop @mousedown.left.prevent @click.stop="control.invert" @contextmenu.stop.prevent
             @focus="control.hover(true)" @blur="control.hover(false)">
             <span aria-hidden="true">{{ control.inverted.value ? '−' : '+' }}</span>
         </button>

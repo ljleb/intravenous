@@ -7,7 +7,6 @@ jobs="${IV_BUILD_JOBS:-16}"
 workspace="${IV_MODULE_BENCHMARK_WORKSPACE:-${TMPDIR:-/tmp}/intravenous-module-reload-profile}"
 module_paths=()
 skip_build=0
-simple_sine_modules=0
 verbose=0
 clang_time_trace=1
 
@@ -21,8 +20,8 @@ isolated retained workspace.
 Options:
   --module PATH        Source directory or iv_package.json to snapshot.
                        May be specified more than once.
-  --simple-sine-modules
-                       Profile every module in projects/simple_sine/modules.
+  --modules-dir PATH   Profile each package in the immediate subdirectories.
+                       May be specified more than once.
   --workspace PATH     Managed benchmark workspace.
   --skip-build         Reuse an already-built iv_module_build_benchmark.
   --no-clang-time-trace
@@ -45,9 +44,22 @@ while (($#)); do
         module_paths+=("$2")
         shift 2
         ;;
-    --simple-sine-modules)
-        simple_sine_modules=1
-        shift
+    --modules-dir)
+        (($# >= 2)) || { printf '%s\n' '--modules-dir requires a path' >&2; exit 2; }
+        directory="$2"
+        if [[ "$directory" != /* ]]; then
+            directory="$repo_root/$directory"
+        fi
+        first_index="${#module_paths[@]}"
+        for manifest in "$directory"/*/iv_package.json; do
+            [[ -f "$manifest" ]] || continue
+            module_paths+=("$manifest")
+        done
+        if (( ${#module_paths[@]} == first_index )); then
+            printf 'No packages found under %s\n' "$directory" >&2
+            exit 2
+        fi
+        shift 2
         ;;
     --workspace)
         (($# >= 2)) || { printf '%s\n' '--workspace requires a path' >&2; exit 2; }
@@ -78,15 +90,8 @@ while (($#)); do
     esac
 done
 
-if (( simple_sine_modules )); then
-    for manifest in "$repo_root"/projects/simple_sine/modules/*/iv_package.json; do
-        [[ -f "$manifest" ]] || continue
-        module_paths+=("${manifest#"$repo_root"/}")
-    done
-fi
-
 if (( ${#module_paths[@]} == 0 )); then
-    module_paths=("projects/simple_sine/modules/saw")
+    module_paths=("benchmark/fixtures/playback/saw")
 fi
 
 cd "$repo_root"

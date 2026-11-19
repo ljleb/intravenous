@@ -2,6 +2,8 @@
 
 #include <intravenous/runtime/background_evaluation_call_frame.h>
 #include <intravenous/runtime/background_storage_realization.h>
+#include <intravenous/runtime/buffered_storage.h>
+#include <intravenous/runtime/playback_preparation_metrics.h>
 #include <intravenous/runtime/realtime_produced_record.h>
 #include <intravenous/graph_jit/background_storage_plan.h>
 
@@ -1177,6 +1179,7 @@ class BackgroundEvaluationTransaction::Impl {
 
     [[nodiscard]] std::shared_ptr<Evaluation> prepare_evaluation()
     {
+        PlaybackPreparationMetrics::Interval timing{PlaybackPreparationPhase::prepare_evaluation};
         auto binding = binding_selection();
         auto storage = storage_selection(binding, *working_data_);
         expand_output_binding_selection(binding, storage);
@@ -1300,7 +1303,8 @@ class BackgroundEvaluationTransaction::Impl {
         self.prepared_.emplace(std::move(request));
         try {
             auto evaluation = self.prepare_evaluation();
-            self.graph_->background_operations.evaluate(&evaluation->frame->call());
+            measure_playback_preparation(PlaybackPreparationPhase::evaluate_tock,
+                [&] { self.graph_->background_operations.evaluate(&evaluation->frame->call()); });
             if (auto complete = evaluation->frame->validate_evaluation(); !complete) {
                 throw std::runtime_error(complete.error());
             }
@@ -1458,19 +1462,22 @@ class BackgroundEvaluationTransaction::Impl {
                 existing->changed.include(changed);
             }
         }
-        prepared_.emplace(
-            propagation_->prepare(graph_->background_operations,
-                                  *coverage_, inputs_.roots,
-                                  BackgroundCoverageDemandExpansion{
-                                      .data = this,
-                                      .expand_output = &expand_output_demand,
-                                      .restrict_input = &restrict_input_demand,
-                                      .cached_output = &cached_output,
-                                  },
-                                  BackgroundCoverageDiscovery{
-                                      .data = this,
-                                      .materialize = &materialize_discovery,
-                                  }));
+        {
+            PlaybackPreparationMetrics::Interval timing{PlaybackPreparationPhase::propagate_coverage};
+            prepared_.emplace(
+                propagation_->prepare(graph_->background_operations,
+                                      *coverage_, inputs_.roots,
+                                      BackgroundCoverageDemandExpansion{
+                                          .data = this,
+                                          .expand_output = &expand_output_demand,
+                                          .restrict_input = &restrict_input_demand,
+                                          .cached_output = &cached_output,
+                                      },
+                                      BackgroundCoverageDiscovery{
+                                          .data = this,
+                                          .materialize = &materialize_discovery,
+                                      }));
+        }
 
         auto evaluation = prepare_evaluation();
         auto& realization = evaluation->realization;
@@ -1512,7 +1519,8 @@ class BackgroundEvaluationTransaction::Impl {
             working_data_ = &candidate->working_snapshot();
         }
 
-        graph_->background_operations.evaluate(&frame.call());
+        measure_playback_preparation(PlaybackPreparationPhase::evaluate_tock,
+            [&] { graph_->background_operations.evaluate(&frame.call()); });
         // Evaluation normally runs input materializations before invoking the
         // receiver. An observation can demand its input alone.
         if (auto const input = inputs_.projection.sample_input) {
@@ -1538,11 +1546,13 @@ class BackgroundEvaluationTransaction::Impl {
             std::vector<IndexCoverage> tick_input_requirements(plan.ports.size());
             for (auto const& input : prepared_->result().input_requirements)
                 tick_input_requirements[input.port].include(input.required);
-            auto frozen = realization->make_tick_materialization_snapshot(
-                graph_->project_generation,
-                semantic_version_,
-                candidate ? candidate->target_version() : base.version(),
-                tick_input_requirements);
+            auto frozen = measure_playback_preparation(PlaybackPreparationPhase::freeze_tick_inputs, [&] {
+                return realization->make_tick_materialization_snapshot(
+                    graph_->project_generation,
+                    semantic_version_,
+                    candidate ? candidate->target_version() : base.version(),
+                    tick_input_requirements);
+            });
             if (!frozen) {
                 return std::unexpected(std::move(frozen.error()));
             }
@@ -1550,12 +1560,14 @@ class BackgroundEvaluationTransaction::Impl {
             tick_materialization->set_output_coverages(prepared_->output_coverages());
             if (previous_materialization_
                 && !materialization_retention_.empty()) {
+                PlaybackPreparationMetrics::Interval timing{PlaybackPreparationPhase::retain_tick_inputs};
                 tick_materialization->carry_forward(
                     *previous_materialization_, materialization_retention_);
             }
             // All allocation/faulting/locking precedes publication. The audio
             // callback adopts the immutable payload and its residency lease.
-            tick_materialization->prepare_resident(*data_);
+            measure_playback_preparation(PlaybackPreparationPhase::prepare_tick_residency,
+                [&] { tick_materialization->prepare_resident(*data_); });
         }
 
         if (inputs_.prepare_only) {
@@ -1587,7 +1599,8 @@ class BackgroundEvaluationTransaction::Impl {
             }
             retain_reconstruction_inputs(*candidate);
             published = candidate->target_version();
-            if (data_->publish(std::move(*candidate)) ==
+            if (measure_playback_preparation(PlaybackPreparationPhase::publish_output,
+                    [&] { return data_->publish(std::move(*candidate)); }) ==
                 PersistedDataPublishResult::stale_base) {
                 discard_prepared();
                 return BackgroundEvaluationResult{
@@ -1774,6 +1787,7 @@ BackgroundEvaluationTransaction::execute()
         return std::unexpected(
             "background evaluation transaction has been moved from");
     }
+    persisted_data_store_detail::ProcessVmaBudget mapping_budget;
     return impl_->execute();
 }
 

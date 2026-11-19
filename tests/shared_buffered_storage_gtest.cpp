@@ -1,4 +1,6 @@
 #include <intravenous/runtime/persisted_data_store.h>
+#include <intravenous/runtime/buffered_storage.h>
+#include <intravenous/runtime/playback_preparation_metrics.h>
 #include <intravenous/runtime/tick_materialization_snapshot.h>
 #include <intravenous/runtime/graph_jit.h>
 
@@ -216,6 +218,52 @@ TEST(SharedBufferedStorage, MappingRunBudgetCountsRunsRatherThanPagesAndChecksPr
     auto blocked = no_headroom.begin_candidate(1);
     EXPECT_THROW(blocked.overwrite(samples(output(no_headroom), span(0, 1), 1)), std::length_error);
     EXPECT_EQ(no_headroom.buffered_storage_usage().reserved_mapping_bytes, 0u);
+}
+
+TEST(SharedBufferedStorage, MappingAndResidencyShareOneProcessScanUntilBudgetNeedsRefresh)
+{
+#if defined(__linux__)
+    PersistedDataStore store;
+    auto const page = store.buffered_storage_usage().page_size;
+    rlimit limit{};
+    ASSERT_EQ(::getrlimit(RLIMIT_MEMLOCK, &limit), 0);
+    if (limit.rlim_cur < 2 * page) GTEST_SKIP() << "host cannot lock two pages";
+    PersistedContinuousStorage payload{2 * page, page};
+    std::array first{BufferedResidentRange{payload.data(), page}};
+    std::array second{BufferedResidentRange{payload.data() + page, page}};
+    PlaybackPreparationMetrics metrics;
+    PlaybackPreparationMetrics::Attachment attachment{&metrics};
+    metrics.enable();
+    auto calls = [&](PlaybackPreparationPhase phase) {
+        return metrics.snapshot()[static_cast<std::size_t>(phase)].calls;
+    };
+    auto candidate = store.begin_candidate(1);
+    {
+        persisted_data_store_detail::ProcessVmaBudget budget;
+        candidate.overwrite(samples(output(store), span(0, 1)));
+        auto first_lease = store.prepare_resident(first);
+        ASSERT_TRUE(first_lease);
+        {
+            persisted_data_store_detail::ProcessVmaBudget nested;
+            candidate.overwrite(samples(output(store, 1), span(0, 1)));
+        }
+        EXPECT_EQ(calls(PlaybackPreparationPhase::mapping_vma_check), 1u);
+        EXPECT_EQ(calls(PlaybackPreparationPhase::residency_vma_check), 0u);
+
+        // Exhaust the estimate without changing the host's VM limits.
+        persisted_data_store_detail::ProcessVmaBudget::account_for_growth(
+            std::numeric_limits<std::size_t>::max());
+        auto second_lease = store.prepare_resident(second);
+        ASSERT_TRUE(second_lease);
+        EXPECT_EQ(calls(PlaybackPreparationPhase::residency_vma_check), 1u);
+        candidate.overwrite(samples(output(store, 2), span(0, 1)));
+        EXPECT_EQ(calls(PlaybackPreparationPhase::mapping_vma_check), 1u);
+    }
+    candidate.overwrite(samples(output(store, 3), span(0, 1)));
+    EXPECT_EQ(calls(PlaybackPreparationPhase::mapping_vma_check), 2u);
+#else
+    GTEST_SKIP() << "Linux buffered storage backend";
+#endif
 }
 
 TEST(SharedBufferedStorage, EventChunksShareTheBackingBudgetAndRemainAuthoritative)

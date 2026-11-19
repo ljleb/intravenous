@@ -79,3 +79,28 @@ target_include_directories(iv_buffered_storage_benchmark PRIVATE ${PROJECT_SOURC
 target_include_directories(iv_buffered_storage_benchmark SYSTEM PRIVATE
     ${PROJECT_SOURCE_DIR}/src/intravenous/third_party)
 iv_add_host_runtime_objects(iv_buffered_storage_benchmark)
+
+# Replay a fixed two-curve project. The package loader writes generated
+# artifacts beside this build-tree copy of the fixture.
+set(playback_fixture_dir "${CMAKE_CURRENT_BINARY_DIR}/playback_fixture")
+foreach(playback_fixture_file IN ITEMS iv_project.jsonl saw/iv_package.json saw/module.cpp)
+    configure_file(
+        "fixtures/playback/${playback_fixture_file}"
+        "${playback_fixture_dir}/${playback_fixture_file}"
+        COPYONLY)
+endforeach()
+
+add_executable(iv_playback_benchmark
+    iv_playback_benchmark.cpp
+    ${PROJECT_SOURCE_DIR}/src/intravenous/third_party/miniaudio/miniaudio.c)
+target_compile_features(iv_playback_benchmark PRIVATE cxx_std_23)
+set_target_properties(iv_playback_benchmark PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+target_include_directories(iv_playback_benchmark PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_include_directories(iv_playback_benchmark SYSTEM PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/intravenous/third_party)
+target_compile_definitions(iv_playback_benchmark PRIVATE
+    IV_PLAYBACK_BENCHMARK_INSTALL_DIR="${PROJECT_BINARY_DIR}/src/intravenous"
+    IV_PLAYBACK_BENCHMARK_WORKSPACE="${playback_fixture_dir}")
+iv_add_host_runtime_objects(iv_playback_benchmark)
+add_dependencies(iv_playback_benchmark intravenous_builtin_package_artifacts)
