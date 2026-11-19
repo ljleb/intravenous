@@ -15,6 +15,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -382,12 +383,16 @@ struct BackgroundSamplePass {
     }
 };
 
-struct BackgroundEventPass {
+template<bool TimestampOnly>
+struct BackgroundTriggerPass {
     static constexpr auto inputs()
     {
-        return std::array{
-            iv::event_input("in", iv::EventTypeId::trigger, iv::InputAccess::coverage),
-        };
+        if constexpr (TimestampOnly) {
+            return std::array{iv::event_timestamp_input("in")};
+        } else {
+            return std::array{iv::event_input(
+                "in", iv::EventTypeId::trigger, iv::InputAccess::coverage)};
+        }
     }
 
     static constexpr auto outputs()
@@ -397,14 +402,16 @@ struct BackgroundEventPass {
         };
     }
 
-    void tock_coverage(iv::TockCoverageContext<BackgroundEventPass>&) const {}
+    void tock_coverage(iv::TockCoverageContext<BackgroundTriggerPass>&) const {}
     void propagate_forward_coverage(
-        iv::PropagateForwardCoverageContext<BackgroundEventPass>& context) const
+        iv::PropagateForwardCoverageContext<BackgroundTriggerPass>& context) const
     {
         context.template output<"out">().publish(
             context.template input<"in">().regions());
     }
 };
+
+using BackgroundEventPass = BackgroundTriggerPass<false>;
 
 struct BackgroundEventRegionSource {
     static constexpr auto inputs() { return std::tuple{}; }
@@ -3109,6 +3116,82 @@ TEST(GraphJitConnectionPlan, RetainsBackgroundEventConversion)
     EXPECT_EQ(
         runtime.operations[operation].kind,
         graph_jit::BackgroundRuntimeOperationKind::event_materialization);
+}
+
+TEST(EventConversionRegistry, TimestampProjectionPreservesEveryOccurrence)
+{
+    using namespace iv;
+    std::array<std::pair<EventTypeId, Event>, 8> const occurrences{{
+        {EventTypeId::midi, MidiEvent{.bytes = {0x80, 60, 0}, .size = 3}},
+        {EventTypeId::midi, MidiEvent{.bytes = {0xB0, 10, 50}, .size = 3}},
+        {EventTypeId::boundary, BoundaryEvent{.is_begin = false}},
+        {EventTypeId::empty, EmptyEvent{}},
+        {EventTypeId::sample, SampleEvent{}},
+        {EventTypeId::curve_point, CurvePointEvent{}},
+        {EventTypeId::beat, BeatEvent{.depth = 3}},
+        {EventTypeId::trigger, TriggerEvent{}},
+    }};
+    auto const time = GlobalIndex::from_signed(-7);
+    for (auto const& [type, value] : occurrences) {
+        SCOPED_TRACE(static_cast<unsigned>(type));
+        auto const plan = EventConversionRegistry::plan_timestamp_projection(type);
+        EXPECT_EQ(plan.target_type, EventTypeId::trigger);
+        EXPECT_TRUE(EventConversionRegistry::is_nonexpanding(plan));
+        std::size_t count = 0;
+        EventConversionRegistry::convert(
+            plan, TimedEvent{.time = time, .value = value},
+            [&](TimedEvent const& projected) {
+                EXPECT_EQ(projected.time, time);
+                EXPECT_TRUE(std::holds_alternative<TriggerEvent>(projected.value));
+                ++count;
+            });
+        EXPECT_EQ(count, 1u);
+    }
+}
+
+TEST(EventConversionRegistry, BeatToTriggerPreservesSubdivisionOccurrence)
+{
+    using namespace iv;
+    auto const plan = EventConversionRegistry::plan(EventTypeId::beat, EventTypeId::trigger);
+    auto const time = GlobalIndex::from_signed(-7);
+    std::size_t count = 0;
+    EventConversionRegistry::convert(plan, TimedEvent{.time = time, .value = BeatEvent{.depth = 3}},
+        [&](TimedEvent const& trigger) {
+            EXPECT_EQ(trigger.time, time);
+            EXPECT_TRUE(std::holds_alternative<TriggerEvent>(trigger.value));
+            ++count;
+        });
+    EXPECT_EQ(count, 1u);
+}
+
+TEST(GraphJitConnectionPlan, TimestampInputUsesItsOwnBackgroundEventConversion)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<BackgroundMidiSource>(graph);
+    auto ordinary = details::configure_concrete_node<BackgroundEventPass>(graph);
+    auto timestamps = details::configure_concrete_node<BackgroundTriggerPass<true>>(graph);
+    ordinary.connect_event_input(0, source.event_port());
+    timestamps.connect_event_input(0, source.event_port());
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto built = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(built.has_value()) << (built ? std::string{} : built.error());
+    auto const& connections = built->background.connections;
+    ASSERT_EQ(connections.size(), 2u);
+    ASSERT_EQ(connections[0].event_conversion.size(), 1u);
+    ASSERT_EQ(connections[1].event_conversion.size(), 1u);
+    EXPECT_EQ(connections[0].event_conversion[0], EventConversionStepId::midi_to_trigger);
+    EXPECT_EQ(connections[1].event_conversion[0], EventConversionStepId::timestamp_to_trigger);
+
+    auto const& storage = built->background.storage;
+    ASSERT_EQ(storage.connections.size(), 2u);
+    EXPECT_TRUE(std::ranges::none_of(
+        storage.connections[0].event_materializations, [&](auto materialization) {
+            return std::ranges::contains(
+                storage.connections[1].event_materializations, materialization);
+        }));
 }
 
 TEST(GraphJitConnectionPlan, SharesEquivalentBackgroundEventMaterializations)

@@ -43,6 +43,8 @@ constexpr std::string event_type_name(EventTypeId type)
         return "sample";
     case EventTypeId::curve_point:
         return "curve_point";
+    case EventTypeId::beat:
+        return "beat";
     case EventTypeId::count:
         break;
     }

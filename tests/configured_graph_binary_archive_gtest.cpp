@@ -453,6 +453,23 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsRandomAccessContentCapabilities)
     }
 }
 
+TEST(ConfiguredGraphBinaryArchive, RoundTripsTimestampOnlyEventInput)
+{
+    auto const input = iv::materialize_event_config(iv::erase_port_config(
+        iv::event_timestamp_input("marks")));
+    ASSERT_TRUE(input.timestamp_only);
+    ASSERT_EQ(input.type, iv::EventTypeId::trigger);
+    ASSERT_EQ(input.access, iv::InputAccessKind::coverage);
+
+    iv::binary_wire_details::Writer writer;
+    iv::binary_wire_details::write_input_config(writer, iv::make_input_config(input));
+    auto const bytes = std::move(writer).take();
+    iv::binary_wire_details::Reader reader{bytes};
+    EXPECT_EQ(iv::materialize_event_config(
+        iv::binary_wire_details::read_input_config(reader)), input);
+    reader.finish();
+}
+
 TEST(ConfiguredGraphBinaryArchive, RejectsRepeatedContinuousMetadataType)
 {
     auto config = iv::materialize_continuous_config(

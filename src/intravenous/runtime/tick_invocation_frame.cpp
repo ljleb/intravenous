@@ -51,6 +51,8 @@ IndexCoverage const empty_tick_coverage{};
         return std::holds_alternative<SampleEvent>(event);
     case EventTypeId::curve_point:
         return std::holds_alternative<CurvePointEvent>(event);
+    case EventTypeId::beat:
+        return std::holds_alternative<BeatEvent>(event);
     case EventTypeId::midi:
         return std::holds_alternative<MidiEvent>(event);
     case EventTypeId::count:

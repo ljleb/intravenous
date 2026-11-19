@@ -449,6 +449,7 @@ inline void write_event_input(Writer& w, EventInputConfig const& value)
     write_enum(w, value.type);
     write_input_access(w, value.access);
     write_enum(w, value.content_access);
+    w.flag(value.timestamp_only);
 }
 
 inline EventInputConfig read_event_input(Reader& r)
@@ -458,9 +459,15 @@ inline EventInputConfig read_event_input(Reader& r)
         .type = read_enum<EventTypeId>(r),
         .access = read_input_access(r),
         .content_access = read_enum<InputContentAccess>(r),
+        .timestamp_only = r.flag(),
     };
     if (result.content_access > InputContentAccess::complete_buffer)
         throw std::runtime_error("invalid event input content access");
+    if (result.timestamp_only
+        && (result.type != EventTypeId::trigger
+            || result.access != InputAccessKind::coverage)) {
+        throw std::runtime_error("timestamp-only event input must accept TriggerEvent Coverage");
+    }
     return result;
 }
 

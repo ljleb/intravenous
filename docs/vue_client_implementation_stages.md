@@ -3948,3 +3948,62 @@ to record whether the editor exits and whether the replacement starts.
 Knob hover hints use port metadata from the project graph scope. An input
 shows its Sequential, Region, or Coverage access. An output shows its
 production shape and its computed or buffered realization.
+
+### Timestamp projection for graph-authored snapping, 2026-11-18
+
+`event_timestamp_input()` declares a Coverage input that receives one
+`TriggerEvent` for every source event at the original `GlobalIndex`. GraphJit
+selects this projection when routing into that input. Ordinary Trigger inputs
+still use the payload conversions in `EventConversionRegistry::plan()`. The
+configured graph archive carries the input's `timestamp_only` property.
+
+Clang syntax checks passed for the planner and both test files. An isolated
+smoke check passed through `iv_graph_jit_convert_event_sequence()` for every
+registered payload type and round-tripped the input through the configured graph
+archive. The GraphJit and archive suites still need a full build and test run.
+
+### Ruler cover selection friction, 2026-11-18
+
+The [ruler input contract](./project_playback_and_presentation_grids_direction.md#project-ruler-input-for-graph-authored-snapping-accepted-2026-11-16)
+requires a persistent selection that can distinguish overlapping contributions.
+The assumption was that the existing Coverage input could supply those keys
+alongside the timestamp projection. `ProjectEventConnection::connection_id`
+identifies the user's connection, but `apply_event_connection()` passes only
+resolved ports and types into `ConfiguredEventConnection`.
+`EventMaterializationPlan::semantic_source_indices` are positions in the
+planned source list. `OutputCoverageChange::publish_regions()` takes ranges,
+and `BackgroundEventReadView::for_each_region()` reads by position in its
+snapshot's `regions` list. Two covers with identical ranges can hold different
+Events, and republishing the list can change their positions.
+
+One option is to carry stable contribution keys through every event Coverage
+descriptor and materialization. That extends propagation, storage, and
+publication records even for graphs that never use the ruler. Prefer resolving
+the selected `ProjectEventConnection` and its concrete source in the selected
+graph, and carrying the minimum cover identity as Region metadata for the
+bounded ruler query. If a producer can publish several covers, that identity
+must come from the producer's Region description. Adding it to each
+`TimedEvent` would make provenance storage grow with event count.
+
+Resolve that source and cover identity contract before implementing the
+versioned marker query, persistent selector, and automation snap gesture.
+
+### Builtin beat generator, 2026-11-18
+
+`iv.builtin.beats` is a Tock node with a computed `BeatEvent` Coverage output.
+The constructor takes a fixed tempo, beats per bar, nested subdivision factors,
+and a signed sample index for the grid origin. `BeatEvent::depth` distinguishes
+bar lines, beats, and subdivisions. The ordinary Beat-to-Trigger conversion
+preserves the timestamp of each mark. A consumer that uses the depth reads
+`BeatEvent` before that conversion.
+
+`Beats::constrain_ports()` declares sorted Coverage. Forward propagation
+publishes the two logical ranges that span the project timeline and marks them
+changed when the node configuration changes. `tock_coverage()` derives marks
+directly from each requested window. Partitioning a window preserves the sample
+index and depth of every mark. The ruler still needs a bounded event query and a
+subdivision control. [Builtin usage](../src/intravenous/builtin_packages/README.md#beats)
+
+The isolated release build passed 148 tests across node build requests, GraphJit
+connection planning, project persistence, and the builtin package loading case.
+The package test constructs the node with default and custom arguments.

@@ -113,6 +113,7 @@ EventTypeId parse_event_type(std::string_view name)
              EventTypeId::midi,
              EventTypeId::sample,
              EventTypeId::curve_point,
+             EventTypeId::beat,
          }) {
         if (details::event_type_name(type) == name) return type;
     }

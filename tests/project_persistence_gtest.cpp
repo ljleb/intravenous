@@ -379,6 +379,22 @@ TEST(ProjectConnectionJson, RoundTripsEveryStructuredMatcherFieldInBothNameStyle
     }
 }
 
+TEST(ProjectConnectionJson, RoundTripsBeatEventTypes)
+{
+    iv::ProjectConnection const connection = iv::ProjectEventConnection{
+        .connection_id = "connection:beats",
+        .source_type = iv::EventTypeId::beat,
+        .outputs = {{.instance_id = "beats", .port = {.name = "beats"}}},
+        .target_type = iv::EventTypeId::trigger,
+        .inputs = {{.instance_id = "sink", .port = {.name = "clock"}}},
+    };
+    for (auto const names : {iv::ProjectConnectionJsonNames::project_file,
+             iv::ProjectConnectionJsonNames::socket_rpc}) {
+        auto const json = iv::project_connection_json(connection, names);
+        EXPECT_EQ(iv::parse_project_connection_json(json, names), connection);
+    }
+}
+
 TEST(ProjectPersistenceBuilder, StoresReplacementArgumentsAsStructuredJson)
 {
     auto const workspace = fresh_workspace(

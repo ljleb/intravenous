@@ -88,6 +88,13 @@ namespace iv {
         static constexpr size_t average_event_size_bytes() { return sizeof(CurvePointEvent); }
     };
 
+    struct BeatEvent {
+        // Depth zero is a bar line, one is a beat, and higher values are
+        // successive subdivisions of the beat.
+        std::uint8_t depth = 0;
+        static constexpr size_t average_event_size_bytes() { return sizeof(BeatEvent); }
+    };
+
     struct EmptyEvent {
         static constexpr size_t average_event_size_bytes()
         {
@@ -102,6 +109,7 @@ namespace iv {
         midi,
         sample,
         curve_point,
+        beat,
         count,
     };
 
@@ -137,7 +145,8 @@ namespace iv {
         return realtime_port_window(block_index, block_size, latency, 0);
     }
 
-    using Event = std::variant<MidiEvent, TriggerEvent, BoundaryEvent, EmptyEvent, SampleEvent, CurvePointEvent>;
+    using Event = std::variant<
+        MidiEvent, TriggerEvent, BoundaryEvent, EmptyEvent, SampleEvent, CurvePointEvent, BeatEvent>;
 
     struct TimedEvent {
         GlobalIndex time{};
@@ -157,6 +166,7 @@ namespace iv {
         // Value 7 was the former boundary-to-MIDI conversion. Choosing a MIDI
         // note/channel would be arbitrary, so it is intentionally unavailable.
         boundary_to_empty = 8,
+        timestamp_to_trigger = 9,
     };
 
     struct EventConversionPlan {
@@ -205,7 +215,7 @@ namespace iv {
             Score score {};
         };
 
-        static constexpr std::array<Edge, 6> edges() noexcept
+        static constexpr std::array<Edge, 7> edges() noexcept
         {
             // Only conversions with objective data semantics belong here.
             // Trigger and Empty are sink-like event types: information-rich
@@ -218,6 +228,7 @@ namespace iv {
                 { EventTypeId::trigger, EventTypeId::empty, EventConversionStepId::trigger_to_empty, { 1, 0, 1 } },
                 { EventTypeId::boundary, EventTypeId::trigger, EventConversionStepId::boundary_to_trigger, { 1, 0, 1 } },
                 { EventTypeId::boundary, EventTypeId::empty, EventConversionStepId::boundary_to_empty, { 1, 0, 1 } },
+                { EventTypeId::beat, EventTypeId::trigger, EventConversionStepId::timestamp_to_trigger, { 1, 0, 1 } },
             }};
         }
 
@@ -279,6 +290,9 @@ namespace iv {
                 break;
             case EventConversionStepId::boundary_to_empty:
                 break;
+            case EventConversionStepId::timestamp_to_trigger:
+                emit(TimedEvent { .time = event.time, .value = TriggerEvent {} });
+                break;
             }
         }
 
@@ -292,6 +306,7 @@ namespace iv {
             case EventConversionStepId::trigger_to_empty:
             case EventConversionStepId::boundary_to_trigger:
             case EventConversionStepId::boundary_to_empty:
+            case EventConversionStepId::timestamp_to_trigger:
                 return true;
             }
             return false;
@@ -415,6 +430,25 @@ namespace iv {
         {
             apply_steps_recursive(plan, 0, event, std::forward<Emit>(emit));
         }
+
+        // This opt-in projection preserves each occurrence, independently of
+        // the payload-sensitive conversions used by ordinary event inputs.
+        [[nodiscard]] static constexpr EventConversionPlan plan_timestamp_projection(
+            EventTypeId source)
+        {
+            if (!is_valid_type(source)) {
+                throw std::logic_error("invalid event type");
+            }
+            if (source == EventTypeId::trigger) {
+                return plan(source, EventTypeId::trigger);
+            }
+            return {
+                .source_type = source,
+                .target_type = EventTypeId::trigger,
+                .steps = {EventConversionStepId::timestamp_to_trigger},
+                .step_count = 1,
+            };
+        }
     };
 
     inline constexpr size_t DEFAULT_EVENT_PORT_BUFFER_BASE_MULTIPLIER = 256;
@@ -434,6 +468,8 @@ namespace iv {
             return SampleEvent::average_event_size_bytes();
         case EventTypeId::curve_point:
             return CurvePointEvent::average_event_size_bytes();
+        case EventTypeId::beat:
+            return BeatEvent::average_event_size_bytes();
         case EventTypeId::count:
             break;
         }
@@ -1841,6 +1877,7 @@ namespace iv {
         EventTypeId type {};
         InputAccessConfig access = InputAccessKind::sequential;
         InputContentAccess content_access = InputContentAccess::windowed;
+        bool timestamp_only = false;
         constexpr bool operator==(EventInputProperties const&) const = default;
     };
 
@@ -2168,6 +2205,7 @@ namespace iv {
         EventTypeId type {};
         static constexpr auto access = InputAccessKind::coverage;
         InputContentAccess content_access = InputContentAccess::windowed;
+        bool timestamp_only = false;
         constexpr bool operator==(CoverageEventInputConfig const&) const = default;
     };
 
@@ -2429,6 +2467,18 @@ namespace iv {
         InputContentAccess content_access = InputContentAccess::windowed)
     {
         return {.name = std::move(name), .type = type, .content_access = content_access};
+    }
+
+    [[nodiscard]] constexpr CoverageEventInputConfig event_timestamp_input(
+        std::string name,
+        InputContentAccess content_access = InputContentAccess::windowed)
+    {
+        return {
+            .name = std::move(name),
+            .type = EventTypeId::trigger,
+            .content_access = content_access,
+            .timestamp_only = true,
+        };
     }
 
 #define IV_DEFINE_EVENT_OUTPUT_HELPER(Token, Config)                     \
@@ -2781,6 +2831,11 @@ namespace iv {
                         return config.content_access;
                     else return InputContentAccess::windowed;
                 }(),
+                .timestamp_only = [&] {
+                    if constexpr (Config::access == InputAccessKind::coverage)
+                        return config.timestamp_only;
+                    else return false;
+                }(),
             },
         };
     }
@@ -2809,6 +2864,7 @@ namespace iv {
         EventTypeId type {};
         InputAccessConfig access = InputAccessKind::sequential;
         InputContentAccess content_access = InputContentAccess::windowed;
+        bool timestamp_only = false;
         constexpr bool operator==(EventInputConfig const&) const = default;
     };
 
@@ -3074,11 +3130,13 @@ namespace iv {
     [[nodiscard]] constexpr EventInputConfig materialize_event_config(
         InputConfig const& config)
     {
+        auto const& properties = std::get<EventInputProperties>(config.kind);
         return {
             .name = config.name,
-            .type = std::get<EventInputProperties>(config.kind).type,
-            .access = input_access(config),
-            .content_access = std::get<EventInputProperties>(config.kind).content_access,
+            .type = properties.type,
+            .access = properties.access,
+            .content_access = properties.content_access,
+            .timestamp_only = properties.timestamp_only,
         };
     }
 
@@ -3114,7 +3172,12 @@ namespace iv {
     {
         return {
             config.name,
-            EventInputProperties{.type = config.type, .access = config.access, .content_access = config.content_access},
+            EventInputProperties{
+                .type = config.type,
+                .access = config.access,
+                .content_access = config.content_access,
+                .timestamp_only = config.timestamp_only,
+            },
         };
     }
 

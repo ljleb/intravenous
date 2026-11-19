@@ -1,5 +1,6 @@
 #include <intravenous/basic_nodes/filters.h>
 #include <intravenous/basic_nodes/automation.h>
+#include <intravenous/basic_nodes/beats.h>
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/node/coverage_port_context.h>
@@ -2509,6 +2510,84 @@ TEST(NodeBuildRequest, EmptyPointSourceHasAnEmptyEventGroupWithZeroCapacity)
 }
 
 namespace {
+using BeatMark = std::pair<std::int64_t, unsigned>;
+
+std::vector<BeatMark> render_beats(
+    iv::Beats const& beats, std::size_t sample_rate, iv::IndexCoverage const& requested)
+{
+    std::vector<iv::GlobalIndexRange> regions;
+    std::array changes{iv::OutputCoverageChange{
+        .data = &regions,
+        .publish_regions_value = +[](void* data, iv::GlobalIndexRange const* ranges,
+                                     std::size_t count) {
+            static_cast<std::vector<iv::GlobalIndexRange>*>(data)->assign(ranges, ranges + count);
+        },
+    }};
+    iv::PropagateForwardCoverageContext<iv::Beats> forward{
+        .event_outputs = changes, .sample_rate = sample_rate};
+    beats.propagate_forward_coverage(forward);
+
+    std::vector<BeatMark> marks;
+    std::array outputs{iv::TockEventOutputPort{
+        .data = &marks,
+        .region_ranges = regions.data(),
+        .region_count = regions.size(),
+        .requested_coverage_value = &requested,
+        .write_event = +[](void* data, std::size_t, iv::TimedEvent const& event) {
+            static_cast<std::vector<BeatMark>*>(data)->emplace_back(
+                event.time.signed_value(), std::get<iv::BeatEvent>(event.value).depth);
+        },
+    }};
+    iv::TockCoverageContext<iv::Beats> context{
+        .event_outputs = outputs, .sample_rate = sample_rate};
+    beats.tock_coverage(context);
+    return marks;
+}
+
+TEST(Beats, EmitsCoarsestDepthForEachPositionInDisjointRequestedWindows)
+{
+    iv::Beats beats{120, 3, {2, 3}, 10};
+    EXPECT_EQ(render_beats(beats, 48000,
+                  iv::IndexCoverage{range(9, 12011), range(24010, 24011), range(72010, 72011)}),
+        (std::vector<BeatMark>{{10, 0}, {4010, 3}, {8010, 3}, {12010, 2},
+            {24010, 1}, {72010, 0}}));
+}
+
+TEST(Beats, RoundsAbsolutePositionsConsistentlyAcrossWindowBoundaries)
+{
+    iv::Beats beats{120, 3, {2}};
+    auto const whole = render_beats(beats, 9, iv::IndexCoverage{range(-8, 10)});
+    EXPECT_EQ(whole,
+        (std::vector<BeatMark>{{-7, 2}, {-4, 1}, {-2, 2}, {0, 0},
+            {2, 2}, {5, 1}, {7, 2}, {9, 1}}));
+
+    auto split = render_beats(beats, 9, iv::IndexCoverage{range(-8, -2)});
+    for (auto const window : {range(-2, 5), range(5, 10)}) {
+        auto const part = render_beats(beats, 9, iv::IndexCoverage{window});
+        split.insert(split.end(), part.begin(), part.end());
+    }
+    EXPECT_EQ(split, whole);
+}
+
+TEST(Beats, HandlesRequestsAcrossTheSignedTimelineSeam)
+{
+    constexpr auto min = std::numeric_limits<std::int64_t>::min();
+    constexpr auto max = std::numeric_limits<std::int64_t>::max();
+    iv::Beats beats{60, 3, {}, max};
+    EXPECT_EQ(render_beats(beats, 1, iv::IndexCoverage{iv::GlobalIndexRange{index(max - 1), 4}}),
+        (std::vector<BeatMark>{{min, 0}, {min + 1, 1}, {max - 1, 1}, {max, 0}}));
+}
+
+TEST(Beats, RejectsInvalidTempoMeterAndSubdivisionDensity)
+{
+    EXPECT_THROW((iv::Beats{std::numeric_limits<double>::quiet_NaN()}), std::invalid_argument);
+    EXPECT_THROW((iv::Beats{120, 0}), std::invalid_argument);
+    EXPECT_THROW((iv::Beats{120, 4, {1}}), std::invalid_argument);
+    EXPECT_THROW((iv::Beats{120, 4, {32, 64}}), std::invalid_argument);
+    EXPECT_THROW(render_beats(iv::Beats{}, 7, iv::IndexCoverage{range(0, 20)}),
+        std::invalid_argument);
+}
+
 // Computes one demanded curve window. The point input has one logical Region, clip,
 // whose events are sorted relative to clip.begin.
 std::array<float, 8> compute_curve(

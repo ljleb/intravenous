@@ -1761,6 +1761,35 @@ struct ResolvedEventBranch {
     EventConversionPlan conversion{};
 };
 
+std::expected<EventConversionPlan, std::string> plan_event_route_conversion(
+    ConfiguredGraph const& graph,
+    ConfiguredEventConnection const& connection)
+{
+    std::optional<bool> timestamp_only;
+    for (auto const target : connection.targets) {
+        auto const input = graph.node_bundles.resolve_event_input(
+            {target.bundle, PortKind::event, target.port}).config;
+        if (input.type != connection.target_type
+            || (timestamp_only && *timestamp_only != input.timestamp_only)) {
+            return std::unexpected(
+                "GraphJit event connection targets have inconsistent conversion requirements");
+        }
+        if (input.timestamp_only
+            && (input.type != EventTypeId::trigger
+                || input.access != InputAccessKind::coverage)) {
+            return std::unexpected(
+                "GraphJit timestamp-only event input must accept TriggerEvent Coverage");
+        }
+        timestamp_only = input.timestamp_only;
+    }
+    if (timestamp_only.value_or(false)) {
+        return EventConversionRegistry::plan_timestamp_projection(
+            connection.source_type);
+    }
+    return EventConversionRegistry::plan(
+        connection.source_type, connection.target_type);
+}
+
 std::expected<EventConversionPlan, std::string> append_event_conversion(
     EventConversionPlan prefix,
     EventConversionPlan const& suffix)
@@ -1946,8 +1975,11 @@ build_structural_event_routes(ConfiguredGraph const& graph)
                     || std::ranges::contains(*expanded, upstream_target);
             }
             if (!reaches_target) continue;
-            auto edge = EventConversionRegistry::plan(
-                connection.source_type, connection.target_type);
+            auto edge = plan_event_route_conversion(graph, connection);
+            if (!edge) {
+                pop();
+                return std::unexpected(std::move(edge.error()));
+            }
             for (auto const& source : connection.sources) {
                 auto branches = self(self, source.port);
                 if (!branches) {
@@ -1956,7 +1988,7 @@ build_structural_event_routes(ConfiguredGraph const& graph)
                 }
                 for (auto& branch : *branches) {
                     auto appended = append_event_route_edge(
-                        branch, edge, source.detach);
+                        branch, *edge, source.detach);
                     if (!appended) {
                         pop();
                         return std::unexpected(std::move(appended.error()));
@@ -2007,15 +2039,15 @@ build_structural_event_routes(ConfiguredGraph const& graph)
                 branches.push_back(std::move(branch));
             }
         }
-        auto const edge = EventConversionRegistry::plan(
-            connection.source_type, connection.target_type);
+        auto edge = plan_event_route_conversion(graph, connection);
+        if (!edge) return std::unexpected(std::move(edge.error()));
         RoutedEventConnection route{
             .connection = ConfiguredEventConnection{
                 .source_type = connection.source_type,
                 .target_type = connection.target_type,
                 .targets = std::move(terminal_targets),
             },
-            .conversion = edge,
+            .conversion = *edge,
             .authored_connection_index = connection_index,
         };
         for (auto& branch : branches) {

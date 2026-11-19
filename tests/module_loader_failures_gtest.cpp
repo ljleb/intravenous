@@ -316,6 +316,38 @@ TEST(ModuleLoaderPackages, BuiltinNodeShortIdCanConstructATiledRegisteredNode)
     EXPECT_NE(loaded.front().configured_graph, nullptr);
 }
 
+TEST(ModuleLoaderPackages, BuiltinBeatsExposesComputedEventCoverage)
+{
+    auto const package_root = iv::test::make_inline_module_workspace(
+        "builtin_beats_event_coverage", R"cpp(
+#include <intravenous/dsl.h>
+#include <cstdint>
+#include <vector>
+
+void builtin_beats(iv::GraphBuilder& g)
+{
+    using namespace iv;
+    auto beats = g.node<"beats">(123.5, 3u, std::vector<std::uint32_t>{3, 2}, std::int64_t{-5});
+    auto defaults = g.node<"beats">();
+    g.event_outputs("configured"_F = beats.event_port("beats"), "defaults"_F = defaults.event_port("beats"));
+}
+
+IV_MODULE("iv.test.builtin_beats", builtin_beats);
+)cpp");
+    auto loader = iv::test::make_loader();
+    auto loaded = iv::test::load_project_package_definitions(loader, package_root);
+    ASSERT_EQ(loaded.size(), 1u);
+    auto const& graph = loaded.front().configured_graph;
+    ASSERT_NE(graph, nullptr);
+    auto const outputs = graph->public_ports.event_outputs(graph->node_bundles);
+    ASSERT_EQ(outputs.size(), 2u);
+    for (auto const& output : outputs) {
+        EXPECT_EQ(output.type, iv::EventTypeId::beat);
+        EXPECT_EQ(iv::output_production(output), iv::OutputProductionKind::coverage);
+        EXPECT_EQ(output.realization, iv::OutputRealization::computed);
+    }
+}
+
 TEST(ModuleLoaderPackages, ExactShortRegistrationOverridesBuiltinConvenienceAlias)
 {
     auto const package_root = iv::test::runtime_modules_root()
