@@ -54,29 +54,37 @@ server directory when you run the extension separately.
 
 ## Use the managed CMake tree
 
-To build the server on its own, run this command in the Nix shell.
+The Nix development shell provides `ivctl` for cache inspection and cleanup.
+The development bundle includes its own copy at `bin/ivctl`. To run the tool
+outside the development shell, use `nix run .#ivctl -- cache status`.
+
+From the checkout root, run this script in the Nix shell to build the server
+with CMake in a managed directory.
 
 ```sh
-python3 scripts/build_cache.py server
+./scripts/build_server.sh
 ```
 
-To use a Debug tree, pass `--build-type Debug` after `server`. To build other
-targets or run tests, pass a command after `--`. It receives
-`IV_SERVER_BUILD_DIR` and holds a lease on the tree for the command's duration.
-A lease is a file lock that protects files in use.
+To use a Debug tree, pass `--build-type Debug`. To build other targets or run
+tests, pass a command after `--`. The script sets `IV_SERVER_BUILD_DIR` and
+holds a lease on the tree until the command exits. A lease is a file lock
+that protects files in use.
 
 ```sh
-python3 scripts/build_cache.py server -- sh -c 'cmake --build "$IV_SERVER_BUILD_DIR" -j16 && ctest --test-dir "$IV_SERVER_BUILD_DIR" -j16'
+./scripts/build_server.sh -- sh -c 'cmake --build "$IV_SERVER_BUILD_DIR" -j16 && ctest --test-dir "$IV_SERVER_BUILD_DIR" -j16'
 ```
 
 The managed tree contains `compile_commands.json`. If your editor
 configuration names a previous build directory, point it to the managed tree
 using the path in `IV_SERVER_BUILD_DIR`.
 
-To run a command in temporary storage, use `python3 scripts/build_cache.py scratch -- COMMAND`.
-The command receives the path in `IV_BUILD_SCRATCH_DIR`. The package build and
-edit latency benchmarks use this storage by default. To keep a benchmark
-workspace or report, give it a path outside the managed cache.
+The launcher stages the development bundle in scratch storage. The package
+build and edit latency benchmarks also use it for temporary workspaces.
+The development tools give these commands their scratch path in
+`IV_BUILD_SCRATCH_DIR`. To keep a benchmark workspace or report, give it a
+path outside the managed cache.
+
+See the [early development commands](./historical/ivctl_development_commands.md).
 
 ## Configure the build cache
 
@@ -99,27 +107,57 @@ the toolchain and build configuration. Source edits reuse the CMake tree.
 Package artifact sets have separate paths so active graphs can retain an older set.
 Built-in package artifacts belong to the executable or Nix bundle that provides them.
 
-To set your policy, create
-`${XDG_CONFIG_HOME:-$HOME/.config}/intravenous/build-cache.json`. The launcher
-and server read it when they collect the cache. Omitted fields use these defaults.
+Run `ivctl cache config` to see the effective policy in a table of bytes and
+days. Use `-h` for binary sizes such as `40G` and `-H` for decimal sizes
+such as `42.95GB`. The table rounds scaled sizes to two decimal
+places. Use these flags only to display the policy.
+
+Use `set` to write one or more settings at once. Use `reset` with key
+names to restore those defaults. To restore all defaults, run
+`ivctl cache config reset` without key names.
+
+```sh
+ivctl cache config set thresholdBytes=20G targetBytes=10.5GB maxIdleDays=14
+ivctl cache config reset maxIdleDays
+```
+
+A size letter on its own or followed by `iB` uses powers of 1024. A size letter
+followed by `B`, such as `GB`, uses powers of 1000. Suffixes are case-insensitive.
+For example, `10.5g`, `10.5G`, and `10.5GiB` all give 11,274,289,152 bytes.
+`10.5GB` gives 10,500,000,000 bytes. A value without a suffix is in bytes.
+If the result includes a fraction of a byte, it rounds to the nearest byte.
+A half-byte rounds up. `maxIdleDays` takes a whole number of days.
+
+The settings file is
+`${XDG_CONFIG_HOME:-$HOME/.config}/intravenous/build-cache.json`. You can
+also edit it directly. The launcher and server read it on their next sweep.
+The file stores sizes as whole bytes. Omitted fields use these defaults.
 
 ```json
 {
-  "thresholdGiB": 40,
-  "targetGiB": 30,
-  "minimumFreeGiB": 15,
+  "thresholdBytes": 42949672960,
+  "targetBytes": 32212254720,
+  "minimumFreeBytes": 16106127360,
   "maxIdleDays": 30
 }
 ```
 
-Use nonnegative whole numbers. Set `targetGiB` to a value at or below `thresholdGiB`.
+Use nonnegative whole numbers in the file. Set `targetBytes` at or below
+`thresholdBytes`. The [previous GiB keys](./historical/build_cache_gib_settings.md)
+can be replaced with the byte keys above.
 
 ## Garbage collection
 
 The collector runs before and after each managed build, including failed builds.
-Run `python3 scripts/build_cache.py gc` for a manual sweep. It lists the files
-or directories it removed and the entries it kept, with a reason for each.
-It also reports the remaining cache size and free disk space.
+Run `ivctl cache path` to print the cache root. Run `ivctl cache status` to list
+the cache contents, which workspaces are in use, and how much space they use in
+total. These commands work before the cache exists.
+
+Run `ivctl cache gc` for a manual sweep. It lists what it removed and what it
+kept, with a reason for each decision. It also reports the remaining cache
+size and free disk space. Run `ivctl cache gc --dry-run` to preview those
+decisions. The preview estimates free space from allocated file blocks and
+leaves the cache untouched.
 
 The report gives separate counts for build workspaces, package artifact sets,
 and scratch directories. A removed workspace includes its contents. The
@@ -134,9 +172,9 @@ Each sweep follows the same order.
    A failed build leaves the previous successful set available.
 3. Remove build entries whose leases are gone and whose last use reaches
    `maxIdleDays`. The loader and launcher record use explicitly.
-4. If the cache exceeds `thresholdGiB` or the filesystem has less than
-   `minimumFreeGiB` free, evict the least recently used entries first.
-   Stop once the cache reaches `targetGiB` and the disk meets the free-space floor,
+4. If the cache exceeds `thresholdBytes` or the filesystem has less than
+   `minimumFreeBytes` free, evict the least recently used entries first.
+   Stop once the cache reaches `targetBytes` and the disk meets the free-space floor,
    or when all remaining entries are in use.
 
 Build commands hold a writer lock. Child processes inherit it when they access
@@ -158,3 +196,7 @@ stay under their existing owners. Use `nix-collect-garbage` to reclaim
 unreferenced Nix bundles separately.
 
 See the [previous build locations](./historical/build_artifact_locations_before_managed_cache_2026-11-20.md).
+
+`ivctl` uses a new key for server build trees. The first server build with it
+uses a fresh tree. The collector still sees the previous trees and applies
+the same policy to them. See the [previous Python cache commands](./historical/python_build_cache_before_ivctl.md).

@@ -30,7 +30,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(LLVM REQUIRED CONFIG)
 find_package(Clang REQUIRED CONFIG)
-find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
 
 # The environment belongs to this installation and survives automatic
 # regeneration from a desktop process outside the original development shell.

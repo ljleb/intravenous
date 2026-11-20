@@ -16,11 +16,11 @@ if [[ ${1:-} != --stage ]]; then
   command -v -- "${INTRAVENOUS_DEV_CODIUM:-codium}" >/dev/null ||
     fail "No VSCodium executable found. Put your regular codium on PATH or set INTRAVENOUS_DEV_CODIUM."
   [[ -x "$client_dir/node_modules/.bin/esbuild" ]] || fail "Run npm --prefix vscode/client ci in the development shell."
-  cache="$repo_root/scripts/build_cache.py"
+  command -v "${IV_DEV_CACHE:-iv-dev-cache}" >/dev/null || fail "iv-dev-cache is missing from the development shell."
   if [[ $# == 2 ]]; then
-    exec python3 "$cache" scratch --external-build-directory "$2" -- "$repo_root/scripts/run_dev.sh" --stage "$@"
+    exec "${IV_DEV_CACHE:-iv-dev-cache}" scratch --external-build-directory "$2" -- "$repo_root/scripts/run_dev.sh" --stage "$@"
   fi
-  exec python3 "$cache" server --scratch -- "$repo_root/scripts/run_dev.sh" --stage "$1"
+  exec "$repo_root/scripts/build_server.sh" --scratch -- "$repo_root/scripts/run_dev.sh" --stage "$1"
 fi
 shift
 project_dir="$(cd "$1" && pwd -P)"
@@ -52,7 +52,7 @@ snapshot="$scratch/intravenous-dev"
 client_snapshot="$scratch/intravenous-dev-client"
 mkdir -p "$snapshot/runtime" "$snapshot/builtin_packages/builtin" "$client_snapshot"
 
-for file in intravenous libiv_builder.so intravenous-client-helper iv-toolchain-environment build_cache.py; do
+for file in intravenous libiv_builder.so intravenous-client-helper iv-toolchain-environment ivctl; do
   [[ -f "$server_dir/$file" ]] || fail "Missing $server_dir/$file. Build the intravenous target first."
   cp -p "$server_dir/$file" "$snapshot/runtime/"
 done
@@ -98,7 +98,7 @@ printf 'Opening %s with %s\n' "$project_dir" "$bundle"
 # build or scratch trees after the snapshot is in the store.
 read -r -a cache_fds <<< "${IV_BUILD_CACHE_LEASE_FDS:?Missing build cache leases}"
 for fd in "${cache_fds[@]}"; do exec {fd}>&-; done
-unset IV_BUILD_CACHE_LEASE_FDS IV_BUILD_SCRATCH_DIR IV_SERVER_BUILD_DIR
+unset IV_BUILD_CACHE_LEASE_FDS IV_BUILD_SCRATCH_DIR IV_SERVER_BUILD_DIR IV_SERVER_BUILD_TYPE
 # Use the normal desktop CLI so VSCodium can handle the development launch.
 env -u VSCODE_IPC_HOOK_CLI -u ELECTRON_RUN_AS_NODE "$codium" --new-window \
   --extensionDevelopmentPath="$bundle/extension" "${editor_args[@]}" "$project_dir"

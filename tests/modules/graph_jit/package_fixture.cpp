@@ -8001,6 +8001,9 @@ std::shared_ptr<iv::PackageRevision const> load_graph_jit_runtime_revision()
         .declarations = {iv::IvPackageDeclaration{
             .package_id = graph_jit_state_package_id,
             .package_root = workspace,
+            // Each test has its own managed cache. This artifact belongs to
+            // the shared fixture that CTest prepares before those tests.
+            .artifact_root = workspace / "build/iv",
         }},
     };
     package_jit.handle_build_request(request);

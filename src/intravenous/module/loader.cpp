@@ -1,4 +1,5 @@
 #include <intravenous/module/dev_runtime.h>
+#include <intravenous/build_cache/cache.h>
 #include <intravenous/module/loader.h>
 #include <intravenous/module/abi.h>
 #include <intravenous/module/builder_session.h>
@@ -31,7 +32,6 @@
 #include <bit>
 #include <array>
 #include <chrono>
-#include <cerrno>
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
@@ -50,13 +50,6 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
-
-#include <fcntl.h>
-#include <spawn.h>
-#include <sys/file.h>
-#include <sys/wait.h>
-#include <unistd.h>
-extern char** environ;
 
 namespace iv {
 namespace {
@@ -120,37 +113,12 @@ struct LoadedPackageCode {
     ~LoadedPackageCode();
 };
 
-class ScopedModuleBuildLock {
-    int fd_ = -1;
-
-public:
-    explicit ScopedModuleBuildLock(std::filesystem::path const& path, bool shared = false)
-    {
-        fd_ = ::open(path.c_str(), O_CLOEXEC | O_NOFOLLOW | O_CREAT | O_RDWR, 0600);
-        if (fd_ < 0 || ::flock(fd_, shared ? LOCK_SH : LOCK_EX) != 0) {
-            if (fd_ >= 0) ::close(fd_);
-            throw std::runtime_error(
-                "failed to lock module build workspace '" + path.string() + "'");
-        }
-    }
-
-    ~ScopedModuleBuildLock()
-    {
-        ::close(fd_);
-    }
-
-    ScopedModuleBuildLock(ScopedModuleBuildLock const&) = delete;
-    ScopedModuleBuildLock& operator=(ScopedModuleBuildLock const&) = delete;
-
-    int fd() const noexcept { return fd_; }
-};
-
 struct PackageCacheLease {
-    ScopedModuleBuildLock workspace;
-    std::optional<ScopedModuleBuildLock> artifact;
+    build_cache::Lock workspace;
+    std::optional<build_cache::Lock> artifact;
 
     explicit PackageCacheLease(std::filesystem::path const& use_lock)
-        : workspace(use_lock, true) {}
+        : workspace(use_lock, build_cache::LockMode::shared) {}
 };
 
 std::filesystem::path normalize(std::filesystem::path const &path)
@@ -435,26 +403,12 @@ std::string sanitize(std::string_view value)
 
 std::string stable_hash(std::filesystem::path const &path)
 {
-    uint64_t hash = 1469598103934665603ull;
-    for (unsigned char c : normalize(path).generic_string()) {
-        hash ^= c;
-        hash *= 1099511628211ull;
-    }
-    std::ostringstream out;
-    out << std::hex << hash;
-    return out.str();
+    return build_cache::stable_hash(normalize(path).generic_string());
 }
 
 std::string stable_text_hash(std::string_view value)
 {
-    uint64_t hash = 1469598103934665603ull;
-    for (unsigned char c : value) {
-        hash ^= c;
-        hash *= 1099511628211ull;
-    }
-    std::ostringstream out;
-    out << std::hex << hash;
-    return out.str();
+    return build_cache::stable_hash(value);
 }
 
 std::string package_code_name(std::string_view base)
@@ -543,26 +497,6 @@ std::filesystem::path discover_project_root(std::filesystem::path module_dir)
         return module_dir.parent_path().parent_path();
     }
     return module_dir;
-}
-
-std::filesystem::path build_cache_root()
-{
-    if (char const *explicit_cache = std::getenv("IV_BUILD_CACHE_DIR");
-        explicit_cache && *explicit_cache) {
-        std::filesystem::path root(explicit_cache);
-        if (!root.is_absolute()) {
-            throw std::runtime_error("IV_BUILD_CACHE_DIR must be an absolute path");
-        }
-        return normalize(root);
-    }
-    if (char const *xdg = std::getenv("XDG_CACHE_HOME")) {
-        std::filesystem::path root(xdg);
-        if (root.is_absolute()) return normalize(root / "intravenous/build-cache");
-    }
-    if (char const *home = std::getenv("HOME")) {
-        if (*home) return normalize(std::filesystem::path(home) / ".cache/intravenous/build-cache");
-    }
-    throw std::runtime_error("Set HOME or IV_BUILD_CACHE_DIR for the build cache");
 }
 
 std::string llvm_error_string(llvm::Error error)
@@ -680,8 +614,8 @@ void run(
     std::string const &command,
     ModuleLoader::LogSink const &sink,
     std::string_view phase,
-    std::filesystem::path const* output_log = nullptr,
-    ScopedModuleBuildLock const* inherited_lock = nullptr)
+    std::filesystem::path const* output_log,
+    build_cache::Lock const& inherited_lock)
 {
     if (sink) sink("[" + std::string(phase) + "] " + command);
     auto invocation = quote(details::runtime_artifact(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER))
@@ -690,30 +624,10 @@ void run(
         invocation += " >> " + quote(*output_log) + " 2>&1";
     }
     auto const started_at = std::chrono::steady_clock::now();
-    int rc;
-    if (inherited_lock) {
-        // Give CMake the writer lock so a collector also waits for it if the
-        // server dies. Other subprocesses never inherit package leases.
-        posix_spawn_file_actions_t actions;
-        auto error = ::posix_spawn_file_actions_init(&actions);
-        if (error) throw std::runtime_error(std::strerror(error));
-        auto const fd = inherited_lock->fd();
-        error = ::posix_spawn_file_actions_adddup2(&actions, fd, fd);
-        pid_t process{};
-        if (!error) {
-            char shell[] = "/bin/sh";
-            char option[] = "-c";
-            char* argv[] = {shell, option, invocation.data(), nullptr};
-            error = ::posix_spawn(&process, shell, &actions, nullptr, argv, environ);
-        }
-        ::posix_spawn_file_actions_destroy(&actions);
-        if (error) throw std::runtime_error(std::strerror(error));
-        while (::waitpid(process, &rc, 0) < 0) {
-            if (errno != EINTR) throw std::runtime_error(std::strerror(errno));
-        }
-    } else {
-        rc = std::system(invocation.c_str());
-    }
+    char shell[] = "/bin/sh";
+    char option[] = "-c";
+    char* argv[] = {shell, option, invocation.data(), nullptr};
+    auto const rc = build_cache::run_process(argv, std::array{inherited_lock.fd()});
     if (rc != 0) {
         throw std::runtime_error(
             "command failed with exit code " + std::to_string(rc) + ": " + command);
@@ -726,16 +640,6 @@ void run(
     }
 }
 
-void sweep_build_cache(
-    std::filesystem::path const& cache_root, bool before, ModuleLoader::LogSink const& sink)
-{
-    auto command = "IV_BUILD_CACHE_DIR=" + quote(cache_root)
-        + " " + quote(IV_CONFIGURED_BUILD_CACHE_PYTHON)
-        + " " + quote(details::runtime_artifact(IV_CONFIGURED_BUILD_CACHE_SCRIPT))
-        + (before ? " before-build" : " after-build");
-    run(command, sink, "build-cache");
-}
-
 struct PostBuildCacheSweep {
     std::filesystem::path root;
     ModuleLoader::LogSink const& sink;
@@ -745,7 +649,7 @@ struct PostBuildCacheSweep {
     {
         if (!attempted_build) return;
         try {
-            sweep_build_cache(root, false, sink);
+            build_cache::sweep(root, build_cache::Mode::after_build, sink);
         } catch (std::exception const& error) {
             if (sink) sink("warning: " + std::string(error.what()));
         }
@@ -898,7 +802,10 @@ class ModuleLoader::Impl {
 
     void validate_compiler(
         std::filesystem::path const& compiler,
-        std::filesystem::path const& plugin) const
+        std::filesystem::path const& plugin,
+        std::filesystem::path const& generated_dir,
+        std::filesystem::path const& locks,
+        build_cache::Lock const& writer) const
     {
         // The default toolchain produced these artifacts under this same
         // captured environment. Overrides must prove their compatibility.
@@ -908,9 +815,8 @@ class ModuleLoader::Impl {
             + file_identity(plugin)
             + file_identity(details::runtime_artifact(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER));
         if (validated_toolchains_.contains(key)) return;
-        auto const directory = global_cache_root_ / "toolchain-checks" / stable_text_hash(key);
+        auto const directory = generated_dir / "toolchain-checks" / stable_text_hash(key);
         std::filesystem::create_directories(directory);
-        ScopedModuleBuildLock const lock(directory / "check.lock");
         auto const accepted = directory / "accepted";
         if (!std::filesystem::exists(accepted) || read_text(accepted) != key) {
             if (!same_pch_contents(*toolchain_.iv_package_pch, details::runtime_artifact(IV_CONFIGURED_IV_DSL_PCH))) {
@@ -918,6 +824,7 @@ class ModuleLoader::Impl {
                     "iv_package_pch must be an unchanged copy of this application's DSL PCH; "
                     "a PCH from another application build cannot replace its public C++ ABI");
             }
+            if (!locks.empty()) build_cache::mark_dirty(locks);
             auto const log = directory / "compiler.log";
             write_text_if_different(log, "");
             std::string const command = quote(compiler) + " -std=c++23 "
@@ -930,7 +837,7 @@ class ModuleLoader::Impl {
                 + quote(repo_root_ / "src/intravenous")
                 + " -fsyntax-only -x c++ /dev/null";
             try {
-                run(command, log_sink_, "toolchain-check", &log);
+                run(command, log_sink_, "toolchain-check", &log, writer);
             } catch (std::exception const&) {
                 throw std::runtime_error(
                     "IV packages require Clang compatible with this application's LLVM, "
@@ -961,7 +868,7 @@ class ModuleLoader::Impl {
             ? sanitize(root.package_key)
             : sanitize(root.package_key) + "_" + stable_hash(root.module_dir);
         bool const managed = root.artifact_root.empty();
-        auto const cache = managed ? build_cache_root() : std::filesystem::path{};
+        auto const cache = managed ? build_cache::root() : std::filesystem::path{};
         auto workspace = root.artifact_root / "build" / build_key / config_name();
         std::filesystem::path locks;
         if (managed) {
@@ -988,14 +895,12 @@ class ModuleLoader::Impl {
             : default_package_dir;
 
         PostBuildCacheSweep sweep_after{cache, log_sink_};
-        std::filesystem::create_directories(managed ? locks : workspace);
-        ScopedModuleBuildLock const build_lock(managed ? locks / "write" : workspace / "build.lock");
+        build_cache::Lock const build_lock(
+            managed ? locks / "write" : workspace / "build.lock", build_cache::LockMode::exclusive);
         std::shared_ptr<PackageCacheLease> lease;
         if (managed) {
             lease = std::make_shared<PackageCacheLease>(locks / "use");
-            write_text_if_different(locks / "source", root.module_dir.string() + '\n');
-            write_text_if_different(locks / "last-used", "");
-            std::filesystem::last_write_time(locks / "last-used", std::filesystem::file_time_type::clock::now());
+            build_cache::mark_used(locks, root.module_dir.string());
         }
         std::filesystem::create_directories(output_dir);
         std::filesystem::create_directories(generated_dir);
@@ -1027,7 +932,7 @@ class ModuleLoader::Impl {
                 "configured IV module finalizer does not exist: '" +
                 module_finalizer.string() + "'");
         }
-        validate_compiler(cxx, source_introspection_plugin);
+        validate_compiler(cxx, source_introspection_plugin, generated_dir, locks, build_lock);
         std::ostringstream signature;
         signature << "iv-package-abi=" << IV_PACKAGE_ABI_VERSION << '\n'
                   << "config=" << config_name() << '\n'
@@ -1151,18 +1056,18 @@ class ModuleLoader::Impl {
         }
         if (needs_build || (!managed && !std::filesystem::exists(build_dir / "CMakeCache.txt"))) {
             if (managed) {
-                sweep_build_cache(cache, true, log_sink_);
+                build_cache::sweep(cache, build_cache::Mode::before_build, log_sink_);
                 sweep_after.attempted_build = true;
-                write_text_if_different(locks / "dirty", "");
+                build_cache::mark_dirty(locks);
                 std::filesystem::remove(revision_dir / ".complete");
                 std::filesystem::create_directories(revision_dir);
             }
-            run(configure.str(), log_sink_, "configure", nullptr, &build_lock);
+            run(configure.str(), log_sink_, "configure", nullptr, build_lock);
             run(
                 quote(cmake) + " --build " + quote(build_dir) +
                     " --config " + config_name() + " --parallel 16",
                 log_sink_,
-                "build", nullptr, &build_lock);
+                "build", nullptr, build_lock);
         }
 
         auto const compile_database = build_dir / "compile_commands.json";
@@ -1206,17 +1111,17 @@ class ModuleLoader::Impl {
         // LLVM while configured graphs keep the previous ORC resources alive
         // through ModuleRef ownership.
         if (managed) {
-            lease->artifact.emplace(revision_dir / ".use", true);
+            lease->artifact.emplace(revision_dir / ".use", build_cache::LockMode::shared);
             write_text_if_different(revision_dir / ".complete", "");
             auto const current = workspace / ".current-artifact";
             auto const name = artifact_stem + '\n';
             if (!std::filesystem::is_regular_file(current) || read_text(current) != name) {
                 auto const temporary = workspace / ".current-artifact.next";
-                write_text_if_different(locks / "dirty", "");
+                build_cache::mark_dirty(locks);
                 write_text_if_different(temporary, name);
                 std::filesystem::rename(temporary, current);
             }
-            std::filesystem::last_write_time(locks / "last-used", std::filesystem::file_time_type::clock::now());
+            build_cache::mark_used(locks, root.module_dir.string());
         } else {
             write_text_if_different(signature_file, signature.str());
         }
@@ -1262,7 +1167,7 @@ public:
                 || !std::filesystem::is_regular_file(artifact.path.string() + ".node-events.json")
                 || !std::filesystem::is_regular_file(node_code_object_path(artifact.path))) {
                 throw std::runtime_error(
-                    "incomplete bundled IV package artifacts for '" + artifact.string() + "'");
+                    "incomplete bundled IV package artifacts for '" + artifact.path.string() + "'");
             }
         } else {
             artifact = build(root);

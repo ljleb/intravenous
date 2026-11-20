@@ -100,6 +100,9 @@ FetchContent_MakeAvailable(nlohmann_json)
 # for project sources.
 set_property(TARGET nlohmann_json PROPERTY SYSTEM ON)
 
+add_subdirectory(build_cache)
+set_target_properties(ivctl PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+
 set(IV_PUBLIC_INCLUDE_ROOT "${CMAKE_SOURCE_DIR}/src")
 
 function(iv_configure_intravenous_target target defs_visibility)
@@ -275,8 +278,6 @@ add_custom_command(OUTPUT "${iv_sdk_snapshot}/.snapshot"
     VERBATIM)
 add_custom_target(intravenous_runtime_sdk DEPENDS "${iv_sdk_snapshot}/.snapshot")
 configure_file(module/template/PrepareDevRuntime.cmake.in PrepareDevRuntime.cmake @ONLY)
-set(IV_BUILD_CACHE_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/build_cache.py")
-configure_file("${PROJECT_SOURCE_DIR}/scripts/build_cache.py" "${IV_BUILD_CACHE_SCRIPT}" COPYONLY)
 
 # This source represents the default project-local module. Its compilation
 # database entry is copied to new module sources, where clangd infers the
@@ -311,8 +312,6 @@ target_compile_definitions(intravenous_module_loader PRIVATE
     # the one application-built DSL PCH rather than inventing a per-package
     # fallback.
     IV_CONFIGURED_IV_DSL_PCH="${IV_DSL_PCH}"
-    IV_CONFIGURED_BUILD_CACHE_SCRIPT="${IV_BUILD_CACHE_SCRIPT}"
-    IV_CONFIGURED_BUILD_CACHE_PYTHON="${Python3_EXECUTABLE}"
     IV_CONFIGURED_PACKAGE_COMPILE_FLAGS="${IV_PACKAGE_COMPILER_FLAGS_COMMAND_LINE}"
     IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER="${IV_APPLICATION_ENVIRONMENT_LAUNCHER}")
 llvm_map_components_to_libnames(IV_PACKAGE_LOADER_LLVM_LIBS
@@ -330,6 +329,7 @@ llvm_map_components_to_libnames(IV_PACKAGE_LOADER_LLVM_LIBS
 target_link_libraries(intravenous_module_loader PRIVATE
     ${IV_PACKAGE_LOADER_LLVM_LIBS}
     nlohmann_json::nlohmann_json
+    intravenous_build_cache
 )
 
 add_library(intravenous_module_watcher OBJECT
@@ -630,7 +630,7 @@ target_include_directories(intravenous SYSTEM PRIVATE
 )
 
 iv_add_host_runtime_objects(intravenous)
-add_dependencies(intravenous intravenous_dsl_pch intravenous_runtime_sdk)
+add_dependencies(intravenous intravenous_dsl_pch intravenous_runtime_sdk ivctl)
 # The launcher bundles these staged inputs with the executable. Relink even
 # when an SDK or builtin-only change leaves all server objects unchanged.
 set_property(TARGET intravenous APPEND PROPERTY LINK_DEPENDS

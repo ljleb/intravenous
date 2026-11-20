@@ -1,9 +1,14 @@
 include(FetchContent)
 include(GoogleTest)
 
-add_test(NAME intravenous_build_cache
-    COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/build_cache_test.py")
-set_tests_properties(intravenous_build_cache PROPERTIES LABELS light)
+find_package(Python3 3.9 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME intravenous_build_cache
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/build_cache_test.py"
+            "$<TARGET_FILE:ivctl>" "$<TARGET_FILE:iv-dev-cache>"
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+    set_tests_properties(intravenous_build_cache PROPERTIES LABELS light)
+endif()
 
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_Declare(

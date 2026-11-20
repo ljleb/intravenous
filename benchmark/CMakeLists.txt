@@ -57,9 +57,9 @@ iv_add_host_runtime_objects(iv_edit_latency_benchmark)
 add_dependencies(iv_edit_latency_benchmark intravenous_builtin_package_artifacts)
 
 foreach(benchmark_target IN ITEMS iv_module_build_benchmark iv_edit_latency_benchmark)
+    add_dependencies(${benchmark_target} iv-dev-cache)
     target_compile_definitions(${benchmark_target} PRIVATE
-        IV_BENCHMARK_BUILD_CACHE_SCRIPT="${PROJECT_BINARY_DIR}/src/intravenous/build_cache.py"
-        IV_BENCHMARK_BUILD_CACHE_PYTHON="${Python3_EXECUTABLE}")
+        IV_BENCHMARK_DEV_CACHE="$<TARGET_FILE:iv-dev-cache>")
 endforeach()
 
 # Same executor and no-DSP graph for both cases; adds the former all-binding

@@ -29,9 +29,10 @@ pkgs.runCommandLocal "intravenous-dev-bundle" {
   # VSCodium uses the extension path to identify its development windows.
   projectKey = builtins.hashString "sha256" projectDir;
 } ''
-  mkdir -p "$out/extension"
+  mkdir -p "$out/extension" "$out/bin"
   cp -R "$client/." "$out/extension/"
   chmod u+w "$out/extension"
   printf '%s\n' "$projectKey" > "$out/extension/.iv-dev-bundle"
   ln -s "$runtime" "$out/runtime"
+  ln -s "$runtime/ivctl" "$out/bin/ivctl"
 ''

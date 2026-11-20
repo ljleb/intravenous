@@ -263,6 +263,10 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
     std::shared_ptr<iv::PackageRevision const> revision;
     ASSERT_NO_THROW(revision = load_graph_jit_runtime_revision());
     ASSERT_TRUE(revision);
+    auto const artifact_path = revision->compiler_artifact.bitcode_path
+        .lexically_relative(revision->package_root);
+    ASSERT_FALSE(artifact_path.empty());
+    EXPECT_EQ(*artifact_path.begin(), std::filesystem::path("build"));
     auto has_leaf_definition = [&](std::string_view definition_id) {
         return std::ranges::any_of(
             revision->leaf_definitions,
