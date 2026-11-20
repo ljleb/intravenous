@@ -57,7 +57,7 @@ const gridModes = [
 ] as const;
 const gridLabel = computed(() => gridModes.find(({ mode }) => mode === gridMode.value)!.label);
 const beatsNode = computed(() => managedBeats(scope.value));
-const settingsGrid = computed(() => beatsNode.value?.loadState === "ready" && beatsNode.value.construction?.definitionId === "iv.builtin.beats"
+const settingsGrid = computed(() => beatsNode.value?.loadState === "ready" && beatsNode.value.construction?.definitionId === "builtin.beats"
     ? readBeatGrid(beatsNode.value.construction.arguments) : null);
 const snapTimeline = computed(() => managedTimeline(scope.value));
 const customInput = computed(() => gridMode.value === "custom" && snapTimeline.value

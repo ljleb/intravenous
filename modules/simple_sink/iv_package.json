@@ -3,6 +3,6 @@
   "entry": "module.cpp",
   "namespace": "iv.test.simple_sink",
   "dependencies": [
-    "iv.builtin"
+    "builtin"
   ]
 }

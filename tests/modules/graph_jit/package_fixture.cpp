@@ -27,14 +27,12 @@ std::string_view graph_jit_runtime_package_source()
 #include <intravenous/basic_nodes/output_gain.h>
 #include <intravenous/basic_nodes/timeline.h>
 
-// This fixture has an independent package catalog. Register the automation
-// implementations here without loading the rest of the builtin package.
-IV_NODE("iv.builtin.automation.point_source", iv::automation::PointSource, "Automation points");
+// This fixture has an independent package catalog and registers the curve
+// module without loading the rest of the builtin package.
 IV_REGISTER_OUTPUT_GAIN_NODES();
-IV_NODE("iv.builtin.automation.interpreter", iv::automation::Curve, "Automation interpreter");
-IV_MODULE_CLASS("iv.builtin.automation.curve", iv::automation::AutomationCurve, "Automation curve");
-IV_NODE("iv.builtin.beats", iv::Beats, "Beats");
-IV_MODULE_CLASS("iv.builtin.timeline", iv::Timeline, "Timeline");
+IV_MODULE_CLASS("builtin.automation.curve", iv::automation::AutomationCurve, "Automation curve");
+IV_NODE("builtin.beats", iv::Beats, "Beats");
+IV_MODULE_CLASS("builtin.timeline", iv::Timeline, "Timeline");
 
 #include <algorithm>
 #include <array>
@@ -7353,7 +7351,7 @@ void automation_window_module(iv::GraphBuilder& graph) {
     // Ten hours of sparse coverage, but only three event records. None lies
     // inside the two-sample replay window. The list is deliberately unsorted:
     // the curve sorts it before PointSource, which rejects unsorted points.
-    auto curve = graph.node<"iv.builtin.automation.curve">(
+    auto curve = graph.node<"builtin.automation.curve">(
         std::vector<iv::automation::Point>{{3, 36000, 0, iv::CurveInterpolation::bezier, 0},
             {1, 0, 0, iv::CurveInterpolation::bezier, 0}, {2, 4.0 / 88200, 1, iv::CurveInterpolation::bezier, 0}});
     auto min = graph.node<"iv.test.automation.bound_signal">(iv::Sample{.25f});
@@ -7888,13 +7886,13 @@ struct CurvePointTransform {
 IV_NODE("iv.test.automation.transform", CurvePointTransform, "Transform");
 void transformed_sparse_curve_module(iv::GraphBuilder& graph) {
     using namespace iv;
-    auto points = graph.node<"iv.builtin.automation.point_source">(graph.immutable_array<iv::automation::Point>(
+    auto points = iv::details::configure_concrete_node<iv::automation::PointSource>(graph, graph.immutable_array<iv::automation::Point>(
         std::vector<iv::automation::Point>{{1, 0, 0, iv::CurveInterpolation::bezier, 0},
             {2, 4.0 / 88200, 1, iv::CurveInterpolation::hold, 1},
             {3, 12.0 / 88200, 0, iv::CurveInterpolation::empty, 1}}));
     auto transformed = graph.node<"iv.test.automation.transform">();
     transformed("points"_F = points);
-    auto curve = graph.node<"iv.builtin.automation.interpreter">();
+    auto curve = iv::details::configure_concrete_node<iv::automation::Curve>(graph);
     curve("points"_F = transformed);
     auto manual = graph.node<"iv.test.replay.manual_full">();
     manual(curve);
@@ -7904,12 +7902,12 @@ void transformed_sparse_curve_module(iv::GraphBuilder& graph) {
 }
 IV_MODULE("iv.test.automation.transformed_sparse_curve", transformed_sparse_curve_module, "Transformed sparse curve");
 void project_beat_grid_module(iv::GraphBuilder& graph) {
-    auto beats = graph.node<"iv.builtin.beats">();
-    auto timeline = graph.node<"iv.builtin.timeline">();
+    auto beats = graph.node<"builtin.beats">();
+    auto timeline = graph.node<"builtin.timeline">();
     timeline.connect_event_input(0, beats.event_port("beats"));
     graph.subgraph([&](iv::SubgraphBuilder& boundary) {
-        auto nested_beats = graph.node<"iv.builtin.beats">(240.0, 3u, std::vector<std::uint32_t>{3});
-        auto nested_timeline = graph.node<"iv.builtin.timeline">();
+        auto nested_beats = graph.node<"builtin.beats">(240.0, 3u, std::vector<std::uint32_t>{3});
+        auto nested_timeline = graph.node<"builtin.timeline">();
         nested_timeline.connect_event_input(0, nested_beats.event_port("beats"));
         boundary.outputs();
     }, "nested");
@@ -7917,7 +7915,7 @@ void project_beat_grid_module(iv::GraphBuilder& graph) {
 }
 IV_MODULE("iv.test.replay.project_beat_grid", project_beat_grid_module, "Project beat grid");
 void empty_sparse_curve_module(iv::GraphBuilder& graph) {
-    auto curve = graph.node<"iv.builtin.automation.curve">(std::vector<iv::automation::Point>{});
+    auto curve = graph.node<"builtin.automation.curve">(std::vector<iv::automation::Point>{});
     auto manual = graph.node<"iv.test.replay.manual_full">();
     manual(curve);
     auto window = graph.node<"iv.test.replay.window">(std::int64_t{0}, std::uint64_t{8});
@@ -7927,7 +7925,7 @@ void empty_sparse_curve_module(iv::GraphBuilder& graph) {
 IV_MODULE("iv.test.automation.empty_sparse_curve", empty_sparse_curve_module, "Empty sparse curve");
 
 void rolling_automation_module(iv::GraphBuilder& graph) {
-    auto curve = graph.node<"iv.builtin.automation.curve">(
+    auto curve = graph.node<"builtin.automation.curve">(
         std::vector<iv::automation::Point>{{1, 0, 1, iv::CurveInterpolation::bezier, 0},
             {2, 1, 2, iv::CurveInterpolation::bezier, 0}});
     auto module = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
@@ -7984,7 +7982,7 @@ std::filesystem::path ensure_graph_jit_runtime_workspace()
     }
     write_graph_jit_fixture_file_if_changed(
         workspace / "iv_package.json",
-        "{\n  \"schema\": 2,\n  \"entry\": \"module.cpp\",\n  \"namespace\": \"iv.test\",\n  \"dependencies\": [\"iv.builtin\"]\n}\n");
+        "{\n  \"schema\": 2,\n  \"entry\": \"module.cpp\",\n  \"namespace\": \"iv.test\",\n  \"dependencies\": [\"builtin\"]\n}\n");
     write_graph_jit_fixture_file_if_changed(
         workspace / "module.cpp",
         graph_jit_runtime_package_source());

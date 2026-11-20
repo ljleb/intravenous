@@ -11,11 +11,11 @@ native dependencies through its package-local CMake project.
 
 The default package includes automation points and curves without additional
 dependencies. See [the automation guide](builtin/AUTOMATION.md) for the
-`iv.builtin.automation.*` definitions and curve-editor construction arguments.
+`builtin.automation.*` definitions and curve-editor construction arguments.
 
 ## Beats
 
-`iv.builtin.beats` produces a regular grid at a fixed tempo. Its `beats` output
+`builtin.beats` produces a regular grid at a fixed tempo. Its `beats` output
 provides computed Event Coverage. Intravenous generates the marks in each
 requested window on the background thread.
 

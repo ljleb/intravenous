@@ -35,7 +35,7 @@ sampler uses exact values at point samples.
 
 ### Automation signal inputs and optional transforms
 
-`iv.builtin.automation.curve` exposes `min` and `max` as ordinary Sample
+`builtin.automation.curve` exposes `min` and `max` as ordinary Sample
 Coverage inputs. The sampler applies them at point samples before it
 interpolates. At each point, the highest lower bound and lowest upper bound
 apply. If they cross, the point evaluates to their midpoint.

@@ -29,12 +29,14 @@ CSS is in each Vue file's `<style scoped>` block. Theme colours come from the
 `--vscode-*` variables. Prefer changing the visible shape separately from its mouse
 target so a smaller icon does not become harder to grab.
 
-After editing, run this from the repository root to rebuild and install just the
-extension, then reopen the graph view:
+After editing, relaunch the development window with your existing server build.
 
 ```sh
-./scripts/install_client.sh "$PWD/build-release/src/intravenous"
+nix develop --command ./scripts/run_dev.sh projects/simple_sine
 ```
+
+See the [development workflow](./development_run.md) and the
+[previous workflow](./historical/managed_install_before_nix_dev_run_2026-11-19.md).
 
 To check the client, run `npm test` and `npm run typecheck` in `vscode/client`.
 

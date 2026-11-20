@@ -15,6 +15,9 @@ import type { SemanticNode } from "../presentation/semanticNode";
 import { provideGraphEditor, type KnobDrag, type ObjectDrag } from "./context";
 import { cursorWarpAnchor, PointerLockCursorReturn, type CursorWarpAnchor, type CursorTrace } from "./cursorReturn";
 import NodeEditor from "./NodeEditor.vue";
+import NodeDefinitionPicker from "./NodeDefinitionPicker.vue";
+import type { NodeDefinitionPreview } from "../../src/nodeDefinitionSearch";
+import { presentations } from "../presentation/presentations";
 import { canContinuePortConnection, fixedConnectionPorts, type GraphConnectionEnd, type GraphPortEndpoint } from "../../src/graphConnectionEditing";
 import { beginPortConnection, canDropPortConnection, finishPortConnection, movePortConnection, type PortConnectionDrag } from "../../src/portConnectionGesture";
 import { initialPortHoverShift, keyboardPortHoverShift, pointerPortHoverShift } from "../../src/portHoverShift";
@@ -47,7 +50,8 @@ type WireOcclusions = { labels: DOMRect[]; knobs: DOMRect[] };
 
 const wireOpacity = { faint: .19, emphasized: .72 };
 
-const state = shallowRef<GraphEditorState>({ sessionStatus: "starting", scope: null, layout: readLayout(null), definitions: [], error: "" });
+const state = shallowRef<GraphEditorState>({ sessionStatus: "starting", scope: null, layout: readLayout(null),
+    definitions: null, definitionUsage: {}, error: "" });
 const playback = providePlayback();
 const automation = useAutomationEditing();
 const beats = useBeatGridEditing();
@@ -415,7 +419,10 @@ let wireFrame = 0;
 let disposed = false;
 let wireResizeObserver: ResizeObserver | null = null;
 let stopListeningForFocus: (() => void) | undefined;
-const editing = ref<string | null>(null); // Empty string creates an instance.
+const editing = ref<string | null>(null);
+const pickerOpen = ref(false);
+const pickerReply = shallowRef<Extract<GraphEditorHostMessage, { type: "nodeDefinitionSearchResult" }>>();
+const pickerCreationError = ref("");
 const creatingPackage = ref(false);
 const packageName = ref("");
 const editedNode = computed(() => state.value.scope?.nodes.find((entry) => entry.instance.instanceId === editing.value));
@@ -761,12 +768,52 @@ function keepAltInDetachedGraph(event: KeyboardEvent) {
     event.stopImmediatePropagation();
 }
 function openAddNode() {
+    if (!state.value.scope?.editable) return;
     cancelConnection();
     blurPointerControls();
-    editing.value = "";
+    pickerReply.value = undefined;
+    pickerCreationError.value = "";
+    pickerOpen.value = true;
+}
+function closeNodePicker() {
+    pickerOpen.value = false;
+    void nextTick(() => surface.value?.focus({ preventScroll: true }));
+}
+function nodeConstructionCallback(definition: NodeDefinitionPreview) {
+    if (definition.requiresConfiguration) {
+        return presentations.select(definition.id).createInitialConfiguration;
+    }
+}
+function nodeCreationUnavailable(definition: NodeDefinitionPreview) {
+    if (definition.requiresConfiguration && !nodeConstructionCallback(definition))
+        return "Requires construction arguments";
+}
+function createPickedNode(definition: NodeDefinitionPreview) {
+    const createConfiguration = nodeConstructionCallback(definition);
+    if (definition.requiresConfiguration && !createConfiguration) return;
+    pickerCreationError.value = "";
+    let configurationSource = "";
+    try {
+        if (createConfiguration) {
+            configurationSource = createConfiguration();
+            if (typeof configurationSource !== "string" || !configurationSource.trim())
+                throw new Error("The presentation must supply construction arguments.");
+        }
+    } catch (error) {
+        pickerCreationError.value = error instanceof Error ? error.message : String(error);
+        return;
+    }
+    webviewApi.postMessage({ type: "createGraphNode", definitionId: definition.id, displayName: "",
+        configurationSource,
+        afterInstanceId: selectedLaneIds.value.at(-1) });
+    closeNodePicker();
+}
+function searchNodeDefinitions(requestId: string, source: string, cursor: number) {
+    pickerCreationError.value = "";
+    webviewApi.postMessage({ type: "searchNodeDefinitions", requestId, source, cursor });
 }
 function handleGraphEditorShortcut(event: KeyboardEvent) {
-    if (!state.value.scope || editing.value !== null || creatingPackage.value || isTextEditingTarget(event.target)) return;
+    if (!state.value.scope || pickerOpen.value || editing.value !== null || creatingPackage.value || isTextEditingTarget(event.target)) return;
     const action = graphEditorShortcut(event);
     if (!action || (action === "selectAll" && event.target instanceof Element
         && event.target.closest("[data-lane-item-editor]"))) return;
@@ -944,6 +991,10 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
         if (action.action === "createPackage") { packageName.value = ""; creatingPackage.value = true; }
         return;
     }
+    if (event.data?.type === "nodeDefinitionSearchResult") {
+        pickerReply.value = event.data;
+        return;
+    }
     if (event.data?.type === "graphLanesInserted") {
         if (event.data.duplicateRequestId !== undefined) {
             if (!pendingLaneCopies || pendingLaneCopies.requestId !== event.data.duplicateRequestId) return;
@@ -960,6 +1011,8 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     }
     if (event.data?.type !== "graphState") return;
     state.value = event.data.state;
+    if (editing.value !== null && !editedNode.value) editing.value = null;
+    if (!state.value.scope?.editable && pickerOpen.value) closeNodePicker();
     manualGestures.configuredGeneration(state.value.scope?.generation ?? null);
     observations.configuredGeneration(state.value.scope?.execution?.phase === "configurationFailed"
         ? null : state.value.scope?.generation ?? null, state.value.scope?.sampleRate);
@@ -1073,7 +1126,10 @@ onBeforeUnmount(() => {
 <template>
     <main ref="surface" class="graph-editor" tabindex="-1" @pointerdown.capture="focusSurfaceFromPointer"
         @lostpointercapture="pointerCancelled">
-        <div v-if="state.sessionStatus !== 'running'" class="status" role="status">
+        <div v-if="state.sessionStatus === 'stopped'" class="status" role="status">
+            The server stopped. Run Intravenous: Retry Server or reload the window.
+        </div>
+        <div v-else-if="state.sessionStatus !== 'running'" class="status" role="status">
             {{ state.sessionStatus === 'starting' ? 'Starting Intravenous…' : 'Restarting Intravenous…' }}
         </div>
         <div v-if="state.error" class="error" role="alert">{{ state.error }}</div>
@@ -1083,9 +1139,10 @@ onBeforeUnmount(() => {
             :lane-key="valueEntryAnchor?.closest<HTMLElement>('[data-lane-key]')?.dataset.laneKey"
             :return-focus="valueEntryAnchor" :accept="() => manualGestures.acceptEntry()"
             :cancel="() => manualGestures.cancelEntry()" :set-draft="(draft) => manualGestures.setEntryDraft(draft)" />
-        <NodeEditor v-if="editing !== null" :key="editing" :node="editedNode" :definitions="state.definitions"
-            :after-instance-id="selectedLaneIds.at(-1)"
-            @close="editing = null" />
+        <NodeDefinitionPicker v-if="pickerOpen" :catalog="state.definitions" :usage="state.definitionUsage"
+            :response="pickerReply" :unavailable-reason="nodeCreationUnavailable" :creation-error="pickerCreationError"
+            @search="searchNodeDefinitions" @choose="createPickedNode" @close="closeNodePicker" />
+        <NodeEditor v-if="editedNode" :key="editedNode.instance.instanceId" :node="editedNode" @close="editing = null" />
         <Teleport to="body">
             <div v-if="creatingPackage" class="package-dialog-backdrop" @click.self="creatingPackage = false" @keydown.esc.stop="creatingPackage = false">
                 <form class="package-dialog" role="dialog" aria-modal="true" aria-label="New package" @submit.prevent="createPackage">

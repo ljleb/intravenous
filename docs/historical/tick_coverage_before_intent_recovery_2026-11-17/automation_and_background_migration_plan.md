@@ -1382,8 +1382,8 @@ source publishes a valid one-sample event Region containing zero events.
 `Curve` derives empty coverage from those contents. The source's storage Region
 never defines the interpreter's active intervals.
 
-The editable module retains `iv.builtin.automation.curve`. Its interpreter leaf
-is now `iv.builtin.automation.interpreter`, replacing the misleading linear-only
+The editable module retains `builtin.automation.curve`. Its interpreter leaf
+is now `builtin.automation.interpreter`, replacing the misleading linear-only
 name. Point construction, `AddPoint`, `MovePoint`, `RemovePoint`, `SetSegment`,
 client bindings, and the Vue presentation carry segment policy and tension.
 The editor draws separate paths across gaps and uses the backend's interpolation

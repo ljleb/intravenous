@@ -1,6 +1,8 @@
 #include <intravenous/runtime/package_jit.h>
 
 #include <intravenous/juce/vst_runtime.h>
+#include <intravenous/graph/configured_graph.hpp>
+#include <intravenous/runtime/node_instance_interface.h>
 #include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/runtime_project_events.h>
 
@@ -21,6 +23,42 @@ std::string describe_exception(std::exception_ptr exception)
     } catch (...) {
         return "unknown exception";
     }
+}
+
+std::string tag_path(Tag const& tag)
+{
+    if (!tag.parent) return std::string(tag.segment);
+    auto result = tag_path(*tag.parent);
+    result += '.';
+    result += tag.segment;
+    return result;
+}
+
+NodeDefinitionPresentation describe_definition(details::PackageDefinition const& definition,
+    ConfiguredGraph const* graph = nullptr)
+{
+    NodeDefinitionPresentation result;
+    result.required_arguments = definition.signature()->required_argument_count;
+    for (auto const* tag : std::span{definition.tags, definition.tag_count}) {
+        auto path = tag_path(*tag);
+        if (!std::ranges::contains(result.tags, path)) result.tags.push_back(std::move(path));
+    }
+    if (definition.describe_ports) {
+        definition.describe_ports(&result.ports, +[](void* opaque, char const* name, std::size_t length,
+            bool event, bool output) {
+            static_cast<std::vector<DefinitionPortPreview>*>(opaque)->push_back({std::string(name, length), event, output});
+        });
+    } else if (graph) {
+        auto const interface = read_node_instance_interface(graph->node_bundles, graph->public_ports.boundary_handle());
+        auto append = [&](std::vector<NodeInstancePortInfo> const& ports, bool event, bool output) {
+            for (auto const& port : ports) result.ports.push_back({port.name, event, output});
+        };
+        append(interface.sample_inputs, false, false);
+        append(interface.event_inputs, true, false);
+        append(interface.sample_outputs, false, true);
+        append(interface.event_outputs, true, true);
+    }
+    return result;
 }
 } // namespace
 
@@ -178,6 +216,7 @@ PackageJitBatchResult PackageJit::build(
                     .definition_id = loaded_definition.module_id,
                     .display_name = std::string(loaded_definition.provider.display_name,
                         loaded_definition.provider.display_name_size),
+                    .presentation = describe_definition(loaded_definition.provider, loaded_definition.configured_graph.get()),
                     .package_root = declaration.package_root,
                     .module_id = std::move(loaded_definition.module_id),
                     .provider = NodeDefinitionProvider{
@@ -197,6 +236,7 @@ PackageJitBatchResult PackageJit::build(
                     .definition_id = std::move(node_type.node_type_id),
                     .display_name = std::string(node_type.provider.display_name,
                         node_type.provider.display_name_size),
+                    .presentation = describe_definition(node_type.provider),
                     .package_root = declaration.package_root,
                     .provider = NodeDefinitionProvider{
                         .leaf_build = node_type.provider.node_build,

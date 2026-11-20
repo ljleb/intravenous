@@ -2,17 +2,28 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Build Intravenous And Install Client",
+      "label": "Build Intravenous",
       "type": "shell",
-      "command": "./scripts/build_release_and_install_client.sh",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "group": {
-        "kind": "build",
-        "isDefault": true
-      },
+      "command": "cmake --build build-release --target intravenous --parallel 16",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
       "problemMatcher": []
+    },
+    {
+      "label": "Run Intravenous Development",
+      "type": "process",
+      "command": "nix",
+      "args": ["develop", "--command", "./scripts/run_dev.sh", "${input:intravenousProject}"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "intravenousProject",
+      "type": "promptString",
+      "description": "Intravenous project directory",
+      "default": "projects/simple_sine"
     }
   ]
 }

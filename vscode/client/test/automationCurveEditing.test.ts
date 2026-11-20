@@ -16,13 +16,13 @@ import { automationTimelineTicks, timelineTicks } from "../webview/timeline/geom
 const target: NodeAddress = { instanceId: "curve" };
 const curvedAxes: CurveAxes = { left: 0, top: 0, width: 100, height: 100, begin: 0, end: 10 };
 const axes: CurveAxes = { ...curvedAxes, display: "cropped", pan: .5, zoom: { factor: 2, center: .5 } };
-const construction = { definitionId: "iv.builtin.automation.curve", arguments: [[
+const construction = { definitionId: "builtin.automation.curve", arguments: [[
     { id: 1, seconds: 1, value: .5, interpolation: "bezier", tension: 0 },
     { id: 2, seconds: 5, value: 1, interpolation: "bezier", tension: 0 },
 ]] };
 function scope(revision = 1, value: GraphScopeNode["construction"] = construction): GraphScope {
     return { sessionRevision: revision, generation: revision, sampleRate: 48000, editable: true, connections: [], nodes: [{ address: target,
-        loadState: "ready", instance: { instanceId: "curve", definitionId: "iv.builtin.automation.curve", realized: true },
+        loadState: "ready", instance: { instanceId: "curve", definitionId: "builtin.automation.curve", realized: true },
         sampleInputs: [], sampleOutputs: [], eventInputs: [], eventOutputs: [], hasChildren: true, construction: value }] };
 }
 function harness(send: (event: NodeEvent) => Promise<void> = async () => {}, revision?: number) {
@@ -351,17 +351,17 @@ test("the curve is cyclic: the last point interpolates toward the first across t
     const middle = 5 + (cycle - 4) / 2;
     assert.ok(Math.abs(automationWindow(data, middle, middle + 1).vertices[0].value - .75) < 1e-6);
     // Points may lie anywhere, including before zero; there is no duration.
-    const signed = readAutomationCurve({ definitionId: "iv.builtin.automation.curve", arguments: [[
+    const signed = readAutomationCurve({ definitionId: "builtin.automation.curve", arguments: [[
         { id: 4, seconds: 2, value: 1, interpolation: "bezier", tension: 0 },
         { id: 3, seconds: -2, value: 0, interpolation: "bezier", tension: 0 },
     ]] })!;
     assert.deepEqual(signed.points.map((point) => point.id), [3, 4]);
     assert.deepEqual(automationWindow(signed, -1, 0).vertices, [{ seconds: -1, value: .25 }, { seconds: 0, value: .5 }]);
-    assert.equal(readAutomationCurve({ definitionId: "iv.builtin.automation.curve", arguments: [[], 10] }), null);
+    assert.equal(readAutomationCurve({ definitionId: "builtin.automation.curve", arguments: [[], 10] }), null);
 });
 
 test("one point defines a constant curve and no points define empty coverage", () => {
-    const single = readAutomationCurve({ definitionId: "iv.builtin.automation.curve",
+    const single = readAutomationCurve({ definitionId: "builtin.automation.curve",
         arguments: [[{ id: 1, seconds: 3, value: .25, interpolation: "bezier", tension: 1 }]] }, 48000)!;
     assert.deepEqual(automationWindow(single, -10, 10).vertices.map((vertex) => vertex.value), [.25, .25, .25]);
     const outside = automationWindow(single, 20, 30);
@@ -369,13 +369,13 @@ test("one point defines a constant curve and no points define empty coverage", (
     assert.equal(outside.points.length, 0);
     assert.deepEqual(outside.paths.map(({ begin, end }) => [begin, end]),
         [[{ seconds: 20, value: .25 }, { seconds: 30, value: .25 }]]);
-    const empty = readAutomationCurve({ definitionId: "iv.builtin.automation.curve", arguments: [[]] })!;
+    const empty = readAutomationCurve({ definitionId: "builtin.automation.curve", arguments: [[]] })!;
     assert.deepEqual(automationWindow(empty, 0, 1).vertices, []);
     assert.deepEqual(automationWindow(empty, 0, 1).paths, []);
 });
 
 test("sparse segments render gaps, half-open holds and equal-position jumps", () => {
-    const curve = readAutomationCurve({ definitionId: "iv.builtin.automation.curve", arguments: [[
+    const curve = readAutomationCurve({ definitionId: "builtin.automation.curve", arguments: [[
         { id: 1, seconds: 0, value: 0, interpolation: "bezier", tension: 0 },
         { id: 3, seconds: 4, value: 3, interpolation: "hold", tension: 1 },
         { id: 2, seconds: 4, value: 1, interpolation: "empty", tension: 1 },
@@ -392,7 +392,7 @@ test("sparse segments render gaps, half-open holds and equal-position jumps", ()
 });
 
 test("automatic cubic matches the backend on irregular intervals and tension zero stays exactly linear", () => {
-    const curve = readAutomationCurve({ definitionId: "iv.builtin.automation.curve", arguments: [[
+    const curve = readAutomationCurve({ definitionId: "builtin.automation.curve", arguments: [[
         { id: 1, seconds: 0, value: 0, interpolation: "bezier", tension: 1 },
         { id: 2, seconds: 4, value: 1, interpolation: "bezier", tension: 1 },
         { id: 3, seconds: 12, value: 2, interpolation: "empty", tension: 1 },
@@ -405,7 +405,7 @@ test("automatic cubic matches the backend on irregular intervals and tension zer
 });
 
 test("one empty point remains empty and a hold segment can cross zero", () => {
-    const data = (points: unknown[]) => readAutomationCurve({ definitionId: "iv.builtin.automation.curve", arguments: [points] }, 48000)!;
+    const data = (points: unknown[]) => readAutomationCurve({ definitionId: "builtin.automation.curve", arguments: [points] }, 48000)!;
     assert.deepEqual(automationWindow(data([{ id: 1, seconds: 2, value: .25, interpolation: "empty", tension: 1 }]), 0, 4).paths, []);
     const curve = data([{ id: 1, seconds: -2, value: .25, interpolation: "hold", tension: 1 },
         { id: 2, seconds: 2, value: 1, interpolation: "empty", tension: 1 }]);
@@ -591,10 +591,11 @@ test("both drag modes choose order within one detent when a beat and points shar
     }
 });
 
-test("a right press on a blank curve adds an empty point, even without motion", async () => {
+test("a right press on a default-constructed curve adds its first point without motion", async () => {
     const sent: unknown[] = [];
     const h = harness(async (event) => { sent.push(serializeNodeEvent(event).payload); });
-    h.edits.reconcile(scope(2, { ...construction, arguments: [[]] }));
+    h.edits.reconcile(scope(2, { ...construction, arguments: [] }));
+    assert.deepEqual(h.edits.view(target)?.points, []);
     assert.equal(h.edits.begin(target, null, 7, axes, { x: 10, y: 50 }), true);
     assert.deepEqual(sent, [{ insert: true,
         point: { id: 0, seconds: 0, value: .5, interpolation: "empty", tension: 1, sample_index: "48000", order: 0 },

@@ -3,6 +3,6 @@
   "entry": "module.cpp",
   "namespace": "iv.test.benchmark_constant_voice",
   "dependencies": [
-    "iv.builtin"
+    "builtin"
   ]
 }

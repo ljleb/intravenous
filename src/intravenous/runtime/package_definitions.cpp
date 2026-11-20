@@ -1,6 +1,7 @@
 #include <intravenous/runtime/package_definitions.h>
 
 #include <intravenous/module/package_manifest.h>
+#include <intravenous/module/dev_runtime.h>
 #include <intravenous/runtime/package_pipeline_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
@@ -86,16 +87,23 @@ void write_initial_compile_commands(
     throw std::runtime_error("no package source clangd command was configured");
 #else
     auto const source = package_root / "module.cpp";
+    auto const runtime = details::dev_runtime_directory();
+    auto const include = runtime.empty()
+        ? std::filesystem::path(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_INCLUDE_DIR)
+        : std::filesystem::canonical(runtime / "sdk") / "src";
+    auto const third_party = runtime.empty()
+        ? std::filesystem::path(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_THIRD_PARTY_INCLUDE_DIR)
+        : include / "intravenous/third_party";
     auto const command = command_quote(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_CXX_COMPILER)
         + " -DIV_ENABLE_JUCE_VST=0"
         + " -I" + command_quote(package_root.generic_string())
-        + " -isystem " + command_quote(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_INCLUDE_DIR)
-        + " -isystem " + command_quote(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_THIRD_PARTY_INCLUDE_DIR)
+        + " -isystem " + command_quote(include.generic_string())
+        + " -isystem " + command_quote(third_party.generic_string())
         // The shared package flags (PackageCompileFlags.cmake).
         + " " + IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_COMPILE_FLAGS
         + " -Xclang -disable-llvm-passes -std=c++23 -fvisibility=hidden"
           " -fvisibility-inlines-hidden -Wall -Wextra -Wpedantic"
-        + " -include-pch " + command_quote(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_DSL_PCH)
+        + " -include-pch " + command_quote(details::runtime_artifact(IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_DSL_PCH).generic_string())
         + " -c " + command_quote(source.generic_string());
     nlohmann::json database = nlohmann::json::array({{
         {"directory", package_root.generic_string()},

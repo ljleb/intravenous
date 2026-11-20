@@ -118,7 +118,7 @@ test("a fractional authored default is exact during a whole-step drag", () => {
 });
 
 function scope(revision: number, bpm: number): GraphScope {
-    const definitionId = "iv.builtin.beats";
+    const definitionId = "builtin.beats";
     return { sessionRevision: revision, generation: revision, sampleRate: 48000, editable: true, connections: [],
         nodes: [{ address, loadState: "ready", instance: { instanceId: address.instanceId, definitionId, realized: true },
             construction: { definitionId, arguments: [bpm] }, hasChildren: false,

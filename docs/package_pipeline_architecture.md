@@ -100,7 +100,7 @@ before accepting a built revision. The former proposal is preserved in
 
 `PackageWatcher` resolves desired instance/replacement IDs against this manifest
 catalog and computes the package-dependency closure without executing package
-code. The executable's `iv.builtin` package is automatically imported by every
+code. The executable's `builtin` package is automatically imported by every
 other package and included in its closure. Manifests need not repeat it in
 `dependencies`; an explicit entry is harmless and does not build it twice.
 This includes implicit constructions such as the builtin constants backing
@@ -111,7 +111,7 @@ It builds the dirty required closure first and publishes its accepted definition
 in one transaction. Other dependencies must be declared using exact package
 namespaces; a missing dependency is a package failure, never a request to compile
 the entire catalog. Authored registered-definition lookups into another package
-require that declared dependency, with `iv.builtin` as the automatic exception.
+require that declared dependency, with `builtin` as the automatic exception.
 Source/header/library build dependencies remain the compiler/loader's existing
 separate watch inputs. The earlier blanket declaration requirement is preserved
 [in the dependency history](historical/package_dependencies_before_implicit_builtin_2026-11-16.md).

@@ -16,7 +16,7 @@ export default defineConfig({
     plugins: [vue()],
     publicDir: false,
     build: {
-        outDir: path.join(clientRoot, "dist", "webview"),
+        outDir: path.join(process.env.IV_CLIENT_OUT_DIR || path.join(clientRoot, "dist"), "webview"),
         emptyOutDir: true,
         target: "es2022",
         cssCodeSplit: false,

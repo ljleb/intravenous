@@ -13,14 +13,14 @@ linear interpolation and an earlier Tick implementation. The replacement is
 The default builtin IV package provides a sparse Tock point source, a replayable
 Tick linear interpolator, and an editable automation-curve module. They require
 no additional package or native dependency. Their registered IDs are
-`iv.builtin.automation.point_source`, `iv.builtin.automation.linear_curve`, and
-`iv.builtin.automation.curve`.
+`builtin.automation.point_source`, `builtin.automation.linear_curve`, and
+`builtin.automation.curve`.
 
 ```cpp
 #include <intravenous/basic_nodes/automation.h>
 
 void build(iv::GraphBuilder& graph) {
-    auto curve = graph.node<"iv.builtin.automation.curve">(
+    auto curve = graph.node<"builtin.automation.curve">(
         std::vector<iv::automation::Point>{
             {1, 0.0, 0.0f},
             {2, 1.0, 1.0f},
@@ -44,11 +44,11 @@ in `iv::automation`. They replace the module's construction arguments through
 `ModuleMessageContext::replace()`. The backend's existing replacement history
 and project persistence retain the accepted point list.
 
-The two leaves can also be used separately. `iv.builtin.automation.point_source` takes
+The two leaves can also be used separately. `builtin.automation.point_source` takes
 an `ImmutableArray<Point>` created by `graph.immutable_array<Point>()`. Unlike the
 module, it does not sort: it rejects unsorted or non-finite points. Its events can
 pass through other event-processing nodes before reaching
-`iv.builtin.automation.linear_curve`.
+`builtin.automation.linear_curve`.
 
 Time in Intravenous is cyclic: the global timeline has 2^64 sample positions
 and wraps. The curve interpolates linearly between successive points in cyclic
@@ -64,7 +64,7 @@ cycle, searches for the neighboring points of each requested position, and
 samples only the requested positions.
 
 The Vue client includes a specialized presentation for a direct
-`iv.builtin.automation.curve` instance. After rebuilding the application and
+`builtin.automation.curve` instance. After rebuilding the application and
 restarting its server, choose that definition in Add Node. The editor fills in
 `{}`, an empty point list, as the construction arguments of a new curve. A
 populated illustrative configuration source is:

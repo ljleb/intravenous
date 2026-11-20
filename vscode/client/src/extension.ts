@@ -1,7 +1,7 @@
 import "reflect-metadata";
 
 import type { ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, openSync } from "node:fs";
 import { join } from "node:path";
 import * as vscode from "vscode";
 import { container } from "tsyringe";
@@ -119,6 +119,14 @@ async function configureXWaylandRelaunch(context: vscode.ExtensionContext, folde
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+    const bundleMarker = context.asAbsolutePath(".iv-dev-bundle");
+    let bundledRuntime: string | undefined;
+    if (existsSync(bundleMarker)) {
+        // On Linux Nix sees the open store file as a process-lifetime root.
+        const bundle = openSync(bundleMarker, "r");
+        context.subscriptions.push(new vscode.Disposable(() => closeSync(bundle)));
+        bundledRuntime = join(context.extensionPath, "..", "runtime");
+    }
     const outputChannel = timestampOutput(vscode.window.createOutputChannel("Intravenous"));
     const provider = new LiveGraphViewProvider(context.extensionUri);
     const highlighter = new NodeSpanHighlighter();
@@ -135,15 +143,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     const localDesktop = vscode.env.uiKind === vscode.UIKind.Desktop
         && (!vscode.env.remoteName || context.extension.extensionKind === vscode.ExtensionKind.UI);
-    void configureXWaylandRelaunch(context, workspaceFolder, localDesktop, (message) => outputChannel.appendLine(message));
+    if (!bundledRuntime) {
+        void configureXWaylandRelaunch(context, workspaceFolder, localDesktop, (message) => outputChannel.appendLine(message));
+    }
     let nativeHelper: NativeClientHelper | undefined;
     if (process.platform === "linux" && localDesktop) {
         const name = "intravenous-client-helper";
-        const packaged = context.asAbsolutePath(`dist/${name}`);
         nativeHelper = new NativeClientHelper(() => {
-            if (existsSync(packaged)) return NativeClientHelper.launch(packaged);
             const configured = vscode.workspace.getConfiguration("intravenous", workspaceFolder?.uri).get<string>("intravenousDir");
-            const binary = resolveIntravenousBinary(name, workspaceFolder?.uri.fsPath, configured);
+            const binary = resolveIntravenousBinary(name, configured, bundledRuntime);
             return NativeClientHelper.launch(binary.path);
         }, (message) => outputChannel.appendLine(message));
         context.subscriptions.push(nativeHelper);
@@ -160,9 +168,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         outputChannel,
         provider,
         highlighter,
+        bundledRuntime,
     );
 
-    const graphEditor = new GraphEditorProvider(context.extensionUri, session, nativeHelper, (message) => outputChannel.appendLine(message));
+    const graphEditor = new GraphEditorProvider(context.extensionUri, session, nativeHelper,
+        (message) => outputChannel.appendLine(message), context.globalState);
     provider.setInteractionHintHandler((hint) => graphEditor.setInspectionHint(hint));
     context.subscriptions.push(graphEditor);
     for (const seek of [false, true]) context.subscriptions.push(vscode.commands.registerCommand(
@@ -171,6 +181,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             catch (error) { void vscode.window.showErrorMessage(`Cannot change playback: ${error.message}`); }
         }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.openGraphEditor", () => graphEditor.open()));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.retryServer", async () => {
+        try { await session.retryServer(); }
+        catch (error) { void vscode.window.showErrorMessage(`Cannot start Intravenous: ${error.message}`); }
+    }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.debug", () => graphEditor.debug()));
     const graphActions: GraphEditorAction[] = ["addNode", "editNode", "deleteNode", "openNodeSource", "createPackage", "deleteConnection", "undo", "redo"];
     for (const action of graphActions) {
@@ -278,7 +292,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
     } catch (error: any) {
         outputChannel.appendLine(`Startup failed: ${error.message}`);
-        throw error;
     }
 
     context.subscriptions.push(vscode.window.onDidChangeTextEditorSelection(async (event) => {

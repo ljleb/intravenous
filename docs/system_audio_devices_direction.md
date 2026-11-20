@@ -27,7 +27,7 @@ creates them through the same `ProjectGraph` node-instantiation surface used by
 any other node.
 
 The implemented leaf types are `SystemAudioInput` and `SystemAudioOutput`, registered
-as `iv.builtin.system_audio_input` and `iv.builtin.system_audio_output`. Each type has a
+as `builtin.system_audio_input` and `builtin.system_audio_output`. Each type has a
 `device_id` configuration field. Both expose stereo interleaved `Sample` ports. The
 input node has one Tick output named `out`; the output node has one Sequential input
 named `in`.

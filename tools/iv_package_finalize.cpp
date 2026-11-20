@@ -1178,7 +1178,7 @@ void validate_package_definitions(
     std::set<std::pair<std::string, std::string>> runtime_definitions;
     for (auto* global : definitions) {
         auto* record = dyn_cast_or_null<ConstantStruct>(global->getInitializer());
-        if (!record || record->getNumOperands() != 13) {
+        if (!record || record->getNumOperands() != 16) {
             fail("malformed IV package definition record");
         }
         auto const kind_value = constant_u64(record->getOperand(0));

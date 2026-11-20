@@ -388,6 +388,10 @@ public:
     // The desired manual controls, which outlive a failed configuration pass.
     [[nodiscard]] std::vector<ProjectManualControl> manual_controls() const;
     [[nodiscard]] std::shared_ptr<NodeDefinitionsSnapshot const> definitions_snapshot() const;
+    void handle_socket_rpc_get_node_definitions(std::shared_ptr<NodeDefinitionsSnapshot const>& result) const
+    {
+        result = definitions_snapshot();
+    }
     [[nodiscard]] NodeMessageDispatchResult dispatch_node_message(
         NodeAddress const& target, OwnedNodeMessage message,
         std::optional<NodeMessageGestureId> const& gesture = std::nullopt);

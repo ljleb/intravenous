@@ -3,6 +3,6 @@
   "entry": "module.cpp",
   "namespace": "iv.test.benchmark_constant_filtered",
   "dependencies": [
-    "iv.builtin"
+    "builtin"
   ]
 }

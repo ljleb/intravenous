@@ -1154,9 +1154,31 @@ lane interface. They do not claim that the current client implements them._
 - Double-clicking a lane's node name starts renaming that node instance.
   A blank name restores the definition's display label. Custom names are
   saved on the instance and participate in project undo and redo.
-- Creation must offer a convenient way to find definitions without knowing their
-  IDs. Search by display name or ID, tag search, and visual browsing are candidate
-  interfaces. The owner has not selected one of these interfaces yet.
+- The Add Node picker searches display names and IDs. A complete tag query
+  filters the list. Type a tag prefix and press Tab to complete the current
+  part of the query. A space between two tags requires both tags. Use `|` for
+  alternatives and `!` to exclude a tag.
+- Typing or pressing Ctrl+Space opens tag suggestions. Clicking in the search
+  field moves the caret and dismisses suggestions. Escape dismisses suggestions
+  first, then closes the picker on a separate press.
+- More relevant matches appear first. Within equal matches, definitions created
+  more often by the current user appear first. Highlight a result to view its
+  ports and tags. Click a result to create it with its defaults. With completion
+  suggestions open, Enter accepts the highlighted suggestion. Otherwise, Enter
+  creates the highlighted definition.
+- The optional fourth argument of `IV_NODE`, `IV_MODULE`, and `IV_MODULE_CLASS`
+  takes an `iv::tags(...)` list. Define each tag once as a `constexpr iv::Tag`
+  and share that constant across registrations. A child `iv::Tag` takes its
+  parent constant and its own path segment. The catalog provides `id.*` tags
+  from definition IDs. For example, `id.builtin.automation` matches the
+  definitions under that path.
+- If a definition requires construction arguments, its presentation must
+  supply a starting configuration before the picker can create it. The picker
+  calls the selected presentation's `createInitialConfiguration()` once when
+  the user chooses the node. The callback takes no arguments and returns
+  configuration source for the backend to validate. Definitions that can be
+  constructed with zero arguments use their backend defaults.
+  [Previous creation rules](./historical/node_creation_before_tag_picker_2026-11-19.md).
 
 ### Knobs and port handles
 

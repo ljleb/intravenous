@@ -4,6 +4,13 @@ Everything in this directory is non-normative historical material.
 
 These documents are retained because they record deleted architectures, superseded design directions, completed migrations, profiling experiments, or implementation checkpoints that may still explain why the repository looks the way it does. They must not be treated as current requirements when they conflict with documents in the parent [`docs/`](../README.md) directory.
 
+## Superseded local installation workflows
+
+- [Isolated Development Launch Before Shared VSCodium](./isolated_dev_launch_before_shared_codium_2026-11-19.md)
+- [Managed Installer Before The Nix Development Run](./managed_install_before_nix_dev_run_2026-11-19.md)
+- [Separate Server And Client Installation](./separate_server_and_client_installation_2026-11-19.md)
+- [Client Installation Before Server Releases](./client_install_before_server_releases_2026-11-19.md)
+
 ## Superseded meter display semantics
 
 - [Meter Value Mode Before the Shared Peak/RMS Display (2026-11-16)](./vue_meter_value_before_shared_peak_display_2026-11-16.md)
@@ -313,7 +320,7 @@ Preserved before the owner separated configuration commitment from DSP readiness
 
 - [Package dependencies before implicit builtin import (2026-11-16)](package_dependencies_before_implicit_builtin_2026-11-16.md)
   preserves the blanket explicit-dependency wording before the owner clarified
-  that every other package automatically imports `iv.builtin`.
+  that every other package automatically imports `builtin`.
 
 - [Automation nano presence before continuous curve scaling (2026-11-16)](vue_automation_nano_presence_before_curve_scaling_2026-11-16.md)
   preserves the coverage-only nano contract before the owner requested the same

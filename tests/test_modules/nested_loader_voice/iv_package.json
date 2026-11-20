@@ -3,6 +3,6 @@
   "entry": "module.cpp",
   "namespace": "iv.test.nested_loader_voice",
   "dependencies": [
-    "iv.builtin"
+    "builtin"
   ]
 }

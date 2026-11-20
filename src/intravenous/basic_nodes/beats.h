@@ -138,7 +138,7 @@ public:
 
     void on_message(NodeMessageContext<Beats>& ctx, SetBeatGrid const& event) const
     {
-        ctx.replace<"iv.builtin.beats">(event.bpm, event.beats_per_bar, event.subdivisions);
+        ctx.replace<"builtin.beats">(event.bpm, event.beats_per_bar, event.subdivisions);
     }
 
     void constrain_ports(ConstrainPortsContext<Beats>& ctx) const

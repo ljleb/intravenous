@@ -1,23 +1,23 @@
 # Automation points and curves
 
-The builtin package provides `iv.builtin.automation.curve`, an editable module.
-Its leaves are `iv.builtin.automation.point_source` and
-`iv.builtin.automation.interpreter`. Both leaves execute as Tock nodes. The
-point source publishes buffered event data. The interpreter computes Sample
-Coverage data only for requested windows.
+The builtin package provides `builtin.automation.curve`, an editable module.
+Its `PointSource` and `Curve` leaves are internal to its implementation.
+Both run as Tock nodes. The point source publishes buffered event data. The
+interpreter computes Sample Coverage data only for requested windows.
+[Previous public definitions](../../../../docs/historical/automation_before_private_leaves_2026-11-19.md).
 
 ```cpp
 #include <intravenous/basic_nodes/automation.h>
 
 void build(iv::GraphBuilder& graph) {
     using namespace iv;
-    auto curve = graph.node<"iv.builtin.automation.curve">(
+    auto curve = graph.node<"builtin.automation.curve">(
         std::vector<iv::automation::Point>{
             {1, 0.0, 0.0f, iv::CurveInterpolation::bezier, 1},
             {2, 1.0, 1.0f, iv::CurveInterpolation::hold, 1},
             {3, 5.0, 0.25f, iv::CurveInterpolation::empty, 1},
         });
-    graph.outputs("value"_P = curve, "points"_F = curve.event_port());
+    graph.outputs("value"_P = curve);
 }
 IV_MODULE("my.automation", build, "My Automation");
 ```
@@ -60,8 +60,8 @@ Sequential destinations resolve uncovered positions with their declared neutral
 or manual fallback. Region and Coverage destinations retain the gaps. Pending
 background data never count as a gap.
 
-The Vue presentation creates an empty point list for a new curve. The clip ruler
-shows seconds and sample positions. Zoom in to see individual sample marks.
+A new curve uses the module's default empty point list. The clip ruler shows
+seconds and sample positions. Zoom in to see individual sample marks.
 
 - Right-press empty space to add a point at the nearest sample and start placing it.
 - Drag a point to move it with its curve.

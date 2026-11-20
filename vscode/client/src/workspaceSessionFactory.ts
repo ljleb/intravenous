@@ -14,12 +14,14 @@ export class WorkspaceSessionFactory {
         outputChannel: vscode.OutputChannel,
         provider: LiveGraphProviderLike,
         highlighter: NodeSpanHighlighter,
+        bundledRuntime?: string,
     ): WorkspaceSession {
         return new WorkspaceSession(
             workspaceFolder,
             outputChannel,
             provider,
             highlighter,
+            bundledRuntime,
         );
     }
 }

@@ -492,7 +492,7 @@ std::optional<PackageWatcher::PreparedRefresh> PackageWatcher::prepare_refresh_l
     while (changed) {
         changed = false;
         for (auto const& [id, declaration] : package_declarations_by_id_) {
-            if (auto builtin = owners.find("iv.builtin"); builtin != owners.end()
+            if (auto builtin = owners.find("builtin"); builtin != owners.end()
                 && is_implicit_package_dependency(declaration.package_namespace, builtin->first)
                 && dirty_package_ids_.contains(builtin->second))
                 changed |= dirty_package_ids_.insert(id).second;
@@ -512,7 +512,7 @@ std::optional<PackageWatcher::PreparedRefresh> PackageWatcher::prepare_refresh_l
         // is built before one coherent definition publication.
         if (!visiting.insert(id).second) return;
         auto const& declaration = package_declarations_by_id_.at(id);
-        if (auto builtin = owners.find("iv.builtin"); builtin != owners.end()
+        if (auto builtin = owners.find("builtin"); builtin != owners.end()
             && is_implicit_package_dependency(declaration.package_namespace, builtin->first))
             self(self, builtin->second);
         for (auto const& dependency : declaration.package_dependencies) {

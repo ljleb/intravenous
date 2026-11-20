@@ -11,8 +11,8 @@ export type TimelineSnapMemory = { beats?: [number, number, number[]]; custom?: 
 const beatsInstanceId = "c17d95d0-80f9-4eec-a184-a2be63cc6d04";
 const timelineInstanceId = "9962e717-db59-46a8-bb00-1876f1935504";
 const generatedConnectionId = "25723a79-67d9-4fcc-9d36-a3ffe6365bdc";
-const beatsDefinition = "iv.builtin.beats";
-const timelineDefinition = "iv.builtin.timeline";
+const beatsDefinition = "builtin.beats";
+const timelineDefinition = "builtin.timeline";
 
 function hasRootAddress(address: NodeAddress, instanceId: string): boolean {
     return address.instanceId === instanceId && !address.path?.length;

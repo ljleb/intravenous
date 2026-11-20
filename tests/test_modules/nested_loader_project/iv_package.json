@@ -3,7 +3,7 @@
   "entry": "module.cpp",
   "namespace": "iv.test.nested_loader_project",
   "dependencies": [
-    "iv.builtin",
+    "builtin",
     "iv.test.nested_loader_voice"
   ]
 }

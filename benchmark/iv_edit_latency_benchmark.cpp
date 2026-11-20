@@ -96,14 +96,14 @@
 namespace {
 using Clock = std::chrono::steady_clock;
 
-constexpr std::string_view constant_id = "iv.builtin.constant";
-constexpr std::string_view saw_id = "iv.builtin.saw_oscillator";
-constexpr std::string_view sine_id = "iv.builtin.sine_oscillator";
-constexpr std::string_view low_pass_id = "iv.builtin.simple_iir_low_pass";
-constexpr std::string_view high_pass_id = "iv.builtin.simple_iir_high_pass";
-constexpr std::string_view warper_id = "iv.builtin.warper";
-constexpr std::string_view subtract_id = "iv.builtin.subtract";
-constexpr std::string_view sink_id = "iv.builtin.dummy_sink";
+constexpr std::string_view constant_id = "builtin.constant";
+constexpr std::string_view saw_id = "builtin.saw_oscillator";
+constexpr std::string_view sine_id = "builtin.sine_oscillator";
+constexpr std::string_view low_pass_id = "builtin.simple_iir_low_pass";
+constexpr std::string_view high_pass_id = "builtin.simple_iir_high_pass";
+constexpr std::string_view warper_id = "builtin.warper";
+constexpr std::string_view subtract_id = "builtin.subtract";
+constexpr std::string_view sink_id = "builtin.dummy_sink";
 
 struct Options {
     std::string shape = "voices";
@@ -385,10 +385,10 @@ void feedback_voice(iv::GraphBuilder& g)
 {
     auto frequency = g.input<"frequency">(110.0f);
     auto cutoff = g.input<"cutoff">(0.5f);
-    auto oscillator = g.node<"iv.builtin.saw_oscillator">();
+    auto oscillator = g.node<"builtin.saw_oscillator">();
     oscillator.connect_input("frequency", frequency);
-    auto filter = g.node<"iv.builtin.simple_iir_low_pass">();
-    auto difference = g.node<"iv.builtin.subtract">();
+    auto filter = g.node<"builtin.simple_iir_low_pass">();
+    auto difference = g.node<"builtin.subtract">();
     difference.connect_input(0, static_cast<iv::SamplePortRef>(oscillator));
     difference.connect_input(1, static_cast<iv::SamplePortRef>(filter).detach());
     filter.connect_input("in", static_cast<iv::SamplePortRef>(difference));
@@ -1135,7 +1135,7 @@ int main(int argc, char** argv)
             write_text_if_changed(
                 root / "iv_package.json",
                 "{\"schema\":2,\"entry\":\"module.cpp\",\"namespace\":\""
-                    + package.package_namespace + "\",\"dependencies\":[\"iv.builtin\"]}\n");
+                    + package.package_namespace + "\",\"dependencies\":[\"builtin\"]}\n");
             write_text_if_changed(root / "module.cpp", package.module_source);
         }
         std::cout << "building the packages (not timed)...\n" << std::flush;

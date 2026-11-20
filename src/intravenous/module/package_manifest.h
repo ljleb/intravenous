@@ -24,7 +24,7 @@ constexpr bool package_namespace_owns(std::string_view package_namespace, std::s
 // dependency that every manifest must repeat.
 constexpr bool is_implicit_package_dependency(std::string_view owner, std::string_view dependency)
 {
-    return owner != "iv.builtin" && dependency == "iv.builtin";
+    return owner != "builtin" && dependency == "builtin";
 }
 
 } // namespace iv

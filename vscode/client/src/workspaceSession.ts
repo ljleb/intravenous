@@ -6,6 +6,7 @@ import type { GraphLaneCopy, NodeAddress } from "./graphScope";
 import { validateNodeEventTarget, type SerializedNodeEvent } from "./nodeEvents";
 import { NodeEventInteractions } from "./nodeEventInteractions";
 import type { PlaybackDrag, PlaybackSnapshot } from "./playback";
+import type { NodeDefinitionCatalog, NodeDefinitionSearch } from "./nodeDefinitionSearch";
 import * as vscode from "vscode";
 import * as childProcess from "child_process";
 import * as crypto from "crypto";
@@ -222,11 +223,23 @@ export class WorkspaceSession {
         else if (mutation?.type === "upsert") await rpc.upsertGraphConnection(mutation.connection, revision);
     }
 
-    async graphDefinitions(): Promise<string[]> {
+    private definitionCatalog?: { rpc: WorkspaceRpc; pending: Promise<NodeDefinitionCatalog> };
+
+    async graphDefinitions(): Promise<NodeDefinitionCatalog> {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
-        const result = await this.rpc.getIvPackageDefinitions();
-        const packages = this.parseIvPackageDefinitions(result.packages);
-        return [...new Set(packages.flatMap((entry) => [...entry.moduleIds, ...entry.nodeTypeIds]))].sort();
+        if (this.definitionCatalog?.rpc === this.rpc) return this.definitionCatalog.pending;
+        const catalog = { rpc: this.rpc, pending: this.rpc.nodeDefinitionCatalog() };
+        this.definitionCatalog = catalog;
+        try { return await catalog.pending; }
+        catch (error) {
+            if (this.definitionCatalog === catalog) this.definitionCatalog = undefined;
+            throw error;
+        }
+    }
+
+    async searchNodeDefinitions(source: string, cursor: number): Promise<NodeDefinitionSearch> {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+        return this.rpc.searchNodeDefinitions(source, cursor);
     }
 
     async createGraphNode(definitionId: string, displayName: string, configurationSource: string): Promise<string> {
@@ -336,10 +349,12 @@ export class WorkspaceSession {
     private lastSessionRevision = 0;
     // Restart backoff for a server that keeps failing soon after it starts.
     private readonly initialRestartDelayMs = 1000;
-    private readonly maxRestartDelayMs = 30000;
     private readonly stableServerRunMs = 30000;
+    private readonly maximumRestartAttempts = 3;
     private restartDelayMs = 1000;
+    private restartAttempts = 0;
     private restartInFlight = false;
+    private selectedServerBinary: string | null = null;
     private connectedAtMs: number | null = null;
     private shuttingDown = false;
     private serverReadyWaiters: Array<{
@@ -361,6 +376,7 @@ export class WorkspaceSession {
         outputChannel: vscode.OutputChannel,
         provider: LiveGraphProviderLike,
         highlighter: NodeSpanHighlighter,
+        private readonly bundledRuntime?: string,
     ) {
         this.workspaceFolder = workspaceFolder;
         this.outputChannel = outputChannel;
@@ -490,6 +506,7 @@ export class WorkspaceSession {
         this.notifications.subscribe<Record<string, never>>("ivPackages.updated", async () => {
             // A failed build can change node availability without producing a
             // graph generation or graph.changed notification.
+            this.definitionCatalog = undefined;
             this.graphChanges.fire();
             await this.refreshProjectCatalog();
         });
@@ -819,32 +836,31 @@ export class WorkspaceSession {
     }
 
     private serverBinaryPath(): string {
+        if (this.selectedServerBinary) return this.selectedServerBinary;
         const configuredDir = vscode.workspace.getConfiguration("intravenous", this.workspaceFolder.uri).get<string>("intravenousDir");
-        const resolved = resolveIntravenousBinary("intravenous", this.workspaceRoot(), configuredDir);
-        let stat: fs.Stats;
+        const resolved = resolveIntravenousBinary("intravenous", configuredDir, this.bundledRuntime);
         try {
-            stat = fs.statSync(resolved.path);
-        } catch {
-            throw new Error(`resolved server binary from ${resolved.source} does not exist: ${resolved.path}`);
+            if (!fs.statSync(resolved.path).isFile()) throw new Error("server executable is not a file");
+            fs.accessSync(resolved.path, fs.constants.X_OK);
+        } catch (error) {
+            throw new Error(`Cannot use the server from ${resolved.source} at ${resolved.path}: ${error.message}`);
         }
-
-        if (!stat.isFile()) {
-            throw new Error(`resolved server binary from ${resolved.source} is not a file: ${resolved.path}`);
-        }
-
-        fs.accessSync(resolved.path, fs.constants.X_OK);
-        this.outputChannel.appendLine(`resolved server from ${resolved.source}: ${resolved.path}`);
+        this.selectedServerBinary = resolved.path;
+        this.outputChannel.appendLine(`Resolved server from ${resolved.source}: ${resolved.path}`);
         return resolved.path;
     }
 
     async start(): Promise<boolean> {
+        if (this.startInFlight) return this.startInFlight;
         if (this.rpc) {
             return true;
         }
-        if (this.startInFlight) {
-            return await this.startInFlight;
-        }
-        this.startInFlight = this.startImpl().finally(() => {
+        if (this.shuttingDown) return false;
+        this.startInFlight = this.startImpl().catch((error) => {
+            if (!this.restartInFlight && !this.shuttingDown && this.graphSessionStatus !== "restarting")
+                this.stopRestarting(error.message);
+            throw error;
+        }).finally(() => {
             this.startInFlight = null;
         });
         return await this.startInFlight;
@@ -861,6 +877,7 @@ export class WorkspaceSession {
         this.resetServerReadyState();
 
         const binary = this.serverBinaryPath();
+        if (this.shuttingDown) return false;
         const serverDir = path.dirname(binary);
         const args = [
             "--server",
@@ -871,7 +888,7 @@ export class WorkspaceSession {
         ];
         const childEnv: NodeJS.ProcessEnv = {
             ...process.env,
-            INTRAVENOUS_DIR: process.env.INTRAVENOUS_DIR || serverDir,
+            INTRAVENOUS_DIR: serverDir,
             IV_LOG_FILE: this.serverDiagnosticLogPath,
         };
 
@@ -927,12 +944,18 @@ export class WorkspaceSession {
         }
         try {
             await this.connectToServer(socket);
+            await this.loadInitialSessionState();
         } catch (error) {
             this.logCapturedServerFailureContext();
+            if (this.process === spawnedProcess) this.process = null;
+            const client = this.client;
+            this.client = null;
+            this.rpc = null;
+            this.connectedAtMs = null;
+            client?.dispose();
             spawnedProcess.kill();
             throw error;
         }
-        await this.loadInitialSessionState();
         return true;
     }
 
@@ -953,6 +976,7 @@ export class WorkspaceSession {
         );
         this.client = client;
         await client.connect();
+        if (this.client !== client) throw new Error("Server disconnected before startup completed");
         this.rpc = new WorkspaceRpc(client, () => this.lastSessionRevision);
         // The inherited client is trusted and subscribed to every notification
         // from the moment it is attached, so nothing needs replaying.
@@ -974,7 +998,7 @@ export class WorkspaceSession {
 
     // The server stops with its socket, so a lost connection means this
     // window's server is gone. Unless the window is shutting down, start a new
-    // one, backing off while servers keep failing soon after starting.
+    // one within the retry budget for this release.
     private handleServerConnectionLost(
         client: JsonRpcSocketClient,
         error: Error,
@@ -993,18 +1017,17 @@ export class WorkspaceSession {
         lostProcess?.kill("SIGTERM");
         if (this.shuttingDown) return;
 
-        const ranLongEnough = this.connectedAtMs !== null
-            && Date.now() - this.connectedAtMs >= this.stableServerRunMs;
-        this.restartDelayMs = ranLongEnough
-            ? this.initialRestartDelayMs
-            : Math.min(this.restartDelayMs * 2, this.maxRestartDelayMs);
+        const connectedAt = this.connectedAtMs;
         this.connectedAtMs = null;
-        this.provider.setSessionStatus("restarting");
-        this.graphSessionStatus = "restarting";
-        this.graphChanges.fire();
-        this.outputChannel.appendLine(
-            `Server connection lost: ${error.message}; restarting the server`,
-        );
+        // An attempt that never completed its handshake rejects its startup
+        // promise. Its caller accounts for that failure.
+        if (connectedAt === null) return;
+        if (Date.now() - connectedAt >= this.stableServerRunMs) {
+            this.restartAttempts = 0;
+            this.restartDelayMs = this.initialRestartDelayMs;
+        }
+        this.setServerStatus("restarting");
+        this.outputChannel.appendLine(`Server connection lost: ${error.message}`);
         void this.restartServer();
     }
 
@@ -1013,19 +1036,30 @@ export class WorkspaceSession {
         this.restartInFlight = true;
         try {
             while (!this.shuttingDown && !this.rpc) {
+                if (this.restartAttempts >= this.maximumRestartAttempts) {
+                    this.stopRestarting("Automatic server retries are exhausted");
+                    break;
+                }
                 await new Promise<void>((resolve) => setTimeout(resolve, this.restartDelayMs));
                 if (this.shuttingDown || this.rpc) break;
+                ++this.restartAttempts;
+                this.restartDelayMs *= 2;
+                this.outputChannel.appendLine(`Restarting server (${this.restartAttempts}/${this.maximumRestartAttempts})`);
                 try {
-                    await this.start();
+                    if (!await this.start()) {
+                        if (!this.shuttingDown) this.stopRestarting("The project is no longer available");
+                        break;
+                    }
                 } catch (error) {
                     this.outputChannel.appendLine(
                         `Server restart failed: ${error instanceof Error ? error.message : String(error)}`,
                     );
-                    this.restartDelayMs = Math.min(
-                        this.restartDelayMs * 2, this.maxRestartDelayMs);
                 }
             }
-            // The panel still shows nodes from the stopped server.
+        } finally {
+            this.restartInFlight = false;
+        }
+        try {
             if (this.rpc && this.lastQuery) {
                 const nodes = await this.refreshLastQuery();
                 this.updatePrimaryHighlight(nodes);
@@ -1034,14 +1068,33 @@ export class WorkspaceSession {
             this.outputChannel.appendLine(
                 `Query after restart failed: ${error instanceof Error ? error.message : String(error)}`,
             );
-        } finally {
-            this.restartInFlight = false;
         }
     }
 
+    private setServerStatus(status: LiveGraphSessionStatus): void {
+        this.provider.setSessionStatus(status);
+        this.graphSessionStatus = status;
+        this.graphChanges.fire();
+    }
+
+    private stopRestarting(reason: string): void {
+        this.outputChannel.appendLine(`${reason}. Run Intravenous: Retry Server or reload the window.`);
+        this.setServerStatus("stopped");
+    }
+
+    async retryServer(): Promise<void> {
+        if (this.restartInFlight || this.rpc) return;
+        this.restartAttempts = 0;
+        this.restartDelayMs = this.initialRestartDelayMs;
+        this.setServerStatus("starting");
+        if (!await this.start() && !this.shuttingDown) this.stopRestarting("The project is no longer available");
+    }
+
     private async loadInitialSessionState(): Promise<void> {
-        if (!this.rpc) return;
-        const result = await this.rpc.getNodeInstances();
+        const rpc = this.rpc;
+        if (!rpc) throw new Error("Server disconnected before loading the session");
+        const result = await rpc.getNodeInstances();
+        if (this.rpc !== rpc) throw new Error("Server disconnected before loading the session");
         this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
         this.projectModuleInstances = this.ivModuleInstances;
         this.refreshVisibleInstances();
@@ -1051,9 +1104,7 @@ export class WorkspaceSession {
         this.outputChannel.appendLine(
             `Instances after ready: total=${this.ivModuleInstances.length} realized=${realizedCount} selected=${this.selectedInstanceId ?? "[none]"}`,
         );
-        this.provider.setSessionStatus("running");
-        this.graphSessionStatus = "running";
-        this.graphChanges.fire();
+        this.setServerStatus("running");
     }
 
     private async waitForServerReady(timeoutMs: number): Promise<void> {
@@ -1341,7 +1392,9 @@ export class WorkspaceSession {
             this.outputChannel.appendLine(`workspace is not an Intravenous project: missing ${this.projectMarkerPath()}`);
             return false;
         }
-        if (!this.rpc) {
+        if (this.shuttingDown || this.graphSessionStatus === "stopped" || this.graphSessionStatus === "restarting")
+            return false;
+        if (!this.rpc || this.startInFlight) {
             await this.start();
         }
         return this.rpc !== null;

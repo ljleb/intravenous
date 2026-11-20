@@ -36,7 +36,7 @@ test("the project layout round trips lane order and independent presentation sta
         const store = new GraphLayoutStore(directory);
         const layout = readLayout(null);
         const address = { instanceId: "curve" };
-        const curve = presentationStateKey(address, "iv.builtin.automation.curve");
+        const curve = presentationStateKey(address, "builtin.automation.curve");
         const custom = presentationStateKey(address, "example.custom");
         const first = { ruler: "half", display: "cropped", pan: -2.5, zoom: { factor: 4, center: .5 } } as const;
         const second = { cursor: [2, 4], layers: { points: true, preview: false } };
@@ -60,7 +60,7 @@ test("lane copies save independent snapshots of all presentation states owned by
     try {
         const store = new GraphLayoutStore(directory);
         const memberPath = [{ name: "member" }];
-        const curve = (instanceId: string) => presentationStateKey({ instanceId }, "iv.builtin.automation.curve");
+        const curve = (instanceId: string) => presentationStateKey({ instanceId }, "builtin.automation.curve");
         const member = (instanceId: string) => presentationStateKey({ instanceId, path: memberPath }, "example.member");
         const zoom = { factor: 2, center: .5 };
         const layout = reactive(readLayout({ presentationStates: {
@@ -112,7 +112,7 @@ test("zoom saves from the reactive graph layout survive the message channel and 
     try {
         const store = new GraphLayoutStore(directory);
         const address = { instanceId: "curve" };
-        const curve = presentationStateKey(address, "iv.builtin.automation.curve");
+        const curve = presentationStateKey(address, "builtin.automation.curve");
         const custom = presentationStateKey(address, "example.custom");
         const otherState = { layers: { points: true } };
         await store.save(readLayout(null), { [curve]: { pan: 3 }, [custom]: otherState });

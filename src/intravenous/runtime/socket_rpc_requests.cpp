@@ -291,6 +291,17 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
     if (method == "graph.getScope") {
         return parsed(GetGraphScopeRequest{});
     }
+    if (method == "nodeDefinitions.search") {
+        auto const& params = parse_request_params(request);
+        auto source = parse_string_param(params, "source");
+        std::optional<std::size_t> cursor;
+        if (auto const value = params.find("cursor"); value != params.end()) {
+            cursor = parse_uint32_value(*value, "cursor must be an unsigned UTF-8 byte offset");
+        }
+        if (source.size() > 1024 || (cursor ? *cursor > source.size() : !source.empty()))
+            throw std::runtime_error("invalid node definition query length or cursor");
+        return parsed(SearchNodeDefinitionsRequest{std::move(source), cursor});
+    }
     if (method == "project.setToolchain") {
         auto const settings = params.find("toolchain");
         if (settings == params.end() || !settings->is_object())

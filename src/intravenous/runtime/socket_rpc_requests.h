@@ -34,6 +34,7 @@ struct GetVirtualNodeRequest { std::string node_id{}; };
 struct GetVirtualNodesRequest { std::vector<std::string> node_ids{}; };
 // The graph editor's project root scope; see ProjectGraphScope.
 struct GetGraphScopeRequest {};
+struct SearchNodeDefinitionsRequest { std::string source; std::optional<std::size_t> cursor; };
 struct ApplyProjectEditRequest { ProjectEditBatch batch{}; };
 struct UndoProjectEditRequest { std::function<void()> authorize_audio_control{}; };
 struct RedoProjectEditRequest { std::function<void()> authorize_audio_control{}; };
@@ -146,6 +147,7 @@ using SocketRpcRequestPayload = std::variant<
     GetVirtualNodeRequest,
     GetVirtualNodesRequest,
     GetGraphScopeRequest,
+    SearchNodeDefinitionsRequest,
     ApplyProjectEditRequest,
     UndoProjectEditRequest,
     RedoProjectEditRequest,

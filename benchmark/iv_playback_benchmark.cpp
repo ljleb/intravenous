@@ -181,9 +181,9 @@ void wait_for_definitions(iv::ProjectGraph const& graph, iv::PackageWatcherServi
     auto const deadline = Clock::now() + 5min;
     while (Clock::now() < deadline) {
         auto const definitions = graph.definitions_snapshot();
-        if (definitions && definitions->by_id.contains("iv.builtin.automation.curve")
+        if (definitions && definitions->by_id.contains("builtin.automation.curve")
             && definitions->by_id.contains("iv.bench.playback.saw")
-            && definitions->by_id.contains("iv.builtin.system_audio_output")) return;
+            && definitions->by_id.contains("builtin.system_audio_output")) return;
         if (auto failure = watcher.failure_message()) throw std::runtime_error(*failure);
         std::this_thread::sleep_for(50ms);
     }

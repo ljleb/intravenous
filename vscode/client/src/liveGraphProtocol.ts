@@ -4,12 +4,12 @@ import { isStatusHint, type StatusHint } from "./statusBarText";
 // Messages between the extension host and the Vue webview. This module is
 // imported by both sides; it must contain only types and pure functions.
 
-// The window's own server: starting, running, or being restarted after it
-// stopped while the window stayed open.
+// The window's own server, including a stopped state after retries run out.
 export type LiveGraphSessionStatus =
     | "starting"
     | "running"
-    | "restarting";
+    | "restarting"
+    | "stopped";
 
 export type LiveGraphInstance = {
     instanceId: string;

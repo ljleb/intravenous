@@ -1,0 +1,6 @@
+{
+  "schema": 2,
+  "entry": "module.cpp",
+  "namespace": "iv.project.q24_icosphere_morton_pan",
+  "dependencies": []
+}

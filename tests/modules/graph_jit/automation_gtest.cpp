@@ -347,7 +347,7 @@ TEST_F(GraphJitRuntimeFixture, AutomationMessagesSerializeCompleteReplacementPoi
         capture = {};
         handler->invoke(handler->receiver.get(), operations,
             iv::NodeAddress{.instance_id = "curve"}, handler->module_local_refs.get(), event.data());
-        EXPECT_EQ(capture.definition, "iv.builtin.automation.curve");
+        EXPECT_EQ(capture.definition, "builtin.automation.curve");
         return nlohmann::ordered_json::parse(capture.arguments);
     };
     auto added = invoke("AddPoint", {{"point", {{"id", 4}, {"seconds", 1.0}, {"value", -2.0}, {"interpolation", "hold"}, {"tension", 1.0}}}});

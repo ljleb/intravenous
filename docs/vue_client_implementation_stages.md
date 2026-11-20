@@ -363,7 +363,7 @@ Order:
    `graphConnections.delete` by dragging between ports,
    `nodeInstances.update` for configuration source, and `project.save`. A
    window reload restarts the server and replays the project. Hearing the
-   result means connecting to an `iv.builtin.system_audio_output` instance.
+   result means connecting to an `builtin.system_audio_output` instance.
 4. **Retire `ModulesViewProvider`,** whose instance management the editor
    takes over.
 5. **The first undo/redo slice** described above.
@@ -1449,12 +1449,12 @@ leaves, rather than forcing the editable module into one execution domain.
 The default `builtin_packages/builtin` package registers these definitions
 (promoted from the optional automation package on 2026-11-14):
 
-- `iv.builtin.automation.point_source`: a persisted Tock event Region containing
+- `builtin.automation.point_source`: a persisted Tock event Region containing
   `SampleEvent` values. The point list is frozen with `ImmutableArray<Point>`.
-- `iv.builtin.automation.linear_curve`: a stateless, replayable Tick node with a Region
+- `builtin.automation.linear_curve`: a stateless, replayable Tick node with a Region
   event input and a sequential Sample output. It finds the neighboring points
   and samples only its current block or requested replay window.
-- `iv.builtin.automation.curve`: a class module owning the editable point list. Its
+- `builtin.automation.curve`: a class module owning the editable point list. Its
   independent `AddPoint`, `RemovePoint`, and `MovePoint` message types reconstruct
   the module through the existing durable replacement mechanism. It exposes
   both the interpreted values and the underlying point events.
@@ -2618,14 +2618,14 @@ Implemented; builds, tests, and manual UI verification remain owner-run.
   Release flushes the latest position and closes history. A final draft remains
   visible until a scope read reaches its last accepted payload revision; ending
   the history group alone is not a newer point value. Errors restore accepted data.
-- The bundled `iv.builtin.automation.curve` presentation shares the parent timeline's time
+- The bundled `builtin.automation.curve` presentation shares the parent timeline's time
   window. Double-click adds a point, drag moves it, and right-click removes it.
   Visible-window lookup uses binary search and neighboring segments. This edits
   constructor data; it adds no audio-thread observation or sampling work.
 - Automation ships in the default builtin package. To exercise the specialized
-  editor, create a direct `iv.builtin.automation.curve` instance; see the
+  editor, create a direct `builtin.automation.curve` instance; see the
   [automation guide](../src/intravenous/builtin_packages/builtin/AUTOMATION.md).
-  The owner requested builtin packaging and `iv.builtin` IDs on 2026-11-14;
+  The owner requested builtin packaging and `builtin` IDs on 2026-11-14;
   the prior packaging is preserved in [historical documentation](historical/automation_before_builtin_promotion_2026-11-14.md).
 - Added light regressions for pristine accepted values, replacement/undo/failure
   reads, grouped history, conflict rejection, disjoint edits, disconnect cleanup,
@@ -2642,9 +2642,9 @@ cleanup remains before Stage 4.
 ### Automation builtin promotion, 2026-11-14
 
 Owner decision: the dependency-free automation nodes and class module belong in
-the default builtin package, under `iv.builtin`. Source now registers
-`iv.builtin.automation.curve`, `iv.builtin.automation.point_source`, and
-`iv.builtin.automation.linear_curve` in that package. The separate automation
+the default builtin package, under `builtin`. Source now registers
+`builtin.automation.curve`, `builtin.automation.point_source`, and
+`builtin.automation.linear_curve` in that package. The separate automation
 manifest and entry were removed, and internal construction/replacement IDs and
 the Vue presentation selection were updated. The shared JIT fixture still tests
 the same implementations through its independent catalog. The builtin-loader
@@ -3282,7 +3282,7 @@ follow-up; owner-run verification remains pending.
 
 The owner's startup run exposed a missing implicit package dependency: module
 input defaults construct builtin constants even when package source has no
-literal builtin-node lookup. `iv.builtin` is now included automatically in
+literal builtin-node lookup. `builtin` is now included automatically in
 package selection and accepted by registered-definition dependency validation.
 Other cross-package constructions still require declared dependencies.
 
@@ -4022,7 +4022,7 @@ versioned marker query, persistent selector, and automation snap gesture.
 
 ### Builtin beat generator, 2026-11-18
 
-`iv.builtin.beats` is a Tock node with a computed `BeatEvent` Coverage output.
+`builtin.beats` is a Tock node with a computed `BeatEvent` Coverage output.
 The constructor takes a fixed tempo, beats per bar, and nested subdivision
 factors. The grid starts at sample zero. See the
 [earlier origin argument](./historical/beats_constructor_origin.md).
@@ -4391,7 +4391,7 @@ payload for each event Region. `request_event_neighbors()` searches indexed
 Regions with bounded probes. `Beats` publishes one Region per depth in each
 signed half of the index circle. It computes selected occurrences by index.
 
-`iv.builtin.timeline` has a public BeatEvent Coverage input and produces no
+`builtin.timeline` has a public BeatEvent Coverage input and produces no
 signals. The graph scope lists Timeline addresses for the client, including
 addressable module members. The `beat-grid` observation reads these inputs
 through the compiled source routes. Queries for the same viewport can share
@@ -4415,7 +4415,7 @@ fresh build to verify.
 #### Editor-managed ruler snapping and combined zoom
 
 `WorkspaceSession.setTimelineSnapMode()` uses `project.applyEdit` for the
-hidden `iv.builtin.beats` and `iv.builtin.timeline` instances and their
+hidden `builtin.beats` and `builtin.timeline` instances and their
 connections. The graph read determines the active mode in each editor.
 `GraphLayoutStore` saves the inactive Beats arguments and Custom routes
 before the edit. `TimelineScopePresentation.vue` observes only the
@@ -4441,8 +4441,12 @@ from the definition. The project file and history store only custom names.
 Built-in and example default labels use Capital Space Case. New package
 templates capitalize the words in the package name and separate them with spaces.
 
-Shift+A opens the existing Add Node form. The new lane goes after the lowest
-selected lane, or at the bottom without a selection. Ctrl+D sends one revision-
+Shift+A opens the Add Node picker. It uses the parser and completion rules
+from `main` against the published definition catalog. The catalog provides port
+previews and tags without creating nodes. VS Code stores add counts in user
+state. The new lane goes after the lowest selected lane, or at the bottom without
+a selection. See the [previous Add Node form](./historical/node_creation_before_tag_picker_2026-11-19.md).
+Ctrl+D sends one revision-
 checked project edit, places each copy directly below its original, and selects
 the copies. The webview stages presentation state under the new instance IDs
 before the graph publishes them, then saves it with lane order after acceptance.

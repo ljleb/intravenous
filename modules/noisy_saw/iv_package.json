@@ -3,6 +3,6 @@
   "entry": "module.cpp",
   "namespace": "iv.test.noisy_saw",
   "dependencies": [
-    "iv.builtin"
+    "builtin"
   ]
 }

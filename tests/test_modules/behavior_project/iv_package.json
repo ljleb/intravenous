@@ -3,7 +3,7 @@
   "entry": "module.cpp",
   "namespace": "iv.test.behavior_project",
   "dependencies": [
-    "iv.builtin",
+    "builtin",
     "iv.test.behavior_voice"
   ]
 }

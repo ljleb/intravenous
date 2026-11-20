@@ -173,6 +173,7 @@ add_test(NAME intravenous_application_environment
 set_tests_properties(intravenous_application_environment PROPERTIES LABELS light)
 
 add_iv_gtest(intravenous_node_definitions_tests modules/node_definitions_gtest.cpp)
+add_iv_gtest(intravenous_tag_query_tests query/tag_query_gtest.cpp)
 add_iv_gtest(intravenous_node_instances_tests modules/node_instances_gtest.cpp)
 add_iv_gtest(intravenous_project_graph_tests modules/project_graph_gtest.cpp)
 add_iv_gtest(intravenous_graph_connections_tests modules/graph_connections_gtest.cpp)

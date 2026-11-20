@@ -35,6 +35,7 @@ std::unique_ptr<NodeDefinitions::ModuleDefinitionState> make_module_definition_s
     state->snapshot = ModuleNodeDefinition{
         .definition_id = loaded.definition_id,
         .display_name = loaded.display_name,
+        .presentation = loaded.presentation,
         .package_id = package_revision.package_id,
         .package_root = normalize_path(package_revision.package_root),
         .module_id = loaded.module_id,
@@ -59,6 +60,7 @@ std::unique_ptr<NodeDefinitions::LeafDefinitionState> make_leaf_definition_state
     state->snapshot = LeafNodeDefinition{
         .definition_id = loaded.definition_id,
         .display_name = loaded.display_name,
+        .presentation = loaded.presentation,
         .package_id = package_revision.package_id,
         .package_root = normalize_path(package_revision.package_root),
         .provider = loaded.provider,

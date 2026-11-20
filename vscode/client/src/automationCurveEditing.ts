@@ -39,8 +39,8 @@ type Drag = { key: string; target: NodeAddress; pointerId: number; axes: CurveAx
     sent: AutomationPoint | null; gesture: NodeEventGesture; updates: NodeEventUpdates;
     finishing?: Promise<void> };
 export function readAutomationCurve(value: GraphScopeNode["construction"], sampleRate?: number | null): AutomationCurve | null {
-    if (value?.definitionId !== "iv.builtin.automation.curve" || value.arguments.length !== 1) return null;
-    const [points] = value.arguments;
+    if (value?.definitionId !== "builtin.automation.curve" || value.arguments.length > 1) return null;
+    const points = value.arguments.length === 0 ? [] : value.arguments[0];
     if (!Array.isArray(points)) return null;
     const ids = new Set<number>();
     const rate = sampleRate && Number.isSafeInteger(sampleRate) && sampleRate > 0 ? sampleRate : undefined;

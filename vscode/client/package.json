@@ -89,6 +89,7 @@
             { "command": "intravenous.togglePlayback", "title": "Intravenous: Play/Pause" },
             { "command": "intravenous.seekPlayback", "title": "Intravenous: Seek Playback" },
             { "command": "intravenous.debug", "title": "Intravenous: Debug" },
+            { "command": "intravenous.retryServer", "title": "Intravenous: Retry Server" },
             { "command": "intravenous.undo", "title": "Intravenous: Undo Project Edit" },
             { "command": "intravenous.redo", "title": "Intravenous: Redo Project Edit" },
             {

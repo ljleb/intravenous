@@ -264,6 +264,18 @@ add_custom_command(
     VERBATIM)
 add_custom_target(intravenous_dsl_pch DEPENDS "${IV_DSL_PCH}")
 
+set(iv_sdk_snapshot "${CMAKE_CURRENT_BINARY_DIR}/runtime-sdk")
+file(GLOB iv_sdk_templates CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/module/template/*.cmake")
+add_custom_command(OUTPUT "${iv_sdk_snapshot}/.snapshot"
+    COMMAND "${CMAKE_COMMAND}" -E rm -rf "${iv_sdk_snapshot}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${iv_sdk_snapshot}/src/intravenous"
+    COMMAND "${CMAKE_COMMAND}" -E touch "${iv_sdk_snapshot}/.snapshot"
+    DEPENDS ${IV_PACKAGE_PCH_HEADERS} ${iv_sdk_templates}
+    VERBATIM)
+add_custom_target(intravenous_runtime_sdk DEPENDS "${iv_sdk_snapshot}/.snapshot")
+configure_file(module/template/PrepareDevRuntime.cmake.in PrepareDevRuntime.cmake @ONLY)
+
 # This source represents the default project-local module. Its compilation
 # database entry is copied to new module sources, where clangd infers the
 # command for their module.cpp from this canonical source.
@@ -413,10 +425,16 @@ target_link_libraries(intravenous_runtime_runtime_project_events PRIVATE
 )
 
 add_library(intravenous_tooling_runtime_objects OBJECT
+    query/tag_query_completion.cpp
+    query/tag_query_engine.cpp
+    query/tag_query_parser.cpp
+    query/tag_query_program.cpp
+    query/tag_query_tokenizer.cpp
     runtime/system_audio_devices.cpp
     runtime/audio_input_synchronizer.cpp
     runtime/config.cpp
     runtime/node_definitions.cpp
+    runtime/node_definition_search.cpp
     runtime/node_definitions_project_graph_bridge.cpp
     runtime/package_definitions_node_definitions_bridge.cpp
     runtime/package_watcher_package_definitions_bridge.cpp
@@ -559,6 +577,7 @@ add_executable(intravenous
     main.cpp
     runtime/app.cpp
 )
+set_target_properties(intravenous PROPERTIES BUILD_RPATH_USE_ORIGIN TRUE)
 
 # miniaudio loads libpulse by name. Keep its library directory available
 # when the server runs outside the development shell.
@@ -609,7 +628,7 @@ target_include_directories(intravenous SYSTEM PRIVATE
 )
 
 iv_add_host_runtime_objects(intravenous)
-add_dependencies(intravenous intravenous_dsl_pch)
+add_dependencies(intravenous intravenous_dsl_pch intravenous_runtime_sdk)
 
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/.intravenous_defaults"

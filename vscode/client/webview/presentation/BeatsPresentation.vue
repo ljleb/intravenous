@@ -22,7 +22,7 @@ const surface = ref<HTMLElement | null>(null);
 const width = ref(0);
 const grid = computed(() => {
     const construction = node.value.construction;
-    return construction?.definitionId === "iv.builtin.beats" ? readBeatGrid(construction.arguments) : null;
+    return construction?.definitionId === "builtin.beats" ? readBeatGrid(construction.arguments) : null;
 });
 const editable = computed(() => props.mode === "editable" && !!editor?.scope.value?.editable
     && !!node.value.address && node.value.loadState === "ready" && !!grid.value);

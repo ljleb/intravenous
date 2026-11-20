@@ -1,3 +1,4 @@
+#include <intravenous/module/dev_runtime.h>
 #include <intravenous/module/loader.h>
 #include <intravenous/module/abi.h>
 #include <intravenous/module/builder_session.h>
@@ -533,6 +534,9 @@ std::string quote(std::filesystem::path const &path)
 
 std::filesystem::path discover_repo(std::filesystem::path start)
 {
+    if (auto runtime = details::dev_runtime_directory(); !runtime.empty()) {
+        return std::filesystem::canonical(runtime / "sdk");
+    }
     start = normalize(start);
     if (std::filesystem::is_regular_file(start)) {
         start = start.parent_path();
@@ -679,7 +683,7 @@ void apply_configured_dsl_pch(ModuleLoaderToolchainConfig& toolchain)
 #if defined(IV_CONFIGURED_IV_DSL_PCH)
         auto const configured_path = std::string_view(IV_CONFIGURED_IV_DSL_PCH);
         if (!configured_path.empty()) {
-            toolchain.iv_package_pch = std::filesystem::path(configured_path);
+            toolchain.iv_package_pch = details::runtime_artifact(configured_path);
         }
 #endif
     }
@@ -701,7 +705,7 @@ void run(
     std::filesystem::path const* output_log = nullptr)
 {
     if (sink) sink("[" + std::string(phase) + "] " + command);
-    auto invocation = quote(std::filesystem::path(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER))
+    auto invocation = quote(details::runtime_artifact(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER))
         + " /bin/sh -c " + quote_string(command);
     if (output_log) {
         invocation += " >> " + quote(*output_log) + " 2>&1";
@@ -880,17 +884,17 @@ class ModuleLoader::Impl {
         // The default toolchain produced these artifacts under this same
         // captured environment. Overrides must prove their compatibility.
         if (compiler == std::filesystem::path(IV_CONFIGURED_CXX_COMPILER)
-            && *toolchain_.iv_package_pch == std::filesystem::path(IV_CONFIGURED_IV_DSL_PCH)) return;
+            && *toolchain_.iv_package_pch == details::runtime_artifact(IV_CONFIGURED_IV_DSL_PCH)) return;
         auto const key = file_identity(compiler) + file_identity(*toolchain_.iv_package_pch)
             + file_identity(plugin)
-            + file_identity(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER);
+            + file_identity(details::runtime_artifact(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER));
         if (validated_toolchains_.contains(key)) return;
         auto const directory = global_cache_root_ / "toolchain-checks" / stable_text_hash(key);
         std::filesystem::create_directories(directory);
         ScopedModuleBuildLock const lock(directory / "check.lock");
         auto const accepted = directory / "accepted";
         if (!std::filesystem::exists(accepted) || read_text(accepted) != key) {
-            if (!same_pch_contents(*toolchain_.iv_package_pch, IV_CONFIGURED_IV_DSL_PCH)) {
+            if (!same_pch_contents(*toolchain_.iv_package_pch, details::runtime_artifact(IV_CONFIGURED_IV_DSL_PCH))) {
                 throw std::runtime_error(
                     "iv_package_pch must be an unchanged copy of this application's DSL PCH; "
                     "a PCH from another application build cannot replace its public C++ ABI");
@@ -956,9 +960,9 @@ class ModuleLoader::Impl {
 
         auto const [cc, cxx] = compilers();
         auto const source_introspection_plugin =
-            std::filesystem::path(IV_CONFIGURED_CLANG_SOURCE_INTROSPECTION_PLUGIN);
+            details::runtime_artifact(IV_CONFIGURED_CLANG_SOURCE_INTROSPECTION_PLUGIN);
         auto const module_finalizer =
-            std::filesystem::path(IV_CONFIGURED_IV_PACKAGE_FINALIZER);
+            details::runtime_artifact(IV_CONFIGURED_IV_PACKAGE_FINALIZER);
         if (source_introspection_plugin.empty()
             || !std::filesystem::exists(source_introspection_plugin)) {
             throw std::runtime_error(
@@ -980,7 +984,7 @@ class ModuleLoader::Impl {
         signature << "iv-package-abi=" << IV_PACKAGE_ABI_VERSION << '\n'
                   << "config=" << config_name() << '\n'
                   << "application-environment="
-                  << file_identity(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER) << '\n'
+                  << file_identity(details::runtime_artifact(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER)) << '\n'
                   << "target-triple=" << llvm::sys::getDefaultTargetTriple() << '\n'
                   // Node code is compiled for the host CPU.
                   << "host-cpu=" << host_cpu_signature() << '\n'
@@ -1029,7 +1033,7 @@ class ModuleLoader::Impl {
                   << "package-source=" << source_tree_fingerprint(root.module_dir) << '\n';
         if (std::string_view(IV_CONFIGURED_IV_BUILDER_LIBRARY).size()) {
             signature << "builder-library="
-                      << file_identity(IV_CONFIGURED_IV_BUILDER_LIBRARY) << '\n';
+                      << file_identity(details::runtime_artifact(IV_CONFIGURED_IV_BUILDER_LIBRARY)) << '\n';
         }
         if (std::filesystem::exists(custom_cmake)) {
             signature << read_text(custom_cmake) << '\n';
@@ -1088,7 +1092,7 @@ class ModuleLoader::Impl {
             configure << " -DIV_PACKAGE_CLANG_TIME_TRACE=ON";
         }
         if (std::string_view(IV_CONFIGURED_IV_BUILDER_LIBRARY).size()) {
-            configure << " -DIV_BUILDER_LIBRARY=" << quote(IV_CONFIGURED_IV_BUILDER_LIBRARY);
+            configure << " -DIV_BUILDER_LIBRARY=" << quote(details::runtime_artifact(IV_CONFIGURED_IV_BUILDER_LIBRARY));
         }
         if (needs_build || !std::filesystem::exists(build_dir / "CMakeCache.txt")) {
             run(configure.str(), log_sink_, "configure");
@@ -1180,7 +1184,20 @@ public:
         auto normalized_request = request;
         normalized_request.package_root = std::move(module_path);
         auto root = resolve_dir(normalized_request);
-        auto artifact = build(root);
+        auto const runtime = details::dev_runtime_directory();
+        std::filesystem::path artifact;
+        if (root.provenance == PackageProvenance::built_in && !runtime.empty()
+            && root.artifact_root == runtime / "builtin_package_artifacts") {
+            artifact = root.artifact_root / package_code_name(sanitize(root.package_key));
+            if (!std::filesystem::is_regular_file(artifact)
+                || !std::filesystem::is_regular_file(artifact.string() + ".node-events.json")
+                || !std::filesystem::is_regular_file(node_code_object_path(artifact))) {
+                throw std::runtime_error(
+                    "incomplete bundled IV package artifacts for '" + artifact.string() + "'");
+            }
+        } else {
+            artifact = build(root);
+        }
         return {
             .root = std::move(root),
             .artifact = std::move(artifact),
@@ -1266,7 +1283,7 @@ public:
                 if (std::string_view(IV_CONFIGURED_IV_BUILDER_LIBRARY).size()) {
                     target.addGenerator(take_llvm_expected(
                         llvm::orc::DynamicLibrarySearchGenerator::Load(
-                            IV_CONFIGURED_IV_BUILDER_LIBRARY, global_prefix),
+                            details::runtime_artifact(IV_CONFIGURED_IV_BUILDER_LIBRARY).string().c_str(), global_prefix),
                         "load iv_builder package symbol resolver"));
                 }
                 for (auto const& library : package->dynamic_libraries) {

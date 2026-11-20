@@ -52,11 +52,24 @@ struct NodeDefinitionProvider {
     details::RegisteredSignatureFunction signature = nullptr;
 };
 
+struct DefinitionPortPreview {
+    std::string name;
+    bool event = false;
+    bool output = false;
+};
+
+struct NodeDefinitionPresentation {
+    std::vector<std::string> tags;
+    std::vector<DefinitionPortPreview> ports;
+    std::size_t required_arguments = 0;
+};
+
 struct ModuleNodeDefinition {
     // Published definitions are keyed by stable IV module ID. Package ownership
     // is retained separately and never inferred from the module ID or source path.
     std::string definition_id{};
     std::string display_name{};
+    NodeDefinitionPresentation presentation{};
     std::string package_id{};
     std::filesystem::path package_root{};
     std::string module_id{};
@@ -79,6 +92,7 @@ struct ModuleNodeDefinitionsChanged {
 struct LeafNodeDefinition {
     std::string definition_id{};
     std::string display_name{};
+    NodeDefinitionPresentation presentation{};
     std::string package_id{};
     std::filesystem::path package_root{};
     NodeDefinitionProvider provider{};

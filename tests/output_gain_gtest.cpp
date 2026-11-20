@@ -24,8 +24,8 @@ NodeDefinitionsSnapshot gain_definitions()
         result.by_id.emplace(id, NodeDefinitionEntry{
             .definition_id = id, .definition = std::move(leaf)});
     };
-    add.template operator()<SampleStreamLayout::planar>("iv.builtin.output_gain.mono.planar");
-    add.template operator()<SampleStreamLayout::interleaved>("iv.builtin.output_gain.mono.interleaved");
+    add.template operator()<SampleStreamLayout::planar>("builtin.output_gain.mono.planar");
+    add.template operator()<SampleStreamLayout::interleaved>("builtin.output_gain.mono.interleaved");
     return result;
 }
 

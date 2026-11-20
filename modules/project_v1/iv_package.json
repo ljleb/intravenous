@@ -3,6 +3,6 @@
   "entry": "module.cpp",
   "namespace": "iv.project.v1",
   "dependencies": [
-    "iv.builtin"
+    "builtin"
   ]
 }

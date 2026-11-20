@@ -34,7 +34,7 @@ export class GraphEditorProvider implements vscode.Disposable {
     private readonly windowFocusChanged: vscode.Disposable;
     private readonly shortcutSettingChanged: vscode.Disposable;
     private state: GraphEditorState = {
-        sessionStatus: "starting", scope: null, layout: readLayout(null), definitions: [], error: "",
+        sessionStatus: "starting", scope: null, layout: readLayout(null), definitions: null, definitionUsage: {}, error: "",
     };
     private dirty = false;
     private reading = false;
@@ -130,7 +130,8 @@ export class GraphEditorProvider implements vscode.Disposable {
 
     constructor(private readonly extensionUri: vscode.Uri,
         private readonly session: WorkspaceSession, private readonly nativeHelper?: NativeClientHelper,
-        private readonly log: (message: string) => void = () => {}) {
+        private readonly log: (message: string) => void = () => {}, private readonly pickerStorage?: vscode.Memento) {
+        this.state.definitionUsage = pickerStorage?.get<Record<string, number>>("nodeDefinitionUsage") ?? {};
         this.store = new GraphLayoutStore(session.workspaceRoot());
         this.layoutLoaded = this.store.load().then((layout) => { this.state.layout = layout; })
             .catch((error) => {
@@ -503,11 +504,24 @@ export class GraphEditorProvider implements vscode.Disposable {
                 } catch (error) {
                     void vscode.window.showErrorMessage(`Cannot edit connection: ${error.message}`);
                 }
+            } else if (message?.type === "searchNodeDefinitions") {
+                const { requestId, source, cursor } = message;
+                try {
+                    const result = await this.session.searchNodeDefinitions(source, cursor);
+                    void panel.webview.postMessage({ type: "nodeDefinitionSearchResult", requestId, result });
+                } catch (error) {
+                    void panel.webview.postMessage({ type: "nodeDefinitionSearchResult", requestId, error: error.message });
+                }
             } else if (message?.type === "createGraphNode" || message?.type === "updateGraphNode"
                 || message?.type === "renameGraphLane" || message?.type === "createGraphPackage") {
                 try {
                     if (message.type === "createGraphNode") {
                         const instanceId = await this.session.createGraphNode(message.definitionId, message.displayName, message.configurationSource);
+                        const usage = this.state.definitionUsage;
+                        this.state.definitionUsage = { ...usage, [message.definitionId]:
+                            (Object.hasOwn(usage, message.definitionId) ? usage[message.definitionId] : 0) + 1 };
+                        void this.pickerStorage?.update("nodeDefinitionUsage", this.state.definitionUsage).then(undefined,
+                            (error) => this.log(`Cannot save node picker usage: ${error.message}`));
                         void panel.webview.postMessage({ type: "graphLanesInserted",
                             lanes: [{ instanceId, afterInstanceId: message.afterInstanceId }] });
                     } else if (message.type === "updateGraphNode") {
@@ -586,9 +600,10 @@ export class GraphEditorProvider implements vscode.Disposable {
                 this.state.sessionStatus = this.session.graphSessionStatus;
                 if (this.state.sessionStatus !== "running") {
                     this.state.scope = null;
+                    this.state.definitions = null;
                 } else {
                     try {
-                        const [scope, definitions]: [GraphScope, string[]] = await Promise.all([
+                        const [scope, definitions] = await Promise.all([
                             this.session.readGraphScope(), this.session.graphDefinitions(),
                         ]);
                         // A change while reading requires another complete read.

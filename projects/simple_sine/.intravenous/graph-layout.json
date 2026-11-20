@@ -10,10 +10,10 @@
     }
   },
   "timeline": {
-    "beginSeconds": -12.862709613522007,
-    "secondsPerPixel": 0.022245112646007092,
-    "laneHeight": 127.95719477012496,
-    "scrollTop": 18.05555534362793
+    "beginSeconds": -8.881568330572804,
+    "secondsPerPixel": 0.018830081447684725,
+    "laneHeight": 123.22011183204013,
+    "scrollTop": 102.77777099609375
   },
   "viewport": {
     "x": 215.10152954825116,
@@ -21,33 +21,36 @@
     "scale": 0.7165313200645873
   },
   "presentationStates": {
-    "[\"iv.builtin.automation.curve\",\"09d95295-f20b-4a53-8a49-51c5a87e3b7a\",[]]": {
+    "[\"builtin.automation.curve\",\"09d95295-f20b-4a53-8a49-51c5a87e3b7a\",[]]": {
       "pan": 823.0695155942724,
       "zoom": {
         "factor": 0.0029322066985015866,
         "center": 0.5
       }
     },
-    "[\"iv.builtin.automation.curve\",\"c583a6a6-4cc6-47a0-9f35-f61c45ed5d05\",[]]": {
+    "[\"builtin.automation.curve\",\"c583a6a6-4cc6-47a0-9f35-f61c45ed5d05\",[]]": {
       "pan": 1052.063528206602,
       "zoom": {
         "factor": 0.0016682168124658452,
         "center": 0.5
       }
     },
-    "[\"iv.builtin.automation.curve\",\"4e77cb52-6391-4663-98a1-8536bcbe585e\",[]]": {
+    "[\"builtin.automation.curve\",\"4e77cb52-6391-4663-98a1-8536bcbe585e\",[]]": {
       "pan": 1185.4547797957011,
       "zoom": {
         "factor": 0.0016682168124658452,
         "center": 0.5
       }
     },
-    "[\"iv.builtin.automation.curve\",\"7694626a-cf5e-4b03-97b4-82618bc182d1\",[]]": {
+    "[\"builtin.automation.curve\",\"7694626a-cf5e-4b03-97b4-82618bc182d1\",[]]": {
       "pan": 823.0695155942724,
       "zoom": {
         "factor": 0.0029322066985015866,
         "center": 0.5
       }
+    },
+    "[\"builtin.automation.curve\",\"d9c764e0-fdeb-454a-9aab-26bfe5eaf8ba\",[]]": {
+      "display": "cropped"
     }
   },
   "laneOrder": [
@@ -61,7 +64,11 @@
     "[\"7694626a-cf5e-4b03-97b4-82618bc182d1\",[]]",
     "[\"4e77cb52-6391-4663-98a1-8536bcbe585e\",[]]",
     "[\"c583a6a6-4cc6-47a0-9f35-f61c45ed5d05\",[]]",
+    "[\"84c22f43-3b32-4f34-8da8-0621ade6d9cb\",[]]",
     "[\"c01e1d47-c6fd-4b48-8a1e-ddd2e2a553fb\",[]]",
+    "[\"d9c764e0-fdeb-454a-9aab-26bfe5eaf8ba\",[]]",
+    "[\"62883b05-399c-45e6-bac8-676cd7150398\",[]]",
+    "[\"7e6b01ed-e823-45e3-99f2-434c5d380be7\",[]]",
     "[\"e3d6b9a1-bf5b-44c5-9836-aeb8a82983c6\",[]]"
   ],
   "timelineSnap": {

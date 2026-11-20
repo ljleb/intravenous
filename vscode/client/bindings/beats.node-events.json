@@ -1,7 +1,7 @@
 {
   "definitions": [
     {
-      "definitionId": "iv.builtin.beats",
+      "definitionId": "builtin.beats",
       "supportedEventTypes": [
         {
           "definitionFingerprint": "b2a36c5cb2dc68f3",

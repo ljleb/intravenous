@@ -104,10 +104,10 @@ struct PipelineHarness {
     void discover(std::vector<iv::IvPackageDeclaration> declarations)
     {
         bool const needs_builtin = std::ranges::any_of(declarations, [](auto const& declaration) {
-            return std::ranges::contains(declaration.package_dependencies, std::string("iv.builtin"));
+            return std::ranges::contains(declaration.package_dependencies, std::string("builtin"));
         });
         if (needs_builtin && std::ranges::none_of(declarations, [](auto const& declaration) {
-            return declaration.package_namespace == "iv.builtin";
+            return declaration.package_namespace == "builtin";
         })) declarations.push_back(default_package_declaration());
         iv::IvModuleRequiredDefinitionsChanged required;
         for (auto const& declaration : declarations) required.created.push_back({
@@ -153,12 +153,12 @@ TEST(PackagePipeline, DirtyDeclarationsBuildAndPublishDefinitions)
     ASSERT_NE(local_module, modules.end());
     EXPECT_NE(local_module->configured_graph, nullptr);
     // The default package now publishes an automation module as well as leaves.
-    EXPECT_NE(std::ranges::find(modules, "iv.builtin.automation.curve",
+    EXPECT_NE(std::ranges::find(modules, "builtin.automation.curve",
         &iv::ModuleNodeDefinition::definition_id), modules.end());
 
     auto const leaves = pipeline.definitions.loaded_leaf_definitions();
     EXPECT_NE(
-        std::ranges::find(leaves, "iv.builtin.constant", &iv::LeafNodeDefinition::definition_id),
+        std::ranges::find(leaves, "builtin.constant", &iv::LeafNodeDefinition::definition_id),
         leaves.end());
 }
 

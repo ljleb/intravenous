@@ -3,6 +3,6 @@
   "entry": "module.cpp",
   "namespace": "iv.test.reload_voice",
   "dependencies": [
-    "iv.builtin"
+    "builtin"
   ]
 }

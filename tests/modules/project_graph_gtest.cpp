@@ -4280,19 +4280,19 @@ TEST_F(ProjectGraphFixture, RegisteredBuiltinConstructionIsAnImplicitPackageDepe
 {
     auto snapshot = std::const_pointer_cast<iv::NodeDefinitionsSnapshot>(make_snapshot(1,
         +[](iv::GraphBuilder& graph, std::span<ConfigurationArgument>) {
-            graph.outputs(graph.node<"iv.builtin.test">());
+            graph.outputs(graph.node<"builtin.test">());
         }));
     auto owner = std::const_pointer_cast<iv::PackageRevision>(snapshot->package_revisions.front());
     owner->package_namespace = "iv.test.project_graph";
     ASSERT_TRUE(owner->package_dependencies.empty());
     auto builtin = std::make_shared<iv::PackageRevision>();
     builtin->package_id = "builtin";
-    builtin->package_namespace = "iv.builtin";
+    builtin->package_namespace = "builtin";
     static constexpr char builtin_root[] = "/tmp/iv-project-graph-builtin-tests";
     static constexpr char builtin_source[] = "/tmp/iv-project-graph-builtin-tests/module.cpp";
     builtin->package_root = builtin_root;
     builtin->revision = 1;
-    static constexpr char builtin_id[] = "iv.builtin.test";
+    static constexpr char builtin_id[] = "builtin.test";
     auto provider = owner->provider_definitions.front();
     provider.id = builtin_id;
     provider.id_size = sizeof(builtin_id) - 1;

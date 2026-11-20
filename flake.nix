@@ -41,7 +41,6 @@
           devOnlyPackages = with pkgs; [
             vscode-extensions.vadimcn.vscode-lldb
             nodejs
-            vsce
             perf
             flamegraph
             valgrind
@@ -51,6 +50,7 @@
           shell = packages: pkgs.mkShell {
             inherit packages;
             shellHook = ''
+              export IV_DEV_NIXPKGS=${nixpkgs.outPath}
               export CC=${llvm.clang}/bin/clang
               export CXX=${llvm.clang}/bin/clang++
               export JUCE_DIR=${pkgs.juce}

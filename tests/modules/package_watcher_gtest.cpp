@@ -1126,7 +1126,7 @@ TEST(PackageWatcher, RequiredPackageAutomaticallyIncludesBuiltinWithoutAnAuthore
 {
     auto const root = iv::test_support::fresh_module_fixture_workspace("implicit_builtin_dependency");
     auto builtin = declaration("builtin", root / "builtin");
-    builtin.package_namespace = "iv.builtin";
+    builtin.package_namespace = "builtin";
     auto consumer = declaration("consumer", root / "consumer");
     consumer.package_namespace = "iv.consumer";
     auto unrelated = declaration("unrelated", root / "unrelated");

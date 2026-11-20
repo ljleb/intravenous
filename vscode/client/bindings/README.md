@@ -4,7 +4,7 @@ The backend publishes a neutral event protocol. The client owns TypeScript
 generation and export names. `automation.node-events.json` is a compiler-produced
 snapshot of the three automation events, extracted from the existing shared
 GraphJit test package artifact on 2026-11-14. Its definition ID was subsequently
-updated to `iv.builtin.automation.curve` for builtin promotion; the compiler's
+updated to `builtin.automation.curve` for builtin promotion; the compiler's
 event identities, fingerprints, and payload schemas are unchanged. It contains
 no TypeScript rules.
 `beats.node-events.json` contains the `SetBeatGrid` identity and payload schema

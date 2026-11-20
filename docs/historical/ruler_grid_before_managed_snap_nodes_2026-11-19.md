@@ -57,7 +57,7 @@ in [Timeline nodes and project snapping](../project_playback_and_presentation_gr
 
 The `Beats` section of `src/intravenous/builtin_packages/README.md` used to say:
 
-> Connect the Beats output to the `beats` input of `iv.builtin.timeline` to use
+> Connect the Beats output to the `beats` input of `builtin.timeline` to use
 > it as a project snap grid. The ruler combines marks from the project's Timeline
 > nodes, including Timeline nodes inside modules. Seeking and automation point
 > editing snap to the marks visible at the current zoom level.

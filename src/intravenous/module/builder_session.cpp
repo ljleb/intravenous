@@ -1029,7 +1029,7 @@ void select_builder_package(BuilderSession* session, std::size_t package_index)
 std::optional<std::string> builtin_definition_alias(std::string_view id)
 {
     if (id.empty() || id.find('.') != std::string_view::npos) return std::nullopt;
-    return "iv.builtin." + std::string(id);
+    return "builtin." + std::string(id);
 }
 
 BuilderDefinition find_builder_definition(
@@ -1064,7 +1064,7 @@ BuilderDefinition find_builder_definition(
     // Builtins have canonical stable IDs, but their short names are useful in
     // ordinary package source.  Resolve a bare name only after exact lookup,
     // so a package's deliberately registered `saw_oscillator` still wins over
-    // the convenience alias for `iv.builtin.saw_oscillator`.
+    // the convenience alias for `builtin.saw_oscillator`.
     if (auto const builtin_id = builtin_definition_alias(id)) {
         if (auto found = find_exact(*builtin_id)) return *found;
     }

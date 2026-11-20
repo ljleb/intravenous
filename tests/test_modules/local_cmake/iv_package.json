@@ -3,6 +3,6 @@
   "entry": "module.cpp",
   "namespace": "iv.test.local_cmake",
   "dependencies": [
-    "iv.builtin"
+    "builtin"
   ]
 }

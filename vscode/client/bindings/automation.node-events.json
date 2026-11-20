@@ -1,7 +1,7 @@
 {
   "definitions": [
     {
-      "definitionId": "iv.builtin.automation.curve",
+      "definitionId": "builtin.automation.curve",
       "supportedEventTypes": [
         {
           "definitionFingerprint": "117f10bf8d2ad496",

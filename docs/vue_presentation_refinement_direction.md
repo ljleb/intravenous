@@ -508,7 +508,7 @@ samples. Playback uses the exact bounds at each output sample.
 
 ### Automation signal inputs and optional transforms
 
-`iv.builtin.automation.curve` exposes `min` and `max` as Sample Coverage
+`builtin.automation.curve` exposes `min` and `max` as Sample Coverage
 inputs. The sampler interpolates the authored curve, then applies the highest
 lower bound and the lowest upper bound at each output sample. If the bounds
 cross, the sample equals their midpoint.

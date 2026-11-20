@@ -3,6 +3,6 @@
   "entry": "module.cpp",
   "namespace": "iv.bench.playback.saw",
   "dependencies": [
-    "iv.builtin"
+    "builtin"
   ]
 }

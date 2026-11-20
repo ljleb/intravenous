@@ -60,6 +60,28 @@ test("an available preference wins and an unavailable one is ignored", () => {
     assert.equal(presentations.select("iv.test.voice", "iv.generic").component, "generic");
 });
 
+test("construction callbacks belong to the selected presentation and run only when called", () => {
+    const presentations = registry();
+    let calls = 0;
+    presentations.register({
+        presentationId: "iv.test.osc.configured",
+        displayName: "Configured oscillator",
+        definitionIds: ["iv.test.osc"],
+        component: "configured",
+        createInitialConfiguration: () => {
+            ++calls;
+            return "440";
+        },
+    });
+    const selected = presentations.select("iv.test.osc");
+    assert.equal(selected.component, "configured");
+    assert.equal(calls, 0);
+    assert.equal(selected.createInitialConfiguration?.(), "440");
+    assert.equal(calls, 1);
+    assert.equal(presentations.select("iv.test.osc", "iv.test.voice.scope").createInitialConfiguration, undefined);
+    assert.equal(presentations.select("iv.test.osc", "iv.generic").createInitialConfiguration, undefined);
+});
+
 test("presentation IDs are unique and must name definitions", () => {
     const presentations = registry();
     assert.throws(() => presentations.register({

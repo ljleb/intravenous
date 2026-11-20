@@ -1080,7 +1080,7 @@ records whether the singleton bridge was bound, so an unbound bridge cannot be
 mistaken for acceptance. A stale submission from `ProjectGraph` is an invariant error.
 
 `SystemAudioDevices` now supplies `ResourceContext::SystemAudioResources`. The
-registered `iv.builtin.system_audio_input` and `iv.builtin.system_audio_output` leaf
+registered `builtin.system_audio_input` and `builtin.system_audio_output` leaf
 nodes resolve stable logical bindings in `initialize()`. An unavailable input reads as
 silence and an unavailable output discards writes. If no selected hardware output can
 open, an internal project-rate fallback output clock keeps the graph running. An
@@ -4560,7 +4560,7 @@ not tuned to one graph:
   interleaving across node types. Project connections (`ProjectSampleConnection`)
   cannot mark feedback; only module code breaks a cycle, with `detach()`. The
   first version built the loop from project connections through
-  `iv.builtin.latency`, and `GraphJit` rejected every generation with "implicit
+  `builtin.latency`, and `GraphJit` rejected every generation with "implicit
   cycle" (2026-11-07).
 
 It then repeats five edits: change a constant, add a node, connect it, disconnect

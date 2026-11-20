@@ -14,13 +14,13 @@ export type PresentationRegistration<Component> = {
     definitionIds: readonly string[];
     component: Component;
     timeline?: true;
-    // Construction source for a new instance, when the presentation edits the
-    // node's construction data itself; users need not type it.
-    initialConfiguration?: string;
+    // Supplies configuration source when a new instance needs arguments
+    // that the backend definition cannot default.
+    createInitialConfiguration?: () => string;
 };
 
 export type GenericPresentationRegistration<Component> = Omit<
-    PresentationRegistration<Component>, "definitionIds">;
+    PresentationRegistration<Component>, "definitionIds" | "createInitialConfiguration">;
 
 export type PresentationSelection<Component> = {
     presentationId: string;
@@ -28,6 +28,7 @@ export type PresentationSelection<Component> = {
     component: Component;
     usedGeneric: boolean;
     timeline?: true;
+    createInitialConfiguration?: () => string;
 };
 
 export class PresentationRegistry<Component> {
@@ -92,6 +93,7 @@ export class PresentationRegistry<Component> {
             component: selected.component,
             usedGeneric: false,
             ...(selected.timeline ? { timeline: selected.timeline } : {}),
+            createInitialConfiguration: selected.createInitialConfiguration,
         };
     }
 

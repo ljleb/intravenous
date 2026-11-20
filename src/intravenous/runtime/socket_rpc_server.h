@@ -38,6 +38,7 @@ namespace iv {
         void (*)(GetVirtualNodesRequest const &, SocketRpcVirtualNodesResultBuilder &);
     using SocketRpcGetGraphScopeEvent =
         void (*)(GetGraphScopeRequest const &, SocketRpcGraphScopeResultBuilder &);
+    using SocketRpcGetNodeDefinitionsEvent = void (*)(std::shared_ptr<NodeDefinitionsSnapshot const>&);
     using SocketRpcCreateNodeInstanceEvent =
         void (*)(CreateNodeInstanceRequest const &, SocketRpcCreateNodeInstanceResultBuilder &);
     using SocketRpcGetIvPackageDefinitionsEvent =
@@ -103,6 +104,7 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcGetVirtualNodeEvent, iv_socket_rpc_get_virtual_node_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetVirtualNodesEvent, iv_socket_rpc_get_virtual_nodes_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetGraphScopeEvent, iv_socket_rpc_get_graph_scope_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetNodeDefinitionsEvent, iv_socket_rpc_get_node_definitions_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateNodeInstanceEvent, iv_socket_rpc_create_node_instance_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetIvPackageDefinitionsEvent, iv_socket_rpc_get_iv_package_definitions_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvPackageEvent, iv_socket_rpc_create_iv_package_event);

@@ -18,7 +18,7 @@ struct ConfigurationTypeIdentity;
 // value. It stays 0 and is never raised: a package build signature already
 // contains this header's text and the identity of the DSL precompiled header,
 // so a changed host header rebuilds every package.
-inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 0;
+inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 1;
 
 struct ModuleDataView {
     void const* data = nullptr;

@@ -41,7 +41,7 @@ concrete and public Coverage inputs.
 _Future direction, recorded on 2026-11-18._
 
 Expose `min`, `max`, `scale`, and `offset` as ordinary connectable inputs on
-`iv.builtin.automation.curve`. Apply the observed bounds to point events
+`builtin.automation.curve`. Apply the observed bounds to point events
 before interpolation so clamping preserves smooth segments. Apply scale and
 then offset to sampled values so other curves can modulate both. In the absence
 of a scale or offset contribution, use an identity transform. Preserve the

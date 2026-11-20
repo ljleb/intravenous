@@ -2,7 +2,7 @@
 
 Historical implementation status, preserved 2026-11-14. The owner requested that
 these dependency-free definitions ship in the default builtin package and use
-`iv.builtin` IDs. The replacement guide is
+`builtin` IDs. The replacement guide is
 [Automation points and curves](../../src/intravenous/builtin_packages/builtin/AUTOMATION.md).
 
 The following guide was `src/intravenous/builtin_packages/automation/README.md`

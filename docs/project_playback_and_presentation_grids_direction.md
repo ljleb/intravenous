@@ -417,11 +417,11 @@ area extends to the top and right edges and left of the visible button.
 
 - **Seconds** is the default. It shows time graduations without a beat grid.
   The graph has no editor-managed snapping nodes.
-- **Beats** creates an editor-managed `iv.builtin.beats` and connects its
-  `beats` output to the editor-managed `iv.builtin.timeline`. The popover
+- **Beats** creates an editor-managed `builtin.beats` and connects its
+  `beats` output to the editor-managed `builtin.timeline`. The popover
   exposes the same BPM, beats per bar, and subdivisions as an authored Beats
   lane.
-- **Custom** uses the editor-managed `iv.builtin.timeline`. Its `beats`
+- **Custom** uses the editor-managed `builtin.timeline`. Its `beats`
   input sits below the playback indicator, seconds, and sample count in the
   ruler's taller left column in a full-height port row. Compatible
   BeatEvent outputs can connect to it using ordinary graph cables. Multiple

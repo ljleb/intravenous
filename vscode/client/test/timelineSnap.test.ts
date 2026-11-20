@@ -19,7 +19,7 @@ function apply(scope: GraphScope, operations: ProjectEditOperation[]): GraphScop
         if (method === "nodeInstances.create") {
             const instanceId = String(params.instanceId), definitionId = String(params.definitionId);
             const entry = node(instanceId, definitionId);
-            if (definitionId === "iv.builtin.timeline") entry.eventInputs = [{ name: "beats", index: 0, eventType: "beat" }];
+            if (definitionId === "builtin.timeline") entry.eventInputs = [{ name: "beats", index: 0, eventType: "beat" }];
             nodes.set(instanceId, entry);
         } else if (method === "nodeInstances.delete") nodes.delete(String(params.instanceId));
         else if (method === "graphConnections.delete") connections.delete(String(params.connectionId));
@@ -38,7 +38,7 @@ function empty(): GraphScope {
 const unusedId = () => assert.fail("unexpected replacement connection id");
 
 test("the graph owns the snap mode and retains the accepted Beats settings across removal", () => {
-    const authored = node("authored-beats", "iv.builtin.beats");
+    const authored = node("authored-beats", "builtin.beats");
     const scope = { ...empty(), nodes: [authored] };
     const created = planTimelineSnapMode(scope, "beats", {}, unusedId);
     const beats = apply(scope, created.operations);
@@ -47,18 +47,18 @@ test("the graph owns the snap mode and retains the accepted Beats settings acros
     assert.equal(beats.connections.filter(isGeneratedSnapConnection).length, 1);
     assert.deepEqual(planTimelineSnapMode(beats, "beats", {}, unusedId).operations, []);
 
-    managedBeats(beats)!.construction = { definitionId: "iv.builtin.beats", arguments: [137.5, 7, [3, 2]] };
+    managedBeats(beats)!.construction = { definitionId: "builtin.beats", arguments: [137.5, 7, [3, 2]] };
     const removed = planTimelineSnapMode(beats, "seconds", {}, unusedId);
     assert.deepEqual(removed.memory.beats, [137.5, 7, [3, 2]]);
     const seconds = apply(beats, removed.operations);
     assert.deepEqual(seconds, scope);
     const restored = planTimelineSnapMode(seconds, "beats", readTimelineSnapMemory(removed.memory), unusedId);
-    assert.equal(restored.operations.find(({ params }) => params.definitionId === "iv.builtin.beats")?.params.configurationSource,
+    assert.equal(restored.operations.find(({ params }) => params.definitionId === "builtin.beats")?.params.configurationSource,
         "137.5, 7, {3, 2}");
 });
 
 test("Custom remembers multiple sources and preserves the authored part of a shared connection", () => {
-    const initial = { ...empty(), nodes: [node("one", "example.source"), node("two", "example.source"), node("other", "iv.builtin.timeline")] };
+    const initial = { ...empty(), nodes: [node("one", "example.source"), node("two", "example.source"), node("other", "builtin.timeline")] };
     const custom = apply(initial, planTimelineSnapMode(initial, "custom", {}, unusedId).operations);
     const timeline = managedTimeline(custom)!;
     custom.connections = ["one", "two"].map((id) => ({ id, applied: true, connection: {

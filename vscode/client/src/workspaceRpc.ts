@@ -6,6 +6,7 @@ import type { GraphScope } from "./graphScope";
 import type { NodeAddress } from "./graphScope";
 import type { NodeEventProtocol, SerializedNodeEvent } from "./nodeEvents";
 import type { PlaybackDrag, PlaybackSnapshot } from "./playback";
+import type { NodeDefinitionCatalog, NodeDefinitionSearch } from "./nodeDefinitionSearch";
 
 export type SourceQueryRange = {
     start: { line: number; column: number };
@@ -188,6 +189,14 @@ export class WorkspaceRpc {
 
     getIvPackageDefinitions(): Promise<{ packages?: Array<Record<string, unknown>> }> {
         return this.client.request("ivPackages.list", {});
+    }
+
+    nodeDefinitionCatalog(): Promise<NodeDefinitionCatalog> {
+        return this.client.request("nodeDefinitions.search", { source: "" });
+    }
+
+    searchNodeDefinitions(source: string, cursor: number): Promise<NodeDefinitionSearch> {
+        return this.client.request("nodeDefinitions.search", { source, cursor });
     }
 
     createIvPackage(name: string): Promise<{ package: Record<string, unknown> }> {

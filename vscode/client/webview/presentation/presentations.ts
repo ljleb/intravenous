@@ -14,11 +14,9 @@ export const presentations = new PresentationRegistry<Component>({
     displayName: "Generic",
     component: markRaw(GenericPresentation),
 });
-presentations.register({ presentationId: "iv.builtin.automation.curve", displayName: "Automation curve",
-    definitionIds: ["iv.builtin.automation.curve"], component: markRaw(AutomationCurvePresentation), timeline: true,
-    // An empty point list; points are added and edited on the curve.
-    initialConfiguration: "{}" });
-presentations.register({ presentationId: "iv.builtin.beats", displayName: "Beats",
-    definitionIds: ["iv.builtin.beats"], component: markRaw(BeatsPresentation), timeline: true });
-presentations.register({ presentationId: "iv.builtin.timeline", displayName: "Timeline",
-    definitionIds: ["iv.builtin.timeline"], component: markRaw(GenericPresentation), timeline: true });
+presentations.register({ presentationId: "builtin.automation.curve", displayName: "Automation curve",
+    definitionIds: ["builtin.automation.curve"], component: markRaw(AutomationCurvePresentation), timeline: true });
+presentations.register({ presentationId: "builtin.beats", displayName: "Beats",
+    definitionIds: ["builtin.beats"], component: markRaw(BeatsPresentation), timeline: true });
+presentations.register({ presentationId: "builtin.timeline", displayName: "Timeline",
+    definitionIds: ["builtin.timeline"], component: markRaw(GenericPresentation), timeline: true });

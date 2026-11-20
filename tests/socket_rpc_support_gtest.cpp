@@ -756,7 +756,7 @@ TEST(SocketRpcIvPackageDefinitionsResultBuilder, SerializesProvenance)
     iv::SocketRpcIvPackageDefinitionsResultBuilder builder;
     builder.succeed({
         iv::IvPackageInfo{
-            .package_id = "iv.builtin",
+            .package_id = "builtin",
             .package_root = "/tmp/builtin",
             .provenance = iv::PackageProvenance::built_in,
         },

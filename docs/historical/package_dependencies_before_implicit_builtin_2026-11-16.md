@@ -1,7 +1,7 @@
 # Package dependencies before implicit builtin import
 
 Non-normative. Preserved from `docs/package_pipeline_architecture.md` on
-2026-11-16 before the owner clarified that `iv.builtin` is automatically
+2026-11-16 before the owner clarified that `builtin` is automatically
 imported and does not require an authored dependency declaration. Replaced by
 [static package selection](../package_pipeline_architecture.md#logical-package-namespaces-and-static-selection).
 

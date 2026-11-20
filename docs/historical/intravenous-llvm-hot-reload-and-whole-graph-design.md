@@ -632,7 +632,7 @@ the deployable copied package root to startup search roots; direct
 was supplied.
 
 Every existing non-template, source-facing basic node has one explicit
-`IV_NODE("iv.builtin.…", Type)` registration in that package. Consequently,
+`IV_NODE("builtin.…", Type)` registration in that package. Consequently,
 the public `GraphBuilder` surface has no `g.node<NodeType>` overload. A source
 uses, for example:
 
@@ -640,9 +640,9 @@ uses, for example:
 auto oscillator = g.node<"saw_oscillator", stereo>();
 ```
 
-`iv.builtin.saw_oscillator` remains the canonical registered ID. A bare name
+`builtin.saw_oscillator` remains the canonical registered ID. A bare name
 first resolves an exact user/package registration and only then falls back to
-`iv.builtin.<name>`, so this readability shortcut cannot silently override a
+`builtin.<name>`, so this readability shortcut cannot silently override a
 locally registered definition. The optional channel type creates a promoted
 tiled `IV_NODE` bundle while still returning dynamic `NodeRef`; callers do
 not receive the builtin C++ type or a static port interface. A registered
@@ -653,7 +653,7 @@ whole `g.node<Id, ChannelType>(...)` call: a non-mono interface rejects the
 tile request and contributes no partial child subgraphs to the caller.
 
 Source-level scalar lifting (for example a numeric value supplied to a public
-output or node input) resolves `iv.builtin.constant` as well. It does not
+output or node input) resolves `builtin.constant` as well. It does not
 instantiate `Constant` in the consuming package. The only direct-concrete
 fallback is private host/lowering code that deliberately has no package table.
 

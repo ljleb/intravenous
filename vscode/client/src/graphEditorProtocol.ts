@@ -9,6 +9,7 @@ import type { NodeEventHostRequest, NodeEventResponse } from "./nodeEventMessagi
 import type { PlaybackDragPhase, PlaybackSnapshot } from "./playback";
 import type { StatusHint } from "./statusBarText";
 import type { TimelineGridMode } from "./timelineSnap";
+import type { NodeDefinitionCatalog, NodeDefinitionSearch } from "./nodeDefinitionSearch";
 
 export type CursorWarp = {
     originX: number; originY: number;
@@ -42,7 +43,8 @@ export type GraphEditorState = {
     sessionStatus: LiveGraphSessionStatus;
     scope: GraphScope | null;
     layout: GraphLayout;
-    definitions: string[];
+    definitions: NodeDefinitionCatalog | null;
+    definitionUsage: Readonly<Record<string, number>>;
     error: string;
 };
 export type GraphEditorAction = "addNode" | "editNode" | "deleteNode" | "openNodeSource" | "createPackage" | "deleteConnection" | "undo" | "redo";
@@ -60,6 +62,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "graphWindowFocus"; focused: boolean }
     | { type: "cursorReturnCompleted"; requestId: number }
     | { type: "graphLanesInserted"; lanes: GraphLaneInsertion[]; duplicateRequestId?: string }
+    | { type: "nodeDefinitionSearchResult"; requestId: string; result?: NodeDefinitionSearch; error?: string }
     | { type: "graphAction"; action: "addNode" | "editNode" | "createPackage"; instanceId?: string };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "setTimelineSnapMode"; mode: TimelineGridMode }
@@ -82,6 +85,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "renameGraphLane"; instanceId: string; displayName: string; previousDisplayName: string }
     | { type: "connectGraphPorts"; first: GraphPortEndpoint; second: GraphPortEndpoint }
     | { type: "editGraphConnectionEnd"; edit: GraphConnectionEdit }
+    | { type: "searchNodeDefinitions"; requestId: string; source: string; cursor: number }
     | { type: "createGraphNode"; definitionId: string; displayName: string; configurationSource: string; afterInstanceId?: string }
     | { type: "updateGraphNode"; instanceId: string; displayName: string; configurationSource: string;
         previousDisplayName: string; previousConfigurationSource: string }

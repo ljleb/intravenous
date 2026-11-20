@@ -11,7 +11,7 @@ Future packages may have stable logical identifiers usable as prefixes for
 public `IV_NODE`/`IV_MODULE` definitions. These are distinct from the already
 implemented discovery provenance (`built_in`, `common`, `project_local`) and
 build artifact/cache identity. This proposal should extend GraphBuilder's
-existing `iv.builtin` lookup and planned namespace imports, not silently
+existing `builtin` lookup and planned namespace imports, not silently
 replace them. Neither an `iv_package.json` field spelling nor collision/
 import precedence was finalized in the discussion. See
 [Node Definitions And Instances](./node_definitions_and_instances_direction.md#future-package-identity-publication-and-type-construction-2026-11-15-clarification).
@@ -19,9 +19,9 @@ import precedence was finalized in the discussion. See
 
 ## Related earlier wording from `node_definitions_and_instances_direction.md`
 
-The existing exact-ID lookup and implicit `iv.builtin.<id>` fallback above are
+The existing exact-ID lookup and implicit `builtin.<id>` fallback above are
 **implemented behavior**. The planned import mechanism should **extend** that
-behavior, treating `iv.builtin` as the default import instead of replacing it
+behavior, treating `builtin` as the default import instead of replacing it
 with an unrelated special resolver. A future stable logical package identifier
 may supply the namespace prefix for canonical public definition IDs, and the
 owning package's namespace may be imported automatically in its builders.

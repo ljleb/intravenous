@@ -1,3 +1,4 @@
+#include <intravenous/module/dev_runtime.h>
 #include <intravenous/runtime/graph_jit.h>
 
 #include <intravenous/graph_jit/lowering.h>
@@ -1104,7 +1105,7 @@ void add_project_code_generators(
     if (std::string_view(IV_CONFIGURED_IV_BUILDER_LIBRARY).size()) {
         jit_dylib.addGenerator(take_llvm_expected(
             llvm::orc::DynamicLibrarySearchGenerator::Load(
-                IV_CONFIGURED_IV_BUILDER_LIBRARY, global_prefix),
+                details::runtime_artifact(IV_CONFIGURED_IV_BUILDER_LIBRARY).string().c_str(), global_prefix),
             GraphJitDiagnosticStage::materialization,
             "load iv_builder project symbol resolver"));
     }

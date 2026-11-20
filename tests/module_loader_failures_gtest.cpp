@@ -173,15 +173,15 @@ TEST(ModuleLoaderPackages, BuiltinPackageUsesExecutableOwnedArtifactRoot)
         .provenance = iv::PackageProvenance::built_in,
         .artifact_root = iv::test::builtin_package_artifact_root(),
     });
-    EXPECT_NE(std::ranges::find(loaded.definitions, "iv.builtin.automation.curve",
+    EXPECT_NE(std::ranges::find(loaded.definitions, "builtin.automation.curve",
         &iv::ModuleLoader::LoadedDefinition::module_id), loaded.definitions.end());
-    for (auto const* id : {"iv.builtin.automation.point_source", "iv.builtin.automation.interpreter"}) {
-        EXPECT_NE(std::ranges::find(loaded.node_types, id,
+    for (auto const* id : {"builtin.automation.point_source", "builtin.automation.interpreter"}) {
+        EXPECT_EQ(std::ranges::find(loaded.node_types, id,
             &iv::ModuleLoader::LoadedNodeType::node_type_id), loaded.node_types.end());
     }
     EXPECT_EQ(std::ranges::count_if(loaded.module_message_handlers, [](auto const& handler) {
         return std::string_view(static_cast<char const*>(handler.definition_id.data), handler.definition_id.size)
-            == "iv.builtin.automation.curve";
+            == "builtin.automation.curve";
     }), 5);
 }
 

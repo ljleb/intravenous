@@ -224,7 +224,7 @@ TEST_F(NodeInstancesTest, PackageRegistryListsQueuedPackagesBeforeTheirFirstBuil
     std::filesystem::create_directories(source_root);
     iv::test_support::write_text(
         source_root / "iv_package.json",
-        "{\"schema\":2,\"entry\":\"module.cpp\",\"namespace\":\"iv.test\",\"dependencies\":[\"iv.builtin\"]}\n");
+        "{\"schema\":2,\"entry\":\"module.cpp\",\"namespace\":\"iv.test\",\"dependencies\":[\"builtin\"]}\n");
     iv::test_support::write_text(
         source_root / "module.cpp",
         "#include <intravenous/dsl.h>\n\n"

@@ -405,7 +405,7 @@ class AutomationCurve {
     std::vector<Point> points_;
 
     void replace_points(ModuleMessageContext<AutomationCurve>& ctx, std::vector<Point> const& points) const {
-        ctx.replace<"iv.builtin.automation.curve">(points);
+        ctx.replace<"builtin.automation.curve">(points);
     }
     static void set_segment(std::vector<Point>& points, SetSegment const& event) {
         auto const found = std::ranges::find(points, event.id, &Point::id);
@@ -415,7 +415,7 @@ class AutomationCurve {
         validate_point(*found);
     }
 public:
-    explicit AutomationCurve(std::vector<Point> points) : points_(std::move(points)) {
+    explicit AutomationCurve(std::vector<Point> points = {}) : points_(std::move(points)) {
         for (auto const& point : points_) {
             validate_point(point);
         }
@@ -431,8 +431,8 @@ public:
         });
     }
     void build_graph(GraphBuilder& g) const {
-        auto points = g.node<"iv.builtin.automation.point_source">(g.immutable_array<Point>(points_));
-        auto curve = g.node<"iv.builtin.automation.interpreter">();
+        auto points = details::configure_concrete_node<PointSource>(g, g.immutable_array<Point>(points_));
+        auto curve = details::configure_concrete_node<Curve>(g);
 
         auto const min = g.input<"min", Sample>(InputAccess::coverage, {
             .channel_layout = mono_planar_channel_layout, .default_value = 0, .enabled_by_default = false});

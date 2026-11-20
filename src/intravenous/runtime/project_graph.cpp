@@ -3587,7 +3587,7 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
             auto const& graph = *generation->graph;
             for (NodeBundleHandle bundle = 0; bundle < graph.node_bundles.size(); ++bundle) {
                 auto const& candidate = graph.node_bundles.bundle(bundle);
-                if (!candidate.is_subgraph() || candidate.subgraph_kind() != "iv.builtin.timeline") continue;
+                if (!candidate.is_subgraph() || candidate.subgraph_kind() != "builtin.timeline") continue;
                 for (auto const& [instance, placement] : generation->placements) {
                     auto path = project_member_path(graph, placement.root, bundle);
                     if (!path) continue;

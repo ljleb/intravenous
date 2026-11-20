@@ -1,4 +1,5 @@
 #include <intravenous/runtime/socket_rpc_routes.h>
+#include <intravenous/runtime/node_definition_search.h>
 
 #include <intravenous/runtime/socket_rpc_response_builders.h>
 #include <intravenous/runtime/socket_rpc_server.h>
@@ -195,6 +196,13 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
                 iv_socket_rpc_get_graph_scope_event, request, builder);
             if (!builder.has_response()) builder.fail("project graph service is unavailable");
             return builder.build(id);
+        });
+    impl_->add<SearchNodeDefinitionsRequest>("nodeDefinitions.search", "project.read", false, false,
+        [](auto const& request, int id, Context const&) {
+            std::shared_ptr<NodeDefinitionsSnapshot const> snapshot;
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_node_definitions_event, snapshot);
+            if (!snapshot) return jsonrpc_error(id, -32000, "Node definitions are unavailable");
+            return jsonrpc_result(id, search_node_definitions(*snapshot, request.source, request.cursor));
         });
     impl_->add<CreateNodeInstanceRequest>(
         "nodeInstances.create", "project.write", true, false,

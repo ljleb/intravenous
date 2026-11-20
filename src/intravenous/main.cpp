@@ -1,6 +1,7 @@
 #define IV_INTERNAL_TRANSLATION_UNIT
 
 #include <intravenous/runtime/app.h>
+#include <intravenous/module/dev_runtime.h>
 
 #include <iostream>
 #include <cstdlib>
@@ -21,8 +22,9 @@ int main(int argc, char** argv)
         auto const* entered = std::getenv("IV_APPLICATION_ENVIRONMENT_ID");
         if (!entered || std::string_view(entered) != IV_CONFIGURED_APPLICATION_ENVIRONMENT_ID) {
             auto executable = std::filesystem::read_symlink("/proc/self/exe").string();
+            auto launcher = iv::details::runtime_artifact(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER).string();
             std::vector<char*> arguments;
-            arguments.push_back(const_cast<char*>(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER));
+            arguments.push_back(launcher.data());
             arguments.push_back(executable.data());
             for (int i = 1; i < argc; ++i) arguments.push_back(argv[i]);
             arguments.push_back(nullptr);

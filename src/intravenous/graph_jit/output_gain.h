@@ -35,7 +35,7 @@ inline OutputGainExpansion expand_output_gains(ConfiguredGraph& graph, NodeDefin
         if (auto found = tick_prototypes.find(key); found != tick_prototypes.end()) return found->second;
         std::optional<ConcreteNode> tick_prototype;
         {
-            auto const id = "iv.builtin.output_gain." + std::string(channel_type_info(layout.channel_type).wire_name)
+            auto const id = "builtin.output_gain." + std::string(channel_type_info(layout.channel_type).wire_name)
                 + (layout.sample_layout == SampleStreamLayout::planar ? ".planar" : ".interleaved");
             auto definition = definitions.by_id.find(id);
             if (definition == definitions.by_id.end())

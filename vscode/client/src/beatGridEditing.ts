@@ -25,7 +25,7 @@ export class BeatGridEditing {
         this.readRevision = revision;
         const seen = new Set<string>();
         for (const { address, construction } of scope?.nodes ?? []) {
-            if (construction?.definitionId !== "iv.builtin.beats") continue;
+            if (construction?.definitionId !== "builtin.beats") continue;
             const grid = readBeatGrid(construction.arguments);
             if (!grid) continue;
             const key = addressKey(address);

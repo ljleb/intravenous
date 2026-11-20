@@ -1,5 +1,6 @@
 import esbuild from "esbuild";
 import path from "path";
+import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "url";
 import { build as buildWebview } from "vite";
 
@@ -7,8 +8,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const watch = process.argv.includes("--watch");
 
-const outdir = path.join(__dirname, "dist");
+const outdir = process.env.IV_CLIENT_OUT_DIR || path.join(__dirname, "dist");
 const webviewConfigFile = path.join(__dirname, "vite.webview.config.mts");
+await mkdir(outdir, { recursive: true });
 
 // The extension host is a Node bundle. The webview is a separate Vue
 // application built by Vite into dist/webview (see vite.webview.config.mts).
@@ -24,7 +26,6 @@ const context = await esbuild.context({
     external: ["vscode"],
     define: {
         "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV || "development"),
-        "__INTRAVENOUS_DEFAULT_DIR__": JSON.stringify(process.env.INTRAVENOUS_DEFAULT_DIR || ""),
     },
 });
 

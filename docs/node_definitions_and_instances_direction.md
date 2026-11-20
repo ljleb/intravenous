@@ -153,13 +153,13 @@ batch. It cannot alter the definition world halfway through the current batch.
 Every `g.node<"id">(...)` lookup uses one rule, whether it resolves through a
 `BuilderSession`'s own package tables or through `NodeInstances`' snapshot: an
 exact definition ID wins, and otherwise a bare ID (one without a `.`) names the
-built-in definition `iv.builtin.<id>`. Scalar sugar depends on it: `osc * 0.1`
+built-in definition `builtin.<id>`. Scalar sugar depends on it: `osc * 0.1`
 creates `g.node<"constant">`. (Restated 2026-11-12, after `NodeInstances`'
 resolution was found to skip the built-in names.)
 
 The executable's builtin package is also an implicit package dependency of
 all other packages. Its default import therefore remains usable without an
-`iv.builtin` entry in each manifest. Static package selection includes it before
+`builtin` entry in each manifest. Static package selection includes it before
 configuration; see [Package Pipeline](package_pipeline_architecture.md#logical-package-namespaces-and-static-selection).
 
 **Planned (requested by the repository owner on 2026-11-12, not scheduled):**
@@ -173,7 +173,7 @@ design.
 
 ### Future package identity, publication, and type construction (2026-11-15 clarification)
 
-The existing exact-ID lookup and implicit `iv.builtin.<id>` fallback above
+The existing exact-ID lookup and implicit `builtin.<id>` fallback above
 remain the authoring lookup behavior. The owner selected static manifest
 namespaces, longest matching dotted-prefix ownership and declared package
 closure selection on 2026-11-16; see
