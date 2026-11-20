@@ -123,10 +123,13 @@ TEST(ScopedGraphBuilder, PrivateModuleConstructionPreservesItsBoundary)
     root.outputs("out"_P = module["value"_P]);
 
     auto const graph = std::move(root).finish();
-    auto const& bundle = graph.node_bundles.bundle(handle);
+    auto const& bundles = graph.node_bundles;
+    auto const& bundle = bundles.bundle(handle);
     ASSERT_TRUE(bundle.is_subgraph());
-    EXPECT_EQ(bundle.sample_input_descriptor(0).config.name, "in");
-    EXPECT_EQ(bundle.sample_output_descriptor(0).config.name, "value");
+    ASSERT_EQ(bundle.sample_input_count(), 1u);
+    ASSERT_EQ(bundle.sample_output_count(), 1u);
+    EXPECT_EQ(bundles.resolve_sample_input({handle, PortKind::sample, 0}).config.name, "in");
+    EXPECT_EQ(bundles.resolve_sample_output({handle, PortKind::sample, 0}).config.name, "value");
 }
 
 TEST(ScopedGraphBuilder, RecursivePrivateModuleFailsConstruction)
