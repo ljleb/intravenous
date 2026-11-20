@@ -47,6 +47,13 @@ project-authored connections may address their ports through the existing
 filtered presentation of that same module instance using the common lane UI;
 it is not a second graph or a less capable interaction system.
 
+**Accepted visibility rule (2026-11-20).** A C++-authored child is addressable
+when the existing project node selector syntax can reach it. This includes
+named tiled children reached with `#name`. Expanded modules show addressable
+children, and project connections can target their ports. Children that no
+selector can reach stay hidden. A future inspection or module-copy operation
+can revisit their visibility.
+
 Project-authored nested subgraph scopes remain planned separately; see
 [Subgraph presentation layout](./node_presentation_and_manual_controls_direction.md#subgraph-presentation-layout).
 Their nodes and connections are project-owned and editable. Scope boundary

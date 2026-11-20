@@ -881,7 +881,6 @@ build_connection_analysis_plan(
         *port_realization,
         kernel_block_size,
         cost_model,
-        nullptr,
         callback_batch_classes,
         callback_elision_candidates);
 }
@@ -909,10 +908,7 @@ TEST(GraphJitConnectionPlan,
     auto const plan = iv::graph_jit::detail::build_connection_analysis_plan(
         graph,
         iv::graph_jit::ResolvedPortRealization{},
-        64,
-        iv::RealtimeStorageCostModel{},
-        nullptr,
-        {});
+        64);
     ASSERT_FALSE(plan.has_value());
     EXPECT_NE(
         plan.error().find("must use interleaved storage"),
@@ -4780,6 +4776,9 @@ TEST(GraphJitConnectionPlan, ReusingCoverageOverrideTopologyKeepsAuthoredValidat
     auto source = details::configure_concrete_node<BackgroundSource>(graph);
     auto target = details::configure_concrete_node<BackgroundSamplePass>(graph);
     target(source);
+    auto event_source = details::configure_concrete_node<BackgroundMidiSource>(graph);
+    auto event_target = details::configure_concrete_node<BackgroundEventPass>(graph);
+    event_target.connect_event_input(0, event_source.event_port());
     graph.outputs();
     auto configured = std::move(graph).finish();
     ASSERT_EQ(configured.connections.configured_sample_connections().size(), 1u);
@@ -4797,12 +4796,26 @@ TEST(GraphJitConnectionPlan, ReusingCoverageOverrideTopologyKeepsAuthoredValidat
     ASSERT_EQ(first->sample_connections.size(), 1u);
     ASSERT_EQ(first->sample_connections.front().source_channels.size(), 1u);
     EXPECT_EQ(first->sample_connections.front().source_channels.front().bundle, manual.front().bundle);
-    ASSERT_FALSE(first->background.connections.empty());
-    auto realization = iv::graph_jit::resolve_port_realization(configured);
+    ASSERT_EQ(first->background.connections.size(), 2u);
+    ASSERT_FALSE(first->background.storage.event_materializations.empty());
+    auto realization = graph_jit::resolve_port_realization(configured);
     ASSERT_TRUE(realization) << realization.error();
-    auto reused = iv::graph_jit::detail::build_connection_analysis_plan(
-        configured, *realization, 64, {}, &first->background);
-    EXPECT_TRUE(reused) << reused.error();
+    auto topology = graph_jit::detail::ConnectionTopology::build(
+        configured, *realization, 64, {}, {}, {});
+    ASSERT_TRUE(topology) << topology.error();
+    auto initial = *topology;
+    auto initial_plan = std::move(initial).build_analysis_plan({}, {}, {});
+    ASSERT_TRUE(initial_plan) << initial_plan.error();
+    auto pressure_model = RealtimeStorageCostModel{};
+    pressure_model.stack_footprint_byte_weight *= 4;
+    auto reused = std::move(*topology).build_analysis_plan(pressure_model, {}, {});
+    ASSERT_TRUE(reused) << reused.error();
+    EXPECT_EQ(initial_plan->background.connections, first->background.connections);
+    EXPECT_EQ(reused->background.connections, first->background.connections);
+    EXPECT_EQ(reused->background.storage.sample_target_storage,
+        first->background.storage.sample_target_storage);
+    EXPECT_EQ(reused->background.storage.event_target_storage,
+        first->background.storage.event_target_storage);
 }
 
 TEST(GraphJitConnectionPlan, ModuleManualFanoutPreservesDetachAndOrdinarySourcePolicy)

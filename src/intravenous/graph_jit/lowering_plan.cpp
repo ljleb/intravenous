@@ -9864,8 +9864,6 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         RootStackBufferPlan root_stack{};
     };
 
-    std::optional<BackgroundEvaluationPlan> retained_background_plan;
-
     auto configure_background_replay = [&](ConnectionAnalysisPlan& connections)
         -> std::expected<void, std::string> {
         auto& background = connections.background;
@@ -9913,20 +9911,20 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         return {};
     };
 
-    // The first analysis derives background topology from every callback
-    // batch class. Later analyses reuse that retained background plan, so
-    // narrowing these realtime classes changes only the realtime schedule.
+    // Background topology keeps all callback batch classes. Stack-budget
+    // retries change only the realtime schedule and storage policy.
+    auto const& configured_cost_model = input.realtime_storage_cost_model;
+    auto topology = ConnectionTopology::build(
+        input.graph, *port_realization, input.specialization.block_size,
+        configured_cost_model, callback_batch_classes, callback_elision_candidates);
+    if (!topology) return std::unexpected(std::move(topology.error()));
     std::vector<std::size_t> realtime_batch_classes = callback_batch_classes;
     auto const no_batch_class = std::numeric_limits<std::size_t>::max();
 
     auto plan_realtime_ports = [&](RealtimeStorageCostModel const& cost_model)
         -> std::expected<RealtimePortPlans, std::string> {
-        auto connections = build_connection_analysis_plan(
-            input.graph,
-            *port_realization,
-            input.specialization.block_size,
+        auto connections = ConnectionTopology(*topology).build_analysis_plan(
             cost_model,
-            retained_background_plan ? &*retained_background_plan : nullptr,
             realtime_batch_classes,
             callback_elision_candidates);
         if (!connections) {
@@ -9934,9 +9932,6 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         }
         if (auto replay = configure_background_replay(*connections); !replay) {
             return std::unexpected(std::move(replay.error()));
-        }
-        if (!retained_background_plan) {
-            retained_background_plan = connections->background;
         }
         auto sample_ports = plan_sample_ports(
             input,
@@ -9982,7 +9977,6 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         };
     };
 
-    auto const& configured_cost_model = input.realtime_storage_cost_model;
     auto const stack_budget = configured_cost_model.stack_budget_bytes;
     for (;;) {
         auto realtime_ports = plan_realtime_ports(configured_cost_model);

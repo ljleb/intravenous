@@ -7,12 +7,14 @@
 #include <intravenous/runtime/node_definitions_project_graph_bridge.h>
 #include <intravenous/runtime/node_instances.h>
 #include <intravenous/runtime/package_pipeline_types.h>
+#include <intravenous/runtime/project_connection_json.h>
 #include <intravenous/runtime/project_graph.h>
 #include <intravenous/runtime/project_graph_events.h>
 #include <intravenous/runtime/project_graph_graph_connections_bridge.h>
 #include <intravenous/runtime/project_graph_package_definitions_bridge.h>
 #include <intravenous/runtime/package_definitions.h>
 #include <intravenous/runtime/project_graph_node_instances_bridge.h>
+#include <intravenous/runtime/project_node_path_resolver.h>
 #include <intravenous/runtime/runtime_project_events.h>
 
 #include <gtest/gtest.h>
@@ -2294,11 +2296,12 @@ TEST_F(ProjectGraphFixture, ConnectionMutationRebuildsWholeRootAndDanglingIntent
 }
 
 namespace {
-nlohmann::ordered_json read_graph_scope(iv::ProjectGraph& project_graph)
+nlohmann::ordered_json read_graph_scope(iv::ProjectGraph& project_graph,
+    std::optional<iv::NodeAddress> subject = std::nullopt)
 {
     iv::SocketRpcGraphScopeResultBuilder builder;
     in_event_source([&] {
-        project_graph.handle_socket_rpc_get_graph_scope(iv::GetGraphScopeRequest{}, builder);
+        project_graph.handle_socket_rpc_get_graph_scope({.subject = std::move(subject)}, builder);
     });
     return nlohmann::ordered_json::parse(builder.build(1)).at("result");
 }
@@ -2322,6 +2325,58 @@ void node_message_gesture(iv::ProjectGraph& graph, iv::NodeMessageGestureId cons
     if (result.contains("error")) throw std::runtime_error(result["error"]["message"].get<std::string>());
 }
 } // namespace
+
+TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
+{
+    using namespace iv;
+    auto configure_children = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
+        using Pass = Sum<mono, SampleStreamLayout::planar, 1>;
+        auto input = graph.input<"main">();
+        auto named = details::configure_concrete_node<Pass>(graph);
+        named(input);
+        named._annotate_source_info("named", "/tmp/module_children.cpp", 1, 2);
+        auto anonymous = details::configure_concrete_node<Pass>(graph);
+        anonymous(named);
+        graph.outputs("main"_P = anonymous);
+    };
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1, configure_children)});
+    ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance(
+        {.instance_id = "module", .definition_id = definition_id}, create); });
+    ASSERT_EQ(create.build(), "module");
+    auto const scope = read_graph_scope(project_graph, NodeAddress{.instance_id = "module"});
+    auto const& children = scope.at("nodes");
+    ASSERT_EQ(children.size(), 1u) << scope.dump();
+    auto const& child = children.at(0);
+    EXPECT_EQ(child.at("childDisplayName"), "named");
+    auto const address = parse_node_address_json(child.at("address"), ProjectConnectionJsonNames::socket_rpc);
+    ASSERT_EQ(address.path.size(), 2u);
+    auto const generation = project_graph.current_generation();
+    ASSERT_TRUE(generation && generation->graph);
+    auto const matches = resolve_node_address(*generation->graph, generation->placements, address);
+    ASSERT_EQ(matches.size(), 1u);
+    EXPECT_EQ(matches.front().kind, ProjectNodePathMatch::Kind::bundle);
+    EXPECT_EQ(child.at("sampleOutputs").size(), 1u);
+    EXPECT_TRUE(read_graph_scope(project_graph, address).at("nodes").empty());
+
+    ProjectStringBuilder create_sink;
+    in_event_source([&] { project_graph.handle_project_create_node_instance(
+        {.instance_id = "sink", .definition_id = definition_id}, create_sink); });
+    ASSERT_EQ(create_sink.build(), "sink");
+    ProjectAckBuilder connect;
+    in_event_source([&] { project_graph.handle_project_upsert_graph_connection({
+        .connection = ProjectSampleConnection{
+            .connection_id = "child-wire",
+            .source_type = ChannelTypeId::mono,
+            .outputs = {{.instance_id = address.instance_id, .path = address.path, .port = {.index = 0}}},
+            .target_type = ChannelTypeId::mono,
+            .inputs = {{.instance_id = "sink", .port = {.name = "main"}}},
+        },
+    }, connect); });
+    ASSERT_NO_THROW(connect.build());
+    EXPECT_EQ(project_graph.current_generation()->applied_connection_ids,
+        std::vector<std::string>{"child-wire"});
+}
 
 TEST_F(ProjectGraphFixture, GraphScopeReportsAcceptedArgumentsAfterReplacementUndoAndFailedConfiguration)
 {

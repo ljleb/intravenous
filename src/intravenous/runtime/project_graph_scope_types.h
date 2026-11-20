@@ -34,7 +34,10 @@ struct ProjectGraphScopeManualControl {
 // one desired project instance.
 struct ProjectGraphScopeNode {
     NodeAddress address{};
+    // The project instance owns the address. For a source-owned child, the
+    // selector path identifies the row within that instance.
     IvModuleInstanceInfo instance{};
+    std::optional<std::string> child_display_name{};
     // A diagnostic from the latest configuration pass, not merely a pending
     // realization. The previous executable generation may still be running.
     std::string error_message{};

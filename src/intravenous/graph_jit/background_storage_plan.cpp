@@ -122,89 +122,6 @@ std::optional<PortSubsetIndex> event_source_subset_for(
     return std::nullopt;
 }
 
-SampleConnectionPlan const* sample_connection_for(
-    ConnectionAnalysisPlan const& connections,
-    BackgroundConnectionPlan const& background)
-{
-    auto const found = std::ranges::find_if(
-        connections.sample_connections,
-        [&](SampleConnectionPlan const& connection) {
-            if (connection.configured_connection_index
-                    == background.configured_connection_index
-                && connection.source_type == background.sample_source_type
-                && connection.target_type == background.sample_target_type
-                && connection.source_channels == background.sample_source_channels
-                && connection.target_channels == background.sample_target_channels
-                && connection.projection_contributions.size()
-                    == background.sample_projections.size()) {
-                for (std::size_t index = 0;
-                     index < connection.projection_contributions.size();
-                     ++index) {
-                    auto const& planned =
-                        connection.projection_contributions[index];
-                    auto const& retained = background.sample_projections[index];
-                    if (planned.source_type != retained.source_type
-                        || planned.source_channel_indices
-                            != retained.source_channel_indices
-                        || planned.target_type != retained.target_type
-                        || planned.target_channels != retained.target_channels
-                        || planned.transform.source_channel_count
-                            != retained.transform_source_channel_count
-                        || planned.transform.target_channel_count
-                            != retained.transform_target_channel_count
-                        || planned.transform.coefficients
-                            != retained.transform_coefficients) {
-                        return false;
-                    }
-                }
-                return true;
-            }
-            return false;
-        });
-    return found == connections.sample_connections.end() ? nullptr : &*found;
-}
-
-EventConnectionPlan const* event_connection_for(
-    ConnectionAnalysisPlan const& connections,
-    BackgroundConnectionPlan const& background)
-{
-    auto const found = std::ranges::find_if(
-        connections.event_connections,
-        [&](EventConnectionPlan const& connection) {
-            if (connection.configured_connection_index
-                    != background.configured_connection_index
-                || connection.source_type != background.event_source_type
-                || connection.target_type != background.event_target_type
-                || connection.conversion != background.event_conversion
-                || connection.deliveries.size()
-                    != background.event_deliveries.size()) {
-                return false;
-            }
-            for (std::size_t delivery = 0;
-                 delivery < connection.deliveries.size(); ++delivery) {
-                auto const& planned = connection.deliveries[delivery];
-                if (planned.source_index >= connection.source_plans.size()
-                    || planned.target_index >= connection.target_plans.size()) {
-                    return false;
-                }
-                auto const& retained = background.event_deliveries[delivery];
-                if (connection.source_plans[planned.source_index].source
-                        != retained.source
-                    || connection.source_plans[planned.source_index].source_type
-                        != retained.source_type
-                    || connection.source_plans[planned.source_index].conversion
-                        != retained.conversion
-                    || connection.target_plans[planned.target_index].target
-                        != retained.target
-                    || planned.mechanism != retained.mechanism) {
-                    return false;
-                }
-            }
-            return true;
-        });
-    return found == connections.event_connections.end() ? nullptr : &*found;
-}
-
 std::optional<std::size_t> direct_sample_source_index(
     SampleConnectionPlan const& connection,
     std::size_t target_channel)
@@ -425,9 +342,14 @@ std::optional<BackgroundEventCountBound> background_event_count_bound(
 }
 
 std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
-    ConnectionAnalysisPlan const& connections)
+    ConnectionAnalysisPlan const& connections,
+    std::span<std::size_t const> normalized_connection_indices)
 {
     auto const& background = connections.background;
+    if (normalized_connection_indices.size() != background.connections.size()) {
+        return std::unexpected(
+            "GraphJit background storage planning has an incomplete connection mapping");
+    }
     BackgroundStoragePlan result;
     result.sample_source_storage.resize(
         background.sample_source_subsets.size());
@@ -774,15 +696,15 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
          connection_index < background.connections.size(); ++connection_index) {
         auto const& background_connection =
             background.connections[connection_index];
+        auto const normalized_index = normalized_connection_indices[connection_index];
         auto& storage_connection = result.connections[connection_index];
 
         if (background_connection.kind == PortKind::sample) {
-            auto const* connection = sample_connection_for(
-                connections, background_connection);
-            if (!connection) {
+            if (normalized_index >= connections.sample_connections.size()) {
                 return std::unexpected(
-                    "GraphJit background sample storage planning lost its normalized connection");
+                    "GraphJit background storage planning has an invalid sample connection index");
             }
+            auto const* connection = &connections.sample_connections[normalized_index];
             for (auto const target_subset_index :
                  background_connection.target_subsets) {
                 if (target_subset_index >= background.sample_target_subsets.size()) {
@@ -1281,12 +1203,11 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
             continue;
         }
 
-        auto const* connection = event_connection_for(
-            connections, background_connection);
-        if (!connection) {
+        if (normalized_index >= connections.event_connections.size()) {
             return std::unexpected(
-                "GraphJit background event storage planning lost its normalized connection");
+                "GraphJit background storage planning has an invalid event connection index");
         }
+        auto const* connection = &connections.event_connections[normalized_index];
         for (auto const target_subset_index : background_connection.target_subsets) {
             if (target_subset_index >= background.event_target_subsets.size()) {
                 return std::unexpected(

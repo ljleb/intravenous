@@ -207,9 +207,7 @@ class ProjectGraph {
     bool restore_live_targets_ = false;
     struct GraphCompileRequest {
         std::uint64_t request_id = 0;
-        std::shared_ptr<ProjectGraphGeneration const> generation{};
-        std::shared_ptr<ConfiguredGraph const> graph{};
-        CompiledObservationPlan observations{};
+        GraphJitCompileRequest inputs{};
         std::shared_ptr<ControlCompileTrace> trace{};
     };
     std::optional<GraphCompileRequest> pending_graph_compile_{};
@@ -225,31 +223,17 @@ class ProjectGraph {
     };
     struct ControlCompileRequest {
         std::uint64_t request_id = 0;
-        std::uint64_t project_generation = 0;
-        std::uint64_t configured_generation = 0;
-        std::shared_ptr<ConfiguredGraph const> graph{};
-        std::shared_ptr<NodeDefinitionsSnapshot const> definitions{};
+        GraphJitCompileRequest inputs{};
         std::vector<ManualControlId> dynamic_inputs{};
         bool activate_on_ready = false;
         std::shared_ptr<ControlCompileTrace> trace{};
-        CompiledObservationPlan observations{};
         // A prepared candidate being promoted to staging; skip recompiling it.
         std::shared_ptr<CompiledGraph const> prepared_graph{};
     };
     struct ReadyControlCode {
-        std::uint64_t project_generation = 0;
         std::vector<ManualControlId> dynamic_inputs{};
         std::shared_ptr<CompiledGraph const> graph{};
         std::shared_ptr<ControlCompileTrace> trace{};
-    };
-    struct InflightControlCompile {
-        std::uint64_t request_id = 0;
-        std::uint64_t project_generation = 0;
-        std::vector<ManualControlId> dynamic_inputs{};
-        bool activate_on_ready = false;
-        std::shared_ptr<ControlCompileTrace> trace{};
-        std::shared_ptr<ConfiguredGraph const> graph{};
-        CompiledObservationPlan observations{};
     };
 
     std::vector<ProjectEditEffect> edit_history_{};
@@ -300,7 +284,7 @@ class ProjectGraph {
     std::shared_ptr<CompiledGraph const> staged_control_graph_{};
     std::optional<ControlCompileRequest> pending_control_compile_{};
     std::vector<ProjectControlCompileStatus> control_compile_notifications_{};
-    std::optional<InflightControlCompile> inflight_control_compile_{};
+    std::optional<ControlCompileRequest> inflight_control_compile_{};
     std::optional<ReadyControlCode> ready_control_code_{};
     bool settling_controls_ = false;
     std::condition_variable control_compile_changed_{};
@@ -348,7 +332,12 @@ class ProjectGraph {
     void publish_control_compile_status();
     void compile_control_storage_change(std::uint64_t request_id,
         std::shared_ptr<ControlCompileTrace> const& trace);
+    [[nodiscard]] GraphJitCompileRequest capture_compile_inputs_locked(
+        std::shared_ptr<ConfiguredGraph const> graph) const;
+    [[nodiscard]] bool compile_inputs_are_current_locked(
+        std::uint64_t project_generation, std::uint64_t observation_revision) const;
     [[nodiscard]] bool control_code_matches_locked(std::span<ManualControlId const> inputs) const;
+    [[nodiscard]] bool ready_control_code_matches_locked(std::span<ManualControlId const> inputs) const;
     [[nodiscard]] bool control_configuration_matches_locked(ConfiguredGraph const& candidate,
         std::span<ManualControlId const> inputs) const;
     [[nodiscard]] ProjectManualControl* find_manual_control_locked(

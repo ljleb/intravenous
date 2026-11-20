@@ -22,7 +22,8 @@ struct BackgroundEventCountBound {
 // background or mixed-domain connection. No data memory is allocated here;
 // GraphExecutor later realizes these records for a requested range/version.
 std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
-    ConnectionAnalysisPlan const& connections);
+    ConnectionAnalysisPlan const& connections,
+    std::span<std::size_t const> normalized_connection_indices);
 
 // Retain the compact runtime binding/operation/replay schedule over the
 // already-selected storage plan, then validate every retained index and order.

@@ -509,7 +509,7 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
     }
     auto nodes = Json::array();
     for (auto const& node : result->nodes) {
-        nodes.push_back(Json{
+        Json entry{
             {"address", node_address_json(node.address, ProjectConnectionJsonNames::socket_rpc)},
             {"instance", iv_module_instance_json(node.instance)},
             {"definitionId", node.construction_definition_id.empty()
@@ -526,7 +526,9 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
                 {"arguments", Json::parse(*node.construction_arguments_json)},
             } : Json(nullptr)},
             {"constructionError", node.construction_error},
-        });
+        };
+        if (node.child_display_name) entry["childDisplayName"] = *node.child_display_name;
+        nodes.push_back(std::move(entry));
     }
     auto connections = Json::array();
     for (auto const& entry : result->connections) {

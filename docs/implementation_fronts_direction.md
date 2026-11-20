@@ -7043,6 +7043,40 @@ approach to full spherical panning using the available datasets and research.
 No algorithm replacement or quality tradeoff is accepted yet. The associated UI
 requests remain in [the Vue follow-up list](vue_client_implementation_stages.md#owner-follow-up-list-2026-11-14).
 
+## Architecture refactor follow-ups
+
+_Status notes from the 2026-11-20 source review. The existing design documents
+continue to govern observable behavior._
+
+- **Graph identity across views.** `graph.getScope` describes top-level
+  `GraphScopeNode` records. The source panel reads `VirtualNode` records through
+  `graph.queryBySpans`. The project editor also reduces selected `NodeAddress`
+  values to instance IDs for some commands. Give both views the same addressed
+  node and port descriptions, with edit permissions based on ownership. Start
+  with the child scopes of existing C++ modules and preserve source selection
+  as a filter. Design project-owned scope boundaries separately.
+  Discover C++-authored children through the same selector paths used by
+  project connections. Named tile paths such as `#right` count as addresses.
+  Hide children that the selector resolver cannot reach.
+  `graph.getScope` now accepts a subject `NodeAddress` and returns its direct
+  selector-reachable children and their port interfaces. The root response
+  still describes project instances. The editor and source panel still need
+  to consume child scopes.
+  [Module interaction](./module_interoperability_and_graph_macros_direction.md#nested-module-presentation-and-project-owned-scopes)
+- **Compilation staging eligibility.** Structural graph builds, speculative
+  control builds, and failed-generation recovery now use `GraphJitCompileRequest`
+  for their inputs. `ProjectGraph` shares the generation and observation
+  freshness checks for new builds and prepared control code. Recovery uses
+  the original inputs of the accepted successors it rebuilds. Native test
+  verification is pending.
+  [Project graph coordination](./project_graph_application_architecture.md#projectgraph-is-the-root-graph-transaction-coordinator)
+- **GraphJit connection planning.** `ConnectionTopology` now keeps the normalized
+  Sample and Event connections with the background topology. Storage planning
+  follows the index recorded when each background connection was made.
+  Stack-budget retries reuse that topology and recompute scheduling and storage.
+  Authored detach validation still precedes planning for manual overrides.
+  Native test verification is pending.
+
 ## Dependency summary
 
 The main execution path is approximately:

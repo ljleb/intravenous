@@ -503,6 +503,42 @@ sequential_connection_coverage(
     SampleConnectionPlan const& connection,
     std::optional<bool> realtime_component = {});
 
+// Normalized connections and the background topology derived from them. The
+// graph and its port realization must outlive this object and remain unchanged.
+// A planning attempt receives a copy when the caller needs to retain topology
+// for retries. A one-shot caller can transfer it without a copy.
+class ConnectionTopology {
+public:
+    static std::expected<ConnectionTopology, std::string> build(
+        ConfiguredGraph const& graph,
+        ResolvedPortRealization const& port_realization,
+        std::size_t kernel_block_size,
+        RealtimeStorageCostModel const& cost_model,
+        std::span<std::size_t const> callback_batch_classes,
+        std::span<NodeBundleHandle const> callback_elision_candidates);
+
+    std::expected<ConnectionAnalysisPlan, std::string> build_analysis_plan(
+        RealtimeStorageCostModel const& cost_model,
+        std::span<std::size_t const> callback_batch_classes,
+        std::span<NodeBundleHandle const> callback_elision_candidates) &&;
+
+private:
+    ConnectionTopology(ConfiguredGraph const& graph,
+        ResolvedPortRealization const& port_realization,
+        std::size_t kernel_block_size)
+        : graph_(graph), port_realization_(port_realization),
+          kernel_block_size_(kernel_block_size)
+    {}
+
+    ConfiguredGraph const& graph_;
+    ResolvedPortRealization const& port_realization_;
+    std::size_t kernel_block_size_;
+    ConnectionAnalysisPlan plan_{};
+    // In background connection order. Each entry indexes either sample_connections
+    // or event_connections, according to the corresponding connection's PortKind.
+    std::vector<std::size_t> normalized_connection_indices_{};
+};
+
 // Pure host-side topology/temporal/storage-requirement analysis. It does not
 // require LLVM or resolved package implementations and is intentionally usable
 // before the current lowering capability gate. That lets connected graphs be
@@ -512,10 +548,6 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     ResolvedPortRealization const& port_realization,
     std::size_t kernel_block_size,
     RealtimeStorageCostModel const& cost_model = {},
-    // Stack-pressure retries change only realtime storage policy. Supplying
-    // the immutable plan retained from the first analysis avoids repeating
-    // semantic SCC/background topology work for the same graph specialization.
-    BackgroundEvaluationPlan const* retained_background_plan = nullptr,
     // Optional entry positions are ConfiguredGraph NodeBundleHandle values.
     // Equal identifiers mean equal callback-facing implementation/realization.
     // The empty span preserves the ordinary deterministic bundle order.

@@ -66,6 +66,17 @@ struct ProjectNodePathGraph {
 [[nodiscard]] ProjectNodePathMatch require_single_project_node_path_match(
     std::span<ProjectNodePathMatch const> matches,
     std::string_view description);
+
+struct ProjectChildNode {
+    NodeBundleHandle bundle;
+    std::vector<ProjectNodePathSelector> path;
+};
+
+// Direct children whose selector paths resolve uniquely from the subject.
+// Paths are relative to the subject and can be appended to its NodeAddress.
+[[nodiscard]] std::vector<ProjectChildNode> project_child_nodes(
+    ConfiguredGraph const&, NodeBundleHandle subject);
+
 // Finds a semantic member path when the target belongs to this authored instance.
 [[nodiscard]] std::optional<std::vector<ProjectNodePathSelector>> project_member_path(
     ConfiguredGraph const&, NodeBundleHandle root, NodeBundleHandle target);

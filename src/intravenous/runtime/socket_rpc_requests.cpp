@@ -290,7 +290,11 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
             .node_ids = parse_string_array_param(params, "nodeIds")});
     }
     if (method == "graph.getScope") {
-        return parsed(GetGraphScopeRequest{});
+        GetGraphScopeRequest query;
+        if (auto const subject = params.find("subject"); subject != params.end()) {
+            query.subject = parse_node_address_json(*subject, ProjectConnectionJsonNames::socket_rpc);
+        }
+        return parsed(std::move(query));
     }
     if (method == "nodeDefinitions.search") {
         auto const& params = parse_request_params(request);

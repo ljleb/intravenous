@@ -3022,6 +3022,7 @@ std::expected<void, std::string> populate_background_topology(
     ResolvedPortRealization const& realization,
     ConnectionAnalysisPlan const& connections,
     BackgroundEvaluationPlan& plan,
+    std::vector<std::size_t>& normalized_connection_indices,
     std::size_t kernel_block_size,
     std::span<std::size_t const> callback_batch_classes)
 {
@@ -3512,7 +3513,8 @@ std::expected<void, std::string> populate_background_topology(
             ports.push_back(port);
         }
     };
-    auto append_connection = [&](BackgroundConnectionPlan connection) {
+    auto append_connection = [&](BackgroundConnectionPlan connection,
+                                 std::size_t normalized_index) {
         auto const index = plan.connections.size();
         for (auto const port : connection.source_coverage_ports) {
             auto& outgoing_connections =
@@ -3529,6 +3531,7 @@ std::expected<void, std::string> populate_background_topology(
             }
         }
         plan.connections.push_back(std::move(connection));
+        normalized_connection_indices.push_back(normalized_index);
     };
     auto append_background_dependency = [&](BackgroundDependencyPlan dependency) {
         auto const duplicate = std::ranges::find_if(
@@ -3562,7 +3565,9 @@ std::expected<void, std::string> populate_background_topology(
         return plan.bundle_to_background_node[bundle];
     };
 
-    for (auto const& connection : connections.sample_connections) {
+    for (std::size_t normalized_index = 0;
+         normalized_index < connections.sample_connections.size(); ++normalized_index) {
+        auto const& connection = connections.sample_connections[normalized_index];
         auto const target_bundle = connection.target_port.node_bundle_handle;
         auto const target_replay = node_is_contextually_replayable(target_bundle);
         auto const has_background_delivery = std::ranges::any_of(
@@ -3657,7 +3662,7 @@ std::expected<void, std::string> populate_background_topology(
                 .transform_coefficients = projection.transform.coefficients,
             });
         }
-        append_connection(std::move(background));
+        append_connection(std::move(background), normalized_index);
 
         auto const target_node = background_node_for_bundle(target_bundle);
         if (!target_node) continue;
@@ -3686,7 +3691,9 @@ std::expected<void, std::string> populate_background_topology(
         }
     }
 
-    for (auto const& connection : connections.event_connections) {
+    for (std::size_t normalized_index = 0;
+         normalized_index < connections.event_connections.size(); ++normalized_index) {
+        auto const& connection = connections.event_connections[normalized_index];
         bool any_relevant = false;
         for (auto const& delivery : connection.deliveries) {
             auto const& target = connection.target_plans[delivery.target_index];
@@ -3804,7 +3811,7 @@ std::expected<void, std::string> populate_background_topology(
                     && source.realization == OutputRealization::buffered,
             });
         }
-        append_connection(std::move(background));
+        append_connection(std::move(background), normalized_index);
     }
 
     for (BackgroundPortIndex index = 0; index < plan.ports.size(); ++index) {
@@ -6830,12 +6837,11 @@ void plan_public_event_coverage_inputs(ConfiguredGraph const& graph, BackgroundE
     }
 }
 
-std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_plan(
+std::expected<ConnectionTopology, std::string> ConnectionTopology::build(
     ConfiguredGraph const& graph,
     ResolvedPortRealization const& port_realization,
     std::size_t kernel_block_size,
     RealtimeStorageCostModel const& cost_model,
-    BackgroundEvaluationPlan const* retained_background_plan,
     std::span<std::size_t const> callback_batch_classes,
     std::span<NodeBundleHandle const> callback_elision_candidates)
 {
@@ -6846,16 +6852,15 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
 
     auto const has_manual_override = std::ranges::any_of(
         graph.manual_controls, [](auto const& control) { return control.override_connections; });
-    if (has_manual_override && !retained_background_plan) {
+    if (has_manual_override) {
         // detach() is validated against authored topology. A temporary source
         // replacement can open a valid feedback cycle; its remaining delay
         // still belongs to that authored temporal cut.
-        // Only the first analysis needs this validation. Later iterations
-        // carry the retained plan for the override topology alone.
+        // Stack-budget retries reuse the validated topology.
         auto authored = graph;
         for (auto& control : authored.manual_controls) control.override_connections = false;
         auto validated = build_connection_analysis_plan(authored, port_realization,
-            kernel_block_size, cost_model, nullptr,
+            kernel_block_size, cost_model,
             callback_batch_classes, callback_elision_candidates);
         if (!validated) return std::unexpected(std::move(validated.error()));
     }
@@ -6883,7 +6888,8 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
         }
     }
 
-    ConnectionAnalysisPlan plan;
+    ConnectionTopology topology(graph, port_realization, kernel_block_size);
+    auto& plan = topology.plan_;
     if (auto inventory = inventory_nodes(graph, port_realization, plan); !inventory) {
         return std::unexpected(std::move(inventory.error()));
     }
@@ -6924,27 +6930,9 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
             graph, port_realization, plan, *routed_events); !events) {
         return std::unexpected(std::move(events.error()));
     }
-    if (retained_background_plan) {
-        if (retained_background_plan->semantic_nodes.size()
-                != plan.nodes.size()
-            || retained_background_plan->bundle_to_semantic_node.size()
-                != graph.node_bundles.size()) {
-            return std::unexpected(
-                "GraphJit retained background plan does not match this graph specialization");
-        }
-        for (std::size_t node = 0; node < plan.nodes.size(); ++node) {
-            if (retained_background_plan->semantic_nodes[node].bundle
-                != plan.nodes[node].bundle) {
-                return std::unexpected(
-                    "GraphJit retained background plan does not match configured node identity");
-            }
-        }
-        plan.background = *retained_background_plan;
-    } else {
-        auto background = build_semantic_background_plan(graph, plan);
-        if (!background) return std::unexpected(std::move(background.error()));
-        plan.background = std::move(*background);
-    }
+    auto background = build_semantic_background_plan(graph, plan);
+    if (!background) return std::unexpected(std::move(background.error()));
+    plan.background = std::move(*background);
     mark_live_sequential_outputs(graph, plan);
     if (auto replay = derive_contextual_replayability(graph, plan); !replay) {
         return std::unexpected(std::move(replay.error()));
@@ -6959,20 +6947,19 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     if (auto detaches = validate_detach_delivery_mechanisms(plan); !detaches) {
         return std::unexpected(std::move(detaches.error()));
     }
-    if (!retained_background_plan) {
-        if (auto populated = populate_background_topology(
-                graph,
-                port_realization,
-                plan,
-                plan.background,
-                kernel_block_size,
-                callback_batch_classes);
-            !populated) {
-            return std::unexpected(std::move(populated.error()));
-        }
-        plan_public_coverage_inputs(graph, port_realization, plan);
-        plan_public_event_coverage_inputs(graph, plan.background);
+    if (auto populated = populate_background_topology(
+            graph,
+            port_realization,
+            plan,
+            plan.background,
+            topology.normalized_connection_indices_,
+            kernel_block_size,
+            callback_batch_classes);
+        !populated) {
+        return std::unexpected(std::move(populated.error()));
     }
+    plan_public_coverage_inputs(graph, port_realization, plan);
+    plan_public_event_coverage_inputs(graph, plan.background);
     if (auto acyclic = validate_explicit_graph_is_acyclic(graph, plan); !acyclic) {
         return std::unexpected(std::move(acyclic.error()));
     }
@@ -6981,6 +6968,19 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
             return std::unexpected(std::move(detaches.error()));
         }
     }
+    return topology;
+}
+
+std::expected<ConnectionAnalysisPlan, std::string> ConnectionTopology::build_analysis_plan(
+    RealtimeStorageCostModel const& cost_model,
+    std::span<std::size_t const> callback_batch_classes,
+    std::span<NodeBundleHandle const> callback_elision_candidates) &&
+{
+    auto const& graph = graph_;
+    auto const& port_realization = port_realization_;
+    auto const kernel_block_size = kernel_block_size_;
+    auto plan = std::move(plan_);
+
     std::vector<std::uint8_t> callback_elided(
         graph.node_bundles.size(), std::uint8_t{0});
     std::vector<std::uint8_t> callback_elision_seen(
@@ -7038,7 +7038,8 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
             plan, kernel_block_size, cost_model); !events) {
         return std::unexpected(std::move(events.error()));
     }
-    auto background_storage = build_background_storage_plan(plan);
+    auto background_storage = build_background_storage_plan(
+        plan, normalized_connection_indices_);
     if (!background_storage) {
         return std::unexpected(std::move(background_storage.error()));
     }
@@ -7065,6 +7066,22 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
         };
     }
     return plan;
+}
+
+std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_plan(
+    ConfiguredGraph const& graph,
+    ResolvedPortRealization const& port_realization,
+    std::size_t kernel_block_size,
+    RealtimeStorageCostModel const& cost_model,
+    std::span<std::size_t const> callback_batch_classes,
+    std::span<NodeBundleHandle const> callback_elision_candidates)
+{
+    auto topology = ConnectionTopology::build(
+        graph, port_realization, kernel_block_size, cost_model,
+        callback_batch_classes, callback_elision_candidates);
+    if (!topology) return std::unexpected(std::move(topology.error()));
+    return std::move(*topology).build_analysis_plan(
+        cost_model, callback_batch_classes, callback_elision_candidates);
 }
 
 std::optional<std::string> raw_region_node_identity(
