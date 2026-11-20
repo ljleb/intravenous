@@ -56,8 +56,8 @@ for file in intravenous libiv_builder.so intravenous-client-helper iv-toolchain-
   [[ -f "$server_dir/$file" ]] || fail "Missing $server_dir/$file. Build the intravenous target first."
   cp -p "$server_dir/$file" "$snapshot/runtime/"
 done
-cp -p "$build_dir/tools/"{iv_clang_source_introspection_plugin.so,iv_package_finalize} "$snapshot/runtime/"
-cp -p "$build_dir/tools/iv_package_prebuild" "$server_dir/PrepareDevRuntime.cmake" "$snapshot/"
+cp -p "$build_dir/package_tools/"{iv_clang_source_introspection_plugin.so,iv_package_finalize} "$snapshot/runtime/"
+cp -p "$build_dir/package_tools/iv_package_prebuild" "$server_dir/PrepareDevRuntime.cmake" "$snapshot/"
 cp -R "$server_dir/runtime-sdk" "$snapshot/sdk"
 cp -p "$server_dir/builtin_packages/builtin/"{iv_package.json,module.cpp} "$snapshot/builtin_packages/builtin/"
 require_linked_server "$snapshot/runtime/intravenous"

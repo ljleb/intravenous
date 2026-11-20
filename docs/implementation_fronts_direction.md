@@ -215,7 +215,7 @@ both lanes skip in one two-lane batch.
 of 584 tests. Every heavy package build stopped in `iv_package_finalize` with
 "malformed iv_node_types operations ABI". Front 2 had added five batch anchors to
 `NodeCompilerOperations`, which now has 13 function pointers. `scan_node_records()`
-in `tools/iv_package_finalize.cpp` still required 8 operands. The check now
+in `package_tools/iv_package_finalize.cpp` still required 8 operands. The check now
 requires 13. A collaborator rerun remains pending.
 
 **Second verification run (2026-10-23):** 581 of 585 tests passed. The remaining

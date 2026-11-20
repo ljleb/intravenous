@@ -993,7 +993,7 @@ Removed from source:
 - `src/intravenous/node/presentation.h` (`IV_NODE_PRESENTATION`,
   `PackageNodePresentation`, `NodePresentationDescriptor`) and its `dsl.h` include;
 - the finalizer's presentation-record collection, validation, and
-  `iv_package_node_presentations` table (`tools/iv_package_finalize.cpp`);
+  `iv_package_node_presentations` table (`package_tools/iv_package_finalize.cpp`);
 - `iv_package_node_presentations_fn`, the loader's table copy and validation,
   `ModuleLoader::LoadedPackage::node_presentations`,
   `PackageRevision::node_presentations`, `IvPackageInfo::node_presentations`, and

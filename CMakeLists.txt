@@ -69,7 +69,7 @@ else()
 endif()
 
 add_subdirectory(src/intravenous)
-add_subdirectory(tools)
+add_subdirectory(package_tools)
 
 add_dependencies(
     intravenous_module_loader
