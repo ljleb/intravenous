@@ -170,16 +170,16 @@ Owner verification:
 ```sh
 cmake --build build-release -j16
 ctest --test-dir build-release -j16 --output-on-failure > build-release/Testing/Temporary/LastTest-verbatim.log
-bash scripts/benchmark_page_cache.sh
+IV_BUILD_DIR=build-release ./benchmark/scripts/benchmark_buffered_storage.sh page-cache
 ```
 
-The new benchmark mode is `iv_buffered_storage_benchmark --cache`. Its script
+The `page-cache` mode runs `iv_buffered_storage_benchmark --cache`. The script
 records results under `build-release/page-cache/` for 64/1024-page outputs and
 zero/four pinned readers. It checks recording and reader contents, reports
 preparation/publication/reclamation latency, live/backing bytes, eviction counts,
-offset reuse and mapping calls. It does not time DSP or LLVM. The existing
-`scripts/benchmark_buffered_storage.sh` remains available for the previous
-overwrite/fragmentation comparison. Playhead implementation waits for successful
+offset reuse and mapping calls. It does not time DSP or LLVM. Use the
+`buffered-storage` mode for the earlier overwrite and fragmentation comparison.
+Playhead implementation waits for successful
 owner verification and correction of any failures.
 
 ## First owner verification and Tick-persistence correction
@@ -205,7 +205,7 @@ verify these changes; playhead work remains pending.
 ## Successful owner verification and measurements
 
 The owner confirms all tests pass after the Tick-persistence correction and
-ran `bash scripts/benchmark_page_cache.sh`. The reports under
+ran the page-cache benchmark. The reports under
 `build-release/page-cache/` contain 100 iterations per case:
 
 | Pages per output | Pinned readers | Median / p95 (µs) | Peak live (MiB) | Live after reader release (MiB) | Backing retained (MiB) |

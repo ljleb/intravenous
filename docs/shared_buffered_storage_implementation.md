@@ -14,7 +14,7 @@ work waits for owner verification of that feature.
 Successor checkpoint, 2026-11-17: the page-cache ownership refactor, pressure
 policy, reconstruction path and regressions are ready for owner compilation
 and testing. This does not change the earlier benchmark results below. New
-measurements use `bash scripts/benchmark_page_cache.sh` and are recorded under
+measurements use `benchmark/scripts/benchmark_buffered_storage.sh page-cache` and are recorded under
 `build-release/page-cache/`. See the successor plan for scope and limits.
 
 Latest checkpoint, 2026-11-17: the owner reports all tests pass and has run
@@ -203,15 +203,15 @@ backing pressure, VMA/run limits, event accounting and residency lease lifetime.
 After building, run:
 
 ```sh
-scripts/benchmark_buffered_storage.sh
+IV_BUILD_DIR=build-release ./benchmark/scripts/benchmark_buffered_storage.sh buffered-storage
 ```
 
 This invokes `iv_buffered_storage_benchmark` without rebuilding anything and
 overwrites eight TSV reports under `build-release/buffered-storage/`. It varies
 64/1,024 pages, zero/four pinned old versions and 64/1,024 KiB per-view limits.
 Each invocation measures dense and fragmented replacements for recording and
-Tock storage. An optional first argument changes the default 100 iterations;
-`IV_BUILD_DIR` selects another build directory.
+Tock storage. Give the iteration count after the mode to change the default of 100.
+`IV_BUILD_DIR` selects the build directory.
 
 Rows report median/p95 background write/publication/reclamation time, live and
 cached backing, file extent, reusable offsets, observed mapped-byte/run peaks,
@@ -381,8 +381,8 @@ script still writes eight reports, now normally containing ten rows each.
 Each case checks its final value in every channel and rejects excess live pages
 after old readers retire for these fully valid, page-aligned workloads.
 
-Rebuild and run the backend suite, then rerun
-`scripts/benchmark_buffered_storage.sh`. Compare dense mapping-call/run counts
+Rebuild and run the backend suite, then rerun the `buffered-storage` mode above.
+Compare dense mapping-call/run counts
 and times, and check that the scattered Tock cases retain exactly their payload
 in live pages after retirement. Process-map inspection still occurs for each
 new mapping; batching remains a measurement-led follow-up if it is still costly.

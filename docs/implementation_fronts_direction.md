@@ -3096,7 +3096,7 @@ The selected measurement is Linux `perf` sampling plus native disassembly:
     plugin, `process_orc_perf_plugin()`, to every IV `LLJIT`. Its own
     never-destroyed `ExecutionSession` supplies the in-process executor the
     plugin uses for start and end.
-- `scripts/profile_edit_benchmark.sh` records user-space cycles and call stacks,
+- `benchmark/scripts/profile_edit_benchmark.sh` records user-space cycles and call stacks,
   injects the JIT records, and writes an interactive `perf.jit.data` file plus a
   text report under a new `build-release/iv-perf-*` directory.
 
@@ -3800,28 +3800,28 @@ It does not reproduce the planner in benchmark code.
   mono-to-stereo conversion, sample fan-out, event fan-in, event fan-out, and
   retained event history. It complements `voices`, `chain`, `mixed`, and
   `feedback` without adding production nodes or planner exceptions.
-- `scripts/sweep_realtime_storage_cost_model.sh` runs those five shapes and a
+- `benchmark/scripts/sweep_realtime_storage_cost_model.sh` runs those five shapes and a
   2,048-frame `storage` case. `quick` changes one cost dimension at a time.
   `coarse` adds intermediate values, stronger values, one combined probe, and
   two more stack budgets. Every run retains its log and TSV file. The script
   reuses one workspace so unchanged benchmark-local packages do not rebuild,
   then combines all rows in
   `build-release/iv-storage-cost-sweep.latest/results.tsv`.
-- `scripts/summarize_realtime_storage_cost_sweep.py` removes the repeated Tick
+- `benchmark/scripts/summarize_realtime_storage_cost_sweep.py` removes the repeated Tick
   fields from multiple compilation rows. The sweep runs it automatically and
   writes `tick-edit-summary.tsv` and `plan-summary.tsv` beside `results.tsv`.
 
 Run the first pass after building the benchmark:
 
 ```text
-./scripts/sweep_realtime_storage_cost_model.sh quick 64 3 500
+./benchmark/scripts/sweep_realtime_storage_cost_model.sh quick 64 3 500
 ```
 
 Run the broader one-factor pass only after the first pass proves that every
 case completes:
 
 ```text
-./scripts/sweep_realtime_storage_cost_model.sh coarse 64 5 500
+./benchmark/scripts/sweep_realtime_storage_cost_model.sh coarse 64 5 500
 ```
 
 The first selection pass must reject any parameter set that makes an accepted
@@ -3836,7 +3836,7 @@ long steady window. `profile_edit_benchmark.sh` forwards arguments after its
 shape, size, and duration to the benchmark. For example:
 
 ```text
-./scripts/profile_edit_benchmark.sh storage 64 30 \
+./benchmark/scripts/profile_edit_benchmark.sh storage 64 30 \
     --copied-byte-weight 2 \
     --ring-addressed-byte-weight 1 \
     --stack-footprint-byte-weight 1 \
@@ -4290,7 +4290,7 @@ the 500 ms bulk target by 38 ms.
   checks the constant, phi, select, and sign-extended cases on hand-built IR.
   `KeepsLoadsWhoseAddressesCanReachUnknownBytes` checks that an address
   reaching an unknown byte keeps its load.
-- *Profile records.* `scripts/profile_edit_benchmark.sh` now writes the
+- *Profile records.* `benchmark/scripts/profile_edit_benchmark.sh` now writes the
   benchmark's output to `benchmark.log`, the steady Tick statistics and the
   performance-core sample header to `summary.txt`, and points
   `build-release/iv-perf-<shape>-<size>.latest` at the newest profile

@@ -78,6 +78,10 @@ The managed tree contains `compile_commands.json`. If your editor
 configuration names a previous build directory, point it to the managed tree
 using the path in `IV_SERVER_BUILD_DIR`.
 
+If you already configured `build-release` in the checkout, run
+`./scripts/test_release.sh -j16` to build it and run its tests.
+The benchmark commands are under [benchmark/scripts](../benchmark/scripts/).
+
 The launcher stages the development bundle in scratch storage. The package
 build and edit latency benchmarks also use it for temporary workspaces.
 The development tools give these commands their scratch path in

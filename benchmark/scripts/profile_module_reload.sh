@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 original_arguments=("$@")
 jobs="${IV_BUILD_JOBS:-16}"
 workspace="${IV_MODULE_BENCHMARK_WORKSPACE:-${TMPDIR:-/tmp}/intravenous-module-reload-profile}"
@@ -12,7 +12,7 @@ clang_time_trace=1
 
 usage() {
     cat <<'EOF'
-Usage: scripts/profile_module_reload.sh [options]
+Usage: benchmark/scripts/profile_module_reload.sh [options]
 
 Measures a cold IV-module build followed by a source-only hot reload in an
 isolated retained workspace.
@@ -94,9 +94,8 @@ if (( ${#module_paths[@]} == 0 )); then
     module_paths=("benchmark/fixtures/playback/saw")
 fi
 
+source "$repo_root/scripts/lib/use_managed_build.sh" "${original_arguments[@]}"
 cd "$repo_root"
-
-source "$repo_root/scripts/use_managed_build.sh" "${original_arguments[@]}"
 log_directory="${workspace}.logs"
 mkdir -p "$log_directory"
 

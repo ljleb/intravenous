@@ -7,8 +7,8 @@ size="${2:-64}"
 iterations="${3:-3}"
 settle_ms="${4:-500}"
 
-repo_root="$(git rev-parse --show-toplevel)"
-source "$repo_root/scripts/use_managed_build.sh"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "$repo_root/scripts/lib/use_managed_build.sh"
 benchmark="${build_dir}/benchmark/iv_edit_latency_benchmark"
 
 if [[ ! -x "${benchmark}" ]]; then
@@ -31,7 +31,7 @@ all_results="${output_dir}/results.tsv"
 metadata="${output_dir}/metadata.txt"
 latest="${build_dir}/iv-storage-cost-sweep.latest"
 workspace="${output_dir}/workspace"
-summarizer="${repo_root}/scripts/summarize_realtime_storage_cost_sweep.py"
+summarizer="${repo_root}/benchmark/scripts/summarize_realtime_storage_cost_sweep.py"
 
 echo "Sweep directory: ${output_dir}"
 

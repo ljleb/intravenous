@@ -9,7 +9,7 @@ Git retains them if they are ever useful for archaeology.
 From the repository root, run:
 
 ```text
-scripts/profile_module_reload.sh
+benchmark/scripts/profile_module_reload.sh
 ```
 
 It builds only `iv_module_build_benchmark`, snapshots
@@ -24,7 +24,7 @@ and timing sidecar can be inspected.
 To use another module or workspace:
 
 ```text
-scripts/profile_module_reload.sh \
+benchmark/scripts/profile_module_reload.sh \
   --module benchmark/fixtures/playback/saw \
   --workspace /tmp/iv-module-reload-profile
 ```
@@ -82,7 +82,7 @@ largest measured stage:
 - high load/configuration timings: profile ORC loading and graph configuration
   separately.
 
-`scripts/verify_release_performance.sh` builds the release tree and runs
+`benchmark/scripts/verify_release_performance.sh` builds the release tree and runs
 the release tests. It then runs the module-build benchmark and
 `iv_playback_benchmark` with the checked-in saw fixture.
 

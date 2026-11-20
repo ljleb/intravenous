@@ -3687,7 +3687,7 @@ reclaims retired snapshots before testing the next transaction's limits.
 
 The [implementation checkpoint and owner-run measurements](./shared_buffered_storage_implementation.md#implementation-checkpoint-2026-11-17)
 record exact source behaviour, provisional limits and remaining measurement
-questions. Regression sources and `scripts/benchmark_buffered_storage.sh` are
+questions. Regression sources and `benchmark/scripts/benchmark_buffered_storage.sh buffered-storage` are
 ready. Only source inspection and static diff checks have been performed; owner
 builds, tests and measurements remain pending before advancing the feature order.
 

@@ -83,7 +83,7 @@ snapshot_store="$(nix-store --add "$snapshot")"
 exec {snapshot_pin}<"$snapshot_store/runtime/.intravenous_defaults"
 client_store="$(nix-store --add "$client_snapshot")"
 exec {client_pin}<"$client_store/package.json"
-bundle="$(nix-build "$repo_root/scripts/dev_bundle.nix" --no-out-link \
+bundle="$(nix-build "$repo_root/scripts/lib/dev_bundle.nix" --no-out-link \
   --argstr nixpkgsPath "$IV_DEV_NIXPKGS" --argstr snapshotPath "$snapshot_store" \
   --argstr clientPath "$client_store" --argstr storePaths "$store_paths" \
   --argstr projectDir "$project_dir")"

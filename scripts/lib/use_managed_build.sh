@@ -4,5 +4,6 @@ if [[ -n ${IV_BUILD_DIR:-} ]]; then
 elif [[ -n ${IV_SERVER_BUILD_DIR:-} ]]; then
     build_dir="$IV_SERVER_BUILD_DIR"
 else
-    exec "$repo_root/scripts/build_server.sh" -- bash "$repo_root/scripts/${0##*/}" "$@"
+    script_path="$(realpath -e -- "$0")"
+    exec "$repo_root/scripts/build_server.sh" -- bash "$script_path" "$@"
 fi
