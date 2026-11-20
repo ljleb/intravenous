@@ -2,7 +2,7 @@ import type { ObservationHostRequest, ObservationResponse } from "./observations
 import type { ObservationDelivery } from "./observationDelivery";
 import type { ObservationProfileSummary } from "./observationProfile";
 import type { ManualControlAction, ManualControlInteractionState, ManualControlLiveValue } from "./manualControls";
-import { readLayout, type GraphLaneCopy, type GraphLayout, type GraphScope, type GraphViewState, type NodeAddress, type PresentationState } from "./graphScope";
+import type { GraphLaneCopy, GraphScope, NodeAddress, PresentationState } from "./graphScope";
 import type { LiveGraphSessionStatus } from "./liveGraphProtocol";
 import type { GraphConnectionEdit, GraphPortEndpoint } from "./graphConnectionEditing";
 import type { NodeEventHostRequest, NodeEventResponse } from "./nodeEventMessaging";
@@ -24,31 +24,20 @@ export type CursorReturnMessage =
     | { type: "returnCursor"; warp: CursorWarp; requestId: number; policy?: CursorReturnPolicy; traceId?: string }
     | { type: "cursorReturnSkipped"; detail: string };
 
-type SaveGraphLayoutMessage = {
-    type: "saveGraphLayout";
-    layout: Omit<GraphLayout, keyof GraphViewState>;
+export type GraphPresentationPatch = {
     presentationStates: Record<string, PresentationState | null>;
     laneOrder?: string[];
 };
 
-export function saveGraphLayoutMessage(layout: GraphLayout, presentationStates: SaveGraphLayoutMessage["presentationStates"],
-    laneOrderChanged: boolean): SaveGraphLayoutMessage {
-    // Send only changed presentation states. Saved states can still contain
-    // reactive objects that the webview message channel cannot clone.
-    const { presentationStates: _storedStates, laneOrder, ...geometry } = readLayout(layout);
-    return { type: "saveGraphLayout", layout: geometry, presentationStates, ...(laneOrderChanged ? { laneOrder } : {}) };
-}
-
 export type GraphEditorState = {
     sessionStatus: LiveGraphSessionStatus;
     scope: GraphScope | null;
-    layout: GraphLayout;
     definitions: NodeDefinitionCatalog | null;
     definitionUsage: Readonly<Record<string, number>>;
     error: string;
 };
 export type GraphEditorAction = "addNode" | "editNode" | "deleteNode" | "openNodeSource" | "createPackage" | "deleteConnection" | "undo" | "redo";
-export type GraphLaneInsertion = { instanceId: string; afterInstanceId?: string };
+export type GraphLaneInsertion = { instanceId: string };
 export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorState }
     | { type: "playbackUpdate"; snapshot: PlaybackSnapshot | null; requestedPosition: string | null;
         releasedDragPosition: string | null; dragReleaseId?: string }
@@ -61,7 +50,9 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "manualControlState"; interactions: ManualControlInteractionState[]; live: ManualControlLiveValue[] }
     | { type: "graphWindowFocus"; focused: boolean }
     | { type: "cursorReturnCompleted"; requestId: number }
+    | { type: "knobClipboardResult"; requestId: number; text?: string; error?: string }
     | { type: "graphLanesInserted"; lanes: GraphLaneInsertion[]; duplicateRequestId?: string }
+    | { type: "graphPresentationAccepted"; requestId: number; revision?: number }
     | { type: "nodeDefinitionSearchResult"; requestId: string; result?: NodeDefinitionSearch; error?: string }
     | { type: "graphAction"; action: "addNode" | "editNode" | "createPackage"; instanceId?: string };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
@@ -82,6 +73,8 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "setManualInputEnabled"; target: NodeAddress; inputName: string; enabled: boolean }
     | { type: "projectHistory"; direction: "undo" | "redo" }
     | { type: "copyNodeDebugDetails"; nodeKey: string }
+    | { type: "flushProjectAutosave" }
+    | { type: "knobClipboard"; requestId: number; text?: string }
     | { type: "renameGraphLane"; instanceId: string; displayName: string; previousDisplayName: string }
     | { type: "connectGraphPorts"; first: GraphPortEndpoint; second: GraphPortEndpoint }
     | { type: "editGraphConnectionEnd"; edit: GraphConnectionEdit }
@@ -90,4 +83,4 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "updateGraphNode"; instanceId: string; displayName: string; configurationSource: string;
         previousDisplayName: string; previousConfigurationSource: string }
     | { type: "createGraphPackage"; name: string }
-    | SaveGraphLayoutMessage;
+    | ({ type: "saveGraphPresentation"; requestId: number } & GraphPresentationPatch);

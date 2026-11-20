@@ -201,9 +201,10 @@ Json node_event_protocol_json(NodeEventProtocolSnapshot const& protocol)
 }
 } // namespace
 
-void SocketRpcAutosaveStateResultBuilder::succeed(bool enabled)
+void SocketRpcAutosaveStateResultBuilder::succeed(bool enabled, bool pending)
 {
     result = enabled;
+    pending_ = pending;
     error_message.clear();
 }
 
@@ -538,6 +539,13 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
     auto timelines = Json::array();
     for (auto const& address : result->timeline_nodes)
         timelines.push_back(node_address_json(address, ProjectConnectionJsonNames::socket_rpc));
+    auto lane_order = Json::array();
+    auto lane_views = Json::array();
+    constexpr auto names = ProjectConnectionJsonNames::socket_rpc;
+    for (auto const& address : result->presentation.lane_order)
+        lane_order.push_back(node_address_json(address, names));
+    for (auto const& view : result->presentation.lane_views)
+        lane_views.push_back(project_lane_view_json(view, names));
     return jsonrpc_result(request_id, Json{
         {"generation", result->generation ? Json(*result->generation) : Json(nullptr)},
         {"sampleRate", result->sample_rate ? Json(*result->sample_rate) : Json(nullptr)},
@@ -546,6 +554,8 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
             {"activeGeneration", result->active_generation ? Json(*result->active_generation) : Json(nullptr)}}},
         {"editable", result->editable},
         {"timelineNodes", std::move(timelines)},
+        {"presentation", {{"laneOrder", std::move(lane_order)}, {"laneViews", std::move(lane_views)},
+            {"timelineSnapMemory", Json(result->presentation.timeline_snap_memory)}}},
         {"nodes", std::move(nodes)},
         {"connections", std::move(connections)},
     });

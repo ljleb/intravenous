@@ -185,6 +185,7 @@ class ProjectGraph {
         // Read-model changes of the build, also when configuration failed.
         ProjectGraphPublication publication{};
         std::optional<AudioDevicesSnapshot> audio_devices{};
+        bool state_changed = false;
     };
     struct ActiveManualControlInteraction {
         ManualControlInteractionId interaction{};
@@ -252,6 +253,7 @@ class ProjectGraph {
     };
 
     std::vector<ProjectEditEffect> edit_history_{};
+    ProjectPresentation presentation_{};
     std::size_t history_position_ = 0;
     std::uint64_t history_serial_ = 0;
     struct NodeMessageGesture {
@@ -269,7 +271,7 @@ class ProjectGraph {
         ActiveManualControlInteraction& interaction);
     void set_interaction_value_locked(ActiveManualControlInteraction& interaction, Sample value);
     void record_edit_locked(ProjectEditEffect effect);
-    void open_transactions_locked(InteractionTransactions& transactions);
+    void open_transactions_locked(InteractionTransactions& transactions) const;
     RebuildResult apply_edit_locked(ProjectEditBatch const& batch, bool record_history,
         std::optional<bool> history_undo = std::nullopt,
         std::function<void()> const& authorize_audio = {});

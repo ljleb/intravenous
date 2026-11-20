@@ -13,16 +13,32 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 project_dir="$(cd "$1" && pwd -P)"
 [[ -f "$project_dir/iv_project.jsonl" ]] || fail "No iv_project.jsonl in $project_dir"
-build_dir="$(cd "${2:-$repo_root/build-release}" && pwd -P)"
+build_dir="${2:-$repo_root/build-release}"
+[[ -f "$build_dir/CMakeCache.txt" ]] || fail "Configure $build_dir with CMake before launching."
+build_dir="$(cd "$build_dir" && pwd -P)"
 server_dir="$build_dir/src/intravenous"
 client_dir="$repo_root/vscode/client"
 codium="$(command -v -- "${INTRAVENOUS_DEV_CODIUM:-codium}")" ||
   fail "No VSCodium executable found. Put your regular codium on PATH or set INTRAVENOUS_DEV_CODIUM."
 [[ -n ${IV_DEV_NIXPKGS:-} ]] || fail "Run this script in the Intravenous Nix development shell."
 [[ -x "$client_dir/node_modules/.bin/esbuild" ]] || fail "Run npm --prefix vscode/client ci in the development shell."
-[[ -f "$server_dir/PrepareDevRuntime.cmake" && -f "$server_dir/runtime-sdk/.snapshot" ]] ||
-  fail "Build the intravenous target with the current checkout before launching."
 
+cmake --build "$build_dir" --target intravenous
+[[ -f "$server_dir/PrepareDevRuntime.cmake" && -f "$server_dir/runtime-sdk/.snapshot" ]] ||
+  fail "The intravenous build did not prepare the development runtime inputs in $server_dir."
+
+require_linked_server() {
+  local executable="$1" input
+  [[ -x "$executable" ]] || fail "Missing server executable. Build the intravenous target in $build_dir."
+  for input in "$server_dir/libiv_builder.so" "$server_dir/runtime-sdk/.snapshot" \
+      "$server_dir/builtin_packages/builtin/"{iv_package.json,module.cpp}; do
+    [[ -f "$input" ]] || fail "Missing $input. Build the intravenous target in $build_dir."
+    [[ ! "$executable" -ot "$input" ]] ||
+      fail "The server is older than $input. Finish building the intravenous target in $build_dir before launching."
+  done
+}
+
+require_linked_server "$server_dir/intravenous"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/intravenous-dev.XXXXXXXX")"
 trap 'rm -rf -- "$scratch"' EXIT
 snapshot="$scratch/intravenous-dev"
@@ -37,6 +53,7 @@ cp -p "$build_dir/tools/"{iv_clang_source_introspection_plugin.so,iv_package_fin
 cp -p "$build_dir/tools/iv_package_prebuild" "$server_dir/PrepareDevRuntime.cmake" "$snapshot/"
 cp -R "$server_dir/runtime-sdk" "$snapshot/sdk"
 cp -p "$server_dir/builtin_packages/builtin/"{iv_package.json,module.cpp} "$snapshot/builtin_packages/builtin/"
+require_linked_server "$snapshot/runtime/intravenous"
 sed -e 's@^iv_package_pch=.*@iv_package_pch=iv_dsl.pch@' \
     -e 's@^iv_builtin_package_root=.*@iv_builtin_package_root=builtin_packages@' \
     -e 's@^iv_builtin_package_artifact_root=.*@iv_builtin_package_artifact_root=builtin_package_artifacts@' \

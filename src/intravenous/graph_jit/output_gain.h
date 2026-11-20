@@ -3,8 +3,9 @@
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph_jit/output_gain_runtime.h>
 #include <intravenous/graph_jit/port_realization.h>
-#include <intravenous/graph/builder.h>
+#include <intravenous/basic_nodes/output_gain.h>
 #include <intravenous/runtime/node_definition_types.h>
+#include <intravenous/runtime/package_pipeline_types.h>
 
 #include <map>
 #include <cmath>
@@ -24,6 +25,61 @@ struct OutputGainExpansion {
     std::map<NodeBundlePortId, NodeBundlePortId, NodeBundlePortIdLess> background_outputs{};
 };
 
+inline iv::details::NodeCompilerRecord const& output_gain_compiler_record(
+    NodeDefinitionsSnapshot const& definitions, NodeCodeKey key)
+{
+    auto const& revisions = definitions.package_revisions;
+    auto const builtin = std::ranges::find_if(revisions, [](auto const& revision) {
+        return revision->provenance == PackageProvenance::built_in
+            && revision->package_namespace == "builtin";
+    });
+    auto const providers = builtin == revisions.end()
+        ? std::span{revisions} : std::span{builtin, std::size_t{1}};
+    iv::details::NodeCompilerRecord const* record = nullptr;
+    for (auto const& provider : providers) {
+        auto const found = std::ranges::find(
+            provider->node_compiler_records, key, &iv::details::NodeCompilerRecord::code_key);
+        if (found == provider->node_compiler_records.end()) continue;
+        if (record) throw std::invalid_argument("more than one pinned package provides the output gain type");
+        record = &*found;
+    }
+    if (!record) throw std::invalid_argument("the pinned packages have no compiler record for the output gain type");
+    return *record;
+}
+
+template<ChannelTypeId Channels, SampleStreamLayout Layout>
+ConcreteNode make_tick_output_gain(NodeDefinitionsSnapshot const& definitions)
+{
+    using Gain = OutputGainNode<Channels, Layout>;
+    auto storage = std::make_shared<Gain const>();
+    auto const& record = output_gain_compiler_record(definitions, iv::details::node_code_key_v<Gain>);
+    iv::details::NodeBuildRequest const request{
+        .compiler_record = &record,
+        .config = storage.get(),
+        .config_size = sizeof(Gain),
+        .config_alignment = alignof(Gain),
+        .describe = &iv::details::describe_node<Gain>,
+    };
+    return GraphBuilderNodeBundles::make_concrete_node(
+        iv::details::materialize_node_description(request, std::move(storage)));
+}
+
+inline ConcreteNode make_tick_output_gain(
+    ChannelLayout layout, NodeDefinitionsSnapshot const& definitions)
+{
+    switch (layout.channel_type) {
+#define IV_MAKE_TICK_OUTPUT_GAIN(name, ...) \
+    case ChannelTypeId::name: \
+        return layout.sample_layout == SampleStreamLayout::planar \
+            ? make_tick_output_gain<ChannelTypeId::name, SampleStreamLayout::planar>(definitions) \
+            : make_tick_output_gain<ChannelTypeId::name, SampleStreamLayout::interleaved>(definitions);
+    IV_CHANNEL_TYPES(IV_MAKE_TICK_OUTPUT_GAIN)
+#undef IV_MAKE_TICK_OUTPUT_GAIN
+    case ChannelTypeId::count: break;
+    }
+    throw std::invalid_argument("invalid channel type for output gain");
+}
+
 inline OutputGainExpansion expand_output_gains(ConfiguredGraph& graph, NodeDefinitionsSnapshot const& definitions)
 {
     OutputGainExpansion result;
@@ -33,33 +89,9 @@ inline OutputGainExpansion expand_output_gains(ConfiguredGraph& graph, NodeDefin
     auto tick_node = [&](ChannelLayout layout) -> ConcreteNode {
         auto key = std::pair{layout.channel_type, layout.sample_layout};
         if (auto found = tick_prototypes.find(key); found != tick_prototypes.end()) return found->second;
-        std::optional<ConcreteNode> tick_prototype;
-        {
-            auto const id = "builtin.output_gain." + std::string(channel_type_info(layout.channel_type).wire_name)
-                + (layout.sample_layout == SampleStreamLayout::planar ? ".planar" : ".interleaved");
-            auto definition = definitions.by_id.find(id);
-            if (definition == definitions.by_id.end())
-                throw std::invalid_argument("the pinned builtin package has no output-gain node");
-            auto leaf = std::get_if<LeafNodeDefinition>(&definition->second.definition);
-            if (!leaf || !leaf->provider.leaf_build)
-                throw std::invalid_argument("the output-gain definition is not a constructible leaf");
-            GraphBuilder builder;
-            (void)leaf->provider.leaf_build(builder, {}, nullptr);
-            builder.outputs();
-            auto configured = std::move(builder).finish();
-            for (NodeBundleHandle bundle = 0; bundle < configured.node_bundles.size(); ++bundle) {
-                if (!configured.node_bundles.bundle(bundle).is_concrete()) continue;
-                if (tick_prototype) throw std::invalid_argument("output-gain construction produced several primitives");
-                tick_prototype = GraphBuilderNodeBundles::make_concrete_node(
-                    configured.node_bundles.materialize_concrete_description(bundle));
-                tick_prototype->registered_node_type_identity = RegisteredNodeTypeIdentity{
-                    .node_type_id = leaf->definition_id,
-                    .provider_package_root = leaf->package_root.generic_string()};
-            }
-            if (!tick_prototype) throw std::invalid_argument("output-gain construction produced no primitive");
-        }
-        tick_prototypes.emplace(key, *tick_prototype);
-        return *tick_prototype;
+        auto prototype = make_tick_output_gain(layout, definitions);
+        tick_prototypes.emplace(key, prototype);
+        return prototype;
     };
     auto const connections = graph.connections.configured_sample_connections();
     std::vector<ConfiguredSampleConnection> samples(connections.begin(), connections.end());

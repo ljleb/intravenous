@@ -1,8 +1,7 @@
 import * as crypto from "node:crypto";
 import * as vscode from "vscode";
-import { GraphLayoutStore } from "./graphLayoutStore";
 import { isGeneratedSnapConnection, isTimelineSnapNode } from "./timelineSnap";
-import { addressKey, readLayout, type GraphScope } from "./graphScope";
+import { addressKey, type GraphScope } from "./graphScope";
 import { nodeDebugDetails } from "./nodeDebugDetails";
 import { ObservationDeliveryState, type ObservationDelivery } from "./observationDelivery";
 import type { GraphEditorAction, GraphEditorHostMessage, GraphEditorState, GraphEditorWebviewMessage, TraceDetails } from "./graphEditorProtocol";
@@ -28,18 +27,15 @@ export class GraphEditorProvider implements vscode.Disposable {
     private readonly ready = new Set<vscode.WebviewPanel>();
     private lastActivePanel: vscode.WebviewPanel | null = null;
     private readonly pendingActions = new Map<vscode.WebviewPanel, GraphEditorAction[]>();
-    private readonly store: GraphLayoutStore;
-    private readonly layoutLoaded: Promise<void>;
     private readonly changed: vscode.Disposable;
     private readonly windowFocusChanged: vscode.Disposable;
     private readonly shortcutSettingChanged: vscode.Disposable;
     private state: GraphEditorState = {
-        sessionStatus: "starting", scope: null, layout: readLayout(null), definitions: null, definitionUsage: {}, error: "",
+        sessionStatus: "starting", scope: null, definitions: null, definitionUsage: {}, error: "",
     };
     private dirty = false;
     private reading = false;
     private disposed = false;
-    private layoutError = "";
     private playbackReading = false;
     private pendingSeek: (PlaybackSeek & { releasedFrom?: vscode.WebviewPanel }) | null = null;
     private playbackDrag: { panel: vscode.WebviewPanel; dragId: string; position: string } | null = null;
@@ -132,12 +128,6 @@ export class GraphEditorProvider implements vscode.Disposable {
         private readonly session: WorkspaceSession, private readonly nativeHelper?: NativeClientHelper,
         private readonly log: (message: string) => void = () => {}, private readonly pickerStorage?: vscode.Memento) {
         this.state.definitionUsage = pickerStorage?.get<Record<string, number>>("nodeDefinitionUsage") ?? {};
-        this.store = new GraphLayoutStore(session.workspaceRoot());
-        this.layoutLoaded = this.store.load().then((layout) => { this.state.layout = layout; })
-            .catch((error) => {
-                this.layoutError = `Cannot read graph layout: ${error.message}. Positions will not be saved until the file is repaired and the window reloaded.`;
-                this.state.error = this.layoutError;
-            });
         this.changed = session.onDidChangeGraph(() => {
             if (session.graphSessionStatus !== "running") {
                 this.observations.clear();
@@ -349,6 +339,7 @@ export class GraphEditorProvider implements vscode.Disposable {
         });
         const root = vscode.Uri.joinPath(this.extensionUri, "dist", "webview");
         panel.webview.options = { enableScripts: true, localResourceRoots: [root] };
+        let clipboardOperation = Promise.resolve();
         const messages = panel.webview.onDidReceiveMessage(async (message: GraphEditorWebviewMessage) => {
             if (message?.type === "observationDescribe" || message?.type === "observationReconcile") {
                 const owner = this.controlOwners.get(panel);
@@ -417,7 +408,6 @@ export class GraphEditorProvider implements vscode.Disposable {
                 }
                 catch (error) { void vscode.window.showErrorMessage(`Cannot change playback: ${error.message}`); }
             } else if (message?.type === "graphReady") {
-                await this.layoutLoaded;
                 if (!this.panels.has(panel)) return;
                 this.interactionHints.delete(panel);
                 this.updateInteractionStatus();
@@ -469,7 +459,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                 try {
                     await this.session.duplicateGraphNodes(copies);
                     void panel.webview.postMessage({ type: "graphLanesInserted", duplicateRequestId: requestId,
-                        lanes: copies.map(({ sourceInstanceId, instanceId }) => ({ instanceId, afterInstanceId: sourceInstanceId })) });
+                        lanes: copies.map(({ instanceId }) => ({ instanceId })) });
                     await this.refresh();
                 } catch (error) {
                     void panel.webview.postMessage({ type: "graphLanesInserted", duplicateRequestId: requestId, lanes: [] });
@@ -483,6 +473,21 @@ export class GraphEditorProvider implements vscode.Disposable {
                     await this.session.projectHistory(message.direction);
                     await this.refresh();
                 } catch (error) { void vscode.window.showErrorMessage(`Cannot ${message.direction} project edit: ${error.message}`); }
+            } else if (message?.type === "knobClipboard") {
+                const { requestId, text } = message;
+                const active = panel.active && vscode.window.state.focused;
+                clipboardOperation = clipboardOperation.then(async () => {
+                    const reply: GraphEditorHostMessage = { type: "knobClipboardResult", requestId };
+                    try {
+                        if (active) {
+                            if (text === undefined) reply.text = await vscode.env.clipboard.readText();
+                            else await vscode.env.clipboard.writeText(text);
+                        }
+                    } catch {
+                        reply.error = text === undefined ? "Could not read the system clipboard." : "Could not copy to the system clipboard.";
+                    }
+                    if (this.panels.has(panel)) void panel.webview.postMessage(reply);
+                });
             } else if (message?.type === "copyNodeDebugDetails") {
                 const scope = this.state.scope;
                 const node = scope?.nodes.find((entry) => addressKey(entry.address) === message.nodeKey);
@@ -492,7 +497,7 @@ export class GraphEditorProvider implements vscode.Disposable {
             } else if (message?.type === "setTimelineSnapMode") {
                 if (message.mode !== "seconds" && message.mode !== "beats" && message.mode !== "custom") return;
                 try {
-                    await this.session.setTimelineSnapMode(message.mode, this.store);
+                    await this.session.setTimelineSnapMode(message.mode);
                     await this.refresh();
                 } catch (error) { void vscode.window.showErrorMessage(`Cannot change timeline snapping: ${error.message}`); }
             } else if (message?.type === "connectGraphPorts" || message?.type === "editGraphConnectionEnd") {
@@ -516,14 +521,15 @@ export class GraphEditorProvider implements vscode.Disposable {
                 || message?.type === "renameGraphLane" || message?.type === "createGraphPackage") {
                 try {
                     if (message.type === "createGraphNode") {
-                        const instanceId = await this.session.createGraphNode(message.definitionId, message.displayName, message.configurationSource);
+                        const instanceId = await this.session.createGraphNode(message.definitionId, message.displayName,
+                            message.configurationSource, message.afterInstanceId);
                         const usage = this.state.definitionUsage;
                         this.state.definitionUsage = { ...usage, [message.definitionId]:
                             (Object.hasOwn(usage, message.definitionId) ? usage[message.definitionId] : 0) + 1 };
                         void this.pickerStorage?.update("nodeDefinitionUsage", this.state.definitionUsage).then(undefined,
                             (error) => this.log(`Cannot save node picker usage: ${error.message}`));
                         void panel.webview.postMessage({ type: "graphLanesInserted",
-                            lanes: [{ instanceId, afterInstanceId: message.afterInstanceId }] });
+                            lanes: [{ instanceId }] });
                     } else if (message.type === "updateGraphNode") {
                         await this.session.updateGraphNode(message.instanceId, message.displayName, message.previousDisplayName,
                             { source: message.configurationSource, previous: message.previousConfigurationSource });
@@ -536,19 +542,19 @@ export class GraphEditorProvider implements vscode.Disposable {
                 } catch (error) {
                     void vscode.window.showErrorMessage(`Cannot edit project: ${error.message}`);
                 }
-            } else if (message?.type === "saveGraphLayout" && message.layout) {
-                await this.layoutLoaded;
-                if (this.layoutError) return;
-                const next = readLayout(message.layout);
-                this.state.layout = { ...next, positions: { ...this.state.layout.positions, ...next.positions },
-                    presentationStates: this.state.layout.presentationStates, laneOrder: this.state.layout.laneOrder };
+            } else if (message?.type === "saveGraphPresentation") {
+                const { requestId, presentationStates, laneOrder } = message;
                 try {
-                    const view = await this.store.save(this.state.layout, message.presentationStates, message.laneOrder);
-                    this.state.layout = { ...this.state.layout, ...view };
+                    const result = await this.session.saveGraphPresentation({ presentationStates, laneOrder });
+                    void panel.webview.postMessage({ type: "graphPresentationAccepted", requestId, revision: result.sessionRevision });
+                    await this.refresh();
+                } catch (error) {
+                    void panel.webview.postMessage({ type: "graphPresentationAccepted", requestId });
+                    void vscode.window.showErrorMessage(`Cannot save lane presentation: ${error.message}`);
                 }
-                catch (error) {
-                    void vscode.window.showErrorMessage(`Cannot save graph layout: ${error.message}`);
-                }
+            } else if (message?.type === "flushProjectAutosave") {
+                try { await this.session.saveProject(true); }
+                catch (error) { this.log(`Project autosave failed: ${error.message}`); }
             }
         });
         panel.onDidDispose(() => {
@@ -594,7 +600,6 @@ export class GraphEditorProvider implements vscode.Disposable {
         if (this.reading) return;
         this.reading = true;
         try {
-            await this.layoutLoaded;
             while (this.dirty && !this.disposed) {
                 this.dirty = false;
                 this.state.sessionStatus = this.session.graphSessionStatus;
@@ -612,7 +617,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                         this.session.manualControls.reconcile(scope);
                         this.state.scope = scope;
                         this.state.definitions = definitions;
-                        this.state.error = this.layoutError;
+                        this.state.error = "";
                     } catch (error) {
                         if (this.dirty) continue;
                         this.state.error = `Cannot read graph: ${error.message}`;

@@ -58,12 +58,12 @@ struct OutputGainNode {
 using OutputGain = OutputGainNode<ChannelTypeId::mono, SampleStreamLayout::planar>;
 } // namespace iv
 
-// Register concrete channel/layout variants through the same package path as
-// other nodes, so LLVM sees and specializes their ordinary authored callbacks.
-#define IV_REGISTER_OUTPUT_GAIN_CHANNEL(name, wire_name, ...) \
-    using IvOutputGain_##name##_planar = ::iv::OutputGainNode<::iv::ChannelTypeId::name, ::iv::SampleStreamLayout::planar>; \
-    using IvOutputGain_##name##_interleaved = ::iv::OutputGainNode<::iv::ChannelTypeId::name, ::iv::SampleStreamLayout::interleaved>; \
-    IV_NODE("builtin.output_gain." wire_name ".planar", IvOutputGain_##name##_planar, "Output Gain"); \
-    IV_NODE("builtin.output_gain." wire_name ".interleaved", IvOutputGain_##name##_interleaved, "Output Gain");
-#define IV_REGISTER_OUTPUT_GAIN_NODES() IV_CHANNEL_TYPES(IV_REGISTER_OUTPUT_GAIN_CHANNEL)
+// GraphJit inserts these types after package construction. Emit their
+// compiler records from the package without publishing node definitions.
+#define IV_INSTANTIATE_OUTPUT_GAIN_CHANNEL(name, ...) \
+    template const iv::details::NodeCompilerRecord iv::details::node_compiler_record< \
+        iv::OutputGainNode<iv::ChannelTypeId::name, iv::SampleStreamLayout::planar>>; \
+    template const iv::details::NodeCompilerRecord iv::details::node_compiler_record< \
+        iv::OutputGainNode<iv::ChannelTypeId::name, iv::SampleStreamLayout::interleaved>>;
+#define IV_INSTANTIATE_OUTPUT_GAIN_NODES() IV_CHANNEL_TYPES(IV_INSTANTIATE_OUTPUT_GAIN_CHANNEL)
 

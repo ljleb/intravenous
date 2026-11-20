@@ -75,6 +75,22 @@ test("project history and a multi-node edit use one revision-checked request eac
     ]);
 });
 
+test("lane view patches and save on blur do not require a graph revision", async () => {
+    const calls: unknown[] = [];
+    const client = { request: async (method, params) => { calls.push({ method, params }); } } as unknown as JsonRpcSocketClient;
+    const rpc = new WorkspaceRpc(client, () => 23);
+    const operations = [{ method: "projectPresentation.setLaneView",
+        params: { address: { instanceId: "curve", path: [] }, presentationId: "curve", state: { pan: -4 } } }];
+    await rpc.applyProjectEdit(operations, null);
+    await rpc.saveProject(true);
+    await rpc.saveProject();
+    assert.deepEqual(calls, [
+        { method: "project.applyEdit", params: { operations } },
+        { method: "project.save", params: { autosaveOnly: true } },
+        { method: "project.save", params: {} },
+    ]);
+});
+
 test("manual control mutations use fresh revisions and live updates are revision-free notifications", async () => {
     const calls: unknown[] = [];
     let revision = 1;

@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { manualKnobStatus, type KnobActivity } from "../../src/manualControlGesture";
 import { KnobScrub, clampKnobValue, type KnobLimits } from "../../src/knobScrub";
 import { knobScrubSpeed } from "../../src/knobPresentation";
+import { parseKnobValue, type KnobValueRange } from "../../src/knobValueEntry";
 import { scrubSensitivityShortcut } from "../../src/scrubSensitivity";
 import { useOptionalGraphEditor, type KnobDrag } from "../graph/context";
 import KnobFace from "./KnobFace.vue";
@@ -16,6 +17,7 @@ const props = defineProps<{
     reset?: () => void;
     beginEdit?: (event: PointerEvent) => boolean; endEdit?: () => void; editActive?: () => boolean;
     bindDrag?: (event: PointerEvent) => KnobDrag | undefined; bindValueEntry?: (anchor: DOMRect) => void;
+    clipboard?: { value: number | undefined; range: KnobValueRange; apply: (value: number) => void };
 }>();
 const emit = defineEmits<{ hover: [hover: boolean] }>();
 const editor = useOptionalGraphEditor();
@@ -24,6 +26,27 @@ const hovered = ref(false);
 const dragging = computed(() => editor?.activeKnob.value === props.identity);
 const activity = computed(() => dragging.value ? "active" : props.activity ?? (hovered.value ? "hover" : "idle"));
 const value = computed(() => props.value ?? props.limits.defaultValue ?? 0);
+function clipboardValue(): number | undefined {
+    if (props.disabled) return undefined;
+    const value = props.clipboard ? props.clipboard.value : props.value;
+    return value !== undefined && Number.isFinite(value) ? value : undefined;
+}
+watch(button, (element, _, onCleanup) => {
+    if (!element || !editor) return;
+    onCleanup(editor.registerKnobClipboard(element, {
+        identity: () => props.identity,
+        value: clipboardValue,
+        paste(text) {
+            const current = clipboardValue();
+            if (current === undefined) return "Knob value is unavailable.";
+            const next = parseKnobValue(text, props.clipboard?.range ?? props.limits);
+            if (typeof next === "string") return next;
+            if (next === current) return;
+            if (props.clipboard) props.clipboard.apply(next);
+            else props.apply(next, false);
+        },
+    }));
+});
 const hint = computed(() => props.disabled || props.value === undefined
     ? { text: [props.label, props.description, "Unavailable"].filter(Boolean).join(" · "), shortcuts: undefined }
     : manualKnobStatus(props.label, value.value, props.limits.defaultValue !== undefined, props.description));

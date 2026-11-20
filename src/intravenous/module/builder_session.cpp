@@ -265,7 +265,7 @@ std::string configuration_schema_json_value(
 
 struct BuilderSession {
     // Declaration counters and module-local refs of one semantic frame: the
-    // session root, one registered-definition invocation, or one module body.
+    // session root, one definition invocation, or one module body.
     struct SemanticFrame {
         struct DeclarationCount {
             std::vector<ProjectNodePathSelector> scope_path{};
@@ -274,7 +274,7 @@ struct BuilderSession {
         };
         std::vector<ProjectNodePathSelector> scope_path{};
         std::vector<DeclarationCount> concrete_node_counts{};
-        std::vector<DeclarationCount> registered_call_counts{};
+        std::vector<DeclarationCount> invocation_counts{};
         std::vector<ModuleMessageLocalRef> module_message_local_refs{};
     };
 
@@ -477,14 +477,14 @@ builder_semantic_scope_path(BuilderSession const* session) noexcept
         : std::span<ProjectNodePathSelector const>{};
 }
 
-std::vector<ProjectNodePathSelector> claim_builder_registered_call_path(
+std::vector<ProjectNodePathSelector> claim_builder_invocation_path(
     BuilderSession* session, std::string_view source_identity)
 {
-    if (!session) throw std::invalid_argument("registered call requires a builder session");
+    if (!session) throw std::invalid_argument("node invocation requires a builder session");
     auto& frame = session->semantic_frame();
     auto path = frame.scope_path;
     auto const member = next_declaration_member(
-        frame.registered_call_counts, frame.scope_path, source_identity);
+        frame.invocation_counts, frame.scope_path, source_identity);
     path.push_back(ProjectVirtualNodeSelector{
         .source_identity = std::string(source_identity),
     });

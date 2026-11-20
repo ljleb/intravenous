@@ -19,7 +19,7 @@ type Gesture = {
 const displayValue = (value: number) => Number(value.toPrecision(6)).toString();
 export function manualKnobStatus(name: string, value: number, canReset: boolean, port = ""): ManualControlHint {
     return { text: `${port ? `${port} · ` : ""}${name} ${displayValue(value)}`,
-        shortcuts: `↑↓ · ${rightClickHint} value` + (canReset ? " · Dbl-click reset" : "") };
+        shortcuts: `↑↓ · ${rightClickHint} value` + (canReset ? " · Dbl-click reset" : "") + " · C/V copy/paste" };
 }
 // Owned by the webview root, never by a presentation widget. Components can
 // disappear while these window-level pointer and keyboard gestures continue.
@@ -213,17 +213,23 @@ export class ManualControlGestures {
         return [this.active?.control, this.valueEditing.owner()?.control].some((control) =>
             control && addressKey(control.node) === addressKey(address));
     }
+    applyValue(control: ManualControlId, descriptor: ManualControlDescriptor, value: number, fromDisplay = false): void {
+        if (this.active?.pointer || !Number.isFinite(value) || !canEditManualControl(control, descriptor)) return;
+        const current = this.currentValue(control, descriptor) ?? descriptor.value;
+        const target = fromDisplay && value !== 0 && this.outputInverted(control, current) ? -value : value;
+        if (current === target) return;
+        this.edit(control, { ...descriptor, value: current });
+        this.update(control, target);
+        this.finish(control);
+    }
     openEntry(control: ManualControlId, descriptor: ManualControlDescriptor, limits: ManualControlLimits,
         anchor: ManualValueEntry["anchor"]): void {
         this.finish();
         if (!canEditManualControl(control, descriptor)) return;
         const entry = { control, descriptor, limits };
         this.valueEditing.open(manualControlName(control), this.displayValue(control, this.state(control)?.value ?? descriptor.value),
-            anchor, () => entry.limits, (value) => {
-                this.edit(control, entry.descriptor);
-                this.update(control, this.valueFromDisplay(control, value));
-                this.finish(control);
-            }, entry);
+            anchor, () => entry.limits,
+            (value) => this.applyValue(control, entry.descriptor, value, true), entry);
     }
     numericEntry(): ManualValueEntry | null {
         const owner = this.valueEditing.owner(), view = this.valueEditing.view();

@@ -32,9 +32,8 @@ channel type `C`, and typed access to its concrete member bundles.
 
 `NodeRef` is the public source-facing result of `g.node<"stable.id">(...)`
 and `g.node<"stable.id", ChannelType>(...)`.
-The typed and tiled forms remain builder/lowering implementation tools for a
-provider's concrete node and generated internal nodes; they are not an
-alternative source API. The CRTP implementation helper is likewise internal.
+Type-based construction can return a typed or tiled reference for a private
+leaf. The CRTP implementation helper is internal.
 Typed refs derive from `NodeRef`, but an erased handle for an lvalue is made by
 `node_ref()`, not by copying or slicing a node ref.
 
@@ -90,16 +89,15 @@ Output-selection rules superseded on 2026-11-14 are preserved in
   kind supplied the ID.
 - `g.node<"stable.id", ChannelType>(args...)` requests a tiled registered
   `IV_NODE` bundle or a tiled `IV_MODULE` subgraph and still returns `NodeRef`.
-  It replaces the old `g.node<Node, C>()` spelling without exposing `Node`'s
-  type or static ports. Every sample input/output of a tiled iv module must be
+  Every sample input/output of a tiled IV module must be
   mono so the enclosing bundle can promote matching ports consistently. If
   that condition is not met, the entire node-construction call fails without
   adding its attempted module children to the caller's graph.
-- Concrete typed construction **currently** remains a private provider, lowering, and
-  finalization operation. A future package-internal `g.node<Type>(...)`
-  operation is proposed for unregistered private leaves; see
-  [Node Definitions And Instances](./node_definitions_and_instances_direction.md#future-package-identity-publication-and-type-construction-2026-11-15-clarification).
-  Do not treat this proposed syntax as an implemented public DSL operation.
+- `g.node<Type>(args...)` constructs a private leaf by C++ type, or creates a
+  subgraph from a class with `build_graph(GraphBuilder&) const`.
+  `g.node<Type, ChannelType>(args...)` tiles a private leaf.
+  See [Node Definitions and Instances](./node_definitions_and_instances_direction.md#future-package-identity-publication-and-type-construction-2026-11-15-clarification)
+  and the [earlier DSL](historical/node_construction_before_package_private_types_2026-11-19.md).
 - `g.subgraph(...)`, embedding, and module loading return `NodeRef` to one
   subgraph bundle.
 - `ref(...)`, `connect_input`, and `connect_event_input` connect positional or

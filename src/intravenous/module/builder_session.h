@@ -89,11 +89,11 @@ void prepare_builder_node_source_identity(
 consume_builder_node_source_identity(BuilderSession*);
 [[nodiscard]] std::span<ProjectNodePathSelector const>
 builder_semantic_scope_path(BuilderSession const*) noexcept;
-// Claims the semantic path of one registered call made in the current
+// Claims the semantic path of one invocation in the current
 // semantic frame: scope path, declaration, and the next member index of that
 // declaration.
 [[nodiscard]] std::vector<ProjectNodePathSelector>
-claim_builder_registered_call_path(
+claim_builder_invocation_path(
     BuilderSession*, std::string_view source_identity);
 // The virtual-record qualifier of a placement at `relative_path`.
 [[nodiscard]] std::string builder_invocation_qualifier(
@@ -217,6 +217,18 @@ BuilderDefinition find_builder_definition(
 std::vector<std::size_t> builder_used_packages(BuilderSession const*);
 void begin_builder_module(BuilderSession*, std::string_view id);
 void end_builder_module(BuilderSession*) noexcept;
+
+class ModuleStackEntry {
+    BuilderSession* session_;
+public:
+    ModuleStackEntry(BuilderSession* session, std::string_view id) : session_(session)
+    {
+        begin_builder_module(session_, id);
+    }
+    ModuleStackEntry(ModuleStackEntry const&) = delete;
+    ModuleStackEntry& operator=(ModuleStackEntry const&) = delete;
+    ~ModuleStackEntry() { end_builder_module(session_); }
+};
 
 NodeConfigRelocations capture_node_config(
     BuilderSession*, NodeCodeKey, void const*, std::size_t);

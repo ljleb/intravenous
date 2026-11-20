@@ -220,7 +220,7 @@ TEST_F(NodeInstancesTest, PackageRegistryListsQueuedPackagesBeforeTheirFirstBuil
 {
     auto const workspace =
         iv::test_support::fresh_module_fixture_workspace("iv_module_instances_many_source_modules");
-    auto const source_root = workspace / "modules" / "many";
+    auto const source_root = workspace / "packages" / "many";
     std::filesystem::create_directories(source_root);
     iv::test_support::write_text(
         source_root / "iv_package.json",

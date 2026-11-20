@@ -1,7 +1,6 @@
 #pragma once
 
 #include <chrono>
-#include <cstdint>
 #include <mutex>
 #include <optional>
 
@@ -20,16 +19,20 @@ struct SessionSnapshotRequest;
         using TimePoint = Clock::time_point;
 
     private:
-        static constexpr auto debounce_delay = std::chrono::seconds(1);
+        static constexpr auto idle_delay = std::chrono::seconds(3);
+        static constexpr auto save_interval = std::chrono::seconds(10);
         static constexpr auto retry_delay = std::chrono::seconds(5);
 
         mutable std::mutex mutex_;
         bool project_loaded_ = false;
         bool enabled_ = true;
         bool save_in_flight_ = false;
-        std::uint64_t revision_ = 0;
-        std::uint64_t saving_revision_ = 0;
-        std::optional<TimePoint> due_at_ {};
+        std::optional<TimePoint> first_unsaved_edit_ {};
+        TimePoint last_edit_ {};
+        TimePoint retry_at_ = TimePoint::min();
+
+        // Called with mutex_ held. Edits after a claim start a new interval.
+        [[nodiscard]] bool claim_pending_save();
 
     public:
         void project_loaded(TimePoint now = Clock::now());

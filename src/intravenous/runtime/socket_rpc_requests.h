@@ -124,7 +124,7 @@ struct SetAudioDevicesRequest {
     std::optional<std::string> input_device_id {};
 };
 
-struct SaveProjectRequest {};
+struct SaveProjectRequest { bool autosave_only = false; };
 struct EnableProjectAutosaveRequest {};
 struct DisableProjectAutosaveRequest {};
 struct SessionHelloRequest {

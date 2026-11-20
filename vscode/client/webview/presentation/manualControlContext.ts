@@ -59,7 +59,7 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: M
         if (context && id.value && descriptor.value) context.gestures.refresh(id.value, descriptor.value, limits.value);
     });
     return {
-        value, available, limits, state, descriptor, activity, dragging, inverted, port,
+        value, signedValue, available, limits, state, descriptor, activity, dragging, inverted, port,
         key: computed(() => id.value ? manualControlKey(id.value) : ""),
         hover(hovered: boolean) {
             if (!context || !id.value) return;
@@ -67,19 +67,15 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: M
                 context.gestures.hover(id.value, descriptor.value, limits.value, knobPortStatus(port.value));
             else context.gestures.unhover(id.value);
         },
-        edit() { if (id.value && descriptor.value) context?.gestures.edit(id.value, descriptor.value); },
-        update(value: number) {
-            if (!id.value || !Number.isFinite(value)) return;
-            if (limits.value.min !== undefined) value = Math.max(limits.value.min, value);
-            if (limits.value.max !== undefined) value = Math.min(limits.value.max, value);
-            if (context) context.gestures.update(id.value, context.gestures.valueFromDisplay(id.value, value));
+        applyValue(value: number, signed = false) {
+            if (!context || !id.value || !descriptor.value) return;
+            context.gestures.applyValue(id.value, descriptor.value, value, !signed);
         },
         invert() {
             if (!context || !id.value || !descriptor.value || !available.value) return;
             context.gestures.hover(id.value, descriptor.value, limits.value);
             context.gestures.invertOutput(id.value, descriptor.value);
         },
-        finish() { if (id.value) context?.gestures.finish(id.value); },
         reset() {
             if (!context || !id.value || !descriptor.value) return;
             context.gestures.hover(id.value, descriptor.value, limits.value, knobPortStatus(port.value));

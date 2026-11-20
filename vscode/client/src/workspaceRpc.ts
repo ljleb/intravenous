@@ -161,8 +161,9 @@ export class WorkspaceRpc {
             "graphConnections.delete", this.mutationParams({ connectionId }, expectedRevision));
     }
 
-    applyProjectEdit(operations: Array<{ method: string; params: Record<string, unknown> }>, expectedRevision?: number): Promise<void> {
-        return this.client.request("project.applyEdit", this.mutationParams({ operations }, expectedRevision));
+    applyProjectEdit(operations: Array<{ method: string; params: Record<string, unknown> }>, expectedRevision?: number | null): Promise<{ sessionRevision: number }> {
+        return this.client.request("project.applyEdit", expectedRevision === null ? { operations }
+            : this.mutationParams({ operations }, expectedRevision));
     }
 
     projectHistory(direction: "undo" | "redo"): Promise<void> {
@@ -208,8 +209,8 @@ export class WorkspaceRpc {
         return this.client.request("server.shutdown", {});
     }
 
-    saveProject(): Promise<void> {
-        return this.client.request("project.save", {});
+    saveProject(autosaveOnly = false): Promise<void> {
+        return this.client.request("project.save", autosaveOnly ? { autosaveOnly } : {});
     }
 
     enableProjectAutosave(): Promise<void> {

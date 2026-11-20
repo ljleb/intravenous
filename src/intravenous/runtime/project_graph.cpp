@@ -2286,7 +2286,7 @@ void ProjectGraph::set_interaction_value_locked(ActiveManualControlInteraction& 
     }
 }
 
-void ProjectGraph::open_transactions_locked(InteractionTransactions& transactions)
+void ProjectGraph::open_transactions_locked(InteractionTransactions& transactions) const
 {
     NodeInstancesInteractionRequest nodes{};
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_node_instances_interaction_requested_event, nodes);
@@ -2324,7 +2324,7 @@ void remove_deleted_instance_endpoints(std::vector<ProjectConnection>& connectio
 void append_project_instance_duplicates(ProjectEditBatch& edit,
     std::unordered_map<std::string, ProjectNodeInstanceDeclaration const*> const& existing_instances,
     ProjectInstanceRecords const& instances, std::span<ProjectConnection const> connections,
-    std::span<ProjectManualControl const> controls)
+    std::span<ProjectManualControl const> controls, std::span<ProjectLaneView const> lane_views)
 {
     if (edit.instance_duplicates.empty()) return;
     std::unordered_map<std::string, std::string> copies;
@@ -2353,6 +2353,13 @@ void append_project_instance_duplicates(ProjectEditBatch& edit,
         auto control = original;
         control.id.node.instance_id = copy->second;
         edit.manual_controls.push_back({control.id, std::move(control)});
+    }
+    for (auto const& original : lane_views) {
+        auto const copy = copies.find(original.id.address.instance_id);
+        if (copy == copies.end()) continue;
+        auto view = original;
+        view.id.address.instance_id = copy->second;
+        edit.lane_views.push_back({view.id, std::move(view)});
     }
     auto duplicate_matchers = [&](std::span<ProjectNodePortMatcher const> matchers) {
         std::vector<ProjectNodePortMatcher> result;
@@ -2418,6 +2425,49 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
             || !edit.connections.empty() || !edit.manual_controls.empty() || !edit.instance_duplicates.empty();
     RebuildResult rebuilt;
     ProjectEditEffect effect;
+    if (historical) {
+        if (historical->lane_order)
+            edit.lane_order = project_history_setting(presentation_.lane_order, *historical->lane_order, *history_undo);
+        if (historical->timeline_snap_memory)
+            edit.timeline_snap_memory = project_history_setting(
+                presentation_.timeline_snap_memory, *historical->timeline_snap_memory, *history_undo);
+        for (auto const& change : historical->lane_views) {
+            auto const& desired = *history_undo ? change.before : change.after;
+            auto const& other = *history_undo ? change.after : change.before;
+            // Lane navigation can change a view after a duplication. Undo
+            // still removes that lane and its current view.
+            edit.lane_views.push_back({desired ? desired->id : other->id, desired});
+        }
+    }
+    std::optional<ProjectPresentation> next_presentation;
+    auto prepare_presentation = [&](std::unordered_set<std::string> const& remaining_instances) {
+        if (edit.lane_views.empty() && !edit.lane_order && !edit.timeline_snap_memory
+            && std::ranges::all_of(presentation_.lane_order, [&](auto const& address) {
+                return remaining_instances.contains(address.instance_id);
+            }) && std::ranges::all_of(presentation_.lane_views, [&](auto const& view) {
+                return remaining_instances.contains(view.id.address.instance_id);
+            })) return;
+        auto& next = next_presentation.emplace(presentation_);
+        for (auto const& view : edit.lane_views) {
+            if (view.value && !remaining_instances.contains(view.key.address.instance_id))
+                throw std::invalid_argument("lane view addresses an unknown instance");
+        }
+        if (edit.lane_order) {
+            for (auto const& address : *edit.lane_order) {
+                if (!remaining_instances.contains(address.instance_id))
+                    throw std::invalid_argument("lane order addresses an unknown instance");
+            }
+            next.lane_order = *edit.lane_order;
+        }
+        if (edit.timeline_snap_memory) next.timeline_snap_memory = *edit.timeline_snap_memory;
+        apply_project_record_edits(next.lane_views, edit.lane_views);
+        std::erase_if(next.lane_order, [&](auto const& address) {
+            return !remaining_instances.contains(address.instance_id);
+        });
+        std::erase_if(next.lane_views, [&](auto const& view) {
+            return !remaining_instances.contains(view.id.address.instance_id);
+        });
+    };
     if (needs_graph) {
         InteractionTransactions transactions;
         open_transactions_locked(transactions);
@@ -2434,7 +2484,7 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
         }
         std::unordered_map<std::string, ProjectNodeInstanceDeclaration const*> existing_instances;
         for (auto const& value : instances.instances) existing_instances.emplace(value.instance_id, &value);
-        append_project_instance_duplicates(edit, existing_instances, instances, connections, controls);
+        append_project_instance_duplicates(edit, existing_instances, instances, connections, controls, presentation_.lane_views);
         for (auto const& id : edit.require_absent_instances) {
             if (existing_instances.contains(id))
                 throw std::invalid_argument("duplicate node instance id: " + id);
@@ -2457,6 +2507,7 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
         apply_project_record_edits(controls, edit.manual_controls);
         std::unordered_set<std::string> remaining_instances;
         for (auto const& value : instances.instances) remaining_instances.insert(value.instance_id);
+        prepare_presentation(remaining_instances);
         std::unordered_set<std::string> removed_instances;
         for (auto const& value : before_instances.instances) {
             if (!remaining_instances.contains(value.instance_id)) removed_instances.insert(value.instance_id);
@@ -2493,6 +2544,22 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
             rebuilt = rebuild_locked(std::move(nodes), std::move(wires), true, nullptr,
                 &transactions, &previous_controls, false, &effect);
         }
+    } else if (!edit.lane_views.empty() || edit.lane_order || edit.timeline_snap_memory) {
+        NodeInstancesProjectGraphRead instances{};
+        IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_node_instances_read_event, instances);
+        if (!instances.handled) throw std::runtime_error("project editing requires NodeInstances");
+        std::unordered_set<std::string> remaining_instances;
+        for (auto const& instance : instances.instances)
+            remaining_instances.insert(instance.instance_id);
+        prepare_presentation(remaining_instances);
+    }
+    if (next_presentation) {
+        effect.lane_views = project_record_changes(presentation_.lane_views, next_presentation->lane_views);
+        if (presentation_.lane_order != next_presentation->lane_order)
+            effect.lane_order = {presentation_.lane_order, next_presentation->lane_order};
+        if (presentation_.timeline_snap_memory != next_presentation->timeline_snap_memory)
+            effect.timeline_snap_memory = {presentation_.timeline_snap_memory, next_presentation->timeline_snap_memory};
+        presentation_ = std::move(*next_presentation);
     }
     // All record applicability and batch validation has succeeded. Settings
     // commits report activation failures as status, not rejected durable edits.
@@ -2507,7 +2574,13 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
         if (*before_audio != *edit.audio_devices)
             effect.audio_devices = ProjectRecordChange<ProjectAudioDeviceSelection>{*before_audio, *edit.audio_devices};
     }
-    if (record_history) record_edit_locked(std::move(effect));
+    rebuilt.state_changed = !effect.empty() || !!historical;
+    if (record_history) {
+        // Continuous view settings are saved without creating an undo entry.
+        // Graph edits still record the views they create or remove.
+        if (!needs_graph) effect.lane_views.clear();
+        record_edit_locked(std::move(effect));
+    }
     if (history_undo) {
         if (*history_undo) --history_position_;
         else ++history_position_;
@@ -2517,13 +2590,15 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
 
 void ProjectGraph::handle_project_apply_edit(ProjectEditBatch const& batch, ProjectAckBuilder& builder)
 {
+    bool changed = false;
     {
         std::scoped_lock lock(mutex_);
         auto rebuilt = apply_edit_locked(batch, true);
+        changed = rebuilt.state_changed;
         builder.set_publication(std::move(rebuilt.publication));
     }
     builder.succeed();
-    IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+    if (changed) IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
 }
 
 void ProjectGraph::handle_project_undo(ProjectAckBuilder& builder, std::function<void()> const& authorize_audio)
@@ -2721,6 +2796,13 @@ void ProjectGraph::handle_project_replace_graph(
                 GraphConnectionReplaceAllMutation{
                     .connections = request.connections,
                 }, true, nullptr, nullptr, nullptr, false);
+            presentation_ = request.presentation;
+            std::erase_if(presentation_.lane_order, [&](auto const& address) {
+                return !instance_ids.contains(address.instance_id);
+            });
+            std::erase_if(presentation_.lane_views, [&](auto const& view) {
+                return !instance_ids.contains(view.id.address.instance_id);
+            });
             edit_history_.clear();
             node_message_gestures_.clear();
             history_position_ = 0;
@@ -3017,7 +3099,14 @@ void ProjectGraph::handle_project_persistence_collect_state(
     ProjectPersistenceBuilder& builder) const
 {
     std::scoped_lock lock(mutex_);
+    InteractionTransactions transactions;
+    open_transactions_locked(transactions);
+    auto instances = transactions.node_instances.records();
+    builder.add_node_instances(std::move(instances.instances));
+    builder.add_node_replacements(std::move(instances.replacements));
+    builder.add_graph_connections(transactions.graph_connections.records());
     builder.add_manual_controls(manual_controls_);
+    builder.add_project_presentation(presentation_);
 }
 
 void ProjectGraph::handle_socket_rpc_set_audio_devices(SetAudioDevicesRequest const& request,
@@ -3461,6 +3550,7 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
         }
 
         ProjectGraphScope scope;
+        scope.presentation = presentation_;
         auto const generation = current_generation_;
         if (generation) scope.generation = generation->configured_generation;
         scope.sample_rate = generation && generation->compiled_graph

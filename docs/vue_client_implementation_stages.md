@@ -564,7 +564,7 @@ controls do not change selection. Selection is local to each editor and survives
 scope revisions while its stable node address remains present.
 
 The 2026-11-18 lane controls add Shift-click range selection and Shift+Up or
-Shift+Down to move the selection. The project layout file stores the order.
+Shift+Down to move the selection. `iv_project.jsonl` stores the lane order.
 Enter selects a focused lane. Space controls playback.
 [Current lane operations](./node_presentation_and_manual_controls_direction.md#navigation-selection-and-lane-order)
 
@@ -4417,8 +4417,10 @@ fresh build to verify.
 `WorkspaceSession.setTimelineSnapMode()` uses `project.applyEdit` for the
 hidden `builtin.beats` and `builtin.timeline` instances and their
 connections. The graph read determines the active mode in each editor.
-`GraphLayoutStore` saves the inactive Beats arguments and Custom routes
-before the edit. `TimelineScopePresentation.vue` observes only the
+`iv_project.jsonl` stores the inactive Beats arguments and Custom routes.
+The snap-mode edit updates that state and the graph together.
+[Previous storage](./historical/project_presentation_before_jsonl_2026-11-19.md).
+`TimelineScopePresentation.vue` observes only the
 editor-managed Timeline and exposes that node's Beats input in Custom mode.
 `BeatsSettings.vue` serves both the ruler popover and authored Beats lanes.
 

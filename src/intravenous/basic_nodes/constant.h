@@ -9,9 +9,7 @@ namespace iv {
 struct Constant {
     Sample _value;
 
-    // A registered IV node has one explicit public construction interface.
-    // This replaces the aggregate-only spelling that was usable only through
-    // the deleted g.node<Constant>(...) direct-type API.
+    // The same default applies to construction by type or by definition ID.
     constexpr explicit Constant(Sample value = 0.0)
         : _value(value)
     {}

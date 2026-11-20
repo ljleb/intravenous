@@ -1,18 +1,18 @@
 <script setup lang="ts">
 import { PresentationObservations, provideObservations } from "../presentation/observationContext";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import { saveGraphLayoutMessage, type GraphEditorHostMessage, type GraphEditorState, type GraphEditorWebviewMessage,
-    type GraphLaneInsertion } from "../../src/graphEditorProtocol";
+import type { GraphEditorHostMessage, GraphEditorState, GraphEditorWebviewMessage,
+    GraphLaneInsertion, GraphPresentationPatch } from "../../src/graphEditorProtocol";
 import { ObservationProfile } from "../../src/observationProfile";
 import { ObservationDeliveryReceiver } from "../../src/observationDelivery";
-import { addressKey, copyLanePresentationStates, readLayout, type NodeAddress, type Point,
-    type PresentationState, type PresentationStates } from "../../src/graphScope";
+import { addressKey, newGraphLayout, readGraphViewState, type NodeAddress, type Point,
+    type PresentationState } from "../../src/graphScope";
 import { isTimelineSnapNode } from "../../src/timelineSnap";
 import type { CurveAxes, CurveDragKind } from "../../src/automationCurveEditing";
 import { webviewApi } from "../host";
 import PresentationHost from "../presentation/PresentationHost.vue";
 import type { SemanticNode } from "../presentation/semanticNode";
-import { provideGraphEditor, type KnobDrag, type ObjectDrag } from "./context";
+import { provideGraphEditor, type KnobClipboard, type KnobDrag, type ObjectDrag } from "./context";
 import { cursorWarpAnchor, PointerLockCursorReturn, type CursorWarpAnchor, type CursorTrace } from "./cursorReturn";
 import NodeEditor from "./NodeEditor.vue";
 import NodeDefinitionPicker from "./NodeDefinitionPicker.vue";
@@ -40,7 +40,7 @@ import type { StatusHint } from "../../src/statusBarText";
 import { projectHistoryShortcut } from "../../src/projectHistoryShortcut";
 import { graphEditorShortcut, isTextEditingTarget } from "../../src/graphEditorShortcuts";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
-import { insertLanes, mergeLaneOrder, moveSelectedLanes, orderLanes, selectLaneRange } from "../../src/laneSelection";
+import { mergeLaneOrder, moveSelectedLanes, orderLanes, selectLaneRange } from "../../src/laneSelection";
 import { connectionEndKey, connectionWirePath, portEndpointKey, portSlotKey, selectedLaneConnections, selectedLaneWirePath,
     type PortWireAnchor, type RevealedConnectionEnd, type SelectedLaneWire } from "../../src/selectedLaneConnections";
 
@@ -50,7 +50,7 @@ type WireOcclusions = { labels: DOMRect[]; knobs: DOMRect[] };
 
 const wireOpacity = { faint: .19, emphasized: .72 };
 
-const state = shallowRef<GraphEditorState>({ sessionStatus: "starting", scope: null, layout: readLayout(null),
+const state = shallowRef<GraphEditorState>({ sessionStatus: "starting", scope: null,
     definitions: null, definitionUsage: {}, error: "" });
 const playback = providePlayback();
 const automation = useAutomationEditing();
@@ -76,7 +76,7 @@ function takePlayheadTrace(): CursorTrace | undefined {
         type: "playheadTrace", traceId: id, step, details: { ...details, elapsedMs: Math.round(performance.now() - start) },
     } satisfies GraphEditorWebviewMessage) };
 }
-const layout = ref(readLayout(null));
+const layout = ref(newGraphLayout());
 const manualVersion = ref(0);
 const timelineZoomHint = ref<string | null>(null);
 let lastInteractionHint: StatusHint | null | undefined;
@@ -104,6 +104,11 @@ const knobClicks = new KnobClicks();
 const activeKnob = ref<string | null>(null);
 let knobDrag: (KnobDrag & { pointerId: number }) | null = null;
 const valueEntryAnchor = shallowRef<HTMLElement>();
+const knobClipboards = new WeakMap<Element, KnobClipboard>();
+const pendingKnobPastes = new Map<number, (text: string) => string | undefined>();
+let knobClipboardRequest = 0;
+let knobClipboardStatus: StatusHint | null = null;
+let knobClipboardStatusTimer: ReturnType<typeof setTimeout> | undefined;
 
 const manualGestures = new ManualControlGestures(
     (action) => webviewApi.postMessage({ type: "manualControlAction", action }),
@@ -243,7 +248,7 @@ function publishInteractionHint() {
             shortcuts: sensitivity ? scrubSensitivityShortcut : undefined } : null)
         ?? (timelineZoomHint.value ? { text: timelineZoomHint.value } : null)
         ?? (drag === null ? null : { text: `Start ${drag} smp${pointerLockError ? " · Pointer lock unavailable" : ""}` })
-        ?? elementStatus.hint.value ?? manual ?? null;
+        ?? knobClipboardStatus ?? elementStatus.hint.value ?? manual ?? null;
     if (lastInteractionHint !== undefined && hint?.text === lastInteractionHint?.text
         && hint?.shortcuts === lastInteractionHint?.shortcuts) return;
     lastInteractionHint = hint;
@@ -383,7 +388,6 @@ function guardPointerLockExit(event: Event) {
 for (const type of pointerLockExitTypes) window.addEventListener(type, guardPointerLockExit, true);
 const trustedHover = new TrustedHover(undefined, elementStatus.hover);
 
-let initializedLayout = false;
 const surface = ref<HTMLElement | null>(null);
 const connectionDrag = shallowRef<PortConnectionDrag | null>(null);
 const hoverShift = shallowRef(initialPortHoverShift());
@@ -399,7 +403,7 @@ const laneKeys = computed(() => orderedLanes.value.map(({ address }) => addressK
 const selectedLaneIds = computed(() => orderedLanes.value.filter(({ address }) => selectedLanes.value.has(addressKey(address)))
     .map(({ instance }) => instance.instanceId));
 let laneSelectionAnchor: string | null = null;
-let pendingLaneCopies: { requestId: string; states: PresentationStates } | undefined;
+let pendingLaneCopies: string | undefined;
 let insertedSelection: string[] = [];
 const selectedWires = shallowRef<SelectedLaneWire[]>([]);
 const movingWireId = computed(() => connectionDrag.value?.edit?.connection.id);
@@ -452,20 +456,39 @@ const dropPreviewWires = computed(() => {
         path: connectionWirePath(wire.anchor, target) })) : [];
 });
 const changedPresentationStates = new Map<string, () => PresentationState | null>();
-let laneOrderChanged = false;
-function save() {
-    const states = new Map(Object.entries(layout.value.presentationStates));
-    const changed = new Map<string, PresentationState | null>();
-    for (const [key, serialize] of changedPresentationStates) {
-        const snapshot = JSON.parse(JSON.stringify(serialize())) as PresentationState | null;
-        changed.set(key, snapshot);
-        if (snapshot === null) states.delete(key);
-        else states.set(key, snapshot);
+const pendingPresentation = new Map<number, { patch: GraphPresentationPatch; revision?: number }>();
+let nextPresentationRequest = 0;
+function updateProjectPresentation() {
+    const scope = state.value.scope;
+    const view = readGraphViewState(scope?.presentation);
+    for (const [id, { patch, revision }] of pendingPresentation) {
+        if (revision !== undefined && (scope?.sessionRevision ?? -1) >= revision) {
+            pendingPresentation.delete(id);
+            continue;
+        }
+        if (patch.laneOrder) view.laneOrder = patch.laneOrder;
+        for (const [key, state] of Object.entries(patch.presentationStates)) {
+            if (state === null) delete view.presentationStates[key];
+            else view.presentationStates[key] = state;
+        }
     }
-    if (changed.size) layout.value.presentationStates = Object.fromEntries(states);
-    webviewApi.postMessage(saveGraphLayoutMessage(layout.value, Object.fromEntries(changed), laneOrderChanged));
+    const currentOrder = layout.value.laneOrder;
+    if (currentOrder.length !== view.laneOrder.length || currentOrder.some((key, index) => key !== view.laneOrder[index]))
+        layout.value.laneOrder = view.laneOrder;
+    layout.value.presentationStates = view.presentationStates;
+}
+function save(laneOrder?: string[]) {
+    if (!laneOrder && !changedPresentationStates.size) return;
+    const presentationStates: GraphPresentationPatch["presentationStates"] = {};
+    for (const [key, serialize] of changedPresentationStates) {
+        presentationStates[key] = JSON.parse(JSON.stringify(serialize())) as PresentationState | null;
+    }
     changedPresentationStates.clear();
-    laneOrderChanged = false;
+    const patch = { presentationStates, laneOrder };
+    const requestId = ++nextPresentationRequest;
+    pendingPresentation.set(requestId, { patch });
+    updateProjectPresentation();
+    webviewApi.postMessage({ type: "saveGraphPresentation", requestId, ...patch });
 }
 
 function selectInsertedLanes() {
@@ -477,20 +500,14 @@ function selectInsertedLanes() {
     insertedSelection = [];
 }
 
-function placeInsertedLanes(lanes: readonly GraphLaneInsertion[]) {
-    const insertions = lanes.map(({ instanceId, afterInstanceId }) => ({
-        key: addressKey({ instanceId }), after: afterInstanceId === undefined ? undefined : addressKey({ instanceId: afterInstanceId }),
-    }));
-    layout.value.laneOrder = mergeLaneOrder(layout.value.laneOrder, insertLanes(laneKeys.value, insertions));
-    laneOrderChanged = true;
-    save();
-    insertedSelection = insertions.map(({ key }) => key);
+function selectNewLanes(lanes: readonly GraphLaneInsertion[]) {
+    insertedSelection = lanes.map(({ instanceId }) => addressKey({ instanceId }));
     selectInsertedLanes();
 }
 provideGraphEditor({ layout, save,
     readPresentationState: (key) => {
         const pending = changedPresentationStates.get(key);
-        const state = pending ? pending() : layout.value.presentationStates[key] ?? pendingLaneCopies?.states[key];
+        const state = pending ? pending() : layout.value.presentationStates[key];
         return state ? JSON.parse(JSON.stringify(state)) : undefined;
     },
     presentationStateChanged: (key, serialize) => changedPresentationStates.set(key, serialize),
@@ -515,6 +532,10 @@ provideGraphEditor({ layout, save,
     },
     closeKnobValueWithin(panel) {
         if (panel.contains(valueEntryAnchor.value ?? null)) manualGestures.cancelEntry();
+    },
+    registerKnobClipboard(element, knob) {
+        knobClipboards.set(element, knob);
+        return () => knobClipboards.delete(element);
     },
     selectedLanes, portsChanged: scheduleWireUpdate,
     elementAtPointer: () => {
@@ -812,13 +833,47 @@ function searchNodeDefinitions(requestId: string, source: string, cursor: number
     pickerCreationError.value = "";
     webviewApi.postMessage({ type: "searchNodeDefinitions", requestId, source, cursor });
 }
+function knobClipboardBlocked() {
+    return knobDrag || objectDrag || connectionDrag.value || document.pointerLockElement
+        || manualGestures.valueEditing.view() || isTextEditingTarget(document.activeElement);
+}
+function handleKnobClipboard(event: KeyboardEvent, copy: boolean): boolean {
+    if (knobClipboardBlocked()) return false;
+    let element = trustedHover.elementAtPointer();
+    while (element instanceof Element && !knobClipboards.has(element)) element = element.parentElement;
+    const target = element instanceof Element ? element : document.activeElement;
+    const knob = target && knobClipboards.get(target);
+    const value = knob && knob.value();
+    if (!knob || value === undefined) return false;
+    if (event.repeat) return true;
+    if (!copy && !state.value.scope?.editable) return false;
+    clearTimeout(knobClipboardStatusTimer);
+    knobClipboardStatus = null;
+    publishInteractionHint();
+    const requestId = ++knobClipboardRequest;
+    if (copy) {
+        const text = Object.is(value, -0) ? "-0" : String(value);
+        webviewApi.postMessage({ type: "knobClipboard", requestId, text });
+    } else {
+        const identity = knob.identity();
+        pendingKnobPastes.set(requestId, (text) => {
+            if (target?.isConnected && knobClipboards.get(target) === knob && knob.identity() === identity
+                && state.value.scope?.editable && !knobClipboardBlocked()) return knob.paste(text);
+        });
+        webviewApi.postMessage({ type: "knobClipboard", requestId });
+    }
+    return true;
+}
 function handleGraphEditorShortcut(event: KeyboardEvent) {
     if (!state.value.scope || pickerOpen.value || editing.value !== null || creatingPackage.value || isTextEditingTarget(event.target)) return;
     const action = graphEditorShortcut(event);
     if (!action || (action === "selectAll" && event.target instanceof Element
         && event.target.closest("[data-lane-item-editor]"))) return;
+    const knobShortcut = action === "copyKnobValue" || action === "pasteKnobValue";
+    if (knobShortcut && !handleKnobClipboard(event, action === "copyKnobValue")) return;
     event.preventDefault();
     event.stopImmediatePropagation();
+    if (knobShortcut) return;
     if (action === "selectAll") {
         selectedLanes.value = new Set(laneKeys.value);
         if (!laneSelectionAnchor || !selectedLanes.value.has(laneSelectionAnchor)) laneSelectionAnchor = laneKeys.value[0] ?? null;
@@ -828,16 +883,9 @@ function handleGraphEditorShortcut(event: KeyboardEvent) {
     if (action === "addNode") openAddNode();
     else if (!pendingLaneCopies && selectedLaneIds.value.length) {
         const copies = selectedLaneIds.value.map((sourceInstanceId) => ({ sourceInstanceId, instanceId: crypto.randomUUID() }));
-        const states = { ...layout.value.presentationStates };
-        for (const [key, serialize] of changedPresentationStates) {
-            const state = serialize();
-            if (state === null) delete states[key];
-            else states[key] = state;
-        }
-        // The graph can publish new nodes before the edit reply. Stage their
-        // view settings for the first render and persist them on acceptance.
+        save();
         const requestId = copies[0].instanceId;
-        pendingLaneCopies = { requestId, states: copyLanePresentationStates(states, copies) };
+        pendingLaneCopies = requestId;
         webviewApi.postMessage({ type: "duplicateSelectedLanes", copies, requestId });
     }
 }
@@ -849,6 +897,7 @@ function handleProjectHistory(event: KeyboardEvent) {
     cancelConnection();
     automation.edits.abandon();
     beats.edits.abandon();
+    save();
     webviewApi.postMessage({ type: "projectHistory", direction });
 }
 function keyDown(event: KeyboardEvent) {
@@ -867,9 +916,7 @@ function keyDown(event: KeyboardEvent) {
         const current = laneKeys.value;
         const next = moveSelectedLanes(current, selectedLanes.value, event.key === "ArrowUp" ? -1 : 1);
         if (next !== current) {
-            layout.value.laneOrder = mergeLaneOrder(layout.value.laneOrder, next);
-            laneOrderChanged = true;
-            save();
+            save(mergeLaneOrder(layout.value.laneOrder, next));
             const focused = document.activeElement;
             void nextTick(() => {
                 if (focused instanceof HTMLElement && focused.isConnected && document.activeElement === document.body)
@@ -902,13 +949,20 @@ function observePointerShift(event: PointerEvent) {
 function windowBlurred() {
     if (document.hasFocus()) return;
     hoverShift.value = initialPortHoverShift();
-    if (!knobDrag && !objectDrag && !cursorReturn.waitingForUnlock) blurPointerControls();
+    if (!knobDrag && !objectDrag && !document.pointerLockElement && !cursorReturn.waitingForUnlock) {
+        blurPointerControls();
+        if (state.value.scope) {
+            save();
+            webviewApi.postMessage({ type: "flushProjectAutosave" } satisfies GraphEditorWebviewMessage);
+        }
+    }
     publishInteractionHint();
     // Keep the captured gesture. Native activation can blur this iframe again
     // immediately after a successful pointerdown; the host reports real exits.
 }
 function nativeWindowFocusChanged(focused: boolean) {
     if (!focused) {
+        pendingKnobPastes.clear();
         hoverShift.value = initialPortHoverShift();
         cancelConnection();
         blurPointerControls();
@@ -924,6 +978,29 @@ function createPackage() {
     creatingPackage.value = false;
 }
 function receive(event: MessageEvent<GraphEditorHostMessage>) {
+    if (event.data?.type === "graphPresentationAccepted") {
+        const { requestId, revision } = event.data;
+        const pending = pendingPresentation.get(requestId);
+        if (!pending) return;
+        if (revision === undefined) pendingPresentation.delete(requestId);
+        else pending.revision = revision;
+        updateProjectPresentation();
+        return;
+    }
+    if (event.data?.type === "knobClipboardResult") {
+        const { requestId, text, error } = event.data;
+        const paste = pendingKnobPastes.get(requestId);
+        pendingKnobPastes.delete(requestId);
+        if (!document.hasFocus()) return;
+        const problem = error ?? (text !== undefined ? paste?.(text) : undefined);
+        if (problem) {
+            clearTimeout(knobClipboardStatusTimer);
+            knobClipboardStatus = { text: problem };
+            publishInteractionHint();
+            knobClipboardStatusTimer = setTimeout(() => { knobClipboardStatus = null; publishInteractionHint(); }, 3000);
+        }
+        return;
+    }
     if (event.data?.type === "cursorReturnCompleted") {
         cursorReturn.complete(event.data.requestId);
         return;
@@ -997,16 +1074,10 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     }
     if (event.data?.type === "graphLanesInserted") {
         if (event.data.duplicateRequestId !== undefined) {
-            if (!pendingLaneCopies || pendingLaneCopies.requestId !== event.data.duplicateRequestId) return;
-            if (event.data.lanes.length) {
-                for (const [key, snapshot] of Object.entries(pendingLaneCopies.states)) {
-                    if (!changedPresentationStates.has(key) && !Object.hasOwn(layout.value.presentationStates, key))
-                        changedPresentationStates.set(key, () => snapshot);
-                }
-            }
+            if (pendingLaneCopies !== event.data.duplicateRequestId) return;
             pendingLaneCopies = undefined;
         }
-        if (event.data.lanes.length) placeInsertedLanes(event.data.lanes);
+        if (event.data.lanes.length) selectNewLanes(event.data.lanes);
         return;
     }
     if (event.data?.type !== "graphState") return;
@@ -1022,6 +1093,9 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     if (entry && !canEditManualControl(entry.control, resolveManualControl(state.value.scope, entry.control)))
         manualGestures.cancelEntry();
     if (state.value.sessionStatus !== "running") {
+        pendingPresentation.clear();
+        changedPresentationStates.clear();
+        pendingKnobPastes.clear();
         manualGestures.disconnected();
         pendingLaneCopies = undefined;
         insertedSelection = [];
@@ -1037,15 +1111,12 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     if (editing.value && !state.value.scope?.nodes.some((entry) => entry.instance.instanceId === editing.value)) {
         editing.value = null;
     }
-    if (!initializedLayout) {
-        layout.value = readLayout(state.value.layout);
-        initializedLayout = true;
-    }
+    updateProjectPresentation();
     selectInsertedLanes();
 }
 onMounted(() => {
     // Give VS Code a persisted panel state so its serializer can restore
-    // this editor. Geometry itself lives in the project layout file.
+    // this editor. Shared lane state comes from the server.
     webviewApi.setState({ ...webviewApi.getState(), surface: "graphEditor" });
     window.addEventListener("message", receive);
     window.addEventListener("pointermove", moveConnection, true);
@@ -1081,6 +1152,8 @@ onMounted(() => {
     webviewApi.postMessage({ type: "graphReady" });
 });
 onBeforeUnmount(() => {
+    clearTimeout(knobClipboardStatusTimer);
+    pendingKnobPastes.clear();
     clearTimeout(playheadTraceTimer);
     clearTimeout(observationProfileTimer);
     observationProfile = undefined;

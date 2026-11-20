@@ -431,8 +431,8 @@ public:
         });
     }
     void build_graph(GraphBuilder& g) const {
-        auto points = details::configure_concrete_node<PointSource>(g, g.immutable_array<Point>(points_));
-        auto curve = details::configure_concrete_node<Curve>(g);
+        auto points = g.node<PointSource>(g.immutable_array<Point>(points_));
+        auto curve = g.node<Curve>();
 
         auto const min = g.input<"min", Sample>(InputAccess::coverage, {
             .channel_layout = mono_planar_channel_layout, .default_value = 0, .enabled_by_default = false});

@@ -6,6 +6,7 @@
 #include <intravenous/runtime/socket_rpc_server.h>
 
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -268,6 +269,7 @@ void ProjectPersistence::replay(std::vector<ProjectMessageNotification>& message
     std::unordered_map<std::string, ProjectNodeReplacement> node_replacements;
     std::unordered_map<std::string, ProjectConnection> connections;
     std::unordered_map<std::string, ProjectManualControl> manual_controls;
+    ProjectPresentation presentation;
     for (auto const &command : read_commands()) {
         try {
             auto const& args = command.args;
@@ -419,6 +421,22 @@ void ProjectPersistence::replay(std::vector<ProjectMessageNotification>& message
                     + (output_gain ? "\noutput:" : "\ninput:")
                     + require_string(args, output_gain ? "output_name" : "input_name");
                 manual_controls.erase(key);
+            } else if (command.command == "projectPresentation.setLaneOrder") {
+                presentation.lane_order = parse_project_lane_order(
+                    args.at("order"), ProjectConnectionJsonNames::project_file);
+            } else if (command.command == "projectPresentation.setLaneView") {
+                auto key = parse_project_lane_view_id(args, ProjectConnectionJsonNames::project_file);
+                auto existing = std::ranges::find(presentation.lane_views, key, &ProjectLaneView::id);
+                if (args.at("state").is_null()) {
+                    if (existing != presentation.lane_views.end()) presentation.lane_views.erase(existing);
+                } else {
+                    auto state = parse_project_presentation_object(args.at("state"));
+                    if (existing == presentation.lane_views.end())
+                        presentation.lane_views.push_back({std::move(key), std::move(state)});
+                    else existing->state = std::move(state);
+                }
+            } else if (command.command == "projectPresentation.setTimelineSnapMemory") {
+                presentation.timeline_snap_memory = parse_project_presentation_object(args.at("memory"));
             } else {
                 throw std::runtime_error("unknown project command: " + command.command);
             }
@@ -437,6 +455,7 @@ void ProjectPersistence::replay(std::vector<ProjectMessageNotification>& message
     }
 
     ProjectReplaceGraphRequest request;
+    request.presentation = std::move(presentation);
     request.instances.reserve(instances.size());
     for (auto& [_, declaration] : instances) {
         request.instances.push_back(std::move(declaration));
@@ -512,15 +531,23 @@ void ProjectPersistence::save() const
     auto const commands = collect_commands();
 
     auto const project_file = project_file_path();
+    std::string contents;
+    for (auto const& command : commands) {
+        contents += Json{{"command", command.command}, {"args", command.args}}.dump();
+        contents += '\n';
+    }
+    {
+        std::ifstream existing(project_file, std::ios::binary);
+        if (existing && std::string(std::istreambuf_iterator<char>(existing), {}) == contents)
+            return;
+    }
     auto const temporary_file = project_file.parent_path()
         / (project_file.filename().string() + ".tmp");
-    std::ofstream out(temporary_file, std::ios::trunc);
+    std::ofstream out(temporary_file, std::ios::binary | std::ios::trunc);
     if (!out) {
         throw std::runtime_error("failed to write " + temporary_file.string());
     }
-    for (auto const &command : commands) {
-        out << Json{{"command", command.command}, {"args", command.args}}.dump() << '\n';
-    }
+    out << contents;
     out.close();
     if (!out) {
         throw std::runtime_error("failed to write " + temporary_file.string());

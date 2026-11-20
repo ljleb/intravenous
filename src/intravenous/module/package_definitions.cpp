@@ -13,19 +13,6 @@
 
 namespace iv::details {
 namespace {
-class ModuleStackEntry {
-    BuilderSession* session_ = nullptr;
-public:
-    ModuleStackEntry(BuilderSession* session, std::string_view id)
-        : session_(session)
-    {
-        begin_builder_module(session_, id);
-    }
-    ModuleStackEntry(ModuleStackEntry const&) = delete;
-    ModuleStackEntry& operator=(ModuleStackEntry const&) = delete;
-    ~ModuleStackEntry() { end_builder_module(session_); }
-};
-
 class PackageSelection {
     BuilderSession* session_ = nullptr;
     std::size_t previous_ = static_cast<std::size_t>(-1);
@@ -169,7 +156,7 @@ NodeRef configure_package_definition_impl(
     auto const prepared = consume_builder_node_source_identity(session);
     try {
         record_builder_module_message_local_ref(session, prepared);
-        auto const relative_path = claim_builder_registered_call_path(
+        auto const relative_path = claim_builder_invocation_path(
             session, prepared.source_identity);
         if (auto resolver = builder_definition_resolver(session)) {
             return resolver(

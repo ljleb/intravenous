@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, ref } from "vue";
 import { addressKey, nodeWidth, nodeHeightFor, resolveScopePorts, zoomAt, type GraphPortMatcher, type GraphScopeNode, type GraphScopePort, type GraphScopeConnection, type Point } from "../../src/graphScope";
 import { useNode } from "../presentation/nodeContext";
 import PresentationHost from "../presentation/PresentationHost.vue";
@@ -12,7 +12,7 @@ const scope = computed(() => node.value.scope!);
 const children = computed(() => scope.value.nodes.map((child) => ({
     child, semantic: semanticNodeFromScopeChild(child, scope.value),
 })));
-const { layout, save } = useGraphEditor();
+const { layout } = useGraphEditor();
 const canvas = ref<HTMLElement | null>(null);
 const viewport = computed(() => layout.value.viewport);
 const position = (child: GraphScopeNode) => layout.value.positions[addressKey(child.address)] ?? { x: 0, y: 0 };
@@ -75,9 +75,7 @@ function up(event: PointerEvent) {
     if (!drag || drag.pointer !== event.pointerId) return;
     drag = null;
     if (canvas.value?.hasPointerCapture(event.pointerId)) canvas.value.releasePointerCapture(event.pointerId);
-    save();
 }
-let wheelSave: ReturnType<typeof setTimeout> | undefined;
 function wheel(event: WheelEvent) {
     if ((event.target as Element).closest(".connection-list")) return;
     event.preventDefault();
@@ -85,8 +83,6 @@ function wheel(event: WheelEvent) {
     const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? rect.height : 1);
     layout.value.viewport = zoomAt(viewport.value, { x: event.clientX - rect.left, y: event.clientY - rect.top },
         viewport.value.scale * Math.exp(-pixels * 0.001));
-    clearTimeout(wheelSave);
-    wheelSave = setTimeout(() => { wheelSave = undefined; save(); }, 150);
 }
 function fit() {
     if (!scope.value.nodes.length || !canvas.value) return;
@@ -98,12 +94,7 @@ function fit() {
     const rect = canvas.value.getBoundingClientRect();
     const scale = Math.max(0.1, Math.min(1, (rect.width - 80) / (right - left), (rect.height - 80) / (bottom - top)));
     layout.value.viewport = { x: 40 - left * scale, y: 40 - top * scale, scale };
-    save();
 }
-onBeforeUnmount(() => {
-    if (wheelSave) clearTimeout(wheelSave);
-    if (wheelSave || drag) save();
-});
 </script>
 
 <template>

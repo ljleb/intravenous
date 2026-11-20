@@ -29,7 +29,7 @@ std::string_view graph_jit_runtime_package_source()
 
 // This fixture has an independent package catalog and registers the curve
 // module without loading the rest of the builtin package.
-IV_REGISTER_OUTPUT_GAIN_NODES();
+IV_INSTANTIATE_OUTPUT_GAIN_NODES();
 IV_MODULE_CLASS("builtin.automation.curve", iv::automation::AutomationCurve, "Automation curve");
 IV_NODE("builtin.beats", iv::Beats, "Beats");
 IV_MODULE_CLASS("builtin.timeline", iv::Timeline, "Timeline");
@@ -7886,13 +7886,13 @@ struct CurvePointTransform {
 IV_NODE("iv.test.automation.transform", CurvePointTransform, "Transform");
 void transformed_sparse_curve_module(iv::GraphBuilder& graph) {
     using namespace iv;
-    auto points = iv::details::configure_concrete_node<iv::automation::PointSource>(graph, graph.immutable_array<iv::automation::Point>(
+    auto points = graph.node<iv::automation::PointSource>(graph.immutable_array<iv::automation::Point>(
         std::vector<iv::automation::Point>{{1, 0, 0, iv::CurveInterpolation::bezier, 0},
             {2, 4.0 / 88200, 1, iv::CurveInterpolation::hold, 1},
             {3, 12.0 / 88200, 0, iv::CurveInterpolation::empty, 1}}));
     auto transformed = graph.node<"iv.test.automation.transform">();
     transformed("points"_F = points);
-    auto curve = iv::details::configure_concrete_node<iv::automation::Curve>(graph);
+    auto curve = graph.node<iv::automation::Curve>();
     curve("points"_F = transformed);
     auto manual = graph.node<"iv.test.replay.manual_full">();
     manual(curve);

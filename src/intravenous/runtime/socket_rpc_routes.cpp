@@ -484,6 +484,14 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
     impl_->add<SaveProjectRequest>(
         "project.save", "project.write", false, false,
         [](auto const& request, int id, Context const&) {
+            if (request.autosave_only) {
+                SocketRpcAutosaveStateResultBuilder autosave;
+                IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_autosave_state_event, SessionSnapshotRequest{}, autosave);
+                if (!autosave.has_response()) autosave.fail("project autosave service is unavailable");
+                if (!autosave.enabled()) return autosave.build(id);
+                if (!*autosave.enabled() || !autosave.pending())
+                    return jsonrpc_result(id, Json{{"ok", true}});
+            }
             SocketRpcAckResponseBuilder builder;
             IV_INVOKE_LINKER_EVENT(iv_socket_rpc_save_project_event, request, builder);
             if (!builder.has_response()) builder.fail("runtime project event was not handled");

@@ -14,18 +14,14 @@ using namespace iv::graph_jit::detail;
 NodeDefinitionsSnapshot gain_definitions()
 {
     NodeDefinitionsSnapshot result;
-    auto add = [&]<SampleStreamLayout Layout>(std::string id) {
-        LeafNodeDefinition leaf{.definition_id = id,
-            .provider = {.leaf_build = +[](GraphBuilder& builder,
-                std::span<iv::details::ConfigurationArgument>, ChannelLayout const*) {
-                return iv::details::configure_concrete_node<
-                    iv::OutputGainNode<ChannelTypeId::mono, Layout>>(builder).node_ref();
-            }}};
-        result.by_id.emplace(id, NodeDefinitionEntry{
-            .definition_id = id, .definition = std::move(leaf)});
+    auto package = std::make_shared<PackageRevision>();
+    package->provenance = PackageProvenance::built_in;
+    package->package_namespace = "builtin";
+    package->node_compiler_records = {
+        iv::details::node_compiler_record<OutputGainNode<ChannelTypeId::mono, SampleStreamLayout::planar>>,
+        iv::details::node_compiler_record<OutputGainNode<ChannelTypeId::mono, SampleStreamLayout::interleaved>>,
     };
-    add.template operator()<SampleStreamLayout::planar>("builtin.output_gain.mono.planar");
-    add.template operator()<SampleStreamLayout::interleaved>("builtin.output_gain.mono.interleaved");
+    result.package_revisions.push_back(std::move(package));
     return result;
 }
 
@@ -68,6 +64,7 @@ TEST(OutputGain, OneTransformFeedsAllConsumersAndItsIngressKeepsTheRawSource)
     auto expanded = expand_output_gains(graph, gain_definitions());
     ASSERT_EQ(expanded.stages.size(), 1u);
     auto stage = expanded.stages.front().bundle;
+    EXPECT_FALSE(graph.node_bundles.materialize_concrete_description(stage).registered_node_type_identity);
     auto routed = graph.connections.configured_sample_connections();
     ASSERT_EQ(routed.size(), 3u);
     EXPECT_EQ(routed[0].source_channels[0].channel.bundle, stage);

@@ -117,9 +117,8 @@ NodeRef configure_tiled_package_definition(
 void register_builder_module_class_message_handlers(
     GraphBuilder&, std::shared_ptr<void const> receiver);
 
-// This is the private concrete-node construction primitive. Registered node
-// adapters use it after validating their erased arguments; source-facing code
-// uses only GraphBuilder::node<"stable.id">(...).
+// Shared concrete-node construction used by type-based calls and registered
+// leaf adapters after they validate the public arguments.
 template<class Node, class... Args>
 node_ref_for_t<Node> configure_concrete_node(GraphBuilder&, Args&&...);
 template<class Node, class... Args>

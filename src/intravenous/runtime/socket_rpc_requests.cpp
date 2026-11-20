@@ -330,10 +330,29 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
             auto const operation_method = parse_string_param(operation, "method");
             if (operation_method == "project.applyEdit" || operation_method == "project.undo" || operation_method == "project.redo")
                 throw std::invalid_argument("project batches cannot contain history or nested batches");
+            auto const operation_params = operation.value("params", Json::object());
+            constexpr auto names = ProjectConnectionJsonNames::socket_rpc;
+            if (operation_method == "projectPresentation.setLaneOrder") {
+                if (batch.lane_order) throw std::invalid_argument("project batch edits lane order twice");
+                batch.lane_order = parse_project_lane_order(operation_params.at("order"), names);
+                continue;
+            }
+            if (operation_method == "projectPresentation.setLaneView") {
+                auto key = parse_project_lane_view_id(operation_params, names);
+                auto const& state = operation_params.at("state");
+                std::optional<ProjectLaneView> view;
+                if (!state.is_null()) view = ProjectLaneView{key, parse_project_presentation_object(state)};
+                batch.lane_views.push_back({std::move(key), std::move(view)});
+                continue;
+            }
+            if (operation_method == "projectPresentation.setTimelineSnapMemory") {
+                if (batch.timeline_snap_memory) throw std::invalid_argument("project batch edits snap memory twice");
+                batch.timeline_snap_memory = parse_project_presentation_object(operation_params.at("memory"));
+                continue;
+            }
             if (operation_method == "nodeInstances.duplicate") {
-                auto const duplicate_params = operation.value("params", Json::object());
-                auto const copies = duplicate_params.find("copies");
-                if (copies == duplicate_params.end() || !copies->is_array() || copies->empty())
+                auto const copies = operation_params.find("copies");
+                if (copies == operation_params.end() || !copies->is_array() || copies->empty())
                     throw std::invalid_argument("nodeInstances.duplicate requires a nonempty copies array");
                 for (auto const& copy : *copies) {
                     batch.instance_duplicates.push_back({
@@ -344,7 +363,7 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
                 continue;
             }
             auto const nested = parse_socket_rpc_request(Json{{"id", 0}, {"method", operation_method},
-                {"params", operation.value("params", Json::object())}}.dump());
+                {"params", operation_params}}.dump());
             std::visit([&](auto const& value) {
                 using Request = std::remove_cvref_t<decltype(value)>;
                 if constexpr (std::same_as<Request, CreateNodeInstanceRequest>) {
@@ -653,7 +672,7 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
             .input_device_id = parse_optional_nullable_string_param(params, "inputDeviceId")});
     }
     if (method == "project.save") {
-        return parsed(SaveProjectRequest{});
+        return parsed(SaveProjectRequest{.autosave_only = params.value("autosaveOnly", false)});
     }
     if (method == "project.enableAutosave") {
         return parsed(EnableProjectAutosaveRequest{});

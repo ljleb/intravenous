@@ -321,13 +321,13 @@ Manifest parse_manifest(std::filesystem::path const &file)
 std::string package_key_for(std::filesystem::path const& directory)
 {
     auto const normalized = normalize(directory);
-    auto modules = normalized.end();
+    auto packages = normalized.end();
     for (auto it = normalized.begin(); it != normalized.end(); ++it) {
-        if (*it == "modules") modules = it;
+        if (*it == IV_PROJECT_PACKAGES_DIR) packages = it;
     }
-    if (modules != normalized.end()) {
+    if (packages != normalized.end()) {
         auto relative = std::filesystem::path{};
-        for (auto it = std::next(modules); it != normalized.end(); ++it) {
+        for (auto it = std::next(packages); it != normalized.end(); ++it) {
             relative /= *it;
         }
         if (!relative.empty()) return relative.generic_string();
@@ -561,7 +561,7 @@ std::filesystem::path discover_project_root(std::filesystem::path module_dir)
         }
         if (path == path.root_path()) break;
     }
-    if (module_dir.parent_path().filename() == "modules") {
+    if (module_dir.parent_path().filename() == IV_PROJECT_PACKAGES_DIR) {
         return module_dir.parent_path().parent_path();
     }
     return module_dir;

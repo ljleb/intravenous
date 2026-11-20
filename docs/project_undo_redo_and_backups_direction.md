@@ -135,6 +135,19 @@ reader verbatim. Ordinary save/autosave writes the current normalized project,
 not each action or history entry. Project replay reconstructs the current state;
 it does not create an undo entry for each replayed line.
 
+Save lane order, presentation state by node address and presentation ID, and
+remembered timeline snap settings in `iv_project.jsonl`. Keep graph-wide pan
+and zoom in the current editor session. Lane reorder is undoable. Duplication
+and deletion include the affected presentation state in the project edit.
+Lane-local view changes save without adding undo entries.
+
+Autosave writes after three seconds without an edit or ten seconds after the
+first unsaved edit. Further edits postpone the idle save within that deadline.
+A successful save starts a fresh interval for subsequent changes. Leaving the
+graph can request an immediate autosave. **Intravenous: Save Project Now**
+saves on demand. Unchanged contents leave the saved file untouched.
+[Previous layout storage](./historical/project_presentation_before_jsonl_2026-11-19.md).
+
 The normalized, human-readable `iv_project.jsonl` is intended for ordinary
 version control with Git. There is no planned separate restorable
 backup/checkpoint feature. Session undo/redo remains an independent

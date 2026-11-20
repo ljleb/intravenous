@@ -299,7 +299,7 @@ IvPackageInfo PackageDefinitions::create_project_package(std::string const& name
             "IV package name must start with a letter or '_' and contain only letters, digits, '_' or '-'");
     }
 
-    auto const root = project_root_ / "modules" / name;
+    auto const root = project_root_ / IV_PROJECT_PACKAGES_DIR / name;
     std::error_code error;
     if (std::filesystem::exists(root, error)) {
         throw std::runtime_error("IV package already exists: " + root.string());

@@ -466,9 +466,9 @@ scale. Cropped uses a linear window and clips values outside it. Pan and zoom
 apply to the lane view independently of the `min` and `max` inputs.
 [Previous navigation rules](./historical/automation_navigation_before_independent_value_axis_2026-11-18.md).
 
-The editor saves the display mode, value ruler, pan, and zoom for each curve in
-the project's `.intravenous/graph-layout.json`.
-[Previous storage choice](./historical/lane_selection_and_automation_view_storage_before_2026-11-18.md#automation-view-storage).
+The project saves each curve's display mode, value ruler, pan, and zoom in
+`iv_project.jsonl`. Graph-wide pan and zoom stay in the current editor session.
+[Previous storage choice](./historical/project_presentation_before_jsonl_2026-11-19.md).
 
 A custom presentation can register `serialize` and `restore` callbacks with
 `usePresentationState`. When the view changes, the presentation tells the host

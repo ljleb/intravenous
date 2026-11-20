@@ -66,11 +66,22 @@ export type GraphScope = {
     nodes: GraphScopeNode[];
     connections: GraphScopeConnection[];
     timelineNodes?: NodeAddress[];
+    presentation?: ProjectPresentation;
 };
 export type Point = { x: number; y: number };
 export type GraphLaneCopy = { sourceInstanceId: string; instanceId: string };
 export type PresentationState = { [name: string]: JsonValue };
 export type PresentationStates = Record<string, PresentationState>;
+export type ProjectLaneView = {
+    address: NodeAddress;
+    presentationId: string;
+    state: PresentationState;
+};
+export type ProjectPresentation = {
+    laneOrder: NodeAddress[];
+    laneViews: ProjectLaneView[];
+    timelineSnapMemory: import("./timelineSnap").TimelineSnapMemory;
+};
 export type GraphViewState = {
     presentationStates: PresentationStates;
     laneOrder: string[];
@@ -79,7 +90,6 @@ export type GraphLayout = GraphViewState & {
     positions: Record<string, Point>;
     viewport: Point & { scale: number };
     timeline: TimelineViewport;
-    automationBounds?: Record<string, { min?: number; max?: number }>;
 };
 export const nodeWidth = 300;
 export const nodeHeight = 320;
@@ -99,63 +109,30 @@ export function presentationStateKey(address: NodeAddress, presentationId: strin
     return JSON.stringify([presentationId, address.instanceId, address.path ?? []]);
 }
 
-export function copyLanePresentationStates(states: PresentationStates, copies: readonly GraphLaneCopy[]): PresentationStates {
-    const destinations = new Map(copies.map(({ sourceInstanceId, instanceId }) => [sourceInstanceId, instanceId]));
-    const result: PresentationStates = {};
-    for (const [key, state] of Object.entries(states)) {
-        let parts: unknown;
-        try { parts = JSON.parse(key); }
-        catch { continue; }
-        if (!Array.isArray(parts) || parts.length !== 3) continue;
-        const [presentationId, sourceInstanceId, path] = parts;
-        if (typeof presentationId !== "string" || typeof sourceInstanceId !== "string" || !Array.isArray(path)) continue;
-        const instanceId = destinations.get(sourceInstanceId);
-        if (instanceId === undefined) continue;
-        result[presentationStateKey({ instanceId, path }, presentationId)] = JSON.parse(JSON.stringify(state));
-    }
-    return result;
+export function addressFromKey(key: string): NodeAddress {
+    const [instanceId, path] = JSON.parse(key) as [string, NodeAddress["path"]];
+    return { instanceId, path };
 }
 
-export function readPresentationStates(value: unknown): PresentationStates {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-    return Object.fromEntries(Object.entries(value).filter(([, state]) => state && typeof state === "object" && !Array.isArray(state)));
+export function laneViewFromKey(key: string, state: PresentationState | null): Omit<ProjectLaneView, "state"> & { state: PresentationState | null } {
+    const [presentationId, instanceId, path] = JSON.parse(key) as [string, string, NodeAddress["path"]];
+    return { address: { instanceId, path }, presentationId, state };
 }
 
-export function readGraphViewState(value: unknown): GraphViewState {
-    const state = value as Partial<GraphViewState> | null;
-    const laneOrder = Array.isArray(state?.laneOrder)
-        ? [...new Set(state.laneOrder.filter((key) => typeof key === "string" && key.length))] : [];
-    return { laneOrder, presentationStates: readPresentationStates(state?.presentationStates) };
-}
-
-export function readLayout(value: unknown): GraphLayout {
-    const layout = value as Partial<GraphLayout> | null;
-    const finitePoint = (point: unknown): point is Point => {
-        if (!point || typeof point !== "object") return false;
-        const candidate = point as Point;
-        return Number.isFinite(candidate.x) && Number.isFinite(candidate.y);
-    };
-    const positions: Record<string, Point> = {};
-    for (const [key, point] of Object.entries(layout?.positions ?? {})) {
-        if (finitePoint(point)) positions[key] = { x: point.x, y: point.y };
-    }
-    const view = layout?.viewport;
-    const automationBounds: NonNullable<GraphLayout["automationBounds"]> = {};
-    for (const [key, bounds] of Object.entries(layout?.automationBounds ?? {})) {
-        if (!bounds || typeof bounds !== "object") continue;
-        const min = Number.isFinite(bounds.min) && Number.isFinite(Math.fround(bounds.min!)) ? bounds.min : undefined;
-        const max = Number.isFinite(bounds.max) && Number.isFinite(Math.fround(bounds.max!)) ? bounds.max : undefined;
-        if (min === undefined && max === undefined || min !== undefined && max !== undefined && min >= max) continue;
-        automationBounds[key] = { ...(min !== undefined ? { min } : {}), ...(max !== undefined ? { max } : {}) };
-    }
+export function readGraphViewState(presentation?: ProjectPresentation): GraphViewState {
     return {
-        positions,
-        ...(Object.keys(automationBounds).length ? { automationBounds } : {}),
-        ...readGraphViewState(layout),
-        timeline: readTimelineViewport(layout?.timeline),
-        viewport: finitePoint(view) && Number.isFinite(view.scale) && view.scale >= 0.1 && view.scale <= 2
-            ? { x: view.x, y: view.y, scale: view.scale }
-            : { x: 40, y: 40, scale: 1 },
+        laneOrder: presentation?.laneOrder.map(addressKey) ?? [],
+        presentationStates: Object.fromEntries((presentation?.laneViews ?? []).map(
+            ({ address, presentationId, state }) => [presentationStateKey(address, presentationId), state])),
+    };
+}
+
+export function newGraphLayout(): GraphLayout {
+    return {
+        positions: {},
+        ...readGraphViewState(),
+        timeline: readTimelineViewport(undefined),
+        viewport: { x: 40, y: 40, scale: 1 },
     };
 }
 

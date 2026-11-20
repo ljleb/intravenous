@@ -9,6 +9,7 @@
 #include <intravenous/runtime/project_graph_publication.h>
 #include <intravenous/runtime/project_node_instance_types.h>
 #include <intravenous/runtime/project_node_replacement_types.h>
+#include <intravenous/runtime/project_presentation.h>
 #include <intravenous/runtime/runtime_project_api_types.h>
 #include <intravenous/node/manual_control.h>
 
@@ -101,6 +102,7 @@ struct ProjectReplaceGraphRequest {
     std::vector<ProjectNodeReplacement> node_replacements{};
     std::vector<ProjectConnection> connections{};
     std::vector<ProjectManualControl> manual_controls{};
+    ProjectPresentation presentation{};
 };
 
 struct ProjectUpsertManualControlRequest {

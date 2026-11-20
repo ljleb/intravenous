@@ -859,6 +859,31 @@ try {
     throw;
 }
 
+NodeRef GraphBuilder::configure_private_module(
+    std::string_view kind, std::move_only_function<void(GraphBuilder&)> build)
+try {
+    auto const package = details::builder_selected_package(_session);
+    details::ModuleStackEntry const module(
+        _session, "private:" + std::to_string(package) + ':' + std::string(kind));
+    auto const prepared = details::consume_builder_node_source_identity(_session);
+    details::record_builder_module_message_local_ref(_session, prepared);
+    auto const path = details::claim_builder_invocation_path(_session, prepared.source_identity);
+    auto const invocation = details::begin_builder_invocation(_session);
+    auto const scope = details::begin_builder_scope(_session, details::BuilderScopeKind::definition);
+    GraphBuilder body(_session, scope);
+    build(body);
+    details::throw_if_builder_failed(_session);
+    auto node = NodeRef(_session, details::finish_builder_scope(_session, scope, kind, std::string_view{}));
+    auto finished = details::finish_builder_invocation(
+        _session, invocation, node.node_bundle_handle(),
+        details::builder_invocation_qualifier(path), false);
+    details::register_builder_embedded_message_handlers(_session, path, finished.message_handlers);
+    return node;
+} catch (...) {
+    details::record_builder_failure(_session, std::current_exception(), {});
+    throw;
+}
+
 std::expected<ConfiguredGraph, ConfiguredGraphSnapshotError>
 GraphBuilder::configured_graph() const
 try {

@@ -2,19 +2,21 @@
 
 #include <algorithm>
 #include <array>
-#include <bitset>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <numbers>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace iv;
 
-struct LearnedHrtfSourceIcosphere
+template<bool StereoInput>
+struct LearnedHrtfSourceIcosphereMorton
 {
     static constexpr size_t latent_parameter_count = 24;
     static constexpr size_t pinna_filter_count = 8;
@@ -23,15 +25,13 @@ struct LearnedHrtfSourceIcosphere
     static constexpr float speed_of_sound = 343.0f;
     static constexpr float head_radius = 0.0875f;
 
-    static constexpr char coefficient_path[] = "modules/q24_icosphere_pan/P0014_icosphere_frequency_local_runtime.bin";
+    static constexpr char coefficient_path[] = "packages/q24_icosphere_pan/P0014_icosphere_frequency_local_runtime.bin";
 
-    // The learned hierarchy contains detail coefficients through Loop level 4.
-    // Runtime evaluation then performs four additional *local* Loop refinements
-    // before the final barycentric sample (a level-8 approximation to the limit).
     static constexpr size_t learned_level = 4;
     static constexpr size_t lookup_level = 6;
-    static constexpr size_t limit_refinement_steps = 4;
+    static constexpr size_t reference_level = 8;
     static constexpr size_t loop_level_count = lookup_level + 1;
+    static constexpr uint32_t morton_side = 64;
 
     static constexpr std::array<size_t, loop_level_count> vertex_count_by_level {
         12, 42, 162, 642, 2562, 10242, 40962,
@@ -67,31 +67,33 @@ struct LearnedHrtfSourceIcosphere
     static constexpr size_t total_geometry_faces =
         20 + 80 + 320 + 1280 + 5120 + 20480 + 81920;
 
-    static constexpr size_t adjacency_face_count =
-        20 + 80 + 320 + 1280 + 5120 + 20480;
-
-    static constexpr size_t learned_vertex_count = 2562;
-    static constexpr size_t learned_face_count = 5120;
-
-    // A radius-five face neighbourhood at level 4 contains ~46 faces on this
-    // mesh. One local subdivision temporarily expands it to < 200 faces.
-    static constexpr size_t patch_capacity = 256;
-    static constexpr size_t patch_face_radius = 5;
-    static constexpr uint16_t invalid_index = 0xffffu;
+    static constexpr uint32_t invalid_face = std::numeric_limits<uint32_t>::max();
 
     static constexpr auto inputs()
     {
-        return std::array {
-            input<Sample>("in", InputAccess::sequential),
-            input<Sample>("azimuth", InputAccess::sequential, {.default_value = 0, .min = -180, .max = 180}),
-            input<Sample>("elevation", InputAccess::sequential, {.default_value = 0, .min = -180, .max = 180}),
-        };
+        auto const azimuth = input<Sample>(
+            "azimuth", InputAccess::sequential, {.default_value = 0, .min = -180, .max = 180});
+        auto const elevation = input<Sample>(
+            "elevation", InputAccess::sequential, {.default_value = 0, .min = -180, .max = 180});
+
+        if constexpr (StereoInput) {
+            return std::array {
+                input<Sample>("in", InputAccess::sequential, {
+                    .channel_layout = { .channel_type = ChannelTypeId::stereo },
+                }),
+                azimuth,
+                elevation,
+                input<Sample>("spread", InputAccess::sequential, {.default_value = 30, .min = 0, .max = 180}),
+            };
+        } else {
+            return std::array { input<Sample>("in", InputAccess::sequential), azimuth, elevation };
+        }
     }
 
     void constrain_ports(
-        ConstrainPortsContext<LearnedHrtfSourceIcosphere>& ctx) const
+        ConstrainPortsContext<LearnedHrtfSourceIcosphereMorton>& ctx) const
     {
-        ctx.input<"in">().history() = input_history;
+        ctx.template input<"in">().history() = input_history;
     }
 
     static constexpr auto outputs()
@@ -175,54 +177,41 @@ struct LearnedHrtfSourceIcosphere
         float delay_samples = 0;
     };
 
-    struct Patch
+    struct Model
     {
-        size_t vertex_count = 0;
-        size_t face_count = 0;
-        size_t center_face = 0;
-        std::array<LatentVector, patch_capacity> control {};
-        std::array<Face, patch_capacity> face {};
+        std::array<Vec3, total_geometry_vertices> geometry_vertex {};
+        std::array<Face, total_geometry_faces> geometry_face {};
+        std::array<float, total_geometry_faces> face_inverse_centroid_length {};
+        std::array<std::array<uint32_t, 3>, total_geometry_faces> face_neighbor {};
+        std::vector<LatentVector> control;
+        std::array<uint32_t, morton_side * morton_side> morton_face {};
+    };
+
+    static constexpr size_t source_count = StereoInput ? 2 : 1;
+
+    struct SourceState
+    {
+        float azimuth = 0.0f;
+        float elevation = 0.0f;
+        std::array<EarRuntime, 2> ear {};
     };
 
     struct State
     {
-        // Geometry/topology is generated once in initialize(). Keeping it in
-        // node state deliberately trades memory for direct, cache-local reads.
-        std::array<Vec3, total_geometry_vertices> geometry_vertex {};
-        std::array<Face, total_geometry_faces> geometry_face {};
-        std::array<float, total_geometry_faces> face_inverse_centroid_length {};
-
-        // Adjacency is needed only through level 5. Level-6 lookup tests the
-        // final candidate triangles directly.
-        std::array<std::array<uint16_t, 3>, adjacency_face_count> face_neighbor {};
-
-        // Sparse hierarchical coefficients are expanded to this contiguous
-        // level-4 control mesh at initialization. Each vertex carries all 24
-        // independent latent scalar fields.
-        std::array<LatentVector, learned_vertex_count> control {};
-
-        Patch patch_a {};
-        Patch patch_b {};
-
-        float azimuth = 0.0f;
-        float elevation = 0.0f;
+        std::unique_ptr<Model const> model;
+        std::array<SourceState, source_count> sources {};
         float sample_rate = 48000.0f;
-
         float head_omega0 = 0.0f;
         float head_inverse_denominator = 0.0f;
         float head_feedback = 0.0f;
         float radius_over_c_samples = 0.0f;
-
-        std::array<EarRuntime, 2> ear {};
     };
 
-    void initialize(InitializationContext<LearnedHrtfSourceIcosphere> const& ctx) const
+    void initialize(InitializationContext<LearnedHrtfSourceIcosphereMorton> const& ctx) const
     {
         auto& state = ctx.state();
 
-        initialize_loop_geometry(state);
-        initialize_face_acceleration(state);
-        load_and_expand_coefficients(state);
+        state.model = build_model();
 
         state.head_omega0 = speed_of_sound / head_radius;
         state.head_inverse_denominator =
@@ -233,41 +222,45 @@ struct LearnedHrtfSourceIcosphere
         state.radius_over_c_samples =
             head_radius * state.sample_rate / speed_of_sound;
 
-        update_direction(state, 0.0f, 0.0f);
+        for (auto& source : state.sources)
+            update_direction(state, source, 0.0f, 0.0f);
     }
 
-    void tick_block(TickBlockContext<LearnedHrtfSourceIcosphere> const& ctx) const
+    void tick_block(TickBlockContext<LearnedHrtfSourceIcosphereMorton> const& ctx) const
     {
         auto& state = ctx.state();
-        auto const input = ctx.input<"in">();
-        auto const azimuth = ctx.input<"azimuth">();
-        auto const elevation = ctx.input<"elevation">();
-        auto output = ctx.output<"out">();
+        auto const input = ctx.template input<"in">();
+        auto const azimuth = ctx.template input<"azimuth">();
+        auto const elevation = ctx.template input<"elevation">();
+        auto output = ctx.template output<"out">();
 
-        for (size_t i = 0; i < ctx.block_size; ++i) {
-            auto const current_azimuth = static_cast<float>(azimuth[i]);
-            auto const current_elevation = static_cast<float>(elevation[i]);
-
-            if (current_azimuth != state.azimuth || current_elevation != state.elevation)
-                update_direction(state, current_azimuth, current_elevation);
-
-            for (size_t channel = 0; channel < 2; ++channel) {
-                auto& ear = state.ear[channel];
-
-                auto value = read_fractional_delay(input, i, ear.delay_samples);
-                value = process_head(ear, state.head_feedback, value);
-
-                for (size_t filter = 0; filter < pinna_filter_count; ++filter)
-                    value = process_biquad(
-                        ear.filters[filter],
-                        ear.filter_state[filter],
-                        value);
-
-                if (channel == 0)
-                    output[stereo::left][i] = value;
-                else
-                    output[stereo::right][i] = value;
+        for (size_t frame = 0; frame < ctx.block_size; ++frame) {
+            auto const center = static_cast<float>(azimuth[frame]);
+            auto const current_elevation = static_cast<float>(elevation[frame]);
+            std::array<float, source_count> current_azimuth { center };
+            if constexpr (StereoInput) {
+                auto const spread = ctx.template input<"spread">();
+                auto const half_spread = static_cast<float>(spread[frame]) * 0.5f;
+                current_azimuth = { center - half_spread, center + half_spread };
             }
+
+            std::array<float, 2> value {};
+            for (size_t channel = 0; channel < source_count; ++channel) {
+                auto& source = state.sources[channel];
+                if (current_azimuth[channel] != source.azimuth || current_elevation != source.elevation)
+                    update_direction(state, source, current_azimuth[channel], current_elevation);
+
+                for (size_t side = 0; side < source.ear.size(); ++side) {
+                    auto& ear = source.ear[side];
+                    auto sample = read_fractional_delay(input, frame, channel, ear.delay_samples);
+                    auto filtered = process_head(ear, state.head_feedback, sample);
+                    for (size_t filter = 0; filter < pinna_filter_count; ++filter)
+                        filtered = process_biquad(ear.filters[filter], ear.filter_state[filter], filtered);
+                    value[side] += filtered;
+                }
+            }
+            output[stereo::left][frame] = value[0];
+            output[stereo::right][frame] = value[1];
         }
     }
 
@@ -351,7 +344,7 @@ private:
         }
     }
 
-    static void load_and_expand_coefficients(State& state)
+    static void load_and_expand_coefficients(Model& state)
     {
         std::ifstream file(coefficient_path, std::ios::binary);
         if (!file)
@@ -385,8 +378,14 @@ private:
             current.swap(next);
         }
 
-        for (size_t i = 0; i < learned_vertex_count; ++i)
-            state.control[i] = current[i];
+        for (size_t level = learned_level; level < lookup_level; ++level) {
+            std::vector<LatentVector> next(vertex_count_by_level[level + 1]);
+            refine_dense_control_level(state, level, current, next);
+            current.swap(next);
+        }
+
+        state.control = std::move(current);
+        project_to_reference_vertices(state);
     }
 
     // ---------- Loop geometry construction ----------
@@ -426,7 +425,7 @@ private:
     }
 
     static std::vector<EdgeInfo> build_edges(
-        State const& state,
+        Model const& state,
         size_t level,
         std::vector<std::array<uint16_t, 6>>& neighbors,
         std::vector<uint8_t>& neighbor_count)
@@ -513,7 +512,7 @@ private:
         return (5.0f / 8.0f - t * t) / n;
     }
 
-    static void initialize_root_geometry(State& state)
+    static void initialize_root_geometry(Model& state)
     {
         auto const phi = (1.0f + std::sqrt(5.0f)) * 0.5f;
         auto const inverse_length = 1.0f / std::sqrt(1.0f + phi * phi);
@@ -536,7 +535,7 @@ private:
             state.geometry_face[face_offset + i] = root_faces[i];
     }
 
-    static void build_next_geometry_level(State& state, size_t level)
+    static void build_next_geometry_level(Model& state, size_t level)
     {
         auto const vertex_count = vertex_count_by_level[level];
         auto const vertex_offset = vertex_offset_by_level[level];
@@ -599,7 +598,7 @@ private:
         }
     }
 
-    static void initialize_loop_geometry(State& state)
+    static void initialize_loop_geometry(Model& state)
     {
         initialize_root_geometry(state);
         for (size_t level = 0; level < lookup_level; ++level)
@@ -607,7 +606,7 @@ private:
     }
 
     static void refine_dense_control_level(
-        State const& state,
+        Model const& state,
         size_t level,
         std::vector<LatentVector> const& current,
         std::vector<LatentVector>& next)
@@ -650,32 +649,32 @@ private:
     {
         uint16_t a = 0;
         uint16_t b = 0;
-        uint16_t face = 0;
+        uint32_t face = 0;
         uint8_t slot = 0;
     };
 
-    static void build_face_adjacency(State& state, size_t level)
+    static void build_face_adjacency(Model& state, size_t level)
     {
         auto const count = face_count_by_level[level];
         auto const offset = face_offset_by_level[level];
 
         for (size_t i = 0; i < count; ++i)
             state.face_neighbor[offset + i] = {
-                invalid_index,
-                invalid_index,
-                invalid_index,
+                invalid_face,
+                invalid_face,
+                invalid_face,
             };
 
         std::vector<FaceEdgeSeed> edge;
         edge.reserve(count * 3);
 
-        auto append = [&](uint16_t a, uint16_t b, uint16_t face, uint8_t slot) {
+        auto append = [&](uint16_t a, uint16_t b, uint32_t face, uint8_t slot) {
             if (a > b)
                 std::swap(a, b);
             edge.push_back({ a, b, face, slot });
         };
 
-        for (uint16_t i = 0; i < count; ++i) {
+        for (uint32_t i = 0; i < count; ++i) {
             auto const f = state.geometry_face[offset + i];
             append(f.a, f.b, i, 0);
             append(f.b, f.c, i, 1);
@@ -698,7 +697,7 @@ private:
         }
     }
 
-    static void initialize_face_acceleration(State& state)
+    static void initialize_face_acceleration(Model& state)
     {
         for (size_t level = 0; level < loop_level_count; ++level) {
             auto const face_count = face_count_by_level[level];
@@ -718,12 +717,12 @@ private:
             }
         }
 
-        for (size_t level = 0; level < lookup_level; ++level)
+        for (size_t level = 0; level <= lookup_level; ++level)
             build_face_adjacency(state, level);
     }
 
     static float face_score(
-        State const& state,
+        Model const& state,
         size_t level,
         uint32_t face,
         Vec3 direction)
@@ -744,7 +743,7 @@ private:
     }
 
     static Barycentric ray_barycentric(
-        State const& state,
+        Model const& state,
         size_t level,
         uint32_t face,
         Vec3 direction)
@@ -775,11 +774,11 @@ private:
     }
 
     static void add_unique_face(
-        std::array<uint16_t, 4>& list,
+        std::array<uint32_t, 4>& list,
         size_t& count,
-        uint16_t value)
+        uint32_t value)
     {
-        if (value == invalid_index)
+        if (value == invalid_face)
             return;
         for (size_t i = 0; i < count; ++i)
             if (list[i] == value)
@@ -788,16 +787,16 @@ private:
     }
 
     static uint32_t choose_centroid_child(
-        State const& state,
+        Model const& state,
         size_t level,
         uint32_t parent,
         Vec3 direction)
     {
         auto const previous_offset = face_offset_by_level[level - 1];
-        std::array<uint16_t, 4> parents {};
+        std::array<uint32_t, 4> parents {};
         size_t parent_count = 0;
 
-        add_unique_face(parents, parent_count, static_cast<uint16_t>(parent));
+        add_unique_face(parents, parent_count, parent);
         for (auto n : state.face_neighbor[previous_offset + parent])
             add_unique_face(parents, parent_count, n);
 
@@ -819,44 +818,14 @@ private:
         return best_face;
     }
 
-    static Barycentric parent_barycentric(uint32_t child, Barycentric b)
-    {
-        switch (child) {
-        case 0:
-            return {
-                b.a + 0.5f * (b.b + b.c),
-                0.5f * b.b,
-                0.5f * b.c,
-            };
-        case 1:
-            return {
-                0.5f * b.c,
-                b.a + 0.5f * (b.b + b.c),
-                0.5f * b.b,
-            };
-        case 2:
-            return {
-                0.5f * b.b,
-                0.5f * b.c,
-                b.a + 0.5f * (b.b + b.c),
-            };
-        default:
-            return {
-                0.5f * (b.a + b.c),
-                0.5f * (b.a + b.b),
-                0.5f * (b.b + b.c),
-            };
-        }
-    }
-
     struct ParameterLocation
     {
-        uint16_t face4 = 0;
-        Barycentric bary4 {};
+        uint32_t face;
+        Barycentric barycentric;
     };
 
     static ParameterLocation locate_parameter(
-        State const& state,
+        Model const& state,
         Vec3 direction)
     {
         uint32_t face = 0;
@@ -875,9 +844,9 @@ private:
 
         // At level 6 evaluate the same small child candidate set directly.
         auto const previous_offset = face_offset_by_level[lookup_level - 1];
-        std::array<uint16_t, 4> parents {};
+        std::array<uint32_t, 4> parents {};
         size_t parent_count = 0;
-        add_unique_face(parents, parent_count, static_cast<uint16_t>(face));
+        add_unique_face(parents, parent_count, face);
         for (auto n : state.face_neighbor[previous_offset + face])
             add_unique_face(parents, parent_count, n);
 
@@ -919,426 +888,162 @@ private:
             }
         }
 
-        auto const face5 = face6 / 4;
-        auto const child6 = face6 % 4;
-        auto const face4 = face5 / 4;
-        auto const child5 = face5 % 4;
-
-        auto bary5 = parent_barycentric(child6, bary6);
-        auto bary4 = parent_barycentric(child5, bary5);
-
-        return {
-            static_cast<uint16_t>(face4),
-            bary4,
-        };
+        return { face6, bary6 };
     }
 
-    // ---------- local Loop evaluation ----------
-
-    static size_t patch_find_vertex(
-        std::array<uint16_t, patch_capacity> const& global_vertex,
-        size_t count,
-        uint16_t vertex)
+    static void project_to_reference_vertices(Model& model)
     {
-        for (size_t i = 0; i < count; ++i)
-            if (global_vertex[i] == vertex)
-                return i;
-        return count;
-    }
-
-    static void extract_level4_patch(
-        State const& state,
-        uint16_t center_face,
-        Patch& patch)
-    {
-        std::bitset<learned_face_count> visited;
-        std::array<uint16_t, patch_capacity> queue {};
-        std::array<uint8_t, patch_capacity> depth {};
-        std::array<uint16_t, patch_capacity> selected {};
-        size_t queue_begin = 0;
-        size_t queue_end = 0;
-        size_t selected_count = 0;
-
-        queue[queue_end] = center_face;
-        depth[queue_end] = 0;
-        ++queue_end;
-        visited.set(center_face);
-
-        auto const adjacency_offset = face_offset_by_level[learned_level];
-
-        while (queue_begin < queue_end) {
-            auto const face = queue[queue_begin];
-            auto const d = depth[queue_begin];
-            ++queue_begin;
-
-            selected[selected_count++] = face;
-
-            if (d == patch_face_radius)
-                continue;
-
-            for (auto n : state.face_neighbor[adjacency_offset + face]) {
-                if (n != invalid_index && !visited.test(n)) {
-                    visited.set(n);
-                    queue[queue_end] = n;
-                    depth[queue_end] = static_cast<uint8_t>(d + 1);
-                    ++queue_end;
-                }
-            }
+        auto const vertex_count = vertex_count_by_level[lookup_level];
+        auto const face_offset = face_offset_by_level[lookup_level];
+        std::vector<std::array<uint16_t, 6>> neighbors(vertex_count);
+        std::vector<uint8_t> neighbor_count(vertex_count);
+        for (size_t i = 0; i < face_count_by_level[lookup_level]; ++i) {
+            auto const face = model.geometry_face[face_offset + i];
+            add_neighbor(neighbors[face.a], neighbor_count[face.a], face.b);
+            add_neighbor(neighbors[face.a], neighbor_count[face.a], face.c);
+            add_neighbor(neighbors[face.b], neighbor_count[face.b], face.a);
+            add_neighbor(neighbors[face.b], neighbor_count[face.b], face.c);
+            add_neighbor(neighbors[face.c], neighbor_count[face.c], face.a);
+            add_neighbor(neighbors[face.c], neighbor_count[face.c], face.b);
         }
 
-        patch.vertex_count = 0;
-        patch.face_count = 0;
-        patch.center_face = 0;
-
-        std::array<uint16_t, patch_capacity> global_vertex {};
-        auto const face_offset = face_offset_by_level[learned_level];
-
-        for (size_t s = 0; s < selected_count; ++s) {
-            auto const global_face = selected[s];
-            auto const f = state.geometry_face[face_offset + global_face];
-            std::array<uint16_t, 3> gv { f.a, f.b, f.c };
-            std::array<uint16_t, 3> lv {};
-
-            for (size_t j = 0; j < 3; ++j) {
-                auto local = patch_find_vertex(
-                    global_vertex,
-                    patch.vertex_count,
-                    gv[j]);
-
-                if (local == patch.vertex_count) {
-                    global_vertex[patch.vertex_count] = gv[j];
-                    patch.control[patch.vertex_count] = state.control[gv[j]];
-                    ++patch.vertex_count;
-                }
-
-                lv[j] = static_cast<uint16_t>(local);
-            }
-
-            patch.face[patch.face_count] = { lv[0], lv[1], lv[2] };
-            if (global_face == center_face)
-                patch.center_face = patch.face_count;
-            ++patch.face_count;
-        }
-    }
-
-    struct PatchEdge
-    {
-        uint16_t a = 0;
-        uint16_t b = 0;
-        uint16_t opposite0 = 0;
-        uint16_t opposite1 = 0;
-        uint8_t opposite_count = 0;
-    };
-
-    static size_t find_patch_edge(
-        std::array<PatchEdge, patch_capacity> const& edge,
-        size_t edge_count,
-        uint16_t a,
-        uint16_t b)
-    {
-        if (a > b)
-            std::swap(a, b);
-
-        for (size_t i = 0; i < edge_count; ++i)
-            if (edge[i].a == a && edge[i].b == b)
-                return i;
-        return edge_count;
-    }
-
-    static void add_patch_neighbor(
-        std::array<uint16_t, 6>& neighbor,
-        uint8_t& count,
-        uint16_t value)
-    {
-        for (uint8_t i = 0; i < count; ++i)
-            if (neighbor[i] == value)
-                return;
-        neighbor[count++] = value;
-    }
-
-    static void add_patch_edge(
-        std::array<PatchEdge, patch_capacity>& edge,
-        size_t& edge_count,
-        uint16_t a,
-        uint16_t b,
-        uint16_t opposite)
-    {
-        if (a > b)
-            std::swap(a, b);
-
-        auto index = find_patch_edge(edge, edge_count, a, b);
-        if (index == edge_count) {
-            edge[index] = { a, b, opposite, 0, 1 };
-            ++edge_count;
-        }
-        else if (edge[index].opposite_count == 1) {
-            edge[index].opposite1 = opposite;
-            edge[index].opposite_count = 2;
-        }
-    }
-
-    static void refine_patch(Patch const& source, Patch& destination)
-    {
-        std::array<std::array<uint16_t, 6>, patch_capacity> neighbor {};
-        std::array<uint8_t, patch_capacity> neighbor_count {};
-        std::array<PatchEdge, patch_capacity> edge {};
-        size_t edge_count = 0;
-
-        for (size_t i = 0; i < source.face_count; ++i) {
-            auto const f = source.face[i];
-
-            add_patch_neighbor(neighbor[f.a], neighbor_count[f.a], f.b);
-            add_patch_neighbor(neighbor[f.a], neighbor_count[f.a], f.c);
-            add_patch_neighbor(neighbor[f.b], neighbor_count[f.b], f.a);
-            add_patch_neighbor(neighbor[f.b], neighbor_count[f.b], f.c);
-            add_patch_neighbor(neighbor[f.c], neighbor_count[f.c], f.a);
-            add_patch_neighbor(neighbor[f.c], neighbor_count[f.c], f.b);
-
-            add_patch_edge(edge, edge_count, f.a, f.b, f.c);
-            add_patch_edge(edge, edge_count, f.b, f.c, f.a);
-            add_patch_edge(edge, edge_count, f.c, f.a, f.b);
-        }
-
-        destination.vertex_count = source.vertex_count + edge_count;
-        destination.face_count = source.face_count * 4;
-
-        for (size_t i = 0; i < source.vertex_count; ++i) {
+        auto projected = model.control;
+        for (size_t i = 0; i < vertex_count; ++i) {
             auto const count = neighbor_count[i];
             auto const beta = loop_beta(count);
             auto const center_weight = 1.0f - beta * count;
-
             for (size_t k = 0; k < latent_parameter_count; ++k) {
-                float value = center_weight * source.control[i].value[k];
+                auto center = model.control[i].value[k];
+                float neighbor_sum = 0.0f;
                 for (uint8_t n = 0; n < count; ++n)
-                    value += beta * source.control[neighbor[i][n]].value[k];
-                destination.control[i].value[k] = value;
+                    neighbor_sum += model.control[neighbors[i][n]].value[k];
+
+                // Each new neighbor is the Loop edge point between the center
+                // and an old neighbor. Their sum depends only on this ring.
+                for (size_t level = lookup_level; level < reference_level; ++level) {
+                    auto const next_center = center_weight * center + beta * neighbor_sum;
+                    neighbor_sum = (3.0f / 8.0f) * count * center + (5.0f / 8.0f) * neighbor_sum;
+                    center = next_center;
+                }
+
+                projected[i].value[k] = center;
             }
         }
-
-        for (size_t i = 0; i < edge_count; ++i) {
-            auto const& e = edge[i];
-            auto& out = destination.control[source.vertex_count + i];
-
-            for (size_t k = 0; k < latent_parameter_count; ++k) {
-                if (e.opposite_count == 2) {
-                    out.value[k] =
-                        3.0f / 8.0f
-                            * (source.control[e.a].value[k]
-                               + source.control[e.b].value[k])
-                        + 1.0f / 8.0f
-                            * (source.control[e.opposite0].value[k]
-                               + source.control[e.opposite1].value[k]);
-                }
-                else {
-                    // Patch boundary only. The queried face is five rings away,
-                    // so this fallback never propagates into the sampled value.
-                    out.value[k] =
-                        0.5f
-                        * (source.control[e.a].value[k]
-                           + source.control[e.b].value[k]);
-                }
-            }
-        }
-
-        for (size_t i = 0; i < source.face_count; ++i) {
-            auto const f = source.face[i];
-            auto const ab = static_cast<uint16_t>(
-                source.vertex_count + find_patch_edge(edge, edge_count, f.a, f.b));
-            auto const bc = static_cast<uint16_t>(
-                source.vertex_count + find_patch_edge(edge, edge_count, f.b, f.c));
-            auto const ca = static_cast<uint16_t>(
-                source.vertex_count + find_patch_edge(edge, edge_count, f.c, f.a));
-
-            auto const out = i * 4;
-            destination.face[out + 0] = { f.a, ab, ca };
-            destination.face[out + 1] = { f.b, bc, ab };
-            destination.face[out + 2] = { f.c, ca, bc };
-            destination.face[out + 3] = { ab, bc, ca };
-        }
+        model.control = std::move(projected);
     }
 
-    static size_t shared_vertex_count(Face a, Face b)
+    static float sign(float x)
     {
-        std::array<uint16_t, 3> av { a.a, a.b, a.c };
-        std::array<uint16_t, 3> bv { b.a, b.b, b.c };
-        size_t count = 0;
-        for (auto x : av)
-            for (auto y : bv)
-                count += x == y;
-        return count;
+        return x < 0.0f ? -1.0f : 1.0f;
     }
 
-    static void crop_patch(
-        Patch const& source,
-        size_t center_face,
-        Patch& destination)
+    static uint32_t spread_morton_bits(uint32_t value)
     {
-        std::array<std::array<uint16_t, 3>, patch_capacity> adjacency {};
-        std::array<uint8_t, patch_capacity> adjacency_count {};
-
-        for (size_t i = 0; i < source.face_count; ++i)
-            for (size_t j = i + 1; j < source.face_count; ++j)
-                if (shared_vertex_count(source.face[i], source.face[j]) == 2) {
-                    adjacency[i][adjacency_count[i]++] = static_cast<uint16_t>(j);
-                    adjacency[j][adjacency_count[j]++] = static_cast<uint16_t>(i);
-                }
-
-        std::array<uint8_t, patch_capacity> visited {};
-        std::array<uint16_t, patch_capacity> queue {};
-        std::array<uint8_t, patch_capacity> depth {};
-        std::array<uint16_t, patch_capacity> selected {};
-        size_t queue_begin = 0;
-        size_t queue_end = 0;
-        size_t selected_count = 0;
-
-        queue[queue_end] = static_cast<uint16_t>(center_face);
-        depth[queue_end] = 0;
-        ++queue_end;
-        visited[center_face] = 1;
-
-        while (queue_begin < queue_end) {
-            auto const face = queue[queue_begin];
-            auto const d = depth[queue_begin];
-            ++queue_begin;
-
-            selected[selected_count++] = face;
-
-            if (d == patch_face_radius)
-                continue;
-
-            for (uint8_t n = 0; n < adjacency_count[face]; ++n) {
-                auto const next = adjacency[face][n];
-                if (!visited[next]) {
-                    visited[next] = 1;
-                    queue[queue_end] = next;
-                    depth[queue_end] = static_cast<uint8_t>(d + 1);
-                    ++queue_end;
-                }
-            }
-        }
-
-        destination.vertex_count = 0;
-        destination.face_count = 0;
-        destination.center_face = 0;
-
-        std::array<int16_t, patch_capacity> vertex_map {};
-        vertex_map.fill(-1);
-
-        for (size_t s = 0; s < selected_count; ++s) {
-            auto const source_face = selected[s];
-            auto const f = source.face[source_face];
-            std::array<uint16_t, 3> old { f.a, f.b, f.c };
-            std::array<uint16_t, 3> mapped {};
-
-            for (size_t j = 0; j < 3; ++j) {
-                if (vertex_map[old[j]] < 0) {
-                    vertex_map[old[j]] = static_cast<int16_t>(destination.vertex_count);
-                    destination.control[destination.vertex_count] = source.control[old[j]];
-                    ++destination.vertex_count;
-                }
-                mapped[j] = static_cast<uint16_t>(vertex_map[old[j]]);
-            }
-
-            destination.face[destination.face_count] = {
-                mapped[0], mapped[1], mapped[2]
-            };
-
-            if (source_face == center_face)
-                destination.center_face = destination.face_count;
-
-            ++destination.face_count;
-        }
+        value = (value | (value << 4)) & 0x0f0f;
+        value = (value | (value << 2)) & 0x3333;
+        return (value | (value << 1)) & 0x5555;
     }
 
-    static uint32_t choose_parameter_child(Barycentric& bary)
+    static uint32_t morton_key(uint32_t x, uint32_t y)
     {
-        if (bary.a >= 0.5f) {
-            bary = {
-                2.0f * bary.a - 1.0f,
-                2.0f * bary.b,
-                2.0f * bary.c,
-            };
-            return 0;
+        return spread_morton_bits(x) | (spread_morton_bits(y) << 1);
+    }
+
+    static uint32_t direction_morton_key(Vec3 direction)
+    {
+        auto const scale = 1.0f / (std::abs(direction.x) + std::abs(direction.y) + std::abs(direction.z));
+        auto x = direction.x * scale;
+        auto y = direction.y * scale;
+        if (direction.z < 0.0f) {
+            auto const folded_x = (1.0f - std::abs(y)) * sign(x);
+            y = (1.0f - std::abs(x)) * sign(y);
+            x = folded_x;
         }
 
-        if (bary.b >= 0.5f) {
-            bary = {
-                2.0f * bary.b - 1.0f,
-                2.0f * bary.c,
-                2.0f * bary.a,
-            };
-            return 1;
-        }
-
-        if (bary.c >= 0.5f) {
-            bary = {
-                2.0f * bary.c - 1.0f,
-                2.0f * bary.a,
-                2.0f * bary.b,
-            };
-            return 2;
-        }
-
-        auto const a = bary.a;
-        auto const b = bary.b;
-        auto const c = bary.c;
-        bary = {
-            a + b - c,
-            b + c - a,
-            c + a - b,
+        auto const cell = [](float coordinate) {
+            auto const grid = (coordinate + 1.0f) * (0.5f * morton_side);
+            return static_cast<uint32_t>(std::clamp(grid, 0.0f, static_cast<float>(morton_side - 1)));
         };
-        return 3;
+        return morton_key(cell(x), cell(y));
+    }
+
+    static Vec3 morton_cell_direction(uint32_t i, uint32_t j)
+    {
+        auto x = (static_cast<float>(i) + 0.5f) * (2.0f / morton_side) - 1.0f;
+        auto y = (static_cast<float>(j) + 0.5f) * (2.0f / morton_side) - 1.0f;
+        auto const z = 1.0f - std::abs(x) - std::abs(y);
+        if (z < 0.0f) {
+            auto const unfolded_x = (1.0f - std::abs(y)) * sign(x);
+            y = (1.0f - std::abs(x)) * sign(y);
+            x = unfolded_x;
+        }
+        return { x, y, z };
+    }
+
+    static std::unique_ptr<Model const> build_model()
+    {
+        auto model = std::make_unique<Model>();
+        initialize_loop_geometry(*model);
+        initialize_face_acceleration(*model);
+        load_and_expand_coefficients(*model);
+        for (uint32_t y = 0; y < morton_side; ++y) {
+            for (uint32_t x = 0; x < morton_side; ++x) {
+                auto const direction = morton_cell_direction(x, y);
+                model->morton_face[morton_key(x, y)] = locate_parameter(*model, direction).face;
+            }
+        }
+        return model;
+    }
+
+    static ParameterLocation locate_morton(Model const& model, Vec3 direction)
+    {
+        auto face = model.morton_face[direction_morton_key(direction)];
+        auto const offset = face_offset_by_level[lookup_level];
+        for (size_t step = 0; step < 16; ++step) {
+            auto const barycentric = ray_barycentric(model, lookup_level, face, direction);
+            std::array weights { barycentric.a, barycentric.b, barycentric.c };
+            auto const smallest = std::min_element(weights.begin(), weights.end());
+            if (*smallest >= -2.0e-6f)
+                return { face, barycentric };
+
+            // The edge opposite A is BC (slot 1), then CA and AB.
+            auto const edge = (static_cast<size_t>(smallest - weights.begin()) + 1) % 3;
+            face = model.face_neighbor[offset + face][edge];
+        }
+
+        return locate_parameter(model, direction);
     }
 
     static std::array<float, latent_parameter_count>
-    evaluate_latent(State& state, Vec3 direction)
+    evaluate_latent(Model const& model, Vec3 direction)
     {
-        auto const location = locate_parameter(state, direction);
-        auto bary = location.bary4;
-
-        extract_level4_patch(state, location.face4, state.patch_a);
-
-        for (size_t level = 0; level < limit_refinement_steps; ++level) {
-            refine_patch(state.patch_a, state.patch_b);
-
-            auto const child = choose_parameter_child(bary);
-            auto const child_face = state.patch_a.center_face * 4 + child;
-
-            if (level + 1 == limit_refinement_steps) {
-                auto const f = state.patch_b.face[child_face];
-                std::array<float, latent_parameter_count> result {};
-
-                for (size_t k = 0; k < latent_parameter_count; ++k) {
-                    result[k] =
-                        bary.a * state.patch_b.control[f.a].value[k]
-                        + bary.b * state.patch_b.control[f.b].value[k]
-                        + bary.c * state.patch_b.control[f.c].value[k];
-                }
-
-                return result;
-            }
-
-            crop_patch(state.patch_b, child_face, state.patch_a);
-        }
-
-        return {};
+        auto const location = locate_morton(model, direction);
+        auto const face = model.geometry_face[face_offset_by_level[lookup_level] + location.face];
+        auto const weight = location.barycentric;
+        auto const& a = model.control[face.a].value;
+        auto const& b = model.control[face.b].value;
+        auto const& c = model.control[face.c].value;
+        std::array<float, latent_parameter_count> result;
+        for (size_t k = 0; k < latent_parameter_count; ++k)
+            result[k] = weight.a * a[k] + weight.b * b[k] + weight.c * c[k];
+        return result;
     }
 
     // ---------- existing HRTF decoder / DSP ----------
 
-    static Sample read_ago(auto const& input, size_t frame, size_t samples_ago)
+    static Sample read_ago(auto const& input, size_t frame, size_t channel, size_t samples_ago)
     {
         if (samples_ago <= frame)
-            return input.get_value(frame - samples_ago);
-        return input.get(samples_ago - frame);
+            return input.get_value(frame - samples_ago, channel);
+        return input.get(samples_ago - frame, channel);
     }
 
-    static Sample read_fractional_delay(auto const& input, size_t frame, float delay)
+    static Sample read_fractional_delay(auto const& input, size_t frame, size_t channel, float delay)
     {
         auto const whole = static_cast<size_t>(delay);
         auto const fraction = delay - static_cast<float>(whole);
-        auto const a = read_ago(input, frame, whole);
-        auto const b = read_ago(input, frame, whole + 1);
+        auto const a = read_ago(input, frame, channel, whole);
+        auto const b = read_ago(input, frame, channel, whole + 1);
         return a + fraction * (b - a);
     }
 
@@ -1462,15 +1167,14 @@ private:
     }
 
     static void update_ear(
-        State& state,
-        size_t channel,
+        State const& state,
+        EarRuntime& ear,
         float x,
         float y,
         float z)
     {
-        auto const latent = evaluate_latent(state, { x, y, z });
+        auto const latent = evaluate_latent(*state.model, { x, y, z });
         auto const parameters = decode(latent);
-        auto& ear = state.ear[channel];
 
         constexpr float alpha_min = 0.1f;
         constexpr float theta_min =
@@ -1518,25 +1222,28 @@ private:
         }
     }
 
-    static void update_direction(State& state, float azimuth, float elevation)
+    static void update_direction(State const& state, SourceState& source, float azimuth, float elevation)
     {
-        auto const azimuth_radians =
-            azimuth * std::numbers::pi_v<float> / 180.0f;
-        auto const elevation_radians =
-            elevation * std::numbers::pi_v<float> / 180.0f;
+        if (!std::isfinite(azimuth) || !std::isfinite(elevation))
+            return;
+
+        constexpr float radians_per_degree = std::numbers::pi_v<float> / 180.0f;
+        auto const azimuth_radians = azimuth * radians_per_degree;
+        auto const elevation_radians = elevation * radians_per_degree;
         auto const cos_elevation = std::cos(elevation_radians);
         auto const x = cos_elevation * std::cos(azimuth_radians);
         auto const y = -cos_elevation * std::sin(azimuth_radians);
         auto const z = std::sin(elevation_radians);
 
-        update_ear(state, 0, x, y, z);
-        update_ear(state, 1, x, -y, z);
+        update_ear(state, source.ear[0], x, y, z);
+        update_ear(state, source.ear[1], x, -y, z);
 
-        state.azimuth = azimuth;
-        state.elevation = elevation;
+        source.azimuth = azimuth;
+        source.elevation = elevation;
     }
 };
-IV_NODE("iv.project.q24_icosphere_pan.learned_hrtf", LearnedHrtfSourceIcosphere, "Learned HRTF");
+using LearnedHrtfSourceIcosphereMortonMono = LearnedHrtfSourceIcosphereMorton<false>;
+using LearnedHrtfSourceIcosphereMortonStereo = LearnedHrtfSourceIcosphereMorton<true>;
 
 struct BaselineFir256
 {
@@ -1544,7 +1251,7 @@ struct BaselineFir256
     static constexpr size_t input_history = tap_count - 1;
 
     static constexpr char coefficient_path[] =
-        "modules/q24_icosphere_pan/P0014_v2_runtime_baseline_ir_256.csv";
+        "packages/q24_icosphere_pan/P0014_v2_runtime_baseline_ir_256.csv";
 
     static constexpr auto inputs()
     {
@@ -1628,16 +1335,19 @@ struct BaselineFir256
         }
     }
 };
-IV_NODE("iv.project.q24_icosphere_pan.baseline_fir_256", BaselineFir256, "Baseline FIR 256");
 
 
-void single_pan(GraphBuilder& g)
+struct SinglePan {
+    void build_graph(GraphBuilder& g) const;
+};
+
+void SinglePan::build_graph(GraphBuilder& g) const
 {
     auto const in = g.input<"in">();
     auto const az = g.input<"azimuth">(0, -180, 180);
     auto const el = g.input<"elevation">(0, -180, 180);
 
-    auto const hrtf = g.node<"iv.project.q24_icosphere_pan.learned_hrtf">();
+    auto const hrtf = g.node<LearnedHrtfSourceIcosphereMortonMono>();
 
     hrtf(
         "in"_P = in,
@@ -1647,7 +1357,6 @@ void single_pan(GraphBuilder& g)
 
     g.outputs(hrtf);
 }
-IV_MODULE("iv.project.q24_icosphere_pan.single_pan", single_pan, "Single Pan");
 
 
 void module_main(GraphBuilder& g)
@@ -1656,26 +1365,16 @@ void module_main(GraphBuilder& g)
     auto const center = g.input<"azimuth">(0, -180, 180);
     auto const el = g.input<"elevation">(0, -180, 180);
     auto const spread = g.input<"spread">(30, 0, 180);
-    auto const az = g.tile<stereo>(center - spread * 0.5, center + spread * 0.5);
-    auto const fir = g.node<"iv.project.q24_icosphere_pan.baseline_fir_256">();
-
-    auto const v_l = g.node<"iv.project.q24_icosphere_pan.single_pan">();
-    auto const v_r = g.node<"iv.project.q24_icosphere_pan.single_pan">();
-
-    auto const v_l_out = v_l(
-        "in"_P = in[stereo::left],
-        "azimuth"_P = az[stereo::left],
-        "elevation"_P = el
+    auto const hrtf = g.node<LearnedHrtfSourceIcosphereMortonStereo>();
+    hrtf(
+        "in"_P = in,
+        "azimuth"_P = center,
+        "elevation"_P = el,
+        "spread"_P = spread
     );
-
-    auto const v_r_out = v_r(
-        "in"_P = in[stereo::right],
-        "azimuth"_P = az[stereo::right],
-        "elevation"_P = el
-    );
-
-    fir(v_l_out + v_r_out);
+    auto const fir = g.node<BaselineFir256>();
+    fir(hrtf);
 
     g.outputs("main"_P = fir);
 }
-IV_MODULE("iv.project.q24_icosphere_pan", module_main, "Q24 Icosphere Panner");
+IV_MODULE("iv.project.q24_icosphere_pan", module_main, "Icosphere Pan");

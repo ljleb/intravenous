@@ -21,9 +21,12 @@ namespace iv {
         int error_code = -32000;
         std::string error_message{};
         std::optional<bool> result{};
+        bool pending_ = false;
 
     public:
-        void succeed(bool enabled);
+        void succeed(bool enabled, bool pending = false);
+        [[nodiscard]] std::optional<bool> enabled() const noexcept { return result; }
+        [[nodiscard]] bool pending() const noexcept { return pending_; }
         void fail(std::string message);
         void fail(int code, std::string message);
         [[nodiscard]] bool has_response() const noexcept

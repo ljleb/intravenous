@@ -182,6 +182,8 @@ class GraphBuilder {
 
   GraphBuilder(details::BuilderSession*, details::BuilderScopeId,
       bool owns_session, bool owns_scope) noexcept;
+  NodeRef configure_private_module(
+      std::string_view kind, std::move_only_function<void(GraphBuilder&)> build);
 
 public:
   // A root view that owns a new BuilderSession.
@@ -314,9 +316,6 @@ public:
     return event_input_named({}, type, details::module_input_access_kind<Access>());
   }
 
-  // A package definition ID is the only source-facing node-creation API.
-  // Concrete node-type construction is deliberately private to lowering,
-  // finalization, and the implementation of registered provider adapters.
   // The loaded IV packages resolve the provider immediately, so this returns
   // the provider's genuine realized NodeRef.
   template<fixed_string Id, class... Args>
@@ -327,6 +326,29 @@ public:
     auto arguments = details::configuration_arguments(std::forward<Args>(args)...);
     return details::configure_package_definition(
         *this, Id.view(), std::span<details::ConfigurationArgument>{arguments});
+  }
+
+  // Type construction keeps the implementation in the calling package.
+  // A class with build_graph() defines a nested module boundary.
+  template<class Node, class... Args>
+    requires std::constructible_from<Node, Args...>
+  auto node(Args&&... args) {
+    if constexpr (requires(Node const& module, GraphBuilder& body) {
+      { module.build_graph(body) } -> std::same_as<void>;
+    }) {
+      return configure_private_module(details::clang_type_name<Node>(), [&](GraphBuilder& body) {
+        Node const module(std::forward<Args>(args)...);
+        module.build_graph(body);
+      });
+    } else {
+      return details::configure_concrete_node<Node>(*this, std::forward<Args>(args)...);
+    }
+  }
+
+  template<class Node, class ChannelType, class... Args>
+    requires std::constructible_from<Node, Args...> && requires { ChannelTypeTraits<ChannelType>::id; }
+  auto node(Args&&... args) {
+    return details::configure_concrete_tiled_node<Node, ChannelType>(*this, std::forward<Args>(args)...);
   }
 
   // A registered definition can request a promoted channel layout without

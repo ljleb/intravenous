@@ -22,6 +22,27 @@
 namespace {
 using Pass = iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>;
 
+struct PrivatePass {
+    iv::Sample default_value;
+
+    void build_graph(iv::GraphBuilder& graph) const
+    {
+        using namespace iv;
+        auto input = graph.input<"in">(default_value);
+        details::iv_builder_prepare_node_source_identity(&graph, "inner-pass", "pass");
+        auto pass = graph.node<Pass>();
+        pass(input);
+        graph.outputs("value"_P = pass);
+    }
+};
+
+struct RecursivePrivateModule {
+    void build_graph(iv::GraphBuilder& graph) const
+    {
+        (void)graph.node<RecursivePrivateModule>();
+    }
+};
+
 template<auto Production, iv::OutputRealization Realization, iv::ChannelTypeId Channels = iv::ChannelTypeId::mono>
 struct PublicOutputSource {
     static constexpr bool sequential =
@@ -89,6 +110,30 @@ iv::ConfiguredGraph make_frozen_pass()
     return std::move(graph).finish();
 }
 } // namespace
+
+TEST(ScopedGraphBuilder, PrivateModuleConstructionPreservesItsBoundary)
+{
+    using namespace iv;
+    GraphBuilder root;
+    details::iv_builder_prepare_node_source_identity(&root, "private-module", "module");
+    auto module = root.node<PrivatePass>(Sample{.25f});
+    auto const handle = module.node_bundle_handle();
+    auto const input = root.input<"in">();
+    module("in"_P = input);
+    root.outputs("out"_P = module["value"_P]);
+
+    auto const graph = std::move(root).finish();
+    auto const& bundle = graph.node_bundles.bundle(handle);
+    ASSERT_TRUE(bundle.is_subgraph());
+    EXPECT_EQ(bundle.sample_input_descriptor(0).config.name, "in");
+    EXPECT_EQ(bundle.sample_output_descriptor(0).config.name, "value");
+}
+
+TEST(ScopedGraphBuilder, RecursivePrivateModuleFailsConstruction)
+{
+    iv::GraphBuilder root;
+    EXPECT_THROW(root.node<RecursivePrivateModule>(), std::runtime_error);
+}
 
 TEST(ScopedGraphBuilder, PublicSampleOutputsInferProductionAndRealizationAcrossDeclarations)
 {

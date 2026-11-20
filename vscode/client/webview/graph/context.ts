@@ -22,6 +22,11 @@ export type KnobDrag = {
     active?: () => boolean;
     hint?: () => StatusHint;
 };
+export type KnobClipboard = {
+    identity: () => string;
+    value: () => number | undefined;
+    paste: (text: string) => string | undefined;
+};
 
 type GraphEditorContext = {
     layout: Ref<GraphLayout>;
@@ -45,6 +50,7 @@ type GraphEditorContext = {
     activeKnob: Readonly<Ref<string | null>>;
     startKnob: (event: PointerEvent, key: string, begin: () => KnobDrag | undefined, reset?: () => void) => void;
     cancelKnob: () => boolean;
+    registerKnobClipboard: (element: HTMLElement, knob: KnobClipboard) => () => void;
     openKnobValue: (anchor: HTMLElement, label: string, value: number, limits: () => KnobLimits,
         apply: (value: number) => void, bindValueEntry?: (anchor: DOMRect) => void) => void;
     closeKnobValueWithin: (panel: HTMLElement) => void;

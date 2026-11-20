@@ -12,7 +12,6 @@
 #include <intravenous/runtime/node_definitions_events.h>
 #include <intravenous/runtime/package_pipeline_types.h>
 #include <intravenous/runtime/project_node_path_resolver.h>
-#include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 #include <intravenous/runtime/uuid.h>
 
@@ -1964,13 +1963,6 @@ void NodeInstances::apply_project_graph_transaction(
     if (changes.instances_list_changed || changes.instance_declarations_changed) {
         request.instances = list_instances();
     }
-}
-
-void NodeInstances::handle_project_persistence_collect_state(
-    ProjectPersistenceBuilder& builder) const
-{
-    builder.add_node_instances(desired_instances());
-    builder.add_node_replacements(desired_node_replacements());
 }
 
 void NodeInstances::handle_socket_rpc_get_node_instances(

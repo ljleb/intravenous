@@ -11,12 +11,18 @@ const inactive = computed(() => !descriptor.value?.participates
     || (props.direction === "output" && value.value === 1 && !control.inverted.value));
 const knob = ref<InstanceType<typeof Knob> | null>(null);
 const description = computed(() => [knobPortStatus(control.port.value),
+    state.value?.phase === "starting" || state.value?.phase === "ending" ? "Applying value…" : "",
     activity.value === "retained" ? "Override held" : !descriptor.value?.enabled && activity.value !== "active" ? "Manual value off" : "",
 ].filter(Boolean).join(" · "));
 function apply(value: number) {
     control.hover(true);
-    control.edit(); control.update(value); control.finish();
+    control.applyValue(value);
 }
+const clipboard = computed(() => ({
+    value: control.signedValue.value,
+    range: props.direction === "output" ? {} : limits.value,
+    apply: (value: number) => control.applyValue(value, true),
+}));
 onBeforeUnmount(() => control.hover(false));
 </script>
 
@@ -37,7 +43,8 @@ onBeforeUnmount(() => control.hover(false));
         <Knob ref="knob" class="manual-knob" :identity="control.key.value" :label="name" :value="value" :limits="limits"
             :disabled="!available" :port-cutout="portCutout" :direction="direction" :activity="activity"
             :inactive="inactive" :inverted="control.inverted.value" :description="description"
-            :apply="apply" :bind-drag="control.scrub" :bind-value-entry="control.numeric" :reset="control.reset" @hover="control.hover" />
+            :apply="apply" :clipboard="clipboard" :bind-drag="control.scrub" :bind-value-entry="control.numeric"
+            :reset="control.reset" @hover="control.hover" />
         <button v-if="direction === 'output'" type="button" tabindex="-1" class="knob-side-toggle"
             :aria-pressed="control.inverted.value"
             :disabled="!available" :aria-label="`${name}: invert output polarity`"

@@ -5,6 +5,7 @@
 #include <intravenous/devices/audio_device.h>
 #include "fake_audio_device.h"
 #include <intravenous/module/loader.h>
+#include <intravenous/module/package_manifest.h>
 #include <intravenous/runtime/handlers.h>
 #include <intravenous/runtime/node_definitions.h>
 #include <intravenous/runtime/package_pipeline_types.h>
@@ -212,7 +213,7 @@ namespace iv::test {
             }
             if (current == current.root_path()) break;
         }
-        if (module_dir.parent_path().filename() == "modules") {
+        if (module_dir.parent_path().filename() == IV_PROJECT_PACKAGES_DIR) {
             return module_dir.parent_path().parent_path();
         }
         return module_dir;
@@ -221,13 +222,13 @@ namespace iv::test {
     inline std::string source_package_key(std::filesystem::path const& source_dir)
     {
         auto const normalized = std::filesystem::weakly_canonical(source_dir).lexically_normal();
-        auto modules = normalized.end();
+        auto packages = normalized.end();
         for (auto it = normalized.begin(); it != normalized.end(); ++it) {
-            if (*it == "modules") modules = it;
+            if (*it == IV_PROJECT_PACKAGES_DIR) packages = it;
         }
-        if (modules != normalized.end()) {
+        if (packages != normalized.end()) {
             auto relative = std::filesystem::path{};
-            for (auto it = std::next(modules); it != normalized.end(); ++it) {
+            for (auto it = std::next(packages); it != normalized.end(); ++it) {
                 relative /= *it;
             }
             if (!relative.empty()) return relative.generic_string();

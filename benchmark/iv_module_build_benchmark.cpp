@@ -1,4 +1,5 @@
 #include <intravenous/module/loader.h>
+#include <intravenous/module/package_manifest.h>
 
 #include <algorithm>
 #include <chrono>
@@ -493,7 +494,7 @@ void run(Options const& options)
         }
         workload = "project-module";
     } else {
-        module = options.workspace / "modules" / "compile_benchmark";
+        module = options.workspace / iv::IV_PROJECT_PACKAGES_DIR / "compile_benchmark";
         hot_source = module / "module.cpp";
         write(options.workspace / "iv_project.jsonl", "");
         write(module / "iv_package.json", R"({"schema":2,"entry":"module.cpp"})");

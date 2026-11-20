@@ -5,6 +5,7 @@
 #include <intravenous/runtime/project_node_instance_types.h>
 #include <intravenous/runtime/project_node_replacement_types.h>
 #include <intravenous/runtime/project_connection_types.h>
+#include <intravenous/runtime/project_presentation.h>
 #include <intravenous/node/manual_control.h>
 
 #include <algorithm>
@@ -23,6 +24,7 @@ inline auto const& project_record_key(ProjectNodeInstanceDeclaration const& valu
 inline auto const& project_record_key(ProjectNodeReplacement const& value) { return value.address; }
 inline auto const& project_record_key(ProjectConnection const& value) { return project_connection_id(value); }
 inline auto const& project_record_key(ProjectManualControl const& value) { return value.id; }
+inline auto const& project_record_key(ProjectLaneView const& value) { return value.id; }
 
 template<class Record, class Key>
 struct ProjectRecordEdit {
@@ -52,6 +54,9 @@ struct ProjectEditBatch {
     std::vector<ProjectRecordEdit<ProjectManualControl, ManualControlId>> manual_controls{};
     std::optional<ProjectAudioDeviceSelection> audio_devices{};
     std::optional<ProjectToolchainSettings> toolchain{};
+    std::vector<ProjectRecordEdit<ProjectLaneView, ProjectLaneViewId>> lane_views{};
+    std::optional<std::vector<NodeAddress>> lane_order{};
+    std::optional<nlohmann::json> timeline_snap_memory{};
 };
 
 // Temporary owner-provided snapshots, never a second canonical project model.
@@ -72,9 +77,12 @@ struct ProjectEditEffect {
     std::vector<ProjectRecordChange<ProjectManualControl>> manual_controls{};
     std::optional<ProjectRecordChange<ProjectAudioDeviceSelection>> audio_devices{};
     std::optional<ProjectRecordChange<ProjectToolchainSettings>> toolchain{};
+    std::vector<ProjectRecordChange<ProjectLaneView>> lane_views{};
+    std::optional<ProjectRecordChange<std::vector<NodeAddress>>> lane_order{};
+    std::optional<ProjectRecordChange<nlohmann::json>> timeline_snap_memory{};
     [[nodiscard]] bool empty() const {
         return instances.empty() && replacements.empty() && connections.empty() && manual_controls.empty()
-            && !audio_devices && !toolchain;
+            && !audio_devices && !toolchain && lane_views.empty() && !lane_order && !timeline_snap_memory;
     }
 };
 
@@ -96,6 +104,8 @@ inline bool project_effects_overlap(ProjectEditEffect const& left, ProjectEditEf
         || project_changes_overlap(left.replacements, right.replacements)
         || project_changes_overlap(left.connections, right.connections)
         || project_changes_overlap(left.manual_controls, right.manual_controls)
+        || project_changes_overlap(left.lane_views, right.lane_views)
+        || (left.lane_order && right.lane_order) || (left.timeline_snap_memory && right.timeline_snap_memory)
         || (left.audio_devices && right.audio_devices) || (left.toolchain && right.toolchain);
 }
 
@@ -120,6 +130,7 @@ inline void merge_project_effect(ProjectEditEffect& into, ProjectEditEffect effe
     merge_project_changes(into.replacements, std::move(effect.replacements));
     merge_project_changes(into.connections, std::move(effect.connections));
     merge_project_changes(into.manual_controls, std::move(effect.manual_controls));
+    merge_project_changes(into.lane_views, std::move(effect.lane_views));
     auto merge_setting = [](auto& target, auto source) {
         if (!source) return;
         if (target) target->after = std::move(source->after);
@@ -128,6 +139,8 @@ inline void merge_project_effect(ProjectEditEffect& into, ProjectEditEffect effe
     };
     merge_setting(into.audio_devices, std::move(effect.audio_devices));
     merge_setting(into.toolchain, std::move(effect.toolchain));
+    merge_setting(into.lane_order, std::move(effect.lane_order));
+    merge_setting(into.timeline_snap_memory, std::move(effect.timeline_snap_memory));
 }
 
 struct ProjectRecordKeyHash {
@@ -151,6 +164,9 @@ struct ProjectRecordKeyHash {
     std::size_t operator()(ManualControlId const& value) const {
         return (*this)(value.node) ^ ((*this)(value.port_name) << 1)
             ^ (static_cast<std::size_t>(value.kind) << 2);
+    }
+    std::size_t operator()(ProjectLaneViewId const& value) const {
+        return (*this)(value.address) ^ ((*this)(value.presentation_id) << 1);
     }
 };
 

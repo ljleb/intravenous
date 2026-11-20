@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { addressKey, placeNodes, readLayout, resolveScopePorts, zoomAt,
+import { addressFromKey, addressKey, laneViewFromKey, newGraphLayout, placeNodes, presentationStateKey,
+    readGraphViewState, resolveScopePorts, zoomAt,
     type GraphScope, type GraphScopeNode } from "../src/graphScope";
 import { semanticNodeFromScopeChild } from "../webview/presentation/semanticNode";
 import { nodeDescription, nodeDisplayName, nodeIdentitySummary } from "../webview/presentation/nodeSummary";
@@ -36,7 +37,7 @@ test("graph layout keys normalize root addresses and keep instances distinct", (
 
 test("graph changes preserve moved and temporarily removed node positions", () => {
     const original = graph();
-    const saved = placeNodes(original.nodes, readLayout(null));
+    const saved = placeNodes(original.nodes, newGraphLayout());
     saved.positions[addressKey(original.nodes[0].address)] = { x: -930, y: 407 };
     const reduced = placeNodes([original.nodes[1]], saved);
     const restored = placeNodes([...original.nodes, node("new")], reduced);
@@ -47,7 +48,7 @@ test("graph changes preserve moved and temporarily removed node positions", () =
 
 test("default graph placement follows source order without overlapping a saved node", () => {
     const nodes = [node("first"), node("second"), node("third")];
-    const saved = readLayout(null);
+    const saved = newGraphLayout();
     saved.positions[addressKey(nodes[2].address)] = { x: 0, y: 0 };
     const placed = placeNodes(nodes, saved).positions;
     assert.ok(placed[addressKey(nodes[0].address)].x > 0);
@@ -66,11 +67,21 @@ test("zoom keeps the graph point under the cursor fixed, including at zoom limit
     }
 });
 
-test("layout loading rejects invalid geometry while retaining valid positions", () => {
-    const layout = readLayout({ positions: { good: { x: -20, y: 80 }, bad: { x: Infinity, y: 2 } },
-        viewport: { x: 0, y: 0, scale: 0 } });
-    assert.deepEqual(layout.positions, { good: { x: -20, y: 80 } });
-    assert.equal(layout.viewport.scale, 1);
+test("project presentation preserves lane addresses and local values independently of navigation", () => {
+    const address = { instanceId: "source", path: [{ kind: "tiledChild" as const, name: "left" }] };
+    const state = { pan: -4, zoom: { factor: 2, center: .25 } };
+    const presentation = { laneOrder: [address], laneViews: [{ address, presentationId: "curve", state }], timelineSnapMemory: {} };
+    const view = readGraphViewState(presentation);
+    assert.deepEqual(view.laneOrder.map(addressFromKey), [address]);
+    const key = presentationStateKey(address, "curve");
+    assert.deepEqual(view.presentationStates, { [key]: state });
+    assert.deepEqual(laneViewFromKey(key, view.presentationStates[key]), presentation.laneViews[0]);
+    assert.deepEqual(laneViewFromKey(key, null), { address, presentationId: "curve", state: null });
+    const layout = newGraphLayout();
+    assert.deepEqual(layout.positions, {});
+    assert.deepEqual(layout.viewport, { x: 40, y: 40, scale: 1 });
+    assert.equal(layout.timeline.scrollTop, 0);
+    assert.deepEqual(Object.keys(view).sort(), ["laneOrder", "presentationStates"]);
 });
 
 test("scope port resolution respects kind, direction, all-port matchers, and nested selectors", () => {

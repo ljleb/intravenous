@@ -957,7 +957,7 @@ TEST(PackageWatcher, OverlappingDiscoveryRootsUseHighestPriorityOwnershipOnce)
 {
     auto const project = iv::test_support::fresh_module_fixture_workspace(
         "package_discovery_provenance_priority");
-    auto const package = project / "modules" / "voice";
+    auto const package = project / "packages" / "voice";
     auto const artifact_root = project / "executable-artifacts";
     std::filesystem::create_directories(package);
     iv::test_support::write_text(
@@ -990,7 +990,7 @@ TEST(PackageWatcher, EqualPriorityOverlapsRejectConflictingArtifactOwners)
 {
     auto const project = iv::test_support::fresh_module_fixture_workspace(
         "package_discovery_conflicting_artifact_owners");
-    auto const package = project / "modules" / "voice";
+    auto const package = project / "packages" / "voice";
     std::filesystem::create_directories(package);
     iv::test_support::write_text(
         package / "iv_package.json",

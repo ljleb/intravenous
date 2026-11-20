@@ -12,7 +12,6 @@
 #include <vector>
 
 namespace iv {
-class ProjectPersistenceBuilder;
 struct GraphConnectionDiagnostic {
     std::string connection_id{};
     std::string message{};
@@ -125,8 +124,6 @@ public:
     void handle_project_graph_transaction(GraphConnectionsProjectGraphRequest& request);
     void handle_project_graph_interaction(GraphConnectionsInteractionRequest& request);
     void handle_project_graph_read(GraphConnectionsProjectGraphRead& read) const;
-    void handle_project_persistence_collect_state(
-        ProjectPersistenceBuilder& builder) const;
 };
 // Shared semantic-output lookup used by wiring and read-only observation.
 [[nodiscard]] std::vector<SampleOutputChannelId> resolve_project_sample_output(

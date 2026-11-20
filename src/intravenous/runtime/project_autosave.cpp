@@ -9,9 +9,8 @@ void ProjectAutosave::project_loaded(TimePoint)
     std::lock_guard lock(mutex_);
     project_loaded_ = true;
     save_in_flight_ = false;
-    revision_ = 0;
-    saving_revision_ = 0;
-    due_at_.reset();
+    first_unsaved_edit_.reset();
+    retry_at_ = TimePoint::min();
 }
 
 void ProjectAutosave::project_state_changed(TimePoint now)
@@ -21,21 +20,18 @@ void ProjectAutosave::project_state_changed(TimePoint now)
         return;
     }
 
-    ++revision_;
-    if (enabled_ && !save_in_flight_) {
-        due_at_ = now + debounce_delay;
-    }
+    if (!first_unsaved_edit_) first_unsaved_edit_ = now;
+    last_edit_ = now;
 }
 
 void ProjectAutosave::set_enabled(bool enabled, TimePoint now)
 {
     std::lock_guard lock(mutex_);
-    enabled_ = enabled;
-    if (!enabled_) {
-        due_at_.reset();
-    } else if (project_loaded_ && revision_ != saving_revision_ && !save_in_flight_) {
-        due_at_ = now;
+    if (enabled && !enabled_ && first_unsaved_edit_) {
+        first_unsaved_edit_ = now - save_interval;
+        retry_at_ = TimePoint::min();
     }
+    enabled_ = enabled;
 }
 
 void ProjectAutosave::handle_socket_rpc_enable_project_autosave(
@@ -58,7 +54,8 @@ void ProjectAutosave::handle_socket_rpc_get_autosave_state(
     SessionSnapshotRequest const&,
     SocketRpcAutosaveStateResultBuilder& builder) const
 {
-    builder.succeed(enabled());
+    std::scoped_lock lock(mutex_);
+    builder.succeed(enabled_, first_unsaved_edit_.has_value() || save_in_flight_);
 }
 
 void ProjectAutosave::handle_project_state_changed()
@@ -88,48 +85,40 @@ bool ProjectAutosave::enabled() const
 bool ProjectAutosave::take_due_save(TimePoint now)
 {
     std::lock_guard lock(mutex_);
-    if (!project_loaded_ || !enabled_ || save_in_flight_ || !due_at_.has_value() || now < *due_at_) {
+    if (!first_unsaved_edit_ || now < retry_at_
+        || (now < *first_unsaved_edit_ + save_interval && now < last_edit_ + idle_delay)) {
         return false;
     }
-
-    due_at_.reset();
-    save_in_flight_ = true;
-    saving_revision_ = revision_;
-    return true;
+    return claim_pending_save();
 }
 
 bool ProjectAutosave::take_pending_save()
 {
     std::lock_guard lock(mutex_);
-    if (!project_loaded_ || !enabled_ || save_in_flight_
-        || revision_ == saving_revision_) {
-        return false;
-    }
+    return claim_pending_save();
+}
 
-    due_at_.reset();
+bool ProjectAutosave::claim_pending_save()
+{
+    if (!project_loaded_ || !enabled_ || save_in_flight_ || !first_unsaved_edit_) return false;
     save_in_flight_ = true;
-    saving_revision_ = revision_;
+    first_unsaved_edit_.reset();
     return true;
 }
 
-void ProjectAutosave::save_succeeded(TimePoint now)
+void ProjectAutosave::save_succeeded(TimePoint)
 {
     std::lock_guard lock(mutex_);
     save_in_flight_ = false;
-    if (revision_ == saving_revision_) {
-        return;
-    }
-    if (enabled_) {
-        due_at_ = now + debounce_delay;
-    }
+    retry_at_ = TimePoint::min();
 }
 
 void ProjectAutosave::save_failed(TimePoint now)
 {
     std::lock_guard lock(mutex_);
     save_in_flight_ = false;
-    if (enabled_) {
-        due_at_ = now + retry_delay;
-    }
+    if (!first_unsaved_edit_) first_unsaved_edit_ = now;
+    last_edit_ = now;
+    retry_at_ = now + retry_delay;
 }
 } // namespace iv

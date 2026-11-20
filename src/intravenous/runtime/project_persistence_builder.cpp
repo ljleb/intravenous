@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <ranges>
 #include <tuple>
+#include <utility>
 
 namespace iv {
 namespace {
@@ -74,6 +75,11 @@ void ProjectPersistenceBuilder::add_manual_controls(
     std::vector<ProjectManualControl> controls)
 {
     manual_controls_ = std::move(controls);
+}
+
+void ProjectPersistenceBuilder::add_project_presentation(ProjectPresentation const& presentation)
+{
+    presentation_ = presentation;
 }
 
 std::string ProjectPersistenceBuilder::relativize_path(
@@ -220,6 +226,26 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
         });
     }
 
+    constexpr auto names = ProjectConnectionJsonNames::project_file;
+    if (!presentation_.lane_order.empty()) {
+        auto order = Json::array();
+        for (auto const& address : presentation_.lane_order)
+            order.push_back(node_address_json(address, names));
+        commands.push_back({"projectPresentation.setLaneOrder", {{"order", std::move(order)}}});
+    }
+    std::vector<Json> lane_views;
+    lane_views.reserve(presentation_.lane_views.size());
+    for (auto const& view : presentation_.lane_views)
+        lane_views.push_back(project_lane_view_json(view, names));
+    std::ranges::sort(lane_views, {}, [](auto const& view) {
+        return std::pair{view.at("address").dump(), view.at("presentation_id").dump()};
+    });
+    for (auto& view : lane_views)
+        commands.push_back({"projectPresentation.setLaneView", std::move(view)});
+    if (!presentation_.timeline_snap_memory.empty()) {
+        commands.push_back({"projectPresentation.setTimelineSnapMemory",
+            {{"memory", Json(presentation_.timeline_snap_memory)}}});
+    }
     return commands;
 }
 } // namespace iv

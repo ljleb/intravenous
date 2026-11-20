@@ -1,7 +1,5 @@
-// The application ships this as one ordinary IV package.  Keeping the
-// built-ins behind the same registration/ORC boundary as user packages makes
-// their implementation replaceable and prevents source modules from reaching
-// into iv_builder with g.node<NodeType>().
+// The application ships this as one ordinary IV package. Its exported
+// definitions and private leaves use the same compiler records as user packages.
 #include <intravenous/dsl.h>
 
 #include <intravenous/basic_nodes/arithmetic.h>
@@ -20,7 +18,7 @@
 #include <intravenous/basic_nodes/timing.h>
 
 IV_NODE("builtin.constant", iv::Constant, "Constant");
-IV_REGISTER_OUTPUT_GAIN_NODES();
+IV_INSTANTIATE_OUTPUT_GAIN_NODES();
 IV_NODE("builtin.debug_probe", ::DebugProbe, "Debug Probe");
 
 IV_MODULE_CLASS("builtin.automation.curve", iv::automation::AutomationCurve, "Automation Curve", iv::tags(iv::tag::automation));

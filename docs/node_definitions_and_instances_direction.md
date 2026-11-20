@@ -183,26 +183,22 @@ builder lookup with an unrelated resolver. Package namespace is distinct from
 filesystem provenance and artifact identity. The earlier unresolved wording is
 preserved in [the namespace history](historical/package_namespace_proposal_before_static_selection_2026-11-16.md).
 
-**Proposed API simplification, not implemented:** allow `g.node<Type>(...)`
-for package-internal concrete leaves without an `IV_NODE` declaration. Reserve
-`IV_NODE(...)` for **public** leaf definition registration and `IV_MODULE(...)`
-for **public** module registration; no parallel `_PUBLIC` macro family is
-wanted. Private module construction may remain ordinary C++ functions/classes;
-whether a distinct private, addressable module definition is needed is not
-settled. The goal of retiring `IV_MODULE_CLASS` is to register functions and
-classes through one `IV_MODULE` entry point, but the exact valid C++ spelling
-and compiler-plugin mechanism are open.
+Reserve `IV_NODE(...)` for public leaves and `IV_MODULE(...)` or
+`IV_MODULE_CLASS(...)` for public modules. Use `g.node<Type>(...)` for a
+package-internal leaf or a class with a const `build_graph(GraphBuilder&)`
+method. The latter creates a subgraph boundary. Use `g.node<Type, ChannelType>(...)`
+to tile a private leaf.
+See the [earlier registration-only design](historical/node_construction_before_package_private_types_2026-11-19.md).
 
-Package-private means available throughout the owning package, **not** limited
-to one translation unit. An unregistered private concrete leaf may already
-contribute a compiler record once instantiated, but that is not the same as
-publishing a configurable definition or automatically creating a virtual-node
-source annotation. Registration currently performs eager declaration checks;
-unused unregistered types may receive no equivalent static validation until
-instantiated. This tradeoff is acknowledged; no automatic validation of every
-unused class has been specified. Direct type construction must also respect the
-intended package privacy boundary; omitting registration alone is not a
-cross-package C++ access-control mechanism.
+The goal of retiring `IV_MODULE_CLASS` is to register public functions and
+classes through one `IV_MODULE` entry point. The C++ spelling and compiler
+plugin mechanism are open.
+
+Put shared private types in headers owned by the package when multiple
+translation units need them. Instantiating a private leaf emits its compiler
+record. The builder validates the leaf at construction. The Clang source
+introspection plugin handles type-based and ID-based `g.node` calls.
+C++ visibility follows the declarations and headers the package makes available.
 
 See [Module Interoperability And Graph Macros](./module_interoperability_and_graph_macros_direction.md)
 for construction/interaction ownership and future project editing.

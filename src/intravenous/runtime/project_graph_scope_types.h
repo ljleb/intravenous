@@ -7,6 +7,7 @@
 #include <intravenous/runtime/iv_module_instance_types.h>
 #include <intravenous/runtime/node_instance_interface.h>
 #include <intravenous/runtime/project_connection_types.h>
+#include <intravenous/runtime/project_presentation.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -73,5 +74,6 @@ struct ProjectGraphScope {
     std::vector<ProjectGraphScopeNode> nodes{};
     std::vector<ProjectGraphScopeConnection> connections{};
     std::vector<NodeAddress> timeline_nodes{};
+    ProjectPresentation presentation{};
 };
 } // namespace iv

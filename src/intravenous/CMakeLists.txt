@@ -472,8 +472,6 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     runtime/runtime_project_events.cpp
     runtime/project_persistence_system_audio_devices_bridge.cpp
     runtime/project_persistence_project_autosave_bridge.cpp
-    runtime/project_persistence_node_instances_bridge.cpp
-    runtime/project_persistence_graph_connections_bridge.cpp
     runtime/project_persistence_project_graph_bridge.cpp
     runtime/project_persistence_package_jit_bridge.cpp
     runtime/socket_rpc_system_audio_devices_bridge.cpp
@@ -629,6 +627,12 @@ target_include_directories(intravenous SYSTEM PRIVATE
 
 iv_add_host_runtime_objects(intravenous)
 add_dependencies(intravenous intravenous_dsl_pch intravenous_runtime_sdk)
+# The launcher bundles these staged inputs with the executable. Relink even
+# when an SDK or builtin-only change leaves all server objects unchanged.
+set_property(TARGET intravenous APPEND PROPERTY LINK_DEPENDS
+    "${iv_sdk_snapshot}/.snapshot"
+    "${_iv_builtin_package_manifest}"
+    "${_iv_builtin_package_entry}")
 
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/.intravenous_defaults"

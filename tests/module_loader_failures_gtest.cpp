@@ -179,6 +179,9 @@ TEST(ModuleLoaderPackages, BuiltinPackageUsesExecutableOwnedArtifactRoot)
         EXPECT_EQ(std::ranges::find(loaded.node_types, id,
             &iv::ModuleLoader::LoadedNodeType::node_type_id), loaded.node_types.end());
     }
+    EXPECT_TRUE(std::ranges::none_of(loaded.node_types, [](auto const& node) {
+        return node.node_type_id.starts_with("builtin.output_gain.");
+    }));
     EXPECT_EQ(std::ranges::count_if(loaded.module_message_handlers, [](auto const& handler) {
         return std::string_view(static_cast<char const*>(handler.definition_id.data), handler.definition_id.size)
             == "builtin.automation.curve";
@@ -562,8 +565,8 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
 {
     auto const project_root = iv::test::runtime_modules_root()
         / "registered_package_node";
-    auto const node_package = project_root / "modules" / "registered_node";
-    auto const consumer_package = project_root / "modules" / "consumer";
+    auto const node_package = project_root / "packages" / "registered_node";
+    auto const consumer_package = project_root / "packages" / "consumer";
     std::filesystem::remove_all(project_root);
     std::filesystem::create_directories(node_package);
     std::filesystem::create_directories(consumer_package);
@@ -656,8 +659,8 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
 {
     auto const project_root = iv::test::runtime_modules_root()
         / "registered_configuration_arguments";
-    auto const provider_package = project_root / "modules" / "provider";
-    auto const consumer_package = project_root / "modules" / "consumer";
+    auto const provider_package = project_root / "packages" / "provider";
+    auto const consumer_package = project_root / "packages" / "consumer";
     std::filesystem::remove_all(project_root);
     std::filesystem::create_directories(provider_package);
     std::filesystem::create_directories(consumer_package);
@@ -983,8 +986,8 @@ TEST(ModuleLoaderFailures, RegisteredConfigurationRejectsImplicitConversions)
 {
     auto const project_root = iv::test::runtime_modules_root()
         / "registered_configuration_type_mismatch";
-    auto const provider_package = project_root / "modules" / "provider";
-    auto const consumer_package = project_root / "modules" / "consumer";
+    auto const provider_package = project_root / "packages" / "provider";
+    auto const consumer_package = project_root / "packages" / "consumer";
     std::filesystem::remove_all(project_root);
     std::filesystem::create_directories(provider_package);
     std::filesystem::create_directories(consumer_package);

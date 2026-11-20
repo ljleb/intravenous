@@ -10,8 +10,6 @@
 #include <intravenous/runtime/project_persistence.h>
 #include <intravenous/runtime/project_persistence_builder.h>
 #include <intravenous/runtime/project_persistence_events.h>
-#include <intravenous/runtime/project_persistence_node_instances_bridge.h>
-#include <intravenous/runtime/project_persistence_graph_connections_bridge.h>
 #include <intravenous/runtime/project_persistence_project_graph_bridge.h>
 #include <intravenous/runtime/graph_connections.h>
 #include <intravenous/runtime/project_graph.h>
@@ -24,6 +22,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -241,14 +240,14 @@ TEST(ProjectPersistenceBuilder, SerializesOnlyDurableConfiguredStateInStableOrde
         iv::ProjectNodeInstanceDeclaration{
             .instance_id = "instance:b",
             .definition_id = "iv.test.b",
-            .package_root = workspace / "modules" / "b",
+            .package_root = workspace / "packages" / "b",
             .display_name = "B",
             .configuration_source = "{.gain = 0.25}",
         },
         iv::ProjectNodeInstanceDeclaration{
             .instance_id = "instance:a",
             .definition_id = "iv.test.a",
-            .package_root = workspace / "modules" / "a",
+            .package_root = workspace / "packages" / "a",
         },
     });
     builder.add_graph_connections({iv::ProjectSampleConnection{
@@ -298,7 +297,7 @@ TEST(ProjectPersistenceBuilder, SerializesOnlyDurableConfiguredStateInStableOrde
     EXPECT_EQ(commands[1].command, "nodeInstances.upsert");
     EXPECT_EQ(commands[1].args["instance_id"], "instance:a");
     EXPECT_EQ(commands[1].args["definition_id"], "iv.test.a");
-    EXPECT_EQ(commands[1].args["package_root"], "modules/a");
+    EXPECT_EQ(commands[1].args["package_root"], "packages/a");
     EXPECT_TRUE(commands[1].args["display_name"].is_null());
     EXPECT_EQ(commands[1].args["configuration_source"], "");
 
@@ -408,7 +407,7 @@ TEST(ProjectPersistenceBuilder, StoresReplacementArgumentsAsStructuredJson)
             }},
         },
         .definition_id = "iv.test.successor",
-        .package_root = workspace / "modules" / "successor",
+        .package_root = workspace / "packages" / "successor",
         .configuration_arguments_json =
             R"([17,{"mode":"highpass"},[1,2,3]])",
     }});
@@ -417,7 +416,7 @@ TEST(ProjectPersistenceBuilder, StoresReplacementArgumentsAsStructuredJson)
     ASSERT_EQ(commands.size(), 1u);
     EXPECT_EQ(commands[0].command, "nodeReplacements.upsert");
     EXPECT_EQ(commands[0].args["definition_id"], "iv.test.successor");
-    EXPECT_EQ(commands[0].args["package_root"], "modules/successor");
+    EXPECT_EQ(commands[0].args["package_root"], "packages/successor");
     EXPECT_EQ(
         commands[0].args["configuration_arguments"],
         nlohmann::ordered_json::array({
@@ -447,14 +446,14 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
     write_text(
         workspace / "iv_project.jsonl",
         R"({"command":"removed.timelineCommand","args":{}})" "\n"
-        R"({"command":"nodeInstances.upsert","args":{"instance_id":"instance:0","definition_id":"iv.test.legacy","package_root":"modules/legacy","display_name":null}})" "\n"
+        R"({"command":"nodeInstances.upsert","args":{"instance_id":"instance:0","definition_id":"iv.test.legacy","package_root":"packages/legacy","display_name":null}})" "\n"
         R"({"command":"nodeInstances.upsert","args":{"instance_id":"instance:removed","definition_id":"iv.test.removed","package_root":null,"display_name":null,"configuration_source":""}})" "\n"
         R"({"command":"nodeInstances.delete","args":{"instance_id":"instance:removed"}})" "\n"
-        R"({"command":"nodeInstances.upsert","args":{"instance_id":"instance:1","definition_id":"iv.test.replayed","package_root":"modules/replayed","display_name":"Replayed","configuration_source":"12 + 4"}})" "\n"
+        R"({"command":"nodeInstances.upsert","args":{"instance_id":"instance:1","definition_id":"iv.test.replayed","package_root":"packages/replayed","display_name":"Replayed","configuration_source":"12 + 4"}})" "\n"
         R"({"command":"manualControls.upsert","args":{"node":{"instance_id":"instance:0","path":[{"kind":"virtualNode","source_identity":"processor"}]},"input_name":"gain","value":0.75,"participation":"participate_with_connections","enabled":true}})" "\n"
         R"({"command":"manualControls.upsert","args":{"node":{"instance_id":"instance:1","path":[]},"input_name":"removed","value":0.5,"participation":"disconnected_only","enabled":true}})" "\n"
         R"({"command":"manualControls.delete","args":{"node":{"instance_id":"instance:1","path":[]},"input_name":"removed"}})" "\n"
-        R"({"command":"nodeReplacements.upsert","args":{"address":{"instance_id":"instance:0","path":[{"kind":"virtualNode","source_identity":"processor"}]},"definition_id":"iv.test.successor","package_root":"modules/successor","configuration_arguments":[17,{"mode":"highpass"}]}})" "\n"
+        R"({"command":"nodeReplacements.upsert","args":{"address":{"instance_id":"instance:0","path":[{"kind":"virtualNode","source_identity":"processor"}]},"definition_id":"iv.test.successor","package_root":"packages/successor","configuration_arguments":[17,{"mode":"highpass"}]}})" "\n"
         R"({"command":"graphConnections.upsert","args":{"kind":"event","connection_id":"event:removed","source_type":"trigger","outputs":[{"instance_id":"instance:0","path":[],"port":{"name":"out"}}],"target_type":"empty","inputs":[{"instance_id":"instance:1","path":[],"port":{"index":0}}]}})" "\n"
         R"({"command":"graphConnections.delete","args":{"connection_id":"event:removed"}})" "\n"
         R"({"command":"graphConnections.upsert","args":{"kind":"event","connection_id":"event:dangling","source_type":"trigger","outputs":[{"instance_id":"instance:0","path":[],"port":{"name":"out"}}],"target_type":"empty","inputs":[{"instance_id":"instance:1","path":[],"port":{"index":0}}]}})" "\n"
@@ -470,8 +469,6 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
         iv::project_graph_node_instances_bridge::bind(project_graph, instances);
     auto project_graph_connections_scope =
         iv::project_graph_graph_connections_bridge::bind(project_graph, graph_connections);
-    auto instances_scope =
-        iv::project_persistence_node_instances_bridge::bind(persistence, instances);
 
     auto const messages = persistence.load();
 
@@ -575,9 +572,6 @@ TEST(ProjectPersistence, LoadedReplacementConfiguresAfterDefinitionsArrive)
     auto graph_connections_scope =
         iv::project_graph_graph_connections_bridge::bind(
             project_graph, graph_connections);
-    auto persistence_instances_scope =
-        iv::project_persistence_node_instances_bridge::bind(
-            persistence, instances);
     persisted_successor_configure_calls = 0;
 
     (void)persistence.load();
@@ -611,12 +605,15 @@ TEST(ProjectPersistence, SaveCollectsInstanceMetadataWithoutExecutionState)
     auto startup = startup_for(workspace);
     iv::ProjectPersistence persistence(workspace, startup);
     iv::NodeInstances instances;
-    auto instances_scope =
-        iv::project_persistence_node_instances_bridge::bind(persistence, instances);
+    iv::GraphConnections connections;
+    iv::ProjectGraph graph;
+    auto persistence_graph_scope = iv::project_persistence_project_graph_bridge::bind(persistence, graph);
+    auto graph_instances_scope = iv::project_graph_node_instances_bridge::bind(graph, instances);
+    auto graph_connections_scope = iv::project_graph_graph_connections_bridge::bind(graph, connections);
 
     (void)iv::test::NodeInstancesDriver(instances).create(
         "iv.test.persisted",
-        workspace / "modules" / "persisted",
+        workspace / "packages" / "persisted",
         "instance:stable",
         "Persisted",
         "{.cutoff = 1200}");
@@ -628,7 +625,7 @@ TEST(ProjectPersistence, SaveCollectsInstanceMetadataWithoutExecutionState)
     EXPECT_EQ(commands[0]["command"], "nodeInstances.upsert");
     EXPECT_EQ(commands[0]["args"]["instance_id"], "instance:stable");
     EXPECT_EQ(commands[0]["args"]["definition_id"], "iv.test.persisted");
-    EXPECT_EQ(commands[0]["args"]["package_root"], "modules/persisted");
+    EXPECT_EQ(commands[0]["args"]["package_root"], "packages/persisted");
     EXPECT_EQ(commands[0]["args"]["display_name"], "Persisted");
     EXPECT_EQ(commands[0]["args"]["configuration_source"], "{.cutoff = 1200}");
     EXPECT_EQ(commands[0]["args"].size(), 5u);
@@ -639,9 +636,11 @@ TEST(ProjectPersistence, SaveCollectsDanglingStructuredGraphConnections)
     auto const workspace = fresh_workspace("project_persistence_connection_save");
     iv::ProjectPersistence persistence(workspace, startup_for(workspace));
     iv::GraphConnections connections;
-    auto connections_scope =
-        iv::project_persistence_graph_connections_bridge::bind(
-            persistence, connections);
+    iv::NodeInstances instances;
+    iv::ProjectGraph graph;
+    auto persistence_graph_scope = iv::project_persistence_project_graph_bridge::bind(persistence, graph);
+    auto graph_instances_scope = iv::project_graph_node_instances_bridge::bind(graph, instances);
+    auto graph_connections_scope = iv::project_graph_graph_connections_bridge::bind(graph, connections);
 
     iv::GraphBuilder root;
     std::unordered_map<std::string, iv::NodeInstancePlacement> placements;
@@ -687,6 +686,90 @@ TEST(ProjectPersistence, SaveWithNoContributorsWritesEmptyProjectFile)
     in_event_source([&] { return persistence.save(); });
 
     EXPECT_TRUE(parse_project_file(workspace / "iv_project.jsonl").empty());
+}
+
+TEST(ProjectPersistence, LanePresentationReplaysAndFollowsNodeHistory)
+{
+    auto const workspace = fresh_workspace("project_persistence_lane_presentation");
+    auto const project_file = workspace / "iv_project.jsonl";
+    write_text(project_file,
+        R"({"command":"nodeInstances.upsert","args":{"instance_id":"curve","definition_id":"iv.test.persistence.original"}})" "\n"
+        R"({"command":"projectPresentation.setLaneOrder","args":{"order":[{"instance_id":"curve","path":[]}]}})" "\n"
+        R"({"command":"projectPresentation.setLaneView","args":{"address":{"instance_id":"curve","path":[]},"presentation_id":"curve","state":{"pan":3}}})" "\n"
+        R"({"command":"projectPresentation.setTimelineSnapMemory","args":{"memory":{"beats":[120,4,[2]]}}})" "\n");
+    iv::ProjectPersistence persistence(workspace, startup_for(workspace));
+    iv::NodeInstances instances;
+    iv::GraphConnections graph_connections;
+    iv::ProjectGraph project_graph;
+    auto persistence_graph_scope = iv::project_persistence_project_graph_bridge::bind(persistence, project_graph);
+    auto graph_instances_scope = iv::project_graph_node_instances_bridge::bind(project_graph, instances);
+    auto graph_connections_scope = iv::project_graph_graph_connections_bridge::bind(project_graph, graph_connections);
+    publish_definitions_snapshot(project_graph, {.snapshot = persisted_replacement_definitions()});
+    EXPECT_TRUE(persistence.load().empty());
+
+    auto save_commands = [&] {
+        in_event_source([&] { persistence.save(); });
+        return parse_project_file(project_file);
+    };
+    auto edit = [&](iv::ProjectEditBatch const& batch) {
+        iv::ProjectAckBuilder builder;
+        in_event_source([&] { project_graph.handle_project_apply_edit(batch, builder); });
+        builder.build();
+    };
+    auto undo = [&] {
+        iv::ProjectAckBuilder builder;
+        in_event_source([&] { project_graph.handle_project_undo(builder); });
+        builder.build();
+    };
+    auto const original = save_commands();
+    ASSERT_EQ(original.size(), 4u);
+    EXPECT_EQ(original[1]["args"]["order"][0]["instance_id"], "curve");
+    EXPECT_EQ(original[2]["args"]["state"]["pan"], 3);
+    EXPECT_EQ(original[3]["args"]["memory"]["beats"][0], 120);
+
+    auto const generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    iv::ProjectLaneView const view{{{.instance_id = "curve"}, "curve"}, {{"pan", 8}}};
+    iv::ProjectEditBatch adjust;
+    adjust.lane_views.push_back({view.id, view});
+    edit(adjust);
+    EXPECT_EQ(project_graph.current_generation(), generation);
+    EXPECT_THROW(undo(), std::runtime_error);
+
+    iv::ProjectEditBatch duplicate;
+    duplicate.instance_duplicates.push_back({"curve", "copy"});
+    duplicate.lane_order = std::vector<iv::NodeAddress>{{.instance_id = "curve"}, {.instance_id = "copy"}};
+    edit(duplicate);
+    auto const copied = save_commands();
+    ASSERT_EQ(copied.size(), 6u);
+    EXPECT_EQ(copied[2]["args"]["order"][1]["instance_id"], "copy");
+    EXPECT_EQ(copied[3]["args"]["address"]["instance_id"], "copy");
+    EXPECT_EQ(copied[3]["args"]["state"]["pan"], 8);
+
+    // A later pan on the copy does not prevent undo from removing the copy.
+    auto changed = view;
+    changed.id.address.instance_id = "copy";
+    changed.state["pan"] = 5;
+    adjust.lane_views = {{changed.id, changed}};
+    edit(adjust);
+    undo();
+    auto const undone = save_commands();
+    ASSERT_EQ(undone.size(), 4u);
+    EXPECT_EQ(undone[1]["args"]["order"].size(), 1u);
+    EXPECT_EQ(undone[2]["args"]["state"]["pan"], 8);
+}
+
+TEST(ProjectPersistence, SavingUnchangedContentsKeepsExistingFile)
+{
+    auto const workspace = fresh_workspace("project_persistence_clean_save");
+    auto const project_file = workspace / "iv_project.jsonl";
+    write_text(project_file, "");
+    auto const recorded_time = std::filesystem::last_write_time(project_file) - std::chrono::hours(1);
+    std::filesystem::last_write_time(project_file, recorded_time);
+    auto const timestamp = std::filesystem::last_write_time(project_file);
+    iv::ProjectPersistence persistence(workspace, startup_for(workspace));
+    in_event_source([&] { persistence.save(); });
+    EXPECT_EQ(std::filesystem::last_write_time(project_file), timestamp);
 }
 
 TEST(ProjectPersistence, CollectStateFailureDoesNotReplaceExistingProjectFile)

@@ -3,7 +3,6 @@
 #include <intravenous/graph/builder/state.h>
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/runtime/project_node_path_resolver.h>
-#include <intravenous/runtime/project_persistence_builder.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -575,12 +574,6 @@ std::vector<ProjectConnection> GraphConnections::desired_connections() const
         return project_connection_id(connection);
     });
     return result;
-}
-
-void GraphConnections::handle_project_persistence_collect_state(
-    ProjectPersistenceBuilder& builder) const
-{
-    builder.add_graph_connections(desired_connections());
 }
 
 void GraphConnectionsInteraction::run(

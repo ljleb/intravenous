@@ -1,13 +1,12 @@
 # Run Intravenous for development
 
-From the repository root, enter the Nix development shell and build the server.
-Install the client build dependencies into the checkout once, or again when its
-lockfile changes.
+From the repository root, configure the server build in the Nix development
+shell. Install the client build dependencies once, or again when its lockfile
+changes.
 
 ```sh
 nix develop
 cmake -S . -B build-release -G Ninja -DJUCE_DIR="$JUCE_DIR" -DCMAKE_BUILD_TYPE=Release
-cmake --build build-release --target intravenous
 npm --prefix vscode/client ci
 ```
 
@@ -19,21 +18,24 @@ nix develop --command ./scripts/run_dev.sh projects/simple_sine
 ```
 
 Inside the development shell, run `./scripts/run_dev.sh projects/simple_sine`
-directly. Pass a build directory as the second argument to use another completed
-server build. You can also use the **Run Intravenous Development** editor task.
+directly. Pass a configured build directory as the second argument to use
+another build. You can also use the **Run Intravenous Development** editor task.
 The launcher uses `codium` from your PATH. Use `INTRAVENOUS_DEV_CODIUM` to
 select a specific VSCodium executable.
 
-The launcher builds the extension and uses your completed server build.
+The launcher runs the incremental `intravenous` build before it builds the
+extension. A failed build or a server executable older than its staged SDK,
+built-in sources, or builder library stops the launch. To build the server on
+its own, run `cmake --build build-release --target intravenous`.
 Nix prepares the DSL precompiled header and built-in packages for that server
 and stores them with its SDK and tools. The extension uses the matching server
 from its bundle. Client-only changes can reuse the prepared server files.
 Close the development window and run the launcher again to pick up a new revision.
 
 VSCodium loads the extension in development mode and uses your regular editor
-profile. It can open the dev window in the running editor. Project files such as
-`.intravenous/graph-layout.json` and writable project package caches stay in
-the project.
+profile. It can open the dev window in the running editor. Shared lane state
+stays in `iv_project.jsonl`. Writable package caches stay in the project's
+build directory.
 
 For cursor wrapping and cursor return on Wayland, start VSCodium with XWayland
 if your desktop provides an X11 display. An existing VSCodium process keeps its

@@ -146,7 +146,7 @@ TEST(PackageDefinitions, SuccessfulRevisionBecomesAcceptedAndPublicationProjecti
 {
     auto const project = iv::test_support::fresh_module_fixture_workspace(
         "package_definitions_success");
-    auto const root = project / "modules" / "voice";
+    auto const root = project / "packages" / "voice";
     std::filesystem::create_directories(root);
     auto const package = declaration("iv.test.voice", root);
 
@@ -216,7 +216,7 @@ TEST(PackageDefinitions, FailedRebuildPreservesAcceptedSnapshotAndPublishedProje
 {
     auto const project = iv::test_support::fresh_module_fixture_workspace(
         "package_definitions_failure_preserves");
-    auto const root = project / "modules" / "voice";
+    auto const root = project / "packages" / "voice";
     std::filesystem::create_directories(root);
     auto const package = declaration("iv.test.voice", root);
 
@@ -254,7 +254,7 @@ TEST(PackageDefinitions, RemovingPackagePublishesNewEmptySnapshotAndDeletesCatal
 {
     auto const project = iv::test_support::fresh_module_fixture_workspace(
         "package_definitions_remove");
-    auto const root = project / "modules" / "voice";
+    auto const root = project / "packages" / "voice";
     std::filesystem::create_directories(root);
     auto const package = declaration("iv.test.voice", root);
 
@@ -287,7 +287,7 @@ TEST(PackageDefinitions, PublicationFailureDoesNotRollBackAcceptedPackageRevisio
 {
     auto const project = iv::test_support::fresh_module_fixture_workspace(
         "package_definitions_publication_failure");
-    auto const root = project / "modules" / "voice";
+    auto const root = project / "packages" / "voice";
     std::filesystem::create_directories(root);
     auto const package = declaration("iv.test.voice", root);
 
@@ -332,7 +332,7 @@ TEST(PackageDefinitions, AcceptedSnapshotsRemainImmutableAcrossLaterSuccessfulRe
 {
     auto const project = iv::test_support::fresh_module_fixture_workspace(
         "package_definitions_snapshot_immutability");
-    auto const root = project / "modules" / "voice";
+    auto const root = project / "packages" / "voice";
     std::filesystem::create_directories(root);
     auto const package = declaration("iv.test.voice", root);
 
@@ -366,7 +366,7 @@ TEST(PackageDefinitions, ProjectPackageCreationRejectsTraversalAndLeavesNoArtifa
             static_cast<void>(harness.packages.create_project_package(bad_name)),
             std::runtime_error);
     }
-    EXPECT_FALSE(std::filesystem::exists(project / "modules" / "escape"));
+    EXPECT_FALSE(std::filesystem::exists(project / "packages" / "escape"));
 }
 
 TEST(PackageDefinitions, ProjectPackageCreationWritesSelfConsistentSkeletonAndRejectsOverwrite)
@@ -377,7 +377,7 @@ TEST(PackageDefinitions, ProjectPackageCreationWritesSelfConsistentSkeletonAndRe
 
     auto const created = harness.packages.create_project_package("_voice-bank");
     auto const expected_root = std::filesystem::weakly_canonical(
-        project / "modules" / "_voice-bank");
+        project / "packages" / "_voice-bank");
     EXPECT_EQ(created.package_root, expected_root);
     EXPECT_EQ(created.package_id, expected_root.generic_string());
     EXPECT_EQ(created.provenance, iv::PackageProvenance::project_local);

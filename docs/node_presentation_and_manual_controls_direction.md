@@ -1124,7 +1124,8 @@ lane interface. They do not claim that the current client implements them._
   A lane cannot leave its parent through either action. Selected lanes already
   stacked against the relevant boundary stay there. Do not wrap them around or
   swap their order.
-  Save the displayed order in `.intravenous/graph-layout.json`.
+  Save the displayed order in `iv_project.jsonl` as an undoable project edit.
+  [Previous storage](./historical/project_presentation_before_jsonl_2026-11-19.md).
 - Delete removes selected lanes through an undoable project edit. A focused
   lane editor that manages a collection owns Delete for its own items, including
   when its selection is empty. Native text editing owns Delete within its

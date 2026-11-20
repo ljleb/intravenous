@@ -417,6 +417,34 @@ test("inverted gain numeric entry and default reset edit magnitude and preserve 
     assert.equal(gestures.state(gain)?.value, -1);
 });
 
+test("applying an exact value retains a hovered manual override through one gesture", () => {
+    const actions: Array<{ action: string; value?: number }> = [];
+    const gestures = new ManualControlGestures((action) => actions.push(action), () => "paste", () => {});
+    const disabled = { ...descriptor, enabled: false };
+    gestures.hover(control, disabled);
+    gestures.applyValue(control, disabled, descriptor.value);
+    assert.equal(actions.length, 1);
+    gestures.applyValue(control, disabled, 123.45678901234567);
+    assert.deepEqual(actions.map(({ action, value }) => [action, value]), [
+        ["hover", undefined], ["begin", 440], ["update", 123.45678901234567], ["end", 123.45678901234567],
+    ]);
+    assert.equal(gestures.activity(control), "retained");
+    gestures.unhover(control);
+    assert.equal(gestures.activity(control), "idle");
+    assert.equal(actions.at(-1)?.action, "hover");
+});
+
+test("applying an exact signed gain uses one gesture for both magnitude and polarity", () => {
+    const gain: ManualControlId = { node: control.node, outputName: "value" };
+    const actions: Array<{ action: string; value?: number }> = [];
+    const gestures = new ManualControlGestures((action) => actions.push(action), () => "paste", () => {});
+    gestures.applyValue(gain, { ...descriptor, value: 1 }, -.125);
+    assert.deepEqual(actions.map(({ action, value }) => [action, value]), [
+        ["begin", 1], ["update", -.125], ["end", -.125],
+    ]);
+    assert.equal(gestures.outputInverted(gain, gestures.state(gain)!.value), true);
+});
+
 test("numeric entry commits one exact gesture and cancellation sends no edit", () => {
     const actions: unknown[] = [];
     const gestures = new ManualControlGestures((action) => actions.push(action), () => "entry", () => {});

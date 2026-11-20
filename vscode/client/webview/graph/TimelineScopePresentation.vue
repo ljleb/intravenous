@@ -234,7 +234,6 @@ const middlePointerLock = new KnobPointerLock<Point>({
     const drag = middleDrag.value;
     if (drag && !root.value?.hasPointerCapture(drag.pointerId)) endMiddleDrag();
 });
-let middleDragMoved = false;
 let observer: ResizeObserver | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let scrollRequest = 0;
@@ -255,7 +254,6 @@ async function applyScroll() {
 function scrolled() {
     if (!root.value) return;
     viewport.value.scrollTop = root.value.scrollTop;
-    scheduleSave();
 }
 function zoomAnchor(action: TimelineZoomAction, x: number, y: number, unwrapped = false): number {
     if (action === "horizontalZoom") {
@@ -293,7 +291,6 @@ function wheel(event: WheelEvent) {
         }, delta, { horizontal, vertical });
         if (vertical) void applyScroll();
     }
-    scheduleSave();
 }
 function preventMiddleDefault(event: MouseEvent) {
     if (event.button === 1) event.preventDefault();
@@ -332,7 +329,6 @@ function beginMiddleDrag(event: PointerEvent) {
         x: zoomAnchor("horizontalZoom", cursor.x, cursor.y),
         y: zoomAnchor("verticalZoom", cursor.x, cursor.y),
     }, cursor) } : { ...pointer, action };
-    middleDragMoved = false;
     middlePointerLockError = "";
     const cursorAnchor = cursorWarpAnchor(event, window.devicePixelRatio);
     middleCursorAnchor = cursorAnchor ? { ...cursorAnchor, moved: false } : null;
@@ -451,10 +447,8 @@ function moveLockedMiddleDrag(id: number, delta: Point) {
 function applyMiddleDrag(moved: TimelineViewport) {
     const current = viewport.value;
     if (moved === current) return;
-    middleDragMoved = true;
     viewport.value = moved;
     if (moved.scrollTop !== current.scrollTop || moved.laneHeight !== current.laneHeight) void applyScroll();
-    scheduleSave();
 }
 function cancelMiddleClick() { middlePress = lastMiddleClick = null; }
 function completeMiddleClick() {
@@ -496,7 +490,7 @@ function finishMiddleDrag(pointerId: number) {
     laneValueGesture = null;
     laneHorizontalZoom = null;
     if (root.value?.hasPointerCapture(pointerId)) root.value.releasePointerCapture(pointerId);
-    if (!middleDragMoved && !laneChanged) return;
+    if (!laneChanged) return;
     clearTimeout(saveTimer);
     saveTimer = undefined;
     save();

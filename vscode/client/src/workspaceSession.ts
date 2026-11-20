@@ -2,7 +2,9 @@ import type { ObservationInterest } from "./observations";
 import type { ObservationDelivery } from "./observationDelivery";
 import { ManualControlInteractions, resolveManualControl } from "./manualControls";
 import { ControlCompilationProgress, type ControlCompileStatus } from "./controlCompilation";
-import type { GraphLaneCopy, NodeAddress } from "./graphScope";
+import { addressFromKey, addressKey, laneViewFromKey, type GraphLaneCopy, type GraphScope, type NodeAddress } from "./graphScope";
+import type { GraphPresentationPatch } from "./graphEditorProtocol";
+import { insertLanes, mergeLaneOrder, orderLanes } from "./laneSelection";
 import { validateNodeEventTarget, type SerializedNodeEvent } from "./nodeEvents";
 import { NodeEventInteractions } from "./nodeEventInteractions";
 import type { PlaybackDrag, PlaybackSnapshot } from "./playback";
@@ -40,8 +42,23 @@ import { WorkspaceNotificationRouter } from "./workspaceNotifications";
 import { WorkspaceRpc } from "./workspaceRpc";
 import { audioOutputDiagnostic } from "./audioOutputDiagnostic";
 import { statusBarText } from "./statusBarText";
-import type { GraphLayoutStore } from "./graphLayoutStore";
-import { isGeneratedSnapConnection, isTimelineSnapInstance, isTimelineSnapNode, planTimelineSnapMode, type TimelineGridMode } from "./timelineSnap";
+import { isGeneratedSnapConnection, isTimelineSnapInstance, isTimelineSnapNode, planTimelineSnapMode, readTimelineSnapMemory,
+    type ProjectEditOperation, type TimelineGridMode } from "./timelineSnap";
+
+function laneOrderOperation(order: readonly string[]): ProjectEditOperation {
+    return { method: "projectPresentation.setLaneOrder", params: { order: order.map(addressFromKey) } };
+}
+
+function orderWithInsertedLanes(scope: GraphScope, insertions: readonly { instanceId: string; afterInstanceId?: string }[]) {
+    const saved = scope.presentation?.laneOrder.map(addressKey) ?? [];
+    const visible = orderLanes(scope.nodes.filter((node) => !isTimelineSnapNode(node)), saved);
+    const order = insertLanes(visible.map(({ address }) => addressKey(address)),
+        insertions.map(({ instanceId, afterInstanceId }) => ({
+            key: addressKey({ instanceId }),
+            after: afterInstanceId === undefined ? undefined : addressKey({ instanceId: afterInstanceId }),
+        })));
+    return laneOrderOperation(mergeLaneOrder(saved, order));
+}
 
 type LiveGraphProviderLike = {
     setSessionStatus(status: LiveGraphSessionStatus): void;
@@ -149,16 +166,34 @@ export class WorkspaceSession {
     }
 
     private timelineSnapChange: Promise<void> = Promise.resolve();
+    private presentationChanges: Promise<unknown> = Promise.resolve();
 
-    setTimelineSnapMode(mode: TimelineGridMode, store: GraphLayoutStore): Promise<void> {
+    saveGraphPresentation(patch: GraphPresentationPatch): Promise<{ sessionRevision: number }> {
+        const rpc = this.rpc;
+        const change = this.presentationChanges.catch(() => {}).then(async () => {
+            if (!rpc || rpc !== this.rpc || this.graphSessionStatus !== "running") throw new Error("The server is unavailable");
+            const operations: ProjectEditOperation[] = Object.entries(patch.presentationStates)
+                .map(([key, state]) => ({ method: "projectPresentation.setLaneView", params: laneViewFromKey(key, state) }));
+            if (patch.laneOrder) operations.push(laneOrderOperation(patch.laneOrder));
+            return rpc.applyProjectEdit(operations, patch.laneOrder ? undefined : null);
+        });
+        this.presentationChanges = change;
+        return change;
+    }
+
+    setTimelineSnapMode(mode: TimelineGridMode): Promise<void> {
         const change = this.timelineSnapChange.catch(() => {}).then(async () => {
+            await this.presentationChanges.catch(() => {});
             if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
             const rpc = this.rpc;
             const revision = this.lastSessionRevision;
             const scope = await rpc.getGraphScope();
-            const { operations } = await store.prepareTimelineSnap((memory) => planTimelineSnapMode(scope, mode, memory, crypto.randomUUID));
+            const memory = readTimelineSnapMemory(scope.presentation?.timelineSnapMemory);
+            const { operations, memory: nextMemory } = planTimelineSnapMode(scope, mode, memory, crypto.randomUUID);
             if (rpc !== this.rpc) throw new Error("The session changed before editing the snap mode");
-            if (operations.length) await rpc.applyProjectEdit(operations, scope.sessionRevision ?? revision);
+            if (operations.length) await rpc.applyProjectEdit([...operations,
+                { method: "projectPresentation.setTimelineSnapMemory", params: { memory: nextMemory } },
+            ], scope.sessionRevision ?? revision);
         });
         this.timelineSnapChange = change;
         return change;
@@ -242,9 +277,17 @@ export class WorkspaceSession {
         return this.rpc.searchNodeDefinitions(source, cursor);
     }
 
-    async createGraphNode(definitionId: string, displayName: string, configurationSource: string): Promise<string> {
+    async createGraphNode(definitionId: string, displayName: string, configurationSource: string, afterInstanceId?: string): Promise<string> {
+        await this.presentationChanges.catch(() => {});
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
-        const { instanceId } = await this.rpc.createNodeInstance(definitionId, displayName.trim() || null, configurationSource);
+        const rpc = this.rpc;
+        const scope = await rpc.getGraphScope();
+        if (rpc !== this.rpc) throw new Error("The session changed before creating the lane");
+        const instanceId = crypto.randomUUID();
+        await rpc.applyProjectEdit([
+            { method: "nodeInstances.create", params: { instanceId, definitionId, displayName: displayName.trim() || null, configurationSource } },
+            orderWithInsertedLanes(scope, [{ instanceId, afterInstanceId }]),
+        ], scope.sessionRevision);
         return instanceId;
     }
 
@@ -272,6 +315,7 @@ export class WorkspaceSession {
     }
 
     async deleteGraphNodes(instanceIds: string[]): Promise<void> {
+        await this.presentationChanges.catch(() => {});
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         const rpc = this.rpc;
         const revision = this.lastSessionRevision;
@@ -285,6 +329,7 @@ export class WorkspaceSession {
 
     async duplicateGraphNodes(copies: readonly GraphLaneCopy[]): Promise<void> {
         if (!copies.length) return;
+        await this.presentationChanges.catch(() => {});
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         const rpc = this.rpc;
         await this.manualControls.settled();
@@ -295,10 +340,14 @@ export class WorkspaceSession {
         if (!scope.editable || copies.some(({ sourceInstanceId }) => !visible.has(sourceInstanceId))) {
             throw new Error("A selected node is no longer available");
         }
-        await rpc.applyProjectEdit([{ method: "nodeInstances.duplicate", params: { copies } }], scope.sessionRevision ?? revision);
+        await rpc.applyProjectEdit([
+            { method: "nodeInstances.duplicate", params: { copies } },
+            orderWithInsertedLanes(scope, copies.map(({ sourceInstanceId, instanceId }) => ({ instanceId, afterInstanceId: sourceInstanceId }))),
+        ], scope.sessionRevision ?? revision);
     }
 
     async projectHistory(direction: "undo" | "redo"): Promise<void> {
+        await this.presentationChanges.catch(() => {});
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         await this.manualControls.settled();
         await this.rpc.projectHistory(direction);
@@ -1267,11 +1316,15 @@ export class WorkspaceSession {
         this.provider.setSelectedInstanceId(this.selectedInstanceId);
     }
 
-    async saveProject(): Promise<void> {
+    async saveProject(autosaveOnly = false): Promise<void> {
+        if (autosaveOnly && this.graphSessionStatus !== "running") return;
         if (!(await this.ensureReady()) || !this.rpc) {
             return;
         }
-        await this.rpc.saveProject();
+        const rpc = this.rpc;
+        await this.presentationChanges.catch(() => {});
+        await this.manualControls.settled();
+        if (rpc === this.rpc) await rpc.saveProject(autosaveOnly);
     }
 
     async enableProjectAutosave(): Promise<void> {

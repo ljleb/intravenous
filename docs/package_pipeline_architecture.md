@@ -74,6 +74,9 @@ one package to be discovered or compiled twice. Definition-ID
 collisions across distinct packages remain an explicit namespace/publication
 matter, not an implicit source-directory precedence rule.
 
+Use `packages/<name>/` for project-local package source and assets. **Create
+Package** writes a new package to this directory.
+
 ### Logical package namespaces and static selection
 
 Each discovered `iv_package.json` declares a logical `namespace`, its source

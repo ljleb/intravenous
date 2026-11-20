@@ -567,33 +567,28 @@ struct StorageEventConsumer {
 void storage_voice(iv::GraphBuilder& graph)
 {
     auto drive = graph.input<"drive">(0.25f);
-    auto samples = graph.node<"iv.bench.storage_sample_source">(
+    auto samples = graph.node<StorageSampleSource>(
         std::size_t{512});
-    auto converted_samples = graph.node<"iv.bench.storage_sample_source">(
+    auto converted_samples = graph.node<StorageSampleSource>(
         std::size_t{64});
-    auto history = graph.node<"iv.bench.storage_history_consumer">();
-    auto stereo = graph.node<"iv.bench.storage_stereo_consumer">();
+    auto history = graph.node<StorageHistoryConsumer>();
+    auto stereo = graph.node<StorageStereoConsumer>();
     samples(drive);
     converted_samples(drive);
     history(samples);
     stereo(converted_samples);
 
-    auto events_a = graph.node<"iv.bench.storage_event_source">();
-    auto events_b = graph.node<"iv.bench.storage_event_source">();
+    auto events_a = graph.node<StorageEventSource>();
+    auto events_b = graph.node<StorageEventSource>();
     std::array event_ports{events_a.event_port(), events_b.event_port()};
     auto merged = graph.make_event_port(event_ports);
-    auto event_sink_a = graph.node<"iv.bench.storage_event_consumer">();
-    auto event_sink_b = graph.node<"iv.bench.storage_event_consumer">();
+    auto event_sink_a = graph.node<StorageEventConsumer>();
+    auto event_sink_b = graph.node<StorageEventConsumer>();
     event_sink_a.connect_event_input(0, merged);
     event_sink_b.connect_event_input(0, merged);
     graph.outputs(samples);
 }
 
-IV_NODE("iv.bench.storage_sample_source", StorageSampleSource, "Storage Sample Source");
-IV_NODE("iv.bench.storage_history_consumer", StorageHistoryConsumer, "Storage History Consumer");
-IV_NODE("iv.bench.storage_stereo_consumer", StorageStereoConsumer, "Storage Stereo Consumer");
-IV_NODE("iv.bench.storage_event_source", StorageEventSource, "Storage Event Source");
-IV_NODE("iv.bench.storage_event_consumer", StorageEventConsumer, "Storage Event Consumer");
 IV_MODULE("iv.bench.storage_voice", storage_voice, "Storage Voice");
 )";
 

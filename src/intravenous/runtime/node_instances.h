@@ -27,7 +27,6 @@
 #include <vector>
 
 namespace iv {
-class ProjectPersistenceBuilder;
 class SocketRpcNodeInstancesResultBuilder;
 struct GetNodeInstancesRequest;
 
@@ -412,7 +411,6 @@ public:
     void handle_project_graph_transaction(NodeInstancesProjectGraphRequest& request);
     void handle_project_graph_interaction(NodeInstancesInteractionRequest& request);
     void handle_project_graph_read(NodeInstancesProjectGraphRead& read) const;
-    void handle_project_persistence_collect_state(ProjectPersistenceBuilder& builder) const;
     void handle_socket_rpc_get_node_instances(
         GetNodeInstancesRequest const& request,
         SocketRpcNodeInstancesResultBuilder& builder) const;
