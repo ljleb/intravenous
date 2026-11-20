@@ -215,9 +215,9 @@ test("middle double-click modifiers reset the selected axis at the click anchor"
     assert.equal(isMiddleDoubleClick(first, { ...first, at: 500 }), false);
     assert.equal(isMiddleDoubleClick(first, { ...first, x: 120 }), false);
     assert.equal(isMiddleDoubleClick(first, { ...first, mode: "horizontalZoom" }), false);
-    const view = { beginSeconds: 2, secondsPerPixel: .02, laneHeight: 120, scrollTop: 240 };
+    const view = { beginSeconds: 2, secondsPerPixel: .02, laneHeight: 160, scrollTop: 240 };
     assert.deepEqual(resetTimelineZoom(view, "horizontalZoom", 100), { ...view, beginSeconds: 3, secondsPerPixel: .01 });
-    assert.deepEqual(resetTimelineZoom(view, "verticalZoom", 120), { ...view, laneHeight: 240, scrollTop: 600 });
+    assert.deepEqual(resetTimelineZoom(view, "verticalZoom", 120), { ...view, laneHeight: 120, scrollTop: 150 });
 });
 
 test("saved timeline state normalizes invalid values and does not depend on viewport size", () => {

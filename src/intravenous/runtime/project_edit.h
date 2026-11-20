@@ -56,7 +56,7 @@ struct ProjectEditBatch {
     std::optional<ProjectToolchainSettings> toolchain{};
     std::vector<ProjectRecordEdit<ProjectLaneView, ProjectLaneViewId>> lane_views{};
     std::optional<std::vector<NodeAddress>> lane_order{};
-    std::optional<nlohmann::json> timeline_snap_memory{};
+    std::optional<std::string> timeline_snap_memory_json{};
 };
 
 // Temporary owner-provided snapshots, never a second canonical project model.
@@ -79,10 +79,10 @@ struct ProjectEditEffect {
     std::optional<ProjectRecordChange<ProjectToolchainSettings>> toolchain{};
     std::vector<ProjectRecordChange<ProjectLaneView>> lane_views{};
     std::optional<ProjectRecordChange<std::vector<NodeAddress>>> lane_order{};
-    std::optional<ProjectRecordChange<nlohmann::json>> timeline_snap_memory{};
+    std::optional<ProjectRecordChange<std::string>> timeline_snap_memory_json{};
     [[nodiscard]] bool empty() const {
         return instances.empty() && replacements.empty() && connections.empty() && manual_controls.empty()
-            && !audio_devices && !toolchain && lane_views.empty() && !lane_order && !timeline_snap_memory;
+            && !audio_devices && !toolchain && lane_views.empty() && !lane_order && !timeline_snap_memory_json;
     }
 };
 
@@ -105,7 +105,7 @@ inline bool project_effects_overlap(ProjectEditEffect const& left, ProjectEditEf
         || project_changes_overlap(left.connections, right.connections)
         || project_changes_overlap(left.manual_controls, right.manual_controls)
         || project_changes_overlap(left.lane_views, right.lane_views)
-        || (left.lane_order && right.lane_order) || (left.timeline_snap_memory && right.timeline_snap_memory)
+        || (left.lane_order && right.lane_order) || (left.timeline_snap_memory_json && right.timeline_snap_memory_json)
         || (left.audio_devices && right.audio_devices) || (left.toolchain && right.toolchain);
 }
 
@@ -140,7 +140,7 @@ inline void merge_project_effect(ProjectEditEffect& into, ProjectEditEffect effe
     merge_setting(into.audio_devices, std::move(effect.audio_devices));
     merge_setting(into.toolchain, std::move(effect.toolchain));
     merge_setting(into.lane_order, std::move(effect.lane_order));
-    merge_setting(into.timeline_snap_memory, std::move(effect.timeline_snap_memory));
+    merge_setting(into.timeline_snap_memory_json, std::move(effect.timeline_snap_memory_json));
 }
 
 struct ProjectRecordKeyHash {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import type { BeatRulerLabel } from "../../src/beatGrid";
 import { rulerMarkerPoints, timelineSampleFraction, timelineTicks } from "./geometry";
 import RulerGraduations from "./RulerGraduations.vue";
 import TimelinePlayhead from "./TimelinePlayhead.vue";
@@ -10,6 +11,7 @@ import { usePlayheadSeek, type SeekBeatReader } from "./usePlayheadSeek";
 // A presentation can use a time ruler without being a graph or a lane.
 // It makes no assumption about the node's number or kinds of output ports.
 const props = defineProps<{ window: PresentationTimeWindow; marks?: readonly TimelineMark[];
+    beatLabels?: readonly BeatRulerLabel[];
     beatStrengths?: ReadonlyMap<number, number>; playback?: boolean; openBeatReader?: () => SeekBeatReader | undefined }>();
 const { state, requestedPosition, dragPreview } = usePlayback();
 const sampleRate = computed(() => state.value?.sampleRate ?? props.window.sampleRate ?? 48000);
@@ -52,6 +54,8 @@ onBeforeUnmount(() => observer?.disconnect());
                     :x1="mark.x" :x2="mark.x" :y1="mark.depth === 0 ? '33%' : mark.depth === 1 ? '56%' : mark.depth === 2 ? '75%' : '83%'"
                     y2="100%" vector-effect="non-scaling-stroke" />
             </TransitionGroup>
+            <text v-for="label in showBeats ? beatLabels : []" :key="label.text" class="beat-label"
+                :x="label.x + 4" y="11">{{ label.text }}</text>
 
             <TimelinePlayhead v-if="playback" :window="window" ruler />
             <line v-if="requestedMarker >= 0 && requestedMarker <= width" class="requested-marker"
@@ -69,6 +73,7 @@ onBeforeUnmount(() => observer?.disconnect());
 .seekable { cursor: ew-resize; touch-action: none; user-select: none; }
 .ruler-playheads { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .ruler-playheads { --iv-grid-max-opacity: .84; }
+.beat-label { fill: var(--vscode-descriptionForeground); font: 10px monospace; }
 .requested-marker { stroke: var(--vscode-focusBorder, #569cd6); stroke-dasharray: 3 3; }
 .start-marker { fill: var(--iv-background-playhead); pointer-events: auto; }
 </style>

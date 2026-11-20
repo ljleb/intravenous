@@ -729,7 +729,7 @@ TEST(ProjectPersistence, LanePresentationReplaysAndFollowsNodeHistory)
 
     auto const generation = project_graph.current_generation();
     ASSERT_TRUE(generation);
-    iv::ProjectLaneView const view{{{.instance_id = "curve"}, "curve"}, {{"pan", 8}}};
+    iv::ProjectLaneView const view{{{.instance_id = "curve"}, "curve"}, R"({"pan":8})"};
     iv::ProjectEditBatch adjust;
     adjust.lane_views.push_back({view.id, view});
     edit(adjust);
@@ -749,7 +749,7 @@ TEST(ProjectPersistence, LanePresentationReplaysAndFollowsNodeHistory)
     // A later pan on the copy does not prevent undo from removing the copy.
     auto changed = view;
     changed.id.address.instance_id = "copy";
-    changed.state["pan"] = 5;
+    changed.state_json = R"({"pan":5})";
     adjust.lane_views = {{changed.id, changed}};
     edit(adjust);
     undo();

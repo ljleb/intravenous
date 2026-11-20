@@ -1,6 +1,7 @@
 #include <intravenous/runtime/project_persistence_builder.h>
 
 #include <intravenous/runtime/project_connection_json.h>
+#include <intravenous/runtime/project_presentation_json.h>
 
 #include <algorithm>
 #include <ranges>
@@ -242,9 +243,9 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
     });
     for (auto& view : lane_views)
         commands.push_back({"projectPresentation.setLaneView", std::move(view)});
-    if (!presentation_.timeline_snap_memory.empty()) {
+    if (presentation_.timeline_snap_memory_json != "{}") {
         commands.push_back({"projectPresentation.setTimelineSnapMemory",
-            {{"memory", Json(presentation_.timeline_snap_memory)}}});
+            {{"memory", Json::parse(presentation_.timeline_snap_memory_json)}}});
     }
     return commands;
 }

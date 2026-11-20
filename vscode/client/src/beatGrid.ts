@@ -59,6 +59,30 @@ function floorDivide(value: bigint, divisor: bigint): bigint {
 }
 
 export type BeatGridTick = { x: number; depth: number; sample: bigint; bar?: bigint };
+export type BeatRulerLabel = { x: number; text: string };
+
+export function beatRulerLabels(grid: BeatGrid, marks: readonly { index: bigint; depth: number; x: number }[],
+    sampleRate: number, width: number): BeatRulerLabel[] {
+    const numerator = BigInt(sampleRate) * 60n * BigInt(bpmScale);
+    const beatsPerBar = BigInt(grid.beatsPerBar);
+    // Give bar numbers room before considering the individual beat labels.
+    const candidates = marks.filter(({ depth }) => depth < 2).sort((a, b) => a.depth - b.depth || a.x - b.x);
+    const labels: Array<BeatRulerLabel & { right: number }> = [];
+    for (const { index, depth, x } of candidates) {
+        const beat = floorDivide(index * grid.scaledBpm + numerator / 2n, numerator);
+        const bar = floorDivide(beat, beatsPerBar);
+        const beatInBar = beat - bar * beatsPerBar;
+        // A displayed observation can still be from the previous grid while
+        // the next one is pending. Only label matching samples and depths.
+        if ((depth === 0) !== (beatInBar === 0n)
+            || floorDivide(beat * numerator + grid.scaledBpm / 2n, grid.scaledBpm) !== index) continue;
+        const text = depth === 0 ? String(bar + 1n) : `${bar + 1n}.${beatInBar + 1n}`;
+        const right = x + text.length * 7 + 10;
+        if (x < 0 || right > width || labels.some((label) => x < label.right && label.x < right)) continue;
+        labels.push({ x, text, right });
+    }
+    return labels.sort((a, b) => a.x - b.x).map(({ x, text }) => ({ x, text }));
+}
 
 export function selectVisibleBeatMarks<Mark extends { x: number; depth: number }>(
     candidates: readonly Mark[], width: number, spacing = minimumBeatMarkSpacing,

@@ -1,6 +1,7 @@
 #include <intravenous/runtime/socket_rpc_response_builders.h>
 #include <intravenous/runtime/socket_rpc_json_serialization.h>
 #include <intravenous/runtime/project_connection_json.h>
+#include <intravenous/runtime/project_presentation_json.h>
 
 #include <intravenous/channel_type.h>
 #include <intravenous/graph/names.h>
@@ -555,7 +556,7 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
         {"editable", result->editable},
         {"timelineNodes", std::move(timelines)},
         {"presentation", {{"laneOrder", std::move(lane_order)}, {"laneViews", std::move(lane_views)},
-            {"timelineSnapMemory", Json(result->presentation.timeline_snap_memory)}}},
+            {"timelineSnapMemory", Json::parse(result->presentation.timeline_snap_memory_json)}}},
         {"nodes", std::move(nodes)},
         {"connections", std::move(connections)},
     });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { beatBpm, beatGridTicks, maximumBeatBpm, maximumBeatSubdivisionCount, readBeatGrid } from "../src/beatGrid";
+import { beatBpm, beatGridTicks, beatRulerLabels, maximumBeatBpm, maximumBeatSubdivisionCount, readBeatGrid } from "../src/beatGrid";
 import { BeatGridEditing } from "../src/beatGridEditing";
 import { SetBeatGrid } from "../src/generated/beatsEvents";
 import type { GraphScope } from "../src/graphScope";
@@ -26,6 +26,35 @@ test("the Beats preview keeps the same rounded sample positions after a pan", ()
     const marks = read(-8, 10);
     assert.deepEqual(marks, [[-7n, 2], [-4n, 1], [-2n, 2], [0n, 0], [2n, 2], [5n, 1], [7n, 2], [9n, 1]]);
     assert.deepEqual([...read(-8, -3), ...read(-3, 4), ...read(4, 10)], marks);
+});
+
+test("ruler labels use absolute bar and beat numbers at rounded sample positions", () => {
+    const grid = readBeatGrid([120, 3, [2]])!;
+    const marks = [
+        { index: -4n, depth: 1, x: 0 },
+        { index: -2n, depth: 2, x: 24 },
+        { index: 0n, depth: 0, x: 48 },
+        { index: 5n, depth: 1, x: 96 },
+        { index: 8n, depth: 1, x: 120 }, // Not on the accepted grid.
+        { index: 9n, depth: 1, x: 144 },
+        { index: 14n, depth: 0, x: 192 },
+    ];
+    assert.deepEqual(beatRulerLabels(grid, marks, 9, 250), [
+        { x: 0, text: "0.3" }, { x: 48, text: "1" }, { x: 96, text: "1.2" },
+        { x: 144, text: "1.3" }, { x: 192, text: "2" },
+    ]);
+});
+
+test("ruler labels keep bar numbers when the adjacent beats are crowded", () => {
+    const grid = readBeatGrid([120, 3, []])!;
+    const marks = [
+        { index: 0n, depth: 0, x: 0 },
+        { index: 24000n, depth: 1, x: 20 },
+        { index: 48000n, depth: 1, x: 40 },
+        { index: 72000n, depth: 0, x: 50 },
+        { index: 96000n, depth: 1, x: 80 },
+    ];
+    assert.deepEqual(beatRulerLabels(grid, marks, 48000, 105), [{ x: 0, text: "1" }, { x: 50, text: "2" }]);
 });
 
 test("zooming out hides dense subdivisions before beats and keeps the bar origin", () => {

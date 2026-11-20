@@ -2428,9 +2428,9 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
     if (historical) {
         if (historical->lane_order)
             edit.lane_order = project_history_setting(presentation_.lane_order, *historical->lane_order, *history_undo);
-        if (historical->timeline_snap_memory)
-            edit.timeline_snap_memory = project_history_setting(
-                presentation_.timeline_snap_memory, *historical->timeline_snap_memory, *history_undo);
+        if (historical->timeline_snap_memory_json)
+            edit.timeline_snap_memory_json = project_history_setting(
+                presentation_.timeline_snap_memory_json, *historical->timeline_snap_memory_json, *history_undo);
         for (auto const& change : historical->lane_views) {
             auto const& desired = *history_undo ? change.before : change.after;
             auto const& other = *history_undo ? change.after : change.before;
@@ -2441,7 +2441,7 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
     }
     std::optional<ProjectPresentation> next_presentation;
     auto prepare_presentation = [&](std::unordered_set<std::string> const& remaining_instances) {
-        if (edit.lane_views.empty() && !edit.lane_order && !edit.timeline_snap_memory
+        if (edit.lane_views.empty() && !edit.lane_order && !edit.timeline_snap_memory_json
             && std::ranges::all_of(presentation_.lane_order, [&](auto const& address) {
                 return remaining_instances.contains(address.instance_id);
             }) && std::ranges::all_of(presentation_.lane_views, [&](auto const& view) {
@@ -2459,7 +2459,7 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
             }
             next.lane_order = *edit.lane_order;
         }
-        if (edit.timeline_snap_memory) next.timeline_snap_memory = *edit.timeline_snap_memory;
+        if (edit.timeline_snap_memory_json) next.timeline_snap_memory_json = *edit.timeline_snap_memory_json;
         apply_project_record_edits(next.lane_views, edit.lane_views);
         std::erase_if(next.lane_order, [&](auto const& address) {
             return !remaining_instances.contains(address.instance_id);
@@ -2544,7 +2544,7 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
             rebuilt = rebuild_locked(std::move(nodes), std::move(wires), true, nullptr,
                 &transactions, &previous_controls, false, &effect);
         }
-    } else if (!edit.lane_views.empty() || edit.lane_order || edit.timeline_snap_memory) {
+    } else if (!edit.lane_views.empty() || edit.lane_order || edit.timeline_snap_memory_json) {
         NodeInstancesProjectGraphRead instances{};
         IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_node_instances_read_event, instances);
         if (!instances.handled) throw std::runtime_error("project editing requires NodeInstances");
@@ -2557,8 +2557,8 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
         effect.lane_views = project_record_changes(presentation_.lane_views, next_presentation->lane_views);
         if (presentation_.lane_order != next_presentation->lane_order)
             effect.lane_order = {presentation_.lane_order, next_presentation->lane_order};
-        if (presentation_.timeline_snap_memory != next_presentation->timeline_snap_memory)
-            effect.timeline_snap_memory = {presentation_.timeline_snap_memory, next_presentation->timeline_snap_memory};
+        if (presentation_.timeline_snap_memory_json != next_presentation->timeline_snap_memory_json)
+            effect.timeline_snap_memory_json = {presentation_.timeline_snap_memory_json, next_presentation->timeline_snap_memory_json};
         presentation_ = std::move(*next_presentation);
     }
     // All record applicability and batch validation has succeeded. Settings

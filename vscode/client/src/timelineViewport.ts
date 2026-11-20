@@ -7,7 +7,7 @@ export type TimelineViewport = {
     scrollTop: number;
 };
 export const initialTimelineViewport: TimelineViewport = {
-    beginSeconds: 0, secondsPerPixel: 0.01, laneHeight: 240, scrollTop: 0,
+    beginSeconds: 0, secondsPerPixel: 0.01, laneHeight: 120, scrollTop: 0,
 };
 export const minimumLaneHeight = 12;
 export const maximumLaneHeight = 1600;

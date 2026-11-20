@@ -1,6 +1,7 @@
 #include <intravenous/runtime/socket_rpc_requests.h>
 
 #include <intravenous/runtime/project_connection_json.h>
+#include <intravenous/runtime/project_presentation_json.h>
 
 #include <nlohmann/json.hpp>
 
@@ -341,13 +342,13 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
                 auto key = parse_project_lane_view_id(operation_params, names);
                 auto const& state = operation_params.at("state");
                 std::optional<ProjectLaneView> view;
-                if (!state.is_null()) view = ProjectLaneView{key, parse_project_presentation_object(state)};
+                if (!state.is_null()) view = ProjectLaneView{key, encode_project_presentation_object(state)};
                 batch.lane_views.push_back({std::move(key), std::move(view)});
                 continue;
             }
             if (operation_method == "projectPresentation.setTimelineSnapMemory") {
-                if (batch.timeline_snap_memory) throw std::invalid_argument("project batch edits snap memory twice");
-                batch.timeline_snap_memory = parse_project_presentation_object(operation_params.at("memory"));
+                if (batch.timeline_snap_memory_json) throw std::invalid_argument("project batch edits snap memory twice");
+                batch.timeline_snap_memory_json = encode_project_presentation_object(operation_params.at("memory"));
                 continue;
             }
             if (operation_method == "nodeInstances.duplicate") {

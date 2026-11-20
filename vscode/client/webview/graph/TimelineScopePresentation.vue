@@ -18,7 +18,7 @@ import TimeRuler from "../timeline/TimeRuler.vue";
 import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
 import type { SeekBeatReader } from "../timeline/usePlayheadSeek";
 import { timelineBeatObservationWindow } from "../timeline/geometry";
-import { minimumBeatMarkSpacing, readBeatGrid, selectVisibleBeatMarks } from "../../src/beatGrid";
+import { beatRulerLabels, minimumBeatMarkSpacing, readBeatGrid, selectVisibleBeatMarks } from "../../src/beatGrid";
 import { gridGuideStrengths } from "../../src/gridGuideStrength";
 import { provideTimelineMarks, provideTimelineNavigation, provideTimelineWindow, type TimelineMark,
     type LaneHorizontalZoomGesture, type LaneValueGesture, type LaneValueNavigation } from "../timeline/timelineContext";
@@ -200,6 +200,12 @@ function openBeatReader(): SeekBeatReader | undefined {
 }
 provideTimelineMarks(timelineMarks);
 const beatStrengths = computed(() => gridGuideStrengths(timelineMarks.value, ({ x }) => x));
+const beatLabels = computed(() => {
+    const sampleRate = timeWindow.value.sampleRate;
+    if (gridMode.value !== "beats" || !settingsGrid.value || !sampleRate) return [];
+    // Reserve room for the ruler's settings button.
+    return beatRulerLabels(settingsGrid.value, timelineMarks.value, sampleRate, timeWidth.value - 56);
+});
 const valueNavigationTargets = new Map<Element, LaneValueNavigation>();
 provideTimelineNavigation({ wheel, beginMiddleDrag, registerValueNavigation(element, lane) {
     valueNavigationTargets.set(element, lane);
@@ -598,7 +604,7 @@ onBeforeUnmount(() => {
                 </div>
             </div>
             <div ref="timeRegion" class="time-region">
-                <TimeRuler :window="timeWindow" :marks="timelineMarks" :beat-strengths="beatStrengths"
+                <TimeRuler :window="timeWindow" :marks="timelineMarks" :beat-strengths="beatStrengths" :beat-labels="beatLabels"
                     :open-beat-reader="openBeatReader" playback style="height: 100%" />
                 <LaneSettings :label="gridLabel" dialog-label="Timeline snap mode"
                     hint="Choose the timeline grid and snapping" :width="240" :preferred-height="settingsGrid ? 300 : 104" v-slot="{ close }">

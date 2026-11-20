@@ -2,6 +2,7 @@
 
 #include <intravenous/runtime/project_persistence_events.h>
 #include <intravenous/runtime/project_connection_json.h>
+#include <intravenous/runtime/project_presentation_json.h>
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/socket_rpc_server.h>
 
@@ -430,13 +431,13 @@ void ProjectPersistence::replay(std::vector<ProjectMessageNotification>& message
                 if (args.at("state").is_null()) {
                     if (existing != presentation.lane_views.end()) presentation.lane_views.erase(existing);
                 } else {
-                    auto state = parse_project_presentation_object(args.at("state"));
+                    auto state = encode_project_presentation_object(args.at("state"));
                     if (existing == presentation.lane_views.end())
                         presentation.lane_views.push_back({std::move(key), std::move(state)});
-                    else existing->state = std::move(state);
+                    else existing->state_json = std::move(state);
                 }
             } else if (command.command == "projectPresentation.setTimelineSnapMemory") {
-                presentation.timeline_snap_memory = parse_project_presentation_object(args.at("memory"));
+                presentation.timeline_snap_memory_json = encode_project_presentation_object(args.at("memory"));
             } else {
                 throw std::runtime_error("unknown project command: " + command.command);
             }
