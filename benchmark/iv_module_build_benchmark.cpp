@@ -1,6 +1,8 @@
 #include <intravenous/module/loader.h>
 #include <intravenous/module/package_manifest.h>
 
+#include "build_cache_scratch.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -48,8 +50,7 @@ enum class SourceShape {
 };
 
 struct Options {
-    std::filesystem::path workspace =
-        std::filesystem::temp_directory_path() / "intravenous-module-build-benchmark";
+    std::filesystem::path workspace;
     size_t voices = 1;
     bool keep_workspace = false;
     bool source_introspection = true;
@@ -514,8 +515,13 @@ void run(Options const& options)
             },
             [&](std::string const& entry) { loader_log.push_back(entry); });
 
+        // Measure a cold and warm build in an explicitly owned workspace.
+        auto const request = iv::PackageBuildRequest{
+            .package_root = module,
+            .artifact_root = options.workspace / "artifacts",
+        };
         auto const cold_start = Clock::now();
-        (void)loader.compile_project_package(module);
+        (void)loader.compile_package(request);
         auto const cold_elapsed = Clock::now() - cold_start;
         auto const ninja_log = find_ninja_log(options.workspace);
         auto const cold_log = read(ninja_log);
@@ -542,7 +548,7 @@ void run(Options const& options)
         write(hot_source, source);
         loader_log.clear();
         auto const hot_start = Clock::now();
-        (void)loader.compile_project_package(module);
+        (void)loader.compile_package(request);
         auto const hot_elapsed = Clock::now() - hot_start;
         auto const hot_log = read(ninja_log);
         auto const hot_finalizer_timings = finalizer_timings(
@@ -577,7 +583,12 @@ void run(Options const& options)
 int main(int argc, char** argv)
 {
     try {
-        run(parse_options(argc, argv));
+        auto options = parse_options(argc, argv);
+        if (options.workspace.empty()) {
+            if (options.keep_workspace) throw std::invalid_argument("--keep requires --workspace");
+            options.workspace = benchmark_scratch(argc, argv) / "module-build";
+        }
+        run(options);
     } catch (std::exception const& error) {
         std::cerr << "iv-module-build-benchmark: " << error.what() << '\n';
         return 1;

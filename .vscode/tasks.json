@@ -4,7 +4,7 @@
     {
       "label": "Build Intravenous",
       "type": "shell",
-      "command": "cmake --build build-release --target intravenous --parallel 16",
+      "command": "nix develop --command python3 scripts/build_cache.py server",
       "options": { "cwd": "${workspaceFolder}" },
       "group": { "kind": "build", "isDefault": true },
       "problemMatcher": []

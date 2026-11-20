@@ -25,9 +25,9 @@ struct PackageDiscoveryRoot {
 };
 
 // Exact source and artifact ownership passed to ModuleLoader for one package.
-// A missing artifact_root selects the provenance default: the platform common
-// cache for common packages or the containing IV project's build/iv directory
-// for project-local packages. Built-in packages require an explicit root.
+// A missing artifact_root selects the per-user build cache. Common packages
+// share a workspace across projects. Project-local workspaces are keyed by
+// project. Built-in packages require an explicit executable-owned root.
 struct PackageBuildRequest {
     std::filesystem::path package_root{};
     PackageProvenance provenance = PackageProvenance::project_local;

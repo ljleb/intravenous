@@ -20,7 +20,6 @@ let
     # Retain the captured compiler environment and ELF dependencies of the
     # binaries imported from the local CMake build.
     printf '%s\n' $runtimeDependencies > "$out/toolchain-store-paths"
-    export IV_GLOBAL_MODULE_CACHE="$TMPDIR/module-cache"
     cmake "-Druntime=$out" "-Dscratch=$TMPDIR" \
       "-Dprebuild=$snapshot/iv_package_prebuild" -P "$snapshot/PrepareDevRuntime.cmake"
   '';

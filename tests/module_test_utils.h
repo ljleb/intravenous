@@ -144,20 +144,6 @@ namespace iv::test {
         return configured_build_root() / "test_shared_fixtures";
     }
 
-    inline std::string sanitize_module_id(std::string_view id)
-    {
-        std::string sanitized(id);
-        if (sanitized.empty()) sanitized = "module";
-        for (char& c : sanitized) {
-            bool good =
-                (c >= 'a' && c <= 'z') ||
-                (c >= 'A' && c <= 'Z') ||
-                (c >= '0' && c <= '9');
-            if (!good) c = '_';
-        }
-        return sanitized;
-    }
-
     inline std::string sanitize_test_token(std::string_view text)
     {
         std::string sanitized(text);
@@ -181,15 +167,6 @@ namespace iv::test {
         return workspace;
     }
 
-    inline char const* active_build_config()
-    {
-#if defined(NDEBUG)
-        return "Release";
-#else
-        return "Debug";
-#endif
-    }
-
     inline std::string stable_path_hash(std::filesystem::path const& path)
     {
         auto normalized = std::filesystem::weakly_canonical(path).generic_string();
@@ -203,52 +180,13 @@ namespace iv::test {
         return out.str();
     }
 
-    inline std::filesystem::path project_root_for_module(std::filesystem::path module_dir)
+    inline std::filesystem::path compiled_package_workspace(
+        std::filesystem::path const& artifact)
     {
-        module_dir = std::filesystem::weakly_canonical(module_dir).lexically_normal();
-        for (auto current = module_dir; !current.empty(); current = current.parent_path()) {
-            if (std::filesystem::exists(current / "iv_project.json") ||
-                std::filesystem::exists(current / "iv_project.jsonl")) {
-                return current;
-            }
-            if (current == current.root_path()) break;
+        for (auto path = artifact.parent_path(); path != path.root_path(); path = path.parent_path()) {
+            if (path.filename() == "out") return path.parent_path();
         }
-        if (module_dir.parent_path().filename() == IV_PROJECT_PACKAGES_DIR) {
-            return module_dir.parent_path().parent_path();
-        }
-        return module_dir;
-    }
-
-    inline std::string source_package_key(std::filesystem::path const& source_dir)
-    {
-        auto const normalized = std::filesystem::weakly_canonical(source_dir).lexically_normal();
-        auto packages = normalized.end();
-        for (auto it = normalized.begin(); it != normalized.end(); ++it) {
-            if (*it == IV_PROJECT_PACKAGES_DIR) packages = it;
-        }
-        if (packages != normalized.end()) {
-            auto relative = std::filesystem::path{};
-            for (auto it = std::next(packages); it != normalized.end(); ++it) {
-                relative /= *it;
-            }
-            if (!relative.empty()) return relative.generic_string();
-        }
-        return normalized.filename().generic_string();
-    }
-
-    inline std::filesystem::path runtime_module_workspace_root(
-        std::filesystem::path const& source_dir)
-    {
-        auto const project_root = project_root_for_module(source_dir);
-        return project_root / "build" / "iv" / "build" /
-            (sanitize_module_id(source_package_key(source_dir)) + "_"
-                + stable_path_hash(source_dir));
-    }
-
-    inline std::filesystem::path runtime_module_workspace(
-        std::filesystem::path const& source_dir)
-    {
-        return runtime_module_workspace_root(source_dir) / active_build_config();
+        throw std::runtime_error("compiled artifact is missing its output directory");
     }
 
     inline void require(bool condition, char const* message)

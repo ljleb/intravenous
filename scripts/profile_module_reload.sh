@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-build_dir="${IV_BUILD_DIR:-$repo_root/build-release}"
+original_arguments=("$@")
 jobs="${IV_BUILD_JOBS:-16}"
 workspace="${IV_MODULE_BENCHMARK_WORKSPACE:-${TMPDIR:-/tmp}/intravenous-module-reload-profile}"
 module_paths=()
@@ -30,7 +30,7 @@ Options:
   --help               Show this help.
 
 Environment:
-  IV_BUILD_DIR         Build directory (default: <repo>/build-release).
+  IV_BUILD_DIR         Explicit build directory (default: managed Release tree).
   IV_BUILD_JOBS        Parallel build jobs (default: 16).
   IV_MODULE_BENCHMARK_WORKSPACE
                        Default workspace when --workspace is omitted.
@@ -96,6 +96,7 @@ fi
 
 cd "$repo_root"
 
+source "$repo_root/scripts/use_managed_build.sh" "${original_arguments[@]}"
 log_directory="${workspace}.logs"
 mkdir -p "$log_directory"
 

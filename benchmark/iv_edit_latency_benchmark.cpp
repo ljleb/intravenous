@@ -43,6 +43,8 @@
 
 #include <intravenous/compat.h>
 #include <intravenous/global_index.h>
+#include "build_cache_scratch.h"
+
 #include <intravenous/runtime/graph_connections.h>
 #include <intravenous/runtime/graph_executor.h>
 #include <intravenous/runtime/graph_jit.h>
@@ -1038,6 +1040,14 @@ int main(int argc, char** argv)
     try {
         iv::install_crash_handlers();
         auto const options = parse_options(argc, argv);
+        auto workspace = options.workspace.value_or(std::filesystem::path{});
+        if (workspace.empty()) {
+            auto const scratch = benchmark_scratch(argc, argv);
+            workspace = scratch / "edit-latency";
+            if (::setenv("IV_BUILD_CACHE_DIR", (scratch / "package-cache").c_str(), 1) != 0) {
+                throw std::system_error(errno, std::generic_category(), "set benchmark package cache");
+            }
+        }
         std::ofstream results_tsv;
         if (options.results_tsv) {
             results_tsv.open(*options.results_tsv, std::ios::trunc);
@@ -1053,10 +1063,6 @@ int main(int argc, char** argv)
         ::setenv("INTRAVENOUS_DIR", IV_EDIT_BENCHMARK_INSTALL_DIR, 0);
         ::setenv("IV_EDIT_TIMING", "1", 0);
 
-        auto const workspace = options.workspace.value_or(
-            std::filesystem::temp_directory_path()
-                / "iv_edit_latency_benchmark_workspace");
-        if (!options.workspace) std::filesystem::remove_all(workspace);
         std::filesystem::create_directories(workspace);
 
         iv::StartupConfig startup_config(workspace, std::filesystem::current_path());

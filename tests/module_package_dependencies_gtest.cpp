@@ -5,21 +5,6 @@
 #include <string_view>
 
 namespace {
-std::filesystem::path finalized_package_bitcode(std::filesystem::path const& workspace)
-{
-    std::vector<std::filesystem::path> artifacts;
-    for (std::filesystem::recursive_directory_iterator it(workspace / "build/iv"), end;
-         it != end;
-         ++it) {
-        if (it->is_regular_file()
-            && it->path().filename().string().ends_with(".ivpkg.bc")) {
-            artifacts.push_back(it->path());
-        }
-    }
-    EXPECT_EQ(artifacts.size(), 1u);
-    return artifacts.empty() ? std::filesystem::path{} : artifacts.front();
-}
-
 std::vector<std::string> nonempty_manifest_lines(std::filesystem::path const& manifest)
 {
     std::vector<std::string> result;
@@ -60,7 +45,8 @@ TEST(ModulePackageDependencies, DeferredCustomCmakeLinksStaticAndDynamicDependen
     // from the shared library. A successful configuration proves that deferred
     // target-link collection, archive extraction, and ORC symbol generation all
     // participated; neither function is compiled into module.cpp itself.
-    auto const artifact = finalized_package_bitcode(workspace);
+    auto const compiled = loader.compile_project_package(workspace);
+    auto const& artifact = compiled.path;
     ASSERT_FALSE(artifact.empty());
     auto dynamic_manifest = artifact;
     dynamic_manifest += ".dynamic-libraries";
@@ -85,7 +71,7 @@ TEST(ModulePackageDependencies, DeferredCustomCmakeLinksStaticAndDynamicDependen
     }
 
     auto const compile_database = iv::test::read_text(
-        iv::test::runtime_module_workspace(workspace)
+        iv::test::compiled_package_workspace(artifact)
         / "cmake-build/compile_commands.json");
     EXPECT_NE(compile_database.find("lto_root.cpp"), std::string::npos);
     EXPECT_NE(compile_database.find("-flto=full"), std::string::npos);
@@ -98,7 +84,8 @@ TEST(ModulePackageDependencies, DynamicLibraryManifestAdversarialCorpus)
     auto loader = iv::test::make_loader();
     ASSERT_NO_THROW((void)iv::test::load_project_package_definitions(loader, workspace));
 
-    auto const artifact = finalized_package_bitcode(workspace);
+    auto const compiled = loader.compile_project_package(workspace);
+    auto const& artifact = compiled.path;
     ASSERT_FALSE(artifact.empty());
     auto manifest = artifact;
     manifest += ".dynamic-libraries";

@@ -1,6 +1,7 @@
 #include "test_workspace.h"
 
 #include <gtest/gtest.h>
+#include <cstdlib>
 
 namespace {
 class WorkspaceListener final : public testing::EmptyTestEventListener {
@@ -13,6 +14,7 @@ class WorkspaceListener final : public testing::EmptyTestEventListener {
         std::filesystem::remove_all(workspace, error);
         ASSERT_FALSE(error) << "could not reset test workspace " << workspace
                             << ": " << error.message();
+        ASSERT_EQ(::setenv("IV_BUILD_CACHE_DIR", (workspace / "build/cache").c_str(), 1), 0);
     }
 };
 } // namespace

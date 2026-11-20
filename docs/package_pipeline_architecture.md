@@ -61,7 +61,7 @@ identified by its own `iv_package.json`; an IV project is rooted at its
 | --- | --- | --- |
 | Built-in packages | The executable/build or installed Intravenous distribution | The executable's build tree, or installation-associated prebuilt artifact/cache location |
 | Common packages | Zero or more configured shared package directories | A shared package cache independent of any project |
-| Project-local packages | The current IV project's source tree | That project's `build/iv/` tree |
+| Project-local packages | The current IV project's source tree | An external cache entry keyed by the project and package source |
 
 These are **package search scopes**, not three separate JIT implementations.
 `PackageWatcher` discovers packages from all applicable scopes, `PackageJit`
@@ -148,8 +148,8 @@ original build directory still exists. Merely staging built-in **sources** into
 the build tree does not satisfy this artifact-location contract.
 
 Every project opened by a compatible executable should reuse the same built-in
-package artifacts. Opening a project must not create a built-in build workspace
-under the built-in source directory or under that project's `build/iv/`. This is
+package artifacts. Opening a project keeps those workspaces in the
+executable's artifact location. This is
 "once per compatible executable build", not "once forever": changes to the
 built-in source, package ABI, relevant compiler/finalizer/introspection tooling,
 target architecture, or build configuration must invalidate the artifact.
@@ -197,8 +197,14 @@ as project-local.
 | Provenance | Artifact root |
 | --- | --- |
 | `built_in` | The explicit executable-owned `artifact_root`; omission is an error |
-| `common` | `IV_GLOBAL_MODULE_CACHE`, or its platform default |
-| `project_local` | The containing IV project's `build/iv/` directory |
+| `common` | `shared-packages/<package-source>/<build-profile>/` in the writable cache |
+| `project_local` | `project-packages/<project>/<package>/<build-profile>/` in the writable cache |
+
+An explicit `PackageBuildRequest::artifact_root` gives ownership to the caller.
+For a cached package, `ModuleLoader::CompiledArtifact` holds the leases for the
+artifact set and its CMake tree. Loaded package code retains those leases through
+`ModuleRef`. See the [cache configuration and deletion rules](./development_run.md#configure-the-build-cache)
+and the [previous package routes](./historical/build_artifact_locations_before_managed_cache_2026-11-20.md).
 
 CMake stages the built-in package under
 `<cmake-build>/src/intravenous/builtin_packages/` and the

@@ -275,6 +275,8 @@ add_custom_command(OUTPUT "${iv_sdk_snapshot}/.snapshot"
     VERBATIM)
 add_custom_target(intravenous_runtime_sdk DEPENDS "${iv_sdk_snapshot}/.snapshot")
 configure_file(module/template/PrepareDevRuntime.cmake.in PrepareDevRuntime.cmake @ONLY)
+set(IV_BUILD_CACHE_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/build_cache.py")
+configure_file("${PROJECT_SOURCE_DIR}/scripts/build_cache.py" "${IV_BUILD_CACHE_SCRIPT}" COPYONLY)
 
 # This source represents the default project-local module. Its compilation
 # database entry is copied to new module sources, where clangd infers the
@@ -309,6 +311,8 @@ target_compile_definitions(intravenous_module_loader PRIVATE
     # the one application-built DSL PCH rather than inventing a per-package
     # fallback.
     IV_CONFIGURED_IV_DSL_PCH="${IV_DSL_PCH}"
+    IV_CONFIGURED_BUILD_CACHE_SCRIPT="${IV_BUILD_CACHE_SCRIPT}"
+    IV_CONFIGURED_BUILD_CACHE_PYTHON="${Python3_EXECUTABLE}"
     IV_CONFIGURED_PACKAGE_COMPILE_FLAGS="${IV_PACKAGE_COMPILER_FLAGS_COMMAND_LINE}"
     IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER="${IV_APPLICATION_ENVIRONMENT_LAUNCHER}")
 llvm_map_components_to_libnames(IV_PACKAGE_LOADER_LLVM_LIBS

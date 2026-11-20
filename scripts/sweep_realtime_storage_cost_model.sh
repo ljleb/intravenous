@@ -8,7 +8,7 @@ iterations="${3:-3}"
 settle_ms="${4:-500}"
 
 repo_root="$(git rev-parse --show-toplevel)"
-build_dir="${IV_BUILD_DIR:-${repo_root}/build-release}"
+source "$repo_root/scripts/use_managed_build.sh"
 benchmark="${build_dir}/benchmark/iv_edit_latency_benchmark"
 
 if [[ ! -x "${benchmark}" ]]; then

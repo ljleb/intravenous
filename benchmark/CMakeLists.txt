@@ -56,6 +56,12 @@ target_compile_definitions(iv_edit_latency_benchmark PRIVATE
 iv_add_host_runtime_objects(iv_edit_latency_benchmark)
 add_dependencies(iv_edit_latency_benchmark intravenous_builtin_package_artifacts)
 
+foreach(benchmark_target IN ITEMS iv_module_build_benchmark iv_edit_latency_benchmark)
+    target_compile_definitions(${benchmark_target} PRIVATE
+        IV_BENCHMARK_BUILD_CACHE_SCRIPT="${PROJECT_BINARY_DIR}/src/intravenous/build_cache.py"
+        IV_BENCHMARK_BUILD_CACHE_PYTHON="${Python3_EXECUTABLE}")
+endforeach()
+
 # Same executor and no-DSP graph for both cases; adds the former all-binding
 # scan only in the legacy case to isolate idle manual-control polling cost.
 add_executable(iv_manual_control_polling_benchmark
@@ -80,8 +86,7 @@ target_include_directories(iv_buffered_storage_benchmark SYSTEM PRIVATE
     ${PROJECT_SOURCE_DIR}/src/intravenous/third_party)
 iv_add_host_runtime_objects(iv_buffered_storage_benchmark)
 
-# Replay fixed playback projects. The package loader writes generated artifacts
-# beside these build-tree fixture copies.
+# Replay fixed playback projects from build-tree fixture copies.
 set(playback_fixture_dir "${CMAKE_CURRENT_BINARY_DIR}/playback_fixture")
 foreach(playback_project IN ITEMS iv_project independent stacked shared-driver)
     if(playback_project STREQUAL "iv_project")

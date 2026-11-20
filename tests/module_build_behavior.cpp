@@ -33,11 +33,11 @@ int main(int, char** argv)
         "behavior project should depend on exactly its root and voice closure");
     auto const original_artifact = loader.compile_project_package(project_dst);
 
-    auto const project_workspace = iv::test::runtime_module_workspace(project_dst);
+    auto const project_workspace = iv::test::compiled_package_workspace(original_artifact.path);
     auto const project_cache = project_workspace / "cmake-build" / "CMakeCache.txt";
     iv::test::require(
         std::filesystem::exists(project_cache),
-        "root module should configure in the project-local build/iv tree");
+        "root module should configure in the project package cache");
 
     auto const import_root = runtime_root / "build" / "iv" / "imports" / "iv" / "nodes";
     auto const project_import = import_root / "iv.test.behavior_project";
@@ -69,7 +69,7 @@ int main(int, char** argv)
     (void)iv::test::load_project_package_definitions(loader, project_dst);
     auto const changed_artifact = loader.compile_project_package(project_dst);
     iv::test::require(
-        changed_artifact != original_artifact,
+        changed_artifact.path != original_artifact.path,
         "package source content must invalidate the artifact when its timestamp is unchanged");
 
     auto voice_source = iv::test::read_text(voice_dst / "module.cpp");
@@ -94,7 +94,8 @@ int main(int, char** argv)
     iv::test::write_text_advancing_timestamp(local_dst / "CMakeLists.txt", local_cmake);
     (void)iv::test::load_project_package_definitions(loader, local_dst);
 
-    auto const local_workspace = iv::test::runtime_module_workspace(local_dst);
+    auto const local_artifact = loader.compile_project_package(local_dst);
+    auto const local_workspace = iv::test::compiled_package_workspace(local_artifact.path);
     auto const local_cache = local_workspace / "cmake-build" / "CMakeCache.txt";
     iv::test::require(
         iv::test::read_text(local_cache).contains("IV_TEST_CUSTOM_CMAKE_MARKER:BOOL=ON"),

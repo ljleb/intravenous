@@ -17,6 +17,7 @@
           commonPackages = with pkgs; [
             cmake
             ninja
+            python3
             pkg-config
             juce
             llvm.clang
@@ -62,7 +63,7 @@
               echo "CC=$CC"
               echo "CXX=$CXX"
               echo "JUCE_DIR=$JUCE_DIR"
-              echo 'Configure with: cmake -S . -B build -G Ninja -DJUCE_DIR=$JUCE_DIR && cmake -S . -B build-release -G Ninja -DJUCE_DIR=$JUCE_DIR -DCMAKE_BUILD_TYPE=Release'
+              echo 'Build with: python3 scripts/build_cache.py server'
             '';
           };
         in {

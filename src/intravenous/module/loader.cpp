@@ -31,6 +31,7 @@
 #include <bit>
 #include <array>
 #include <chrono>
+#include <cerrno>
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
@@ -50,16 +51,12 @@
 #include <unordered_set>
 #include <utility>
 
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <Windows.h>
-#else
 #include <fcntl.h>
+#include <spawn.h>
 #include <sys/file.h>
+#include <sys/wait.h>
 #include <unistd.h>
-#endif
+extern char** environ;
 
 namespace iv {
 namespace {
@@ -100,6 +97,7 @@ struct LoadedPackageCode {
     std::string id;
     std::string package_root;
     std::filesystem::path bitcode_path;
+    ModuleRef cache_lease;
     std::vector<std::filesystem::path> dynamic_libraries;
     std::shared_ptr<SharedPackageJit> shared_jit;
     llvm::orc::JITDylib* jit_dylib = nullptr;
@@ -123,56 +121,36 @@ struct LoadedPackageCode {
 };
 
 class ScopedModuleBuildLock {
-#if defined(_WIN32)
-    HANDLE handle_ = INVALID_HANDLE_VALUE;
-    OVERLAPPED overlapped_ {};
-#else
     int fd_ = -1;
-#endif
 
 public:
-    explicit ScopedModuleBuildLock(std::filesystem::path const& path)
+    explicit ScopedModuleBuildLock(std::filesystem::path const& path, bool shared = false)
     {
-#if defined(_WIN32)
-        handle_ = CreateFileW(
-            path.c_str(), GENERIC_READ | GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
-            FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (handle_ == INVALID_HANDLE_VALUE ||
-            !LockFileEx(
-                handle_, LOCKFILE_EXCLUSIVE_LOCK, 0,
-                MAXDWORD, MAXDWORD, &overlapped_)) {
-            if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_);
-            throw std::runtime_error(
-                "failed to lock module build workspace '" + path.string() + "'");
-        }
-#else
-        fd_ = ::open(path.c_str(), O_CREAT | O_RDWR, 0666);
-        if (fd_ < 0 || ::flock(fd_, LOCK_EX) != 0) {
+        fd_ = ::open(path.c_str(), O_CLOEXEC | O_NOFOLLOW | O_CREAT | O_RDWR, 0600);
+        if (fd_ < 0 || ::flock(fd_, shared ? LOCK_SH : LOCK_EX) != 0) {
             if (fd_ >= 0) ::close(fd_);
             throw std::runtime_error(
                 "failed to lock module build workspace '" + path.string() + "'");
         }
-#endif
     }
 
     ~ScopedModuleBuildLock()
     {
-#if defined(_WIN32)
-        if (handle_ != INVALID_HANDLE_VALUE) {
-            UnlockFileEx(handle_, 0, MAXDWORD, MAXDWORD, &overlapped_);
-            CloseHandle(handle_);
-        }
-#else
-        if (fd_ >= 0) {
-            ::flock(fd_, LOCK_UN);
-            ::close(fd_);
-        }
-#endif
+        ::close(fd_);
     }
 
     ScopedModuleBuildLock(ScopedModuleBuildLock const&) = delete;
     ScopedModuleBuildLock& operator=(ScopedModuleBuildLock const&) = delete;
+
+    int fd() const noexcept { return fd_; }
+};
+
+struct PackageCacheLease {
+    ScopedModuleBuildLock workspace;
+    std::optional<ScopedModuleBuildLock> artifact;
+
+    explicit PackageCacheLease(std::filesystem::path const& use_lock)
+        : workspace(use_lock, true) {}
 };
 
 std::filesystem::path normalize(std::filesystem::path const &path)
@@ -567,24 +545,24 @@ std::filesystem::path discover_project_root(std::filesystem::path module_dir)
     return module_dir;
 }
 
-std::filesystem::path global_cache_root()
+std::filesystem::path build_cache_root()
 {
-    if (char const *explicit_cache = std::getenv("IV_GLOBAL_MODULE_CACHE")) {
-        if (*explicit_cache) return normalize(explicit_cache);
+    if (char const *explicit_cache = std::getenv("IV_BUILD_CACHE_DIR");
+        explicit_cache && *explicit_cache) {
+        std::filesystem::path root(explicit_cache);
+        if (!root.is_absolute()) {
+            throw std::runtime_error("IV_BUILD_CACHE_DIR must be an absolute path");
+        }
+        return normalize(root);
     }
-#if defined(_WIN32)
-    if (char const *local_app_data = std::getenv("LOCALAPPDATA")) {
-        if (*local_app_data) return normalize(std::filesystem::path(local_app_data) / "Intravenous");
-    }
-#else
     if (char const *xdg = std::getenv("XDG_CACHE_HOME")) {
-        if (*xdg) return normalize(std::filesystem::path(xdg) / "intravenous");
+        std::filesystem::path root(xdg);
+        if (root.is_absolute()) return normalize(root / "intravenous/build-cache");
     }
     if (char const *home = std::getenv("HOME")) {
-        if (*home) return normalize(std::filesystem::path(home) / ".cache/intravenous");
+        if (*home) return normalize(std::filesystem::path(home) / ".cache/intravenous/build-cache");
     }
-#endif
-    return normalize(std::filesystem::temp_directory_path() / "intravenous-global-cache");
+    throw std::runtime_error("Set HOME or IV_BUILD_CACHE_DIR for the build cache");
 }
 
 std::string llvm_error_string(llvm::Error error)
@@ -702,7 +680,8 @@ void run(
     std::string const &command,
     ModuleLoader::LogSink const &sink,
     std::string_view phase,
-    std::filesystem::path const* output_log = nullptr)
+    std::filesystem::path const* output_log = nullptr,
+    ScopedModuleBuildLock const* inherited_lock = nullptr)
 {
     if (sink) sink("[" + std::string(phase) + "] " + command);
     auto invocation = quote(details::runtime_artifact(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER))
@@ -711,7 +690,30 @@ void run(
         invocation += " >> " + quote(*output_log) + " 2>&1";
     }
     auto const started_at = std::chrono::steady_clock::now();
-    int rc = std::system(invocation.c_str());
+    int rc;
+    if (inherited_lock) {
+        // Give CMake the writer lock so a collector also waits for it if the
+        // server dies. Other subprocesses never inherit package leases.
+        posix_spawn_file_actions_t actions;
+        auto error = ::posix_spawn_file_actions_init(&actions);
+        if (error) throw std::runtime_error(std::strerror(error));
+        auto const fd = inherited_lock->fd();
+        error = ::posix_spawn_file_actions_adddup2(&actions, fd, fd);
+        pid_t process{};
+        if (!error) {
+            char shell[] = "/bin/sh";
+            char option[] = "-c";
+            char* argv[] = {shell, option, invocation.data(), nullptr};
+            error = ::posix_spawn(&process, shell, &actions, nullptr, argv, environ);
+        }
+        ::posix_spawn_file_actions_destroy(&actions);
+        if (error) throw std::runtime_error(std::strerror(error));
+        while (::waitpid(process, &rc, 0) < 0) {
+            if (errno != EINTR) throw std::runtime_error(std::strerror(errno));
+        }
+    } else {
+        rc = std::system(invocation.c_str());
+    }
     if (rc != 0) {
         throw std::runtime_error(
             "command failed with exit code " + std::to_string(rc) + ": " + command);
@@ -723,6 +725,33 @@ void run(
                 std::chrono::steady_clock::now() - started_at).count()));
     }
 }
+
+void sweep_build_cache(
+    std::filesystem::path const& cache_root, bool before, ModuleLoader::LogSink const& sink)
+{
+    auto command = "IV_BUILD_CACHE_DIR=" + quote(cache_root)
+        + " " + quote(IV_CONFIGURED_BUILD_CACHE_PYTHON)
+        + " " + quote(details::runtime_artifact(IV_CONFIGURED_BUILD_CACHE_SCRIPT))
+        + (before ? " before-build" : " after-build");
+    run(command, sink, "build-cache");
+}
+
+struct PostBuildCacheSweep {
+    std::filesystem::path root;
+    ModuleLoader::LogSink const& sink;
+    bool attempted_build = false;
+
+    ~PostBuildCacheSweep()
+    {
+        if (!attempted_build) return;
+        try {
+            sweep_build_cache(root, false, sink);
+        } catch (std::exception const& error) {
+            if (sink) sink("warning: " + std::string(error.what()));
+        }
+    }
+};
+
 LoadedPackageCode::~LoadedPackageCode()
 {
     if (!shared_jit || !shared_jit->jit) return;
@@ -751,7 +780,6 @@ LoadedPackageCode::~LoadedPackageCode()
 
 class ModuleLoader::Impl {
     std::filesystem::path repo_root_;
-    std::filesystem::path global_cache_root_;
     ModuleLoaderToolchainConfig toolchain_;
     mutable std::unordered_set<std::string> validated_toolchains_;
     LogSink log_sink_;
@@ -759,7 +787,7 @@ class ModuleLoader::Impl {
 
     struct CompiledPackage {
         ResolvedPackage root;
-        std::filesystem::path artifact;
+        CompiledArtifact artifact;
     };
 
     std::shared_ptr<SharedPackageJit> package_jit_;
@@ -815,19 +843,10 @@ class ModuleLoader::Impl {
         std::filesystem::path artifact_root;
         if (request.artifact_root) {
             artifact_root = normalize(*request.artifact_root);
-        } else {
-            switch (request.provenance) {
-            case PackageProvenance::project_local:
-                artifact_root = discover_project_root(dir) / "build/iv";
-                break;
-            case PackageProvenance::common:
-                artifact_root = global_cache_root_;
-                break;
-            case PackageProvenance::built_in:
-                throw std::runtime_error(
-                    "built-in IV package has no executable-owned artifact root: '"
-                    + dir.string() + "'");
-            }
+        } else if (request.provenance == PackageProvenance::built_in) {
+            throw std::runtime_error(
+                "built-in IV package has no executable-owned artifact root: '"
+                + dir.string() + "'");
         }
 
         return {
@@ -924,14 +943,41 @@ class ModuleLoader::Impl {
         validated_toolchains_.insert(key);
     }
 
-    std::filesystem::path build(
+    CompiledArtifact build(
         ResolvedPackage const &root) const
     {
-        auto const& owner_root = root.artifact_root;
+        auto const [cc, cxx] = compilers();
+        auto const cmake = cmake_program();
+        auto const cmake_identity = file_identity(cmake);
+        auto const cc_identity = file_identity(cc);
+        auto const cxx_identity = file_identity(cxx);
+        auto const generator = toolchain_.cmake_generator.value_or(
+            std::string(IV_CONFIGURED_CMAKE_GENERATOR));
+        auto const selected_make_program = make_program();
+        auto const selected_juce_dir = juce_dir();
+        auto const target = llvm::sys::getDefaultTargetTriple();
+        auto const host_cpu = host_cpu_signature();
         auto const build_key = root.provenance == PackageProvenance::built_in
             ? sanitize(root.package_key)
             : sanitize(root.package_key) + "_" + stable_hash(root.module_dir);
-        auto const workspace = owner_root / "build" / build_key / config_name();
+        bool const managed = root.artifact_root.empty();
+        auto const cache = managed ? build_cache_root() : std::filesystem::path{};
+        auto workspace = root.artifact_root / "build" / build_key / config_name();
+        std::filesystem::path locks;
+        if (managed) {
+            std::ostringstream profile;
+            profile << config_name() << '\n' << target << '\n' << host_cpu << '\n'
+                    << IV_PACKAGE_ABI_VERSION << '\n' << generator << '\n'
+                    << cc_identity << '\n' << cxx_identity << '\n' << cmake_identity << '\n'
+                    << selected_make_program.value_or(std::filesystem::path{}) << '\n'
+                    << selected_juce_dir.value_or(std::filesystem::path{}) << '\n';
+            auto relative = root.provenance == PackageProvenance::common
+                ? std::filesystem::path("shared-packages")
+                : std::filesystem::path("project-packages") / stable_hash(discover_project_root(root.module_dir));
+            relative /= std::filesystem::path(build_key) / stable_text_hash(profile.str());
+            workspace = cache / relative;
+            locks = cache / "locks" / relative;
+        }
         auto const build_dir = workspace / "cmake-build";
         auto const output_dir = workspace / "out";
         auto const generated_dir = workspace / "generated";
@@ -941,8 +987,16 @@ class ModuleLoader::Impl {
             ? root.module_dir
             : default_package_dir;
 
-        std::filesystem::create_directories(workspace);
-        ScopedModuleBuildLock const build_lock(workspace / "build.lock");
+        PostBuildCacheSweep sweep_after{cache, log_sink_};
+        std::filesystem::create_directories(managed ? locks : workspace);
+        ScopedModuleBuildLock const build_lock(managed ? locks / "write" : workspace / "build.lock");
+        std::shared_ptr<PackageCacheLease> lease;
+        if (managed) {
+            lease = std::make_shared<PackageCacheLease>(locks / "use");
+            write_text_if_different(locks / "source", root.module_dir.string() + '\n');
+            write_text_if_different(locks / "last-used", "");
+            std::filesystem::last_write_time(locks / "last-used", std::filesystem::file_time_type::clock::now());
+        }
         std::filesystem::create_directories(output_dir);
         std::filesystem::create_directories(generated_dir);
 
@@ -958,7 +1012,6 @@ class ModuleLoader::Impl {
                 "iv_add_package(iv_package)\n");
         }
 
-        auto const [cc, cxx] = compilers();
         auto const source_introspection_plugin =
             details::runtime_artifact(IV_CONFIGURED_CLANG_SOURCE_INTROSPECTION_PLUGIN);
         auto const module_finalizer =
@@ -975,24 +1028,19 @@ class ModuleLoader::Impl {
                 module_finalizer.string() + "'");
         }
         validate_compiler(cxx, source_introspection_plugin);
-        std::string generator = toolchain_.cmake_generator.value_or(
-            std::string(IV_CONFIGURED_CMAKE_GENERATOR));
-        auto const selected_make_program = make_program();
-        auto const selected_juce_dir = juce_dir();
-
         std::ostringstream signature;
         signature << "iv-package-abi=" << IV_PACKAGE_ABI_VERSION << '\n'
                   << "config=" << config_name() << '\n'
                   << "application-environment="
                   << file_identity(details::runtime_artifact(IV_CONFIGURED_APPLICATION_ENVIRONMENT_LAUNCHER)) << '\n'
-                  << "target-triple=" << llvm::sys::getDefaultTargetTriple() << '\n'
+                  << "target-triple=" << target << '\n'
                   // Node code is compiled for the host CPU.
-                  << "host-cpu=" << host_cpu_signature() << '\n'
+                  << "host-cpu=" << host_cpu << '\n'
                   << "pointer-size=" << sizeof(void*) << '\n'
                   << "little-endian=" << (std::endian::native == std::endian::little) << '\n'
-                  << "cmake=" << file_identity(cmake_program()) << '\n'
-                  << "cc=" << file_identity(cc) << '\n'
-                  << "cxx=" << file_identity(cxx) << '\n'
+                  << "cmake=" << cmake_identity << '\n'
+                  << "cc=" << cc_identity << '\n'
+                  << "cxx=" << cxx_identity << '\n'
                   << "generator=" << generator << '\n'
                   << "make-program="
                   << (selected_make_program
@@ -1042,11 +1090,18 @@ class ModuleLoader::Impl {
         auto const artifact_stem = "iv_package_" + sanitize(root.package_key)
             + "_" + stable_text_hash(signature.str());
         auto const artifact_name = package_code_name(artifact_stem);
-        auto artifact = output_dir / artifact_name;
-        bool const needs_build =
-            !std::filesystem::exists(artifact) ||
-            !std::filesystem::exists(signature_file) ||
-            read_text(signature_file) != signature.str();
+        auto const revision_dir = managed ? output_dir / artifact_stem : output_dir;
+        auto resolve_artifact = [&] {
+            auto const path = revision_dir / artifact_name;
+            auto const configured = revision_dir / config_name() / artifact_name;
+            return !std::filesystem::exists(path) && std::filesystem::exists(configured)
+                ? configured : path;
+        };
+        auto artifact = resolve_artifact();
+        bool const needs_build = !std::filesystem::is_regular_file(artifact)
+            || (managed
+                ? !std::filesystem::is_regular_file(revision_dir / ".complete")
+                : !std::filesystem::exists(signature_file) || read_text(signature_file) != signature.str());
 
         std::vector<std::filesystem::path> include_dirs{root.module_dir};
         std::ostringstream include_list;
@@ -1058,7 +1113,7 @@ class ModuleLoader::Impl {
         source_list << root.entry_file.generic_string();
 
         std::ostringstream configure;
-        configure << quote(cmake_program())
+        configure << quote(cmake)
                   << " -S " << quote(package_dir)
                   << " -B " << quote(build_dir)
                   << " -DCMAKE_BUILD_TYPE=" << config_name();
@@ -1078,7 +1133,7 @@ class ModuleLoader::Impl {
                   << " -DIV_PACKAGE_ENTRY_FILE=" << quote(root.entry_file)
                   << " -DIV_PACKAGE_INCLUDE_DIRS=\"" << include_list.str() << "\""
                   << " -DIV_PACKAGE_SOURCE_FILES=\"" << source_list.str() << "\""
-                  << " -DIV_PACKAGE_OUTPUT_DIR=" << quote(output_dir)
+                  << " -DIV_PACKAGE_OUTPUT_DIR=" << quote(revision_dir)
                   << " -DIV_PACKAGE_OUTPUT_NAME=" << artifact_stem
                   << " -DIV_CLANG_SOURCE_INTROSPECTION_PLUGIN="
                   << quote(source_introspection_plugin)
@@ -1094,14 +1149,20 @@ class ModuleLoader::Impl {
         if (std::string_view(IV_CONFIGURED_IV_BUILDER_LIBRARY).size()) {
             configure << " -DIV_BUILDER_LIBRARY=" << quote(details::runtime_artifact(IV_CONFIGURED_IV_BUILDER_LIBRARY));
         }
-        if (needs_build || !std::filesystem::exists(build_dir / "CMakeCache.txt")) {
-            run(configure.str(), log_sink_, "configure");
+        if (needs_build || (!managed && !std::filesystem::exists(build_dir / "CMakeCache.txt"))) {
+            if (managed) {
+                sweep_build_cache(cache, true, log_sink_);
+                sweep_after.attempted_build = true;
+                write_text_if_different(locks / "dirty", "");
+                std::filesystem::remove(revision_dir / ".complete");
+                std::filesystem::create_directories(revision_dir);
+            }
+            run(configure.str(), log_sink_, "configure", nullptr, &build_lock);
             run(
-                quote(cmake_program()) + " --build " + quote(build_dir) +
+                quote(cmake) + " --build " + quote(build_dir) +
                     " --config " + config_name() + " --parallel 16",
                 log_sink_,
-                "build");
-            write_text_if_different(signature_file, signature.str());
+                "build", nullptr, &build_lock);
         }
 
         auto const compile_database = build_dir / "compile_commands.json";
@@ -1122,12 +1183,7 @@ class ModuleLoader::Impl {
             }
         }
 
-        if (!std::filesystem::exists(artifact)) {
-            auto configured_artifact = output_dir / config_name() / artifact_name;
-            if (std::filesystem::exists(configured_artifact)) {
-                artifact = configured_artifact;
-            }
-        }
+        artifact = resolve_artifact();
         if (!std::filesystem::exists(artifact)) {
             throw std::runtime_error(
                 "IV package build did not produce expected LLVM '" + artifact.string() + "'");
@@ -1149,7 +1205,22 @@ class ModuleLoader::Impl {
         // The signature is part of the filename. A changed IV package produces new
         // LLVM while configured graphs keep the previous ORC resources alive
         // through ModuleRef ownership.
-        return artifact;
+        if (managed) {
+            lease->artifact.emplace(revision_dir / ".use", true);
+            write_text_if_different(revision_dir / ".complete", "");
+            auto const current = workspace / ".current-artifact";
+            auto const name = artifact_stem + '\n';
+            if (!std::filesystem::is_regular_file(current) || read_text(current) != name) {
+                auto const temporary = workspace / ".current-artifact.next";
+                write_text_if_different(locks / "dirty", "");
+                write_text_if_different(temporary, name);
+                std::filesystem::rename(temporary, current);
+            }
+            std::filesystem::last_write_time(locks / "last-used", std::filesystem::file_time_type::clock::now());
+        } else {
+            write_text_if_different(signature_file, signature.str());
+        }
+        return {.path = std::move(artifact), .cache_lease = std::move(lease)};
     }
 
 public:
@@ -1158,13 +1229,11 @@ public:
         ModuleLoaderToolchainConfig toolchain,
         LogSink sink)
         : repo_root_(discover_repo(std::move(discovery_start))),
-          global_cache_root_(global_cache_root()),
           toolchain_(std::move(toolchain)),
           log_sink_(std::move(sink)),
           package_jit_(create_shared_package_jit())
     {
         apply_configured_dsl_pch(toolchain_);
-        std::filesystem::create_directories(global_cache_root_);
     }
 
     CompiledPackage compile_package_unlocked(
@@ -1185,13 +1254,13 @@ public:
         normalized_request.package_root = std::move(module_path);
         auto root = resolve_dir(normalized_request);
         auto const runtime = details::dev_runtime_directory();
-        std::filesystem::path artifact;
+        CompiledArtifact artifact;
         if (root.provenance == PackageProvenance::built_in && !runtime.empty()
             && root.artifact_root == runtime / "builtin_package_artifacts") {
-            artifact = root.artifact_root / package_code_name(sanitize(root.package_key));
-            if (!std::filesystem::is_regular_file(artifact)
-                || !std::filesystem::is_regular_file(artifact.string() + ".node-events.json")
-                || !std::filesystem::is_regular_file(node_code_object_path(artifact))) {
+            artifact.path = root.artifact_root / package_code_name(sanitize(root.package_key));
+            if (!std::filesystem::is_regular_file(artifact.path)
+                || !std::filesystem::is_regular_file(artifact.path.string() + ".node-events.json")
+                || !std::filesystem::is_regular_file(node_code_object_path(artifact.path))) {
                 throw std::runtime_error(
                     "incomplete bundled IV package artifacts for '" + artifact.string() + "'");
             }
@@ -1204,7 +1273,7 @@ public:
         };
     }
 
-    std::filesystem::path compile_package(
+    CompiledArtifact compile_package(
         PackageBuildRequest const& package) const
     {
         std::lock_guard lock(mutex_);
@@ -1222,7 +1291,7 @@ public:
         CompiledPackage const& compiled) const
     {
         auto const& root = compiled.root;
-        auto const& bitcode_path = compiled.artifact;
+        auto const& bitcode_path = compiled.artifact.path;
         auto const bitcode_key = normalize(bitcode_path).generic_string();
 
         std::shared_ptr<LoadedPackageCode> package;
@@ -1237,6 +1306,7 @@ public:
             package->id = root.package_key;
             package->package_root = root.module_dir.generic_string();
             package->bitcode_path = bitcode_path;
+            package->cache_lease = compiled.artifact.cache_lease;
             package->dynamic_libraries = package_dynamic_libraries(bitcode_path);
             package->shared_jit = package_jit_;
             package->dependency = {
@@ -1944,13 +2014,13 @@ void ModuleLoader::remove_package(std::filesystem::path const& path) const
     _impl->remove_package(path);
 }
 
-std::filesystem::path ModuleLoader::compile_package(
+ModuleLoader::CompiledArtifact ModuleLoader::compile_package(
     PackageBuildRequest const& package) const
 {
     return _impl->compile_package(package);
 }
 
-std::filesystem::path ModuleLoader::compile_project_package(
+ModuleLoader::CompiledArtifact ModuleLoader::compile_project_package(
     std::filesystem::path const& package_path) const
 {
     return compile_package(PackageBuildRequest{

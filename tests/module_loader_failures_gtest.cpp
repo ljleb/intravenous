@@ -161,11 +161,11 @@ TEST(ModuleLoaderPackages, BuiltinPackageUsesExecutableOwnedArtifactRoot)
         .artifact_root = iv::test::builtin_package_artifact_root(),
     });
     auto const build_root = iv::test::builtin_package_artifact_root() / "build/builtin";
-    auto const relative_artifact = artifact.lexically_relative(build_root);
+    auto const relative_artifact = artifact.path.lexically_relative(build_root);
 
     ASSERT_FALSE(relative_artifact.empty());
     EXPECT_NE(*relative_artifact.begin(), std::filesystem::path{".."});
-    EXPECT_TRUE(std::filesystem::is_regular_file(artifact));
+    EXPECT_TRUE(std::filesystem::is_regular_file(artifact.path));
 
     // The default catalog must expose automation without a separate package.
     auto loaded = iv::test::load_package(loader, {
@@ -209,7 +209,7 @@ void common_artifact_owner(iv::GraphBuilder& g) { g.outputs(); }
 )cpp");
     auto const common_cache = package_root.parent_path() / "common-cache";
     iv::test_support::ScopedEnvVar cache_env(
-        "IV_GLOBAL_MODULE_CACHE", common_cache.string());
+        "IV_BUILD_CACHE_DIR", common_cache.string());
     iv::ModuleLoader loader(iv::test::repo_root());
 
     auto const request = iv::PackageBuildRequest{
@@ -218,9 +218,9 @@ void common_artifact_owner(iv::GraphBuilder& g) { g.outputs(); }
     };
     auto const artifact = loader.compile_package(request);
 
-    auto const relative_artifact = artifact.lexically_relative(common_cache);
+    auto const relative_artifact = artifact.path.lexically_relative(common_cache);
     ASSERT_FALSE(relative_artifact.empty());
-    EXPECT_NE(*relative_artifact.begin(), std::filesystem::path{".."});
+    EXPECT_EQ(*relative_artifact.begin(), std::filesystem::path{"shared-packages"});
     EXPECT_FALSE(std::filesystem::exists(package_root / "build/iv"));
 
     auto const source_path = package_root / "module.cpp";
@@ -230,7 +230,8 @@ void common_artifact_owner(iv::GraphBuilder& g) { g.outputs(); }
         iv::test_support::read_text(source_path) + "\n// changed without a timestamp change\n");
     std::filesystem::last_write_time(source_path, original_stamp);
     auto const changed_artifact = loader.compile_package(request);
-    EXPECT_NE(changed_artifact, artifact);
+    EXPECT_NE(changed_artifact.path, artifact.path);
+    EXPECT_TRUE(std::filesystem::is_regular_file(artifact.path));
 }
 
 TEST(ModuleLoaderPackages, ReloadingUnchangedCodeReportsTheCurrentSourceStamp)

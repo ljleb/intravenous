@@ -57,8 +57,6 @@ TEST(StartupConfig, IntravenousDefaultsOverrideToolchain)
     auto const workspace = mutable_module_fixture_workspace("startup_config_toolchain_override", "local_cmake");
     auto const install_dir = workspace / "install";
     std::filesystem::create_directories(install_dir);
-    std::filesystem::remove_all(
-        iv::test::runtime_module_workspace_root(workspace));
 
     auto const c_compiler = configured_program_or_find("clang", IV_CONFIGURED_C_COMPILER);
     auto const cxx_compiler = configured_program_or_find("clang++", IV_CONFIGURED_CXX_COMPILER);

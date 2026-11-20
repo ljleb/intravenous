@@ -142,12 +142,18 @@ namespace iv {
         // retain their ModuleRef-owned code revision until they are replaced.
         void remove_package(std::filesystem::path const& package_path) const;
 
+        struct CompiledArtifact {
+            std::filesystem::path path;
+            // Keep this ownership while using any of the compiled files.
+            ModuleRef cache_lease;
+        };
+
         // Builds finalized O0 LLVM for the IV package without adding it to the shared ORC JIT.
-        std::filesystem::path compile_package(
+        CompiledArtifact compile_package(
             PackageBuildRequest const& package
         ) const;
 
-        std::filesystem::path compile_project_package(
+        CompiledArtifact compile_project_package(
             std::filesystem::path const& package_path
         ) const;
 

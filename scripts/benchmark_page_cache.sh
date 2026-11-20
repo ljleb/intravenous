@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-build_dir="${IV_BUILD_DIR:-$repo_root/build-release}"
+source "$repo_root/scripts/use_managed_build.sh"
 iterations="${1:-100}"
 benchmark="$build_dir/benchmark/iv_buffered_storage_benchmark"
 report_dir="$build_dir/page-cache"

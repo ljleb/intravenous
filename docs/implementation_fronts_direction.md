@@ -2296,6 +2296,11 @@ template inputs.
 See [Package Pipeline Application Architecture](./package_pipeline_architecture.md)
 for the exact records, configuration keys, and paths.
 
+**Accepted change (2026-11-20).** Common and project-local packages now use
+the [managed writable build cache](./development_run.md#configure-the-build-cache).
+The executable still owns its built-in package artifacts. This supersedes the
+project-local destination in the November 3 status above.
+
 This front owns:
 
 - explicit package provenance;

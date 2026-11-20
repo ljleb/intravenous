@@ -7,7 +7,7 @@ size="${2:-64}"
 seconds="${3:-30}"
 extra_benchmark_args=("${@:4}")
 repo_root="$(git rev-parse --show-toplevel)"
-build_dir="${IV_BUILD_DIR:-${repo_root}/build-release}"
+source "$repo_root/scripts/use_managed_build.sh"
 benchmark="${build_dir}/benchmark/iv_edit_latency_benchmark"
 
 if ! command -v perf >/dev/null 2>&1; then

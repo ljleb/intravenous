@@ -25,14 +25,14 @@ int main(int argc, char** argv)
         });
         if (argc == 5) {
             std::ofstream artifact_path(argv[4]);
-            artifact_path << artifact.generic_string();
+            artifact_path << artifact.path.generic_string();
             artifact_path.close();
             if (!artifact_path) {
                 throw std::runtime_error(
                     "cannot write IV package artifact path to '" + std::string(argv[4]) + "'");
             }
         } else {
-            std::cout << artifact.generic_string() << '\n';
+            std::cout << artifact.path.generic_string() << '\n';
         }
         return 0;
     } catch (std::exception const& error) {

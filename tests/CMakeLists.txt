@@ -1,6 +1,10 @@
 include(FetchContent)
 include(GoogleTest)
 
+add_test(NAME intravenous_build_cache
+    COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/build_cache_test.py")
+set_tests_properties(intravenous_build_cache PROPERTIES LABELS light)
+
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_Declare(
     googletest
