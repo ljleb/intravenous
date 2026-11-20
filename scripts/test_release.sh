@@ -6,7 +6,7 @@ usage() {
 Usage: scripts/test_release.sh [-j<n> | --help]
 
 Build the preconfigured build-release tree and run CTest with
---output-on-failure. Hide the start and result lines for passing tests.
+--output-on-failure. Passing tests update one live line in a terminal.
 
 Options
   -j<n>                Use n parallel jobs for both the build and tests.
@@ -47,8 +47,30 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 build_dir="$repo_root/build-release"
 
 cmake --build "$build_dir" --parallel "$jobs"
+
+terminal_columns=0
+if [[ -t 1 && "${TERM:-dumb}" != dumb ]]; then
+    { terminal_size="$(stty size <&3 2>/dev/null)" || terminal_size=; } 3>&1
+    terminal_columns="${terminal_size##* }"
+fi
+
 ctest --test-dir "$build_dir" --parallel "$jobs" --output-on-failure 2>&1 |
-    awk '
+    awk -v columns="$terminal_columns" '
+        function clear_progress() {
+            if (showing_progress) {
+                printf "\r\033[K"
+                showing_progress = 0
+            }
+        }
+        function show_progress(line) {
+            if (columns < 5)
+                return
+            if (length(line) >= columns)
+                line = substr(line, 1, columns - 4) "..."
+            printf "\r\033[K%s", line
+            fflush()
+            showing_progress = 1
+        }
         /^[[:space:]]*Start[[:space:]]+[0-9]+:[[:space:]]/ {
             test_id = $2 + 0
             start[test_id] = $0
@@ -66,16 +88,20 @@ ctest --test-dir "$build_dir" --parallel "$jobs" --output-on-failure 2>&1 |
             if (test_id in start && index(result, name[test_id]) == 1) {
                 status = substr(result, length(name[test_id]) + 1)
                 passed = status ~ /^[.[:space:]]+Passed[[:space:]]+[0-9.]+[[:space:]]+sec[[:space:]]*$/
-                if (!passed)
-                    print start[test_id]
+                start_line = start[test_id]
                 delete start[test_id]
                 delete name[test_id]
-                if (passed)
+                if (passed) {
+                    show_progress($0)
                     next
+                }
+                clear_progress()
+                print start_line
             }
         }
-        { print; fflush() }
+        { clear_progress(); print; fflush() }
         END {
+            clear_progress()
             for (test_id in start)
                 print start[test_id]
         }
