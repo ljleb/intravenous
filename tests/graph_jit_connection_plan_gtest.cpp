@@ -2,6 +2,9 @@
 #include <intravenous/graph_jit/background_storage_plan.h>
 #include <intravenous/graph_jit/connection_plan.h>
 #include <intravenous/graph_jit/coverage_manual_control.h>
+#include <intravenous/graph_jit/lowering.h>
+#include <intravenous/graph_jit/lowering/event_port_plan.h>
+#include <intravenous/graph_jit/lowering/graph_analysis.h>
 #include <intravenous/graph_jit/module_input_resolution.h>
 #include <intravenous/graph_jit/sample_storage_plan.h>
 
@@ -195,6 +198,28 @@ struct TickMidiEventSource {
     }
 
     void tick_block(iv::TickBlockContext<TickMidiEventSource> const&) const {}
+};
+
+template<std::size_t History>
+struct TriggerEventSink {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::event_input("in", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+        };
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::tuple{};
+    }
+
+    void constrain_ports(iv::ConstrainPortsContext<TriggerEventSink>& ctx) const
+    {
+        ctx.template input<"in">().history() = History;
+    }
+
+    void tick_block(iv::TickBlockContext<TriggerEventSink> const&) const {}
 };
 
 struct MonoSource {
@@ -2782,6 +2807,61 @@ TEST(GraphJitConnectionPlan, ConversionUsesTransientMaterialization)
     EXPECT_EQ(
         group.live_interval.end,
         *plan->schedule.bundle_execution_position[sink_handle]);
+}
+
+TEST(GraphJitConnectionPlan, SharesEventConversionAcrossCompatibleHistoryWindows)
+{
+    using namespace iv;
+    using namespace iv::graph_jit::detail;
+    constexpr std::size_t block_size = 64;
+
+    GraphBuilder graph;
+    auto source = details::configure_concrete_node<TickMidiEventSource>(graph);
+    auto whole = details::configure_concrete_node<TriggerEventSink<0>>(graph);
+    auto narrow = details::configure_concrete_node<TriggerEventSink<8>>(graph);
+    auto wide = details::configure_concrete_node<TriggerEventSink<16>>(graph);
+    whole.connect_event_input("in", source.event_port());
+    narrow.connect_event_input("in", source.event_port());
+    wide.connect_event_input("in", source.event_port());
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    auto realization = graph_jit::resolve_port_realization(configured);
+    ASSERT_TRUE(realization) << realization.error();
+    auto connections = build_connection_analysis_plan(configured, *realization, block_size);
+    ASSERT_TRUE(connections) << connections.error();
+    ASSERT_EQ(connections->event_connections.size(), 3u);
+    ASSERT_EQ(connections->event_producer_groups.size(), 1u);
+
+    // Event planning uses the resolved Tick callback presence and block size.
+    graph_jit::NodeImplementation tick{.tick_block = "tick"};
+    GraphAnalysis analysis;
+    for (auto const bundle : {source.node_bundle_handle(), whole.node_bundle_handle(),
+             narrow.node_bundle_handle(), wide.node_bundle_handle()}) {
+        analysis.primitives.push_back({
+            .bundle = {.node_bundle = bundle, .maximum_block_size = block_size},
+            .implementation = &tick,
+        });
+    }
+    auto ports = plan_event_ports(
+        configured, block_size, analysis, *connections, *realization, {});
+    ASSERT_TRUE(ports) << ports.error();
+    ASSERT_EQ(ports->materializations.size(), 2u);
+
+    auto const whole_storage = ports->primitives[1].inputs[0].storage;
+    auto const narrow_storage = ports->primitives[2].inputs[0].storage;
+    auto const wide_storage = ports->primitives[3].inputs[0].storage;
+    ASSERT_TRUE(whole_storage);
+    ASSERT_TRUE(wide_storage);
+    EXPECT_NE(whole_storage, wide_storage);
+    EXPECT_EQ(narrow_storage, wide_storage);
+
+    auto const windowed = std::ranges::find_if(
+        ports->materializations, &EventMaterializationPlan::select_invocation_window);
+    ASSERT_NE(windowed, ports->materializations.end());
+    EXPECT_EQ(windowed->target_representation, *wide_storage);
+    EXPECT_EQ(windowed->history_samples, 16u);
+    EXPECT_EQ(windowed->maximum_output_event_count, 20u);
 }
 
 TEST(GraphJitConnectionPlan, ExternalEventsUseBoundaryPolicy)

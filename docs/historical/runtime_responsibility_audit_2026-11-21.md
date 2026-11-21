@@ -139,3 +139,23 @@ The large-file inventory described the same boundary as follows.
 | File | Lines | Boundary to scrutinize |
 | --- | ---: | --- |
 | [`lowering_plan.cpp`](../../src/intravenous/graph_jit/lowering_plan.cpp#L9458) | 10,061 | `build_lowering_plan()` coordinates connection analysis, storage choice, package imports and scheduling. Event delivery, storage requirements and callback binding have different inputs and can be tested separately. The split between `select_event_storage()` and `layout_event_ports()` makes those responsibilities explicit. Storage trials share one connection analysis per callback order. |
+
+## Event conversion sharing before the rules were consolidated
+
+The runtime responsibility audit recorded this finding on 2026-11-21.
+See the [current implementation](../runtime_responsibility_audit.md#event-conversion-sharing).
+The line references describe the source at the time of the finding.
+
+### Event conversion sharing
+
+Staged fan-in, ordinary fan-in, single-source delivery, and feedback each
+search `EventPortBindingPlan::materializations` for a conversion to reuse.
+Each path also widens the history and cost bounds of a shared conversion.
+The matching rules differ. For example, fan-in checks whether the target
+keeps source indices. Some single-source and feedback paths omit that
+check. Review the matching rules and give conversion sharing one owner. Its inputs include the conversion, execution scope,
+source filter, and whether the result keeps source indices.
+[Staged fan-in](../../src/intravenous/graph_jit/lowering/event_port_plan.cpp#L1825) ·
+[Ordinary fan-in](../../src/intravenous/graph_jit/lowering/event_port_plan.cpp#L2166) ·
+[Single-source delivery](../../src/intravenous/graph_jit/lowering/event_port_plan.cpp#L2541) ·
+[Feedback](../../src/intravenous/graph_jit/lowering/event_port_plan.cpp#L3016)

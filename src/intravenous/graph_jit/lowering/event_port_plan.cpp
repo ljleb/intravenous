@@ -330,6 +330,67 @@ std::expected<void, std::string> realize_event_sequence_storage(
     return {};
 }
 
+// Callers match the source representation first, resolving any aliases.
+// A pre-merge sequence must fit that merge's window. A callback-facing
+// sequence can cover the largest history because each input reads its own
+// window.
+bool can_share_event_materialization(
+    EventMaterializationPlan const& existing,
+    EventMaterializationPlan const& requested)
+{
+    return existing.conversion == requested.conversion
+        && existing.scope == requested.scope
+        && existing.source_index_filter == requested.source_index_filter
+        && existing.preserve_source_indices == requested.preserve_source_indices
+        && existing.select_invocation_window == requested.select_invocation_window
+        && existing.before_merge == requested.before_merge
+        && (!existing.before_merge
+            || existing.history_samples == requested.history_samples);
+}
+
+void extend_event_materialization(
+    EventMaterializationPlan& existing,
+    EventMaterializationPlan const& requested)
+{
+    existing.history_samples = std::max(existing.history_samples, requested.history_samples);
+    existing.maximum_output_event_count = std::max(
+        existing.maximum_output_event_count, requested.maximum_output_event_count);
+    existing.maximum_source_event_reads = std::max(
+        existing.maximum_source_event_reads, requested.maximum_source_event_reads);
+}
+
+std::expected<std::size_t, std::string> require_event_materialization(
+    EventPortBindingPlan& plan,
+    std::size_t group_index,
+    EventMaterializationPlan requested)
+{
+    auto const existing = std::ranges::find_if(
+        plan.materializations, [&](EventMaterializationPlan const& candidate) {
+            return candidate.source_representation == requested.source_representation
+                && can_share_event_materialization(candidate, requested);
+        });
+    if (existing != plan.materializations.end()) {
+        extend_event_materialization(*existing, requested);
+        return existing->target_representation;
+    }
+
+    auto target = append_event_representation(
+        plan,
+        group_index,
+        requested.conversion.target_type,
+        plan.ports[requested.source_representation].event_capacity,
+        false,
+        false,
+        {},
+        false,
+        requested.preserve_source_indices);
+    if (!target) return std::unexpected(std::move(target.error()));
+
+    requested.target_representation = *target;
+    plan.materializations.push_back(std::move(requested));
+    return *target;
+}
+
 void apply_event_sequence_aliases(
     EventPortBindingPlan& plan, std::vector<std::optional<std::size_t>>& aliases)
 {
@@ -355,14 +416,8 @@ void apply_event_sequence_aliases(
             auto const& candidate = plan.materializations[candidate_index];
             auto const& candidate_target = plan.ports[candidate.target_representation];
             auto const& target = plan.ports[operation.target_representation];
-            return candidate.conversion == operation.conversion
-                && candidate.source_index_filter == operation.source_index_filter
-                && candidate.preserve_source_indices == operation.preserve_source_indices
-                && candidate.select_invocation_window == operation.select_invocation_window
-                && candidate.before_merge == operation.before_merge
-                && candidate.scope == operation.scope
-                && candidate_target.event_capacity == target.event_capacity
-                && candidate_target.has_source_indices == target.has_source_indices;
+            return can_share_event_materialization(candidate, operation)
+                && candidate_target.event_capacity == target.event_capacity;
         });
         if (found == conversions.end()) {
             conversions.push_back(index);
@@ -370,11 +425,7 @@ void apply_event_sequence_aliases(
         }
         auto& shared = plan.materializations[*found];
         aliases[operation.target_representation] = shared.target_representation;
-        shared.history_samples = std::max(shared.history_samples, operation.history_samples);
-        shared.maximum_output_event_count = std::max(
-            shared.maximum_output_event_count, operation.maximum_output_event_count);
-        shared.maximum_source_event_reads = std::max(
-            shared.maximum_source_event_reads, operation.maximum_source_event_reads);
+        extend_event_materialization(shared, operation);
     }
     std::erase_if(plan.materializations, [&](EventMaterializationPlan const& operation) {
         return aliases[operation.target_representation].has_value();
@@ -1452,37 +1503,15 @@ std::expected<EventPortBindingPlan, std::string> bind_event_ports(
                     }
                     return source.raw_representation;
                 }
-                auto existing = std::ranges::find_if(
-                    plan.materializations,
-                    [&](EventMaterializationPlan const& candidate) {
-                        return candidate.source_representation
-                                == source.raw_representation
-                            && candidate.conversion == source.conversion
-                            && candidate.scope == scope
-                            && candidate.before_merge;
+                return require_event_materialization(
+                    plan, group_index, EventMaterializationPlan{
+                        .source_representation = source.raw_representation,
+                        .conversion = source.conversion,
+                        .maximum_output_event_count = source.aggregate_event_bound,
+                        .maximum_source_event_reads = source.aggregate_event_bound,
+                        .before_merge = true,
+                        .scope = scope,
                     });
-                if (existing != plan.materializations.end()) {
-                    return existing->target_representation;
-                }
-                auto converted = append_representation(
-                    group_index,
-                    group.source_type,
-                    plan.ports[source.raw_representation].event_capacity);
-                if (!converted) {
-                    return std::unexpected(std::move(converted.error()));
-                }
-                plan.materializations.push_back(EventMaterializationPlan{
-                    .source_representation = source.raw_representation,
-                    .target_representation = *converted,
-                    .conversion = source.conversion,
-                    .maximum_output_event_count =
-                        source.aggregate_event_bound,
-                    .maximum_source_event_reads =
-                        source.aggregate_event_bound,
-                    .before_merge = true,
-                    .scope = scope,
-                });
-                return *converted;
             };
 
             // Source indices let a composed connection select its ordinary
@@ -1822,73 +1851,23 @@ std::expected<EventPortBindingPlan, std::string> bind_event_ports(
                                 return std::unexpected(
                                     std::move(materialized_events.error()));
                             }
-                            auto existing = std::ranges::find_if(
-                                plan.materializations,
-                                [&](EventMaterializationPlan const& candidate) {
-                                    return candidate.source_representation
-                                            == *canonical
-                                        && !candidate.source_index_filter
-                                        && candidate.conversion
-                                            == connection.conversion
-                                        && candidate.scope == scope
-                                        && candidate.target_representation
-                                            < plan.ports.size()
-                                        && plan.ports[
-                                               candidate.target_representation]
-                                               .type
-                                            == connection.target_type
-                                        && plan.ports[
-                                               candidate.target_representation]
-                                               .has_source_indices
-                                            == preserve_source_indices;
+                            auto converted = require_event_materialization(
+                                plan, group_index, EventMaterializationPlan{
+                                    .source_representation = *canonical,
+                                    .conversion = connection.conversion,
+                                    .preserve_source_indices = preserve_source_indices,
+                                    .history_samples = connection.target_history,
+                                    .maximum_output_event_count =
+                                        materialized_events->output_writes,
+                                    .maximum_source_event_reads =
+                                        materialized_events->source_reads,
+                                    .select_invocation_window = select_invocation_window,
+                                    .scope = scope,
                                 });
-                            if (existing != plan.materializations.end()) {
-                                target_representation =
-                                    existing->target_representation;
-                                existing->history_samples = std::max(
-                                    existing->history_samples,
-                                    connection.target_history);
-                                existing->maximum_output_event_count = std::max(
-                                    existing->maximum_output_event_count,
-                                    materialized_events->output_writes);
-                                existing->maximum_source_event_reads = std::max(
-                                    existing->maximum_source_event_reads,
-                                    materialized_events->source_reads);
-                            } else {
-                                auto derived = append_representation(
-                                    group_index,
-                                    connection.target_type,
-                                    plan.ports[*canonical]
-                                        .event_capacity,
-                                    false,
-                                    false,
-                                    {},
-                                    false,
-                                    preserve_source_indices);
-                                if (!derived) {
-                                    return std::unexpected(
-                                        std::move(derived.error()));
-                                }
-                                target_representation = *derived;
-                                plan.materializations.push_back(
-                                    EventMaterializationPlan{
-                                        .source_representation = *canonical,
-                                        .target_representation =
-                                            target_representation,
-                                        .conversion = connection.conversion,
-                                        .preserve_source_indices =
-                                            preserve_source_indices,
-                                        .history_samples =
-                                            connection.target_history,
-                                        .maximum_output_event_count =
-                                            materialized_events->output_writes,
-                                        .maximum_source_event_reads =
-                                            materialized_events->source_reads,
-                                        .select_invocation_window =
-                                            select_invocation_window,
-                                        .scope = scope,
-                                    });
+                            if (!converted) {
+                                return std::unexpected(std::move(converted.error()));
                             }
+                            target_representation = *converted;
                         }
                         auto& target_binding = plan.primitives[
                             *target_primitive].inputs[target_id.port];
@@ -2163,67 +2142,23 @@ std::expected<EventPortBindingPlan, std::string> bind_event_ports(
                             return std::unexpected(
                                 std::move(materialized_events.error()));
                         }
-                        auto existing = std::ranges::find_if(
-                            plan.materializations,
-                            [&](EventMaterializationPlan const& candidate) {
-                                return candidate.source_representation == *canonical
-                                    && !candidate.source_index_filter
-                                    && candidate.conversion == connection.conversion
-                                    && candidate.scope == *scope
-                                    && candidate.target_representation
-                                        < plan.ports.size()
-                                    && plan.ports[
-                                           candidate.target_representation].type
-                                        == connection.target_type
-                                    && plan.ports[
-                                           candidate.target_representation]
-                                           .has_source_indices
-                                        == preserve_source_indices;
+                        auto converted = require_event_materialization(
+                            plan, group_index, EventMaterializationPlan{
+                                .source_representation = *canonical,
+                                .conversion = connection.conversion,
+                                .preserve_source_indices = preserve_source_indices,
+                                .history_samples = connection.target_history,
+                                .maximum_output_event_count =
+                                    materialized_events->output_writes,
+                                .maximum_source_event_reads =
+                                    materialized_events->source_reads,
+                                .select_invocation_window = select_invocation_window,
+                                .scope = *scope,
                             });
-                        if (existing != plan.materializations.end()) {
-                            target_representation =
-                                existing->target_representation;
-                            existing->history_samples = std::max(
-                                existing->history_samples,
-                                connection.target_history);
-                            existing->maximum_output_event_count = std::max(
-                                existing->maximum_output_event_count,
-                                materialized_events->output_writes);
-                            existing->maximum_source_event_reads = std::max(
-                                existing->maximum_source_event_reads,
-                                materialized_events->source_reads);
-                        } else {
-                            auto derived = append_representation(
-                                group_index,
-                                connection.target_type,
-                                plan.ports[*canonical].event_capacity,
-                                false,
-                                false,
-                                {},
-                                false,
-                                preserve_source_indices);
-                            if (!derived) {
-                                return std::unexpected(
-                                    std::move(derived.error()));
-                            }
-                            target_representation = *derived;
-                            plan.materializations.push_back(
-                                EventMaterializationPlan{
-                                    .source_representation = *canonical,
-                                    .target_representation = target_representation,
-                                    .conversion = connection.conversion,
-                                    .preserve_source_indices =
-                                        preserve_source_indices,
-                                    .history_samples = connection.target_history,
-                                    .maximum_output_event_count =
-                                        materialized_events->output_writes,
-                                    .maximum_source_event_reads =
-                                        materialized_events->source_reads,
-                                    .select_invocation_window =
-                                        select_invocation_window,
-                                    .scope = *scope,
-                                });
+                        if (!converted) {
+                            return std::unexpected(std::move(converted.error()));
                         }
+                        target_representation = *converted;
                     }
                     auto& target_binding =
                         plan.primitives[*target_primitive].inputs[target_id.port];
@@ -2428,23 +2363,19 @@ std::expected<EventPortBindingPlan, std::string> bind_event_ports(
             auto const merge_scope = primitive_scope(
                 group.live_interval.begin, EventOperationPhase::after);
             if (source_conversion.size() != 0) {
-                auto converted = append_representation(
-                    group_index,
-                    group.source_type,
-                    plan.ports[*raw_source_representation].event_capacity);
+                auto converted = require_event_materialization(
+                    plan, group_index, EventMaterializationPlan{
+                        .source_representation = *raw_source_representation,
+                        .conversion = source_conversion,
+                        .maximum_output_event_count = *base_max_events,
+                        .maximum_source_event_reads = *base_max_events,
+                        .before_merge = true,
+                        .scope = merge_scope,
+                    });
                 if (!converted) {
                     return std::unexpected(std::move(converted.error()));
                 }
                 producer_representation = *converted;
-                plan.materializations.push_back(EventMaterializationPlan{
-                    .source_representation = *raw_source_representation,
-                    .target_representation = *converted,
-                    .conversion = source_conversion,
-                    .maximum_output_event_count = *base_max_events,
-                    .maximum_source_event_reads = *base_max_events,
-                    .before_merge = true,
-                    .scope = merge_scope,
-                });
             }
             group_sequences.push_back({
                 .representation = source_representation,
@@ -2538,55 +2469,22 @@ std::expected<EventPortBindingPlan, std::string> bind_event_ports(
                         return std::unexpected(
                             std::move(materialized_events.error()));
                     }
-                    auto existing = std::ranges::find_if(
-                        plan.materializations,
-                        [&](EventMaterializationPlan const& candidate) {
-                            return candidate.source_representation
-                                    == source_representation
-                                && !candidate.source_index_filter
-                                && candidate.conversion == connection.conversion
-                                && candidate.scope == *scope
-                                && candidate.target_representation
-                                    < plan.ports.size()
-                                && plan.ports[
-                                       candidate.target_representation].type
-                                    == connection.target_type;
-                        });
-                    if (existing != plan.materializations.end()) {
-                        target_representation = existing->target_representation;
-                        existing->history_samples = std::max(
-                            existing->history_samples,
-                            connection.target_history);
-                        existing->maximum_output_event_count = std::max(
-                            existing->maximum_output_event_count,
-                            materialized_events->output_writes);
-                        existing->maximum_source_event_reads = std::max(
-                            existing->maximum_source_event_reads,
-                            materialized_events->source_reads);
-                    } else {
-                        auto derived = append_representation(
-                            group_index,
-                            connection.target_type,
-                            plan.ports[source_representation]
-                                .event_capacity);
-                        if (!derived) {
-                            return std::unexpected(std::move(derived.error()));
-                        }
-                        target_representation = *derived;
-                        plan.materializations.push_back(EventMaterializationPlan{
+                    auto converted = require_event_materialization(
+                        plan, group_index, EventMaterializationPlan{
                             .source_representation = source_representation,
-                            .target_representation = target_representation,
                             .conversion = connection.conversion,
                             .history_samples = connection.target_history,
                             .maximum_output_event_count =
                                 materialized_events->output_writes,
                             .maximum_source_event_reads =
                                 materialized_events->source_reads,
-                            .select_invocation_window =
-                                select_invocation_window,
+                            .select_invocation_window = select_invocation_window,
                             .scope = *scope,
                         });
+                    if (!converted) {
+                        return std::unexpected(std::move(converted.error()));
                     }
+                    target_representation = *converted;
                 }
                 auto& target_binding =
                     plan.primitives[*target_primitive].inputs[target_id.port];
@@ -3013,43 +2911,9 @@ std::expected<EventPortBindingPlan, std::string> bind_event_ports(
                     return std::unexpected(
                         std::move(materialized_events.error()));
                 }
-                auto existing = std::ranges::find_if(
-                    plan.materializations,
-                    [&](EventMaterializationPlan const& candidate) {
-                        return candidate.source_representation
-                                == target_representation
-                            && !candidate.source_index_filter
-                            && candidate.conversion == connection.conversion
-                            && candidate.scope == scope
-                            && candidate.target_representation
-                                < plan.ports.size()
-                            && plan.ports[
-                                   candidate.target_representation].type
-                                == connection.target_type;
-                    });
-                if (existing != plan.materializations.end()) {
-                    consumer_representation = existing->target_representation;
-                    existing->history_samples = std::max(
-                        existing->history_samples, connection.target_history);
-                    existing->maximum_output_event_count = std::max(
-                        existing->maximum_output_event_count,
-                        materialized_events->output_writes);
-                    existing->maximum_source_event_reads = std::max(
-                        existing->maximum_source_event_reads,
-                        materialized_events->source_reads);
-                } else {
-                    auto derived = append_representation(
-                        source_group_index,
-                        connection.target_type,
-                        plan.ports[target_representation]
-                            .event_capacity);
-                    if (!derived) {
-                        return std::unexpected(std::move(derived.error()));
-                    }
-                    consumer_representation = *derived;
-                    plan.materializations.push_back(EventMaterializationPlan{
+                auto converted = require_event_materialization(
+                    plan, source_group_index, EventMaterializationPlan{
                         .source_representation = target_representation,
-                        .target_representation = consumer_representation,
                         .conversion = connection.conversion,
                         .history_samples = connection.target_history,
                         .maximum_output_event_count =
@@ -3059,7 +2923,10 @@ std::expected<EventPortBindingPlan, std::string> bind_event_ports(
                         .select_invocation_window = true,
                         .scope = scope,
                     });
+                if (!converted) {
+                    return std::unexpected(std::move(converted.error()));
                 }
+                consumer_representation = *converted;
             }
             auto& target_binding =
                 plan.primitives[*target_primitive].inputs[target_id.port];
@@ -3209,25 +3076,6 @@ std::expected<EventPortBindingPlan, std::string> bind_event_ports(
                 }
                 merged_capacity += branch_capacity;
 
-                auto existing = std::ranges::find_if(
-                    plan.materializations,
-                    [&](EventMaterializationPlan const& candidate) {
-                        return candidate.source_representation
-                                == source_representation
-                            && candidate.source_index_filter == source_filter
-                            && candidate.conversion == identity
-                            && candidate.scope == scope
-                            && candidate.before_merge
-                            && candidate.target_representation
-                                < plan.ports.size()
-                            && plan.ports[candidate.target_representation].type
-                                == connection.source_type;
-                    });
-                if (existing != plan.materializations.end()) {
-                    branch_representations.push_back(
-                        existing->target_representation);
-                    continue;
-                }
                 auto materialized_events = materialization_event_bound(
                     source.max_events_per_index,
                     connection.target_history,
@@ -3238,27 +3086,24 @@ std::expected<EventPortBindingPlan, std::string> bind_event_ports(
                     return std::unexpected(
                         std::move(materialized_events.error()));
                 }
-                auto branch = append_representation(
-                    group_index,
-                    connection.source_type,
-                    branch_capacity);
-                if (!branch)
+                auto branch = require_event_materialization(
+                    plan, group_index, EventMaterializationPlan{
+                        .source_representation = source_representation,
+                        .conversion = identity,
+                        .source_index_filter = source_filter,
+                        .history_samples = connection.target_history,
+                        .maximum_output_event_count =
+                            materialized_events->output_writes,
+                        .maximum_source_event_reads =
+                            materialized_events->source_reads,
+                        .select_invocation_window = true,
+                        .before_merge = true,
+                        .scope = scope,
+                    });
+                if (!branch) {
                     return std::unexpected(std::move(branch.error()));
+                }
                 branch_representations.push_back(*branch);
-                plan.materializations.push_back(EventMaterializationPlan{
-                    .source_representation = source_representation,
-                    .target_representation = *branch,
-                    .conversion = identity,
-                    .source_index_filter = source_filter,
-                    .history_samples = connection.target_history,
-                    .maximum_output_event_count =
-                        materialized_events->output_writes,
-                    .maximum_source_event_reads =
-                        materialized_events->source_reads,
-                    .select_invocation_window = true,
-                    .before_merge = true,
-                    .scope = scope,
-                });
             }
 
             auto rounded_capacity = rounded_event_capacity(merged_capacity);
@@ -3289,12 +3134,6 @@ std::expected<EventPortBindingPlan, std::string> bind_event_ports(
 
             auto consumer_representation = *merged;
             if (connection.conversion.size() != 0) {
-                auto converted = append_representation(
-                    group_index,
-                    connection.target_type,
-                    *rounded_capacity);
-                if (!converted)
-                    return std::unexpected(std::move(converted.error()));
                 auto materialized_events = materialization_event_bound(
                     connection.max_events_per_index,
                     connection.target_history,
@@ -3305,19 +3144,22 @@ std::expected<EventPortBindingPlan, std::string> bind_event_ports(
                     return std::unexpected(
                         std::move(materialized_events.error()));
                 }
+                auto converted = require_event_materialization(
+                    plan, group_index, EventMaterializationPlan{
+                        .source_representation = *merged,
+                        .conversion = connection.conversion,
+                        .history_samples = connection.target_history,
+                        .maximum_output_event_count =
+                            materialized_events->output_writes,
+                        .maximum_source_event_reads =
+                            materialized_events->source_reads,
+                        .select_invocation_window = true,
+                        .scope = scope,
+                    });
+                if (!converted) {
+                    return std::unexpected(std::move(converted.error()));
+                }
                 consumer_representation = *converted;
-                plan.materializations.push_back(EventMaterializationPlan{
-                    .source_representation = *merged,
-                    .target_representation = *converted,
-                    .conversion = connection.conversion,
-                    .history_samples = connection.target_history,
-                    .maximum_output_event_count =
-                        materialized_events->output_writes,
-                    .maximum_source_event_reads =
-                        materialized_events->source_reads,
-                    .select_invocation_window = true,
-                    .scope = scope,
-                });
             }
             auto& target_binding =
                 plan.primitives[*target_primitive].inputs[target_id.port];

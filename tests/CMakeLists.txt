@@ -190,6 +190,8 @@ add_iv_gtest(intravenous_configuration_expression_tests configuration_expression
 add_iv_gtest(
     intravenous_graph_jit_connection_plan_tests
     graph_jit_connection_plan_gtest.cpp)
+target_include_directories(intravenous_graph_jit_connection_plan_tests SYSTEM PRIVATE
+    ${LLVM_INCLUDE_DIRS})
 add_iv_gtest(
     intravenous_port_realization_tests
     port_realization_gtest.cpp)

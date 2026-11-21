@@ -78,7 +78,22 @@ stream binding, storage selection, and buffer packing.
 `build_lowering_plan()` passes the graph, block size, and analysis into
 `plan_event_ports()`. It uses the returned `EventPortBindingPlan` to
 enforce the stack budget with the Sample plan.
-[Event port planner](../src/intravenous/graph_jit/lowering/event_port_plan.cpp#L3787)
+[Event port planner](../src/intravenous/graph_jit/lowering/event_port_plan.cpp#L3629)
+
+### Event conversion sharing
+
+Event lowering uses one rule for reusing a materialization when it binds
+a stream and when it resolves a raw output alias. A materialization produces
+a sequence that another operation or callback can read. Shared requests
+must agree on the source stream, conversion, scope, source filter, source
+indices, and whether to select the invocation window.
+
+Callback-facing conversions can cover the largest requested history. Each
+callback reads its own window. A pre-merge conversion uses the merge's
+exact history because the window determines the origin for Event ordering.
+GraphJit widens the cost bounds of a shared conversion to cover every
+request.
+[Event materialization planner](../src/intravenous/graph_jit/lowering/event_port_plan.cpp#L337)
 
 ### Stack-budget retries
 
@@ -117,20 +132,6 @@ which object files each executable and test links. [CMake targets](../src/intrav
 | `app/` | Startup and composition. `app/bridges/` connects the components through linker events. Request and event declarations live with their owners. |
 
 ## Open findings and proposals
-
-### Event conversion sharing
-
-Staged fan-in, ordinary fan-in, single-source delivery, and feedback each
-search `EventPortBindingPlan::materializations` for a conversion to reuse.
-Each path also widens the history and cost bounds of a shared conversion.
-The matching rules differ. For example, fan-in checks whether the target
-keeps source indices. Some single-source and feedback paths omit that
-check. Review the matching rules and give conversion sharing one owner. Its inputs include the conversion, execution scope,
-source filter, and whether the result keeps source indices.
-[Staged fan-in](../src/intravenous/graph_jit/lowering/event_port_plan.cpp#L1825) ·
-[Ordinary fan-in](../src/intravenous/graph_jit/lowering/event_port_plan.cpp#L2166) ·
-[Single-source delivery](../src/intravenous/graph_jit/lowering/event_port_plan.cpp#L2541) ·
-[Feedback](../src/intravenous/graph_jit/lowering/event_port_plan.cpp#L3016)
 
 ### Connection routing, scheduling, and port grouping
 
