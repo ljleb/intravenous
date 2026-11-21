@@ -1,6 +1,5 @@
 #include "../module_test_utils.h"
 #include "../event_source_test_support.h"
-#include "../node_definitions_test_support.h"
 
 #include <intravenous/runtime/node_definitions_project_graph_bridge.h>
 #include <intravenous/runtime/graph_connections.h>
@@ -8,18 +7,25 @@
 #include <intravenous/runtime/runtime_project_events.h>
 #include <intravenous/runtime/project_graph_graph_connections_bridge.h>
 #include <intravenous/runtime/project_graph_node_instances_bridge.h>
+#include <intravenous/runtime/project_graph_package_definitions_bridge.h>
 #include <intravenous/runtime/project_graph_iv_module_source_introspection_bridge.h>
+#include <intravenous/runtime/socket_rpc_requests.h>
+#include <intravenous/runtime/socket_rpc_response_builders.h>
 #include <intravenous/runtime/node_instances.h>
+#include <intravenous/runtime/package_definitions.h>
+#include <intravenous/runtime/package_jit.h>
 #include <intravenous/runtime/node_instances_iv_module_source_introspection_bridge.h>
 #include <intravenous/runtime/iv_module_source_introspection.h>
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <ranges>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -44,6 +50,7 @@ struct InitializedIvModuleSourceIntrospectionApp {
     iv::GraphConnections graph_connections;
     iv::ProjectGraph project_graph;
     iv::IvModuleSourceIntrospection introspection;
+    iv::PackageDefinitions packages;
     iv::StartupConfig startup_config;
     iv::node_definitions_project_graph_bridge::scope
         node_definitions_project_graph_scope;
@@ -51,6 +58,8 @@ struct InitializedIvModuleSourceIntrospectionApp {
         project_graph_node_instances_scope;
     iv::project_graph_graph_connections_bridge::scope
         project_graph_graph_connections_scope;
+    iv::project_graph_package_definitions_bridge::scope
+        project_graph_package_definitions_scope;
     iv::project_graph_iv_module_source_introspection_bridge::scope
         project_graph_iv_module_source_introspection_scope;
     iv::node_instances_iv_module_source_introspection_bridge::scope
@@ -62,13 +71,15 @@ struct InitializedIvModuleSourceIntrospectionApp {
         std::filesystem::path workspace_root,
         std::filesystem::path discovery_start,
         std::vector<std::filesystem::path> extra_common_package_roots)
-        : startup_config(
+        : packages(workspace_root),
+          startup_config(
               std::move(workspace_root),
               std::move(discovery_start),
               std::move(extra_common_package_roots)),
           node_definitions_project_graph_scope(definitions, project_graph),
           project_graph_node_instances_scope(project_graph, instances),
           project_graph_graph_connections_scope(project_graph, graph_connections),
+          project_graph_package_definitions_scope(project_graph, packages),
           project_graph_iv_module_source_introspection_scope(
               project_graph,
               introspection),
@@ -79,13 +90,41 @@ struct InitializedIvModuleSourceIntrospectionApp {
 
     void initialize()
     {
-        auto const config = startup_config.initialize();
+        auto config = startup_config.initialize();
         auto const module_root = std::filesystem::weakly_canonical(config.workspace_root);
-        auto definition = iv::test::load_runtime_iv_module_definition(config, module_root);
-        // Source introspection learns instance declarations from the
-        // ProjectGraph root build that creates the instance.
-        auto const module_id = definition.module_id;
-        iv::test::publish_loaded_definition(definitions, std::move(definition));
+        auto const builtin_root = iv::test::staged_builtin_package_root();
+        iv::PackageJit jit(std::move(config));
+        iv::PackageJitBatchRequest request{
+            .declarations = {{
+                .package_id = builtin_root.generic_string(),
+                .package_root = builtin_root,
+                .provenance = iv::PackageProvenance::built_in,
+                .artifact_root = iv::test::builtin_package_artifact_root(),
+                .package_namespace = "builtin",
+            }, {
+                .package_id = module_root.generic_string(),
+                .package_root = module_root,
+            }},
+        };
+        jit.handle_build_request(request);
+        if (!request.result.failed.empty())
+            throw std::runtime_error(request.result.failed.front().message);
+        auto const project = std::ranges::find(request.result.revisions, module_root, &iv::PackageRevision::package_root);
+        ASSERT_NE(project, request.result.revisions.end());
+        ASSERT_FALSE(project->module_definitions.empty());
+        auto const module_id = project->module_definitions.front().definition_id;
+
+        // Keep the real provider tables so ProjectGraph can construct the
+        // instance and expose its declaration locations.
+        auto snapshot = std::make_shared<iv::PackageDefinitionsSnapshot>();
+        snapshot->generation = 1;
+        for (auto& revision : request.result.revisions) {
+            auto id = revision.package_id;
+            snapshot->by_package_id.emplace(std::move(id),
+                std::make_shared<iv::PackageRevision const>(std::move(revision)));
+        }
+        iv::PackageDefinitionsPublicationRequest publication{.snapshot = std::move(snapshot)};
+        in_event_source([&] { definitions.handle_package_definitions_publication(publication); });
         iv::ProjectStringBuilder created;
         in_event_source([&] { return project_graph.handle_project_create_node_instance(
             iv::ProjectCreateNodeInstanceRequest{
@@ -94,7 +133,8 @@ struct InitializedIvModuleSourceIntrospectionApp {
                 .package_root = module_root,
             },
             created); });
-        (void)created.build();
+        EXPECT_EQ(created.build(), "instance:1");
+        ASSERT_FALSE(project_graph.configuration_failure());
     }
 
     auto query_by_spans(
@@ -695,7 +735,7 @@ namespace {
         auto const p = g.tile<stereo>(left, right);
         auto const trigger = details::configure_concrete_node<TriggerSource>(g).event_port();
         auto const sink = details::configure_concrete_node<
-            Sum<stereo, SampleStreamLayout::planar, 1>>(g);
+            SumN<stereo, SampleStreamLayout::planar, 1>>(g);
         sink(p);
         g.outputs(sink);
         g.event_outputs(trigger);
@@ -744,7 +784,7 @@ namespace {
     EXPECT_FALSE(std::ranges::any_of(
         direct_initializer.nodes,
         [](auto const& node) {
-            return node.kind.contains("Sum")
+            return node.kind.contains("SumN<")
                 && node.type_identity != "sample-port";
         }));
 
@@ -755,11 +795,38 @@ namespace {
     auto const sink = std::find_if(
         node_call.nodes.begin(), node_call.nodes.end(),
         [](auto const& node) {
-            return node.kind.contains("Sum")
+            return node.kind.contains("SumN<")
                 && node.type_identity != "sample-port";
         });
     ASSERT_NE(sink, node_call.nodes.end());
     EXPECT_FALSE(sink->source_spans.empty());
+
+    iv::SocketRpcGraphScopeResultBuilder scope_builder;
+    in_event_source([&] {
+        app.project_graph.handle_socket_rpc_get_graph_scope(
+            {.expanded = {{.instance_id = "instance:1"}}}, scope_builder);
+    });
+    auto const reply = nlohmann::ordered_json::parse(scope_builder.build(1));
+    ASSERT_TRUE(reply.contains("result")) << reply.dump();
+    auto const& scope = reply.at("result");
+    auto const& children = scope.at("childScopes").at(0).at("nodes");
+    auto const module_source = iv::test::read_text(module_cpp);
+    auto expect_declaration = [&](std::string_view label, int line) {
+        auto const child = std::ranges::find_if(children, [&](auto const& entry) {
+            return entry.value("childSourceLabel", std::string{}) == label;
+        });
+        ASSERT_NE(child, children.end()) << label;
+        ASSERT_TRUE(child->contains("declarationSource")) << label;
+        auto const& source = child->at("declarationSource");
+        EXPECT_EQ(source.at("filePath"), module_cpp.generic_string());
+        EXPECT_EQ(source.at("line"), line);
+        auto const identifier_offset = module_source.find(std::string(label) + " = ");
+        ASSERT_NE(identifier_offset, std::string::npos);
+        EXPECT_EQ(source.at("byteOffset"), identifier_offset);
+    };
+    expect_declaration("p", 19);
+    expect_declaration("trigger", 20);
+    expect_declaration("sink", 21);
 }
 
 TEST(IvModuleSourceIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBackedRef)
@@ -829,7 +896,7 @@ namespace {
     iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
         return iv::details::configure_concrete_node<
-            iv::Sum<iv::mono, iv::SampleStreamLayout::planar, Inputs>>(g).node_ref();
+            iv::SumN<iv::mono, iv::SampleStreamLayout::planar, Inputs>>(g).node_ref();
     }
 
     void schema_mismatch_module(iv::GraphBuilder& g)
@@ -852,7 +919,7 @@ namespace {
 
     size_t singleton_sum_count = 0;
     for (auto const &node : result.nodes) {
-        if (node.member_count == 1 && node.kind.contains("Sum<") &&
+        if (node.member_count == 1 && node.kind.contains("SumN<") &&
             (node.continuous_inputs.size() == 2
              || node.continuous_inputs.size() == 3)) {
             ++singleton_sum_count;
@@ -911,10 +978,10 @@ namespace {
     EXPECT_TRUE(split_nodes[1]->id.contains("#type:"));
 
     auto const sum = std::ranges::find_if(split_nodes, [](auto const* node) {
-        return node->kind.contains("Sum<");
+        return node->kind.contains("std::plus");
     });
     auto const difference = std::ranges::find_if(split_nodes, [](auto const* node) {
-        return node->kind.contains("BinaryOpNode");
+        return node->kind.contains("std::minus");
     });
     ASSERT_NE(sum, split_nodes.end());
     ASSERT_NE(difference, split_nodes.end());
@@ -940,7 +1007,7 @@ namespace {
     {
         (void)I;
         return iv::details::configure_concrete_node<
-            iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>(g).node_ref();
+            iv::SumN<iv::mono, iv::SampleStreamLayout::planar, 1>>(g).node_ref();
     }
 
     void mixed_connectivity_module(iv::GraphBuilder& g)
@@ -967,7 +1034,7 @@ namespace {
     size_t connected_sum_count = 0;
     size_t disconnected_sum_count = 0;
     for (auto const &node : result.nodes) {
-        if (!node.kind.contains("Sum<")
+        if (!node.kind.contains("SumN<")
             || node.continuous_inputs.size() != 1) continue;
         EXPECT_EQ(node.member_count, 1u);
         if (node.continuous_inputs.front().connectivity

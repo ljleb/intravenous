@@ -222,6 +222,15 @@ empty Event writes is unchanged. In particular, producing default silence in
 a skipped Tick node is an actual authored write when it uses the output facade;
 it is not equivalent to `untouched`.
 
+A Tick block with a buffered Sequential Event output can use
+`push_preserving_recording(event, sample_offset)` to fill gaps in its
+recording. The background writer compares the finalized range with the
+recording as it stands, including earlier records in the same transaction.
+The writer preserves previously recorded positions, including positions
+that contain no events. The current Tick event stream still reaches live
+consumers. Click Detector uses this to retain the original detections when
+playback revisits a recorded range.
+
 A block with output latency `L` can revise previously authored values during
 later physical Tick invocations. Finalization follows this **physical**
 invocation order. The project addresses belong to the corresponding global

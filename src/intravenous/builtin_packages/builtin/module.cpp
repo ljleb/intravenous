@@ -5,6 +5,7 @@
 #include <intravenous/basic_nodes/arithmetic.h>
 #include <intravenous/basic_nodes/automation.h>
 #include <intravenous/basic_nodes/beats.h>
+#include <intravenous/basic_nodes/click_detector.h>
 #include <intravenous/basic_nodes/timeline.h>
 #include <intravenous/basic_nodes/constant.h>
 #include <intravenous/basic_nodes/debug_probe.h>
@@ -20,16 +21,19 @@
 IV_NODE("builtin.constant", iv::Constant, "Constant");
 IV_INSTANTIATE_OUTPUT_GAIN_NODES();
 IV_NODE("builtin.debug_probe", ::DebugProbe, "Debug Probe");
+IV_NODE("builtin.click_detector", iv::ClickDetector, "Click Detector");
 
 IV_MODULE_CLASS("builtin.automation.curve", iv::automation::AutomationCurve, "Automation Curve", iv::tags(iv::tag::automation));
 
 IV_MODULE_CLASS("builtin.timeline", iv::Timeline, "Timeline", iv::tags(iv::tag::timeline));
 IV_NODE("builtin.beats", iv::Beats, "Beats", iv::tags(iv::tag::rhythm, iv::tag::beats));
 
-IV_NODE("builtin.invert", iv::Invert, "Invert");
-IV_NODE("builtin.power", iv::Power, "Power");
-IV_NODE("builtin.subtract", iv::Subtract, "Subtract");
-IV_NODE("builtin.quotient", iv::Quotient, "Quotient");
+IV_NODE("builtin.invert", iv::Invert, "-a");
+IV_NODE("builtin.power", iv::Power, "a ^ b");
+IV_NODE("builtin.sum", iv::Sum, "a + b");
+IV_NODE("builtin.subtract", iv::Subtraction, "a - b");
+IV_NODE("builtin.product", iv::Product, "a * b");
+IV_NODE("builtin.quotient", iv::Quotient, "a / b");
 
 IV_NODE("builtin.whack_iir", iv::WhackIirThing, "Whack IIR");
 IV_NODE("builtin.simple_iir_high_pass", iv::SimpleIirHighPass, "Simple IIR High Pass");

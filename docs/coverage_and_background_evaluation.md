@@ -2366,9 +2366,13 @@ recording merely because that planning metadata exists.
 6. **In progress: implement concrete-node port-state continuity and graph-revision transitions.**
    Graph-wide connection analysis now retains each authored concrete node's optional
    stable graph/virtual-node/direct-member identity, and background planning consumes
-   that same identity instead of reconstructing a background-only copy. Anonymous
-   concrete nodes deliberately retain no synthetic identity derived from a
-   generation-local bundle handle.
+   that same identity instead of reconstructing a background-only copy. For a
+   top-level concrete leaf, ProjectGraph supplies the authored instance ID.
+   GraphJit uses that ID and the concrete node type to identify the leaf across
+   executions. A meter subscription can change the execution generation while
+   the leaf's buffered Sequential recording stays under the same output key.
+   Anonymous concrete nodes deliberately retain no synthetic identity derived
+   from a generation-local bundle handle.
 
    Connection analysis also now derives the authoritative inventory of non-empty
    node-owned Sequential-input history and Tick-output history/latency. Sample state

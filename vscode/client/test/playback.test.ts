@@ -5,6 +5,7 @@ import { renderToString } from "vue/server-renderer";
 import { isPendingPlaybackSeek, PlaybackDisplay, playbackSampleIndexFromSeconds,
     playbackSeekPosition, type PlaybackSnapshot } from "../src/playback";
 import { WorkspaceRpc } from "../src/workspaceRpc";
+import { PlaybackProfile } from "../src/playbackProfile";
 import type { JsonRpcSocketClient } from "../src/rpcClient";
 import { providePlayback, usePlayback } from "../webview/timeline/playbackContext";
 
@@ -105,10 +106,72 @@ test("playback RPC does not attach graph revisions or touch project history", as
     const client = { request: async (method: string, params: unknown) => { calls.push({ method, params }); return state(); } };
     const rpc = new WorkspaceRpc(client as unknown as JsonRpcSocketClient, () => 99);
     await rpc.getPlayback();
+    await rpc.getPlayback(true);
+    await rpc.getPlayback(false, { id: "take", durationMs: 10000 });
+    await rpc.getPlayback(false, { id: "take" });
     await rpc.togglePlayback();
     await rpc.seekPlayback("-9223372036854775808");
     assert.deepEqual(calls, [
-        { method: "playback.get", params: {} }, { method: "playback.toggle", params: {} },
+        { method: "playback.get", params: {} }, { method: "playback.get", params: { diagnostics: true } },
+        { method: "playback.get", params: { outputProfile: { id: "take", durationMs: 10000 } } },
+        { method: "playback.get", params: { outputProfile: { id: "take" } } },
+        { method: "playback.toggle", params: {} },
         { method: "playback.seek", params: { position: "-9223372036854775808" } },
     ]);
+});
+
+test("the playback profile correlates probe changes, execution cutovers, and marked clicks", () => {
+    const profile = new PlaybackProfile(1000);
+    const diagnostics = { configuredGeneration: "7", executionGeneration: "42",
+        backgroundUnderrunBlocks: "9007199254740993" };
+    profile.recordPlayback(state({ diagnostics }), 1000, 1002);
+    const compiling = { phase: "compiling", message: "", preparedGeneration: null, activeGeneration: 42 };
+    profile.recordGraph(compiling, 1060);
+    profile.recordGraph(compiling, 1070);
+    profile.recordObservation({ revision: "4", activationId: "8" }, 1110);
+    profile.recordPlayback(state({ diagnostics: { ...diagnostics, executionGeneration: "43",
+        backgroundUnderrunBlocks: "9007199254740995" }, executionIndex: "48096" }), 1100, 1120);
+    profile.markClick(1150);
+    const report = profile.report(11000);
+    assert.match(report, /Observed execution changes · 1, including 1 within the same graph configuration/);
+    assert.match(report, /Background underruns · 2 blocks silenced/);
+    assert.match(report, /\+0\.110 s  Live meter probes · requirement revision 4, activation 8/);
+    assert.match(report, /\+0\.120 s  Active execution 42 → 43, configuration 7, foreground sample 48096/);
+    assert.match(report, /Audible clicks marked · 1 · \+0\.150 s/);
+    assert.equal(report.match(/Graph compiling/g)?.length, 1);
+});
+
+test("a playback profile with missing diagnostics reports unavailable measurements", () => {
+    const profile = new PlaybackProfile(0);
+    profile.recordPlayback(state(), 0, 20);
+    profile.recordPlayback(null, 50, 75);
+    const report = profile.report(10000);
+    assert.match(report, /0 with diagnostics, 2 unavailable/);
+    assert.match(report, /server returned no playback diagnostics/);
+    assert.doesNotMatch(report, /Background underruns · 0/);
+});
+
+test("the device capture compares each channel at the graph switch with nearby sample steps", () => {
+    const profile = new PlaybackProfile(1000);
+    for (let i = 0; i < 125; ++i) profile.recordObservation({ revision: "4", activationId: String(i) }, 1000 + i);
+    profile.markClick(1500);
+    profile.stop(2000);
+    profile.markClick(2050);
+    const report = profile.report(2200, {
+        status: "ready", buffers: 3, overBudgetBuffers: 1, omittedCutovers: 0,
+        maxRenderMs: 3, maxBudgetFraction: 1.5, cutovers: [{
+            previousGeneration: "42", executionGeneration: "42", previousPublication: "12",
+            codePublication: "13", foregroundSample: "-9007199254740995",
+            previousRendered: true, rendered: true, transportChanged: false,
+            previousTransitionTick: false, transitionTick: false,
+            elapsedMs: 420, renderMs: 3, budgetMs: 2,
+            before: [0, null, 0.25, null], after: [0.75, 0.5, 0.875, 0.25],
+        }],
+    });
+    assert.match(report, /over 1\.00 s/);
+    assert.match(report, /Audible clicks marked · 1 · \+0\.500 s/);
+    assert.match(report, /1 exceeded their audio duration.*150\.0%/);
+    assert.match(report, /\+0\.420 s · foreground sample -9007199254740995 · execution 42 → 42, code publication 12 → 13/);
+    assert.match(report, /step L\/R 0\.50000 \/ \? · nearby peak step L\/R 0\.25000 \/ \? before, 0\.12500 \/ 0\.25000 after/);
+    assert.match(report, /5 later timeline entries omitted/);
 });

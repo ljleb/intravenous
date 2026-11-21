@@ -7,7 +7,7 @@ import type { GraphPresentationPatch } from "./graphEditorProtocol";
 import { insertLanes, mergeLaneOrder, orderLanes } from "./laneSelection";
 import { validateNodeEventTarget, type SerializedNodeEvent } from "./nodeEvents";
 import { NodeEventInteractions } from "./nodeEventInteractions";
-import type { PlaybackDrag, PlaybackSnapshot } from "./playback";
+import type { PlaybackDrag, PlaybackOutputProfileRequest, PlaybackSnapshot } from "./playback";
 import type { NodeDefinitionCatalog, NodeDefinitionSearch } from "./nodeDefinitionSearch";
 import * as vscode from "vscode";
 import * as childProcess from "child_process";
@@ -117,10 +117,10 @@ type GraphNodesUpdatedNotification = {
 };
 
 export class WorkspaceSession {
-    async readPlayback(): Promise<PlaybackSnapshot | null> {
+    async readPlayback(diagnostics = false, outputProfile?: PlaybackOutputProfileRequest): Promise<PlaybackSnapshot | null> {
         const rpc = this.rpc;
         if (!rpc || this.graphSessionStatus !== "running") return null;
-        const state = await rpc.getPlayback();
+        const state = await rpc.getPlayback(diagnostics, outputProfile);
         return this.rpc === rpc && this.graphSessionStatus === "running" ? state : null;
     }
     async playbackCommand(position?: string, drag?: PlaybackDrag): Promise<PlaybackSnapshot | null> {
@@ -1214,26 +1214,35 @@ export class WorkspaceSession {
     }
 
     private async revealPackageSource(packageRoot: string): Promise<void> {
-        const uri = vscode.Uri.file(path.join(packageRoot, "module.cpp"));
+        await this.revealSourceFile(path.join(packageRoot, "module.cpp"));
+    }
+
+    async revealSourceFile(filePath: string, source?: { line: number; byteOffset: number }): Promise<void> {
+        const uri = vscode.Uri.file(filePath);
+        const key = uri.toString();
         const existing = vscode.window.visibleTextEditors.find(
-            (editor) => editor.document.uri.toString() === uri.toString(),
+            (editor) => editor.document.uri.toString() === key,
         );
-        if (existing) {
-            await vscode.window.showTextDocument(existing.document, existing.viewColumn, false);
-            return;
-        }
-        const existingGroup = vscode.window.tabGroups.all.find((group) =>
+        const viewColumn = existing?.viewColumn ?? vscode.window.tabGroups.all.find((group) =>
             group.tabs.some((tab) => {
                 const input = tab.input as { uri?: vscode.Uri };
-                return input.uri?.toString() === uri.toString();
+                return input.uri?.toString() === key;
             }),
-        );
-        const document = await vscode.workspace.openTextDocument(uri);
-        if (existingGroup) {
-            await vscode.window.showTextDocument(document, existingGroup.viewColumn, false);
-            return;
+        )?.viewColumn;
+        const document = existing?.document ?? await vscode.workspace.openTextDocument(uri);
+        let selection: vscode.Range | undefined;
+        if (source) {
+            const bytes = await vscode.workspace.fs.readFile(uri);
+            const prefix = bytes.subarray(0, source.byteOffset);
+            const lineStart = 1 + Math.max(prefix.lastIndexOf(0x0a), prefix.lastIndexOf(0x0d));
+            // Clang offsets count UTF-8 bytes. VS Code columns count UTF-16 code units.
+            const column = new TextDecoder("utf-8", { ignoreBOM: lineStart !== 0 })
+                .decode(prefix.subarray(lineStart)).length;
+            const position = document.validatePosition(new vscode.Position(source.line - 1, column));
+            selection = new vscode.Range(position, position);
         }
-        await vscode.window.showTextDocument(document, { preview: false });
+        const editor = await vscode.window.showTextDocument(document, { viewColumn, preview: false, selection });
+        if (selection) editor.revealRange(selection, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
     }
 
     private async moduleIdForPackageRoot(packageRoot: string): Promise<string> {

@@ -54,28 +54,32 @@ namespace iv {
     public:
         static constexpr auto inputs()
         {
-            return std::array{SequentialInputConfig<Sample>{.name = "left"},
-                SequentialInputConfig<Sample>{.name = "right"}};
+            return std::array {
+                SequentialInputConfig<Sample>{.name = "a"},
+                SequentialInputConfig<Sample>{.name = "b"}
+            };
         }
 
         static constexpr auto outputs()
         {
-            return std::array{SequentialOutputConfig<Sample>{.name = "out"}};
+            return std::array {
+                SequentialOutputConfig<Sample>{.name = "out"}
+            };
         }
 
-        void tick(auto const& ctx) const
+        void tick(TickSampleContext<BinaryOpNode<BinaryOp>> const& ctx) const
         {
             auto out = ctx.template output<"out">();
-            auto left = ctx.template input<"left">();
-            auto right = ctx.template input<"right">();
+            auto left = ctx.template input<"a">();
+            auto right = ctx.template input<"b">();
             out.push(BinaryOp{}(left.get(), right.get()));
         }
     };
 
     template<class ChannelType, SampleStreamLayout Layout, size_t NumInputs>
-    class Sum {
+    class SumN {
     public:
-        static_assert(NumInputs >= 1, "Sum requires at least one input");
+        static_assert(NumInputs >= 1, "SumN requires at least one input");
 
         static constexpr auto inputs()
         {
@@ -93,15 +97,17 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array{output<Sample>("out", OutputProduction::sequential, {
-                .channel_layout = ChannelLayout{
-                    .channel_type = ChannelTypeTraits<ChannelType>::id,
-                    .sample_layout = Layout,
-                },
-            })};
+            return std::array {
+                output<Sample>("out", OutputProduction::sequential, {
+                    .channel_layout = ChannelLayout {
+                        .channel_type = ChannelTypeTraits<ChannelType>::id,
+                        .sample_layout = Layout,
+                    },
+                }),
+            };
         }
 
-        void tick(TickSampleContext<Sum> const& ctx) const
+        void tick(TickSampleContext<SumN> const& ctx) const
         {
             for (size_t channel = 0; channel < ChannelType::channel_count; ++channel) {
                 Sample result = 0.0f;
@@ -117,13 +123,13 @@ namespace iv {
     // A registered IV_NODE may name a fully instantiated node template. The
     // registry binds its stable ID to this one specialization, not to the
     // BinaryOpNode template family as a whole.
-    using Subtract = BinaryOpNode<std::minus<Sample>>;
-    using Multiply = BinaryOpNode<std::multiplies<Sample>>;
+    using Sum = BinaryOpNode<std::plus<Sample>>;
+    using Subtraction = BinaryOpNode<std::minus<Sample>>;
+    using Product = BinaryOpNode<std::multiplies<Sample>>;
+    using Quotient = BinaryOpNode<std::divides<Sample>>;
 
     template<size_t NumInputs>
-    using Product = FixedBinaryOpNode<std::multiplies<Sample>, NumInputs>;
-
-    using Quotient = BinaryOpNode<std::divides<Sample>>;
+    using ProductN = FixedBinaryOpNode<std::multiplies<Sample>, NumInputs>;
 
     struct Invert {
         static constexpr auto inputs()

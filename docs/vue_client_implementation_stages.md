@@ -1987,6 +1987,50 @@ Audible output owner-confirmed (2026-11-14):
   regression now uses the fixture's existing registered constants explicitly.
   Test validation remains owner-run before continuing the specialized presentation.
 
+Virtual sample output connections (2026-11-21)
+
+- A project cable from the Saw's `gain` virtual lane to Click Detector resolved
+  to several stereo producers. `GraphConnections` emitted one configured
+  connection per producer, so GraphJit rejected overlapping writes to the input.
+- `GraphConnections` now keeps all complete source layouts for one cable in a
+  single `ConfiguredSampleConnection` per destination. GraphJit sums
+  corresponding channels before converting to the target layout. Live meters
+  that observe a sum use the same connection representation.
+- Two separate cables can also feed the same concrete input. GraphJit keeps
+  the projections distinct so each retains its own conversion and coverage.
+  Overlapping realtime projections share one destination buffer. Each covered
+  projection adds its value to that buffer. Background materialization
+  continues to use the coverage of each projection.
+- `BackgroundEvaluationTransaction` selects the materialized storage of Tick
+  Sequential inputs. It fills Tick input buffers after background evaluation
+  and before publishing them, including when the source data is already stored.
+- Before the refactor, `TickRuntimePlan` listed storage indices for each input.
+  `storage_selection()` and `make_tick_materialization_snapshot()` separately
+  looked up the direct routes, channel mappings, and read latency for those
+  indices. This split let a derived Tick Sequential input reach snapshot
+  construction without any demand on its storage.
+- GraphJit now resolves each Tick input's direct and materialized reads when it
+  builds `TickRuntimePlan`. Storage selection and snapshot construction use the
+  same reads and requested windows. The records preserve storage sharing,
+  channel mappings, read latency, and the distinction between published coverage
+  and prepared values. The mixed Tick and Tock regression covers this boundary.
+- `BackgroundEvaluationTransaction` separates input demand, source dependency
+  and Region selection, and the decision to write or reuse selected storage.
+  `append_sample_projection()` applies source and target channel selection in
+  one step. The normalized connection retains the original coverage requirements.
+- Open cutover failure. The live project built its packages, then GraphExecutor
+  rejected a cutover because it could not inherit a retained sample window.
+  The original error did not identify the port. The rejection now reports the
+  first affected port, both generations and storage views, and the required
+  window. The existing rule to preserve the predecessor's values still applies.
+- The expanded error identified the two `ClickDetector.audio` channels. Each
+  had one in-flight sample and no history. A source without a retained window
+  caused lowering to classify the entire composition as callback-only.
+  `SampleRealtimePortStateCompositionSource` now keeps timing for every source
+  and records whether that source owns any samples at cutover. The transfer
+  copies only finalized positions. The regression recompiles a two-source sum
+  with the same storage requirements. Native verification is pending.
+
 Knob regrab and drag smoothness investigation (2026-11-14; unresolved):
 
 - The owner reports two defects after all tests passed. Rapid repeated grabs of

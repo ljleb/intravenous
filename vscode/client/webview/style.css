@@ -44,6 +44,16 @@ body:is(.vscode-high-contrast, .vscode-high-contrast-light) {
     cursor: none !important;
 }
 
+.iv-text-link {
+    color: var(--iv-text-link-color, var(--vscode-descriptionForeground));
+    cursor: pointer;
+    text-decoration: none;
+}
+.iv-text-link[data-hovered] {
+    color: color-mix(in srgb,
+        var(--iv-text-link-color, var(--vscode-descriptionForeground)) 65%, var(--vscode-foreground));
+}
+
 .knob-side-toggle {
     --toggle-accent: var(--knob-toggle-accent, var(--iv-port-output));
     display: grid; place-items: center; flex: 0 0 var(--output-polarity-width, 12px);

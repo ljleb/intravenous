@@ -97,10 +97,10 @@ std::string SamplePortRef::to_string() const
 
 void SamplePortRef::_annotate_source_info(
     std::string_view id, std::string_view file,
-    uint32_t begin, uint32_t end) const
+    uint32_t begin, uint32_t end, uint32_t declaration_line) const
 try {
     if (session)
-        details::iv_builder_annotate_sample_port(*this, id, file, begin, end);
+        details::iv_builder_annotate_sample_port(*this, id, file, begin, end, declaration_line);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     details::iv_builder_record_failure(session, std::current_exception(), {});
@@ -165,10 +165,10 @@ std::string EventPortRef::to_string() const
 
 void EventPortRef::_annotate_source_info(
     std::string_view id, std::string_view file,
-    uint32_t begin, uint32_t end) const
+    uint32_t begin, uint32_t end, uint32_t declaration_line) const
 try {
     if (session)
-        details::iv_builder_annotate_event_port(*this, id, file, begin, end);
+        details::iv_builder_annotate_event_port(*this, id, file, begin, end, declaration_line);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     details::iv_builder_record_failure(session, std::current_exception(), {});
@@ -177,20 +177,20 @@ try {
 
 void PublicSampleInputRef::_annotate_source_info(
     std::string_view id, std::string_view file,
-    uint32_t begin, uint32_t end) const
+    uint32_t begin, uint32_t end, uint32_t declaration_line) const
 {
     if (port.session)
         details::iv_builder_annotate_public_sample_input(
-            port, id, file, begin, end);
+            port, id, file, begin, end, declaration_line);
 }
 
 void PublicEventInputRef::_annotate_source_info(
     std::string_view id, std::string_view file,
-    uint32_t begin, uint32_t end) const
+    uint32_t begin, uint32_t end, uint32_t declaration_line) const
 {
     if (port.session)
         details::iv_builder_annotate_public_event_input(
-            port, id, file, begin, end);
+            port, id, file, begin, end, declaration_line);
 }
 
 NodeRef::NodeRef(GraphBuilder const& graph_builder, size_t index)
@@ -551,11 +551,13 @@ NodeRef& NodeRef::operator=(NodeRef&& rhs)
 
 void NodeRef::_annotate_source_info(
     std::string_view id, std::string_view file,
-    uint32_t begin, uint32_t end, std::string_view name) const
+    uint32_t begin, uint32_t end, std::string_view name,
+    uint32_t declaration_line) const
 try {
     _has_source_identity = _has_source_identity || !id.empty();
     if (_session) {
-        details::iv_builder_annotate_node(_session, _index, id, file, begin, end, name);
+        details::iv_builder_annotate_node(
+            _session, _index, id, file, begin, end, name, declaration_line);
     }
 } catch (...) {
     // An exception leaving a session operation fails the session.

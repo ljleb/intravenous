@@ -613,19 +613,22 @@ TEST(
     };
     plan.tick_runtime.sequential_sample_inputs = {{
         .port = 2,
-        .storage = {2},
+        .reads = {{.storage = 2}},
     }};
     plan.tick_runtime.sequential_event_inputs = {{
         .port = 3,
-        .storage = {3},
+        .reads = {{.storage = 3}},
     }};
     plan.tick_runtime.random_access_sample_inputs = {{
         .port = 0,
-        .storage = {0},
+        .reads = {
+            {.storage = 0, .source_channel = 0, .target_channel = 0},
+            {.storage = 0, .source_channel = 1, .target_channel = 1},
+        },
     }};
     plan.tick_runtime.random_access_event_inputs = {{
         .port = 1,
-        .storage = {1},
+        .reads = {{.storage = 1}},
     }};
     plan.tick_runtime.nodes = {{
         .sequential_sample_begin = 0,
@@ -788,7 +791,7 @@ TEST(BackgroundStorageRealization,
     }};
     plan.tick_runtime.random_access_sample_inputs = {{
         .port = 0,
-        .storage = {0},
+        .reads = {{.storage = 0}},
     }};
 
     PersistedDataStore data;

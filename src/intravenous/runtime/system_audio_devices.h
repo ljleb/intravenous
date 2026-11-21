@@ -4,6 +4,7 @@
 
 #include <intravenous/devices/audio_device.h>
 #include <intravenous/runtime/audio_input_synchronizer.h>
+#include <intravenous/runtime/playback_output_profile.h>
 #include <intravenous/node/resources.h>
 
 #include <atomic>
@@ -109,6 +110,7 @@ class SystemAudioDevices {
     std::thread input_capture_thread_ {};
     std::thread output_render_thread_ {};
     std::vector<Sample> input_render_buffer_{};
+    PlaybackOutputProfile output_profile_{};
 
     friend class AudioDeviceSelectionTransaction;
     AudioDevicesSnapshot apply_selected_devices_locked(ProjectAudioDeviceSelection selection);
@@ -172,6 +174,7 @@ public:
     void handle_socket_rpc_get_audio_devices(
         GetAudioDevicesRequest const &request,
         SocketRpcAudioDevicesResultBuilder &builder) const;
+    void handle_playback_profile(ProjectPlaybackRequest& request);
     void handle_project_override_settings(ProjectOverrideSettingsRequest const &request);
     void handle_project_persistence_collect_state(ProjectPersistenceBuilder &builder) const;
 };

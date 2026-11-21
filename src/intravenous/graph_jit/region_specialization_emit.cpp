@@ -580,6 +580,7 @@ emit_region_specialization(
             begin,
             llvm::ConstantInt::get(i64, composition.target_history));
         auto* target_frame = builder.CreateAdd(first, offset);
+        std::vector<bool> populated(composition.target.channel_count, false);
         for (auto const& contribution : composition.contributions) {
             for (std::size_t lane = 0;
                  lane < composition.scalar_lane_count;
@@ -619,16 +620,18 @@ emit_region_specialization(
                             ? value
                             : builder.CreateFAdd(mixed, value);
                     }
-                    auto* store = builder.CreateStore(
-                        mixed,
-                        sample_value(
-                            composition.target,
-                            target_frame,
-                            contribution.target_channels[converted],
-                            lane));
+                    auto const channel = contribution.target_channels[converted];
+                    auto* destination = sample_value(composition.target, target_frame, channel, lane);
+                    if (populated[channel]) {
+                        auto* previous = builder.CreateLoad(float_type, destination);
+                        previous->setAlignment(llvm::Align(alignof(float)));
+                        mixed = builder.CreateFAdd(previous, mixed);
+                    }
+                    auto* store = builder.CreateStore(mixed, destination);
                     store->setAlignment(llvm::Align(alignof(float)));
                 }
             }
+            for (auto const channel : contribution.target_channels) populated[channel] = true;
         }
         auto* next = builder.CreateAdd(offset, llvm::ConstantInt::get(i64, 1));
         offset->addIncoming(next, body);

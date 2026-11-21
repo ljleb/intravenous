@@ -155,7 +155,8 @@ public:
   [[nodiscard]] SamplePortRef require_sample_port(SamplePortRef const&) const;
   [[nodiscard]] EventPortRef require_event_port(EventPortRef const&) const;
   void connect_sample_input(NodeBundlePortId target, SamplePortRef const& source);
-  void connect_sample_input(SampleInputChannelId target, SamplePortRef const& source);
+  void connect_sample_sources(std::variant<NodeBundlePortId, SampleInputChannelId> target,
+      ChannelTypeId source_type, std::span<ConfiguredSampleConnectionSource const> sources);
   void connect_sample_input(NodeBundlePortId target, std::span<SamplePortRef const> sources);
   void connect_event_input(NodeBundlePortId target, EventPortRef const& source);
   bool sample_input_is_connected(NodeBundlePortId target) const;
@@ -188,17 +189,17 @@ public:
 
   // ---- annotations ------------------------------------------------------
   void annotate_node(NodeBundleHandle, std::string_view, std::string_view,
-      uint32_t, uint32_t, std::string_view);
+      uint32_t, uint32_t, std::string_view, uint32_t declaration_line);
   void annotate_node_input_source_info(NodeBundleHandle, PortKind,
       std::string_view, std::string_view, std::string_view, uint32_t, uint32_t);
   void annotate_public_sample_input_source_info(SamplePortRef const&,
-      std::string_view, std::string_view, uint32_t, uint32_t);
+      std::string_view, std::string_view, uint32_t, uint32_t, uint32_t declaration_line);
   void annotate_public_event_input_source_info(EventPortRef const&,
-      std::string_view, std::string_view, uint32_t, uint32_t);
+      std::string_view, std::string_view, uint32_t, uint32_t, uint32_t declaration_line);
   void annotate_sample_port_source_info(SamplePortRef const&,
-      std::string_view, std::string_view, uint32_t, uint32_t);
+      std::string_view, std::string_view, uint32_t, uint32_t, uint32_t declaration_line);
   void annotate_event_port_source_info(EventPortRef const&,
-      std::string_view, std::string_view, uint32_t, uint32_t);
+      std::string_view, std::string_view, uint32_t, uint32_t, uint32_t declaration_line);
 
   // ---- host introspection -----------------------------------------------
   using VacantSampleInput = GraphBuilderVacantSampleInput;

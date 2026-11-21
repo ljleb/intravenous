@@ -460,14 +460,15 @@ void apply_sample_connection(
         return;
     }
 
+    std::vector<ConfiguredSampleConnectionSource> sources;
+    sources.reserve(outputs.size() * channel_count(connection.source_type));
+    for (auto const& output : outputs) {
+        for (auto const channel : output.channels)
+            sources.push_back({.channel = channel});
+    }
     auto& state = details::builder_graph_state(root_builder);
     for (auto const& input : inputs) {
-        for (auto const& output : outputs) {
-            SamplePortRef source(root_builder, output.type, output.channels);
-            std::visit([&](auto const& target) {
-                state.connect_sample_input(target, source);
-            }, input.target);
-        }
+        state.connect_sample_sources(input.target, connection.source_type, sources);
     }
     result.applied_connection_ids.push_back(connection.connection_id);
 }

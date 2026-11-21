@@ -136,19 +136,17 @@ namespace iv {
         char const* declaration_identity,
         char const* file_path,
         uint32_t begin,
-        uint32_t end, char const* declaration_name)
+        uint32_t end, char const* declaration_name, uint32_t declaration_line)
     {
         using Value = std::remove_cv_t<Ref>;
         if constexpr (std::is_base_of_v<NodeRef, Value>) {
             ref->_annotate_source_info(
-                declaration_identity, file_path, begin, end, declaration_name);
-        } else if constexpr (SourceInfoAnnotatableRef<Value>) {
+                declaration_identity, file_path, begin, end, declaration_name, declaration_line);
+        } else if constexpr (requires {
+            ref->_annotate_source_info(declaration_identity, file_path, begin, end, declaration_line);
+        }) {
             ref->_annotate_source_info(
-                declaration_identity, file_path, begin, end);
-        } else if constexpr (std::same_as<Value, PublicSampleInputRef>
-                             || std::same_as<Value, PublicEventInputRef>) {
-            ref->_annotate_source_info(
-                declaration_identity, file_path, begin, end);
+                declaration_identity, file_path, begin, end, declaration_line);
         } else {
             static_assert(false, "unsupported source-annotatable DSL reference");
         }
@@ -406,7 +404,7 @@ namespace iv {
         !(TypedSamplePortLike<L> || TypedSamplePortLike<R>))
     constexpr NodeRef operator+(L&& lhs, R&& rhs)
     {
-        return make_binary_op<Sum<mono, SampleStreamLayout::planar, 2>>(
+        return make_binary_op<Sum>(
             std::forward<L>(lhs),
             std::forward<R>(rhs),
             "operator+"
@@ -421,10 +419,8 @@ namespace iv {
     constexpr auto operator+(L&& lhs, R&& rhs)
     {
         using ChannelType = typename binary_typed_channel<L, R>::type;
-        auto sum = make_binary_op<
-            Sum<mono, SampleStreamLayout::planar, 2>, ChannelType>(
+        return make_binary_op<Sum, ChannelType>(
             std::forward<L>(lhs), std::forward<R>(rhs), "operator+");
-        return sum;
     }
 
     template<class L, class R>
@@ -434,7 +430,7 @@ namespace iv {
         !(TypedSamplePortLike<L> || TypedSamplePortLike<R>))
     constexpr NodeRef operator-(L&& lhs, R&& rhs)
     {
-        return make_binary_op<Subtract>(
+        return make_binary_op<Subtraction>(
             std::forward<L>(lhs),
             std::forward<R>(rhs),
             "operator-"
@@ -450,7 +446,7 @@ namespace iv {
     {
         using ChannelType = typename binary_typed_channel<L, R>::type;
 
-        return make_binary_op<Subtract, ChannelType>(
+        return make_binary_op<Subtraction, ChannelType>(
             std::forward<L>(lhs),
             std::forward<R>(rhs),
             "operator-"
@@ -464,7 +460,7 @@ namespace iv {
         !(TypedSamplePortLike<L> || TypedSamplePortLike<R>))
     constexpr NodeRef operator*(L&& lhs, R&& rhs)
     {
-        return make_binary_op<Multiply>(
+        return make_binary_op<Product>(
             std::forward<L>(lhs),
             std::forward<R>(rhs),
             "operator*"
@@ -479,7 +475,7 @@ namespace iv {
     constexpr auto operator*(L&& lhs, R&& rhs)
     {
         using ChannelType = typename binary_typed_channel<L, R>::type;
-        return make_binary_op<Multiply, ChannelType>(
+        return make_binary_op<Product, ChannelType>(
             std::forward<L>(lhs), std::forward<R>(rhs), "operator*");
     }
 

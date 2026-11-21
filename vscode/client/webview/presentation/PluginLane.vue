@@ -8,7 +8,8 @@ import { PresentationEdits, type PresentationEdit } from "../../src/presentation
 import type { PresentationFrame, PresentationGestureInput, PresentationInput, PresentationObservation, PresentationPoint,
     PresentationProgram, PresentationSavedState, PresentationSnapshot } from "../../src/presentationPlugin";
 import { PresentationPluginSession } from "../../src/presentationPluginSession";
-import { sampleWindow } from "../../src/sampleWaveform";
+import { sampleTimeSpan, sampleWindow } from "../../src/sampleWaveform";
+import { recordedEventTimestampsOperation } from "../../src/observations";
 import { useOptionalGraphEditor } from "../graph/context";
 import { visibleCursorDestination } from "../graph/cursorReturn";
 import { useTimelineMarks, useTimelineNavigation, useTimelineWindow, type LaneValueNavigation } from "../timeline/timelineContext";
@@ -62,10 +63,15 @@ const save = usePresentationState({
 const observed = (props.program.manifest.observations ?? []).map((need) => ({ id: need.id, view: usePortObservationViewport(() => {
     const { address, ports } = node.value;
     const timeline = time?.value;
-    const port = ports.find((port) => port.direction === need.direction && port.name === need.port && port.kind === "continuous");
+    const event = need.operation === recordedEventTimestampsOperation;
+    const port = ports.find((port) => port.direction === need.direction && port.name === need.port
+        && port.kind === (event ? "event" : "continuous"));
     if (!address || !timeline || !port || (need.whenConnected && port.connectivity !== "connected")) return;
-    const window = sampleWindow(timeline.beginSeconds, timeline.endSeconds, timeline.sampleRate, need.points);
-    if (window) return { source: { node: address, kind: need.direction, member: need.port }, operation: "waveform", window,
+    const span = event ? sampleTimeSpan(timeline.beginSeconds, timeline.endSeconds, timeline.sampleRate) : undefined;
+    const window = event ? span && { ...span, points: 0 }
+        : sampleWindow(timeline.beginSeconds, timeline.endSeconds, timeline.sampleRate, need.points);
+    if (window) return { source: { node: address, kind: need.direction, member: need.port, portKind: event ? "event" : undefined },
+        operation: need.operation ?? "waveform", window,
         completeOnly: need.completeOnly };
 }) }));
 const observations = computed(() => Object.fromEntries(observed.map(({ id, view }): [string, PresentationObservation | null] => {

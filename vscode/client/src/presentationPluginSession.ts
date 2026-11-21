@@ -47,10 +47,17 @@ export class PresentationPluginSession {
         const inputs = this.inputs;
         this.inputs = [];
         const viewport = this.viewport;
+        const snapshot = this.snapshot;
         try {
-            const reply = this.run({ ...this.snapshot, clockMs: performance.now() }, inputs);
+            const reply = this.run({ ...snapshot, clockMs: performance.now() }, inputs);
             const result = reply instanceof Promise ? await reply : reply;
-            if (!this.closed) this.accept(readPresentationFrame(result), viewport === this.viewport, inputs);
+            if (!this.closed) {
+                const eventWindows = new Set(Object.values(snapshot.observations).flatMap(
+                    (observation) => observation?.spans.map(({ result }) => result) ?? []));
+                let observedEventCount = 0;
+                for (const window of eventWindows) observedEventCount += window.eventIndices?.length ?? 0;
+                this.accept(readPresentationFrame(result, observedEventCount), viewport === this.viewport, inputs);
+            }
         } catch (error) { this.stop(error); }
         finally {
             this.running = false;

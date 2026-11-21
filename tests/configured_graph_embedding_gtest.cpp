@@ -11,7 +11,7 @@
 #include <vector>
 
 namespace {
-using Pass = iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>;
+using Pass = iv::SumN<iv::mono, iv::SampleStreamLayout::planar, 1>;
 
 iv::ConfiguredGraph make_nested_annotated_graph()
 {

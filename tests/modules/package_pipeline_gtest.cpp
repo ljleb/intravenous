@@ -160,6 +160,12 @@ TEST(PackagePipeline, DirtyDeclarationsBuildAndPublishDefinitions)
     EXPECT_NE(
         std::ranges::find(leaves, "builtin.constant", &iv::LeafNodeDefinition::definition_id),
         leaves.end());
+    auto const product = std::ranges::find(leaves, "builtin.product", &iv::LeafNodeDefinition::definition_id);
+    ASSERT_NE(product, leaves.end());
+    EXPECT_EQ(product->display_name, "a * b");
+    auto const sum = std::ranges::find(leaves, "builtin.sum", &iv::LeafNodeDefinition::definition_id);
+    ASSERT_NE(sum, leaves.end());
+    EXPECT_EQ(sum->display_name, "a + b");
 }
 
 TEST(PackagePipeline, FailedBuildKeepsAcceptedRevisionAndReportsFailure)

@@ -53,6 +53,46 @@ Json built_result(std::string const& response)
     return *result;
 }
 
+Json playback_output_profile(PlaybackOutputProfileResult const& profile)
+{
+    if (profile.status != "ready") return {{"status", profile.status}};
+    auto identifier = [](std::optional<std::uint64_t> value) -> Json {
+        return value ? Json(std::to_string(*value)) : Json(nullptr);
+    };
+    Json cutovers = Json::array();
+    for (auto const& cutover : profile.cutovers) {
+        cutovers.push_back({
+            {"previousGeneration", identifier(cutover.previous.execution_generation)},
+            {"executionGeneration", identifier(cutover.current.execution_generation)},
+            {"previousPublication", identifier(cutover.previous.code_publication)},
+            {"codePublication", identifier(cutover.current.code_publication)},
+            {"foregroundSample", std::to_string(cutover.current.foreground_sample.signed_value())},
+            {"previousRendered", cutover.previous.rendered},
+            {"rendered", cutover.current.rendered},
+            {"previousTransitionTick", cutover.previous.transition_tick},
+            {"transitionTick", cutover.current.transition_tick},
+            {"transportChanged", cutover.previous.segment != cutover.current.segment},
+            {"elapsedMs", cutover.elapsed_ms},
+            {"renderMs", cutover.render_ms},
+            {"budgetMs", cutover.budget_ms},
+            {"before", Json::array()},
+            {"after", Json::array()},
+        });
+        auto& item = cutovers.back();
+        for (std::size_t i = 0; i < cutover.before_samples; ++i) item["before"].push_back(cutover.before[i]);
+        for (std::size_t i = 0; i < cutover.after_samples; ++i) item["after"].push_back(cutover.after[i]);
+    }
+    return {
+        {"status", profile.status},
+        {"buffers", profile.buffers},
+        {"overBudgetBuffers", profile.over_budget_buffers},
+        {"omittedCutovers", profile.omitted_cutovers},
+        {"maxRenderMs", profile.max_render_ms},
+        {"maxBudgetFraction", profile.max_budget_fraction},
+        {"cutovers", std::move(cutovers)},
+    };
+}
+
 std::string playback_result(int id, ProjectPlaybackRequest request)
 {
     IV_INVOKE_LINKER_EVENT(iv_socket_rpc_playback_event, request);
@@ -68,6 +108,19 @@ std::string playback_result(int id, ProjectPlaybackRequest request)
         {"segment", std::to_string(state.segment)},
     };
     if (request.accepted_command) result["acceptedCommand"] = std::to_string(*request.accepted_command);
+    if (request.diagnostics) {
+        auto const& stats = *request.diagnostics;
+        result["diagnostics"] = {
+            {"backgroundUnderrunBlocks", std::to_string(stats.background_underrun_blocks)},
+            {"configuredGeneration", stats.configured_generation
+                ? Json(std::to_string(*stats.configured_generation)) : Json(nullptr)},
+            {"executionGeneration", stats.execution_generation
+                ? Json(std::to_string(*stats.execution_generation)) : Json(nullptr)},
+        };
+    }
+    if (request.output_profile_result) {
+        result["outputProfile"] = playback_output_profile(*request.output_profile_result);
+    }
     return jsonrpc_result(id, std::move(result));
 }
 } // namespace
@@ -126,7 +179,10 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
 {
     using Context = SocketRpcRouteContext;
     impl_->add<GetPlaybackRequest>("playback.get", "project.read", false, false,
-        [](auto const&, int id, Context const&) { return playback_result(id, {}); });
+        [](auto const& request, int id, Context const&) {
+            return playback_result(id, {.include_diagnostics = request.include_diagnostics,
+                .output_profile = request.output_profile});
+        });
     impl_->add<TogglePlaybackRequest>("playback.toggle", "project.write", false, false,
         [](auto const&, int id, Context const&) {
             return playback_result(id, {.operation = ProjectPlaybackOperation::toggle});

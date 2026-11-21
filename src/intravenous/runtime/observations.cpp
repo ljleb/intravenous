@@ -126,9 +126,14 @@ void Observations::handle_protocol(ObservationProtocolRequest& request)
                 || interest.operation.empty() || interest.operation.size() > 128)
                 throw std::invalid_argument("invalid or duplicate observation interest");
             if (interest.prefetch && !interest.window) throw std::invalid_argument("observation prefetch requires a window");
+            auto const exact_events = interest.operation == recorded_event_timestamps_operation;
+            if (exact_events && (!interest.window || interest.source.kind != ObservationSourceKind::output
+                || interest.source.port_kind != PortKind::event || interest.source.channel
+                || interest.window->points || interest.window->max_depth || interest.prefetch))
+                throw std::invalid_argument("invalid recorded event timestamp observation");
             if (interest.window && (interest.source.kind == ObservationSourceKind::state_field
                 || !interest.window->length || interest.window->length > static_cast<std::uint64_t>(INT64_MAX)
-                || !interest.window->points || interest.window->points > maximum_observation_window_points))
+                || (!exact_events && (!interest.window->points || interest.window->points > maximum_observation_window_points))))
                 throw std::invalid_argument("invalid observation window");
         };
         for (auto const& interest : request.interests) validate(interest);
@@ -353,7 +358,13 @@ void Observations::collect(Clock::time_point now, bool execution_activated)
                 {"sampleRate", result.sample_rate}, {"paceExponent", result.pace_exponent},
                 {"executionGeneration", std::to_string(result.execution_generation)}, {"error", result.error}};
             Json body{{"regions", std::move(regions)}};
-            if (query.port.port_kind == PortKind::event || query.window.max_depth) {
+            if (capture.interest.operation == recorded_event_timestamps_operation) {
+                Json indices = Json::array();
+                for (auto const index : result.event_indices)
+                    indices.push_back(std::to_string(index.signed_value()));
+                payload["approximate"] = false;
+                body["eventIndices"] = std::move(indices);
+            } else if (query.window.max_depth) {
                 Json marks = Json::array(), unavailable = Json::array();
                 for (auto const& event : result.events) {
                     marks.push_back({{"index", std::to_string(event.time.signed_value())},
@@ -415,7 +426,8 @@ void Observations::collect(Clock::time_point now, bool execution_activated)
                         Json window{{"begin", std::to_string(interest.window->begin.signed_value())},
                             {"length", std::to_string(interest.window->length)}, {"points", interest.window->points}};
                         if (interest.window->max_depth) window["maxDepth"] = *interest.window->max_depth;
-                        windows.push_back({{"id", interest.id}, {"status", "pending"}, {"approximate", true},
+                        windows.push_back({{"id", interest.id}, {"status", "pending"},
+                            {"approximate", interest.source.port_kind != PortKind::event},
                             {"window", std::move(window)}});
                     }
                     continue;

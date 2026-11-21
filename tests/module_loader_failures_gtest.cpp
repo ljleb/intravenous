@@ -591,7 +591,7 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
         "    }\n"
         "};\n"
         "}\n\n"
-        "IV_NODE(\"iv.test.registered_package_node\", RegisteredPackageNode, \"Test signal\");\n");
+        "IV_NODE(\"iv.test.registered_package_node\", RegisteredPackageNode, \"*\");\n");
     iv::test::write_text(
         consumer_package / "iv_package.json",
         "{\"schema\":2,\"entry\":\"module.cpp\"}\n");
@@ -620,7 +620,7 @@ TEST(ModuleLoaderPackages, RegisteredPackageNodeIsResolvedFromLoadedPackageDefin
     ASSERT_TRUE(batch[1]) << batch[1].error;
     ASSERT_EQ(batch[0].package->node_types.size(), 1u);
     auto const& node_provider = batch[0].package->node_types.front().provider;
-    EXPECT_EQ(std::string_view(node_provider.display_name, node_provider.display_name_size), "Test signal");
+    EXPECT_EQ(std::string_view(node_provider.display_name, node_provider.display_name_size), "*");
     auto loaded = std::move(batch[1].package->definitions);
 
     ASSERT_EQ(loaded.size(), 1);

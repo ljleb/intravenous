@@ -64,7 +64,7 @@ iv::ConfiguredGraph make_event_sink()
 iv::ConfiguredGraph make_virtual_source()
 {
     using namespace iv;
-    using Pass = Sum<mono, SampleStreamLayout::planar, 1>;
+    using Pass = SumN<mono, SampleStreamLayout::planar, 1>;
     GraphBuilder graph;
     auto input = graph.input<"in">();
     auto first = details::configure_concrete_node<Pass>(graph);
@@ -80,8 +80,8 @@ iv::ConfiguredGraph make_virtual_source()
 iv::ConfiguredGraph make_set_valued_virtual_source()
 {
     using namespace iv;
-    using First = Sum<mono, SampleStreamLayout::planar, 1>;
-    using Second = Product<1>;
+    using First = SumN<mono, SampleStreamLayout::planar, 1>;
+    using Second = ProductN<1>;
     GraphBuilder graph;
     auto input = graph.input<"in">();
     auto first = details::configure_concrete_node<First>(graph);
@@ -99,7 +99,7 @@ iv::ConfiguredGraph make_set_valued_virtual_source()
 iv::ConfiguredGraph make_scoped_virtual_source()
 {
     using namespace iv;
-    using Pass = Sum<mono, SampleStreamLayout::planar, 1>;
+    using Pass = SumN<mono, SampleStreamLayout::planar, 1>;
     GraphBuilder graph;
     auto input = graph.input<"in">();
     auto make_processor = [&](std::string_view processor, std::size_t offset) {
@@ -128,7 +128,7 @@ struct FrozenRootFixture {
 FrozenRootFixture make_tiled_source()
 {
     using namespace iv;
-    using Pass = Sum<mono, SampleStreamLayout::planar, 1>;
+    using Pass = SumN<mono, SampleStreamLayout::planar, 1>;
     GraphBuilder graph;
     auto tiled = details::configure_concrete_tiled_node<Pass, stereo>(graph);
     auto const local_root = tiled.node_bundle_handle();
@@ -308,7 +308,7 @@ TEST(GraphConnections, VirtualNodeThenOrderedMemberPathResolvesConcretePort)
 }
 
 
-TEST(GraphConnections, SetValuedVirtualMatcherConnectsEveryResolvedMember)
+TEST(GraphConnections, SetValuedVirtualMatcherKeepsAllMembersInOneConnection)
 {
     auto source_graph = make_set_valued_virtual_source();
     auto sink_graph = make_sample_sink();
@@ -339,7 +339,12 @@ TEST(GraphConnections, SetValuedVirtualMatcherConnectsEveryResolvedMember)
     EXPECT_TRUE(result.diagnostics.empty());
     root.outputs();
     auto configured = std::move(root).finish();
-    EXPECT_EQ(configured.connections.configured_sample_connections().size(), before + 2);
+    auto const records = configured.connections.configured_sample_connections();
+    ASSERT_EQ(records.size(), before + 1);
+    auto const& record = records.back();
+    ASSERT_EQ(record.source_channels.size(), 2u);
+    EXPECT_NE(record.source_channels[0].channel, record.source_channels[1].channel);
+    EXPECT_EQ(record.target_channels.size(), 1u);
 }
 
 TEST(GraphConnections, SingleNodeConsumerRejectsASetValuedPathResult)

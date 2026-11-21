@@ -533,8 +533,8 @@ enum class BackgroundRuntimeOperationKind : std::uint8_t {
     event_materialization,
 };
 
-// Refers to one operation already retained by BackgroundStoragePlan. The
-// operation is placed exactly once in a node's before/after list.
+// Refers to one operation already retained by BackgroundStoragePlan. Its
+// placement selects a node hook or the final preparation of Tick inputs.
 struct BackgroundRuntimeOperationPlan {
     BackgroundRuntimeOperationKind kind =
         BackgroundRuntimeOperationKind::direct_sample;
@@ -566,33 +566,49 @@ struct BackgroundRuntimePlan {
     std::vector<BackgroundRuntimeOperationPlan> operations{};
     // Aligned with BackgroundEvaluationPlan::nodes.
     std::vector<BackgroundNodeOperationPlacementPlan> node_operations{};
+    // Run after background evaluation, before freezing the Tick inputs.
+    std::vector<BackgroundRuntimeOperationIndex> tick_input_materializations{};
     std::vector<BackgroundReplayInvocationPlan> replay_invocations{};
     // Aligned with BackgroundEvaluationPlan::nodes.
     std::vector<std::optional<BackgroundReplayInvocationSlot>>
         node_replay_invocations{};
 };
 
-// One Tick-root Random Access input slot. Storage candidates are retained in
-// preference order and already refer to compatible target representations.
-// Persisted-data slots can be bound directly from the callback's pinned root;
-// tick_random_access slots are supplied by TickMaterializationSnapshot later.
-struct TickRandomAccessBindingPlan {
-    BackgroundPortIndex port = 0;
-    std::vector<PortStorageIndex> storage{};
-    bool operator==(TickRandomAccessBindingPlan const&) const = default;
+struct TickSampleReadPlan {
+    PortStorageIndex storage = 0;
+    std::size_t source_channel = 0;
+    std::size_t target_channel = 0;
+    std::size_t read_latency = 0;
+    bool direct = false;
+
+    bool operator==(TickSampleReadPlan const&) const = default;
 };
 
-// One Tick-root Sequential input whose current-block storage is supplied by
-// background evaluation rather than the ordinary realtime graph. Persisted
-// retained data and immutable Tick materializations are selected at the callback
-// boundary. Mixed current_tick composites remain generated-root operations and
-// therefore do not occupy these external binding slots. The consuming port
-// retains its own sample neutral value.
-struct TickSequentialBindingPlan {
-    BackgroundPortIndex port = 0;
-    std::vector<PortStorageIndex> storage{};
-    bool operator==(TickSequentialBindingPlan const&) const = default;
+struct TickEventReadPlan {
+    PortStorageIndex storage = 0;
+    // Direct streams carry a fixed position in the connection's source order.
+    // Materialized streams retain that position per event.
+    std::optional<std::size_t> semantic_source_index{};
+    bool direct = false;
+
+    bool operator==(TickEventReadPlan const&) const = default;
 };
+
+// One Tick input slot. Direct reads refer to producer storage. Materialized
+// reads refer to storage assembled for the consumer. The same resolved reads
+// select storage and assemble the frozen input. A whole-port identity route
+// can also pin its persisted source directly at the callback boundary.
+template<class Read>
+struct TickInputBindingPlan {
+    BackgroundPortIndex port = 0;
+    std::vector<Read> reads{};
+    std::optional<PortStorageIndex> direct_persisted_storage{};
+
+    bool operator==(TickInputBindingPlan const&) const = default;
+};
+
+using TickSampleInputBindingPlan = TickInputBindingPlan<TickSampleReadPlan>;
+using TickEventInputBindingPlan = TickInputBindingPlan<TickEventReadPlan>;
 
 // One compiler-selected production/finalization capture. The logical output
 // carries the canonical persisted identity and format; runtime realization
@@ -632,10 +648,10 @@ struct TickNodeInvocationPlan {
 };
 
 struct TickRuntimePlan {
-    std::vector<TickSequentialBindingPlan> sequential_sample_inputs{};
-    std::vector<TickSequentialBindingPlan> sequential_event_inputs{};
-    std::vector<TickRandomAccessBindingPlan> random_access_sample_inputs{};
-    std::vector<TickRandomAccessBindingPlan> random_access_event_inputs{};
+    std::vector<TickSampleInputBindingPlan> sequential_sample_inputs{};
+    std::vector<TickEventInputBindingPlan> sequential_event_inputs{};
+    std::vector<TickSampleInputBindingPlan> random_access_sample_inputs{};
+    std::vector<TickEventInputBindingPlan> random_access_event_inputs{};
     std::vector<TickCaptureBindingPlan> sample_captures{};
     std::vector<TickCaptureBindingPlan> event_captures{};
     // Aligned with BackgroundEvaluationPlan::nodes.

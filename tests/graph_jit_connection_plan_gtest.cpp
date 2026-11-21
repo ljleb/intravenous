@@ -3269,9 +3269,10 @@ TEST(GraphJitConnectionPlan, AddressableEventMaterializationSubsumesSequential)
     EXPECT_EQ(
         plan->background.ports[binding.port].configured_port,
         (NodeBundlePortId{sequential_handle, PortKind::event, 0}));
-    ASSERT_EQ(binding.storage.size(), 1u);
-    EXPECT_EQ(binding.storage.front(),
+    ASSERT_EQ(binding.reads.size(), 1u);
+    EXPECT_EQ(binding.reads.front().storage,
         storage.event_materializations[materialization].output);
+    EXPECT_FALSE(binding.reads.front().direct);
     auto const sequential_node =
         *plan->background.bundle_to_background_node[sequential_handle];
     EXPECT_EQ(
@@ -3364,9 +3365,12 @@ TEST(GraphJitConnectionPlan, TockToSequentialUsesPreparedBackgroundDelivery)
     EXPECT_EQ(
         plan->background.ports[binding.port].configured_port,
         (NodeBundlePortId{sink_handle, PortKind::sample, 0}));
-    ASSERT_EQ(binding.storage.size(), 1u);
+    ASSERT_EQ(binding.reads.size(), 1u);
+    EXPECT_TRUE(binding.reads.front().direct);
+    EXPECT_EQ(binding.reads.front().source_channel, 0u);
+    EXPECT_EQ(binding.reads.front().target_channel, 0u);
     EXPECT_EQ(
-        plan->background.storage.ports[binding.storage.front()].storage,
+        plan->background.storage.ports[binding.reads.front().storage].storage,
         graph_jit::PortStorageKind::tick_sequential);
     auto const sink_node =
         *plan->background.bundle_to_background_node[sink_handle];
@@ -3886,8 +3890,8 @@ TEST(GraphJitConnectionPlan, MixedTickAndTockEventFanInPlansPerSource)
     EXPECT_EQ(
         plan->background.ports[binding.port].configured_port,
         (NodeBundlePortId{sink_handle, PortKind::event, 0}));
-    ASSERT_EQ(binding.storage.size(), 1u);
-    EXPECT_EQ(binding.storage.front(), materialization.output);
+    ASSERT_EQ(binding.reads.size(), 1u);
+    EXPECT_EQ(binding.reads.front().storage, materialization.output);
     auto const sink_node =
         *plan->background.bundle_to_background_node[sink_handle];
     EXPECT_EQ(
@@ -3970,10 +3974,12 @@ TEST(GraphJitConnectionPlan, PersistedTickToRandomAccessUsesStoredBoundary)
     EXPECT_EQ(
         plan->background.ports[binding.port].configured_port,
         (NodeBundlePortId{sink_handle, PortKind::sample, 0}));
-    ASSERT_EQ(binding.storage.size(), 1u);
-    ASSERT_LT(binding.storage.front(), plan->background.storage.ports.size());
+    ASSERT_EQ(binding.reads.size(), 1u);
+    ASSERT_LT(binding.reads.front().storage, plan->background.storage.ports.size());
+    EXPECT_FALSE(binding.reads.front().direct);
+    EXPECT_FALSE(binding.direct_persisted_storage.has_value());
     auto const& playback_storage =
-        plan->background.storage.ports[binding.storage.front()];
+        plan->background.storage.ports[binding.reads.front().storage];
     EXPECT_EQ(
         playback_storage.storage,
         graph_jit::PortStorageKind::tick_random_access);

@@ -2392,42 +2392,19 @@ public:
             sink.operations.runtime.tick_block = operations.tick_block;
             sink.operations.runtime.skip_block = operations.skip_block;
             auto const bundle = resolved_graph.node_bundles.append_concrete(std::move(sink));
-            auto const targets = resolved_graph.node_bundles.sample_input_channels({bundle, PortKind::sample, 0});
+            ConfiguredSampleConnection connection{
+                .source_type = layout.channel_type,
+                .target_type = layout.channel_type,
+                .target_channels = resolved_graph.node_bundles.sample_input_channels({bundle, PortKind::sample, 0}),
+            };
             if (grouped) {
-                auto contribution_targets = targets;
-                if (probe.output_sources.size() > 1) {
-                    // Use the same structural sum as several contributions
-                    // to one module output. Lowering folds it into one route
-                    // to the sink and keeps every producer's timing.
-                    auto& bundles = resolved_graph.node_bundles;
-                    auto const boundary = bundles.append_boundary();
-                    bundles.bundle(boundary).append_boundary_sample_output({
-                        .name = "sum", .channel_layout = layout,
-                        .production = default_sequential_output_properties(
-                            ContinuousValueTypeSet{ContinuousValueTypeId::sample}),
-                    });
-                    auto const sum = bundles.append_subgraph(boundary, boundary, 1, "observation_sum");
-                    resolved_graph.connections.record_configured_sample_connection({
-                        .source_type = ChannelTypeId::mono, .source_channels = {{.channel = {sum, 0, 0}}},
-                        .target_type = ChannelTypeId::mono, .target_channels = targets,
-                    });
-                    contribution_targets = {{boundary, 0, 0}};
-                }
-                for (auto source : probe.output_sources) {
-                    source = output_gains.routed_source(resolved_graph.node_bundles, source);
-                    resolved_graph.connections.record_configured_sample_connection({
-                        .source_type = ChannelTypeId::mono, .source_channels = {{.channel = source}},
-                        .target_type = ChannelTypeId::mono, .target_channels = contribution_targets,
-                    });
-                }
+                for (auto source : probe.output_sources)
+                    connection.source_channels.push_back({.channel = output_gains.routed_source(resolved_graph.node_bundles, source)});
             } else {
-                ConfiguredSampleConnection connection{
-                    .source_type = layout.channel_type, .target_type = layout.channel_type, .target_channels = targets,
-                };
                 for (auto channel : resolved_graph.node_bundles.sample_output_channels({probe.bundle, PortKind::sample, probe.port}))
                     connection.source_channels.push_back({.channel = channel});
-                resolved_graph.connections.record_configured_sample_connection(std::move(connection));
             }
+            resolved_graph.connections.record_configured_sample_connection(std::move(connection));
             implementations.push_back(graph_jit::NodeImplementation{
                 .node_bundle = bundle,
                 .observation_slot = slot,

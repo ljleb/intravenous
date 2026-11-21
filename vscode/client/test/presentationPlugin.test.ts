@@ -5,8 +5,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { createBeatsPresentation } from "../src/beatsPresentationPlugin";
+import { clickDetectorPresentationManifest, createClickDetectorPresentation } from "../src/clickDetectorPresentation";
 import { PresentationEdits, type PresentationEdit } from "../src/presentationEdits";
-import { readPresentationFrame, type PresentationFrame, type PresentationInput, type PresentationSnapshot } from "../src/presentationPlugin";
+import { readPresentationFrame, readPresentationManifest,
+    type PresentationFrame, type PresentationInput, type PresentationSnapshot } from "../src/presentationPlugin";
 import { PresentationPluginSession } from "../src/presentationPluginSession";
 import { readProjectPresentations } from "../src/projectPresentationPlugins";
 
@@ -15,6 +17,37 @@ const snapshot: PresentationSnapshot = {
     revision: 1, mode: "editable", editable: true, viewport: { width: 500, height: 80,
         time: { beginSeconds: 0, spanSeconds: 2, sampleRate: 48000 } }, observations: {}, state: null,
 };
+
+test("Click Detector displays observed events at their sample positions during pending refresh", () => {
+    assert.ok(readPresentationManifest(clickDetectorPresentationManifest));
+    const detect = createClickDetectorPresentation();
+    const result = {
+        id: "clicks", status: "ready" as const, approximate: false,
+        window: { begin: "0", length: "96000", points: 0 },
+        eventIndices: ["24000", "48000", "48000", "48002", "96000"], regions: [],
+    };
+    const frame = readPresentationFrame(detect({
+        ...snapshot, node: { definitionId: "builtin.click_detector", arguments: [],
+            ports: [{ name: "audio", direction: "input", kind: "continuous", connected: false }] },
+        observations: { clicks: { status: "pending", result, spans: [{ begin: "0", end: "96000", result }] } },
+    }, []));
+    assert.equal(frame.status, "4 recorded clicks in view");
+    assert.deepEqual(frame.marks?.filter(({ type }) => type === "rect").map(({ x }) => x), [125, 250, 250, 48002 * (500 / 96000)]);
+});
+
+test("the presentation host accepts one mark for every event in a dense recording", async () => {
+    const present = createClickDetectorPresentation();
+    const eventIndices = Array.from({ length: 5000 }, (_, i) => String(i));
+    const result = { id: "clicks", status: "ready" as const, approximate: false,
+        window: { begin: "0", length: "96000", points: 0 }, eventIndices, regions: [] };
+    let frame: PresentationFrame | undefined;
+    const session = new PresentationPluginSession(present, () => {}, (value) => { frame = value; }, (error) => { throw error; });
+    session.update({ ...snapshot,
+        observations: { clicks: { status: "ready", result, spans: [{ begin: "0", end: "96000", result }] } },
+    });
+    await session.flush();
+    assert.equal(frame?.marks?.filter(({ type }) => type === "rect").length, eventIndices.length);
+});
 
 test("Beats uses the portable contract for rendering, settings and exact seek marks", () => {
     const present = createBeatsPresentation();

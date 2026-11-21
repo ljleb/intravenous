@@ -464,6 +464,7 @@ struct RefAnnotation {
     SourceSpanRecord span;
     bool refers_to_enclosing_variable_or_capture = false;
     Expr* node_builder = nullptr;
+    bool is_declaration = false;
 };
 
 struct NodeInputPortAnnotation {
@@ -532,6 +533,7 @@ public:
                 .declaration_identity = identity,
                 .span = *span,
                 .node_builder = node_call_builder(variable->getInit()),
+                .is_declaration = true,
             });
             append_named_port_argument_spans(
                 variable, identity, variable->getInit(), false);
@@ -585,6 +587,7 @@ public:
                         .node_builder = call->getNumArgs() > 1
                             ? node_call_builder(call->getArg(1))
                             : nullptr,
+                        .is_declaration = true,
                     });
                 }
                 if (!identity.empty() && call->getNumArgs() > 1) {
@@ -1097,13 +1100,16 @@ private:
         if (!specialization) return nullptr;
         auto* callee = make_decl_ref(specialization, location);
         if (!callee) return nullptr;
-        llvm::SmallVector<Expr*, 6> arguments{
+        auto const declaration_line = annotation.is_declaration
+            ? context_.getSourceManager().getSpellingLineNumber(location) : 0u;
+        llvm::SmallVector<Expr*, 7> arguments{
             pointer,
             make_string(annotation.declaration_identity, location),
             make_string(annotation.span.file, location),
             make_u32(annotation.span.begin, location),
             make_u32(annotation.span.end, location),
             make_string(annotation.declaration->getNameAsString(), location),
+            make_u32(declaration_line, location),
         };
         auto result = sema().BuildCallExpr(
             nullptr, callee, location, arguments, location);

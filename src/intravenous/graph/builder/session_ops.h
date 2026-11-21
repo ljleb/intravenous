@@ -77,21 +77,25 @@ void iv_builder_apply_ttl(BuilderSession*, NodeBundleHandle, std::size_t samples
 void iv_builder_annotate_node(
     BuilderSession*, NodeBundleHandle, std::string_view declaration_identity,
     std::string_view file_path, std::uint32_t begin, std::uint32_t end,
-    std::string_view declaration_name = {});
+    std::string_view declaration_name = {}, std::uint32_t declaration_line = 0);
 void iv_builder_annotate_node_input(
     BuilderSession*, NodeBundleHandle, PortKind, std::string_view port_name,
     std::string_view declaration_identity, std::string_view file_path,
     std::uint32_t begin, std::uint32_t end);
 void iv_builder_annotate_sample_port(
     SamplePortRef const&, std::string_view declaration_identity,
-    std::string_view file_path, std::uint32_t begin, std::uint32_t end);
+    std::string_view file_path, std::uint32_t begin, std::uint32_t end,
+    std::uint32_t declaration_line);
 void iv_builder_annotate_event_port(
     EventPortRef const&, std::string_view declaration_identity,
-    std::string_view file_path, std::uint32_t begin, std::uint32_t end);
+    std::string_view file_path, std::uint32_t begin, std::uint32_t end,
+    std::uint32_t declaration_line);
 void iv_builder_annotate_public_sample_input(
     SamplePortRef const&, std::string_view declaration_identity,
-    std::string_view file_path, std::uint32_t begin, std::uint32_t end);
+    std::string_view file_path, std::uint32_t begin, std::uint32_t end,
+    std::uint32_t declaration_line);
 void iv_builder_annotate_public_event_input(
     EventPortRef const&, std::string_view declaration_identity,
-    std::string_view file_path, std::uint32_t begin, std::uint32_t end);
+    std::string_view file_path, std::uint32_t begin, std::uint32_t end,
+    std::uint32_t declaration_line);
 } // namespace iv::details

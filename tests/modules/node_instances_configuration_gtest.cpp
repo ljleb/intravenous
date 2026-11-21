@@ -745,7 +745,7 @@ TEST(NodeInstancesConfiguration, LeafDefinitionsUseTheSameConfigurationPath)
 }
 
 namespace {
-using Pass = iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>;
+using Pass = iv::SumN<iv::mono, iv::SampleStreamLayout::planar, 1>;
 
 constexpr char annotated_id[] = "iv.test.node_instances.annotated";
 constexpr char parent_scope_id[] = "iv.test.node_instances.parent_scope";

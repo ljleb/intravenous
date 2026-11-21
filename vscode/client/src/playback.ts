@@ -1,3 +1,32 @@
+export type PlaybackOutputProfileRequest = { id: string; durationMs?: number };
+export type PlaybackOutputCutover = {
+    previousGeneration: string | null;
+    executionGeneration: string | null;
+    previousPublication: string | null;
+    codePublication: string | null;
+    foregroundSample: string;
+    previousRendered: boolean;
+    rendered: boolean;
+    previousTransitionTick: boolean;
+    transitionTick: boolean;
+    transportChanged: boolean;
+    elapsedMs: number;
+    renderMs: number;
+    budgetMs: number;
+    /** Chronological interleaved stereo samples. Non-finite samples are null. */
+    before: (number | null)[];
+    after: (number | null)[];
+};
+export type PlaybackOutputProfileResult = {
+    status: "ready";
+    buffers: number;
+    overBudgetBuffers: number;
+    omittedCutovers: number;
+    maxRenderMs: number;
+    maxBudgetFraction: number;
+    cutovers: PlaybackOutputCutover[];
+} | { status: "recording" | "busy" | "pending" | "unavailable" };
+
 export type PlaybackSnapshot = {
     /** Applied background playhead as a signed decimal sample index. */
     position: string;
@@ -9,6 +38,12 @@ export type PlaybackSnapshot = {
     appliedCommand: string;
     segment: string;
     acceptedCommand?: string;
+    outputProfile?: PlaybackOutputProfileResult;
+    diagnostics?: {
+        backgroundUnderrunBlocks: string;
+        configuredGeneration: string | null;
+        executionGeneration: string | null;
+    };
 };
 
 export type PlaybackSeek = { position: string; acceptedCommand?: string };

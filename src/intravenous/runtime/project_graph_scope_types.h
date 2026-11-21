@@ -30,6 +30,11 @@ struct ProjectGraphScopeManualControl {
     // shows it until a later read reports the gesture closed.
     std::optional<Sample> live_value{};
 };
+struct ProjectGraphScopeSource {
+    std::string file_path{};
+    std::uint32_t line = 0;
+    std::uint32_t byte_offset = 0;
+};
 // One child of a graph editor scope. In the project root scope, each child is
 // one desired project instance.
 struct ProjectGraphScopeNode {
@@ -42,6 +47,7 @@ struct ProjectGraphScopeNode {
     IvModuleInstanceInfo instance{};
     std::optional<std::string> child_display_name{};
     std::optional<std::string> child_source_label{};
+    std::optional<ProjectGraphScopeSource> declaration_source{};
     // A diagnostic from the latest configuration pass, not merely a pending
     // realization. The previous executable generation may still be running.
     std::string error_message{};

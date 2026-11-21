@@ -1,6 +1,6 @@
 import type { ObservationDisplayValue, ObservationWindowResult } from "./observations";
 
-type ObservationWindowBody = Pick<ObservationWindowResult, "regions" | "marks" | "unavailableRegions">;
+type ObservationWindowBody = Pick<ObservationWindowResult, "regions" | "marks" | "eventIndices" | "unavailableRegions">;
 type ObservationWindowHeader = Omit<ObservationWindowResult, keyof ObservationWindowBody | "id">;
 type ObservationWindowPatch = { [Field in keyof ObservationWindowHeader]?: ObservationWindowHeader[Field] | null }
     & { body?: ObservationWindowBody | null };

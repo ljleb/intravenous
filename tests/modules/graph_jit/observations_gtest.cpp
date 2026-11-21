@@ -715,4 +715,174 @@ TEST_F(GraphJitRuntimeFixture, BackgroundWaveformReadsPublishedTickRecordingWith
     EXPECT_FALSE(executor.background_execution_failures().any());
 }
 
+TEST_F(GraphJitRuntimeFixture, ClickDetectorRetainsPlaybackHistoryAcrossMeterChangesAndSeek)
+{
+    GraphExecutor executor(resources);
+    NodeInstances instances;
+    GraphConnections connections;
+    // Keep bindings alive until ProjectGraph has joined its control worker.
+    std::optional<project_graph_node_instances_bridge::scope> instances_scope;
+    std::optional<project_graph_graph_connections_bridge::scope> connections_scope;
+    std::optional<project_graph_graph_jit_bridge::scope> jit_scope;
+    std::optional<project_graph_graph_executor_bridge::scope> executor_scope;
+    ProjectGraph project;
+    instances_scope.emplace(project, instances);
+    connections_scope.emplace(project, connections);
+    jit_scope.emplace(project, *jit);
+    executor_scope.emplace(project, executor);
+    NodeDefinitionsSnapshotChanged changed{.snapshot = definitions};
+    in_event_source([&] { project.handle_node_definitions_snapshot_changed(changed); });
+    ProjectAckBuilder load;
+    in_event_source([&] { project.handle_project_replace_graph({
+        .instances = {
+            {.instance_id = "source", .definition_id = "iv.test.click_recording.source"},
+            {.instance_id = "second-source", .definition_id = "iv.test.click_recording.source"},
+            {.instance_id = "third-source", .definition_id = "iv.test.click_recording.source"},
+            {.instance_id = "detector", .definition_id = "builtin.click_detector"},
+        },
+        .connections = {ProjectSampleConnection{
+            .connection_id = "inspect-audio",
+            .source_type = ChannelTypeId::stereo,
+            .outputs = {
+                {.instance_id = "source", .port = {.name = "audio"}},
+                {.instance_id = "second-source", .port = {.name = "audio"}},
+            },
+            .target_type = ChannelTypeId::stereo,
+            .inputs = {{.instance_id = "detector", .port = {.name = "audio"}}},
+        }, ProjectSampleConnection{
+            .connection_id = "inspect-third-source",
+            .source_type = ChannelTypeId::stereo,
+            .outputs = {{.instance_id = "third-source", .port = {.name = "audio"}}},
+            .target_type = ChannelTypeId::stereo,
+            .inputs = {{.instance_id = "detector", .port = {.name = "audio"}}},
+        }},
+        // Each source steps by 0.25. It takes both cables and all three
+        // sources to cross the threshold on the first sample of the click.
+        .manual_controls = {{
+            .id = {.node = {.instance_id = "detector"}, .port_name = "threshold"},
+            .stored_value = Sample{0.625f},
+        }},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+
+    auto activate = [&](std::size_t at) {
+        auto const target = project.current_generation();
+        if (!target || !target->graph_executor_accepted) return false;
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        do {
+            (void)executor.activate_pending(index(at));
+            if (executor.active_generation() == target->generation
+                && executor.background_generation() == target->generation) {
+                project.acknowledge_execution(target->generation);
+                return true;
+            }
+            std::this_thread::yield();
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    };
+    ASSERT_TRUE(project.wait_for_compilation());
+    ASSERT_TRUE(activate(0));
+    (void)executor.set_playback_running(true);
+
+    auto const graph = executor.active_graph();
+    ASSERT_TRUE(graph);
+    auto const sample_rate = graph->specialization.sample_rate;
+    auto const half_second = sample_rate / 2;
+    auto const recording_frames = 5 * half_second;
+    auto const block_size = graph->specialization.block_size;
+    std::size_t rendered = 0;
+    auto render_until = [&](std::size_t end) {
+        while (rendered < end) {
+            auto const frames = std::min(block_size, end - rendered);
+            executor.render_block(frames, sample_rate);
+            rendered += frames;
+        }
+        EXPECT_EQ(executor.playback_snapshot().foreground_playhead, index(rendered));
+    };
+    auto data_version = [&] {
+        ObservationCollectRequest collection;
+        executor.handle_observation_collect(collection);
+        return collection.execution_data_version;
+    };
+    ObservationSource const source{
+        .node = {.instance_id = "detector"}, .kind = ObservationSourceKind::output,
+        .member = "clicks", .port_kind = PortKind::event,
+    };
+    auto read_recording = [&] {
+        ObservationGraphRequest observation{.windows = {{
+            source, recorded_event_timestamps_operation, {index(0), recording_frames},
+        }}};
+        in_event_source([&] { project.handle_observation_request(observation); });
+        EXPECT_TRUE(observation.error.empty()) << observation.error;
+        auto query = observation.windows.front().query;
+        if (!query) return query;
+        ObservationCollectRequest collection{.windows = {query}};
+        executor.handle_observation_collect(collection);
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!query->complete.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        return query;
+    };
+
+    std::vector<GlobalIndex> expected;
+    for (std::size_t i = 0; i < 5; ++i) {
+        auto const click = i * half_second + 13;
+        auto const previous_version = data_version();
+        render_until((click / block_size + 1) * block_size);
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (data_version() == previous_version && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        ASSERT_GT(data_version(), previous_version) << "Click at sample " << click << " was never published";
+
+        expected.push_back(index(click));
+        auto const query = read_recording();
+        ASSERT_TRUE(query);
+        ASSERT_TRUE(query->complete.load(std::memory_order_acquire));
+        ASSERT_EQ(query->result.status, ObservationWindowResult::Status::ready) << query->result.error;
+        EXPECT_EQ(query->result.event_indices, expected) << "After recording sample " << click;
+
+        if (i == 1) {
+            // Entering a viewport with a live meter can activate a new
+            // execution of the same authored project graph.
+            ObservationGraphRequest subscribe{.requirements = ObservationRequirements{.revision = 1,
+                .probes = {{.id = 17, .source = {.node = {.instance_id = "source"},
+                    .member = "audio", .channel = 0}, .operation = "level"}}}};
+            in_event_source([&] { project.handle_observation_request(subscribe); });
+            ASSERT_TRUE(subscribe.error.empty()) << subscribe.error;
+            ASSERT_TRUE(project.wait_for_compilation());
+            ASSERT_TRUE(activate(rendered));
+            auto const metered = executor.active_graph();
+            ASSERT_TRUE(metered);
+            EXPECT_NE(metered->project_generation, graph->project_generation);
+            EXPECT_EQ(metered->configured_generation, graph->configured_generation);
+            ASSERT_EQ(metered->observations.probes.size(), 1u);
+            EXPECT_TRUE(metered->observations.probes.front().available);
+            auto const after_cutover = read_recording();
+            ASSERT_TRUE(after_cutover);
+            ASSERT_TRUE(after_cutover->complete.load(std::memory_order_acquire));
+            ASSERT_EQ(after_cutover->result.status, ObservationWindowResult::Status::ready)
+                << after_cutover->result.error;
+            EXPECT_EQ(after_cutover->result.event_indices, expected);
+        }
+    }
+
+    render_until(recording_frames);
+    // A running seek replays a click at a different offset within the
+    // callback, so the new write overlaps the original recording.
+    auto const before_replay = data_version();
+    (void)executor.seek_playback(index(half_second + 5));
+    executor.render_block(block_size, sample_rate);
+    ASSERT_EQ(executor.playback_snapshot().foreground_playhead, index(half_second + 5 + block_size));
+    auto const replay_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (data_version() == before_replay && std::chrono::steady_clock::now() < replay_deadline)
+        std::this_thread::yield();
+    ASSERT_GT(data_version(), before_replay);
+    auto const final = read_recording();
+    ASSERT_TRUE(final);
+    ASSERT_TRUE(final->complete.load(std::memory_order_acquire));
+    ASSERT_EQ(final->result.status, ObservationWindowResult::Status::ready) << final->result.error;
+    EXPECT_EQ(final->result.event_indices, expected);
+    EXPECT_FALSE(executor.background_execution_failures().any());
+}
+
 } // namespace iv::test::graph_jit_tests

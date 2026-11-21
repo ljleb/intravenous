@@ -788,17 +788,17 @@ namespace iv::details {
             : _disposition(&disposition)
         {}
 
-        constexpr void observe_write() const
+        constexpr void observe_write(OutputDisposition write = OutputDisposition::written) const
         {
-            IV_ASSERT(*_disposition != OutputDisposition::voided,
-                "an output cannot be written after write_void() in the same invocation");
-            *_disposition = OutputDisposition::written;
+            IV_ASSERT(*_disposition == OutputDisposition::untouched || *_disposition == write,
+                "an output cannot mix recording dispositions in the same invocation");
+            *_disposition = write;
         }
 
         constexpr void observe_void() const
         {
-            IV_ASSERT(*_disposition != OutputDisposition::written,
-                "write_void() cannot follow an ordinary output write in the same invocation");
+            IV_ASSERT(*_disposition == OutputDisposition::untouched || *_disposition == OutputDisposition::voided,
+                "write_void() cannot follow an output write in the same invocation");
             *_disposition = OutputDisposition::voided;
         }
     };

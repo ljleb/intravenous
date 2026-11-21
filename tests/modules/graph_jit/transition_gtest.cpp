@@ -2388,6 +2388,48 @@ TEST_F(GraphJitRuntimeFixture, GrowingCompensationOfComposedSourcesWithUnequalLa
         424);
 }
 
+TEST_F(GraphJitRuntimeFixture, FanInCutoverPreservesTheDelayedOperand)
+{
+    auto graph = configured_module_graph(*revision, "iv.test.graph_jit.fan_in_with_undelayed_operand");
+    ASSERT_TRUE(graph);
+    constexpr std::size_t block_size = 64;
+    run_across_graph_edit(*jit, definitions, resources, graph, graph, 446,
+        sequence_cutover, sequence_cutover + 2 * block_size,
+        [&](iv::CompiledGraph const& compiled, iv::NodeStorage const& storage, std::int64_t begin) {
+            auto const& requirements = compiled.realtime_port_state_requirements.states;
+            auto const input = std::ranges::find_if(requirements, [](auto const& requirement) {
+                return requirement.role == iv::graph_jit::RealtimePortStateRole::sequential_input_history
+                    && requirement.in_flight_samples == 1;
+            });
+            ASSERT_NE(input, requirements.end());
+            auto const requirement_index = static_cast<std::size_t>(input - requirements.begin());
+            auto const& realizations = compiled.realtime_port_state_realizations.sample_states;
+            auto const realization = std::ranges::find(realizations, requirement_index,
+                &iv::graph_jit::SampleRealtimePortStateRealization::requirement_index);
+            ASSERT_NE(realization, realizations.end());
+            EXPECT_EQ(realization->retained_access, iv::graph_jit::SampleRealtimePortStateAccess::composed);
+            ASSERT_EQ(realization->composition_sources.size(), 2u);
+            auto const delayed = std::ranges::find(realization->composition_sources, true,
+                &iv::graph_jit::SampleRealtimePortStateCompositionSource::owns_samples);
+            auto const undelayed = std::ranges::find(realization->composition_sources, false,
+                &iv::graph_jit::SampleRealtimePortStateCompositionSource::owns_samples);
+            ASSERT_NE(delayed, realization->composition_sources.end());
+            ASSERT_NE(undelayed, realization->composition_sources.end());
+            EXPECT_EQ(delayed->storage.timeline_offset_frames, -1);
+            EXPECT_TRUE(delayed->storage.node_storage_offset.has_value());
+            EXPECT_FALSE(undelayed->storage.node_storage_offset.has_value());
+
+            auto const* probe = find_unique_state<SequenceProbeStateMirror>(compiled.node_layout, storage);
+            ASSERT_NE(probe, nullptr);
+            ASSERT_EQ(probe->recorded, block_size);
+            for (std::size_t frame = 0; frame < block_size; ++frame) {
+                auto const position = begin + static_cast<std::int64_t>(frame);
+                auto const expected = position == 0 ? 0.f : static_cast<float>(2 * (position - 1) + 100);
+                EXPECT_FLOAT_EQ(probe->values[frame], expected) << "at sample " << position;
+            }
+        });
+}
+
 // The probe's stereo input reads a ramp on each channel and keeps 3 values of
 // history. The edit feeds its left channel from the probe's own output through
 // detach(4) instead, which routes the connection; the right channel keeps its

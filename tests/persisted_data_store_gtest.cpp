@@ -714,7 +714,8 @@ iv::graph_jit::BackgroundEvaluationPlan direct_tick_plan(
         }};
         plan.tick_runtime.random_access_sample_inputs = {{
             .port = 1,
-            .storage = {0},
+            .reads = {{.storage = 0, .direct = true}},
+            .direct_persisted_storage = 0,
         }};
         plan.tick_runtime.sample_captures = {{
             .port = 0,
@@ -744,7 +745,8 @@ iv::graph_jit::BackgroundEvaluationPlan direct_tick_plan(
         }};
         plan.tick_runtime.random_access_event_inputs = {{
             .port = 1,
-            .storage = {0},
+            .reads = {{.storage = 0, .direct = true}},
+            .direct_persisted_storage = 0,
         }};
         plan.tick_runtime.event_captures = {{
             .port = 0,
@@ -785,7 +787,7 @@ iv::graph_jit::BackgroundEvaluationPlan sequential_tick_sample_plan()
     plan.tick_runtime.sample_captures.clear();
     plan.tick_runtime.sequential_sample_inputs = {{
         .port = 1,
-        .storage = {0},
+        .reads = {{.storage = 0, .direct = true}},
     }};
     plan.tick_runtime.nodes[0] = {};
     plan.tick_runtime.nodes[1] = {
@@ -2150,7 +2152,11 @@ TEST(TickInvocationWorkspace, PausedEventAuditionRebasesOccurrencesWithoutChangi
     plan.ports[1].tick_sequential_input = true;
     plan.storage.ports[0].max_events_per_index = 2;
     plan.tick_runtime.random_access_event_inputs.clear();
-    plan.tick_runtime.sequential_event_inputs = {{.port = 1, .storage = {0}}};
+    plan.tick_runtime.sequential_event_inputs = {{
+        .port = 1,
+        .reads = {{.storage = 0, .direct = true}},
+        .direct_persisted_storage = 0,
+    }};
     plan.tick_runtime.nodes[1] = {.sequential_event_count = 1, .event_capture_begin = 1};
     PersistedDataStore data;
     auto output = data.resolve_output(local_output(PortKind::event, 0));
@@ -3254,6 +3260,71 @@ TEST(BackgroundEvaluationTransaction,
     ASSERT_NE(emptied, nullptr);
     EXPECT_EQ(emptied->range, range(0, 4));
     EXPECT_TRUE(emptied->events.empty());
+}
+
+TEST(BackgroundEvaluationTransaction,
+     PreservingEventWritesFillGapsAndKeepEarlierQueuedEvents)
+{
+    auto graph = queued_persisted_graph(iv::PortKind::event);
+    iv::ResourceContext resources;
+    auto tock_states = graph.tock_state_layout.create_storage(resources);
+    tock_states.initialize();
+    iv::BackgroundCoverageState coverage{1};
+    iv::BackgroundPropagationWorkspace propagation{
+        graph.background_evaluation_plan, graph.specialization.sample_rate};
+    iv::PersistedDataStore data;
+    auto reader = data.register_reader();
+    auto const output = data.resolve_output(local_output(iv::PortKind::event, 0));
+    auto seed = data.begin_candidate(1);
+    seed.overwrite(event_chunk(output, range(2, 4), {3}));
+    ASSERT_EQ(data.publish(std::move(seed)), iv::PersistedDataPublishResult::published);
+
+    iv::ProducerReserve reserve{iv::realtime_produced_block_storage_size};
+    iv::AsyncCapacityManager manager{1};
+    iv::AsyncWorkSignal work_signal;
+    iv::PendingQueue pending{reserve, work_signal};
+    ASSERT_EQ(manager.maintain(reserve, {1, 1, 2}), 2u);
+    iv::ProducedBlockChain chain;
+    iv::ProducedBlockWriter writer;
+    auto append = [&](std::int64_t begin, std::size_t extent, std::span<iv::TimedEvent const> events) {
+        append_record(reserve, chain, writer, {
+            .payload_kind = iv::RealtimeProducedPayloadKind::events_preserving_recording,
+            .payload_size = events.size_bytes(),
+            .begin = index(begin),
+            .range_extent = extent,
+            .event_type = iv::EventTypeId::trigger,
+            .event_count = events.size(),
+        }, std::as_bytes(events));
+    };
+    std::array const first{iv::TimedEvent{index(1), iv::TriggerEvent{}},
+        iv::TimedEvent{index(4), iv::TriggerEvent{}}, iv::TimedEvent{index(7), iv::TriggerEvent{}}};
+    std::array const second{iv::TimedEvent{index(6), iv::TriggerEvent{}},
+        iv::TimedEvent{index(8), iv::TriggerEvent{}}, iv::TimedEvent{index(9), iv::TriggerEvent{}}};
+    std::array const third{iv::TimedEvent{index(3), iv::TriggerEvent{}}};
+    append(0, 8, first);
+    append(6, 4, second);
+    append(3, 1, third);
+    ASSERT_TRUE(pending.publish(std::move(chain)));
+
+    iv::TickMaterializationStore materializations;
+    std::array routes{iv::BackgroundProducedInputRoute{.output = output, .port = 0, .kind = iv::PortKind::event}};
+    std::array selections{pending.pin()};
+    iv::BackgroundEvaluationTransaction transaction{
+        graph, tock_states, coverage, propagation, data, materializations,
+        {.semantic_version = 2}, routes, selections,
+    };
+    auto result = transaction.execute();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
+
+    auto published = reader.pin();
+    auto const timeline = published->event_timeline(output, iv::EventTypeId::trigger);
+    std::vector<iv::GlobalIndex> indices;
+    for (auto const& event : timeline) indices.push_back(event.time);
+    EXPECT_EQ(indices, (std::vector{index(1), index(3), index(7), index(8), index(9)}));
+    auto const* recorded = published->find_event_coverage(output, iv::EventTypeId::trigger);
+    ASSERT_NE(recorded, nullptr);
+    EXPECT_EQ(*recorded, iv::IndexCoverage{range(0, 10)});
 }
 
 TEST(BackgroundEvaluationTransaction,

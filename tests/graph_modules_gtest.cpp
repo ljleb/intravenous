@@ -181,7 +181,7 @@ ConfiguredGraph configure_introspection_regression()
     GraphBuilder g;
     auto input = g.input<"in">(0.25f);
     auto event = g.event_input<"event">(EventTypeId::empty);
-    auto sum = details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 1>>(g);
+    auto sum = details::configure_concrete_node<SumN<mono, SampleStreamLayout::planar, 1>>(g);
     auto const sum_handle = sum.node_bundle_handle();
     auto annotated = _annotate_node_source_info(sum.node_ref(), "sum");
     sum(input);
@@ -260,7 +260,7 @@ TEST(GraphModules, BuilderSessionOwnsStateRatherThanAGraphBuilderObject)
     GraphBuilder builder(session.get());
     auto input = builder.input<"in">(0.0f);
     auto pass = details::configure_concrete_node<
-        Sum<mono, SampleStreamLayout::planar, 1>>(builder);
+        SumN<mono, SampleStreamLayout::planar, 1>>(builder);
     pass(input);
     builder.outputs("out"_P = pass);
 

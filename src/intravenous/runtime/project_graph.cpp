@@ -1516,6 +1516,10 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     generation->definitions_generation = definitions_snapshot_->generation;
     generation->definitions = definitions_snapshot_;
     generation->placements = std::move(request.result.placements);
+    for (auto const& [instance_id, placement] : generation->placements) {
+        if (finished_graph.node_bundles.bundle(placement.root).is_concrete())
+            finished_graph.project_leaf_instances.emplace(placement.root, instance_id);
+    }
     generation->source_sample_connection_count = connections_request.result.source_sample_count;
     generation->source_event_connection_count = connections_request.result.source_event_count;
     generation->applied_connection_ids =
@@ -3701,6 +3705,7 @@ std::string unqualified_child_type(std::string_view type)
 
 std::string child_lane_display_name(
     ProjectGraphGeneration const& generation, ProjectChildNode const& child,
+    std::string_view definition_id,
     std::unordered_map<std::string_view, std::string_view> const& leaf_names_by_type)
 {
     auto const& graph = *generation.graph;
@@ -3713,9 +3718,6 @@ std::string child_lane_display_name(
     auto const& bundle = graph.node_bundles.bundle(child.bundle);
     auto const type = bundle.is_subgraph() ? bundle.subgraph_kind() : bundle.type_identity();
     if (generation.definitions) {
-        auto const* identity = graph.node_bundles.registered_node_type_identity(child.bundle);
-        auto const definition_id = bundle.is_subgraph() ? type
-            : identity ? std::string_view(identity->node_type_id) : std::string_view{};
         if (!definition_id.empty()) {
             auto const it = generation.definitions->by_id.find(std::string(definition_id));
             if (it != generation.definitions->by_id.end()) {
@@ -3928,6 +3930,7 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                 child_address.path.insert(child_address.path.end(), child.path.begin(), child.path.end());
                 std::optional<NodeAddress> membership_address;
                 std::optional<std::size_t> virtual_member_count;
+                std::optional<ProjectGraphScopeSource> declaration_source;
                 if (!child.virtual_node) {
                     auto const placement = generation->placements.find(address.instance_id);
                     if (placement != generation->placements.end()) {
@@ -3942,6 +3945,17 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                         addresses.insert(addresses.begin(), child_address);
                 } else {
                     auto const& record = graph.virtual_nodes.record(*child.virtual_node);
+                    auto const declaration = std::ranges::find_if(record.source_infos,
+                        [](SourceInfo const& info) {
+                            return info.declaration_line != 0 && !info.span.file_path.empty();
+                        });
+                    if (declaration != record.source_infos.end()) {
+                        declaration_source = ProjectGraphScopeSource{
+                            .file_path = declaration->span.file_path,
+                            .line = declaration->declaration_line,
+                            .byte_offset = declaration->span.begin,
+                        };
+                    }
                     auto const selected = resolve_node_address(graph, generation->placements, child_address);
                     if (selected.size() == 1) {
                         auto const& members = selected.front().virtual_member_indices;
@@ -3970,6 +3984,9 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                     }
                 }
                 auto const& bundle = graph.node_bundles.bundle(child.bundle);
+                auto const* registered = graph.node_bundles.registered_node_type_identity(child.bundle);
+                auto const definition_id = bundle.is_subgraph() ? bundle.subgraph_kind()
+                    : registered ? std::string_view(registered->node_type_id) : std::string_view{};
                 auto interface = child.virtual_node
                     ? read_virtual_node_interface(graph.node_bundles, graph.virtual_nodes.record(*child.virtual_node), child.bundle)
                     : read_node_instance_interface(graph.node_bundles, child.bundle);
@@ -3980,12 +3997,13 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                     .virtual_node = child.virtual_node.has_value(),
                     .virtual_member_count = virtual_member_count,
                     .instance = *owner,
-                    .child_display_name = child_lane_display_name(*generation, child, leaf_names_by_type),
+                    .child_display_name = child_lane_display_name(*generation, child, definition_id, leaf_names_by_type),
                     .child_source_label = child.source_label,
+                    .declaration_source = std::move(declaration_source),
                     .load_state = ProjectGraphScopeNodeState::ready,
                     .interface = std::move(interface),
-                    .construction_definition_id = std::string(bundle.is_subgraph()
-                        ? bundle.subgraph_kind() : bundle.type_identity()),
+                    .construction_definition_id = std::string(definition_id.empty()
+                        ? bundle.type_identity() : definition_id),
                 });
                 describe_manual_controls(node);
             }
@@ -4241,6 +4259,17 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
                         ObservationSourceKind::input, name, channel_type);
                 auto bundles = concrete_node_address_matches(graph, matches);
                 if (bundles.size() != 1) continue;
+                if (compiled) {
+                    auto const handle = bundles.front();
+                    auto const& node = graph.node_bundles.bundle(handle);
+                    for (std::size_t index = 0; index < node.event_output_count(); ++index) {
+                        NodeBundlePortId const port{handle, PortKind::event, index};
+                        if (!recorded_event_window_storage(compiled->background_evaluation_plan, port)) continue;
+                        auto const config = graph.node_bundles.resolve_event_output(port).config;
+                        capabilities.push_back({{"nodeIndex", node_index}, {"kind", "output"}, {"portKind", "event"},
+                            {"member", config.name}, {"delivery", "window"}, {"operations", {recorded_event_timestamps_operation}}});
+                    }
+                }
                 std::size_t index = 0;
                 graph.node_bundles.for_each_configured_bundle([&](ConfiguredNodeBundleView const& bundle) {
                     if (index++ != bundles.front() || !bundle.operations

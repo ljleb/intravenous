@@ -10,6 +10,8 @@
 #include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace iv {
 
@@ -35,13 +37,51 @@ struct ProjectPlaybackDrag {
     std::uint64_t id = 0;
 };
 
+struct ProjectPlaybackDiagnostics {
+    std::uint64_t background_underrun_blocks = 0;
+    std::optional<std::uint64_t> configured_generation{};
+    std::optional<std::uint64_t> execution_generation{};
+};
+
+struct PlaybackOutputProfileRequest {
+    std::string id{};
+    std::optional<std::uint32_t> duration_ms{};
+};
+
+struct PlaybackRenderSlice {
+    std::optional<std::uint64_t> execution_generation{};
+    GlobalIndex foreground_sample{};
+    std::uint64_t segment = 0;
+    bool rendered = false;
+    std::optional<std::uint64_t> code_publication{};
+    bool transition_tick = false;
+};
+
+struct PlaybackOutputCutover {
+    PlaybackRenderSlice previous{}, current{};
+    std::array<float, 8> before{}, after{};
+    std::size_t before_samples = 0, after_samples = 0;
+    double elapsed_ms = 0, render_ms = 0, budget_ms = 0;
+};
+
+struct PlaybackOutputProfileResult {
+    std::string status{};
+    std::size_t buffers = 0, over_budget_buffers = 0, omitted_cutovers = 0;
+    double max_render_ms = 0, max_budget_fraction = 0;
+    std::vector<PlaybackOutputCutover> cutovers{};
+};
+
 struct ProjectPlaybackRequest {
     ProjectPlaybackOperation operation = ProjectPlaybackOperation::read;
     GlobalIndex position{};
     bool running = true;
     ProjectPlaybackDrag drag{};
+    bool include_diagnostics = false;
+    std::optional<PlaybackOutputProfileRequest> output_profile{};
     std::optional<std::uint64_t> accepted_command{};
     std::optional<ProjectPlaybackSnapshot> snapshot{};
+    std::optional<ProjectPlaybackDiagnostics> diagnostics{};
+    std::optional<PlaybackOutputProfileResult> output_profile_result{};
 };
 
 // The control side orders commands; the audio side alone applies them. The

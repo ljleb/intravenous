@@ -5,6 +5,7 @@
 #include <intravenous/sample.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstdint>
 #include <cstring>
@@ -311,6 +312,15 @@ std::optional<ChannelTypeId> registered_channel_type_with_count(
 bool can_plan_sample_composition_channels(
     SampleConnectionPlan const& connection)
 {
+    // Overlapping projections need a shared destination to combine their
+    // samples. Independent aliases and per-projection buffers cannot bind it.
+    std::array<bool, maximum_supported_channel_count> projected{};
+    for (auto const& contribution : connection.projection_contributions) {
+        for (auto const channel : contribution.target_channels) {
+            if (channel >= projected.size() || projected[channel]) return false;
+            projected[channel] = true;
+        }
+    }
     return is_entirely_realtime_delivery(connection)
         && !connection.canonical_source_port
         && !connection.detach
@@ -1956,6 +1966,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                 .source_representation = representation,
                 .source_channel = timing.source.channel,
                 .read_latency = timing.read_latency,
+                .source_latency = timing.source_latency,
                 .coverage_sources = coverage->output_change
                         ? std::vector<SequentialCoverageSource>{*coverage}
                         : std::vector<SequentialCoverageSource>{},
@@ -2458,6 +2469,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     .source_representation = source_representation,
                     .source_channel = timing.source.channel,
                     .read_latency = timing.read_latency,
+                    .source_latency = timing.source_latency,
                     .coverage_sources = coverage->output_change
                         ? std::vector<SequentialCoverageSource>{*coverage}
                         : std::vector<SequentialCoverageSource>{},
@@ -2903,6 +2915,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                     .source_representation = source_representation,
                     .source_channel = channel.source.channel,
                     .read_latency = channel.read_latency,
+                    .source_latency = channel.source_latency,
                     .coverage_sources = coverage->output_change
                         ? std::vector<SequentialCoverageSource>{*coverage}
                         : std::vector<SequentialCoverageSource>{},
@@ -2910,8 +2923,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             }
 
             for (auto const target_channel : semantic.target_channels) {
-                if (target_channel >= populated_targets.size()
-                    || populated_targets[target_channel]) {
+                if (target_channel >= populated_targets.size()) {
                     return std::unexpected(
                         "GraphJit sample composition contribution has an invalid target projection");
                 }

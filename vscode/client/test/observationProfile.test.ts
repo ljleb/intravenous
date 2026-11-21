@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ObservationProfile, observationInterestReport } from "../src/observationProfile";
 import type { ObservationDelivery } from "../src/observationDelivery";
-import { ObservationValues, type ObservationInterest } from "../src/observations";
+import { ObservationValues, recordedEventTimestampsOperation, type ObservationInterest } from "../src/observations";
 
 const body = { regions: [{ begin: "0", length: "64", points: [{ index: "0", available: true, value: { value: .5 } }] }] };
 const initial: ObservationDelivery = {
@@ -67,6 +67,36 @@ test("observation profiling links lane interests to replies and reports retained
     assert.equal(skipped.requests, 0);
     assert.equal(skipped.budgetSkips, 1);
     assert.match(observationInterestReport(summary).join("\n"), /Automation Curve\n[\s\S]*Cached at finish ready/);
+});
+
+test("observation profiling finds recorded timestamps lost inside the overlap of two replies", () => {
+    const profile = new ObservationProfile();
+    const values = new ObservationValues();
+    const clicks: ObservationInterest = {
+        id: "clicks", source: { node: { instanceId: "detector" }, kind: "output", portKind: "event", member: "clicks" },
+        operation: recordedEventTimestampsOperation,
+    };
+    function deliver(begin: string, eventIndices: string[], executionGeneration: string) {
+        const window = { begin, length: "64", points: 0 };
+        profile.recordRequests([{ ...clicks, window }], () => ({ consumer: "Click Detector", source: "clicks" }));
+        values.expectWindows([{ ...clicks, window }]);
+        const update: ObservationDelivery = { ...initial, executionGeneration, scopes: { viewport: { windows: {
+            clicks: { window, status: "ready", approximate: false, body: { regions: [], eventIndices } },
+        } } } };
+        profile.record({ type: "observationUpdate", update }, values.receive(update));
+    }
+    deliver("0", ["3", "40", "41", "41"], "2");
+    deliver("32", ["40", "41", "41", "70"], "3");
+    assert.equal(profile.summary(values).interests[0].recording?.loss, undefined);
+    deliver("32", ["40", "41", "70"], "4");
+    const summary = profile.summary(values);
+    assert.deepEqual(summary.interests[0].recording, {
+        count: 3, window: { begin: "32", length: "64", points: 0 },
+        execution: "4", loss: { sample: "41", count: 1, from: "3", to: "4" },
+    });
+    const report = observationInterestReport(summary).join("\n");
+    assert.match(report, /starting at sample 41, from execution generation 3 to 4/);
+    assert.match(report, /Cached at finish ready.*3 recorded timestamps/);
 });
 
 test("profile records viewport, submission and first usable result for each arrival", () => {

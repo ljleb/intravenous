@@ -11,6 +11,7 @@
 #include <optional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <utility>
 
@@ -83,6 +84,7 @@ struct LiveObservationFrame {
 
 inline constexpr std::size_t maximum_observation_window_points = 1024;
 inline constexpr std::size_t maximum_observation_window_values = 2048;
+inline constexpr std::string_view recorded_event_timestamps_operation = "event-timestamps";
 struct ObservationWindow {
     GlobalIndex begin{};
     std::uint64_t length = 0;
@@ -107,6 +109,7 @@ struct ObservationWindowResult {
     bool truncated = false;
     std::vector<ObservationWindowRegion> regions{};
     std::vector<TimedEvent> events{};
+    std::vector<GlobalIndex> event_indices{};
     std::vector<GlobalIndexRange> unavailable_regions{};
     std::string error{};
 };

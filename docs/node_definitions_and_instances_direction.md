@@ -190,6 +190,10 @@ method. The latter creates a subgraph boundary. Use `g.node<Type, ChannelType>(.
 to tile a private leaf.
 See the [earlier registration-only design](historical/node_construction_before_package_private_types_2026-11-19.md).
 
+The third argument of `IV_NODE` stores the definition's display name as
+runtime text. It can contain punctuation such as `"*"`. The first argument
+supplies the definition ID used for lookup.
+
 The goal of retiring `IV_MODULE_CLASS` is to register public functions and
 classes through one `IV_MODULE` entry point. The C++ spelling and compiler
 plugin mechanism are open.

@@ -4,6 +4,7 @@ import GenericPresentation from "./GenericPresentation.vue";
 import PluginLane from "./PluginLane.vue";
 import { PresentationRegistry } from "./registry";
 import { beatsPresentationManifest, createBeatsPresentation } from "../../src/beatsPresentationPlugin";
+import { clickDetectorPresentationManifest, createClickDetectorPresentation } from "../../src/clickDetectorPresentation";
 import { automationCurvePresentationManifest, createAutomationCurvePresentation } from "../../src/automationCurvePresentation";
 import type { PresentationProgram, PresentationScript } from "../../src/presentationPlugin";
 
@@ -23,6 +24,7 @@ presentations.register({ presentationId: "builtin.timeline", displayName: "Timel
 const hosted = markRaw(PluginLane);
 const builtinPrograms = new Map<string, PresentationProgram>([
     ["builtin.beats", { manifest: beatsPresentationManifest, create: createBeatsPresentation }],
+    ["builtin.click_detector", { manifest: clickDetectorPresentationManifest, create: createClickDetectorPresentation }],
     ["builtin.automation.curve", { manifest: automationCurvePresentationManifest, create: createAutomationCurvePresentation }],
 ]);
 const projectPrograms = shallowRef(new Map<string, { program: PresentationScript; serial: number }>());

@@ -69,11 +69,11 @@ child can appear in its module's expanded lanes and take part in project
 connections. Only project instances can be duplicated. Duplicating a module
 runs its constructor to create its children.
 
-Each virtual node has a lane with the node type as its primary label and
-the C++ declaration name as its secondary label. Expanding the lane shows
-its concrete members. A member lane uses its own type and adds a one-based
-index to the declaration name. When a tile expands, its children show
-their channel names as secondary labels.
+Each virtual node has a lane with the C++ declaration name as its primary
+label and the node's display name as its secondary label. Expanding the lane
+shows its concrete members. A member lane puts the declaration name and
+one-based member index first and its display name second. When a tile expands,
+its children put their channel names first.
 
 A concrete member can appear under several virtual nodes. Those rows
 share project edits and saved presentation settings.

@@ -17,6 +17,8 @@ struct SourceInfo {
   std::string declaration_identity{};
   SourceSpan span{};
   std::string declaration_name{};
+  // One-based line when the span identifies the declaration.
+  uint32_t declaration_line = 0;
 
   bool operator==(SourceInfo const&) const = default;
 };

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import { addressKey, formatLaneLabel, isProjectInstance, type Point } from "../../src/graphScope";
+import { addressKey, formatLaneLabel, isProjectInstance, laneLabels, type NodeAddress, type Point } from "../../src/graphScope";
 import { isGeneratedSnapConnection, isTimelineSnapAddress, managedBeats, managedTimeline, timelineGridMode,
     type TimelineGridMode } from "../../src/timelineSnap";
 import { laneRuns } from "../../src/laneSelection";
@@ -49,6 +49,9 @@ const { layout, lanes, save, copyNodeDebugDetails, selectedLanes, expandedModule
     profileGraphUi } = useGraphEditor();
 function renameLane(instanceId: string, displayName: string, previousDisplayName: string) {
     webviewApi.postMessage({ type: "renameGraphLane", instanceId, displayName, previousDisplayName });
+}
+function openVirtualNodeSource(address: NodeAddress) {
+    webviewApi.postMessage({ type: "openVirtualNodeSource", nodeKey: addressKey(address) });
 }
 const children = computed(() => profileGraphUi("Build lane presentation data", () => {
     const boundaries = new Set(scope.value.childScopes?.filter((scope) => scope.hasBoundary).map(({ subject }) => addressKey(subject)));
@@ -765,10 +768,12 @@ onBeforeUnmount(() => {
                 :data-lane-key="moduleBoundary ? undefined : addressKey(child.address)"
                 :style="{ height: `${laneHeight}px`, '--iv-lane-indent': `${Math.min(depth, 5) * 12}px` }" tabindex="-1"
                 :aria-label="moduleBoundary ? `${nodeDisplayName(semantic)} module ports`
-                    : formatLaneLabel(nodeDisplayName(semantic), semantic.sourceLabel)
+                    : formatLaneLabel(laneLabels(nodeDisplayName(semantic), semantic.sourceLabel))
                         + (selectedLanes.has(addressKey(child.address)) ? ', selected' : '')">
                 <PresentationHost v-if="moduleBoundary" :node="semantic" :region-height="laneHeight - 1" module-boundary />
                 <PresentationHost v-else :node="semantic" :region-height="laneHeight - 1" lane
+                    :open-source="child.virtualNode && child.declarationSource
+                        ? () => openVirtualNodeSource(child.address) : undefined"
                     :rename-lane="scope.editable && isProjectInstance(child.address)
                         ? (name, previousName) => renameLane(child.instance.instanceId, name, previousName) : undefined"
                     @copy-debug-details="copyNodeDebugDetails(child.address)" />

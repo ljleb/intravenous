@@ -6,7 +6,7 @@ import { nodeDisplayName, portDescription } from "./nodeSummary";
 import { editableHeightPx, type NodeDisplayMode } from "./displayMode";
 import NodePorts from "./NodePorts.vue";
 import LiveOutputMeters from "./LiveOutputMeters.vue";
-import { addressKey, formatLaneLabel } from "../../src/graphScope";
+import { addressKey, formatLaneLabel, laneLabels } from "../../src/graphScope";
 import { useOptionalGraphEditor } from "../graph/context";
 
 const props = defineProps<{ mode?: NodeDisplayMode; flushContent?: boolean; moduleBoundary?: boolean }>();
@@ -30,23 +30,24 @@ const inputs = computed(() => node.value.ports.filter((port) => port.direction =
 const outputs = computed(() => node.value.ports.filter((port) => port.direction === "output"));
 const inputSummary = computed(() => inputs.value.map((port) => `${port.name}: ${portDescription(port)}`).join('\n'));
 const outputSummary = computed(() => outputs.value.map((port) => `${port.name}: ${portDescription(port)}`).join('\n'));
-const name = computed(() => props.moduleBoundary ? "Module Ports" : nodeDisplayName(node.value));
-const sourceLabel = computed(() => props.moduleBoundary ? undefined : node.value.sourceLabel);
+const displayName = computed(() => nodeDisplayName(node.value));
+const labels = computed(() => props.moduleBoundary ? laneLabels("Module Ports")
+    : laneLabels(displayName.value, node.value.sourceLabel));
 const virtualMembers = computed(() => !props.moduleBoundary && node.value.virtualNode ? node.value.memberCount : undefined);
 const memberDescription = computed(() => {
     const count = virtualMembers.value;
     return count === undefined ? "" : `Virtual lane · ${count} ${count === 1 ? 'member' : 'members'}`;
 });
-const laneStatus = computed(() => props.moduleBoundary ? `Public ports of ${nodeDisplayName(node.value)}`
+const laneStatus = computed(() => props.moduleBoundary ? `Public ports of ${displayName.value}`
     : node.value.loadState === "waitingForDefinition" ? "Waiting for the node definition"
     : node.value.loadState === "waitingForGraph" ? "Waiting for graph realization"
-    : node.value.errorMessage || (sourceLabel.value ? formatLaneLabel(name.value, sourceLabel.value) : node.value.definitionId));
+    : node.value.errorMessage || (labels.value.secondary ? formatLaneLabel(labels.value) : node.value.definitionId));
 const nameInput = ref<HTMLInputElement | null>(null);
 const nameEdit = ref<{ original: string; draft: string } | null>(null);
 
 async function beginRename() {
     if (!lane?.rename || nameEdit.value) return;
-    nameEdit.value = { original: node.value.displayName ?? "", draft: name.value };
+    nameEdit.value = { original: node.value.displayName ?? "", draft: displayName.value };
     await nextTick();
     nameInput.value?.focus({ preventScroll: true });
     nameInput.value?.select();
@@ -75,12 +76,16 @@ function finishRename(commit: boolean) {
                     aria-label="Lane name" :placeholder="node.defaultDisplayName" spellcheck="false" tabindex="-1"
                     @blur="finishRename(true)" @keydown.enter="!$event.isComposing && finishRename(true)"
                     @keydown.esc.stop.prevent="finishRename(false)" />
-                <span v-else class="lane-title" :class="{ 'has-source-label': sourceLabel }"
-                    :data-status-hint="laneStatus" :data-status-shortcuts="lane?.rename ? 'Double-click to rename' : undefined"
-                    :aria-description="laneStatus" @dblclick="beginRename">
-                    <span class="lane-name" :class="{ failed: node.loadState === 'failed' }">{{ name }}</span>
-                    <span v-if="sourceLabel" class="lane-source-label">{{ sourceLabel }}</span>
-                </span>
+                <component v-else :is="lane?.openSource ? 'button' : 'span'" class="lane-title"
+                    :class="{ 'has-secondary-label': labels.secondary, 'source-link': lane?.openSource }"
+                    :type="lane?.openSource ? 'button' : undefined" :tabindex="lane?.openSource ? -1 : undefined"
+                    :data-status-hint="laneStatus"
+                    :data-status-shortcuts="lane?.openSource ? 'Click to open source' : lane?.rename ? 'Double-click to rename' : undefined"
+                    :aria-description="lane?.openSource ? 'Open declaration in source' : laneStatus"
+                    @click.exact="lane?.openSource?.()" @dblclick="beginRename">
+                    <span class="lane-name" :class="{ failed: node.loadState === 'failed', 'iv-text-link': lane?.openSource }">{{ labels.primary }}</span>
+                    <span v-if="labels.secondary" class="lane-secondary-label" :class="{ 'iv-text-link': lane?.openSource }">{{ labels.secondary }}</span>
+                </component>
                 <span v-if="virtualMembers !== undefined" class="member-count" :aria-label="memberDescription"
                     :data-status-hint="memberDescription">{{ virtualMembers }}</span>
                 <button v-if="lane && !moduleBoundary" type="button" tabindex="-1" class="copy-debug" data-status-hint="Copy node debug details"
@@ -134,15 +139,17 @@ function finishRename(commit: boolean) {
 }
 .inline-header .port-summary { display: none; }
 .lane-title { flex: 1; display: flex; align-items: baseline; gap: 6px; min-width: 0; }
-.lane-name, .lane-source-label { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+.source-link { padding: 0; border: 0; background: transparent; font: inherit; text-align: start; cursor: pointer; }
+.lane-name, .lane-secondary-label { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     line-height: 1; }
 .lane-name {
     font-size: min(calc(100cqh - 4px), var(--heading-height), var(--vscode-font-size, 13px));
-    color: var(--iv-lane-title-color); font-weight: 500; }
-.has-source-label .lane-name { max-width: 68%; }
-.lane-source-label { font-size: min(calc(100cqh - 4px), var(--heading-height), calc(var(--vscode-font-size, 13px) * .85));
-    color: var(--vscode-descriptionForeground); }
-.lane-name.failed { color: var(--vscode-errorForeground, #f14c4c); }
+    --iv-text-link-color: var(--iv-lane-title-color); font-weight: 500; }
+.lane-name:not(.iv-text-link) { color: var(--iv-text-link-color); }
+.has-secondary-label .lane-name { max-width: 68%; }
+.lane-secondary-label { font-size: min(calc(100cqh - 4px), var(--heading-height), calc(var(--vscode-font-size, 13px) * .85)); }
+.lane-secondary-label:not(.iv-text-link) { color: var(--vscode-descriptionForeground); }
+.lane-name.failed { --iv-text-link-color: var(--vscode-errorForeground, #f14c4c); }
 .lane-name-edit { flex: 1; box-sizing: border-box; width: 0; padding: 0; border: 0; outline: none;
     background: var(--vscode-input-background); color: var(--vscode-input-foreground); }
 .copy-debug { flex: 0 0 20px; height: var(--heading-height); padding: 0; border: 0; border-radius: 3px;

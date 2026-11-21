@@ -2178,6 +2178,11 @@ BackgroundStorageRealization::execute_operation(
             }
             return true;
         };
+        std::size_t maximum_source_channels = 0;
+        for (auto const& projection : projections)
+            maximum_source_channels = std::max(maximum_source_channels, projection.source_indices.size());
+        std::vector<std::byte const*> source_storage(maximum_source_channels);
+        std::vector<Sample> source_values(maximum_source_channels);
         auto apply_contribution = [&](RegionContribution const& contribution,
                                       GlobalIndex sample_index) {
             if (contribution.projection >= projections.size()) {
@@ -2186,8 +2191,6 @@ BackgroundStorageRealization::execute_operation(
                 return;
             }
             auto const& projection = projections[contribution.projection];
-            std::vector<std::byte const*> source_storage(
-                projection.source_indices.size());
             for (std::size_t channel = 0;
                  channel < projection.source_indices.size(); ++channel) {
                 auto const source_index = projection.source_indices[channel];
@@ -2227,7 +2230,7 @@ BackgroundStorageRealization::execute_operation(
                     std::byte{});
             }
             if (geometry.channel_scalar_lane_count == 0) {
-                if (source_storage.size() != 1
+                if (projection.source_indices.size() != 1
                     || projection.target_channels.size() != 1) {
                     result = std::unexpected(
                         "scalar continuous materialization cannot apply a channel projection");
@@ -2245,8 +2248,6 @@ BackgroundStorageRealization::execute_operation(
                         "audio continuous geometry has an invalid scalar-lane extent");
                     return;
                 }
-                std::array<Sample, maximum_supported_channel_count>
-                    source_values{};
                 std::array<Sample, maximum_supported_channel_count>
                     target_values{};
                 for (std::size_t lane = 0;
@@ -2469,8 +2470,10 @@ BackgroundStorageRealization::execute_operation(
         std::size_t total_count = 0;
         for (std::size_t source_index = 0;
              source_index < materialization.inputs.size(); ++source_index) {
-            auto const* source = event_read(
-                materialization.inputs[source_index]);
+            auto const storage = materialization.inputs[source_index];
+            auto const& coverage = *slot(storage).coverage;
+            if (coverage.empty()) continue;
+            auto const* source = event_read(storage);
             auto const& source_conversion =
                 materialization.source_conversions[source_index];
             if (!source || source->type != source_conversion.source_type
@@ -2487,7 +2490,7 @@ BackgroundStorageRealization::execute_operation(
             std::vector<TimedEvent> source_events;
             bool ordered = true;
             for_each_intersection(
-                *slot(materialization.inputs[source_index]).coverage,
+                coverage,
                 target_coverage,
                 [&](GlobalIndexRange region) {
                     source->for_each(region, [&](TimedEvent const& event) {
@@ -2637,47 +2640,17 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
         std::size_t storage_channel = 0;
         std::size_t latency = 0;
     };
-    auto materialized_tick_storage = [&](graph_jit::PortStorageIndex index) {
-        return index < plan_->storage.ports.size()
-            && (plan_->storage.ports[index].storage
-                    == graph_jit::PortStorageKind::tick_sequential
-                || plan_->storage.ports[index].storage
-                    == graph_jit::PortStorageKind::tick_random_access
-                || plan_->storage.ports[index].storage
-                    == graph_jit::PortStorageKind::persisted_data);
+    auto const sample_bindings = std::array{
+        std::span{plan_->tick_runtime.sequential_sample_inputs},
+        std::span{plan_->tick_runtime.random_access_sample_inputs},
     };
-
-    struct TickBindingView {
-        graph_jit::BackgroundPortIndex port = 0;
-        std::span<graph_jit::PortStorageIndex const> storage{};
+    auto const event_bindings = std::array{
+        std::span{plan_->tick_runtime.sequential_event_inputs},
+        std::span{plan_->tick_runtime.random_access_event_inputs},
     };
-    std::vector<TickBindingView> sample_bindings;
-    sample_bindings.reserve(
-        plan_->tick_runtime.sequential_sample_inputs.size()
-        + plan_->tick_runtime.random_access_sample_inputs.size());
-    for (auto const& binding :
-         plan_->tick_runtime.sequential_sample_inputs) {
-        sample_bindings.push_back({binding.port, binding.storage});
-    }
-    for (auto const& binding :
-         plan_->tick_runtime.random_access_sample_inputs) {
-        sample_bindings.push_back({binding.port, binding.storage});
-    }
-    std::vector<TickBindingView> event_bindings;
-    event_bindings.reserve(
-        plan_->tick_runtime.sequential_event_inputs.size()
-        + plan_->tick_runtime.random_access_event_inputs.size());
-    for (auto const& binding :
-         plan_->tick_runtime.sequential_event_inputs) {
-        event_bindings.push_back({binding.port, binding.storage});
-    }
-    for (auto const& binding :
-         plan_->tick_runtime.random_access_event_inputs) {
-        event_bindings.push_back({binding.port, binding.storage});
-    }
 
     std::vector<TickMaterializedSampleInput> samples;
-    for (auto const& binding : sample_bindings) {
+    for (auto const& binding : sample_bindings | std::views::join) {
         if (binding.port >= plan_->ports.size()) {
             return std::unexpected(
                 "Tick sample materialization references a missing input port");
@@ -2699,44 +2672,15 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
                 routes.push_back(route);
             }
         };
-        for (auto const& direct : plan_->storage.direct_samples) {
-            if (!materialized_tick_storage(direct.storage)
-                || !std::ranges::contains(binding.storage, direct.storage)
-                || direct.target_subset
-                    >= plan_->sample_target_subsets.size()
-                || plan_->sample_target_subsets[direct.target_subset].port
-                    != port.configured_port) {
-                continue;
-            }
-            auto const* view = sample_read(direct.storage);
-            if (view) {
-                append_route({
-                    .view = view,
-                    .logical_channel = direct.target_channel,
-                    .storage_channel = direct.source_channel,
-                    .latency = direct.read_latency,
-                });
-            }
-        }
-        for (auto const storage_index : binding.storage) {
-            if (!materialized_tick_storage(storage_index)) continue;
-            auto const* view = sample_read(storage_index);
-            if (!view) continue;
-            auto const& storage = plan_->storage.ports[storage_index];
-            for (auto const subset : storage.target_subsets) {
-                if (subset >= plan_->sample_target_subsets.size()) continue;
-                auto const& target = plan_->sample_target_subsets[subset];
-                if (target.port != port.configured_port) continue;
-                for (auto const channel : target.channels) {
-                    if (view->has_channel(channel.channel)) {
-                        append_route({
-                            .view = view,
-                            .logical_channel = channel.channel,
-                            .storage_channel = channel.channel,
-                        });
-                    }
-                }
-            }
+        for (auto const& read : binding.reads) {
+            auto const* view = sample_read(read.storage);
+            if (!view || !view->has_channel(read.source_channel)) continue;
+            append_route({
+                .view = view,
+                .logical_channel = read.target_channel,
+                .storage_channel = read.source_channel,
+                .latency = read.read_latency,
+            });
         }
         auto const channels = channel_count(port.sample_layout);
         struct FrozenSourceGroup {
@@ -3075,7 +3019,7 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
     }
 
     std::vector<TickMaterializedEventInput> events;
-    for (auto const& binding : event_bindings) {
+    for (auto const& binding : event_bindings | std::views::join) {
         if (binding.port >= plan_->ports.size()) {
             return std::unexpected(
                 "Tick event materialization references a missing input port");
@@ -3105,50 +3049,8 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
             }
             routes.push_back({view, fixed_source_index});
         };
-        for (auto const& direct : plan_->storage.direct_events) {
-            if (!materialized_tick_storage(direct.storage)
-                || !std::ranges::contains(binding.storage, direct.storage)
-                || direct.target_subset >= plan_->event_target_subsets.size()) {
-                continue;
-            }
-            auto const& target =
-                plan_->event_target_subsets[direct.target_subset].port;
-            if (target.bundle == port.configured_port.node_bundle_handle
-                && target.port == port.configured_port.port_index) {
-                std::optional<std::size_t> semantic_source_index;
-                if (direct.connection < plan_->connections.size()
-                    && direct.source_subset
-                        < plan_->event_source_subsets.size()) {
-                    auto const source = plan_->event_source_subsets[
-                        direct.source_subset].port;
-                    auto const& connection =
-                        plan_->connections[direct.connection];
-                    auto const delivery = std::ranges::find_if(
-                        connection.event_deliveries,
-                        [&](graph_jit::EventDeliveryPlan const& candidate) {
-                            return candidate.source == source
-                                && candidate.target == target;
-                        });
-                    if (delivery != connection.event_deliveries.end()) {
-                        semantic_source_index =
-                            delivery->semantic_source_index;
-                    }
-                }
-                append_route(
-                    event_read(direct.storage), semantic_source_index);
-            }
-        }
-        for (auto const storage_index : binding.storage) {
-            if (!materialized_tick_storage(storage_index)) continue;
-            auto const& storage = plan_->storage.ports[storage_index];
-            for (auto const subset : storage.target_subsets) {
-                if (subset >= plan_->event_target_subsets.size()) continue;
-                auto const& target = plan_->event_target_subsets[subset].port;
-                if (target.bundle == port.configured_port.node_bundle_handle
-                    && target.port == port.configured_port.port_index) {
-                    append_route(event_read(storage_index));
-                }
-            }
+        for (auto const& read : binding.reads) {
+            append_route(event_read(read.storage), read.semantic_source_index);
         }
         IndexCoverage available;
         for (auto const& route : routes) {

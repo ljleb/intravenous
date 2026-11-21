@@ -6,7 +6,7 @@ import type { ObservationDelivery } from "../../src/observationDelivery";
 import { observationPrefetchMarginPx, observationSpans, observationViewportWindow, observationWindowId,
     observationWindowIds, observationWindowRequests, type ObservationTier } from "../../src/observationWindows";
 import { useOptionalNode } from "./nodeContext";
-import { ObservationValues, observationSourceKey, type ObservationCapability, type ObservationHostRequest,
+import { ObservationValues, observationSourceKey, recordedEventTimestampsOperation, type ObservationCapability, type ObservationHostRequest,
     type ObservationInterest, type ObservationResponse, type ObservationSource, type ObservationTimeSpan,
     type MeterMode, type ObservationWindow, sameObservationWindow } from "../../src/observations";
 
@@ -147,7 +147,10 @@ export class PresentationObservations {
         const next = new Set<string>();
         if (observation && tier) {
             const { source, operation, window, consumer } = observation;
-            for (const { slot, ...request } of observationWindowRequests(window, tier)) {
+            const requests: ReturnType<typeof observationWindowRequests> = operation === recordedEventTimestampsOperation
+                ? tier === "visible" ? [{ slot: "visible", window, prefetch: false }] : []
+                : observationWindowRequests(window, tier);
+            for (const { slot, ...request } of requests) {
                 const key = observationWindowId(id, slot);
                 this.observePort(key, { source, operation, ...request }, tier === "visible" ? "viewport" : undefined, consumer);
                 next.add(key);

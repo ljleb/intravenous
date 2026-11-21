@@ -194,7 +194,8 @@ namespace iv {
             std::string_view file_path,
             uint32_t begin,
             uint32_t end,
-            std::string_view declaration_name = {}
+            std::string_view declaration_name = {},
+            uint32_t declaration_line = 0
         ) const;
         void _annotate_input_source_info(
             PortKind,

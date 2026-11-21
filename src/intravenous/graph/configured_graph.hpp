@@ -8,6 +8,8 @@
 #include <intravenous/graph/builder/virtual_nodes.hpp>
 #include <intravenous/node/manual_control.h>
 
+#include <unordered_map>
+
 namespace iv {
 
 // The lossless configuration representation. Lowering never reaches back into
@@ -23,6 +25,9 @@ struct ConfiguredGraph {
   // GraphBuilder::finish(), including implicit defaults. GraphJit expands their
   // private execution stages; the authored graph retains its public topology.
   std::vector<ConfiguredManualControl> manual_controls{};
+  // ProjectGraph supplies authored instance IDs for top-level concrete leaves.
+  // Package configuration snapshots have no project placements.
+  std::unordered_map<NodeBundleHandle, std::string> project_leaf_instances{};
 };
 
 } // namespace iv

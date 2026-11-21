@@ -1072,6 +1072,7 @@ namespace iv {
         untouched,
         written,
         voided,
+        written_preserving_recording,
     };
 
     class OutputPort {

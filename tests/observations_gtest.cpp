@@ -24,6 +24,39 @@ template<class T> T value_at(iv::ObservationResultData const& result, std::size_
     return value;
 }
 
+TEST(Observations, RecordedEventTimestampsKeepEqualTimeEventsAndWindowOrderAcrossTheSeam)
+{
+    auto const low = iv::GlobalIndex::from_signed(std::numeric_limits<std::int64_t>::min());
+    auto const high = low.retreated_by(1);
+    std::array const timeline{
+        iv::TimedEvent{low, iv::TriggerEvent{}},
+        iv::TimedEvent{low.advanced_by(1), iv::TriggerEvent{}},
+        iv::TimedEvent{high, iv::TriggerEvent{}},
+        iv::TimedEvent{high, iv::TriggerEvent{}},
+    };
+    iv::ObservationWindowQuery query{.window = {high, 3}};
+    iv::project_recorded_event_timestamps(query, timeline);
+    EXPECT_EQ(query.result.event_indices, (std::vector{high, high, low, low.advanced_by(1)}));
+    EXPECT_FALSE(query.result.truncated);
+
+    iv::ObservationWindowQuery complete{.window = {high, 2}};
+    iv::project_recorded_event_timestamps(complete, timeline);
+    EXPECT_EQ(complete.result.event_indices, (std::vector{high, high, low}));
+    EXPECT_FALSE(complete.result.truncated);
+}
+
+TEST(Observations, RecordedEventTimestampsAreNotLimitedByTheSampleWindowBudget)
+{
+    auto const count = iv::maximum_observation_window_points + 2;
+    std::vector<iv::TimedEvent> timeline;
+    for (std::size_t i = 0; i < count; ++i)
+        timeline.push_back({iv::GlobalIndex{}.advanced_by(i), iv::TriggerEvent{}});
+    iv::ObservationWindowQuery query{.window = {iv::GlobalIndex{}, count}};
+    iv::project_recorded_event_timestamps(query, timeline);
+    EXPECT_EQ(query.result.event_indices.size(), count);
+    EXPECT_FALSE(query.result.truncated);
+}
+
 TEST(Observations, BeatGridFindsIrregularPositionsByIndexAndKeepsStridePhase)
 {
     struct PublishedGrid {

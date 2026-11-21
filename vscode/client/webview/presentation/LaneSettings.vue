@@ -17,7 +17,7 @@ function toggled(visible: boolean) { open.value = visible; emit("toggle", visibl
 <template>
     <button type="button" tabindex="-1" class="lane-settings-button" :popovertarget="id" :aria-label="dialogLabel" aria-haspopup="dialog" :aria-expanded="open"
         :data-status-hint="hint" @pointerdown.stop @mousedown.left.prevent @click.stop="place" @keydown.space.stop>
-        <span>{{ label }}</span>
+        <span class="iv-text-link">{{ label }}</span>
     </button>
     <AnchoredPopover :id="id" ref="panel" :label="dialogLabel" :width="width" :preferred-height="preferredHeight"
         @toggle="toggled"><slot :close="close" /></AnchoredPopover>
@@ -31,7 +31,7 @@ function toggled(visible: boolean) { open.value = visible; emit("toggle", visibl
 .lane-settings-button span {
     display: block; overflow: hidden; text-overflow: ellipsis;
     border: 1px solid transparent; padding: 1px 4px; border-radius: 3px; white-space: nowrap;
-    color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background);
+    background: var(--vscode-editor-background);
 }
-.lane-settings-button:is(:hover, [aria-expanded="true"]) span { color: var(--vscode-foreground); }
+.lane-settings-button[aria-expanded="true"] span { --iv-text-link-color: var(--vscode-foreground); }
 </style>

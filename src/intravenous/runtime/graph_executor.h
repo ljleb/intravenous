@@ -502,7 +502,8 @@ class GraphExecutor {
     bool activate_pending_at(PlaybackDemand const& applied, PlaybackDemand const* candidate = nullptr,
         RealtimePersistedState const** activated_root = nullptr, bool* applied_candidate = nullptr);
     void execute_tick_block(ExecutionGeneration& generation, RealtimePersistedState const& persisted,
-        GlobalIndex sample_index, std::size_t block_size, TickPlaybackSelection selection, bool ready);
+        GlobalIndex sample_index, std::size_t block_size, TickPlaybackSelection selection, bool ready,
+        PlaybackRenderSlice* profile = nullptr);
     [[nodiscard]] ExecutionGeneration const& realtime_execution_generation()
         const;
     [[nodiscard]] std::expected<BackgroundEvaluationResult, std::string>
@@ -539,10 +540,19 @@ public:
         else if (request.operation == ProjectPlaybackOperation::drag)
             request.accepted_command = playback_.drag(request.drag, request.position);
         request.snapshot = playback_snapshot();
+        if (request.include_diagnostics) {
+            GraphExecutorExecutionReadRequest execution;
+            handle_execution_read(execution);
+            request.diagnostics = ProjectPlaybackDiagnostics{
+                .background_underrun_blocks = playback_underrun_blocks(),
+                .configured_generation = execution.active_generation,
+                .execution_generation = execution.active_project_generation,
+            };
+        }
     }
     // Device-clock entry. Applies session commands and activation at this
     // boundary, then continues Tick execution even when the playhead is held.
-    void render_block(std::size_t frames, double sample_rate);
+    void render_block(std::size_t frames, double sample_rate, PlaybackRenderSlice* profile = nullptr);
     explicit GraphExecutor(
         ResourceContext resources = {},
         RealtimeProducerCapacityConfig producer_capacity = {},

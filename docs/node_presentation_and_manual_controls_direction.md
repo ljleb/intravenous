@@ -635,6 +635,11 @@ identity rather than one concrete index. If the virtual node disappears, the
 enclosing module presentation remains valid and only the focused child target is
 lost.
 
+Click either label on a virtual lane to open its C++ declaration. The graph
+scope supplies the declaration file, line, and identifier byte offset for that
+lane's `NodeAddress`. VS Code reuses an open tab for the file or opens a tab
+for it and places the cursor at the start of the identifier.
+
 Front 12 can add same-session scoped construction and `SubgraphClosure`. It must
 preserve these semantic selector paths. Front 14 does not wait for Front 12.
 

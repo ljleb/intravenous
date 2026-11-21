@@ -61,26 +61,6 @@ IndexCoverage const empty_tick_coverage{};
     return false;
 }
 
-bool target_subset_matches(
-    graph_jit::BackgroundEvaluationPlan const& plan,
-    graph_jit::PortSubsetIndex subset,
-    NodeBundlePortId port)
-{
-    return subset < plan.sample_target_subsets.size()
-        && plan.sample_target_subsets[subset].port == port;
-}
-
-bool target_subset_matches_event(
-    graph_jit::BackgroundEvaluationPlan const& plan,
-    graph_jit::PortSubsetIndex subset,
-    NodeBundlePortId port)
-{
-    if (subset >= plan.event_target_subsets.size()) return false;
-    auto const& target = plan.event_target_subsets[subset].port;
-    return target.bundle == port.node_bundle_handle
-        && target.port == port.port_index;
-}
-
 PersistedOutputId capture_output_id(
     graph_jit::BackgroundEvaluationPlan const& plan,
     graph_jit::BackgroundPortIndex port,
@@ -115,92 +95,14 @@ PersistedOutputId capture_output_id(
             + static_cast<std::size_t>(bytes % block_payload_capacity != 0));
 }
 
-template<class Binding>
-std::optional<PersistedOutputHandle> direct_persisted_sample_output(
+std::optional<PersistedOutputHandle> direct_persisted_output(
     graph_jit::BackgroundEvaluationPlan const& plan,
-    Binding const& binding,
-    graph_jit::BackgroundPortPlan const& port,
+    std::optional<graph_jit::PortStorageIndex> storage,
     std::uint64_t generation,
     PersistedDataStore& data)
 {
-    std::optional<graph_jit::PortStorageIndex> persisted;
-    for (auto const storage : binding.storage) {
-        if (storage < plan.storage.ports.size()
-            && plan.storage.ports[storage].storage
-                == graph_jit::PortStorageKind::persisted_data) {
-            if (persisted) return std::nullopt;
-            persisted = storage;
-        }
-    }
-    if (!persisted || binding.storage.size() != 1) return std::nullopt;
-
-    auto const& storage = plan.storage.ports[*persisted];
-    auto const channels = channel_count(port.sample_layout);
-    bool identity = storage.sample_layout == port.sample_layout;
-    for (std::size_t channel = 0; identity && channel < channels; ++channel) {
-        auto const direct_count = std::ranges::count_if(
-            plan.storage.direct_samples,
-            [&](auto const& direct) {
-                return direct.target_channel == channel
-                    && target_subset_matches(
-                        plan, direct.target_subset, port.configured_port);
-            });
-        identity = direct_count == 1 && std::ranges::any_of(
-            plan.storage.direct_samples,
-            [&](auto const& direct) {
-                return direct.storage == *persisted
-                    && direct.target_channel == channel
-                    && direct.source_channel == channel
-                    && direct.read_latency == 0
-                    && target_subset_matches(
-                        plan, direct.target_subset, port.configured_port);
-            });
-    }
-    return identity
-        ? std::optional<PersistedOutputHandle>{data.resolve_output(
-            persisted_output_id(plan, *persisted, generation))}
-        : std::nullopt;
-}
-
-template<class Binding>
-std::optional<PersistedOutputHandle> direct_persisted_event_output(
-    graph_jit::BackgroundEvaluationPlan const& plan,
-    Binding const& binding,
-    graph_jit::BackgroundPortPlan const& port,
-    std::uint64_t generation,
-    PersistedDataStore& data)
-{
-    std::optional<graph_jit::PortStorageIndex> persisted;
-    for (auto const storage : binding.storage) {
-        if (storage < plan.storage.ports.size()
-            && plan.storage.ports[storage].storage
-                == graph_jit::PortStorageKind::persisted_data) {
-            if (persisted) return std::nullopt;
-            persisted = storage;
-        }
-    }
-    if (!persisted || binding.storage.size() != 1
-        || plan.storage.ports[*persisted].event_type != port.event_type) {
-        return std::nullopt;
-    }
-
-    auto const direct = std::ranges::count_if(
-            plan.storage.direct_events,
-            [&](auto const& candidate) {
-                return target_subset_matches_event(
-                    plan, candidate.target_subset, port.configured_port);
-            }) == 1
-        && std::ranges::any_of(
-            plan.storage.direct_events,
-            [&](auto const& candidate) {
-                return candidate.storage == *persisted
-                    && target_subset_matches_event(
-                        plan, candidate.target_subset, port.configured_port);
-            });
-    return direct
-        ? std::optional<PersistedOutputHandle>{data.resolve_output(
-            persisted_output_id(plan, *persisted, generation))}
-        : std::nullopt;
+    if (!storage) return std::nullopt;
+    return data.resolve_output(persisted_output_id(plan, *storage, generation));
 }
 
 } // namespace
@@ -481,9 +383,11 @@ public:
                      std::span<PendingEvent const> events) noexcept
         {
             auto const voided = span.disposition == OutputDisposition::voided;
+            auto const preserving = span.disposition == OutputDisposition::written_preserving_recording;
             if (!write_header({
                 .payload_kind = voided ? RealtimeProducedPayloadKind::void_value
-                    : RealtimeProducedPayloadKind::events,
+                    : preserving ? RealtimeProducedPayloadKind::events_preserving_recording
+                                 : RealtimeProducedPayloadKind::events,
                 .payload_size = voided ? 0 : events.size() * sizeof(TimedEvent),
                 .begin = span.addresses.begin,
                 .range_extent = span.addresses.extent,
@@ -517,7 +421,9 @@ public:
             auto const open_begin = sequential_begin - spans.extent;
             auto const open_window = GlobalIndexRange{
                 sample_index.retreated_by(spans.extent), spans.extent + block_size};
-            if (binding.disposition == OutputDisposition::written && storage.event_capacity != 0) {
+            if ((binding.disposition == OutputDisposition::written
+                    || binding.disposition == OutputDisposition::written_preserving_recording)
+                && storage.event_capacity != 0) {
                 auto const* events = reinterpret_cast<TimedEvent const*>(storage.storage + storage.events_offset);
                 auto const write = *reinterpret_cast<std::size_t const*>(storage.storage
                     + (storage.persistent_ring ? storage.write_index_offset : storage.count_offset));
@@ -1130,15 +1036,16 @@ public:
                     "Tick Sequential continuous binding has no value-type algebra");
             }
             selected.accepts_materialization = std::ranges::any_of(
-                planned.storage, [&](auto const storage) {
+                planned.reads, [&](auto const& read) {
+                    auto const storage = read.storage;
                     return storage < plan.storage.ports.size()
                         && (plan.storage.ports[storage].storage
                                 == graph_jit::PortStorageKind::tick_sequential
                             || plan.storage.ports[storage].storage
                                 == graph_jit::PortStorageKind::tick_random_access);
                 });
-            selected.output = direct_persisted_sample_output(
-                plan, planned, port, selected_generation, data);
+            selected.output = direct_persisted_output(
+                plan, planned.direct_persisted_storage, selected_generation, data);
             selected.initialize_storage();
             sequential_sample_views[slot] = selected.binding;
         }
@@ -1160,7 +1067,8 @@ public:
             }
 
             std::size_t maximum_count = 0;
-            for (auto const storage : planned.storage) {
+            for (auto const& read : planned.reads) {
+                auto const storage = read.storage;
                 if (storage >= plan.storage.ports.size()) continue;
                 auto const& candidate = plan.storage.ports[storage];
                 if (candidate.kind != PortKind::event
@@ -1188,15 +1096,16 @@ public:
             selected.type = port.event_type;
             selected.capacity = std::bit_ceil(std::max<std::size_t>(maximum_count, 1));
             selected.accepts_materialization = std::ranges::any_of(
-                planned.storage, [&](auto const storage) {
+                planned.reads, [&](auto const& read) {
+                    auto const storage = read.storage;
                     return storage < plan.storage.ports.size()
                         && (plan.storage.ports[storage].storage
                                 == graph_jit::PortStorageKind::tick_sequential
                             || plan.storage.ports[storage].storage
                                 == graph_jit::PortStorageKind::tick_random_access);
                 });
-            selected.output = direct_persisted_event_output(
-                plan, planned, port, selected_generation, data);
+            selected.output = direct_persisted_output(
+                plan, planned.direct_persisted_storage, selected_generation, data);
             selected.initialize_storage();
             sequential_event_views[slot] = selected.binding;
         }
@@ -1213,14 +1122,15 @@ public:
             selected.layout = port.sample_layout;
             selected.geometry = port.continuous_geometry;
             selected.accepts_materialization = std::ranges::any_of(
-                binding.storage, [&](auto const storage) {
+                binding.reads, [&](auto const& read) {
+                    auto const storage = read.storage;
                     return storage < plan.storage.ports.size()
                         && plan.storage.ports[storage].storage
                             != graph_jit::PortStorageKind::current_tick;
                 });
 
-            selected.output = direct_persisted_sample_output(
-                plan, binding, port, selected_generation, data);
+            selected.output = direct_persisted_output(
+                plan, binding.direct_persisted_storage, selected_generation, data);
             sample_views[slot] = RandomAccessContinuousInputPort{
                 .regions = nullptr,
                 .region_count = 0,
@@ -1240,14 +1150,15 @@ public:
             selected.port = binding.port;
             selected.type = port.event_type;
             selected.accepts_materialization = std::ranges::any_of(
-                binding.storage, [&](auto const storage) {
+                binding.reads, [&](auto const& read) {
+                    auto const storage = read.storage;
                     return storage < plan.storage.ports.size()
                         && plan.storage.ports[storage].storage
                             != graph_jit::PortStorageKind::current_tick;
                 });
 
-            selected.output = direct_persisted_event_output(
-                plan, binding, port, selected_generation, data);
+            selected.output = direct_persisted_output(
+                plan, binding.direct_persisted_storage, selected_generation, data);
             event_views[slot] = RandomAccessEventInputPort{
                 .data = &selected,
                 .region_ranges = nullptr,

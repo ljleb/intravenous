@@ -70,7 +70,7 @@ struct ConstrainedArchiveNode {
 
 struct ArchiveFixture {
     iv::SerializedConfiguredGraph archive;
-    using Pass = iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>;
+    using Pass = iv::SumN<iv::mono, iv::SampleStreamLayout::planar, 1>;
     std::array<iv::details::NodeCompilerRecord, 2> node_types{
         iv::details::node_compiler_record<iv::Constant>,
         iv::details::node_compiler_record<Pass>};
@@ -190,7 +190,7 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
 TEST(ConfiguredGraphBinaryArchive, PreservesNamedTiledChildMetadata)
 {
     using namespace iv;
-    using Pass = Sum<mono, SampleStreamLayout::planar, 1>;
+    using Pass = SumN<mono, SampleStreamLayout::planar, 1>;
     GraphBuilder graph;
     auto tiled = details::configure_concrete_tiled_node<Pass, stereo>(graph);
     graph.outputs("main"_P = tiled);

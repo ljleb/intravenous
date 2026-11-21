@@ -49,6 +49,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "observationUpdate"; update: ObservationDelivery; sequence: number; previousSequence?: number }
     | { type: "startObservationProfile"; durationMs: number }
     | { type: "startGraphUiProfile"; profileId: string; durationMs: number }
+    | { type: "startPlaybackProfile"; profileId: string; durationMs: number }
     | { type: "startCursorReturnTrace"; traceId: string }
     | NodeEventResponse
     | { type: "manualControlState"; interactions: ManualControlInteractionState[]; live: ManualControlLiveValue[] }
@@ -69,6 +70,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "observationResync" }
     | { type: "observationProfile"; summary: ObservationProfileSummary }
     | { type: "graphUiProfile"; profileId: string; summary: GraphUiProfileSummary }
+    | { type: "playbackProfileClick"; profileId: string }
     | { type: "cursorReturnTrace"; traceId: string; step: string; details?: TraceDetails }
     | NodeEventHostRequest
     | { type: "graphInteractionHint"; hint: StatusHint | null }
@@ -79,6 +81,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "setManualControlEnabled"; control: ManualControlId; enabled: boolean }
     | { type: "projectHistory"; direction: "undo" | "redo" }
     | { type: "copyNodeDebugDetails"; nodeKey: string }
+    | { type: "openVirtualNodeSource"; nodeKey: string }
     | { type: "flushProjectAutosave" }
     | { type: "knobClipboard"; requestId: number; text?: string }
     | { type: "renameGraphLane"; instanceId: string; displayName: string; previousDisplayName: string }

@@ -1,5 +1,5 @@
 import type { JsonValue, SerializedNodeEvent } from "./nodeEvents";
-import type { ObservationWindowResult } from "./observations";
+import { recordedEventTimestampsOperation, type ObservationWindowResult } from "./observations";
 import type { NodeAddress } from "./graphScope";
 
 export const presentationPluginVersion = 1;
@@ -13,8 +13,9 @@ export type PresentationManifest = {
     timeline?: true;
     timelineSnapping?: true;
     initialConfiguration?: string;
-    observations?: Array<{ id: string; direction: "input" | "output"; port: string; points: number;
-        whenConnected?: true; completeOnly?: true }>;
+    observations?: Array<{ id: string; port: string; whenConnected?: true; completeOnly?: true } & (
+        { direction: "input" | "output"; operation?: "waveform"; points: number }
+        | { direction: "output"; operation: typeof recordedEventTimestampsOperation })>;
 };
 
 export type PresentationPoint = { x: number; y: number };
@@ -126,7 +127,9 @@ export function readPresentationManifest(value: unknown): PresentationManifest |
         || (value.observations !== undefined && !list(value.observations, 8,
             (entry): entry is NonNullable<PresentationManifest["observations"]>[number] => record(entry)
                 && identifier(entry.id) && identifier(entry.port) && (entry.direction === "input" || entry.direction === "output")
-                && Number.isInteger(entry.points) && entry.points >= 2 && entry.points <= 1024
+                && ((entry.operation === undefined || entry.operation === "waveform")
+                    ? Number.isInteger(entry.points) && entry.points >= 2 && entry.points <= 1024
+                    : entry.operation === recordedEventTimestampsOperation && entry.direction === "output" && entry.points === undefined)
                 && flag(entry.whenConnected) && flag(entry.completeOnly)))) return;
     const manifest: PresentationManifest = value as PresentationManifest;
     const { version, id, title, definitionIds, icon, timeline, timelineSnapping, initialConfiguration, observations } = manifest;
@@ -193,10 +196,10 @@ function panel(value: unknown): boolean {
         (row): row is PresentationControl[] => list(row, 12, control)));
 }
 
-export function readPresentationFrame(value: unknown): PresentationFrame {
+export function readPresentationFrame(value: unknown, observedEventCount = 0): PresentationFrame {
     const commandBudget = { items: 4096, characters: 65536 };
     if (!record(value) || (value.status !== undefined && !text(value.status, 512))
-        || (value.marks !== undefined && (!list(value.marks, 4096, mark)
+        || (value.marks !== undefined && (!list(value.marks, 4096 + observedEventCount, mark)
         || value.marks.reduce((size, entry) => size + (entry.type === "polyline" ? entry.points.length : 0), 0) > 16384))
         || (value.targets !== undefined && !list(value.targets, 1024,
             (entry): entry is PresentationTarget => record(entry) && identifier(entry.id) && area(entry)

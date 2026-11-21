@@ -115,7 +115,8 @@ precisely from these logs.
 
 Clang traces put most translation-unit time in the frontend. For example, the
 hot `saw` compile spends 2.113 of its 2.209 seconds there. Template instantiation
-includes `make_node_build_request` for common nodes such as `Constant`, `Sum`,
+includes `make_node_build_request` for common nodes such as `Constant`, `Sum`
+(the variadic node now named `SumN`),
 and arithmetic nodes. The timings overlap and must not be added. This is work
 that remains after loading the shared PCH, not evidence of PCH regeneration.
 

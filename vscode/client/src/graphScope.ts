@@ -26,6 +26,7 @@ export type GraphScopeNode = {
     virtualMemberCount?: number;
     childDisplayName?: string;
     childSourceLabel?: string;
+    declarationSource?: { filePath: string; line: number; byteOffset: number };
     // Accepted definition when realized; instance.definitionId is the desired
     // declaration and can differ after a durable node replacement.
     definitionId?: string;
@@ -49,14 +50,20 @@ export type GraphScopeNode = {
     constructionError?: string;
 };
 
-export function formatLaneLabel(name: string, sourceLabel?: string): string {
-    return sourceLabel ? `${name} · ${sourceLabel}` : name;
+export function laneLabels(displayName: string, sourceLabel?: string) {
+    return sourceLabel
+        ? { primary: sourceLabel, secondary: displayName }
+        : { primary: displayName, secondary: undefined };
+}
+
+export function formatLaneLabel({ primary, secondary }: ReturnType<typeof laneLabels>): string {
+    return secondary ? `${primary} · ${secondary}` : primary;
 }
 
 export function graphScopeNodeLabel(node: GraphScopeNode): string {
     const name = node.childDisplayName || node.instance.displayName || node.instance.defaultDisplayName
         || node.instance.definitionId.split(".").pop() || node.instance.definitionId;
-    return formatLaneLabel(name, node.childSourceLabel);
+    return formatLaneLabel(laneLabels(name, node.childSourceLabel));
 }
 
 export type GraphPortMatcher = NodeAddress & {

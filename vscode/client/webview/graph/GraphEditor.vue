@@ -66,6 +66,7 @@ let observationProfile: ObservationProfile | undefined;
 let observationProfileTimer: ReturnType<typeof setTimeout> | undefined;
 let graphUiRecording: GraphUiRecording | undefined;
 let graphUiProfileTimer: ReturnType<typeof setTimeout> | undefined;
+let playbackProfileMarker: { profileId: string; until: number } | undefined;
 let pendingVueFlush: GraphUiRecording | undefined;
 let graphVisible = true;
 function profileGraphUi<T>(label: string, run: () => T): T {
@@ -1000,6 +1001,15 @@ function handleKnobClipboard(event: KeyboardEvent, copy: boolean): boolean {
 }
 function handleGraphEditorShortcut(event: KeyboardEvent) {
     if (!state.value.scope || pickerOpen.value || editing.value !== null || creatingPackage.value || isTextEditingTarget(event.target)) return;
+    if (playbackProfileMarker && performance.now() < playbackProfileMarker.until
+        && event.key === "m" && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (!event.repeat) webviewApi.postMessage({
+            type: "playbackProfileClick", profileId: playbackProfileMarker.profileId,
+        } satisfies GraphEditorWebviewMessage);
+        return;
+    }
     const action = graphEditorShortcut(event);
     if (!action || (action === "selectAll" && event.target instanceof Element
         && event.target.closest("[data-lane-item-editor]"))) return;
@@ -1123,6 +1133,10 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
 }
 
 function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
+    if (event.data?.type === "startPlaybackProfile") {
+        playbackProfileMarker = { profileId: event.data.profileId, until: performance.now() + event.data.durationMs };
+        return;
+    }
     if (event.data?.type === "graphPresentationAccepted") {
         const { requestId, revision } = event.data;
         const pending = pendingPresentation.get(requestId);

@@ -215,7 +215,7 @@ iv::NodeRef subtract_leaf(
 {
     ++leaf_invocations;
     if (layout) throw std::invalid_argument("benchmark leaf has no tiled form");
-    return iv::details::configure_concrete_node<iv::Subtract>(graph).node_ref();
+    return iv::details::configure_concrete_node<iv::Subtraction>(graph).node_ref();
 }
 
 // A chain of `leaves` constant/subtract pairs feeding from `head`.
@@ -310,7 +310,7 @@ std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_snapshot()
             .kind = PackageDefinitionKind::node,
             .node_build = &subtract_leaf,
             .signature = &zero_signature_callback,
-            .compiler_record = &iv::details::node_compiler_record<iv::Subtract>,
+            .compiler_record = &iv::details::node_compiler_record<iv::Subtraction>,
         },
         DefinitionSpec{
             .id = subgraphs_id,
@@ -513,7 +513,7 @@ Measurement builder_direct_once()
         details::configure_concrete_node<Constant>(graph, Sample{0.25f}));
     for (int index = 0; index < shape.direct_nodes; ++index) {
         auto const value = details::configure_concrete_node<Constant>(graph, Sample{0.5f});
-        auto const difference = details::configure_concrete_node<Subtract>(graph);
+        auto const difference = details::configure_concrete_node<Subtraction>(graph);
         difference(value, head);
         head = static_cast<SamplePortRef>(difference);
     }

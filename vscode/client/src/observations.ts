@@ -9,6 +9,7 @@ export type ObservationSource = {
     portKind?: "sample" | "event";
 };
 export type MeterMode = "level" | "value";
+export const recordedEventTimestampsOperation = "event-timestamps";
 export type ObservationWindow = { begin: string; length: string; points: number; maxDepth?: number };
 export type ObservationTimeSpan = Pick<ObservationWindow, "begin" | "length">;
 export type ObservationWindowResult = {
@@ -16,12 +17,14 @@ export type ObservationWindowResult = {
     approximate: boolean; truncated?: boolean; outdated?: boolean; semanticVersion?: string; dataVersion?: string;
     sampleRate?: number; paceExponent?: number; executionGeneration?: string; error?: string;
     marks?: Array<{ index: string; depth: number }>;
+    eventIndices?: string[];
     unavailableRegions?: Array<{ begin: string; length: string }>;
     regions: Array<{ begin: string; length: string;
         points: Array<{ index: string; available: boolean; value?: Record<string, number | string | null> }> }>;
 };
 export type ObservationInterest = { id: string; source: ObservationSource; operation: string; window?: ObservationWindow; prefetch?: boolean };
 export type ObservationCapability = { nodeIndex: number; kind: ObservationSource["kind"]; member: string; operations: string[];
+    portKind?: ObservationSource["portKind"];
     delivery?: "window"; channels?: Array<{ index: number; name: string }>;
     gainApplied?: boolean;
     resultSchemas?: Array<{ operation: string; fields: Array<{ name: string; type: "float32" | "float64" | "uint64String" }> }> };
@@ -270,7 +273,12 @@ export class ObservationValues {
                 if (previous.execution === execution && compareObservationWindowVersions(item, previous.result) < 0) return false;
                 this.removeReadyWindows(id, (entry) => entry === previous);
             }
-            const units = 1 + (item.marks?.length ?? 0) + (item.unavailableRegions?.length ?? 0)
+            // Preserve one whole event window during panning even when the
+            // recording has more events than the sampled-window cache allows.
+            const exactEvents = item.eventIndices !== undefined;
+            if (exactEvents) this.removeReadyWindows(id, () => true);
+            const units = exactEvents ? 1 : 1 + (item.marks?.length ?? 0)
+                + (item.unavailableRegions?.length ?? 0)
                 + item.regions.reduce((count, region) => count + 1 + region.points.length, 0);
             if (units <= retainedWindowUnitsLimit) {
                 const entry = { execution, source: desired.source, units, result: item };

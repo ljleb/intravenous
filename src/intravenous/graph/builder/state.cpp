@@ -69,10 +69,12 @@ std::vector<OutputRefConfig> make_sample_output_configs(
 }
 
 SourceInfo make_source_info(
-    std::string_view id, std::string_view file, uint32_t begin, uint32_t end) {
+    std::string_view id, std::string_view file, uint32_t begin, uint32_t end,
+    uint32_t declaration_line = 0) {
   return SourceInfo{
       .declaration_identity = std::string(id),
       .span = {.file_path = std::string(file), .begin = begin, .end = end},
+      .declaration_line = declaration_line,
   };
 }
 
@@ -1329,10 +1331,34 @@ void GraphBuilderState::connect_sample_input(
   record_configured_sample_connection(target, source);
 }
 
-void GraphBuilderState::connect_sample_input(
-    SampleInputChannelId target, SamplePortRef const& source)
+void GraphBuilderState::connect_sample_sources(
+    std::variant<NodeBundlePortId, SampleInputChannelId> target,
+    ChannelTypeId source_type, std::span<ConfiguredSampleConnectionSource const> sources)
 {
-  record_configured_sample_connection(target, source);
+  for (auto const& source : sources) {
+    auto const channel = source.channel;
+    auto const config = _node_bundles.resolve_sample_output(
+        {channel.bundle, PortKind::sample, channel.port}).config;
+    if (channel.channel >= channel_count(config.channel_layout.channel_type))
+      details::error("sample connection source channel is out of bounds");
+  }
+  ConfiguredSampleConnection connection{
+      .source_type = source_type,
+      .source_channels = {sources.begin(), sources.end()},
+  };
+  if (auto const* port = std::get_if<NodeBundlePortId>(&target)) {
+    connection.target_type = _node_bundles.resolve_sample_input(*port)
+        .config.channel_layout.channel_type;
+    connection.target_channels = _node_bundles.sample_input_channels(*port);
+  } else {
+    auto const channel = std::get<SampleInputChannelId>(target);
+    auto const channels = _node_bundles.sample_input_channels(
+        {channel.bundle, PortKind::sample, channel.port});
+    if (channel.channel >= channels.size() || channels[channel.channel] != channel)
+      details::error("sample input channel does not belong to its NodeBundle port");
+    connection.target_channels = {channel};
+  }
+  _connections.record_configured_sample_connection(std::move(connection));
 }
 
 void GraphBuilderState::connect_sample_input(
@@ -1513,13 +1539,13 @@ size_t GraphBuilderState::event_port_index(
 
 void GraphBuilderState::annotate_node(
     NodeBundleHandle handle, std::string_view id, std::string_view file,
-    uint32_t begin, uint32_t end, std::string_view name) {
+    uint32_t begin, uint32_t end, std::string_view name, uint32_t declaration_line) {
   if (id.empty()) return;
   if (handle >= _node_bundles.size())
     details::error(
         "builder " + _identity.value +
         ": cannot record source info for an unknown NodeBundle");
-  auto info = make_source_info(id, file, begin, end);
+  auto info = make_source_info(id, file, begin, end, declaration_line);
   info.declaration_name = name;
   auto& infos = _node_bundles.bundle(handle).source_annotations().infos;
   if (!std::ranges::contains(infos, info)) infos.push_back(info);
@@ -1541,7 +1567,7 @@ void GraphBuilderState::annotate_node_input_source_info(
 
 void GraphBuilderState::annotate_public_sample_input_source_info(
     SamplePortRef const& port, std::string_view id,
-    std::string_view file, uint32_t begin, uint32_t end) {
+    std::string_view file, uint32_t begin, uint32_t end, uint32_t declaration_line) {
   if (id.empty() || port.session != _session) return;
   auto logical = _node_bundles.sample_output_port_for_channels(
       port.channel_type, sample_port_channels(port));
@@ -1556,7 +1582,7 @@ void GraphBuilderState::annotate_public_sample_input_source_info(
       continue;
     }
     scope.ports.annotate_sample_input_source_info(
-        logical->port_index, id, file, begin, end);
+        logical->port_index, make_source_info(id, file, begin, end, declaration_line));
     return;
   }
   auto& boundary = _node_bundles.bundle(logical->node_bundle_handle);
@@ -1564,14 +1590,14 @@ void GraphBuilderState::annotate_public_sample_input_source_info(
       logical->port_index >= boundary.boundary_sample_inputs().size())
     details::error(
         "PublicSampleInputRef does not belong to a valid boundary input");
-  auto info = make_source_info(id, file, begin, end);
+  auto info = make_source_info(id, file, begin, end, declaration_line);
   auto& infos = boundary.source_annotations().infos;
   if (!std::ranges::contains(infos, info)) infos.push_back(std::move(info));
 }
 
 void GraphBuilderState::annotate_public_event_input_source_info(
     EventPortRef const& port, std::string_view id,
-    std::string_view file, uint32_t begin, uint32_t end) {
+    std::string_view file, uint32_t begin, uint32_t end, uint32_t declaration_line) {
   if (id.empty() || port.session != _session) return;
   auto const sources = event_port_sources(port);
   if (sources.size() != 1)
@@ -1584,7 +1610,7 @@ void GraphBuilderState::annotate_public_event_input_source_info(
       continue;
     }
     scope.ports.annotate_event_input_source_info(
-        source.port, id, file, begin, end);
+        source.port, make_source_info(id, file, begin, end, declaration_line));
     return;
   }
   auto& boundary = _node_bundles.bundle(source.bundle);
@@ -1592,31 +1618,32 @@ void GraphBuilderState::annotate_public_event_input_source_info(
       source.port >= boundary.boundary_event_inputs().size())
     details::error(
         "PublicEventInputRef does not belong to a valid boundary input");
-  auto info = make_source_info(id, file, begin, end);
+  auto info = make_source_info(id, file, begin, end, declaration_line);
   auto& infos = boundary.source_annotations().infos;
   if (!std::ranges::contains(infos, info)) infos.push_back(std::move(info));
 }
 
 void GraphBuilderState::annotate_sample_port_source_info(
     SamplePortRef const& ref, std::string_view id,
-    std::string_view file, uint32_t begin, uint32_t end) {
+    std::string_view file, uint32_t begin, uint32_t end, uint32_t declaration_line) {
   if (id.empty() || ref.session != _session) return;
   auto const channels = sample_port_channels(ref);
   if (channels.empty()) return;
   auto const record = virtual_record(id, "sample-port");
   _virtual_nodes.attach_sample_output(
-      record, ref.channel_type, channels, make_source_info(id, file, begin, end));
+      record, ref.channel_type, channels,
+      make_source_info(id, file, begin, end, declaration_line));
 }
 
 void GraphBuilderState::annotate_event_port_source_info(
     EventPortRef const& ref, std::string_view id,
-    std::string_view file, uint32_t begin, uint32_t end) {
+    std::string_view file, uint32_t begin, uint32_t end, uint32_t declaration_line) {
   if (id.empty() || ref.session != _session) return;
   auto const sources = event_port_sources(ref);
   if (sources.empty()) return;
   auto const record = virtual_record(id, "event-port");
   _virtual_nodes.attach_event_output(
-      record, ref.type, sources, make_source_info(id, file, begin, end));
+      record, ref.type, sources, make_source_info(id, file, begin, end, declaration_line));
 }
 
 // ---- host introspection -----------------------------------------------

@@ -99,8 +99,8 @@ enum class SampleRealtimePortStateAccess : std::uint8_t {
     // The callback channel is reconstructed from retained_sources using the
     // recorded whole-layout conversion and selected timeline window.
     materialized,
-    // The callback channel is produced by a multi-source composition whose
-    // retained derivation has not yet been reduced to cold transition inputs.
+    // The callback channel is produced by a composition. Only sources with
+    // a nonempty input window participate in cutover.
     composed,
     // No recoverable cross-callback source is currently known.
     callback_only,
@@ -173,6 +173,10 @@ struct SampleRealtimePortStateMaterialization {
 struct SampleRealtimePortStateCompositionSource {
     SampleRealtimePortStateStorageView storage{};
     float coefficient = 0.0f;
+    // The source may contribute during Tick without supplying any history or
+    // finalized in-flight frames at cutover. Its timing still matters when
+    // the successor changes the read delay or producer latency.
+    bool owns_samples = true;
 };
 
 struct SampleRealtimePortStateRealization {
@@ -189,8 +193,9 @@ struct SampleRealtimePortStateRealization {
     // storage only; callback arena bytes are never exposed as retained state.
     std::vector<SampleRealtimePortStateStorageView> retained_sources{};
     std::optional<SampleRealtimePortStateMaterialization> materialization{};
-    // Flattened linear sources for one composed semantic target channel.
-    // Each view already includes its source read latency in timeline_offset.
+    // Flattened linear sources for one composed target channel. Only sources
+    // with owns_samples require recoverable storage. All views retain their
+    // read latency in timeline_offset_frames.
     std::vector<SampleRealtimePortStateCompositionSource>
         composition_sources{};
     // One value of a Sequential input's geometry: its neutral_value. Empty for

@@ -20,7 +20,7 @@
 #include <vector>
 
 namespace {
-using Pass = iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>;
+using Pass = iv::SumN<iv::mono, iv::SampleStreamLayout::planar, 1>;
 
 struct PrivatePass {
     iv::Sample default_value;

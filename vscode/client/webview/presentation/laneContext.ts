@@ -4,6 +4,7 @@ import { inject, provide, type InjectionKey, type Ref } from "vue";
 // Host actions do not require the presentation to render a timeline.
 export type LaneContext = {
     copyDebugDetails: () => void;
+    openSource?: () => void;
     rename?: (name: string, previousName: string) => void;
     regionHeight: Readonly<Ref<number | undefined>>;
     icon?: Readonly<Ref<string | undefined>>;

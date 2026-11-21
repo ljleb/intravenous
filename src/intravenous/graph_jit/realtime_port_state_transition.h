@@ -81,7 +81,12 @@ struct SampleRealtimePortStateTransfer {
     // Channel of source_materialization.target_layout represented by this
     // semantic state. Ignored when source_access is not materialized.
     std::size_t source_materialization_channel = 0;
-    std::vector<float> source_composition_coefficients{};
+    struct CompositionTerm {
+        float coefficient = 0.0f;
+        // A source contributes only the positions it finalized before cutover.
+        std::int64_t inherited_end = 0;
+    };
+    std::vector<CompositionTerm> source_composition{};
     SampleRealtimePortStateStorageView target_storage{};
     // One value of the target's geometry. Every position of the complete
     // successor interval is set to it before the inherited sub-interval is

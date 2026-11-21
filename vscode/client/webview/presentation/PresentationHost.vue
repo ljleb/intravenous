@@ -24,11 +24,13 @@ const props = defineProps<{
     scale?: number;
     lane?: boolean;
     moduleBoundary?: boolean;
+    openSource?: () => void;
     renameLane?: (name: string, previousName: string) => void;
 }>();
 const emit = defineEmits<{ copyDebugDetails: [] }>();
 provideLane(props.lane || props.moduleBoundary ? {
     copyDebugDetails: () => emit("copyDebugDetails"),
+    get openSource() { return props.openSource; },
     get rename() { return props.renameLane; },
     regionHeight: toRef(() => props.regionHeight),
     icon: computed(() => selection.value.icon),

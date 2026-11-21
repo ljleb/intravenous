@@ -116,7 +116,7 @@ test("default lane names honor user labels without exposing instance identifiers
     assert.equal(lane.address?.instanceId, "sink");
 });
 
-test("child lanes show their own type and preserve the source label", () => {
+test("child lanes put the declaration name before the display name", () => {
     const scope = graph();
     const owner = scope.nodes[0];
     owner.instance.displayName = "My Oscillator";
@@ -128,10 +128,14 @@ test("child lanes show their own type and preserve the source label", () => {
     const semantic = semanticNodeFromScopeChild(child, scope);
     assert.equal(nodeDisplayName(semantic), "Quotient");
     assert.equal(semantic.sourceLabel, "detune_pair 1");
-    assert.equal(graphScopeNodeLabel(child), "Quotient · detune_pair 1");
+    assert.equal(graphScopeNodeLabel(child), "detune_pair 1 · Quotient");
+    assert.equal(graphScopeNodeLabel({ ...child, childSourceLabel: "left" }), "left · Quotient");
     assert.equal(graphScopeNodeLabel(owner), "My Oscillator");
-    const virtual = semanticNodeFromScopeChild({ ...child, virtualNode: true,
-        virtualMemberCount: 4, address: { ...owner.address, path: [declaration] } }, scope);
+    const virtualChild: GraphScopeNode = { ...child, virtualNode: true, childSourceLabel: "detune_pair",
+        virtualMemberCount: 4, address: { ...owner.address, path: [declaration] } };
+    const virtual = semanticNodeFromScopeChild(virtualChild, scope);
+    assert.equal(graphScopeNodeLabel(virtualChild), "detune_pair · Quotient");
+    assert.equal(graphScopeNodeLabel({ ...virtualChild, childSourceLabel: undefined }), "Quotient");
     assert.equal(virtual.virtualNode, true);
     assert.equal(virtual.memberCount, 4);
     assert.equal(semantic.memberCount, 1);

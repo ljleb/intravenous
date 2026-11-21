@@ -11,8 +11,9 @@ import type { GraphEditorAction, GraphEditorHostMessage, GraphEditorState, Graph
 import type { WorkspaceSession } from "./workspaceSession";
 import { formatStatusHint, isStatusHint, playbackShortcut, rightClickHint, type StatusHint } from "./statusBarText";
 import { isNodeEventRequest, isNodeEventGestureRequest, replyToNodeEvent, replyToNodeEventGesture } from "./nodeEventMessaging";
-import { isPendingPlaybackSeek, playbackSeekPosition, type PlaybackDrag, type PlaybackDragPhase,
+import { isPendingPlaybackSeek, playbackSeekPosition, type PlaybackDrag, type PlaybackDragPhase, type PlaybackOutputProfileResult,
     type PlaybackSeek, type PlaybackSnapshot } from "./playback";
+import { PlaybackProfile } from "./playbackProfile";
 import type { NativeClientHelper } from "./nativeClientHelper";
 import { projectPresentationWatchPattern, readProjectPresentations } from "./projectPresentationPlugins";
 import type { PresentationScript } from "./presentationPlugin";
@@ -22,8 +23,9 @@ export class GraphEditorProvider implements vscode.Disposable {
     private readonly expandedByPanel = new Map<vscode.WebviewPanel, NodeAddress[]>();
     private readonly interactionHints = new Map<vscode.WebviewPanel, StatusHint>();
     private inspectionHint: StatusHint | null = null;
+    // Keep lane details to the left of the transient build and compilation items.
     private readonly interactionStatus = vscode.window.createStatusBarItem(
-        "intravenous.manualControlHints", vscode.StatusBarAlignment.Left, 10);
+        "intravenous.manualControlHints", vscode.StatusBarAlignment.Left, 101);
     private readonly controlOwners = new Map<vscode.WebviewPanel, string>();
     private readonly controlsChanged: vscode.Disposable;
     private readonly observationsChanged: vscode.Disposable;
@@ -50,6 +52,9 @@ export class GraphEditorProvider implements vscode.Disposable {
     private playbackDrag: { panel: vscode.WebviewPanel; dragId: string; position: string } | null = null;
     private readonly dragReleaseIds = new WeakMap<vscode.WebviewPanel, string>();
     private playbackSnapshot: PlaybackSnapshot | null = null;
+    private playbackProfile?: {
+        id: string; panel: vscode.WebviewPanel; recorder: PlaybackProfile; timer: ReturnType<typeof setTimeout>;
+    };
     private readonly playbackTimer = setInterval(() => { void this.refreshPlayback(); }, 50);
 
     private postPlayback(): void {
@@ -108,15 +113,20 @@ export class GraphEditorProvider implements vscode.Disposable {
     }
 
     private async refreshPlayback(): Promise<void> {
-        if (this.disposed || this.playbackReading || ![...this.ready].some((panel) => panel.visible)) return;
+        const profile = this.playbackProfile?.recorder;
+        if (this.disposed || this.playbackReading || (!profile && ![...this.ready].some((panel) => panel.visible))) return;
+        const sent = profile ? performance.now() : 0;
         this.playbackReading = true;
         try {
-            this.playbackSnapshot = await this.session.readPlayback();
+            this.playbackSnapshot = await this.session.readPlayback(!!profile);
             if (!this.playbackSnapshot) this.pendingSeek = null;
         } catch {
             this.playbackSnapshot = null;
         } finally {
             this.playbackReading = false;
+            if (profile && this.playbackProfile?.recorder === profile) {
+                profile.recordPlayback(this.playbackSnapshot, sent, performance.now());
+            }
             this.postPlayback();
         }
     }
@@ -149,6 +159,7 @@ export class GraphEditorProvider implements vscode.Disposable {
         });
         this.observationsChanged = session.onDidChangeObservations((update) => {
             if (session.graphSessionStatus !== "running") return;
+            this.playbackProfile?.recorder.recordObservation(update, performance.now());
             this.observations.receive(update);
             for (const panel of this.ready) {
                 const owner = this.controlOwners.get(panel);
@@ -239,6 +250,10 @@ export class GraphEditorProvider implements vscode.Disposable {
                 request: { type: "startGraphUiProfile", profileId: traceId, durationMs: profileDurationMs },
                 status: "Recording project graph UI for 10 seconds. Reproduce the slowdown, then check Intravenous output.",
                 durationMs: profileDurationMs },
+            { label: "Profile Audio Playback", description: "Records audio samples at graph switches, render timing, and background underruns",
+                request: { type: "startPlaybackProfile", profileId: traceId, durationMs: profileDurationMs },
+                status: "Recording playback for 10 seconds. Pan and press M when you hear a click.",
+                durationMs: profileDurationMs },
         ];
         const action = await vscode.window.showQuickPick(actions, { placeHolder: "Choose an Intravenous diagnostic" });
         if (!action) return;
@@ -249,6 +264,10 @@ export class GraphEditorProvider implements vscode.Disposable {
             return;
         }
         panel.reveal(panel.viewColumn, false);
+        if (action.request.type === "startPlaybackProfile" && this.playbackProfile) {
+            void vscode.window.showInformationMessage("An Intravenous playback profile is already running.");
+            return;
+        }
         const profile = action.request.type === "startGraphUiProfile"
             ? { id: action.request.profileId, waits: new GraphUiTimings() } : undefined;
         if (profile) this.graphUiProfiles.set(panel, profile);
@@ -260,11 +279,49 @@ export class GraphEditorProvider implements vscode.Disposable {
             }
             if (action.request.type === "startCursorReturnTrace") this.logCursorReturnTrace(action.request.traceId, action.status);
             else this.outputChannel.appendLine(action.status);
+            if (action.request.type === "startPlaybackProfile") {
+                this.startPlaybackProfile(panel, action.request.profileId, action.request.durationMs);
+            }
             vscode.window.setStatusBarMessage(action.status, action.durationMs);
         } catch (error) {
             if (profile && this.graphUiProfiles.get(panel) === profile) this.graphUiProfiles.delete(panel);
             void vscode.window.showErrorMessage(`Cannot start the Intravenous diagnostic: ${error}`);
         }
+    }
+
+    private startPlaybackProfile(panel: vscode.WebviewPanel, id: string, durationMs: number): void {
+        if (this.disposed || this.playbackProfile) return;
+        const now = performance.now();
+        const recorder = new PlaybackProfile(now);
+        recorder.recordGraph(this.state.scope?.execution, now);
+        const outputStart = this.session.readPlayback(false, { id, durationMs })
+            .then((snapshot) => snapshot?.outputProfile, () => undefined);
+        const timer = setTimeout(() => {
+            recorder.stop(performance.now());
+            void this.finishPlaybackProfile(id, recorder, outputStart);
+        }, durationMs);
+        this.playbackProfile = { id, panel, recorder, timer };
+        void this.refreshPlayback();
+    }
+
+    private async finishPlaybackProfile(id: string, recorder: PlaybackProfile,
+        outputStart: Promise<PlaybackOutputProfileResult | undefined>): Promise<void> {
+        let output = await outputStart ?? { status: "unavailable" };
+        try {
+            if (output.status === "recording") {
+                for (let attempt = 0; attempt < 8 && !this.disposed; ++attempt) {
+                    output = (await this.session.readPlayback(false, { id }))?.outputProfile ?? { status: "unavailable" };
+                    if (output.status !== "pending") break;
+                    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+                }
+            }
+        } catch {
+            output = { status: "unavailable" };
+        }
+        if (this.disposed || this.playbackProfile?.recorder !== recorder) return;
+        this.playbackProfile = undefined;
+        this.outputChannel.appendLine(recorder.report(performance.now(), output));
+        this.notifyProfileFinished("audio playback profile");
     }
 
     private logCursorReturnTrace(id: string, step: string, details?: TraceDetails): void {
@@ -389,6 +446,9 @@ export class GraphEditorProvider implements vscode.Disposable {
                 this.postObservationSnapshot(panel);
             } else if (message?.type === "cursorReturnTrace") {
                 this.logCursorReturnTrace(message.traceId, message.step, message.details);
+            } else if (message?.type === "playbackProfileClick") {
+                const profile = this.playbackProfile;
+                if (profile?.panel === panel && message.profileId === profile.id) profile.recorder.markClick(performance.now());
             } else if (message?.type === "graphUiProfile") {
                 const profile = this.graphUiProfiles.get(panel);
                 if (!profile || profile.id !== message.profileId) return;
@@ -540,6 +600,13 @@ export class GraphEditorProvider implements vscode.Disposable {
                 if (!scope || !node) return;
                 try { await vscode.env.clipboard.writeText(nodeDebugDetails(scope, node)); }
                 catch (error) { void vscode.window.showErrorMessage(`Cannot copy node details: ${error.message}`); }
+            } else if (message?.type === "openVirtualNodeSource") {
+                const scope = this.state.scope && graphScopeWithChildren(this.state.scope);
+                const node = scope?.nodes.find((entry) => entry.virtualNode && addressKey(entry.address) === message.nodeKey);
+                const source = node?.declarationSource;
+                if (!source) return;
+                try { await this.session.revealSourceFile(source.filePath, source); }
+                catch (error) { void vscode.window.showErrorMessage(`Cannot open node source: ${error.message}`); }
             } else if (message?.type === "setTimelineSnapMode") {
                 if (message.mode !== "seconds" && message.mode !== "beats" && message.mode !== "custom") return;
                 try {
@@ -703,6 +770,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                         if (this.dirty || this.disposed) continue;
                         this.session.manualControls.reconcile(graphScopeWithChildren(scope));
                         this.state.scope = scope;
+                        this.playbackProfile?.recorder.recordGraph(scope.execution, performance.now());
                         this.state.definitions = definitions;
                         this.state.error = "";
                     } catch (error) {
@@ -719,6 +787,8 @@ export class GraphEditorProvider implements vscode.Disposable {
         this.disposed = true;
         this.presentationWatcher?.dispose();
         clearInterval(this.playbackTimer);
+        if (this.playbackProfile) clearTimeout(this.playbackProfile.timer);
+        this.playbackProfile = undefined;
         this.changed.dispose();
         this.controlsChanged.dispose();
         this.observationsChanged.dispose();

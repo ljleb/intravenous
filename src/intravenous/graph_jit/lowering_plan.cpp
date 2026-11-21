@@ -357,12 +357,7 @@ std::expected<std::string, std::string> input_timeline_migration_identity(
 
     auto const& identity = *selected;
     std::ostringstream out;
-    out << prefix
-        << ":graph=" << identity.node.graph.size() << ':'
-        << identity.node.graph
-        << ":node=" << identity.node.virtual_node.size() << ':'
-        << identity.node.virtual_node
-        << ":member=" << identity.node.direct_member
+    out << prefix << ':' << migration_identity_fields(identity.node)
         << ":direction=" << static_cast<unsigned>(identity.direction)
         << ":kind=" << static_cast<unsigned>(identity.kind)
         << ":port_name=" << identity.port_name.size() << ':'
@@ -372,7 +367,7 @@ std::expected<std::string, std::string> input_timeline_migration_identity(
     return std::move(out).str();
 }
 
-// Locates the TickSequentialBindingPlan slot through which background
+// Locates the Sequential Tick input slot through which background
 // evaluation supplies this Sequential input in the realtime root's
 // TickInvocationCall, as an index in the kind-specific TickRuntimePlan array.
 // Invalid retained ranges are plan corruption, not evidence of an external
@@ -398,37 +393,35 @@ std::expected<std::optional<std::size_t>, std::string> external_tick_sequential_
             "GraphJit background bundle references a missing Tick invocation");
     }
     auto const& invocation = background.tick_runtime.nodes[node];
-    auto const& inputs = kind == PortKind::sample
-        ? background.tick_runtime.sequential_sample_inputs
-        : background.tick_runtime.sequential_event_inputs;
-    auto const begin = kind == PortKind::sample
-        ? invocation.sequential_sample_begin
-        : invocation.sequential_event_begin;
-    auto const count = kind == PortKind::sample
-        ? invocation.sequential_sample_count
-        : invocation.sequential_event_count;
-    if (begin > inputs.size() || count > inputs.size() - begin) {
-        return std::unexpected(
-            "GraphJit Tick invocation has an invalid Sequential input range");
-    }
-    std::optional<std::size_t> found;
-    for (std::size_t slot = begin; slot < begin + count; ++slot) {
-        auto const& binding = inputs[slot];
-        if (binding.port >= background.ports.size()) {
+    auto const find_slot = [&](auto const& inputs, std::size_t begin, std::size_t count)
+        -> std::expected<std::optional<std::size_t>, std::string> {
+        if (begin > inputs.size() || count > inputs.size() - begin) {
             return std::unexpected(
-                "GraphJit Tick invocation references a missing Sequential port");
+                "GraphJit Tick invocation has an invalid Sequential input range");
         }
-        auto const& port = background.ports[binding.port];
-        if (port.node != node) {
-            return std::unexpected(
-                "GraphJit Tick invocation Sequential port belongs to another node");
+        std::optional<std::size_t> found;
+        for (std::size_t slot = begin; slot < begin + count; ++slot) {
+            auto const& binding = inputs[slot];
+            if (binding.port >= background.ports.size()) {
+                return std::unexpected(
+                    "GraphJit Tick invocation references a missing Sequential port");
+            }
+            auto const& port = background.ports[binding.port];
+            if (port.node != node) {
+                return std::unexpected(
+                    "GraphJit Tick invocation Sequential port belongs to another node");
+            }
+            if (port.kind == kind && port.configured_port.port_index == input_index) {
+                found = slot;
+            }
         }
-        if (port.kind == kind
-            && port.configured_port.port_index == input_index) {
-            found = slot;
-        }
-    }
-    return found;
+        return found;
+    };
+    return kind == PortKind::sample
+        ? find_slot(background.tick_runtime.sequential_sample_inputs,
+            invocation.sequential_sample_begin, invocation.sequential_sample_count)
+        : find_slot(background.tick_runtime.sequential_event_inputs,
+            invocation.sequential_event_begin, invocation.sequential_event_count);
 }
 
 // Builds the additive Tick contribution of one mixed Tick/background sample
@@ -574,6 +567,21 @@ realtime_sample_partition(ConnectionAnalysisPlan const& plan, SampleConnectionPl
     if (result.source_channel_timings.empty()) {
         return std::unexpected(
             "GraphJit mixed sample connection has no realtime contribution");
+    }
+    // Some channels may be supplied entirely by the background side. The
+    // realtime operand has the full destination layout and contributes zero
+    // to those channels.
+    for (std::size_t channel = 0; channel < result.target_channels.size(); ++channel) {
+        if (std::ranges::any_of(result.projection_contributions, [&](auto const& projection) {
+                return std::ranges::contains(projection.target_channels, channel);
+            })) {
+            continue;
+        }
+        result.projection_contributions.push_back({
+            .source_channel_indices = {0},
+            .target_channels = {channel},
+            .transform = {1, 1, {0.0f}},
+        });
     }
     return result;
 }
@@ -2044,6 +2052,7 @@ plan_sample_realtime_port_state_realizations(
                 }
                 if (*composition) {
                     bool selected_target = false;
+                    bool all_sources_retained = true;
                     for (auto const& contribution : (**composition).contributions) {
                         for (std::size_t converted_channel = 0;
                              converted_channel
@@ -2061,8 +2070,7 @@ plan_sample_realtime_port_state_realizations(
                             auto const source_count = transform.empty()
                                 ? channel_count(contribution.source_layout)
                                 : transform.source_channel_count;
-                            if (selected_target
-                                || contribution.sources.size() != source_count
+                            if (contribution.sources.size() != source_count
                                 || (!transform.empty()
                                     && (converted_channel
                                             >= transform.target_channel_count
@@ -2070,7 +2078,7 @@ plan_sample_realtime_port_state_realizations(
                                             != source_count
                                                 * transform.target_channel_count))) {
                                 return std::unexpected(
-                                    "GraphJit composed port state has an ambiguous target channel");
+                                    "GraphJit composed port state has an invalid target projection");
                             }
                             selected_target = true;
                             for (std::size_t source_channel = 0;
@@ -2089,6 +2097,8 @@ plan_sample_realtime_port_state_realizations(
                                 if (coefficient == 0.0f) continue;
                                 auto const& source =
                                     contribution.sources[source_channel];
+                                bool const owns_samples = requirement.extent_samples != 0
+                                    || source.read_latency > source.source_latency;
                                 if (source.read_latency
                                     > static_cast<std::size_t>(
                                         std::numeric_limits<std::int64_t>::max())) {
@@ -2101,23 +2111,32 @@ plan_sample_realtime_port_state_realizations(
                                     -static_cast<std::int64_t>(
                                         source.read_latency),
                                     true);
+                                if (source_view && !*source_view && !owns_samples) {
+                                    source_view = storage_view(source.source_representation,
+                                        source.source_channel,
+                                        -static_cast<std::int64_t>(source.read_latency), false);
+                                }
                                 if (!source_view) {
                                     return std::unexpected(
                                         std::move(source_view.error()));
                                 }
                                 if (!*source_view) {
-                                    realization.composition_sources.clear();
-                                    selected_target = false;
+                                    all_sources_retained = false;
                                     break;
                                 }
+                                (**source_view).producer_latency = source.source_latency;
                                 realization.composition_sources.push_back({
                                     .storage = std::move(**source_view),
                                     .coefficient = coefficient,
+                                    .owns_samples = owns_samples,
                                 });
                             }
+                            if (!all_sources_retained) break;
                         }
+                        if (!all_sources_retained) break;
                     }
-                    if (selected_target
+                    if (!all_sources_retained) realization.composition_sources.clear();
+                    if (selected_target && all_sources_retained
                         && !realization.composition_sources.empty()) {
                         realization.retained_access =
                             SampleRealtimePortStateAccess::composed;
@@ -3133,9 +3152,9 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         auto const& connection = connections.sample_connections[connection_index];
         // Background evaluation delivers a connection with no Tick ->
         // Sequential channel. A Sequential target then receives its block
-        // through its TickSequentialBindingPlan slot and is planned below as
+        // through its Sequential Tick input slot and is planned below as
         // invocation_supplied; a Random Access target reads its
-        // TickRandomAccessBindingPlan view.
+        // Random Access Tick input view.
         if (!has_realtime_delivery(connection)) continue;
         auto const mixed_delivery =
             !is_entirely_realtime_delivery(connection);
@@ -3391,8 +3410,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                     }
                     for (auto const target_channel :
                          contribution.target_channels) {
-                        if (target_channel >= populated_targets.size()
-                            || populated_targets[target_channel]) {
+                        if (target_channel >= populated_targets.size()) {
                             return std::unexpected(
                                 "GraphJit sample composition contribution has an invalid target projection");
                         }
@@ -3404,7 +3422,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                         return std::unexpected(
                             "GraphJit sample composition does not populate every target channel");
                 }
-                // Feed-forward composition exposes timestamp-aligned target
+                    // Feed-forward composition exposes timestamp-aligned target
                 // channels and therefore reads at port latency zero; channels may
                 // be direct delayed aliases or computed transient results. Detached
                 // composition writes each source frame forward by its channel's
@@ -3752,7 +3770,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 continue;
             }
             // Tick-time Random Access reads only the callback-pinned view in
-            // its TickRandomAccessBindingPlan slot, whether the input is
+            // its Random Access Tick input slot, whether the input is
             // connected or disconnected (empty coverage).
             if (!is_sequential(config)) {
                 auto& binding = plan.primitives[primitive_index].inputs[port];
@@ -8235,7 +8253,8 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports_once(
                         "GraphJit invocation-supplied event window overflows size_t");
                 }
                 double maximum_rate = 0.0;
-                for (auto const storage : runtime_binding.storage) {
+                for (auto const& read : runtime_binding.reads) {
+                    auto const storage = read.storage;
                     if (storage >= connections.background.storage.ports.size()) {
                         return std::unexpected(
                             "GraphJit invocation-supplied event input references missing storage");

@@ -2358,7 +2358,7 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
 {
     using namespace iv;
     auto configure_children = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
-        using Pass = Sum<mono, SampleStreamLayout::planar, 1>;
+        using Pass = SumN<mono, SampleStreamLayout::planar, 1>;
         auto input = graph.input<"main">();
         auto named = details::configure_concrete_node<NamedSamplePass>(graph);
         named(input);
@@ -2469,7 +2469,7 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsConnectionsFromNamedSamplePortAliases
 {
     using namespace iv;
     auto configure = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
-        using Pass = Sum<mono, SampleStreamLayout::planar, 1>;
+        using Pass = SumN<mono, SampleStreamLayout::planar, 1>;
         auto producer = details::configure_concrete_node<Pass>(graph);
         auto output = producer[std::size_t{0}];
         output._annotate_source_info("output_alias", "/tmp/module_alias.cpp", 1, 2);
@@ -2533,8 +2533,8 @@ TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForANamedMonoQuotientWithoutAT
     EXPECT_EQ(node.at("childSourceLabel"), "detune_pair");
     auto const& inputs = node.at("sampleInputs");
     ASSERT_EQ(inputs.size(), 2u);
-    EXPECT_EQ(inputs.at(0).at("name"), "left");
-    EXPECT_EQ(inputs.at(1).at("name"), "right");
+    EXPECT_EQ(inputs.at(0).at("name"), "a");
+    EXPECT_EQ(inputs.at(1).at("name"), "b");
     for (auto const& input : inputs) {
         ASSERT_TRUE(input.contains("manualControl")) << input.dump();
         EXPECT_EQ(input.at("manualControl").at("available"), true);
@@ -2583,8 +2583,8 @@ TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForTiledMultiplicationAndItsMe
     auto expect_knobs = [](auto const& node, bool input_enabled) {
         auto const& inputs = node.at("sampleInputs");
         ASSERT_EQ(inputs.size(), 2u);
-        EXPECT_EQ(inputs.at(0).at("name"), "left");
-        EXPECT_EQ(inputs.at(1).at("name"), "right");
+        EXPECT_EQ(inputs.at(0).at("name"), "a");
+        EXPECT_EQ(inputs.at(1).at("name"), "b");
         for (auto const& input : inputs) {
             ASSERT_TRUE(input.contains("manualControl")) << input.dump();
             EXPECT_EQ(input.at("manualControl").at("available"), true);
@@ -2617,8 +2617,8 @@ TEST_F(ProjectGraphFixture, VirtualDeclarationsKeepSeparateLanesAndInputsForEach
 {
     using namespace iv;
     auto configure_children = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
-        auto single = details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 1>>(graph);
-        auto pair = details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 2>>(graph);
+        auto single = details::configure_concrete_node<SumN<mono, SampleStreamLayout::planar, 1>>(graph);
+        auto pair = details::configure_concrete_node<SumN<mono, SampleStreamLayout::planar, 2>>(graph);
         single._annotate_source_info("voice", "/tmp/voice.cpp", 1, 2, "voice");
         pair._annotate_source_info("voice", "/tmp/voice.cpp", 1, 2, "voice");
         graph.outputs("main"_P = single);
@@ -2634,7 +2634,7 @@ TEST_F(ProjectGraphFixture, VirtualDeclarationsKeepSeparateLanesAndInputsForEach
     EXPECT_NE(children[0].at("childDisplayName"), children[1].at("childDisplayName"));
     for (std::size_t i = 0; i < children.size(); ++i) {
         auto const label = children[i].at("childDisplayName").get<std::string>();
-        EXPECT_TRUE(label.contains("Sum"));
+        EXPECT_TRUE(label.contains("SumN<"));
         EXPECT_EQ(children[i].at("childSourceLabel"), "voice");
         EXPECT_EQ(children[i].at("sampleInputs").size(), i + 1);
         EXPECT_EQ(children[i].at("sampleOutputs").at(0).at("name"), "out");

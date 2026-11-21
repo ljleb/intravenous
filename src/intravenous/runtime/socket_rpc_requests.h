@@ -110,7 +110,10 @@ struct DispatchNodeMessageRequest {
 struct GetNodeEventProtocolRequest {};
 
 struct GetAudioDevicesRequest {};
-struct GetPlaybackRequest {};
+struct GetPlaybackRequest {
+    bool include_diagnostics = false;
+    std::optional<PlaybackOutputProfileRequest> output_profile{};
+};
 struct TogglePlaybackRequest {};
 struct SetPlaybackRunningRequest { bool running = true; };
 struct SeekPlaybackRequest { GlobalIndex position{}; };

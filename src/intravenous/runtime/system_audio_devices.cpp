@@ -248,9 +248,17 @@ void SystemAudioDevices::input_capture_loop(std::shared_ptr<ActiveInputDevice> i
     }
 }
 
+void SystemAudioDevices::handle_playback_profile(ProjectPlaybackRequest& request)
+{
+    if (request.output_profile) {
+        request.output_profile_result = output_profile_.request(*request.output_profile);
+    }
+}
+
 void SystemAudioDevices::output_render_loop(
     std::shared_ptr<ActiveOutputDevice> output_device) noexcept
 {
+    PlaybackOutputProfile::PreviousSlice previous_slice;
     try {
         for (;;) {
             auto output = output_device->device.wait_for_block_request();
@@ -259,6 +267,7 @@ void SystemAudioDevices::output_render_loop(
                     std::memory_order_acquire)) {
                 return;
             }
+            PlaybackOutputProfile::Buffer profile(output_profile_);
             auto const channels = output_device->device.config().num_channels;
             if (channels != 2 || output.size() % channels != 0) {
                 throw std::runtime_error(
@@ -300,9 +309,11 @@ void SystemAudioDevices::output_render_loop(
                 current_output_samples = output_slice;
 
                 auto* executor = graph_executor_.load(std::memory_order_acquire);
+                PlaybackRenderSlice slice;
                 if (executor) {
-                    executor->render_block(count, sample_rate_);
+                    executor->render_block(count, sample_rate_, profile ? &slice : nullptr);
                 }
+                if (profile) profile.observe(previous_slice, slice, output_slice);
 
                 current_input_binding = nullptr;
                 current_output_binding = nullptr;
@@ -310,7 +321,9 @@ void SystemAudioDevices::output_render_loop(
                 current_output_samples = {};
                 offset += count;
             }
+            auto const rendered_at = profile ? PlaybackOutputProfile::Clock::now() : PlaybackOutputProfile::Clock::time_point{};
             output_device->device.submit_response();
+            if (profile) profile.submitted(rendered_at, frames, sample_rate_);
         }
     } catch (...) {
         current_input_binding = nullptr;

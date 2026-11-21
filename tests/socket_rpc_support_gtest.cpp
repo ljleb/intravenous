@@ -130,7 +130,8 @@ TEST(SocketRpcRequestParser, ParsesGetAudioDevicesRequest)
 TEST(SocketRpcRequestParser, PlaybackControlsPreserveExactIndicesWithoutProjectRevisions)
 {
     auto get = iv::parse_socket_rpc_request(R"({"jsonrpc":"2.0","id":1,"method":"playback.get","params":{}})");
-    EXPECT_NE(std::get_if<iv::GetPlaybackRequest>(&get.payload), nullptr);
+    ASSERT_NE(std::get_if<iv::GetPlaybackRequest>(&get.payload), nullptr);
+    EXPECT_FALSE(std::get<iv::GetPlaybackRequest>(get.payload).include_diagnostics);
     auto toggle = iv::parse_socket_rpc_request(R"({"jsonrpc":"2.0","id":2,"method":"playback.toggle","params":{}})");
     EXPECT_NE(std::get_if<iv::TogglePlaybackRequest>(&toggle.payload), nullptr);
     auto pause = iv::parse_socket_rpc_request(R"({"jsonrpc":"2.0","id":3,"method":"playback.setRunning","params":{"running":false}})");
@@ -154,6 +155,26 @@ TEST(SocketRpcRequestParser, PlaybackControlsPreserveExactIndicesWithoutProjectR
     EXPECT_THROW((void)iv::parse_socket_rpc_request(R"({"jsonrpc":"2.0","id":1,"method":"playback.setRunning","params":{"running":1}})"), std::exception);
 }
 
+TEST(SocketRpcRequestParser, PlaybackOutputCaptureAcceptsOnlyBoundedDurations)
+{
+    auto parse = [](Json profile) {
+        return iv::parse_socket_rpc_request(Json{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "playback.get"},
+            {"params", {{"outputProfile", std::move(profile)}}}}.dump());
+    };
+    auto start = parse({{"id", "capture"}, {"durationMs", 10000}});
+    auto const& request = std::get<iv::GetPlaybackRequest>(start.payload);
+    ASSERT_TRUE(request.output_profile);
+    EXPECT_EQ(request.output_profile->id, "capture");
+    EXPECT_EQ(request.output_profile->duration_ms, 10000u);
+    auto finish = parse({{"id", "capture"}});
+    auto const& result_request = std::get<iv::GetPlaybackRequest>(finish.payload);
+    ASSERT_TRUE(result_request.output_profile);
+    EXPECT_FALSE(result_request.output_profile->duration_ms);
+    for (auto const& duration : {Json(-1), Json(0), Json(1.5), Json(30001), Json(4'294'967'297ULL)}) {
+        EXPECT_THROW((void)parse({{"id", "capture"}, {"durationMs", duration}}), std::invalid_argument);
+    }
+}
+
 TEST(SocketRpcPlayback, RoutesAuthorizeControlsWithoutCreatingProjectMutations)
 {
     iv::SocketRpcServer server{"."};
@@ -163,17 +184,18 @@ TEST(SocketRpcPlayback, RoutesAuthorizeControlsWithoutCreatingProjectMutations)
     std::uint64_t last_accepted = 0;
     for (auto method : {"playback.get", "playback.toggle", "playback.setRunning", "playback.seek", "playback.drag"}) {
         SCOPED_TRACE(method);
+        auto const reading = std::string_view(method) == "playback.get";
         std::string capability;
         std::optional<bool> mutating;
         auto request = iv::parse_socket_rpc_request(Json{{"jsonrpc", "2.0"}, {"id", 1}, {"method", method},
-            {"params", {{"position", "-123"}, {"running", false}, {"phase", "begin"}, {"dragId", "1"}}}}.dump());
+            {"params", {{"position", "-123"}, {"running", false}, {"phase", "begin"}, {"dragId", "1"},
+                {"diagnostics", reading}}}}.dump());
         iv::SocketRpcRouteResult result;
         IV_EVENT_SOURCE(iv::SocketRpcServer, method) {
             result = routes.dispatch(request, {.client_id = "client", .authorize = [&](auto const& requested) {
                 capability = requested;
             }, .before_invoke = [&](bool value) { mutating = value; }});
         }
-        auto const reading = std::string_view(method) == "playback.get";
         EXPECT_EQ(capability, reading ? "project.read" : "project.write");
         ASSERT_TRUE(mutating.has_value());
         EXPECT_FALSE(*mutating);
@@ -186,8 +208,16 @@ TEST(SocketRpcPlayback, RoutesAuthorizeControlsWithoutCreatingProjectMutations)
         EXPECT_EQ(snapshot.at("executionIndex"), "0");
         EXPECT_EQ(snapshot.at("appliedCommand"), "0");
         EXPECT_EQ(snapshot.at("running"), false);
-        if (reading) EXPECT_FALSE(snapshot.contains("acceptedCommand"));
-        else EXPECT_EQ(snapshot.at("acceptedCommand"), std::to_string(++last_accepted));
+        if (reading) {
+            EXPECT_FALSE(snapshot.contains("acceptedCommand"));
+            auto const& diagnostics = snapshot.at("diagnostics");
+            EXPECT_EQ(diagnostics.at("backgroundUnderrunBlocks"), "0");
+            EXPECT_TRUE(diagnostics.at("executionGeneration").is_null());
+            EXPECT_TRUE(diagnostics.at("configuredGeneration").is_null());
+        } else {
+            EXPECT_EQ(snapshot.at("acceptedCommand"), std::to_string(++last_accepted));
+            EXPECT_FALSE(snapshot.contains("diagnostics"));
+        }
     }
 }
 

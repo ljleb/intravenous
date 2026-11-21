@@ -500,9 +500,9 @@ try {
 void iv_builder_annotate_node(
     BuilderSession* value, NodeBundleHandle handle, std::string_view id,
     std::string_view file, std::uint32_t begin, std::uint32_t end,
-    std::string_view name)
+    std::string_view name, std::uint32_t declaration_line)
 try {
-    session(value).annotate_node(handle, id, file, begin, end, name);
+    session(value).annotate_node(handle, id, file, begin, end, name, declaration_line);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     record_builder_failure(value, std::current_exception(), {});
@@ -522,9 +522,10 @@ try {
 }
 void iv_builder_annotate_sample_port(
     SamplePortRef const& port, std::string_view id, std::string_view file,
-    std::uint32_t begin, std::uint32_t end)
+    std::uint32_t begin, std::uint32_t end, std::uint32_t declaration_line)
 try {
-    session(port.session).annotate_sample_port_source_info(port, id, file, begin, end);
+    session(port.session).annotate_sample_port_source_info(
+        port, id, file, begin, end, declaration_line);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     record_builder_failure(port.session, std::current_exception(), {});
@@ -532,9 +533,10 @@ try {
 }
 void iv_builder_annotate_event_port(
     EventPortRef const& port, std::string_view id, std::string_view file,
-    std::uint32_t begin, std::uint32_t end)
+    std::uint32_t begin, std::uint32_t end, std::uint32_t declaration_line)
 try {
-    session(port.session).annotate_event_port_source_info(port, id, file, begin, end);
+    session(port.session).annotate_event_port_source_info(
+        port, id, file, begin, end, declaration_line);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     record_builder_failure(port.session, std::current_exception(), {});
@@ -542,10 +544,10 @@ try {
 }
 void iv_builder_annotate_public_sample_input(
     SamplePortRef const& port, std::string_view id, std::string_view file,
-    std::uint32_t begin, std::uint32_t end)
+    std::uint32_t begin, std::uint32_t end, std::uint32_t declaration_line)
 try {
     session(port.session).annotate_public_sample_input_source_info(
-        port, id, file, begin, end);
+        port, id, file, begin, end, declaration_line);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     record_builder_failure(port.session, std::current_exception(), {});
@@ -553,10 +555,10 @@ try {
 }
 void iv_builder_annotate_public_event_input(
     EventPortRef const& port, std::string_view id, std::string_view file,
-    std::uint32_t begin, std::uint32_t end)
+    std::uint32_t begin, std::uint32_t end, std::uint32_t declaration_line)
 try {
     session(port.session).annotate_public_event_input_source_info(
-        port, id, file, begin, end);
+        port, id, file, begin, end, declaration_line);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     record_builder_failure(port.session, std::current_exception(), {});
@@ -637,7 +639,8 @@ try {
     for (auto const& info : session(value).subgraph_boundary_source_infos(handle)) {
         result._annotate_source_info(
             info.declaration_identity,
-            info.span.file_path, info.span.begin, info.span.end);
+            info.span.file_path, info.span.begin, info.span.end,
+            info.declaration_name, info.declaration_line);
     }
     return result;
 } catch (...) {

@@ -133,6 +133,7 @@ struct ConfiguredSampleConnectionSource {
 
 struct ConfiguredSampleConnection {
   ChannelTypeId source_type = ChannelTypeId::mono;
+  // Each complete source layout contributes channel-wise to this connection.
   std::vector<ConfiguredSampleConnectionSource> source_channels{};
   ChannelTypeId target_type = ChannelTypeId::mono;
   std::vector<SampleInputChannelId> target_channels{};
@@ -174,8 +175,9 @@ public:
   constexpr void record_configured_sample_connection(
       ConfiguredSampleConnection connection)
   {
-    if (connection.source_channels.size()
-        != channel_count(connection.source_type))
+    auto const source_width = channel_count(connection.source_type);
+    if (source_width == 0 || connection.source_channels.empty()
+        || connection.source_channels.size() % source_width != 0)
       details::error(
           "configured sample connection source does not match its channel type");
     if (connection.target_channels.size()

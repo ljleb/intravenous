@@ -787,6 +787,65 @@ TEST(RealtimePortStateTransition, MaterializesInheritedSampleStateIntoSteadyStor
     }
 }
 
+TEST(RealtimePortStateTransition, ComposedTransferReadsOnlyFinalizedSourceWindows)
+{
+    using namespace iv;
+    using namespace iv::graph_jit;
+    auto input = requirement(1, 0, PortKind::sample, PortDirection::input,
+        RealtimePortStateRole::sequential_input_history, "sum", "in", 0);
+    input.in_flight_samples = 2;
+    RealtimePortStateRequirements requirements{.states = {input}};
+    auto successor = direct_sample(0, sizeof(std::uint64_t));
+    successor.retained_sources.front().timeline_offset_frames = -2;
+    successor.authored_storage = successor.retained_sources.front();
+
+    auto short_source = successor.authored_storage;
+    short_source.timeline_offset_frames = -1;
+    short_source.producer_latency = 0;
+    auto long_source = successor.authored_storage;
+    long_source.producer_latency = 0;
+    long_source.representation_channel = 1;
+    RealtimePortStateRealizations before{.sample_states = {{
+        .requirement_index = 0,
+        .authored_storage = successor.authored_storage,
+        .retained_access = SampleRealtimePortStateAccess::composed,
+        .composition_sources = {
+            {.storage = short_source, .coefficient = 1.f},
+            {.storage = long_source, .coefficient = 1.f},
+            {.coefficient = 1.f, .owns_samples = false},
+        },
+    }}};
+    RealtimePortStateRealizations after{.sample_states = {successor}};
+    auto plan = plan_realtime_port_state_transition(requirements, before, requirements, after);
+    ASSERT_TRUE(plan.has_value()) << plan.error();
+    ASSERT_EQ(plan->sample_transfers.size(), 1u);
+    auto const& terms = plan->sample_transfers.front().source_composition;
+    ASSERT_EQ(terms.size(), 2u);
+    EXPECT_EQ(terms[0].inherited_end, 1);
+    EXPECT_EQ(terms[1].inherited_end, 2);
+
+    constexpr auto cursor_size = sizeof(std::uint64_t);
+    std::vector<std::byte> prior(cursor_size + 16 * sizeof(Sample));
+    std::vector<std::byte> next(prior.size());
+    write_sequential_cursor(prior, 0, 8);
+    write_sequential_cursor(next, 0, 8);
+    auto store = [&](std::size_t slot, float value) {
+        Sample sample{value};
+        std::memcpy(prior.data() + cursor_size + slot * sizeof(Sample), &sample, sizeof(sample));
+    };
+    store(7, 3.f);
+    store(0, 900.f); // At relative position 1 this branch has no finalized sample.
+    store(8 + 6, 5.f);
+    store(8 + 7, 7.f);
+    auto prepared = prepare_realtime_port_state_transfers(std::move(*plan), prior, next);
+    ASSERT_TRUE(prepared.has_value()) << prepared.error();
+    execute_realtime_port_state_transfers(*prepared, prior, next, global_index(8));
+    std::array<Sample, 2> values{};
+    std::memcpy(values.data(), next.data() + cursor_size + 6 * sizeof(Sample), sizeof(values));
+    EXPECT_FLOAT_EQ(values[0].value, 8.f);
+    EXPECT_FLOAT_EQ(values[1].value, 7.f);
+}
+
 TEST(RealtimePortStateTransition, DynamicValueShapeWithoutTypeMigrationStartsFresh)
 {
     iv::graph_jit::RealtimePortStateRequirements previous{

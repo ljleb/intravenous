@@ -16,12 +16,85 @@
 #include <cstring>
 #include <limits>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
 namespace iv {
 
 namespace {
+
+std::optional<std::string> unavailable_sample_cutover(
+    graph_jit::RealtimePortStateTransitionPlan const& plan,
+    CompiledGraph const& previous, CompiledGraph const& current)
+{
+    using namespace graph_jit;
+    auto const unavailable = [](RealtimePortStateTransition const& state) {
+        return state.inherited_state_realization
+            == InheritedRealtimePortStateRealization::predecessor_state_unavailable;
+    };
+    auto const missing = std::ranges::find_if(plan.sample_states, unavailable);
+    if (missing == plan.sample_states.end()) return std::nullopt;
+
+    auto const access_name = [](SampleRealtimePortStateAccess access) {
+        switch (access) {
+        case SampleRealtimePortStateAccess::immutable_constant: return "immutable_constant";
+        case SampleRealtimePortStateAccess::direct: return "direct";
+        case SampleRealtimePortStateAccess::materialized: return "materialized";
+        case SampleRealtimePortStateAccess::composed: return "composed";
+        case SampleRealtimePortStateAccess::callback_only: return "callback_only";
+        }
+        return "unknown";
+    };
+    bool const from_transition = current.cutover && previous.cutover
+        && current.cutover->predecessor_phase == CompiledGraphRealtimePhase::transition;
+    auto const& previous_realizations = from_transition
+        ? previous.cutover->transition_realizations : previous.realtime_port_state_realizations;
+
+    std::ostringstream message;
+    message << "sample state is unavailable from the active predecessor"
+        << " (generation " << previous.project_generation
+        << " to " << current.project_generation
+        << ", predecessor phase " << (from_transition ? "transition" : "steady") << ')';
+    auto const count = std::ranges::count_if(plan.sample_states, unavailable);
+    if (count > 1) message << ". " << count << " sample channels could not be transferred";
+    message << "\n  Inherited sample window [" << missing->inherited_begin
+        << ", " << missing->inherited_end << "), successor window ["
+        << missing->target_begin << ", " << missing->target_end << ')';
+    auto describe = [&](char const* label, CompiledGraph const& graph,
+                         RealtimePortStateRealizations const& realizations,
+                         std::size_t requirement_index, std::size_t realization_index) {
+        auto const& requirements = graph.realtime_port_state_requirements.states;
+        if (requirement_index >= requirements.size()) return;
+        auto const& port = requirements[requirement_index];
+        message << "\n  " << label << ' '
+            << (port.direction == PortDirection::input ? "input" : "output");
+        if (auto const& id = port.stable_identity) {
+            message << " '" << id->port_name << '\'';
+            if (!id->node.project_instance.empty()) {
+                message << " on " << id->node.project_leaf_type << " instance " << id->node.project_instance;
+            } else {
+                message << " on " << id->node.virtual_node << " member " << id->node.direct_member
+                    << " in " << id->node.graph;
+            }
+        }
+        message << " (bundle " << port.configured_port.node_bundle_handle
+            << ", port " << port.configured_port.port_index;
+        if (port.channel) message << ", channel " << *port.channel;
+        message << ") has history " << port.extent_samples << " and in-flight " << port.in_flight_samples;
+        if (realization_index >= realizations.sample_states.size()) return;
+        auto const& view = realizations.sample_states[realization_index];
+        message << ", access " << access_name(view.retained_access)
+            << ", read offset " << view.authored_storage.timeline_offset_frames
+            << ", retained sources " << view.retained_sources.size()
+            << ", composition sources " << view.composition_sources.size();
+    };
+    describe("Predecessor", previous, previous_realizations,
+        missing->previous_requirement_index, missing->previous_realization_index);
+    describe("Successor", current, current.realtime_port_state_realizations,
+        missing->current_requirement_index, missing->current_realization_index);
+    return std::move(message).str();
+}
 
 ProducerCapacityPolicy producer_capacity_policy(
     std::size_t maximum_blocks_per_callback,
@@ -610,6 +683,10 @@ void GraphExecutor::ExecutionGeneration::prepare_realtime_migration_from(
         throw std::runtime_error(
             "GraphExecutor could not reconcile realtime port state: "
             + std::move(transition.error()));
+    }
+    if (auto unavailable = unavailable_sample_cutover(*transition, *previous.graph, *graph)) {
+        throw std::runtime_error(
+            "GraphExecutor could not prepare realtime port-state cutover: " + *unavailable);
     }
     auto prepared_transition =
         graph_jit::prepare_realtime_port_state_transfers(
@@ -2314,7 +2391,7 @@ std::optional<std::array<GraphExecutor::PlaybackDemand, 2>> GraphExecutor::read_
     return result;
 }
 
-void GraphExecutor::render_block(std::size_t frames, double sample_rate)
+void GraphExecutor::render_block(std::size_t frames, double sample_rate, PlaybackRenderSlice* profile)
 {
     auto const candidate = playback_.begin_block(sample_rate);
     auto const applied = playback_.current_block(sample_rate);
@@ -2331,14 +2408,28 @@ void GraphExecutor::render_block(std::size_t frames, double sample_rate)
         &persisted, &can_apply);
     if (!realtime_active_) return;
     auto& generation = *realtime_active_;
+    if (profile) {
+        *profile = {.execution_generation = generation.graph->project_generation,
+            .foreground_sample = applied.state.foreground_playhead, .segment = applied.state.segment};
+    }
     if (!persisted) {
         persisted = realtime_persisted_state_.adopt(generation.graph->project_generation);
-        if (!persisted) return;
+        if (!persisted) {
+            if (profile) profile->code_publication =
+                generation.realtime_code.load(std::memory_order_acquire)->publication_id;
+            return;
+        }
         can_apply = pending && playback_ready(*generation.graph, *persisted, candidate_demand);
     }
     auto const& selected = can_apply ? candidate : applied;
     auto const can_execute = can_apply || playback_ready(*generation.graph, *persisted, applied_demand);
-    execute_tick_block(generation, *persisted, selected.state.foreground_playhead, frames, selected.selection(), can_execute);
+    if (profile) {
+        profile->foreground_sample = selected.state.foreground_playhead;
+        profile->segment = selected.state.segment;
+        profile->rendered = can_execute;
+    }
+    execute_tick_block(generation, *persisted, selected.state.foreground_playhead, frames,
+        selected.selection(), can_execute, profile);
     if (can_execute) playback_.end_block(selected, frames);
 }
 
@@ -2358,7 +2449,8 @@ void GraphExecutor::tick_block(GlobalIndex sample_index, std::size_t block_size)
 }
 
 void GraphExecutor::execute_tick_block(ExecutionGeneration& generation, RealtimePersistedState const& persisted,
-    GlobalIndex sample_index, std::size_t block_size, TickPlaybackSelection selection, bool ready)
+    GlobalIndex sample_index, std::size_t block_size, TickPlaybackSelection selection, bool ready,
+    PlaybackRenderSlice* profile)
 {
     if (block_size == 0
         || block_size > generation.graph->specialization.block_size) {
@@ -2366,6 +2458,7 @@ void GraphExecutor::execute_tick_block(ExecutionGeneration& generation, Realtime
             "GraphExecutor tick block size is outside the compiled specialization");
     }
     auto* const realtime_code = generation.realtime_code.load(std::memory_order_acquire);
+    if (profile) profile->code_publication = realtime_code->publication_id;
     auto begin_observation_frame = [&]() -> LiveObservationFrame* {
         auto const changed = last_observation_publication_ != realtime_code->publication_id;
         if (!changed && realtime_code->graph->observations.probes.empty()) return nullptr;
@@ -2408,6 +2501,7 @@ void GraphExecutor::execute_tick_block(ExecutionGeneration& generation, Realtime
         sample_index,
         block_size, selection};
     auto const phase = generation.realtime_phase.load(std::memory_order_relaxed);
+    if (profile) profile->transition_tick = phase == CompiledGraphRealtimePhase::transition;
     auto const& root_operations = phase == CompiledGraphRealtimePhase::transition
         ? generation.graph->root_operations
         : realtime_code->graph->root_operations;
@@ -2477,6 +2571,7 @@ void GraphExecutor::BackgroundExecutor::process_event_windows(
         for (auto it = observation_windows_.begin(); it != observation_windows_.end() && pending.size() < 31;) {
             auto const& next = **it;
             if (!next.canceled.load(std::memory_order_acquire) && next.port.port_kind == PortKind::event
+                && next.kind == ObservationSourceKind::input
                 && next.configured_generation == query.configured_generation
                 && next.execution_generation == query.execution_generation
                 && next.window.begin == query.window.begin && next.window.length == query.window.length) {
@@ -2559,9 +2654,11 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
     try {
         (void)owner_.reclaim_retired_snapshots_on_background();
         auto* current = generation_chain_.get();
-        if (!current || prepared_generation_ || !preparation_queue_.empty()
-            || !current->background_initialized || current->background.has_selected_inputs()
-            || current->background.reconciliation_required || current->background.tick_materialization_required
+        auto const exact_events = query.port.port_kind == PortKind::event && query.kind == ObservationSourceKind::output;
+        if (!current || !current->background_initialized
+            || (!exact_events && (prepared_generation_ || !preparation_queue_.empty()
+                || current->background.has_selected_inputs()
+                || current->background.reconciliation_required || current->background.tick_materialization_required))
             || current->graph->configured_generation.value_or(current->graph->project_generation) != query.configured_generation
             || (query.execution_generation && current->graph->project_generation != query.execution_generation)
             || !owner_.published_has_active_generation_.load(std::memory_order_acquire)
@@ -2569,12 +2666,32 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
             query.complete.store(true, std::memory_order_release);
             return;
         }
-        if (!query.window.length || !query.window.points || query.window.points > maximum_observation_window_points)
+        if (!query.window.length || (!exact_events && (!query.window.points || query.window.points > maximum_observation_window_points)))
             throw std::invalid_argument("invalid background observation window");
         auto const& graph = *current->graph;
         auto const& plan = graph.background_evaluation_plan;
         if (query.port.port_kind == PortKind::event) {
-            process_event_windows(*current, query);
+            if (query.kind == ObservationSourceKind::input) {
+                process_event_windows(*current, query);
+                return;
+            }
+            auto const storage = recorded_event_window_storage(plan, query.port);
+            if (storage) {
+                auto const output = owner_.persisted_data_.resolve_output(
+                    persisted_output_id(plan, *storage, graph.project_generation));
+                auto reader = owner_.persisted_data_.register_reader();
+                auto snapshot = reader.pin();
+                auto const version = snapshot->version();
+                result.semantic_version = version.semantic;
+                result.data_version = version.revision;
+                result.execution_generation = graph.project_generation;
+                result.sample_rate = graph.specialization.sample_rate;
+                project_recorded_event_timestamps(query, snapshot->event_timeline(output, plan.storage.ports[*storage].event_type));
+                result.status = ObservationWindowResult::Status::ready;
+            } else {
+                result.status = ObservationWindowResult::Status::unavailable;
+            }
+            query.complete.store(true, std::memory_order_release);
             return;
         }
         auto const observing_input = query.kind == ObservationSourceKind::input;

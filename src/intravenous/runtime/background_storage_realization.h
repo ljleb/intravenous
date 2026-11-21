@@ -253,6 +253,9 @@ struct BackgroundStorageSelection {
     // authored output can be read from the pinned base when it is still valid,
     // or privately regenerated when its node is scheduled.
     std::vector<bool> produce_storage{};
+    // Indexed by BackgroundPortIndex when this transaction prepares Tick inputs.
+    // The same windows drive storage selection and snapshot construction.
+    std::vector<IndexCoverage> tick_input_requirements{};
     PersistedDataStore::Snapshot const* published = nullptr;
     bool cache_computed_outputs = false;
     bool retain_generated_outputs = true;

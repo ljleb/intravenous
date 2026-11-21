@@ -2,7 +2,7 @@ import { receiveSnapshot, type ObservationSnapshotFixture, observationSnapshot }
 import assert from "node:assert/strict";
 import test from "node:test";
 import { reactive } from "vue";
-import { ObservationValues, observationSourceKey } from "../src/observations";
+import { ObservationValues, observationSourceKey, recordedEventTimestampsOperation } from "../src/observations";
 import { observationViewportWindow, observationWindowId, predictedObservationRows } from "../src/observationWindows";
 
 test("viewport prediction moves farther for a fast pan and respects the graph bounds", () => {
@@ -368,6 +368,25 @@ test("explicit viewport windows coalesce and send before capability discovery", 
         const request = await first;
         assert.equal(request.type, "observationReconcile");
         assert.deepEqual(request.interests, [{ id: "beats", source, operation: "beat-grid", window: latest }]);
+    } finally { scope.dispose(); }
+});
+
+test("recorded event timestamps request exactly the visible range", async () => {
+    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    type Request = Extract<import("../src/observations").ObservationHostRequest, { type: "observationReconcile" }>;
+    let received!: (request: Request) => void;
+    const first = new Promise<Request>((resolve) => { received = resolve; });
+    const scope = new PresentationObservations((request) => {
+        if (request.type === "observationReconcile") received(request);
+        scope.receive({ type: "observationResponse", requestId: request.requestId,
+            result: request.type === "observationDescribe" ? { capabilities: [] } : { revision: "1" } });
+    });
+    const source = { node: { instanceId: "detector" }, kind: "output" as const, portKind: "event" as const, member: "clicks" };
+    const window = { begin: "-321", length: "711", points: 0 };
+    const interest = { source, operation: recordedEventTimestampsOperation, window };
+    try {
+        scope.observeViewport("clicks", interest, "visible");
+        assert.deepEqual((await first).interests, [{ id: "clicks", ...interest, prefetch: false }]);
     } finally { scope.dispose(); }
 });
 

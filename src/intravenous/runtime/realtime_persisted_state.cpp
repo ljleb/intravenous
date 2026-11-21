@@ -1,5 +1,6 @@
 #include <intravenous/runtime/realtime_persisted_state.h>
 
+#include <algorithm>
 #include <cassert>
 #include <stdexcept>
 #include <utility>
@@ -106,10 +107,12 @@ std::expected<void, std::string> RealtimePersistedState::select_payload(
             for (auto const& binding : bindings) {
                 if ((kind == PortKind::sample && materialization().find_sample(binding.port))
                     || (kind == PortKind::event && materialization().find_event(binding.port))) continue;
-                for (auto index : binding.storage) {
+                for (auto const& read : binding.reads) {
+                    auto const index = read.storage;
                     auto const& storage = plan.storage.ports.at(index);
                     if (storage.storage != graph_jit::PortStorageKind::persisted_data) continue;
                     auto output = store.resolve_output(persisted_output_id(plan, index, generation_));
+                    if (std::ranges::find(selected, output, &PersistedPayloadSelection::output) != selected.end()) continue;
                     auto const* coverage = kind == PortKind::sample
                         ? data().find_sample_coverage(output, storage.sample_layout, storage.continuous_geometry)
                         : data().find_event_coverage(output, storage.event_type);

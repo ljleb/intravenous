@@ -2044,6 +2044,59 @@ TEST_F(GraphJitRuntimeFixture, LiveInputUnionPreservesGapsForTheNextInputsManual
     EXPECT_EQ(probe->values, (std::array<float, 8>{1.25f, 1.25f, 6, 7, 8, 9, 1.25f, 1.25f}));
 }
 
+TEST_F(GraphJitRuntimeFixture, ConcreteInputSumsIndependentTickAndTockConnections)
+{
+    auto compiled = compile("iv.test.replay.mixed_sample_fan_in", 3013);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    auto const& plan = graph.background_evaluation_plan;
+    iv::PersistedDataStore data;
+    iv::TickMaterializationStore materializations;
+    auto data_reader = data.register_reader();
+    auto materialization_reader = materializations.register_reader();
+    auto states = graph.tock_state_layout.create_storage(resources);
+    states.initialize();
+    iv::BackgroundCoverageState coverage{plan.accumulators.output_change_count};
+    iv::BackgroundPropagationWorkspace propagation{plan, graph.specialization.sample_rate};
+    iv::CoveragePropagationRequest roots;
+    for (std::size_t node = 0; node < plan.nodes.size(); ++node)
+        roots.locally_changed_nodes.push_back(node);
+    for (auto port : plan.tick_sequential_inputs)
+        roots.input_demands.push_back({.port = port, .required = index_coverage({{18, 26}})});
+    iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data, materializations,
+        {.semantic_version = 1, .roots = std::move(roots)}};
+    auto prepared = transaction.execute();
+    ASSERT_TRUE(prepared) << prepared.error();
+    ASSERT_EQ(prepared->status, iv::BackgroundEvaluationStatus::committed);
+    ASSERT_EQ(plan.tick_runtime.sequential_sample_inputs.size(), 1u);
+    auto const& binding = plan.tick_runtime.sequential_sample_inputs.front();
+    ASSERT_EQ(binding.reads.size(), 1u);
+    EXPECT_FALSE(binding.reads.front().direct);
+    {
+        auto pinned = materialization_reader.pin();
+        auto const* input = pinned->find_sample(binding.port);
+        ASSERT_NE(input, nullptr);
+        EXPECT_TRUE(input->coverage.contains(range(20, 24)));
+        EXPECT_FLOAT_EQ(input->at(index(20), 0).value, 4.f);
+        EXPECT_FLOAT_EQ(input->at(index(23), 0).value, 7.f);
+    }
+
+    auto storage = graph.node_layout.create_storage(resources);
+    storage.initialize();
+    iv::TickInvocationWorkspace workspace{plan, graph.project_generation, data,
+        graph.specialization.block_size, graph.root_operations.combine_sequential_input,
+        graph.root_operations.initialize_sequential_input};
+    iv::TickInvocationFrame frame{data_reader, materialization_reader, workspace, index(18), 8};
+    graph.root_operations.tick_block(storage.buffer().data(), &frame.call(), index(18), 8);
+    struct State { std::uint64_t calls; std::array<float, 8> values; };
+    auto probe = find_unique_state<State>(graph.node_layout, storage);
+    ASSERT_NE(probe, nullptr);
+    EXPECT_EQ(probe->calls, 1u);
+    // The Tick contribution covers the block. Tock adds only at [20, 24).
+    EXPECT_EQ(probe->values, (std::array<float, 8>{29, 30, 35, 37, 39, 41, 35, 36}));
+}
+
 TEST_F(GraphJitRuntimeFixture, HeldSampleAndEmptyEventContributeLiveCoverage)
 {
     struct Fixture {

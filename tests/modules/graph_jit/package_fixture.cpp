@@ -7943,9 +7943,84 @@ void rolling_automation_module(iv::GraphBuilder& graph) {
 IV_MODULE("iv.test.automation.rolling", rolling_automation_module, "Rolling");
 
 )cpp";
+    static constexpr std::string_view click_recording_nodes = R"cpp(
+#include <intravenous/basic_nodes/click_detector.h>
+#include <intravenous/basic_nodes/constant.h>
+#include <cmath>
+#include <numbers>
+
+namespace {
+struct ClickRecordingSource {
+    static constexpr auto inputs() { return std::tuple{}; }
+
+    static constexpr auto outputs()
+    {
+        using namespace iv;
+        return std::array{output<Sample>("audio", OutputProduction::sequential,
+            {.channel_layout = system_audio_channel_layout})};
+    }
+
+    void tick_block(iv::TickBlockContext<ClickRecordingSource> const& ctx) const
+    {
+        auto const samples_per_half_second = static_cast<std::uint64_t>(ctx.sample_rate) / 2;
+        auto const first = ctx.index.whole().bits();
+        auto audio = ctx.output<"audio">();
+        for (std::size_t i = 0; i < audio.block_size(); ++i) {
+            auto const frame = first + i;
+            auto const tone = 0.1 * std::sin(2 * std::numbers::pi * 220 * frame / ctx.sample_rate);
+            auto const click = frame % samples_per_half_second == 13;
+            audio.value(i, 0) = iv::Sample{tone};
+            audio.value(i, 1) = iv::Sample{tone + (click ? 0.25 : 0.0)};
+        }
+    }
+};
+}
+
+IV_NODE("iv.test.click_recording.source", ClickRecordingSource, "Click recording source");
+IV_NODE("builtin.click_detector", iv::ClickDetector, "Click Detector");
+
+void mixed_sample_fan_in_module(iv::GraphBuilder& graph)
+{
+    auto realtime = graph.node<"iv.test.graph_jit.state_context.native_batch_replay">(std::uint64_t{11});
+    auto sparse = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
+    auto probe = graph.node<"iv.test.replay.live_probe">();
+    probe(realtime);
+    probe(sparse);
+    graph.outputs();
+}
+IV_MODULE("iv.test.replay.mixed_sample_fan_in", mixed_sample_fan_in_module, "Mixed sample fan-in");
+
+)cpp";
+    static constexpr std::string_view sample_cutover_nodes = R"cpp(
+struct ForwardFinalSample {
+    static constexpr auto inputs() { return std::array{iv::input<iv::Sample>("in")}; }
+    static constexpr auto outputs() { return std::array{iv::output<iv::Sample>("out")}; }
+
+    void tick(iv::TickSampleContext<ForwardFinalSample> const& ctx) const
+    {
+        ctx.output<"out">().push(ctx.input<"in">().get());
+    }
+};
+
+void fan_in_with_undelayed_operand(iv::GraphBuilder& graph)
+{
+    auto fast = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
+    auto slow = graph.node<"iv.test.graph_jit.state_context.revising_sample_source">();
+    auto forwarded = graph.node<ForwardFinalSample>();
+    auto probe = graph.node<"iv.test.graph_jit.state_context.sample_sequence_probe">();
+    forwarded(slow);
+    probe(fast);
+    probe(forwarded);
+    graph.outputs();
+}
+IV_MODULE("iv.test.graph_jit.fan_in_with_undelayed_operand",
+    fan_in_with_undelayed_operand, "Fan-in with undelayed operand");
+
+)cpp";
     static constexpr std::array parts{
         part_1, part_1_tail, part_2, part_2_tail, part_3, background_region_nodes,
-        part_4, part_4_tail, part_5, internal_nodes,
+        part_4, part_4_tail, part_5, internal_nodes, click_recording_nodes,
+        sample_cutover_nodes,
     };
     static_assert(std::ranges::all_of(parts, [](auto part) { return part.size() < 60 * 1024; }));
     static std::string const source = [] {

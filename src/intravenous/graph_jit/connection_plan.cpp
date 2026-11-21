@@ -155,6 +155,14 @@ std::optional<StableConcreteNodeId> stable_concrete_node_identity(
     NodeBundleHandle bundle)
 {
     auto const& configured_bundle = graph.node_bundles.bundle(bundle);
+    if (auto const leaf = graph.project_leaf_instances.find(bundle);
+        leaf != graph.project_leaf_instances.end()) {
+        return StableConcreteNodeId{
+            .graph = graph.identity.value,
+            .project_instance = leaf->second,
+            .project_leaf_type = std::string(configured_bundle.type_identity()),
+        };
+    }
     std::optional<StableConcreteNodeId> selected;
     for (auto const handle : configured_bundle.virtual_node_handles()) {
         auto const& record = graph.virtual_nodes.record(handle);
@@ -688,6 +696,11 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
     std::map<std::tuple<NodeBundleHandle, std::size_t, std::size_t>, std::vector<IncomingSample>> incoming_by_channel;
     std::vector<std::vector<bool>> connected_module_inputs(graph.node_bundles.size());
     for (auto const& connection : authored) {
+        auto const source_width = channel_count(connection.source_type);
+        if (source_width == 0 || connection.source_channels.empty()
+            || connection.source_channels.size() % source_width != 0) {
+            return std::unexpected("GraphJit sample connection has an incomplete source layout");
+        }
         for (std::size_t target_index = 0; target_index < connection.target_channels.size(); ++target_index) {
             auto expanded = expand_target(expand_target, connection.target_channels[target_index]);
             if (!expanded) return std::unexpected(std::move(expanded.error()));
@@ -807,6 +820,7 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
         }
         for (auto const& [connection, target_channel] : found->second) {
             if (replaces_source(upstream_target, *connection, true)) continue;
+            auto const source_width = channel_count(connection->source_type);
             for (std::size_t source_channel = 0;
                  source_channel < connection->source_channels.size();
                  ++source_channel) {
@@ -830,7 +844,7 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
                 auto const coefficient = channel_conversion_coefficient(
                     connection->source_type,
                     connection->target_type,
-                    source_channel,
+                    source_channel % source_width,
                     target_channel);
                 if (coefficient == 0.0f) continue;
                 add_sample_channel(result, *resolved, coefficient);
@@ -879,10 +893,13 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
         }
         if (!has_terminal_target) continue;
 
+        auto const source_width = channel_count(connection.source_type);
+        auto const multiple_sources = connection.source_channels.size() > source_width;
         std::vector<ResolvedSampleChannel> resolved_sources;
-        resolved_sources.reserve(connection.source_channels.size());
-        bool source_crossed_structure = false;
-        for (auto const& source : connection.source_channels) {
+        resolved_sources.reserve(source_width);
+        bool source_crossed_structure = multiple_sources;
+        for (std::size_t index = 0; index < connection.source_channels.size(); ++index) {
+            auto const& source = connection.source_channels[index];
             auto resolved = resolve_output(resolve_output, source.channel);
             if (!resolved) return std::unexpected(std::move(resolved.error()));
             if (source.detach) {
@@ -893,7 +910,10 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
             }
             source_crossed_structure = source_crossed_structure
                 || resolved->crossed_structure;
-            resolved_sources.push_back(std::move(*resolved));
+            if (index < source_width)
+                resolved_sources.push_back(std::move(*resolved));
+            else
+                add_sample_channel(resolved_sources[index % source_width], *resolved, 1.0f);
         }
 
         auto const first_detach = connection.source_channels.front().detach;
@@ -1472,7 +1492,6 @@ std::expected<void, std::string> normalize_sample_target_projections(
 
         auto const target_channel_total = canonical_targets.size();
         std::vector<bool> claimed(target_channel_total, false);
-        std::vector<std::optional<std::size_t>> authored_sources(target_channel_total);
 
         auto const& first = plan.sample_connections[first_index];
         auto target_history = first.target_history;
@@ -1517,9 +1536,6 @@ std::expected<void, std::string> normalize_sample_target_projections(
 
         for (auto const connection_index : group_indices) {
             auto const& connection = plan.sample_connections[connection_index];
-            bool const manual = std::ranges::all_of(connection.source_channels, [&](auto source) {
-                return coverage_manual_source(graph, source.bundle).has_value();
-            });
             if (connection.target_layout != target.channel_layout
                 || connection.geometry != first.geometry
                 || connection.absolute_pace_exponent
@@ -1584,26 +1600,6 @@ std::expected<void, std::string> normalize_sample_target_projections(
                 }
                 auto const target_index = static_cast<std::size_t>(
                     std::distance(canonical_targets.begin(), found));
-                if (!manual && authored_sources[target_index]) {
-                    auto const& prior = plan.sample_connections[*authored_sources[target_index]];
-                    std::ostringstream detail;
-                    detail << "GraphJit sample target channel has more than one source\n"
-                           << "Input '" << target.name << "' on "
-                           << graph.node_bundles.bundle(target_port.node_bundle_handle).type_identity()
-                           << " (bundle " << target_port.node_bundle_handle << ", port "
-                           << target_port.port_index << ", channel " << target_channel.channel << ")";
-                    for (auto const* route : {&prior, &connection}) {
-                        detail << "\n  Configured connection " << route->configured_connection_index << " reads";
-                        for (auto const source : route->source_channels) {
-                            auto const output = graph.node_bundles.resolve_sample_output(
-                                {source.bundle, PortKind::sample, source.port}).config;
-                            detail << " '" << output.name << "' (bundle " << source.bundle
-                                   << ", port " << source.port << ", channel " << source.channel << ')';
-                        }
-                    }
-                    return std::unexpected(std::move(detail).str());
-                }
-                if (!manual) authored_sources[target_index] = connection_index;
                 claimed[target_index] = true;
                 contribution.target_channels.push_back(target_index);
             }
@@ -6486,8 +6482,14 @@ std::expected<void, std::string> inventory_sequential_input_in_flight_values(
                             std::nullopt));
                         continue;
                     }
-                    for (auto const source : contribution.source_channel_indices) {
-                        raise(target, in_flight_of(source, std::nullopt));
+                    auto const source_count = contribution.source_channel_indices.size();
+                    for (std::size_t column = 0; column < source_count; ++column) {
+                        auto const coefficient = contribution.transform.empty()
+                            ? channel_conversion_coefficient(contribution.source_type,
+                                contribution.target_type, column, position)
+                            : contribution.transform.coefficients[position * source_count + column];
+                        if (coefficient == 0.0f) continue;
+                        raise(target, in_flight_of(contribution.source_channel_indices[column], std::nullopt));
                     }
                 }
             }

@@ -162,6 +162,9 @@ struct SampleCompositionInputPlan {
     std::size_t source_representation = no_sample_representation;
     std::size_t source_channel = 0;
     std::size_t read_latency = 0;
+    // Values at the newest source positions are still revisable for this
+    // many frames. Only the excess read delay belongs to the input window.
+    std::size_t source_latency = 0;
     // Logical coverage can outlive several copies, conversions and detach
     // rings. Keep its original output references, rather than inferring it
     // from the representation's currently available bytes.

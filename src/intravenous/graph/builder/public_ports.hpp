@@ -72,11 +72,9 @@ public:
   constexpr std::vector<GraphBuilderPublicEventOutput> collected_event_outputs(
       GraphBuilderNodeBundles const&) const;
 
-  constexpr void annotate_sample_input_source_info(size_t, std::string_view,
-      std::string_view, uint32_t, uint32_t);
+  constexpr void annotate_sample_input_source_info(size_t, SourceInfo);
   constexpr std::span<SourceInfo const> sample_input_source_infos(size_t) const;
-  constexpr void annotate_event_input_source_info(size_t, std::string_view,
-      std::string_view, uint32_t, uint32_t);
+  constexpr void annotate_event_input_source_info(size_t, SourceInfo);
   constexpr std::span<SourceInfo const> event_input_source_infos(size_t) const;
   constexpr void annotate_sample_output_source_info(size_t, SourceInfo);
   constexpr void annotate_event_output_source_info(size_t, SourceInfo);
@@ -146,15 +144,13 @@ constexpr std::vector<EventOutputConfig> GraphBuilderPublicPorts::event_outputs(
 constexpr std::vector<InputConfig> const& GraphBuilderPublicPorts::inputs(GraphBuilderNodeBundles const& b) const { return b.bundle(_boundary).boundary_ports().inputs(); }
 constexpr std::vector<OutputConfig> const& GraphBuilderPublicPorts::outputs(GraphBuilderNodeBundles const& b) const { return b.bundle(_boundary).boundary_ports().outputs(); }
 
-constexpr void GraphBuilderPublicPorts::annotate_sample_input_source_info(size_t i, std::string_view id, std::string_view file, uint32_t begin, uint32_t end) {
-  if (i >= _sample_input_source_infos.size() || id.empty()) return;
-  SourceInfo info{.declaration_identity = std::string(id), .span = {.file_path = std::string(file), .begin = begin, .end = end}};
+constexpr void GraphBuilderPublicPorts::annotate_sample_input_source_info(size_t i, SourceInfo info) {
+  if (i >= _sample_input_source_infos.size() || info.declaration_identity.empty()) return;
   auto& infos = _sample_input_source_infos[i]; if (!std::ranges::contains(infos, info)) infos.push_back(std::move(info));
 }
 constexpr std::span<SourceInfo const> GraphBuilderPublicPorts::sample_input_source_infos(size_t i) const { return i < _sample_input_source_infos.size() ? std::span<SourceInfo const>(_sample_input_source_infos[i]) : std::span<SourceInfo const>{}; }
-constexpr void GraphBuilderPublicPorts::annotate_event_input_source_info(size_t i, std::string_view id, std::string_view file, uint32_t begin, uint32_t end) {
-  if (i >= _event_input_source_infos.size() || id.empty()) return;
-  SourceInfo info{.declaration_identity = std::string(id), .span = {.file_path = std::string(file), .begin = begin, .end = end}};
+constexpr void GraphBuilderPublicPorts::annotate_event_input_source_info(size_t i, SourceInfo info) {
+  if (i >= _event_input_source_infos.size() || info.declaration_identity.empty()) return;
   auto& infos = _event_input_source_infos[i]; if (!std::ranges::contains(infos, info)) infos.push_back(std::move(info));
 }
 constexpr std::span<SourceInfo const> GraphBuilderPublicPorts::event_input_source_infos(size_t i) const { return i < _event_input_source_infos.size() ? std::span<SourceInfo const>(_event_input_source_infos[i]) : std::span<SourceInfo const>{}; }

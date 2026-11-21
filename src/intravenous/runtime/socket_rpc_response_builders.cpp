@@ -527,6 +527,13 @@ Json graph_scope_nodes_json(std::span<ProjectGraphScopeNode const> entries)
         if (node.virtual_member_count) entry["virtualMemberCount"] = *node.virtual_member_count;
         if (node.child_display_name) entry["childDisplayName"] = *node.child_display_name;
         if (node.child_source_label) entry["childSourceLabel"] = *node.child_source_label;
+        if (node.declaration_source) {
+            entry["declarationSource"] = {
+                {"filePath", node.declaration_source->file_path},
+                {"line", node.declaration_source->line},
+                {"byteOffset", node.declaration_source->byte_offset},
+            };
+        }
         nodes.push_back(std::move(entry));
     }
     return nodes;

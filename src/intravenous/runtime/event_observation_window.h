@@ -10,6 +10,18 @@
 
 namespace iv {
 
+inline void project_recorded_event_timestamps(
+    ObservationWindowQuery& query, std::span<TimedEvent const> timeline)
+{
+    auto& result = query.result;
+    GlobalIndexRange{query.window.begin, query.window.length}.for_each_signed_order_segment([&](auto range) {
+        auto const first = std::ranges::lower_bound(timeline, range.begin, SignedGlobalIndexOrder{}, &TimedEvent::time);
+        for (auto it = first; it != timeline.end() && range.contains(it->time); ++it) {
+            result.event_indices.push_back(it->time);
+        }
+    });
+}
+
 class BeatGridObservation {
     struct Search {
         std::uint64_t first = 0;

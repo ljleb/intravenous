@@ -128,6 +128,13 @@ through the normal node creation route.
   Use `whenConnected` to observe only a connected port. Use
   `completeOnly` if a partial result should leave the previous complete
   spans in view.
+- An output observation can set `"operation": "event-timestamps"` to read
+  a concrete node's buffered sequential event output. Omit `points` for this
+  operation. Each ready span's `result.eventIndices` contains every signed
+  decimal sample index in the observed range, including equal-time events.
+  The host requests the visible range and keeps the previous complete window
+  available while the next one loads. The frame can include one additional
+  mark per observed event.
 
 The VS Code host runs each project script on demand in a web worker. Supply
 one self-contained script with a top-level `present` function. Keep frames

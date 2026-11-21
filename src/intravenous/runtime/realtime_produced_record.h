@@ -17,6 +17,7 @@ enum class RealtimeProducedPayloadKind : std::uint8_t {
     continuous_values,
     events,
     void_value,
+    events_preserving_recording,
 };
 
 struct RealtimeProductionFailures {

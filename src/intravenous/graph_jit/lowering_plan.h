@@ -194,7 +194,7 @@ struct PrimitiveSampleInputBindingPlan {
     std::size_t contiguous_storage_capacity = 0;
     bool has_contiguous_scratch = false;
     // Background evaluation supplies this Sequential input's current block
-    // through its TickSequentialBindingPlan slot on every invocation. Without
+    // through its Sequential Tick input slot on every invocation. Without
     // history it has no channels and the realtime root binds the slot
     // directly. With history, channels name the input's node-owned timeline:
     // the root writes each delivered block into it before the callback, so
@@ -361,7 +361,7 @@ struct PrimitiveEventInputBindingPlan {
     // Callback-visible sequence.
     std::optional<std::size_t> storage{};
     // Background evaluation supplies this Sequential input's current window
-    // through its TickSequentialBindingPlan slot on every invocation. Without
+    // through its Sequential Tick input slot on every invocation. Without
     // history storage is empty and the realtime root binds the slot
     // directly. With history, storage is the input's node-owned persistent
     // timeline ring: the root inserts each delivered window into it before

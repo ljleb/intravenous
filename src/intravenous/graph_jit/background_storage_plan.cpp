@@ -61,6 +61,82 @@ std::optional<std::size_t> aliased_source_channel(
     return result;
 }
 
+std::expected<void, std::string> append_sample_projection(
+    SampleMaterializationPlan& materialization,
+    SampleProjectionContributionPlan const& projection,
+    std::span<std::optional<std::size_t> const> local_source_index,
+    bool split_sources)
+{
+    auto const& transform = projection.transform;
+    auto const source_count = projection.source_channel_indices.size();
+    auto const target_count = projection.target_channels.size();
+    if (transform.empty()
+        ? source_count != channel_count(projection.source_type)
+            || target_count != channel_count(projection.target_type)
+        : transform.source_channel_count != source_count
+            || transform.target_channel_count != target_count
+            || transform.coefficients.size() != source_count * target_count) {
+        return std::unexpected("GraphJit background sample projection has an invalid conversion shape");
+    }
+
+    std::vector<std::size_t> target_rows;
+    std::vector<std::size_t> target_channels;
+    for (std::size_t row = 0; row < target_count; ++row) {
+        auto const channel = projection.target_channels[row];
+        if (!std::ranges::contains(materialization.target_channels, channel)) continue;
+        target_rows.push_back(row);
+        target_channels.push_back(channel);
+    }
+    if (target_rows.empty()) {
+        return std::unexpected("GraphJit background sample projection has no selected target channel");
+    }
+
+    auto append = [&](std::vector<std::size_t> sources, std::size_t first_column) {
+        SampleProjectionPlan retained{
+            .source_type = split_sources ? ChannelTypeId::mono : projection.source_type,
+            .source_channel_indices = std::move(sources),
+            .target_type = projection.target_type,
+            .target_channels = target_channels,
+        };
+        if (!split_sources && target_rows.size() == target_count) {
+            retained.transform_source_channel_count = transform.source_channel_count;
+            retained.transform_target_channel_count = transform.target_channel_count;
+            retained.transform_coefficients = transform.coefficients;
+        } else {
+            auto const columns = retained.source_channel_indices.size();
+            retained.transform_source_channel_count = columns;
+            retained.transform_target_channel_count = target_rows.size();
+            retained.transform_coefficients.reserve(columns * target_rows.size());
+            for (auto const row : target_rows) {
+                for (std::size_t column = first_column; column < first_column + columns; ++column) {
+                    retained.transform_coefficients.push_back(transform.empty()
+                        ? channel_conversion_coefficient(projection.source_type, projection.target_type, column, row)
+                        : transform.coefficients[row * source_count + column]);
+                }
+            }
+        }
+        materialization.projections.push_back(std::move(retained));
+    };
+
+    // A mixed Tick input sums one background value per retained source. The
+    // complete projection's coverage stays on the normalized connection.
+    std::vector<std::size_t> sources;
+    for (std::size_t column = 0; column < source_count; ++column) {
+        auto const original = projection.source_channel_indices[column];
+        if (original >= local_source_index.size()) {
+            return std::unexpected("GraphJit background sample projection references an invalid source");
+        }
+        if (auto const local = local_source_index[original]) {
+            if (split_sources) append({*local}, column);
+            else sources.push_back(*local);
+        } else if (!split_sources) {
+            return std::unexpected("GraphJit background sample projection references a source outside its target subset");
+        }
+    }
+    if (!split_sources) append(std::move(sources), 0);
+    return {};
+}
+
 std::optional<BackgroundPortIndex> output_port_for(
     BackgroundEvaluationPlan const& background,
     NodeBundlePortId requested_port)
@@ -935,12 +1011,6 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                                 target_atom_has_channel)) {
                             continue;
                         }
-                        if (!std::ranges::all_of(
-                                projection.target_channels,
-                                target_atom_has_channel)) {
-                            return std::unexpected(
-                                "GraphJit background sample projection spans multiple target subsets");
-                        }
                         projections.push_back(&projection);
                         for (auto const source_index :
                              projection.source_channel_indices) {
@@ -1069,126 +1139,32 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
                                 ? timing.read_latency
                                 : background_connection.sample_read_latencies[source_index]);
                     }
-                    auto append_partial_projection = [&] (
-                        ChannelTypeId source_type,
-                        std::span<std::size_t const> original_sources,
-                        ChannelTypeId target_type,
-                        std::span<std::size_t const> target_channels,
-                        SampleChannelTransformPlan const& transform)
-                        -> std::expected<void, std::string> {
-                        auto const source_count = original_sources.size();
-                        auto const target_count = target_channels.size();
-                        if ((!transform.empty()
-                                && (transform.source_channel_count
-                                        != source_count
-                                    || transform.target_channel_count
-                                        != target_count
-                                    || transform.coefficients.size()
-                                        != source_count * target_count))
-                            || (transform.empty()
-                                && (source_count != channel_count(source_type)
-                                    || target_count
-                                        != channel_count(target_type)))) {
-                            return std::unexpected(
-                                "GraphJit mixed background sample projection has an invalid conversion shape");
-                        }
-                        for (std::size_t source = 0;
-                             source < source_count; ++source) {
-                            auto const original_source = original_sources[source];
-                            if (original_source >= local_source_index.size()
-                                || !local_source_index[original_source]) {
-                                continue;
-                            }
-                            SampleProjectionPlan retained{
-                                .source_type = ChannelTypeId::mono,
-                                .source_channel_indices = {
-                                    *local_source_index[original_source]},
-                                .target_type = target_type,
-                                .target_channels = std::vector<std::size_t>(
-                                    target_channels.begin(),
-                                    target_channels.end()),
-                                .transform_source_channel_count = 1,
-                                .transform_target_channel_count = target_count,
-                            };
-                            retained.transform_coefficients.resize(target_count);
-                            for (std::size_t target = 0;
-                                 target < target_count; ++target) {
-                                retained.transform_coefficients[target] =
-                                    transform.empty()
-                                    ? channel_conversion_coefficient(
-                                        source_type,
-                                        target_type,
-                                        source,
-                                        target)
-                                    : transform.coefficients[
-                                        target * source_count + source];
-                            }
-                            materialization.projections.push_back(
-                                std::move(retained));
-                        }
-                        return {};
-                    };
-                    if (mixed_sequential_delivery
-                        && storage_kind == PortStorageKind::tick_sequential) {
-                        if (connection->projection_contributions.empty()) {
-                            std::vector<std::size_t> all_sources(
-                                connection->source_channel_timings.size());
-                            std::iota(
-                                all_sources.begin(), all_sources.end(), 0);
-                            std::vector<std::size_t> all_targets(
-                                connection->target_channels.size());
-                            std::iota(
-                                all_targets.begin(), all_targets.end(), 0);
-                            auto appended = append_partial_projection(
-                                connection->source_type,
-                                all_sources,
-                                connection->target_type,
-                                all_targets,
-                                connection->transform);
-                            if (!appended) {
-                                return std::unexpected(
-                                    std::move(appended.error()));
-                            }
-                        } else {
-                            for (auto const* projection : projections) {
-                                auto appended = append_partial_projection(
-                                    projection->source_type,
-                                    projection->source_channel_indices,
-                                    projection->target_type,
-                                    projection->target_channels,
-                                    projection->transform);
-                                if (!appended) {
-                                    return std::unexpected(
-                                        std::move(appended.error()));
-                                }
-                            }
-                        }
-                    } else for (auto const* projection : projections) {
-                        SampleProjectionPlan retained{
-                            .source_type = projection->source_type,
-                            .target_type = projection->target_type,
-                            .target_channels = projection->target_channels,
-                            .transform_source_channel_count =
-                                projection->transform.source_channel_count,
-                            .transform_target_channel_count =
-                                projection->transform.target_channel_count,
-                            .transform_coefficients =
-                                projection->transform.coefficients,
+                    auto const split_sources = mixed_sequential_delivery
+                        && storage_kind == PortStorageKind::tick_sequential;
+                    if (split_sources && connection->projection_contributions.empty()) {
+                        SampleProjectionContributionPlan projection{
+                            .source_type = connection->source_type,
+                            .source_channel_indices = std::vector<std::size_t>(
+                                connection->source_channel_timings.size()),
+                            .target_type = connection->target_type,
+                            .target_channels = std::vector<std::size_t>(
+                                connection->target_channels.size()),
+                            .transform = connection->transform,
                         };
-                        retained.source_channel_indices.reserve(
-                            projection->source_channel_indices.size());
-                        for (auto const source_index :
-                             projection->source_channel_indices) {
-                            if (source_index >= local_source_index.size()
-                                || !local_source_index[source_index]) {
-                                return std::unexpected(
-                                    "GraphJit background sample projection references a source outside its target subset");
-                            }
-                            retained.source_channel_indices.push_back(
-                                *local_source_index[source_index]);
+                        std::iota(projection.source_channel_indices.begin(),
+                            projection.source_channel_indices.end(), 0);
+                        std::iota(projection.target_channels.begin(),
+                            projection.target_channels.end(), 0);
+                        if (auto appended = append_sample_projection(
+                                materialization, projection, local_source_index, true); !appended) {
+                            return std::unexpected(std::move(appended.error()));
                         }
-                        materialization.projections.push_back(
-                            std::move(retained));
+                    }
+                    for (auto const* projection : projections) {
+                        if (auto appended = append_sample_projection(
+                                materialization, *projection, local_source_index, split_sources); !appended) {
+                            return std::unexpected(std::move(appended.error()));
+                        }
                     }
                     auto const materialization_index =
                         append_sample_materialization(
@@ -1725,6 +1701,26 @@ std::expected<void, std::string> validate_background_runtime_plan(
             return valid;
         }
     }
+    auto const is_tick_storage = [](PortStorageKind kind) {
+        return kind == PortStorageKind::tick_sequential
+            || kind == PortStorageKind::tick_random_access;
+    };
+    for (auto const operation : runtime.tick_input_materializations) {
+        if (operation >= runtime.operations.size()) {
+            return std::unexpected("GraphJit Tick materialization operation is out of range");
+        }
+        auto const& selected = runtime.operations[operation];
+        bool const valid = (selected.kind == BackgroundRuntimeOperationKind::sample_materialization
+                && selected.operation < plan.storage.sample_materializations.size()
+                && is_tick_storage(plan.storage.sample_materializations[selected.operation].storage))
+            || (selected.kind == BackgroundRuntimeOperationKind::event_materialization
+                && selected.operation < plan.storage.event_materializations.size()
+                && is_tick_storage(plan.storage.event_materializations[selected.operation].storage));
+        if (!valid || placement_count[operation] != 0) {
+            return std::unexpected("GraphJit Tick materialization has an invalid runtime placement");
+        }
+        ++placement_count[operation];
+    }
     if (std::ranges::any_of(
             placement_count, [](std::size_t count) { return count == 0; })) {
         return std::unexpected(
@@ -1983,6 +1979,20 @@ std::expected<void, std::string> finalize_background_runtime_plan(
                                 std::vector<BackgroundConnectionIndex> connections,
                                 std::vector<BackgroundPortIndex> explicit_targets = {}) {
         if (storage_kind == PortStorageKind::current_tick) return;
+        bool const prepares_tick_input =
+            (kind == BackgroundRuntimeOperationKind::sample_materialization
+                || kind == BackgroundRuntimeOperationKind::event_materialization)
+            && (storage_kind == PortStorageKind::tick_sequential
+                || storage_kind == PortStorageKind::tick_random_access);
+        if (prepares_tick_input) {
+            runtime.tick_input_materializations.push_back(runtime.operations.size());
+            runtime.operations.push_back(BackgroundRuntimeOperationPlan{
+                .kind = kind,
+                .operation = operation,
+                .connections = std::move(connections),
+            });
+            return;
+        }
         auto const positions = operation_positions(
             connections, explicit_targets);
         auto const place_before_consumers =
@@ -2090,10 +2100,8 @@ std::expected<void, std::string> validate_tick_runtime_plan(
             "GraphJit Tick runtime node map is not aligned with the evaluation plan");
     }
 
-    auto validate_random_access_binding = [&](
-        TickRandomAccessBindingPlan const& binding,
-        PortKind kind,
-        BackgroundNodeIndex node)
+    auto validate_input_binding = [&](auto const& binding, PortKind kind,
+                                      BackgroundNodeIndex node, bool sequential)
         -> std::expected<void, std::string> {
         if (binding.port >= plan.ports.size()) {
             return std::unexpected(
@@ -2102,51 +2110,42 @@ std::expected<void, std::string> validate_tick_runtime_plan(
         auto const& port = plan.ports[binding.port];
         if (port.node != node || port.kind != kind
             || port.direction != PortDirection::input
-            || !port.random_access_input || plan.nodes[node].authored_tock_execution) {
+            || (sequential
+                ? !port.tick_sequential_input || binding.reads.empty()
+                : !port.random_access_input || plan.nodes[node].authored_tock_execution)) {
             return std::unexpected(
-                "GraphJit Tick runtime binding does not match its Random Access input");
+                "GraphJit Tick runtime binding does not match its input");
         }
-        for (auto const storage : binding.storage) {
-            if (storage >= plan.storage.ports.size()
-                || plan.storage.ports[storage].kind != kind
-                || (plan.storage.ports[storage].storage
-                        != PortStorageKind::persisted_data
-                    && plan.storage.ports[storage].storage
-                        != PortStorageKind::tick_random_access)) {
+        for (auto const& read : binding.reads) {
+            if (read.storage >= plan.storage.ports.size()) {
+                return std::unexpected(
+                    "GraphJit Tick runtime binding references missing storage");
+            }
+            auto const& storage = plan.storage.ports[read.storage];
+            if (storage.kind != kind
+                || (storage.storage != PortStorageKind::persisted_data
+                    && storage.storage != PortStorageKind::tick_random_access
+                    && !(sequential && storage.storage == PortStorageKind::tick_sequential))) {
                 return std::unexpected(
                     "GraphJit Tick runtime binding references incompatible storage");
             }
-        }
-        return {};
-    };
-    auto validate_sequential_binding = [&](
-        TickSequentialBindingPlan const& binding,
-        PortKind kind,
-        BackgroundNodeIndex node)
-        -> std::expected<void, std::string> {
-        if (binding.port >= plan.ports.size()) {
-            return std::unexpected(
-                "GraphJit Tick Sequential binding references a missing port");
-        }
-        auto const& port = plan.ports[binding.port];
-        if (port.node != node || port.kind != kind
-            || port.direction != PortDirection::input
-            || !port.tick_sequential_input || binding.storage.empty()) {
-            return std::unexpected(
-                "GraphJit Tick Sequential binding does not match its input");
-        }
-        for (auto const storage : binding.storage) {
-            if (storage >= plan.storage.ports.size()
-                || plan.storage.ports[storage].kind != kind
-                || (plan.storage.ports[storage].storage
-                        != PortStorageKind::persisted_data
-                    && plan.storage.ports[storage].storage
-                        != PortStorageKind::tick_sequential
-                    && plan.storage.ports[storage].storage
-                        != PortStorageKind::tick_random_access)) {
-                return std::unexpected(
-                    "GraphJit Tick Sequential binding references incompatible storage");
+            if constexpr (requires { read.source_channel; }) {
+                if (read.source_channel >= channel_count(storage.sample_layout)
+                    || read.target_channel >= channel_count(port.sample_layout)) {
+                    return std::unexpected(
+                        "GraphJit Tick sample read references an invalid channel");
+                }
             }
+        }
+        if (auto const persisted = binding.direct_persisted_storage;
+            persisted && (*persisted >= plan.storage.ports.size()
+                || plan.storage.ports[*persisted].storage != PortStorageKind::persisted_data
+                || binding.reads.empty()
+                || !std::ranges::all_of(binding.reads, [&](auto const& read) {
+                    return read.direct && read.storage == *persisted;
+                }))) {
+            return std::unexpected(
+                "GraphJit Tick runtime binding has an invalid direct persisted source");
         }
         return {};
     };
@@ -2234,10 +2233,9 @@ std::expected<void, std::string> validate_tick_runtime_plan(
              slot < next_sequential_sample
                     + invocation.sequential_sample_count;
              ++slot) {
-            if (auto valid = validate_sequential_binding(
+            if (auto valid = validate_input_binding(
                     runtime.sequential_sample_inputs[slot],
-                    PortKind::sample,
-                    node);
+                    PortKind::sample, node, true);
                 !valid) {
                 return valid;
             }
@@ -2246,10 +2244,9 @@ std::expected<void, std::string> validate_tick_runtime_plan(
              slot < next_sequential_event
                     + invocation.sequential_event_count;
              ++slot) {
-            if (auto valid = validate_sequential_binding(
+            if (auto valid = validate_input_binding(
                     runtime.sequential_event_inputs[slot],
-                    PortKind::event,
-                    node);
+                    PortKind::event, node, true);
                 !valid) {
                 return valid;
             }
@@ -2257,10 +2254,9 @@ std::expected<void, std::string> validate_tick_runtime_plan(
         for (std::size_t slot = next_sample;
              slot < next_sample + invocation.random_access_sample_count;
              ++slot) {
-            if (auto valid = validate_random_access_binding(
+            if (auto valid = validate_input_binding(
                     runtime.random_access_sample_inputs[slot],
-                    PortKind::sample,
-                    node);
+                    PortKind::sample, node, false);
                 !valid) {
                 return valid;
             }
@@ -2268,10 +2264,9 @@ std::expected<void, std::string> validate_tick_runtime_plan(
         for (std::size_t slot = next_event;
              slot < next_event + invocation.random_access_event_count;
              ++slot) {
-            if (auto valid = validate_random_access_binding(
+            if (auto valid = validate_input_binding(
                     runtime.random_access_event_inputs[slot],
-                    PortKind::event,
-                    node);
+                    PortKind::event, node, false);
                 !valid) {
                 return valid;
             }
@@ -2312,6 +2307,115 @@ std::expected<void, std::string> validate_tick_runtime_plan(
     }
     return {};
 }
+
+namespace {
+
+TickSampleInputBindingPlan tick_sample_input_binding(
+    BackgroundEvaluationPlan const& plan, BackgroundPortIndex port_index,
+    std::span<PortStorageIndex const> storage_indices)
+{
+    TickSampleInputBindingPlan binding{.port = port_index};
+    auto const& port = plan.ports[port_index];
+    auto const matches = [&](PortSubsetIndex subset) {
+        return plan.sample_target_subsets[subset].port == port.configured_port;
+    };
+    auto const channel_count_at_port = channel_count(port.sample_layout);
+    std::vector<std::size_t> direct_count(channel_count_at_port);
+    for (auto const connection : port.incoming_connections) {
+        for (auto const index : plan.storage.connections[connection].direct_samples) {
+            auto const& direct = plan.storage.direct_samples[index];
+            if (!matches(direct.target_subset)) continue;
+            ++direct_count[direct.target_channel];
+            if (!std::ranges::contains(storage_indices, direct.storage)) continue;
+            binding.reads.push_back({
+                .storage = direct.storage,
+                .source_channel = direct.source_channel,
+                .target_channel = direct.target_channel,
+                .read_latency = direct.read_latency,
+                .direct = true,
+            });
+        }
+    }
+    for (auto const index : storage_indices) {
+        auto const& storage = plan.storage.ports[index];
+        for (auto const subset : storage.target_subsets) {
+            if (!matches(subset)) continue;
+            for (auto const channel : plan.sample_target_subsets[subset].channels) {
+                if (!std::ranges::contains(storage.sample_channels, channel.channel)) continue;
+                binding.reads.push_back({
+                    .storage = index,
+                    .source_channel = channel.channel,
+                    .target_channel = channel.channel,
+                });
+            }
+        }
+    }
+    if (storage_indices.size() == 1) {
+        auto const index = storage_indices.front();
+        auto const& storage = plan.storage.ports[index];
+        if (storage.storage == PortStorageKind::persisted_data
+            && storage.sample_layout == port.sample_layout
+            && binding.reads.size() == channel_count_at_port
+            && std::ranges::all_of(direct_count, [](auto count) { return count == 1; })
+            && std::ranges::all_of(binding.reads, [](TickSampleReadPlan const& read) {
+                return read.direct && read.source_channel == read.target_channel
+                    && read.read_latency == 0;
+            })) {
+            binding.direct_persisted_storage = index;
+        }
+    }
+    return binding;
+}
+
+TickEventInputBindingPlan tick_event_input_binding(
+    BackgroundEvaluationPlan const& plan, BackgroundPortIndex port_index,
+    std::span<PortStorageIndex const> storage_indices)
+{
+    TickEventInputBindingPlan binding{.port = port_index};
+    auto const& port = plan.ports[port_index];
+    EventInputPortId const target{port.configured_port.node_bundle_handle, port.configured_port.port_index};
+    auto const matches = [&](PortSubsetIndex subset) {
+        return plan.event_target_subsets[subset].port == target;
+    };
+    std::size_t direct_count = 0;
+    for (auto const connection : port.incoming_connections) {
+        auto const& deliveries = plan.connections[connection].event_deliveries;
+        for (auto const index : plan.storage.connections[connection].direct_events) {
+            auto const& direct = plan.storage.direct_events[index];
+            if (!matches(direct.target_subset)) continue;
+            ++direct_count;
+            if (!std::ranges::contains(storage_indices, direct.storage)) continue;
+            auto const source = plan.event_source_subsets[direct.source_subset].port;
+            auto const delivery = std::ranges::find_if(deliveries, [&](auto const& candidate) {
+                return candidate.source == source && candidate.target == target;
+            });
+            binding.reads.push_back({
+                .storage = direct.storage,
+                .semantic_source_index = delivery != deliveries.end()
+                    ? std::optional{delivery->semantic_source_index} : std::nullopt,
+                .direct = true,
+            });
+        }
+    }
+    for (auto const index : storage_indices) {
+        auto const& storage = plan.storage.ports[index];
+        if (std::ranges::any_of(storage.target_subsets, matches)) {
+            binding.reads.push_back({.storage = index});
+        }
+    }
+    if (storage_indices.size() == 1 && direct_count == 1
+        && binding.reads.size() == 1 && binding.reads.front().direct) {
+        auto const index = storage_indices.front();
+        auto const& storage = plan.storage.ports[index];
+        if (storage.storage == PortStorageKind::persisted_data
+            && storage.event_type == port.event_type) {
+            binding.direct_persisted_storage = index;
+        }
+    }
+    return binding;
+}
+
+} // namespace
 
 std::expected<void, std::string> finalize_tick_runtime_plan(
     BackgroundEvaluationPlan& plan,
@@ -2471,33 +2575,25 @@ std::expected<void, std::string> finalize_tick_runtime_plan(
                     return std::unexpected(
                         "GraphJit Tick Sequential input has no compatible storage");
                 }
-                TickSequentialBindingPlan binding{
-                    .port = port_index,
-                    .storage = std::move(storage),
-                };
                 if (port.kind == PortKind::sample) {
                     runtime.sequential_sample_inputs.push_back(
-                        std::move(binding));
+                        tick_sample_input_binding(plan, port_index, storage));
                     ++invocation.sequential_sample_count;
                 } else {
                     runtime.sequential_event_inputs.push_back(
-                        std::move(binding));
+                        tick_event_input_binding(plan, port_index, storage));
                     ++invocation.sequential_event_count;
                 }
             }
             if (port.random_access_input) {
                 auto storage = storage_for_port(port, false);
-                TickRandomAccessBindingPlan binding{
-                    .port = port_index,
-                    .storage = std::move(storage),
-                };
                 if (port.kind == PortKind::sample) {
                     runtime.random_access_sample_inputs.push_back(
-                        std::move(binding));
+                        tick_sample_input_binding(plan, port_index, storage));
                     ++invocation.random_access_sample_count;
                 } else {
                     runtime.random_access_event_inputs.push_back(
-                        std::move(binding));
+                        tick_event_input_binding(plan, port_index, storage));
                     ++invocation.random_access_event_count;
                 }
             }

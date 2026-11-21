@@ -99,6 +99,19 @@ inline bool observation_outputs_share_pace(std::span<SampleOutputChannelId const
     });
 }
 
+inline std::optional<graph_jit::PortStorageIndex> recorded_event_window_storage(
+    graph_jit::BackgroundEvaluationPlan const& plan, NodeBundlePortId output)
+{
+    auto const found = std::ranges::find_if(plan.storage.ports, [&](auto const& storage) {
+        return storage.storage == graph_jit::PortStorageKind::persisted_data
+            && storage.kind == PortKind::event && storage.output_port
+            && plan.ports[*storage.output_port].configured_port == output
+            && plan.ports[*storage.output_port].persisted_tick_output;
+    });
+    if (found == plan.storage.ports.end()) return std::nullopt;
+    return static_cast<graph_jit::PortStorageIndex>(found - plan.storage.ports.begin());
+}
+
 inline bool resolve_observation_window_source(
     ConfiguredGraph const& graph,
     std::unordered_map<std::string, NodeInstancePlacement> const& placements,
@@ -108,6 +121,22 @@ inline bool resolve_observation_window_source(
     CompiledGraph const* compiled = nullptr)
 {
     if (source.port_kind == PortKind::event) {
+        if (compiled && operation_id == recorded_event_timestamps_operation
+            && source.kind == ObservationSourceKind::output && !source.channel) {
+            auto const matches = resolve_node_address(graph, placements, source.node);
+            auto const bundles = concrete_node_address_matches(graph, matches);
+            if (bundles.size() != 1 || !graph.node_bundles.bundle(bundles.front()).is_concrete()) return false;
+            auto const bundle = bundles.front();
+            for (std::size_t index = 0; index < graph.node_bundles.bundle(bundle).event_output_count(); ++index) {
+                NodeBundlePortId const output{bundle, PortKind::event, index};
+                if (graph.node_bundles.resolve_event_output(output).config.name != source.member) continue;
+                if (!recorded_event_window_storage(compiled->background_evaluation_plan, output)) return false;
+                query.port = output;
+                query.kind = source.kind;
+                return true;
+            }
+            return false;
+        }
         if (!compiled || operation_id != "beat-grid" || source.kind != ObservationSourceKind::input) return false;
         std::optional<NodeBundlePortId> port;
         for (auto const& match : resolve_node_address(graph, placements, source.node)) {

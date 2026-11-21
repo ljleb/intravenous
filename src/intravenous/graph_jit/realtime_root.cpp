@@ -118,6 +118,7 @@ struct RootMaterialization {
 struct RootContribution {
     ChannelMix mix{};
     std::vector<SequentialCoverageSource> coverage_sources{};
+    std::uint64_t additive_target_channels = 0;
     // Shifted feedback compositions only: the number of frames by which each
     // converted channel is written after its target frame.
     std::vector<std::size_t> write_latencies{};
@@ -785,9 +786,9 @@ void compose_samples(
     // Shifted feedback writes rewrite only the history frames that every
     // source of a contribution has already authored.
     std::array<std::size_t, maximum_supported_channel_count> first_authored{};
-    for (std::size_t index = 0; index < contributions.size(); ++index) {
-        auto available = target_history;
-        if (shift_writes_by_read_latency && target_history != 0) {
+    if (shift_writes_by_read_latency) {
+        for (std::size_t index = 0; index < contributions.size(); ++index) {
+            auto available = target_history;
             for (auto const& source : contributions[index].sources) {
                 available = std::min(
                     available,
@@ -797,8 +798,8 @@ void compose_samples(
                         target_history,
                         callback_index));
             }
+            first_authored[index] = target_history - available;
         }
-        first_authored[index] = target_history - available;
     }
 
     std::array<float, maximum_supported_channel_count> local_sources{};
@@ -810,7 +811,7 @@ void compose_samples(
         for (std::size_t index = 0; index < contributions.size(); ++index) {
             auto const& contribution = contributions[index];
             auto const& mix = derived[index].mix;
-            auto const authored = offset >= first_authored[index];
+            auto const authored = !shift_writes_by_read_latency || offset >= first_authored[index];
             auto const aligned = contribution.feedback_alignment_representation
                 != detail::no_sample_representation;
             for (std::size_t lane = 0; lane < lanes; ++lane) {
@@ -867,23 +868,18 @@ void compose_samples(
                     auto const write_frame = shift_writes_by_read_latency
                         ? target_frame + derived[index].write_latencies[converted]
                         : target_frame;
-                    store_lane(
-                        continuous_value(
-                            frame,
-                            target_representation,
-                            write_frame,
-                            contribution.target_channels[converted]),
-                        lane,
-                        derived[index].coverage_sources.empty()
-                                || live_projection_presence(frame,
-                                       derived[index].coverage_sources,
-                                       write_frame,
-                                       GlobalIndex::from_bits(global_first + offset
-                                           + (shift_writes_by_read_latency
-                                                   ? derived[index].write_latencies[converted]
-                                                   : 0)), target.absolute_pace_exponent) == SequentialCoveragePresence::covered
-                            ? mixed_value(mix, converted, sources)
-                            : 0.0f);
+                    auto const channel = contribution.target_channels[converted];
+                    auto* destination = continuous_value(frame, target_representation, write_frame, channel);
+                    auto const covered = derived[index].coverage_sources.empty()
+                        || live_projection_presence(frame, derived[index].coverage_sources, write_frame,
+                            GlobalIndex::from_bits(global_first + offset + (write_frame - target_frame)),
+                            target.absolute_pace_exponent) == SequentialCoveragePresence::covered;
+                    if (derived[index].additive_target_channels & (std::uint64_t{1} << channel)) {
+                        if (covered)
+                            store_lane(destination, lane, load_lane(destination, lane) + mixed_value(mix, converted, sources));
+                    } else {
+                        store_lane(destination, lane, covered ? mixed_value(mix, converted, sources) : 0.0f);
+                    }
                 }
             }
         }
@@ -3180,7 +3176,7 @@ private:
         if (contributions.empty()) {
             return invalid("GraphJit sample composition contains no semantic contributions");
         }
-        if (contributions.size() > maximum_supported_channel_count) {
+        if (shift_writes_by_read_latency && contributions.size() > maximum_supported_channel_count) {
             return invalid(
                 "GraphJit sample composition contains an invalid target projection");
         }
@@ -3234,15 +3230,16 @@ private:
                     }
                 }
             }
+            RootContribution derived{.mix = std::move(*mix)};
             for (auto const channel : contribution.target_channels) {
-                if (channel >= populated.size() || populated[channel]) {
+                if (channel >= populated.size() || (shift_writes_by_read_latency && populated[channel])) {
                     return invalid(
                         "GraphJit sample composition contains an invalid target projection");
                 }
+                if (populated[channel]) derived.additive_target_channels |= std::uint64_t{1} << channel;
                 populated[channel] = true;
             }
 
-            RootContribution derived{.mix = std::move(*mix)};
             for (std::size_t source = 0; source < contribution.sources.size(); ++source) {
                 if (!std::ranges::any_of(derived.mix.terms, [&](auto const& term) {
                         return term.source_channel == source;
@@ -3816,7 +3813,7 @@ private:
         RootTickSlots tick{.invocation = runtime.nodes[node]};
         auto const& invocation = tick.invocation;
 
-        auto slot_inputs = [&](std::span<TickSequentialBindingPlan const> bindings,
+        auto slot_inputs = [&](auto const& bindings,
                                std::size_t begin,
                                std::size_t slot_count,
                                PortKind kind,

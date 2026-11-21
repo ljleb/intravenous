@@ -575,18 +575,25 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
                         )
                         throw std::invalid_argument("invalid observation window range");
                     bool const event = interest.source.port_kind == PortKind::event;
-                    auto const& count = window.at(event ? "maxMarks" : "points");
-                    if (!count.is_number_unsigned()) throw std::invalid_argument("invalid observation window budget");
-                    auto const points = count.get<std::uint64_t>();
-                    if (!points || points > maximum_observation_window_points || interest.source.kind == ObservationSourceKind::state_field)
-                        throw std::invalid_argument("invalid observation window points or source");
-                    interest.window = ObservationWindow{GlobalIndex::from_signed(begin), length, static_cast<std::size_t>(points)};
-                    if (event) {
-                        auto const& depth = window.at("maxDepth");
-                        if (interest.operation != "beat-grid" || interest.source.kind != ObservationSourceKind::input
-                            || interest.source.channel || !depth.is_number_unsigned() || depth.get<std::uint64_t>() > 255)
-                            throw std::invalid_argument("invalid beat-grid observation");
-                        interest.window->max_depth = depth.get<std::uint8_t>();
+                    interest.window = ObservationWindow{GlobalIndex::from_signed(begin), length};
+                    if (interest.operation == recorded_event_timestamps_operation) {
+                        if (!event || interest.source.kind != ObservationSourceKind::output || interest.source.channel
+                            || window.contains("points") || window.contains("maxMarks") || window.contains("maxDepth"))
+                            throw std::invalid_argument("invalid recorded event timestamp observation");
+                    } else {
+                        auto const& count = window.at(event ? "maxMarks" : "points");
+                        if (!count.is_number_unsigned() || !count.get<std::uint64_t>()
+                            || count.get<std::uint64_t>() > maximum_observation_window_points
+                            || interest.source.kind == ObservationSourceKind::state_field)
+                            throw std::invalid_argument("invalid observation window points or source");
+                        interest.window->points = count.get<std::size_t>();
+                        if (event) {
+                            auto const& depth = window.at("maxDepth");
+                            if (interest.operation != "beat-grid" || interest.source.kind != ObservationSourceKind::input
+                                || interest.source.channel || !depth.is_number_unsigned() || depth.get<std::uint64_t>() > 255)
+                                throw std::invalid_argument("invalid beat-grid observation");
+                            interest.window->max_depth = depth.get<std::uint8_t>();
+                        }
                     }
                 }
                 if (interest.source.port_kind == PortKind::event && !interest.window)
@@ -653,7 +660,24 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
     if (method == "audioDevices.get") {
         return parsed(GetAudioDevicesRequest{});
     }
-    if (method == "playback.get") return parsed(GetPlaybackRequest{});
+    if (method == "playback.get") {
+        GetPlaybackRequest request{.include_diagnostics = params.value("diagnostics", false)};
+        if (auto const profile = params.find("outputProfile"); profile != params.end()) {
+            if (!profile->is_object()) throw std::invalid_argument("outputProfile must be an object");
+            auto id = parse_string_param(*profile, "id");
+            if (id.empty() || id.size() > 64)
+                throw std::invalid_argument("outputProfile.id must contain 1 to 64 bytes");
+            std::optional<std::uint32_t> duration_ms;
+            if (auto const duration = profile->find("durationMs"); duration != profile->end()) {
+                auto const milliseconds = duration->is_number_integer() ? duration->get<std::uint64_t>() : 0;
+                if (milliseconds < 1 || milliseconds > 30000)
+                    throw std::invalid_argument("outputProfile.durationMs must be an integer between 1 and 30000");
+                duration_ms = static_cast<std::uint32_t>(milliseconds);
+            }
+            request.output_profile = PlaybackOutputProfileRequest{std::move(id), duration_ms};
+        }
+        return parsed(std::move(request));
+    }
     if (method == "playback.toggle") return parsed(TogglePlaybackRequest{});
     if (method == "playback.setRunning") {
         if (!params.contains("running") || !params.at("running").is_boolean())

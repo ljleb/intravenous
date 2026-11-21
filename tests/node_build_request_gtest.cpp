@@ -1,6 +1,7 @@
 #include <intravenous/basic_nodes/filters.h>
 #include <intravenous/basic_nodes/automation.h>
 #include <intravenous/basic_nodes/beats.h>
+#include <intravenous/basic_nodes/click_detector.h>
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/node/coverage_port_context.h>
@@ -29,6 +30,18 @@ namespace {
 iv::GlobalIndex index(std::int64_t value)
 {
     return iv::GlobalIndex::from_signed(value);
+}
+
+TEST(ClickDetector, DetectsAOneChannelStepInAContinuousTone)
+{
+    iv::ClickDetector::State detector;
+    std::vector<std::size_t> clicks;
+    for (std::size_t frame = 0; frame < 512; ++frame) {
+        auto const tone = 0.25f * std::sin(static_cast<float>(frame) / 32);
+        auto const right = frame >= 256 ? tone + 0.2f : tone;
+        if (detector.detect(tone, right, iv::ClickDetector::default_threshold)) clicks.push_back(frame);
+    }
+    EXPECT_EQ(clicks, (std::vector<std::size_t>{256}));
 }
 
 iv::GlobalIndexRange range(std::int64_t begin, std::int64_t end)

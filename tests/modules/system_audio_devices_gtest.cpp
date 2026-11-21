@@ -438,6 +438,52 @@ TEST(SystemAudioDevices, OutputClockSlicesLargeDeviceRequestsIntoProjectBlocks)
     }
 }
 
+TEST(PlaybackOutputProfile, RetainsStereoSamplesAcrossCodeReplacements)
+{
+    iv::PlaybackOutputProfile profile;
+    iv::PlaybackOutputProfile::PreviousSlice previous;
+    ASSERT_EQ(profile.request({"capture", 10000}).status, "recording");
+    auto const first_slice = iv::PlaybackRenderSlice{.execution_generation = 2,
+        .foreground_sample = iv::GlobalIndex::from_signed(-8), .segment = 4,
+        .rendered = true, .code_publication = 5};
+    auto const next_slice = iv::PlaybackRenderSlice{.execution_generation = 2,
+        .foreground_sample = iv::GlobalIndex::from_signed(-3), .segment = 4,
+        .rendered = true, .code_publication = 6};
+    {
+        iv::PlaybackOutputProfile::Buffer buffer(profile);
+        ASSERT_TRUE(static_cast<bool>(buffer));
+        auto const rendered = iv::PlaybackOutputProfile::Clock::now();
+        auto const samples = std::array<iv::Sample, 10>{-1, 1, -2, 2, -3, 3, -4, 4, -5, 5};
+        buffer.observe(previous, first_slice, samples);
+        buffer.submitted(rendered, 5, 48000);
+    }
+    {
+        iv::PlaybackOutputProfile::Buffer buffer(profile);
+        ASSERT_TRUE(static_cast<bool>(buffer));
+        auto const rendered = iv::PlaybackOutputProfile::Clock::now();
+        auto const samples = std::array<iv::Sample, 10>{6, -6, 7, -7, 8, -8, 9, -9, 10, -10};
+        buffer.observe(previous, next_slice, samples);
+        auto later = next_slice;
+        later.foreground_sample = iv::GlobalIndex::from_signed(2);
+        buffer.observe(previous, later, samples);
+        EXPECT_EQ(profile.request({"capture"}).status, "pending");
+        buffer.submitted(rendered, 10, 48000);
+    }
+    auto const result = profile.request({"capture"});
+    ASSERT_EQ(result.status, "ready");
+    EXPECT_EQ(result.buffers, 2u);
+    ASSERT_EQ(result.cutovers.size(), 1u);
+    auto const& cutover = result.cutovers.front();
+    EXPECT_EQ(cutover.previous.code_publication, 5u);
+    EXPECT_EQ(cutover.current.code_publication, 6u);
+    EXPECT_EQ(cutover.current.foreground_sample.signed_value(), -3);
+    EXPECT_EQ(cutover.before_samples, 8u);
+    EXPECT_EQ(cutover.after_samples, 8u);
+    EXPECT_EQ(cutover.before, (std::array<float, 8>{-2, 2, -3, 3, -4, 4, -5, 5}));
+    EXPECT_EQ(cutover.after, (std::array<float, 8>{6, -6, 7, -7, 8, -8, 9, -9}));
+    EXPECT_DOUBLE_EQ(cutover.budget_ms, 10000.0 / 48000.0);
+}
+
 TEST(SystemAudioDevices, PlaybackUnderrunDropsTheDevicesCurrentInputSlice)
 {
     constexpr std::size_t block = 64;

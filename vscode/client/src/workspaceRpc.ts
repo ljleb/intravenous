@@ -1,11 +1,11 @@
-import type { ObservationInterest, ObservationCapability } from "./observations";
+import { recordedEventTimestampsOperation, type ObservationInterest, type ObservationCapability } from "./observations";
 import type { ManualControlDescriptor, ManualControlId } from "./manualControls";
 import { JsonRpcSocketClient } from "./rpcClient";
 import { VirtualNode, SourceSpan } from "./graphModel";
 import type { GraphScope } from "./graphScope";
 import type { NodeAddress } from "./graphScope";
 import type { NodeEventProtocol, SerializedNodeEvent } from "./nodeEvents";
-import type { PlaybackDrag, PlaybackSnapshot } from "./playback";
+import type { PlaybackDrag, PlaybackOutputProfileRequest, PlaybackSnapshot } from "./playback";
 import type { NodeDefinitionCatalog, NodeDefinitionSearch } from "./nodeDefinitionSearch";
 
 export type SourceQueryRange = {
@@ -24,7 +24,12 @@ export type AudioDevicesSnapshot = {
 
 
 export class WorkspaceRpc {
-    getPlayback(): Promise<PlaybackSnapshot> { return this.client.request("playback.get", {}); }
+    getPlayback(diagnostics = false, outputProfile?: PlaybackOutputProfileRequest): Promise<PlaybackSnapshot> {
+        return this.client.request("playback.get", {
+            ...(diagnostics ? { diagnostics: true } : {}),
+            ...(outputProfile ? { outputProfile } : {}),
+        });
+    }
     togglePlayback(): Promise<PlaybackSnapshot> { return this.client.request("playback.toggle", {}); }
     seekPlayback(position: string): Promise<PlaybackSnapshot> { return this.client.request("playback.seek", { position }); }
     dragPlayback(position: string, drag: PlaybackDrag): Promise<PlaybackSnapshot> {
@@ -73,8 +78,9 @@ export class WorkspaceRpc {
     reconcileObservations(scopeId: string, interests: ObservationInterest[], predictedInterests?: ObservationInterest[]): Promise<{ revision: string; leaseMs: number }> {
         const normalize = (interest: ObservationInterest) => ({ ...interest, source: { ...interest.source,
             node: { ...interest.source.node, path: interest.source.node.path ?? [] },
-        }, ...(interest.window?.maxDepth === undefined ? {} : {
-            window: { ...interest.window, maxMarks: interest.window.points },
+        }, ...(interest.source.portKind !== "event" || !interest.window ? {} : {
+            window: interest.operation === recordedEventTimestampsOperation ? { begin: interest.window.begin, length: interest.window.length }
+                : { ...interest.window, maxMarks: interest.window.points },
         }) });
         return this.client.request("observations.reconcile", {
             scopeId,

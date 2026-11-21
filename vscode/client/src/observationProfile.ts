@@ -2,6 +2,8 @@ import type { ObservationDelivery } from "./observationDelivery";
 import { sameObservationWindow, type ObservationInterest, type ObservationValues, type ObservationWindow,
     type ObservationWindowResult } from "./observations";
 
+type RecordedEventWindow = { window: ObservationWindow; indices: string[]; execution: string; sampleRate?: number };
+type RecordedEventLoss = { sample: string; count: number; from: string; to: string };
 type InterestProfile = {
     id: string; consumer: string; source: string; prefetch: boolean;
     active: boolean; atStart: boolean; requests: number; budgetSkips: number;
@@ -10,11 +12,31 @@ type InterestProfile = {
     statuses: Partial<Record<ObservationWindowResult["status"], number>>;
     updated: number; bodies: number; bytes: number; points: number; marks: number;
     outdated: number; truncated: number; removals: number;
+    recordedEvents?: { last: RecordedEventWindow; loss?: RecordedEventLoss };
     eligibilityKey?: string;
     firstResult?: { eligible: number; submitted: number; usable?: number };
 };
 type InterestLabel = (interest: ObservationInterest) => Pick<InterestProfile, "consumer" | "source" | "eligibilityKey">;
 const maximumProfileInterests = 1024;
+
+function missingRecordedEvents(previous: RecordedEventWindow, next: RecordedEventWindow): RecordedEventLoss | undefined {
+    if (previous.sampleRate !== next.sampleRate) return;
+    const begin = BigInt(next.window.begin), length = BigInt(next.window.length);
+    const remaining = new Map<string, number>();
+    for (const index of next.indices) remaining.set(index, (remaining.get(index) ?? 0) + 1);
+    let sample: string | undefined;
+    let count = 0;
+    for (const index of previous.indices) {
+        if (BigInt.asUintN(64, BigInt(index) - begin) >= length) continue;
+        const matches = remaining.get(index) ?? 0;
+        if (matches) remaining.set(index, matches - 1);
+        else {
+            sample ??= index;
+            ++count;
+        }
+    }
+    if (sample !== undefined) return { sample, count, from: previous.execution, to: next.execution };
+}
 
 export class ObservationProfile {
     private readonly started: number;
@@ -134,8 +156,16 @@ export class ObservationProfile {
                     if (entry) {
                         ++entry.bodies;
                         entry.bytes += bytes;
-                        entry.marks += window.body.marks?.length ?? 0;
+                        entry.marks += (window.body.marks?.length ?? 0) + (window.body.eventIndices?.length ?? 0);
                         entry.points += window.body.regions.reduce((total, region) => total + region.points.length, 0);
+                        if (window.body.eventIndices && entry.received) {
+                            const previous = entry.recordedEvents;
+                            const last = { window: entry.received, indices: window.body.eventIndices,
+                                execution: window.executionGeneration ?? update.executionGeneration ?? update.generation,
+                                sampleRate: window.sampleRate ?? update.sampleRate ?? previous?.last.sampleRate };
+                            entry.recordedEvents = { last, loss: previous &&
+                                (previous.loss ?? missingRecordedEvents(previous.last, last)) };
+                        }
                     }
                 }
             }
@@ -145,14 +175,18 @@ export class ObservationProfile {
 
     summary(values?: ObservationValues) {
         const seconds = (this.now() - this.started) / 1000;
-        const interests = [...this.interests.values()].map(({ eligibilityKey, firstResult, ...entry }) => {
+        const interests = [...this.interests.values()].map(({ eligibilityKey, firstResult, recordedEvents, ...entry }) => {
             const window = entry.active && entry.requested ? values?.windowForDisplay(entry.id, entry.requested) : undefined;
             const live = entry.active && !entry.requested ? values?.values.get(entry.id) : undefined;
             const cached = window ? {
                 status: window.status, window: window.window, outdated: !!window.outdated, truncated: !!window.truncated,
-                error: window.error?.slice(0, 240),
+                error: window.error?.slice(0, 240), eventCount: window.eventIndices?.length,
             } : live ? { status: live.pending ? "pending" : live.available ? "available" : "unavailable" } : undefined;
-            return { ...entry, cached, firstResult: firstResult && {
+            const recording = recordedEvents && {
+                count: recordedEvents.last.indices.length, window: recordedEvents.last.window,
+                execution: recordedEvents.last.execution, loss: recordedEvents.loss,
+            };
+            return { ...entry, cached, recording, firstResult: firstResult && {
                 eligibilityToSubmitMs: firstResult.submitted - firstResult.eligible,
                 submitToUsableMs: firstResult.usable === undefined ? undefined : firstResult.usable - firstResult.submitted,
             } };
@@ -204,10 +238,19 @@ export function observationInterestReport(summary: ObservationProfileSummary): s
             }
             if (entry.removals) lines.push(`      Received ${entry.removals} removals.`);
             if (entry.lastError) lines.push(`      Last window error ${entry.lastError}`);
+            if (entry.recording) {
+                const { count, execution, loss, window } = entry.recording;
+                lines.push(`      Last recorded-event reply contained ${count} timestamps in execution generation ${execution} `
+                    + `for sample ${window.begin}, length ${window.length}.`);
+                if (loss) lines.push(`      Successive replies lost ${loss.count} timestamps in their overlapping range, `
+                    + `starting at sample ${loss.sample}, from execution generation ${loss.from} to ${loss.to}.`);
+            }
             if (entry.cached) {
                 const window = "window" in entry.cached ? entry.cached.window : undefined;
+                const eventCount = "eventCount" in entry.cached ? entry.cached.eventCount : undefined;
                 lines.push(`      Cached at finish ${entry.cached.status}${entry.cached.outdated ? ", outdated" : ""}`
                     + `${entry.cached.truncated ? ", truncated" : ""}${window ? `, ${span(window)}` : ""}`
+                    + `${eventCount === undefined ? "" : `, ${eventCount} recorded timestamps`}`
                     + `${entry.cached.error ? ` (${entry.cached.error})` : ""}.`);
             } else if (entry.active) lines.push("      No cached result at finish.");
         }

@@ -385,6 +385,15 @@ namespace iv {
                     _block_size);
             }
 
+            // Live consumers receive the event normally. The recording fills
+            // only positions in this block that have no recorded data yet.
+            void push_preserving_recording(Event event, std::size_t sample_offset) const
+            requires (Access == TickPortAccessKind::block && Recording)
+            {
+                this->observe_write(OutputDisposition::written_preserving_recording);
+                _port.push(std::move(event), sample_offset, _index, _block_size);
+            }
+
             void push(TimedEvent const& event) const
             {
                 if constexpr (Recording) this->observe_write();
