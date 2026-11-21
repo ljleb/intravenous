@@ -1,0 +1,24 @@
+set(flags [==[@IV_PACKAGE_COMPILE_FLAGS@]==])
+file(REAL_PATH "${runtime}/sdk" sdk)
+set(core "${sdk}/src/intravenous")
+execute_process(COMMAND "${runtime}/iv-toolchain-environment" "@CMAKE_CXX_COMPILER@" -std=c++23
+    ${flags} -Xclang -disable-llvm-passes "-I${sdk}/src" -isystem "${core}/third_party"
+    -DIV_ENABLE_JUCE_VST=0 -x c++-header "${core}/module/template/module_pch.h"
+    -o "${runtime}/iv_dsl.pch" COMMAND_ERROR_IS_FATAL ANY)
+set(library_path "${runtime}")
+if(NOT "$ENV{LD_LIBRARY_PATH}" STREQUAL "")
+    string(APPEND library_path ":$ENV{LD_LIBRARY_PATH}")
+endif()
+set(artifact_path_file "${scratch}/builtin-artifact-path")
+execute_process(COMMAND "${runtime}/iv-toolchain-environment" "${CMAKE_COMMAND}" -E env
+    "INTRAVENOUS_DIR=${runtime}" "LD_LIBRARY_PATH=${library_path}"
+    "${prebuild}" "${runtime}/builtin_packages/builtin" "${scratch}/built-in" "${sdk}"
+    "${artifact_path_file}" COMMAND_ERROR_IS_FATAL ANY)
+file(READ "${artifact_path_file}" artifact)
+
+set(published "${runtime}/builtin_package_artifacts")
+file(MAKE_DIRECTORY "${published}")
+foreach(suffix IN ITEMS "" ".node-code.o" ".node-events.json" ".dynamic-libraries")
+    file(COPY_FILE "${artifact}${suffix}" "${published}/builtin.ivpkg.bc${suffix}")
+endforeach()
+file(REMOVE "${runtime}/builtin_packages/builtin/compile_commands.json")

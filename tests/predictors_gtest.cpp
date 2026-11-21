@@ -1,4 +1,5 @@
 #include <intravenous/basic_nodes/predictors.h>
+#include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/node/traits.h>
 
 #include <gtest/gtest.h>
@@ -18,18 +19,37 @@ namespace {
         static_assert(details::has_constexpr_port_configs<ResidualAr2>);
         static_assert(details::has_constexpr_port_configs<Poly>);
 
-        static_assert(sample_properties(Nlms::inputs()[0]).history == 7);
-        static_assert(sample_properties(Nlms::outputs()[0]).history == 3);
-        static_assert(sample_properties(Residual::inputs()[0]).history == 6);
-        static_assert(sample_properties(Residual::outputs()[0]).history == 5);
-        static_assert(sample_properties(ResidualAr2::inputs()[0]).history == 8);
-        static_assert(sample_properties(ResidualAr2::outputs()[0]).history == 6);
-        static_assert(sample_properties(Poly::inputs()[0]).history == 3);
-        static_assert(sample_properties(Poly::outputs()[0]).history == 1);
+        auto expect_history = []<class Node>(
+                                  Node const& node,
+                                  std::size_t input_history,
+                                  std::size_t output_history) {
+            auto const reflected = details::reflect_node(node);
+            ASSERT_EQ(reflected.port_constraints.history_anchors.size(), 2u);
+            EXPECT_EQ(
+                reflected.port_constraints.history_anchors[0],
+                (PortHistoryAnchorConstraint{
+                    .port = {
+                        .direction = PortConstraintDirection::input,
+                        .kind = PortKind::sample,
+                        .port_index = 0,
+                    },
+                    .value = input_history,
+                }));
+            EXPECT_EQ(
+                reflected.port_constraints.history_anchors[1],
+                (PortHistoryAnchorConstraint{
+                    .port = {
+                        .direction = PortConstraintDirection::output,
+                        .kind = PortKind::sample,
+                        .port_index = 0,
+                    },
+                    .value = output_history,
+                }));
+        };
 
-        [[maybe_unused]] Nlms nlms { 0.1f, 0.9f };
-        [[maybe_unused]] Residual residual { 0.1f };
-        [[maybe_unused]] ResidualAr2 residual_ar2 { 0.1f };
-        [[maybe_unused]] Poly poly { 0.1f };
+        expect_history(Nlms{0.1f, 0.9f}, 7, 3);
+        expect_history(Residual{0.1f}, 6, 5);
+        expect_history(ResidualAr2{0.1f}, 8, 6);
+        expect_history(Poly{0.1f}, 3, 1);
     }
 }

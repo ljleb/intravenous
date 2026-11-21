@@ -25,6 +25,7 @@ class AudioInputSynchronizer {
     bool resampler_initialized_ = false;
     mutable std::mutex mutex_;
     std::vector<Sample::storage> fifo_ {};
+    std::vector<Sample::storage> output_storage_ {};
     size_t fifo_read_frame_offset_ = 0;
 
     void compact_fifo_locked();
@@ -43,6 +44,7 @@ public:
     AudioInputSynchronizer &operator=(AudioInputSynchronizer &&) = delete;
 
     void push_captured_block(AudioInputBlock const &block);
+    void render_timeline_block(std::span<Sample> destination);
     OwnedSampleBlock render_timeline_block();
     size_t buffered_frames() const;
     double last_rate_ratio() const;

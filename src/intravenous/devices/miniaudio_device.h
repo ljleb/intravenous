@@ -8,6 +8,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <iostream>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -110,6 +111,7 @@ namespace iv {
         ma_device _device {};
         std::mutex _mutex;
         std::condition_variable _cv;
+        bool _ready_for_render_requests = false;
         bool _shutdown_requested = false;
         bool _request_pending = false;
         bool _response_ready = false;
@@ -126,6 +128,12 @@ namespace iv {
         {
             {
                 std::unique_lock lock(_mutex);
+                // PulseAudio can request preroll synchronously in ma_device_start.
+                // The render thread cannot answer until construction finishes.
+                if (!_ready_for_render_requests) {
+                    std::fill_n(output, frame_count * _config.num_channels, Sample{});
+                    return;
+                }
                 _pending_output = output;
                 _pending_samples = frame_count * _config.num_channels;
                 _request_pending = true;
@@ -194,6 +202,13 @@ namespace iv {
                 ma_device_uninit(&_device);
                 throw std::runtime_error("failed to start miniaudio playback device");
             }
+            {
+                std::scoped_lock lock(_mutex);
+                _ready_for_render_requests = true;
+            }
+            std::cerr << "[intravenous audio] playback opened with "
+                      << ma_get_backend_name(_device.pContext->backend) << " on "
+                      << _device.playback.name << '\n';
         }
 
         ~MiniaudioAudioOutputDevice()

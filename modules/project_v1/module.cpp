@@ -21,4 +21,4 @@ void project_v1(iv::GraphBuilder& g)
     make_channel.template operator()<stereo::right>();
 }
 
-IV_MODULE("iv.project.v1", project_v1);
+IV_MODULE("iv.project.v1", project_v1, "V1");

@@ -12,15 +12,15 @@
     ],
     "activationEvents": [
         "workspaceContains:iv_project.jsonl",
-        "onWebviewPanel:intravenous.lanes",
-        "onWebviewPanel:intravenous.modules"
+        "onWebviewPanel:intravenous.graphEditor"
     ],
     "main": "./dist/extension.js",
     "scripts": {
         "build": "node ./esbuild.mjs",
         "watch": "node ./esbuild.mjs --watch",
-        "typecheck": "tsc --noEmit -p ./tsconfig.json",
-        "test": "tsc -p ./tsconfig.tests.json && node --test dist-test/test/**/*.test.js"
+        "generate-node-events": "tsc -p ./tsconfig.bindings.json && node dist-tools/generateNodeEventBindings.js",
+        "typecheck": "tsc --noEmit -p ./tsconfig.json && vue-tsc --noEmit -p ./webview/tsconfig.json",
+        "test": "node -e \"require('node:fs').rmSync('dist-test', { recursive: true, force: true })\" && tsc -p ./tsconfig.tests.json && node --test \"dist-test/test/**/*.test.js\""
     },
     "dependencies": {
         "reflect-metadata": "^0.2.2",
@@ -29,8 +29,12 @@
     "devDependencies": {
         "@types/node": "^22.15.31",
         "@types/vscode": "^1.85.0",
+        "@vitejs/plugin-vue": "^5.2.4",
         "esbuild": "^0.25.5",
-        "typescript": "^5.8.3"
+        "typescript": "^5.8.3",
+        "vite": "^6.3.5",
+        "vue": "^3.5.13",
+        "vue-tsc": "^2.2.10"
     },
     "contributes": {
         "configuration": {
@@ -40,6 +44,26 @@
                     "type": "string",
                     "default": "",
                     "description": "Absolute path to the directory that directly contains the intravenous executable. INTRAVENOUS_DIR takes precedence when set."
+                },
+                "intravenous.warpCursorAfterPointDrag": {
+                    "type": "boolean",
+                    "default": true,
+                    "scope": "application",
+                    "description": "Move the system cursor to the automation point after a locked drag when the local X11 display supports it."
+                },
+                "intravenous.hideStatusBarShortcuts": {
+                    "type": "boolean",
+                    "default": false,
+                    "scope": "application",
+                    "description": "Hide keyboard and mouse shortcut hints in the Intravenous status bar while showing values, states, and errors."
+                },
+                "intravenous.autoRelaunchWithXWayland": {
+                    "type": ["boolean", "null"],
+                    "enum": [null, true, false],
+                    "enumItemLabels": ["Ask on Project Open", "Enabled", "Disabled"],
+                    "default": null,
+                    "scope": "application",
+                    "description": "Use XWayland for better cursor wrapping and cursor return after dragging. On local Linux Wayland sessions without an explicit --ozone-platform flag, enabling this restarts all open VS Code windows."
                 }
             }
         },
@@ -62,29 +86,39 @@
             ]
         },
         "commands": [
+            { "command": "intravenous.togglePlayback", "title": "Intravenous: Play/Pause" },
+            { "command": "intravenous.seekPlayback", "title": "Intravenous: Seek Playback" },
+            { "command": "intravenous.debug", "title": "Intravenous: Debug" },
+            { "command": "intravenous.retryServer", "title": "Intravenous: Retry Server" },
+            { "command": "intravenous.undo", "title": "Intravenous: Undo Project Edit" },
+            { "command": "intravenous.redo", "title": "Intravenous: Redo Project Edit" },
             {
-                "command": "intravenous.openLanes",
-                "title": "Intravenous: Open Lanes"
+                "command": "intravenous.openGraphEditor",
+                "title": "Intravenous: Open Graph Editor"
             },
             {
-                "command": "intravenous.createLane",
-                "title": "Intravenous: Create Lane"
+                "command": "intravenous.addNode",
+                "title": "Intravenous: Add Node"
             },
             {
-                "command": "intravenous.openModules",
-                "title": "Intravenous: Open Modules"
+                "command": "intravenous.editNode",
+                "title": "Intravenous: Edit Node"
             },
             {
-                "command": "intravenous.resumePlayback",
-                "title": "Intravenous: Resume Playback"
+                "command": "intravenous.deleteNode",
+                "title": "Intravenous: Delete Node"
             },
             {
-                "command": "intravenous.pausePlayback",
-                "title": "Intravenous: Pause Playback"
+                "command": "intravenous.openNodeSource",
+                "title": "Intravenous: Open Node Source"
             },
             {
-                "command": "intravenous.togglePlayback",
-                "title": "Intravenous: Toggle Playback"
+                "command": "intravenous.createPackage",
+                "title": "Intravenous: New Package"
+            },
+            {
+                "command": "intravenous.deleteConnection",
+                "title": "Intravenous: Delete Connection"
             },
             {
                 "command": "intravenous.saveProject",
@@ -97,12 +131,6 @@
             {
                 "command": "intravenous.disableProjectAutosave",
                 "title": "Intravenous: Disable Project Autosave"
-            }
-        ],
-        "keybindings": [
-            {
-                "command": "intravenous.togglePlayback",
-                "key": "shift+space"
             }
         ]
     },

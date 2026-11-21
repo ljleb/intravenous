@@ -6,12 +6,12 @@ namespace {
 struct SamplePeriodSource {
     static constexpr auto outputs()
     {
-        return std::array<iv::OutputConfig, 1>{};
+        return std::array<iv::SequentialOutputConfig<iv::Sample>, 1>{};
     }
 
     void tick(iv::TickSampleContext<SamplePeriodSource> const& ctx) const
     {
-        ctx.outputs[0].push(ctx.sample_period());
+        ctx.template output<0>().push(ctx.sample_period());
     }
 };
 }
@@ -21,5 +21,5 @@ void reload_sample_period(iv::GraphBuilder& g)
     g.outputs(g.node<"iv.test.reload_sample_period.source">());
 }
 
-IV_NODE("iv.test.reload_sample_period.source", SamplePeriodSource);
-IV_MODULE("iv.test.reload_sample_period", reload_sample_period);
+IV_NODE("iv.test.reload_sample_period.source", SamplePeriodSource, "Source");
+IV_MODULE("iv.test.reload_sample_period", reload_sample_period, "Reload sample period");

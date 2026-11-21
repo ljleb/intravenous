@@ -1,82 +1,230 @@
+import type { ObservationInterest, ObservationCapability } from "./observations";
+import type { ManualControlDescriptor, ManualControlId } from "./manualControls";
 import { JsonRpcSocketClient } from "./rpcClient";
 import { VirtualNode, SourceSpan } from "./graphModel";
+import type { GraphScope } from "./graphScope";
+import type { NodeAddress } from "./graphScope";
+import type { NodeEventProtocol, SerializedNodeEvent } from "./nodeEvents";
+import type { PlaybackDrag, PlaybackSnapshot } from "./playback";
+import type { NodeDefinitionCatalog, NodeDefinitionSearch } from "./nodeDefinitionSearch";
 
 export type SourceQueryRange = {
     start: { line: number; column: number };
     end: { line: number; column: number };
 };
 
-type LaneViewParams = {
-    viewId: string;
-    filter: { query?: string; kind?: string };
-    startIndex: number;
-    visibleLaneCount: number;
-    firstSampleIndex?: number;
-    lastSampleIndex?: number;
-    displaySampleCount?: number;
+export type AudioDeviceSelection = {
+    deviceId: string | null; name: string | null; available: boolean; error: string | null;
+};
+export type AudioDevicesSnapshot = {
+    outputDevices: Array<{ deviceId: string; name: string }>;
+    inputDevices: Array<{ deviceId: string; name: string }>;
+    selectedOutput: AudioDeviceSelection; selectedInput: AudioDeviceSelection;
 };
 
-export class WorkspaceRpc {
-    constructor(private readonly client: JsonRpcSocketClient) {}
 
-    getIvModuleInstances(sourceFilePath: string | null = null): Promise<{ instances?: Array<Record<string, unknown>> }> {
-        return this.client.request("ivModuleInstances.get", sourceFilePath ? { sourceFilePath } : {});
+export class WorkspaceRpc {
+    getPlayback(): Promise<PlaybackSnapshot> { return this.client.request("playback.get", {}); }
+    togglePlayback(): Promise<PlaybackSnapshot> { return this.client.request("playback.toggle", {}); }
+    seekPlayback(position: string): Promise<PlaybackSnapshot> { return this.client.request("playback.seek", { position }); }
+    dragPlayback(position: string, drag: PlaybackDrag): Promise<PlaybackSnapshot> {
+        return this.client.request("playback.drag", { position, ...drag });
+    }
+    constructor(
+        private readonly client: JsonRpcSocketClient,
+        private readonly currentRevision: () => number = () => 0,
+    ) {}
+
+    private mutationParams(
+        params: Record<string, unknown>,
+        expectedRevision: number = this.currentRevision(),
+    ): Record<string, unknown> {
+        return {...params, expectedRevision};
     }
 
-    createIvModuleInstance(moduleId: string, displayName: string | null = null): Promise<{ instanceId: string }> {
-        const params: Record<string, unknown> = { moduleId };
+    hello(clientId: string, localCapability: string): Promise<{
+        protocolVersion: number;
+        clientId: string;
+        capabilities: string[];
+        sessionRevision: number;
+    }> {
+        return this.client.request("session.hello", { clientId, localCapability });
+    }
+
+    subscribe(afterRevision: number, topics: string[] = []): Promise<{
+        currentRevision: number;
+        oldestAvailableRevision: number;
+        snapshotRequired: boolean;
+        replayedNotificationCount: number;
+        sessionRevision: number;
+    }> {
+        return this.client.request("session.subscribe", { afterRevision, topics });
+    }
+
+    snapshot(): Promise<Record<string, unknown> & { sessionRevision?: number }> {
+        return this.client.request("session.snapshot", {});
+    }
+
+    describeObservations(nodes: NodeAddress[]): Promise<{ capabilities: ObservationCapability[] }> {
+        return this.client.request("observations.describe", {
+            nodes: nodes.map((node) => ({ ...node, path: node.path ?? [] })),
+        });
+    }
+    reconcileObservations(scopeId: string, interests: ObservationInterest[], predictedInterests?: ObservationInterest[]): Promise<{ revision: string; leaseMs: number }> {
+        const normalize = (interest: ObservationInterest) => ({ ...interest, source: { ...interest.source,
+            node: { ...interest.source.node, path: interest.source.node.path ?? [] },
+        }, ...(interest.window?.maxDepth === undefined ? {} : {
+            window: { ...interest.window, maxMarks: interest.window.points },
+        }) });
+        return this.client.request("observations.reconcile", {
+            scopeId,
+            interests: interests.map(normalize),
+            ...(predictedInterests?.length ? { predictedInterests: predictedInterests.map(normalize) } : {}),
+        });
+    }
+
+    getGraphScope(expanded: NodeAddress[] = []): Promise<GraphScope> {
+        return this.client.request("graph.getScope", expanded.length ? {
+            expanded: expanded.map((address) => ({ ...address, path: address.path ?? [] })),
+        } : {});
+    }
+
+    getNodeEventProtocol(): Promise<NodeEventProtocol> {
+        return this.client.request("nodeMessages.getProtocol", {});
+    }
+
+    dispatchNodeEvent(target: NodeAddress, event: SerializedNodeEvent, expectedRevision: number, interactionId?: string): Promise<{
+        ok: boolean; diagnostics: Array<{ target: NodeAddress; message: string }>; sessionRevision?: number;
+    }> {
+        return this.client.request("nodeMessages.dispatch", { target: { ...target, path: target.path ?? [] },
+            eventTypeNominalId: event.eventType.nominalId,
+            eventTypeDefinitionFingerprint: event.eventType.definitionFingerprint,
+            payload: event.payload, ...(interactionId ? { interactionId } : { expectedRevision }) });
+    }
+
+    nodeEventGesture(target: NodeAddress, interactionId: string, begin: boolean): Promise<void> {
+        const params = { target: { ...target, path: target.path ?? [] }, interactionId };
+        return this.client.request(`nodeMessages.${begin ? "beginGesture" : "endGesture"}`,
+            begin ? this.mutationParams(params) : params);
+    }
+
+    getAudioDevices(): Promise<AudioDevicesSnapshot> {
+        return this.client.request("audioDevices.get", {});
+    }
+
+    getNodeInstances(sourceFilePath: string | null = null): Promise<{ instances?: Array<Record<string, unknown>> }> {
+        return this.client.request("nodeInstances.get", sourceFilePath ? { sourceFilePath } : {});
+    }
+
+    createNodeInstance(
+        definitionId: string,
+        displayName: string | null = null,
+        configurationSource = "",
+        instanceId: string | null = null,
+    ): Promise<{ instanceId: string }> {
+        const params: Record<string, unknown> = { definitionId };
+        if (instanceId != null) {
+            params.instanceId = instanceId;
+        }
         if (displayName != null) {
             params.displayName = displayName;
         }
-        return this.client.request("ivModuleInstances.create", params);
+        if (configurationSource.length > 0) {
+            params.configurationSource = configurationSource;
+        }
+        return this.client.request(
+            "nodeInstances.create", this.mutationParams(params));
     }
 
-    deleteIvModuleInstance(instanceId: string): Promise<void> {
-        return this.client.request("ivModuleInstances.delete", { instanceId });
+    deleteNodeInstance(instanceId: string): Promise<void> {
+        return this.client.request(
+            "nodeInstances.delete",
+            this.mutationParams({ instanceId }),
+        );
     }
 
-    updateIvModuleInstances(
-        updates: Array<{ instanceId: string; displayName?: string | null; defaultSilenceTtlSamples?: number | null }>,
+    updateNodeInstances(
+        updates: Array<{
+            instanceId: string;
+            displayName?: string | null;
+            configurationSource?: string | null;
+        }>,
+        expectedRevision?: number,
     ): Promise<void> {
-        return this.client.request("ivModuleInstances.update", { updates });
+        return this.client.request(
+            "nodeInstances.update", this.mutationParams({ updates }, expectedRevision));
     }
 
-    getIvPackages(): Promise<{ packages?: Array<Record<string, unknown>> }> {
+    upsertGraphConnection(connection: Record<string, unknown>, expectedRevision?: number): Promise<void> {
+        return this.client.request(
+            "graphConnections.upsert", this.mutationParams({ connection }, expectedRevision));
+    }
+
+    deleteGraphConnection(connectionId: string, expectedRevision?: number): Promise<void> {
+        return this.client.request(
+            "graphConnections.delete", this.mutationParams({ connectionId }, expectedRevision));
+    }
+
+    applyProjectEdit(operations: Array<{ method: string; params: Record<string, unknown> }>, expectedRevision?: number | null): Promise<{ sessionRevision: number }> {
+        return this.client.request("project.applyEdit", expectedRevision === null ? { operations }
+            : this.mutationParams({ operations }, expectedRevision));
+    }
+
+    projectHistory(direction: "undo" | "redo"): Promise<void> {
+        return this.client.request(`project.${direction}`, this.mutationParams({}));
+    }
+
+    hoverManualControl(control: ManualControlId | null): Promise<void> {
+        return this.client.request("manualControls.hover", control ? { ...control } : {});
+    }
+    setManualInputEnabled(control: ManualControlId, value: number, enabled: boolean, participation: ManualControlDescriptor["participation"],
+        revision?: number): Promise<void> {
+        return this.client.request("manualControls.upsert", this.mutationParams({ ...control, value, enabled, participation }, revision));
+    }
+    beginManualControl(interactionId: string, control: ManualControlId, value: number): Promise<void> {
+        return this.client.request("manualControls.begin", { interactionId, ...control, value });
+    }
+    // A live gesture value: unacknowledged, revision-free, latest value wins.
+    updateManualControl(interactionId: string, value: number): void {
+        this.client.notify("manualControls.update", { interactionId, value });
+    }
+    endManualControl(interactionId: string, value: number): Promise<void> {
+        return this.client.request("manualControls.end", { interactionId, value });
+    }
+
+    getIvPackageDefinitions(): Promise<{ packages?: Array<Record<string, unknown>> }> {
         return this.client.request("ivPackages.list", {});
     }
 
+    nodeDefinitionCatalog(): Promise<NodeDefinitionCatalog> {
+        return this.client.request("nodeDefinitions.search", { source: "" });
+    }
+
+    searchNodeDefinitions(source: string, cursor: number): Promise<NodeDefinitionSearch> {
+        return this.client.request("nodeDefinitions.search", { source, cursor });
+    }
+
     createIvPackage(name: string): Promise<{ package: Record<string, unknown> }> {
-        return this.client.request("ivPackages.create", { name });
+        return this.client.request(
+            "ivPackages.create", this.mutationParams({ name }));
     }
 
     shutdown(): Promise<void> {
         return this.client.request("server.shutdown", {});
     }
 
-    pausePlayback(): Promise<void> {
-        return this.client.request("playback.pause", {});
-    }
-
-    resumePlayback(startIndex: number): Promise<void> {
-        return this.client.request("playback.resume", {
-            startIndex,
-        });
-    }
-
-    seekPlayback(sampleIndex: number): Promise<void> {
-        return this.client.request("playback.seek", { sampleIndex });
-    }
-
-    saveProject(): Promise<void> {
-        return this.client.request("project.save", {});
+    saveProject(autosaveOnly = false): Promise<void> {
+        return this.client.request("project.save", autosaveOnly ? { autosaveOnly } : {});
     }
 
     enableProjectAutosave(): Promise<void> {
-        return this.client.request("project.enableAutosave", {});
+        return this.client.request(
+            "project.enableAutosave", this.mutationParams({}));
     }
 
     disableProjectAutosave(): Promise<void> {
-        return this.client.request("project.disableAutosave", {});
+        return this.client.request(
+            "project.disableAutosave", this.mutationParams({}));
     }
 
     queryNodesBySpans(
@@ -96,131 +244,8 @@ export class WorkspaceRpc {
         return this.client.request("graph.queryActiveRegions", { filePath });
     }
 
-    setSampleInputValue(nodeId: string, inputOrdinal: number, value: unknown, memberOrdinal: number | null): Promise<void> {
-        const params: Record<string, unknown> = { nodeId, inputOrdinal, value };
-        if (memberOrdinal != null) {
-            params.memberOrdinal = memberOrdinal;
-        }
-        return this.client.request("graph.setSampleInputValue", params);
-    }
 
-    setSampleInputState(nodeId: string, inputOrdinal: number, state: string, memberOrdinal: number | null): Promise<void> {
-        const params: Record<string, unknown> = { nodeId, inputOrdinal, state };
-        if (memberOrdinal != null) {
-            params.memberOrdinal = memberOrdinal;
-        }
-        return this.client.request("graph.setSampleInputState", params);
-    }
 
-    setEventInputState(nodeId: string, inputOrdinal: number, state: string, memberOrdinal: number | null): Promise<void> {
-        const params: Record<string, unknown> = { nodeId, inputOrdinal, state };
-        if (memberOrdinal != null) {
-            params.memberOrdinal = memberOrdinal;
-        }
-        return this.client.request("graph.setEventInputState", params);
-    }
 
-    setSampleOutputState(nodeId: string, outputOrdinal: number, state: string, memberOrdinal: number | null): Promise<void> {
-        const params: Record<string, unknown> = { nodeId, outputOrdinal, state };
-        if (memberOrdinal != null) {
-            params.memberOrdinal = memberOrdinal;
-        }
-        return this.client.request("graph.setSampleOutputState", params);
-    }
 
-    setEventOutputState(nodeId: string, outputOrdinal: number, state: string, memberOrdinal: number | null): Promise<void> {
-        const params: Record<string, unknown> = { nodeId, outputOrdinal, state };
-        if (memberOrdinal != null) {
-            params.memberOrdinal = memberOrdinal;
-        }
-        return this.client.request("graph.setEventOutputState", params);
-    }
-
-    setTimelineLaneUiState(
-        laneId: string,
-        serializedState: string,
-        expectedRevision?: number,
-    ): Promise<void> {
-        const params: Record<string, unknown> = { laneId, serializedState };
-        if (expectedRevision != null) params.expectedRevision = expectedRevision;
-        return this.client.request("timeline.setLaneUiState", params);
-    }
-
-    setTimelineLaneName(laneId: string, name: string): Promise<void> {
-        return this.client.request("timeline.setLaneUiState", { laneId, name });
-    }
-
-    createTimelineLane(typeId: string): Promise<void> {
-        return this.client.request("timeline.createLane", { typeId });
-    }
-
-    deleteTimelineLane(laneId: string): Promise<void> {
-        return this.client.request("timeline.deleteLane", { laneId });
-    }
-
-    duplicateTimelineLane(laneId: string): Promise<void> {
-        return this.client.request("timeline.duplicateLane", { laneId });
-    }
-
-    connectTimelineLanes(
-        sourceLaneId: string,
-        targetLaneId: string,
-        portDomain: "realtime" | "compiled",
-        portKind: "sample" | "event",
-        portOrdinal: number,
-    ): Promise<void> {
-        return this.client.request("timeline.connectLanes", {
-            sourceLaneId,
-            targetLaneId,
-            portDomain,
-            portKind,
-            portOrdinal,
-        });
-    }
-
-    disconnectTimelineLanes(
-        sourceLaneId: string,
-        targetLaneId: string,
-        portDomain: "realtime" | "compiled",
-        portKind: "sample" | "event",
-        portOrdinal: number,
-    ): Promise<void> {
-        return this.client.request("timeline.disconnectLanes", {
-            sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal,
-        });
-    }
-
-    getTimelineLaneTypes(): Promise<{ laneTypes?: Array<{
-        typeId: string; category: string; label: string; description: string;
-    }> }> {
-        return this.client.request("timeline.laneTypes", {});
-    }
-
-    openLaneView(params: LaneViewParams): Promise<Record<string, unknown>> {
-        return this.client.request("timeline.openLaneView", params);
-    }
-
-    updateLaneView(params: LaneViewParams): Promise<Record<string, unknown>> {
-        return this.client.request("timeline.updateLaneView", params);
-    }
-
-    closeLaneView(viewId: string): Promise<void> {
-        return this.client.request("timeline.closeLaneView", { viewId });
-    }
-
-    getLaneQuerySchema(): Promise<{ revision?: number; entries?: Array<{ key?: string; type?: string }> }> {
-        return this.client.request("timeline.getLaneQuerySchema", {});
-    }
-
-    completeLaneQuery(
-        source: string,
-        cursorOffset: number,
-        schemaRevision: number,
-    ): Promise<Record<string, unknown>> {
-        return this.client.request("timeline.completeLaneQuery", {
-            source,
-            cursorOffset,
-            schemaRevision,
-        });
-    }
 }

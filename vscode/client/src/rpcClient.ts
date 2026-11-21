@@ -3,6 +3,8 @@ import { Duplex } from "stream";
 
 export type JsonRpcNotificationHandler =
     ((method: string, params: Record<string, unknown>) => void) | null;
+export type JsonRpcDisconnectHandler = ((error: Error) => void) | null;
+export type JsonRpcRevisionHandler = ((revision: number) => void) | null;
 
 type PendingRequest = {
     resolve: (value: unknown) => void;
@@ -12,15 +14,25 @@ type PendingRequest = {
 export class JsonRpcSocketClient {
     private readonly socketPath: string | null;
     private readonly notificationHandler: JsonRpcNotificationHandler;
+    private readonly disconnectHandler: JsonRpcDisconnectHandler;
+    private readonly revisionHandler: JsonRpcRevisionHandler;
     private socket: Duplex | null = null;
     private nextId = 1;
     private readonly pending = new Map<number, PendingRequest>();
     private buffer = "";
     private socketInitialized = false;
+    private disconnectReported = false;
 
-    constructor(socketPathOrSocket: string | Duplex, notificationHandler: JsonRpcNotificationHandler = null) {
+    constructor(
+        socketPathOrSocket: string | Duplex,
+        notificationHandler: JsonRpcNotificationHandler = null,
+        disconnectHandler: JsonRpcDisconnectHandler = null,
+        revisionHandler: JsonRpcRevisionHandler = null,
+    ) {
         this.socketPath = typeof socketPathOrSocket === "string" ? socketPathOrSocket : null;
         this.notificationHandler = notificationHandler;
+        this.disconnectHandler = disconnectHandler;
+        this.revisionHandler = revisionHandler;
         if (typeof socketPathOrSocket !== "string") {
             this.socket = socketPathOrSocket;
         }
@@ -62,8 +74,10 @@ export class JsonRpcSocketClient {
             socket.setEncoding("utf8");
         }
         socket.on("data", (chunk: Buffer | string) => this.onData(String(chunk)));
-        socket.on("error", (error) => this.failPending(error));
-        socket.on("close", () => this.failPending(new Error("Intravenous server connection closed")));
+        socket.on("error", (error) => this.reportDisconnect(error));
+        socket.on("close", () => this.reportDisconnect(
+            new Error("Server connection closed"),
+        ));
     }
 
     async request<T = unknown>(method: string, params: Record<string, unknown>): Promise<T> {
@@ -76,13 +90,22 @@ export class JsonRpcSocketClient {
         }) + "\n";
 
         if (!this.socket) {
-            throw new Error("Intravenous JSON-RPC client is not connected");
+            throw new Error("JSON-RPC client is not connected");
         }
 
         return await new Promise<T>((resolve, reject) => {
             this.pending.set(id, { resolve, reject });
             this.socket!.write(payload, "utf8");
         });
+    }
+
+    // A JSON-RPC notification: no id, so the server sends no reply. Used only
+    // for transient latest values whose loss a later request makes harmless.
+    notify(method: string, params: Record<string, unknown>): void {
+        if (!this.socket) {
+            throw new Error("JSON-RPC client is not connected");
+        }
+        this.socket.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n", "utf8");
     }
 
     private onData(chunk: string): void {
@@ -120,6 +143,10 @@ export class JsonRpcSocketClient {
             }
             this.pending.delete(message.id);
 
+            const revision = message.result?.sessionRevision
+                ?? message.error?.data?.currentRevision;
+            if (typeof revision === "number") this.revisionHandler?.(revision);
+
             if (message.error) {
                 pending.reject(new Error(message.error.message || "unknown JSON-RPC error"));
             } else {
@@ -135,11 +162,18 @@ export class JsonRpcSocketClient {
         this.pending.clear();
     }
 
+    private reportDisconnect(error: Error): void {
+        this.failPending(error);
+        if (this.disconnectReported) return;
+        this.disconnectReported = true;
+        this.disconnectHandler?.(error);
+    }
+
     dispose(): void {
         if (this.socket) {
             this.socket.destroy();
             this.socket = null;
         }
-        this.failPending(new Error("Intravenous client disposed"));
+        this.failPending(new Error("Client disposed"));
     }
 }

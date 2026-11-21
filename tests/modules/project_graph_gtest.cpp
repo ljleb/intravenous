@@ -1,0 +1,4974 @@
+#include <intravenous/dsl.h>
+#include "../event_source_test_support.h"
+#include <intravenous/basic_nodes/constant.h>
+#include <intravenous/module/package_definitions.h>
+#include <intravenous/runtime/graph_connections.h>
+#include <intravenous/runtime/node_definitions.h>
+#include <intravenous/runtime/node_definitions_events.h>
+#include <intravenous/runtime/node_definitions_project_graph_bridge.h>
+#include <intravenous/runtime/node_instances.h>
+#include <intravenous/runtime/package_pipeline_types.h>
+#include <intravenous/runtime/project_connection_json.h>
+#include <intravenous/runtime/project_graph.h>
+#include <intravenous/runtime/project_graph_events.h>
+#include <intravenous/runtime/project_graph_graph_connections_bridge.h>
+#include <intravenous/runtime/project_graph_package_definitions_bridge.h>
+#include <intravenous/runtime/package_definitions.h>
+#include <intravenous/runtime/project_graph_node_instances_bridge.h>
+#include <intravenous/runtime/project_node_path_resolver.h>
+#include <intravenous/runtime/runtime_project_events.h>
+
+#include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
+#include <intravenous/runtime/socket_rpc_requests.h>
+#include <intravenous/runtime/socket_rpc_response_builders.h>
+
+#include <atomic>
+#include <array>
+#include <bit>
+#include <chrono>
+#include <condition_variable>
+#include <filesystem>
+#include <future>
+#include <iterator>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <span>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace {
+// The snapshot record also carries ProjectGraph's reply (its publication), so
+// the handler takes it as an lvalue.
+void publish_definitions_snapshot(
+    iv::ProjectGraph& project_graph,
+    iv::NodeDefinitionsSnapshotChanged change)
+{
+    in_event_source([&] { return project_graph.handle_node_definitions_snapshot_changed(change); });
+    EXPECT_TRUE(project_graph.wait_for_compilation());
+}
+
+// Worker progress/results publish new enclosing snapshots. Rejected or
+// configuration-only no-op operations must preserve the committed graph and
+// its identities; equality of the enclosing shared_ptr is not that contract.
+void expect_same_configuration(
+    std::shared_ptr<iv::ProjectGraphGeneration const> const& actual,
+    std::shared_ptr<iv::ProjectGraphGeneration const> const& expected)
+{
+    if (!expected) { EXPECT_FALSE(actual); return; }
+    ASSERT_TRUE(actual);
+    EXPECT_EQ(actual->configured_generation, expected->configured_generation);
+    EXPECT_EQ(actual->generation, expected->generation);
+    EXPECT_EQ(actual->graph, expected->graph);
+    EXPECT_EQ(actual->definitions, expected->definitions);
+}
+
+using iv::details::ConfigurationArgument;
+using iv::details::PackageDefinition;
+using iv::details::PackageDefinitionKind;
+using iv::details::RegisteredSignature;
+
+constexpr char definition_id[] = "iv.test.project_graph.node";
+constexpr char package_root[] = "/tmp/iv-project-graph-tests";
+constexpr char source_file[] = "/tmp/iv-project-graph-tests/module.cpp";
+RegisteredSignature const zero_signature{};
+std::atomic<int> configure_calls{0};
+
+constexpr char replacing_definition_id[] =
+    "iv.test.project_graph.replacing";
+constexpr char successor_definition_id[] =
+    "iv.test.project_graph.successor";
+constexpr char sender_definition_id[] =
+    "iv.test.project_graph.sender";
+constexpr char receiver_definition_id[] =
+    "iv.test.project_graph.receiver";
+constexpr char selector_sender_definition_id[] =
+    "iv.test.project_graph.selector_sender";
+constexpr char leaf_receiver_definition_id[] =
+    "iv.test.project_graph.leaf_receiver";
+constexpr char manual_control_leaf_definition_id[] =
+    "iv.test.project_graph.manual_control_leaf";
+std::atomic<int> successor_configure_calls{0};
+std::atomic<int> successor_value{0};
+
+struct ReplaceWithValue {
+    int value = 0;
+};
+
+struct ReplaceWithoutArguments {};
+struct ReplaceTwice { int value = 0; };
+
+struct ReplaceThenSend {
+    int value = 0;
+};
+
+struct SuccessorMessage {
+    int expected_value = 0;
+};
+
+struct RepeatDelivery {
+    bool repeat = true;
+};
+
+struct SendToReceiver {
+    int value = 0;
+};
+
+struct ReceiveFromSender {
+    int value = 0;
+};
+
+struct SendToSelectedReceiver {
+    int value = 0;
+};
+
+struct ReplaceAncestorThenRepeat {};
+
+struct ReplaceUnrelatedThenRepeat {
+    iv::NodeAddress target{};
+};
+
+struct LeafMessage {
+    int value = 0;
+};
+
+std::atomic<int> successor_message_calls{0};
+std::atomic<int> successor_message_value{0};
+std::atomic<int> receiver_message_calls{0};
+std::atomic<int> receiver_message_value{0};
+std::atomic<int> leaf_message_calls{0};
+std::atomic<int> leaf_message_value{0};
+
+iv::details::ConfigurationExpressionTypeSchema const int_schema{
+    .kind = iv::details::ConfigurationExpressionTypeKind::signed_integer,
+    .size = sizeof(int),
+    .alignment = alignof(int),
+    .integer_is_signed = true,
+    .integer_bit_width = sizeof(int) * 8,
+    .construct_scalar =
+        &iv::details::configuration_expression_details::construct_scalar<int>,
+    .read_scalar = &iv::details::configuration_expression_details::read_scalar<int>,
+    .default_construct =
+        &iv::details::configuration_expression_details::default_construct<int>,
+    .destroy = &iv::details::configuration_expression_details::destroy<int>,
+};
+iv::details::ConfigurationTypeIdentity const int_identity{
+    .nominal_id = "test:int",
+    .nominal_id_size = 8,
+    .definition_fingerprint = "test:int:v1",
+    .definition_fingerprint_size = 11,
+    .display_name = "int",
+    .display_name_size = 3,
+    .expression_schema = &int_schema,
+};
+constexpr char protocol_event_nominal_id[] = "iv.test.SetValue";
+constexpr char protocol_event_fingerprint[] = "iv.test.SetValue:v1";
+iv::details::ConfigurationExpressionFieldSchema const protocol_event_fields[]{
+    {
+        .name = "value",
+        .name_size = 5,
+        .byte_offset = 0,
+        .type = &int_schema,
+        .assign = &iv::details::configuration_expression_details::assign<int>,
+    },
+};
+iv::details::ConfigurationExpressionTypeSchema const protocol_event_schema{
+    .kind = iv::details::ConfigurationExpressionTypeKind::aggregate,
+    .size = sizeof(ReplaceWithValue),
+    .alignment = alignof(ReplaceWithValue),
+    .fields = protocol_event_fields,
+    .field_count = std::size(protocol_event_fields),
+    .default_construct =
+        &iv::details::configuration_expression_details::default_construct<
+            ReplaceWithValue>,
+    .destroy = &iv::details::configuration_expression_details::destroy<
+        ReplaceWithValue>,
+};
+iv::details::ConfigurationTypeIdentity const protocol_event_identity{
+    .nominal_id = protocol_event_nominal_id,
+    .nominal_id_size = sizeof(protocol_event_nominal_id) - 1,
+    .definition_fingerprint = protocol_event_fingerprint,
+    .definition_fingerprint_size = sizeof(protocol_event_fingerprint) - 1,
+    .display_name = "ReplaceWithValue",
+    .display_name_size = 16,
+    .expression_schema = &protocol_event_schema,
+};
+iv::details::ConfigurationExpressionTypeSchema const send_to_receiver_schema{
+    .kind = iv::details::ConfigurationExpressionTypeKind::aggregate,
+    .size = sizeof(SendToReceiver),
+    .alignment = alignof(SendToReceiver),
+    .fields = protocol_event_fields,
+    .field_count = std::size(protocol_event_fields),
+    .default_construct =
+        &iv::details::configuration_expression_details::default_construct<
+            SendToReceiver>,
+    .destroy = &iv::details::configuration_expression_details::destroy<
+        SendToReceiver>,
+};
+iv::details::ConfigurationTypeIdentity const send_to_receiver_identity{
+    .nominal_id = "iv.test.SendToReceiver",
+    .nominal_id_size = 22,
+    .definition_fingerprint = "iv.test.SendToReceiver:v1",
+    .definition_fingerprint_size = 25,
+    .display_name = "SendToReceiver",
+    .display_name_size = 14,
+    .expression_schema = &send_to_receiver_schema,
+};
+iv::details::ConfigurationTypeIdentity const* const int_types[]{&int_identity};
+iv::details::ConfigurationValueOperations const* const int_operations[]{
+    iv::details::configuration_value_operations<int>(),
+};
+RegisteredSignature const one_int_signature{
+    .parameter_types = int_types,
+    .parameter_operations = int_operations,
+    .required_argument_count = 1,
+    .argument_count = 1,
+};
+
+RegisteredSignature const* signature_callback() { return &zero_signature; }
+
+void configure_module(iv::GraphBuilder& graph, std::span<ConfigurationArgument>)
+{
+    using namespace iv;
+    ++configure_calls;
+    auto input = graph.input<"main">();
+    graph.outputs("main"_P = input);
+}
+
+template<class Module, class Event,
+         void (Module::*Handler)(
+             iv::ModuleMessageContext<Module>&, Event const&) const>
+void invoke_module_message_handler(
+    void const* receiver,
+    iv::NodeMessageContextOperations const& operations,
+    iv::NodeAddress const& address,
+    iv::ModuleMessageLocalRefs const* local_refs,
+    void const* event)
+{
+    auto context = iv::ModuleMessageContext<Module>(
+        operations, address, local_refs);
+    (static_cast<Module const*>(receiver)->*Handler)(
+        context, *static_cast<Event const*>(event));
+}
+
+template<class Node, class Event,
+         void (Node::*Handler)(
+             iv::NodeMessageContext<Node>&, Event const&) const>
+void invoke_leaf_message_handler(
+    void const* receiver,
+    iv::NodeMessageContextOperations const& operations,
+    iv::NodeAddress const& address,
+    iv::ModuleMessageLocalRefs const*,
+    void const* event)
+{
+    auto context = iv::NodeMessageContext<Node>(operations, address);
+    (static_cast<Node const*>(receiver)->*Handler)(
+        context, *static_cast<Event const*>(event));
+}
+
+struct ReplacingModule {
+    int preserved = 0;
+
+    explicit ReplacingModule(int preserved_) : preserved(preserved_) {}
+
+    void build_graph(iv::GraphBuilder& graph) const
+    {
+        using namespace iv;
+        auto input = graph.input<"main">();
+        graph.outputs("main"_P = input);
+    }
+
+    void on_message(
+        iv::ModuleMessageContext<ReplacingModule>& context,
+        ReplaceWithValue const& event) const
+    {
+        context.replace<"iv.test.project_graph.successor">(
+            preserved + event.value);
+    }
+
+    void on_message(iv::ModuleMessageContext<ReplacingModule>& context, ReplaceTwice const& event) const
+    {
+        context.replace<"iv.test.project_graph.successor">(event.value);
+        context.replace<"iv.test.project_graph.successor">(event.value + 1);
+    }
+
+    void on_message(
+        iv::ModuleMessageContext<ReplacingModule>& context,
+        ReplaceWithoutArguments const&) const
+    {
+        context.replace<"iv.test.project_graph.successor">();
+    }
+
+    void on_message(
+        iv::ModuleMessageContext<ReplacingModule>& context,
+        ReplaceThenSend const& event) const
+    {
+        auto const value = preserved + event.value;
+        context.replace<"iv.test.project_graph.successor">(value);
+        context.send(
+            context.address(),
+            SuccessorMessage{.expected_value = value});
+    }
+
+    void on_message(
+        iv::ModuleMessageContext<ReplacingModule>& context,
+        RepeatDelivery const& event) const
+    {
+        if (event.repeat) {
+            context.send(
+                context.address(),
+                RepeatDelivery{.repeat = false});
+        }
+    }
+};
+
+struct SuccessorModule {
+    int configured_value = 0;
+
+    explicit SuccessorModule(int configured_value_)
+        : configured_value(configured_value_)
+    {
+        ++successor_configure_calls;
+        successor_value = configured_value;
+    }
+
+    void build_graph(iv::GraphBuilder& graph) const
+    {
+        using namespace iv;
+        auto input = graph.input<"main">();
+        graph.outputs("main"_P = input);
+    }
+
+    void on_message(
+        iv::ModuleMessageContext<SuccessorModule>&,
+        SuccessorMessage const& event) const
+    {
+        ++successor_message_calls;
+        successor_message_value = event.expected_value == configured_value
+            ? configured_value
+            : -1;
+    }
+
+    void on_message(
+        iv::ModuleMessageContext<SuccessorModule>& context,
+        ReplaceWithValue const& event) const
+    {
+        context.replace<"iv.test.project_graph.successor">(event.value);
+    }
+};
+
+struct ReceiverModule {
+    void build_graph(iv::GraphBuilder& graph) const
+    {
+        using namespace iv;
+        auto input = graph.input<"main">();
+        graph.outputs("main"_P = input);
+    }
+
+    void on_message(
+        iv::ModuleMessageContext<ReceiverModule>&,
+        ReceiveFromSender const& event) const
+    {
+        ++receiver_message_calls;
+        receiver_message_value = event.value;
+    }
+};
+
+struct SenderModule {
+    void build_graph(iv::GraphBuilder& graph) const
+    {
+        using namespace iv;
+        details::iv_builder_prepare_node_source_identity(
+            &graph,
+            "project-graph-test:receiver",
+            "receiver");
+        auto receiver = graph.node<"iv.test.project_graph.receiver">();
+        receiver._annotate_source_info(
+            "project-graph-test:receiver",
+            source_file,
+            1,
+            2);
+        auto input = graph.input<"main">();
+        graph.outputs("main"_P = input);
+    }
+
+    void on_message(
+        iv::ModuleMessageContext<SenderModule>& context,
+        SendToReceiver const& event) const
+    {
+        context.send(
+            context.ref<"receiver">(),
+            ReceiveFromSender{.value = event.value});
+    }
+
+    void on_message(
+        iv::ModuleMessageContext<SenderModule>& context,
+        ReplaceAncestorThenRepeat const&) const
+    {
+        auto const receiver = context.ref<"receiver">();
+        context.send(receiver, ReceiveFromSender{.value = 1});
+        context.replace<"iv.test.project_graph.sender">();
+        context.send(receiver, ReceiveFromSender{.value = 2});
+    }
+
+    void on_message(
+        iv::ModuleMessageContext<SenderModule>& context,
+        ReplaceUnrelatedThenRepeat const& event) const
+    {
+        context.send(event.target, ReceiveFromSender{.value = 1});
+        context.replace<"iv.test.project_graph.sender">();
+        context.send(event.target, ReceiveFromSender{.value = 2});
+    }
+};
+
+struct SelectorSenderModule {
+    void build_graph(iv::GraphBuilder& graph) const
+    {
+        using namespace iv;
+        details::iv_builder_prepare_node_source_identity(
+            &graph,
+            "project-graph-test:tiled-receiver",
+            "receiver");
+        auto receiver = graph.node<
+            "iv.test.project_graph.receiver", stereo>();
+        receiver._annotate_source_info(
+            "project-graph-test:tiled-receiver",
+            source_file,
+            1,
+            2);
+        auto input = graph.input<"main">();
+        graph.outputs("main"_P = input);
+    }
+
+    void on_message(
+        iv::ModuleMessageContext<SelectorSenderModule>& context,
+        SendToSelectedReceiver const& event) const
+    {
+        context.send(
+            context.ref<"receiver">().member(0).tiled_child<"left">(),
+            ReceiveFromSender{.value = event.value});
+    }
+};
+
+struct LeafReceiver {
+    static constexpr auto inputs() { return std::tuple{}; }
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    void tick(iv::TickSampleContext<LeafReceiver> const&) const {}
+
+    void on_message(
+        iv::NodeMessageContext<LeafReceiver>&,
+        LeafMessage const& event) const
+    {
+        ++leaf_message_calls;
+        leaf_message_value = event.value;
+    }
+};
+
+struct ManualControlLeaf {
+    static constexpr auto inputs()
+    {
+        return std::array{
+            iv::input<iv::Sample>(
+                "gain", iv::InputAccess::sequential),
+        };
+    }
+
+    static constexpr auto outputs() { return std::tuple{}; }
+
+    void tick(iv::TickSampleContext<ManualControlLeaf> const&) const {}
+};
+
+template<class Module>
+void configure_module_class(
+    iv::GraphBuilder& graph,
+    std::shared_ptr<Module const> receiver)
+{
+    receiver->build_graph(graph);
+    iv::details::register_builder_module_class_message_handlers(
+        graph, std::move(receiver));
+}
+
+void configure_replacing_module(
+    iv::GraphBuilder& graph,
+    std::span<ConfigurationArgument> arguments)
+{
+    if (arguments.size() != 1) {
+        throw std::invalid_argument("replaceable module requires one argument");
+    }
+    configure_module_class(
+        graph,
+        std::make_shared<ReplacingModule const>(
+            *static_cast<int const*>(arguments[0].data)));
+}
+
+void configure_successor_module(
+    iv::GraphBuilder& graph,
+    std::span<ConfigurationArgument> arguments)
+{
+    if (arguments.size() != 1) {
+        throw std::invalid_argument("successor requires one argument");
+    }
+    configure_module_class(
+        graph,
+        std::make_shared<SuccessorModule const>(
+            *static_cast<int const*>(arguments[0].data)));
+}
+
+void configure_receiver_module(
+    iv::GraphBuilder& graph,
+    std::span<ConfigurationArgument>)
+{
+    configure_module_class(
+        graph,
+        std::make_shared<ReceiverModule const>());
+}
+
+void configure_sender_module(
+    iv::GraphBuilder& graph,
+    std::span<ConfigurationArgument>)
+{
+    configure_module_class(
+        graph,
+        std::make_shared<SenderModule const>());
+}
+
+void configure_selector_sender_module(
+    iv::GraphBuilder& graph,
+    std::span<ConfigurationArgument>)
+{
+    configure_module_class(
+        graph,
+        std::make_shared<SelectorSenderModule const>());
+}
+
+iv::NodeRef configure_leaf_receiver(
+    iv::GraphBuilder& graph,
+    std::span<ConfigurationArgument>,
+    iv::ChannelLayout const* tiled_layout)
+{
+    if (tiled_layout) {
+        return iv::details::configure_concrete_node_tiled<LeafReceiver>(
+            graph, *tiled_layout);
+    }
+    return iv::details::configure_concrete_node<LeafReceiver>(graph).node_ref();
+}
+
+iv::NodeRef configure_manual_control_leaf(
+    iv::GraphBuilder& graph,
+    std::span<ConfigurationArgument>,
+    iv::ChannelLayout const* tiled_layout)
+{
+    if (tiled_layout) {
+        return iv::details::configure_concrete_node_tiled<ManualControlLeaf>(
+            graph, *tiled_layout);
+    }
+    return iv::details::configure_concrete_node<ManualControlLeaf>(graph)
+        .node_ref();
+}
+
+RegisteredSignature const* one_int_signature_callback()
+{
+    return &one_int_signature;
+}
+
+template<class Module, class Event,
+         void (Module::*Handler)(
+             iv::ModuleMessageContext<Module>&, Event const&) const>
+void add_module_message_handler(
+    iv::PackageRevision& revision,
+    char const* definition,
+    std::size_t definition_size)
+{
+    revision.module_message_handlers.push_back(iv::ModuleMessageHandlerData{
+        .definition_id = {
+            .data = definition,
+            .size = definition_size,
+        },
+        .event_type = iv::details::configuration_type_identity<Event>(),
+        .invoke = &invoke_module_message_handler<Module, Event, Handler>,
+    });
+}
+
+std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_snapshot(
+    std::uint64_t generation,
+    iv::details::IvModuleConfigureFunction module_build = &configure_module,
+    std::string display_name = {})
+{
+    auto revision = std::make_shared<iv::PackageRevision>();
+    revision->package_id = "iv.test.project_graph.package";
+    revision->package_root = package_root;
+    revision->revision = generation;
+    revision->provider_definitions.push_back(PackageDefinition{
+        .kind = PackageDefinitionKind::module,
+        .id = definition_id,
+        .id_size = sizeof(definition_id) - 1,
+        .source_file = source_file,
+        .source_file_size = sizeof(source_file) - 1,
+        .package_root = package_root,
+        .package_root_size = sizeof(package_root) - 1,
+        .module_build = module_build,
+        .signature = &signature_callback,
+    });
+
+    auto snapshot = std::make_shared<iv::NodeDefinitionsSnapshot>();
+    snapshot->generation = generation;
+    snapshot->package_revisions.push_back(revision);
+    snapshot->by_id.emplace(definition_id, iv::NodeDefinitionEntry{
+        .definition_id = definition_id,
+        .kind = iv::NodeDefinitionKind::module,
+        .version = generation,
+        .definition = iv::ModuleNodeDefinition{
+            .definition_id = definition_id,
+            .display_name = std::move(display_name),
+            .package_id = revision->package_id,
+            .package_root = revision->package_root,
+            .module_id = definition_id,
+            .provider = iv::NodeDefinitionProvider{
+                .module_build = module_build,
+                .signature = &signature_callback,
+            },
+        },
+    });
+    return snapshot;
+}
+
+std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_replacement_snapshot(
+    std::uint64_t generation)
+{
+    auto snapshot = std::const_pointer_cast<iv::NodeDefinitionsSnapshot>(
+        make_snapshot(generation));
+    auto revision = std::const_pointer_cast<iv::PackageRevision>(
+        snapshot->package_revisions.front());
+    revision->provider_definitions.push_back(PackageDefinition{
+        .kind = PackageDefinitionKind::module,
+        .id = replacing_definition_id,
+        .id_size = sizeof(replacing_definition_id) - 1,
+        .source_file = source_file,
+        .source_file_size = sizeof(source_file) - 1,
+        .package_root = package_root,
+        .package_root_size = sizeof(package_root) - 1,
+        .module_build = &configure_replacing_module,
+        .signature = &one_int_signature_callback,
+    });
+    revision->provider_definitions.push_back(PackageDefinition{
+        .kind = PackageDefinitionKind::module,
+        .id = successor_definition_id,
+        .id_size = sizeof(successor_definition_id) - 1,
+        .source_file = source_file,
+        .source_file_size = sizeof(source_file) - 1,
+        .package_root = package_root,
+        .package_root_size = sizeof(package_root) - 1,
+        .module_build = &configure_successor_module,
+        .signature = &one_int_signature_callback,
+    });
+    revision->provider_definitions.push_back(PackageDefinition{
+        .kind = PackageDefinitionKind::module,
+        .id = sender_definition_id,
+        .id_size = sizeof(sender_definition_id) - 1,
+        .source_file = source_file,
+        .source_file_size = sizeof(source_file) - 1,
+        .package_root = package_root,
+        .package_root_size = sizeof(package_root) - 1,
+        .module_build = &configure_sender_module,
+        .signature = &signature_callback,
+    });
+    revision->provider_definitions.push_back(PackageDefinition{
+        .kind = PackageDefinitionKind::module,
+        .id = receiver_definition_id,
+        .id_size = sizeof(receiver_definition_id) - 1,
+        .source_file = source_file,
+        .source_file_size = sizeof(source_file) - 1,
+        .package_root = package_root,
+        .package_root_size = sizeof(package_root) - 1,
+        .module_build = &configure_receiver_module,
+        .signature = &signature_callback,
+    });
+    revision->provider_definitions.push_back(PackageDefinition{
+        .kind = PackageDefinitionKind::module,
+        .id = selector_sender_definition_id,
+        .id_size = sizeof(selector_sender_definition_id) - 1,
+        .source_file = source_file,
+        .source_file_size = sizeof(source_file) - 1,
+        .package_root = package_root,
+        .package_root_size = sizeof(package_root) - 1,
+        .module_build = &configure_selector_sender_module,
+        .signature = &signature_callback,
+    });
+    revision->provider_definitions.push_back(PackageDefinition{
+        .kind = PackageDefinitionKind::node,
+        .id = leaf_receiver_definition_id,
+        .id_size = sizeof(leaf_receiver_definition_id) - 1,
+        .source_file = source_file,
+        .source_file_size = sizeof(source_file) - 1,
+        .package_root = package_root,
+        .package_root_size = sizeof(package_root) - 1,
+        .node_build = &configure_leaf_receiver,
+        .node_compiler_record =
+            &iv::details::node_compiler_record<LeafReceiver>,
+        .signature = &signature_callback,
+    });
+    revision->provider_definitions.push_back(PackageDefinition{
+        .kind = PackageDefinitionKind::node,
+        .id = manual_control_leaf_definition_id,
+        .id_size = sizeof(manual_control_leaf_definition_id) - 1,
+        .source_file = source_file,
+        .source_file_size = sizeof(source_file) - 1,
+        .package_root = package_root,
+        .package_root_size = sizeof(package_root) - 1,
+        .node_build = &configure_manual_control_leaf,
+        .node_compiler_record =
+            &iv::details::node_compiler_record<ManualControlLeaf>,
+        .signature = &signature_callback,
+    });
+    add_module_message_handler<
+        ReplacingModule,
+        ReplaceWithValue,
+        static_cast<void (ReplacingModule::*)(
+            iv::ModuleMessageContext<ReplacingModule>&,
+            ReplaceWithValue const&) const>(&ReplacingModule::on_message)>(
+        *revision,
+        replacing_definition_id,
+        sizeof(replacing_definition_id) - 1);
+    add_module_message_handler<
+        ReplacingModule, ReplaceTwice,
+        static_cast<void (ReplacingModule::*)(iv::ModuleMessageContext<ReplacingModule>&,
+            ReplaceTwice const&) const>(&ReplacingModule::on_message)>(
+        *revision, replacing_definition_id, sizeof(replacing_definition_id) - 1);
+    add_module_message_handler<
+        ReplacingModule,
+        ReplaceWithoutArguments,
+        static_cast<void (ReplacingModule::*)(
+            iv::ModuleMessageContext<ReplacingModule>&,
+            ReplaceWithoutArguments const&) const>(&ReplacingModule::on_message)>(
+        *revision,
+        replacing_definition_id,
+        sizeof(replacing_definition_id) - 1);
+    add_module_message_handler<
+        ReplacingModule,
+        ReplaceThenSend,
+        static_cast<void (ReplacingModule::*)(
+            iv::ModuleMessageContext<ReplacingModule>&,
+            ReplaceThenSend const&) const>(&ReplacingModule::on_message)>(
+        *revision,
+        replacing_definition_id,
+        sizeof(replacing_definition_id) - 1);
+    add_module_message_handler<
+        ReplacingModule,
+        RepeatDelivery,
+        static_cast<void (ReplacingModule::*)(
+            iv::ModuleMessageContext<ReplacingModule>&,
+            RepeatDelivery const&) const>(&ReplacingModule::on_message)>(
+        *revision,
+        replacing_definition_id,
+        sizeof(replacing_definition_id) - 1);
+    add_module_message_handler<
+        SuccessorModule,
+        SuccessorMessage,
+        &SuccessorModule::on_message>(
+        *revision,
+        successor_definition_id,
+        sizeof(successor_definition_id) - 1);
+    add_module_message_handler<
+        SuccessorModule,
+        ReplaceWithValue,
+        static_cast<void (SuccessorModule::*)(
+            iv::ModuleMessageContext<SuccessorModule>&,
+            ReplaceWithValue const&) const>(&SuccessorModule::on_message)>(
+        *revision,
+        successor_definition_id,
+        sizeof(successor_definition_id) - 1);
+    add_module_message_handler<
+        ReceiverModule,
+        ReceiveFromSender,
+        &ReceiverModule::on_message>(
+        *revision,
+        receiver_definition_id,
+        sizeof(receiver_definition_id) - 1);
+    add_module_message_handler<
+        SenderModule,
+        SendToReceiver,
+        &SenderModule::on_message>(
+        *revision,
+        sender_definition_id,
+        sizeof(sender_definition_id) - 1);
+    add_module_message_handler<
+        SenderModule,
+        ReplaceAncestorThenRepeat,
+        static_cast<void (SenderModule::*)(
+            iv::ModuleMessageContext<SenderModule>&,
+            ReplaceAncestorThenRepeat const&) const>(&SenderModule::on_message)>(
+        *revision,
+        sender_definition_id,
+        sizeof(sender_definition_id) - 1);
+    add_module_message_handler<
+        SenderModule,
+        ReplaceUnrelatedThenRepeat,
+        static_cast<void (SenderModule::*)(
+            iv::ModuleMessageContext<SenderModule>&,
+            ReplaceUnrelatedThenRepeat const&) const>(&SenderModule::on_message)>(
+        *revision,
+        sender_definition_id,
+        sizeof(sender_definition_id) - 1);
+    add_module_message_handler<
+        SelectorSenderModule,
+        SendToSelectedReceiver,
+        &SelectorSenderModule::on_message>(
+        *revision,
+        selector_sender_definition_id,
+        sizeof(selector_sender_definition_id) - 1);
+    revision->node_message_handlers.push_back(iv::NodeMessageHandlerData{
+        .code_key = iv::details::node_compiler_record<LeafReceiver>.code_key,
+        .event_type = iv::details::configuration_type_identity<LeafMessage>(),
+        .invoke = &invoke_leaf_message_handler<
+            LeafReceiver,
+            LeafMessage,
+            &LeafReceiver::on_message>,
+    });
+    snapshot->by_id.emplace(replacing_definition_id, iv::NodeDefinitionEntry{
+        .definition_id = replacing_definition_id,
+        .kind = iv::NodeDefinitionKind::module,
+        .version = generation,
+        .definition = iv::ModuleNodeDefinition{
+            .definition_id = replacing_definition_id,
+            .package_id = revision->package_id,
+            .package_root = revision->package_root,
+            .module_id = replacing_definition_id,
+            .provider = iv::NodeDefinitionProvider{
+                .module_build = &configure_replacing_module,
+                .signature = &one_int_signature_callback,
+            },
+        },
+    });
+    snapshot->by_id.emplace(successor_definition_id, iv::NodeDefinitionEntry{
+        .definition_id = successor_definition_id,
+        .kind = iv::NodeDefinitionKind::module,
+        .version = generation,
+        .definition = iv::ModuleNodeDefinition{
+            .definition_id = successor_definition_id,
+            .package_id = revision->package_id,
+            .package_root = revision->package_root,
+            .module_id = successor_definition_id,
+            .provider = iv::NodeDefinitionProvider{
+                .module_build = &configure_successor_module,
+                .signature = &one_int_signature_callback,
+            },
+        },
+    });
+    snapshot->by_id.emplace(sender_definition_id, iv::NodeDefinitionEntry{
+        .definition_id = sender_definition_id,
+        .kind = iv::NodeDefinitionKind::module,
+        .version = generation,
+        .definition = iv::ModuleNodeDefinition{
+            .definition_id = sender_definition_id,
+            .package_id = revision->package_id,
+            .package_root = revision->package_root,
+            .module_id = sender_definition_id,
+            .provider = iv::NodeDefinitionProvider{
+                .module_build = &configure_sender_module,
+                .signature = &signature_callback,
+            },
+        },
+    });
+    snapshot->by_id.emplace(receiver_definition_id, iv::NodeDefinitionEntry{
+        .definition_id = receiver_definition_id,
+        .kind = iv::NodeDefinitionKind::module,
+        .version = generation,
+        .definition = iv::ModuleNodeDefinition{
+            .definition_id = receiver_definition_id,
+            .package_id = revision->package_id,
+            .package_root = revision->package_root,
+            .module_id = receiver_definition_id,
+            .provider = iv::NodeDefinitionProvider{
+                .module_build = &configure_receiver_module,
+                .signature = &signature_callback,
+            },
+        },
+    });
+    snapshot->by_id.emplace(selector_sender_definition_id, iv::NodeDefinitionEntry{
+        .definition_id = selector_sender_definition_id,
+        .kind = iv::NodeDefinitionKind::module,
+        .version = generation,
+        .definition = iv::ModuleNodeDefinition{
+            .definition_id = selector_sender_definition_id,
+            .package_id = revision->package_id,
+            .package_root = revision->package_root,
+            .module_id = selector_sender_definition_id,
+            .provider = iv::NodeDefinitionProvider{
+                .module_build = &configure_selector_sender_module,
+                .signature = &signature_callback,
+            },
+        },
+    });
+    snapshot->by_id.emplace(leaf_receiver_definition_id, iv::NodeDefinitionEntry{
+        .definition_id = leaf_receiver_definition_id,
+        .kind = iv::NodeDefinitionKind::leaf,
+        .version = generation,
+        .definition = iv::LeafNodeDefinition{
+            .definition_id = leaf_receiver_definition_id,
+            .package_id = revision->package_id,
+            .package_root = revision->package_root,
+            .provider = iv::NodeDefinitionProvider{
+                .leaf_build = &configure_leaf_receiver,
+                .signature = &signature_callback,
+            },
+            .compiler_record = iv::details::node_compiler_record<LeafReceiver>,
+        },
+    });
+    snapshot->by_id.emplace(
+        manual_control_leaf_definition_id,
+        iv::NodeDefinitionEntry{
+            .definition_id = manual_control_leaf_definition_id,
+            .kind = iv::NodeDefinitionKind::leaf,
+            .version = generation,
+            .definition = iv::LeafNodeDefinition{
+                .definition_id = manual_control_leaf_definition_id,
+                .package_id = revision->package_id,
+                .package_root = revision->package_root,
+                .provider = iv::NodeDefinitionProvider{
+                    .leaf_build = &configure_manual_control_leaf,
+                    .signature = &signature_callback,
+                },
+                .compiler_record =
+                    iv::details::node_compiler_record<ManualControlLeaf>,
+            },
+        });
+    return snapshot;
+}
+
+std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_serialized_sender_snapshot(
+    std::uint64_t generation)
+{
+    auto snapshot = std::const_pointer_cast<iv::NodeDefinitionsSnapshot>(
+        make_replacement_snapshot(generation));
+    auto revision = std::const_pointer_cast<iv::PackageRevision>(
+        snapshot->package_revisions.front());
+    auto const sender = std::ranges::find_if(
+        revision->module_message_handlers,
+        [](iv::ModuleMessageHandlerData const& handler) {
+            auto const definition = std::string_view(
+                static_cast<char const*>(handler.definition_id.data),
+                handler.definition_id.size);
+            return definition == sender_definition_id
+                && handler.event_type
+                    == iv::details::configuration_type_identity<SendToReceiver>();
+        });
+    if (sender == revision->module_message_handlers.end()) {
+        throw std::logic_error("serialized sender handler was not registered");
+    }
+    sender->event_type = &send_to_receiver_identity;
+    return snapshot;
+}
+
+std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_protocol_snapshot(
+    std::uint64_t generation)
+{
+    auto snapshot = std::const_pointer_cast<iv::NodeDefinitionsSnapshot>(
+        make_replacement_snapshot(generation));
+    auto revision = std::const_pointer_cast<iv::PackageRevision>(
+        snapshot->package_revisions.front());
+    revision->node_message_handlers.clear();
+    revision->module_message_handlers.clear();
+    revision->module_message_handlers.push_back(iv::ModuleMessageHandlerData{
+        .definition_id = {
+            .data = replacing_definition_id,
+            .size = sizeof(replacing_definition_id) - 1,
+        },
+        .event_type = &protocol_event_identity,
+        .invoke = &invoke_module_message_handler<
+            ReplacingModule,
+            ReplaceWithValue,
+            static_cast<void (ReplacingModule::*)(
+                iv::ModuleMessageContext<ReplacingModule>&,
+                ReplaceWithValue const&) const>(&ReplacingModule::on_message)>,
+    });
+    revision->module_message_handlers.push_back(iv::ModuleMessageHandlerData{
+        .definition_id = {
+            .data = successor_definition_id,
+            .size = sizeof(successor_definition_id) - 1,
+        },
+        .event_type = &protocol_event_identity,
+        .invoke = &invoke_module_message_handler<
+            SuccessorModule,
+            ReplaceWithValue,
+            static_cast<void (SuccessorModule::*)(
+                iv::ModuleMessageContext<SuccessorModule>&,
+                ReplaceWithValue const&) const>(&SuccessorModule::on_message)>,
+    });
+    return snapshot;
+}
+
+struct ExecutionPublicationProbe {
+    std::mutex mutex;
+    std::vector<iv::ProjectGraphPublication> publications;
+    void receive(iv::ProjectGraphPublication const& value) {
+        std::scoped_lock lock(mutex);
+        publications.push_back(value);
+    }
+    std::optional<iv::ProjectStatusNotification> failure() {
+        std::scoped_lock lock(mutex);
+        for (auto const& value : publications | std::views::reverse)
+            if (value.execution_failure) return value.execution_failure;
+        return std::nullopt;
+    }
+};
+IV_DECLARE_BRIDGE(project_execution_test_bridge, iv::ProjectGraph, ExecutionPublicationProbe);
+IV_DEFINE_BRIDGE(project_execution_test_bridge)
+using iv::iv_runtime_project_graph_execution_published_event_subscriber_type;
+IV_SUBSCRIBE_LINKER_EVENT(project_execution_test_bridge,
+    iv_runtime_project_graph_execution_published_event, &ExecutionPublicationProbe::receive)
+
+struct ProjectGraphFixture : ::testing::Test {
+    iv::NodeInstances instances;
+    iv::GraphConnections connections;
+    iv::ProjectGraph project_graph;
+    ExecutionPublicationProbe execution;
+    project_execution_test_bridge::scope execution_scope{project_graph, execution};
+    void TearDown() override { project_graph.stop_compilation(); }
+    iv::PackageDefinitions packages{std::filesystem::temp_directory_path()};
+    iv::project_graph_package_definitions_bridge::scope packages_scope{project_graph, packages};
+    iv::project_graph_node_instances_bridge::scope instances_scope{
+        project_graph, instances};
+    iv::project_graph_graph_connections_bridge::scope connections_scope{
+        project_graph, connections};
+
+    void SetUp() override
+    {
+        configure_calls = 0;
+        successor_configure_calls = 0;
+        successor_value = 0;
+        successor_message_calls = 0;
+        successor_message_value = 0;
+        receiver_message_calls = 0;
+        receiver_message_value = 0;
+        leaf_message_calls = 0;
+        leaf_message_value = 0;
+    }
+};
+
+struct ManualControlCompileRecord {
+    std::uint64_t project_generation = 0;
+    std::vector<iv::ManualControlId> dynamic_inputs{};
+    bool has_predecessor = false;
+    std::vector<iv::ConfiguredManualControl> controls{};
+    std::uint64_t observation_revision = 0;
+    std::shared_ptr<iv::CompiledGraph const> predecessor{};
+};
+
+struct ManualControlTargetRecord {
+    std::uint64_t project_generation = 0;
+    iv::ManualControlId id{};
+    iv::Sample value{};
+    iv::ManualControlGesturePhase gesture = iv::ManualControlGesturePhase::none;
+};
+
+class ManualControlSchedulerProbe {
+    mutable std::mutex mutex_{};
+    std::condition_variable changed_{};
+    std::vector<ManualControlCompileRecord> compilations_{};
+    std::vector<ManualControlCompileRecord> stages_{};
+    std::vector<ManualControlTargetRecord> targets_{};
+    std::vector<ManualControlCompileRecord> structural_stages_{};
+    std::vector<iv::ProjectControlCompileStatus> control_statuses_{};
+    std::optional<iv::FailedExecutionGeneration> recovery_{};
+    bool dynamic_controls_need_storage_ = false;
+    bool defer_activation_ = false;
+    bool block_next_compilation_ = false;
+    bool compilation_is_blocked_ = false;
+    bool release_blocked_compilation_ = false;
+
+    static std::vector<iv::ManualControlId> dynamic_inputs(
+        std::span<iv::ConfiguredManualControl const> controls)
+    {
+        std::vector<iv::ManualControlId> result;
+        for (auto const& control : controls) {
+            if (control.dynamic) result.push_back(control.id);
+        }
+        return result;
+    }
+
+public:
+    iv::GraphJitCompileResult compile(
+        iv::ProjectGraphGraphJitRequest const& request)
+    {
+        auto const inputs = request.successor.graph
+            ? dynamic_inputs(request.successor.graph->manual_controls)
+            : std::vector<iv::ManualControlId>{};
+        bool needs_storage = false;
+        {
+            std::unique_lock lock(mutex_);
+            compilations_.push_back({
+                .project_generation = request.successor.project_generation,
+                .dynamic_inputs = inputs,
+                .has_predecessor = static_cast<bool>(request.predecessor),
+                .controls = request.successor.graph ? request.successor.graph->manual_controls
+                    : std::vector<iv::ConfiguredManualControl>{},
+                .observation_revision = request.successor.observations.revision,
+                .predecessor = request.predecessor,
+            });
+            needs_storage = dynamic_controls_need_storage_ && !inputs.empty();
+            auto const block = std::exchange(block_next_compilation_, false);
+            if (block) {
+                compilation_is_blocked_ = true;
+                changed_.notify_all();
+                changed_.wait(lock, [&] {
+                    return release_blocked_compilation_;
+                });
+                compilation_is_blocked_ = false;
+                release_blocked_compilation_ = false;
+            }
+            changed_.notify_all();
+        }
+
+        auto compiled = std::make_shared<iv::CompiledGraph>();
+        compiled->project_generation = request.successor.project_generation;
+        compiled->configured_generation = request.successor.configured_generation;
+        compiled->configured_graph = request.successor.graph;
+        compiled->observations = request.successor.observations;
+        compiled->node_layout.storage_size = needs_storage ? 8 : 0;
+        compiled->node_layout.steady_storage_size = compiled->node_layout.storage_size;
+        compiled->root_operations.tick_block.function = +[](
+            iv::graph_jit::RealtimeRootPlan const*, std::byte*,
+            iv::graph_jit::TickInvocationCall const*, iv::GlobalIndex, std::size_t) {};
+        compiled->root_operations.combine_sequential_input = +[](
+            iv::graph_jit::BackgroundPortIndex, std::byte*,
+            std::byte const*, std::size_t) { return true; };
+        if (request.successor.graph) {
+            for (auto const& configured :
+                 request.successor.graph->manual_controls) {
+                compiled->manual_controls.push_back(
+                    iv::ManualControlRuntimeBinding{
+                        .configured = configured,
+                    });
+            }
+        }
+        return {
+            .attempted = true,
+            .compiled_graph = std::move(compiled),
+        };
+    }
+
+    iv::ProjectGraphGraphExecutorResult accept_structural_graph(
+        std::shared_ptr<iv::CompiledGraph const> const& graph)
+    {
+        std::scoped_lock guard(mutex_);
+        return {.attempted = true, .prepared = iv::GraphExecutorPreparedGeneration{[this, graph] {
+            {
+                std::scoped_lock lock(mutex_);
+                structural_stages_.push_back({.project_generation = graph->project_generation,
+                    .dynamic_inputs = dynamic_inputs(graph->configured_graph->manual_controls),
+                    .observation_revision = graph->observations.revision});
+            }
+            changed_.notify_all();
+            return iv::GraphExecutorStageResult::accepted;
+        }, defer_activation_}};
+    }
+
+    void defer_activation()
+    {
+        std::scoped_lock lock(mutex_);
+        defer_activation_ = true;
+    }
+
+    void require_storage_for_dynamic_controls()
+    {
+        std::scoped_lock lock(mutex_);
+        dynamic_controls_need_storage_ = true;
+    }
+
+    std::size_t structural_stage_count() const
+    {
+        std::scoped_lock lock(mutex_);
+        return structural_stages_.size();
+    }
+
+    bool wait_for_structural_stages(std::size_t count)
+    {
+        std::unique_lock lock(mutex_);
+        return changed_.wait_for(lock, std::chrono::seconds(5), [&] {
+            return structural_stages_.size() >= count;
+        });
+    }
+
+    iv::GraphExecutorStageResult stage_realtime_code(
+        std::shared_ptr<iv::CompiledGraph const> graph)
+    {
+        std::vector<iv::ManualControlId> inputs;
+        if (graph) {
+            for (auto const& binding : graph->manual_controls) {
+                if (binding.configured.dynamic) {
+                    inputs.push_back(binding.configured.id);
+                }
+            }
+        }
+        {
+            std::scoped_lock lock(mutex_);
+            stages_.push_back({
+                .project_generation = graph ? graph->project_generation : 0,
+                .dynamic_inputs = std::move(inputs),
+                .controls = graph->configured_graph->manual_controls,
+                .observation_revision = graph->observations.revision,
+            });
+        }
+        changed_.notify_all();
+        return iv::GraphExecutorStageResult::accepted;
+    }
+
+    // The probe stands in for GraphExecutor's one live target per control.
+    std::shared_ptr<iv::ManualControlLiveTarget> live_target = std::make_shared<iv::ManualControlLiveTarget>();
+
+    bool set_target(iv::ProjectGraphManualControlTarget& target)
+    {
+        {
+            std::scoped_lock lock(mutex_);
+            targets_.push_back({
+                .project_generation = target.project_generation,
+                .id = target.id,
+                .value = target.value,
+                .gesture = target.gesture,
+            });
+            auto const bits = std::bit_cast<std::uint32_t>(target.value.value);
+            if (target.gesture == iv::ManualControlGesturePhase::begin) {
+                live_target->target_bits.store(bits);
+                live_target->open_gestures.fetch_add(1);
+                target.live_target = live_target;
+            } else if (target.gesture == iv::ManualControlGesturePhase::end) {
+                live_target->target_bits.store(bits);
+                live_target->open_gestures.fetch_sub(1);
+            }
+        }
+        changed_.notify_all();
+        return true;
+    }
+
+    void block_next_compilation()
+    {
+        std::scoped_lock lock(mutex_);
+        block_next_compilation_ = true;
+        release_blocked_compilation_ = false;
+    }
+
+    void reject_execution(iv::FailedExecutionGeneration recovery)
+    {
+        std::scoped_lock lock(mutex_);
+        recovery_ = std::move(recovery);
+    }
+
+    std::optional<iv::FailedExecutionGeneration> take_execution_recovery()
+    {
+        std::scoped_lock lock(mutex_);
+        return std::exchange(recovery_, std::nullopt);
+    }
+
+    void release_blocked_compilation()
+    {
+        {
+            std::scoped_lock lock(mutex_);
+            release_blocked_compilation_ = true;
+        }
+        changed_.notify_all();
+    }
+
+    [[nodiscard]] bool wait_for_blocked_compilation()
+    {
+        std::unique_lock lock(mutex_);
+        return changed_.wait_for(
+            lock, std::chrono::seconds(5),
+            [&] { return compilation_is_blocked_; });
+    }
+
+    [[nodiscard]] bool wait_for_compilations(std::size_t count)
+    {
+        std::unique_lock lock(mutex_);
+        return changed_.wait_for(
+            lock, std::chrono::seconds(5),
+            [&] { return compilations_.size() >= count; });
+    }
+
+    [[nodiscard]] bool wait_for_stages(
+        std::size_t count,
+        std::chrono::milliseconds timeout = std::chrono::seconds(5))
+    {
+        std::unique_lock lock(mutex_);
+        return changed_.wait_for(
+            lock, timeout,
+            [&] { return stages_.size() >= count; });
+    }
+
+    void record_control_status(std::span<iv::ProjectControlCompileStatus const> statuses)
+    {
+        std::scoped_lock lock(mutex_);
+        control_statuses_.insert(control_statuses_.end(), statuses.begin(), statuses.end());
+        changed_.notify_all();
+    }
+
+    bool wait_for_control_status(std::string_view phase, std::size_t count = 1)
+    {
+        std::unique_lock lock(mutex_);
+        return changed_.wait_for(lock, std::chrono::seconds(5), [&] {
+            return static_cast<std::size_t>(std::ranges::count(
+                control_statuses_, phase, &iv::ProjectControlCompileStatus::phase)) >= count;
+        });
+    }
+
+    std::vector<iv::ProjectControlCompileStatus> control_statuses() const
+    {
+        std::scoped_lock lock(mutex_);
+        return control_statuses_;
+    }
+
+    [[nodiscard]] std::size_t compilation_count() const
+    {
+        std::scoped_lock lock(mutex_);
+        return compilations_.size();
+    }
+
+    [[nodiscard]] std::vector<ManualControlCompileRecord> compilations() const
+    {
+        std::scoped_lock lock(mutex_);
+        return compilations_;
+    }
+
+    [[nodiscard]] std::vector<ManualControlCompileRecord> stages() const
+    {
+        std::scoped_lock lock(mutex_);
+        return stages_;
+    }
+
+    [[nodiscard]] std::vector<ManualControlTargetRecord> targets() const
+    {
+        std::scoped_lock lock(mutex_);
+        return targets_;
+    }
+};
+
+ManualControlSchedulerProbe* active_manual_control_scheduler_probe = nullptr;
+
+iv::GraphJitCompileResult probe_manual_control_compile(
+    iv::ProjectGraphGraphJitRequest const& request)
+{
+    return active_manual_control_scheduler_probe->compile(request);
+}
+
+iv::ProjectGraphGraphExecutorResult probe_structural_graph_acceptance(
+    iv::ProjectGraphGraphExecutorRequest const& request)
+{
+    return active_manual_control_scheduler_probe->accept_structural_graph(request.graph);
+}
+
+std::optional<iv::FailedExecutionGeneration> probe_execution_recovery()
+{
+    return active_manual_control_scheduler_probe->take_execution_recovery();
+}
+
+void probe_graph_executor_controls(
+    iv::ProjectGraphGraphExecutorControlsRequest& request)
+{
+    for (auto& target : request.targets) {
+        request.target_applied |= active_manual_control_scheduler_probe->set_target(target);
+    }
+    if (request.realtime_code) {
+        request.realtime_code_result =
+            active_manual_control_scheduler_probe->stage_realtime_code(
+                request.realtime_code);
+    }
+}
+
+IV_DECLARE_BRIDGE(manual_control_status_test_bridge, iv::ProjectGraph, ManualControlSchedulerProbe);
+IV_DEFINE_BRIDGE(manual_control_status_test_bridge)
+using iv::iv_runtime_control_compile_status_event_subscriber_type;
+IV_SUBSCRIBE_LINKER_EVENT(manual_control_status_test_bridge,
+    iv_runtime_control_compile_status_event, &ManualControlSchedulerProbe::record_control_status)
+
+class ScopedManualControlSchedulerEvents {
+    iv::ProjectGraphGraphJitRequestedEvent previous_graph_jit_{};
+    iv::ProjectGraphGraphExecutorRequestedEvent previous_graph_executor_{};
+    iv::ProjectGraphGraphExecutorControlsRequestedEvent previous_controls_{};
+    iv::ProjectGraphExecutionRecoveryEvent previous_recovery_{};
+
+public:
+    explicit ScopedManualControlSchedulerEvents(
+        ManualControlSchedulerProbe& probe)
+        : previous_graph_jit_(std::exchange(
+              iv::iv_runtime_project_graph_graph_jit_requested_event,
+              &probe_manual_control_compile))
+        , previous_graph_executor_(std::exchange(
+              iv::iv_runtime_project_graph_graph_executor_requested_event,
+              &probe_structural_graph_acceptance))
+        , previous_controls_(std::exchange(
+              iv::iv_runtime_project_graph_graph_executor_controls_requested_event,
+              &probe_graph_executor_controls))
+        , previous_recovery_(std::exchange(iv::iv_runtime_project_graph_execution_recovery_event,
+              &probe_execution_recovery))
+    {
+        if (std::exchange(active_manual_control_scheduler_probe, &probe)) {
+            throw std::logic_error(
+                "manual-control scheduler probe is already active");
+        }
+    }
+
+    ~ScopedManualControlSchedulerEvents()
+    {
+        active_manual_control_scheduler_probe = nullptr;
+        iv::iv_runtime_project_graph_graph_jit_requested_event =
+            previous_graph_jit_;
+        iv::iv_runtime_project_graph_graph_executor_requested_event =
+            previous_graph_executor_;
+        iv::iv_runtime_project_graph_graph_executor_controls_requested_event =
+            previous_controls_;
+        iv::iv_runtime_project_graph_execution_recovery_event = previous_recovery_;
+    }
+};
+
+struct ProjectGraphManualControlSchedulingFixture : ::testing::Test {
+    ManualControlSchedulerProbe probe;
+    ScopedManualControlSchedulerEvents event_scope{probe};
+    iv::NodeInstances instances;
+    iv::GraphConnections connections;
+    // Bind after construction, but unbind only after ProjectGraph joins its
+    // worker: a final status batch may still be published during teardown.
+    std::optional<manual_control_status_test_bridge::scope> status_scope;
+    iv::ProjectGraph project_graph;
+    iv::project_graph_node_instances_bridge::scope instances_scope{
+        project_graph, instances};
+    iv::project_graph_graph_connections_bridge::scope connections_scope{
+        project_graph, connections};
+
+    ProjectGraphManualControlSchedulingFixture()
+    {
+        status_scope.emplace(project_graph, probe);
+    }
+
+    void TearDown() override
+    {
+        // A failed assertion must not leave ProjectGraph's worker blocked while
+        // the fixture joins it during destruction.
+        probe.release_blocked_compilation();
+        project_graph.stop_compilation();
+    }
+
+    void hover(std::string client, std::optional<iv::ManualControlId> control)
+    {
+        iv::ProjectAckBuilder response;
+        in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
+            {.client_id = std::move(client), .id = std::move(control)}, response); });
+        ASSERT_NO_THROW(response.build());
+    }
+
+    void begin(iv::ManualControlInteractionId const& interaction, iv::ManualControlId const& control, float value)
+    {
+        iv::ProjectAckBuilder response;
+        in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction(
+            {interaction, control, value}, response); });
+        ASSERT_NO_THROW(response.build());
+    }
+
+    void end(iv::ManualControlInteractionId const& interaction, float value)
+    {
+        iv::ProjectAckBuilder response;
+        in_event_source([&] { project_graph.handle_project_end_manual_control_interaction(
+            {interaction, value}, response); });
+        ASSERT_NO_THROW(response.build());
+    }
+
+    std::vector<iv::ManualControlId> realize_controls(std::size_t count, bool enabled = true)
+    {
+        publish_definitions_snapshot(project_graph, 
+            iv::NodeDefinitionsSnapshotChanged{
+                .snapshot = make_replacement_snapshot(1),
+            });
+
+        iv::ProjectReplaceGraphRequest request;
+        std::vector<iv::ManualControlId> result;
+        for (std::size_t index = 0; index < count; ++index) {
+            auto const instance_id = "instance:manual:" +
+                std::to_string(index);
+            request.instances.push_back({
+                .instance_id = instance_id,
+                .definition_id = manual_control_leaf_definition_id,
+            });
+            result.push_back({
+                .node = {.instance_id = instance_id},
+                .port_name = "gain",
+            });
+            request.manual_controls.push_back({.id = result.back(), .enabled = enabled});
+        }
+
+        iv::ProjectAckBuilder builder;
+        in_event_source([&] { return project_graph.handle_project_replace_graph(request, builder); });
+        EXPECT_NO_THROW(builder.build());
+        EXPECT_TRUE(project_graph.wait_for_compilation());
+        return result;
+    }
+
+    std::array<iv::ManualControlId, 2> realize_output_and_input_controls()
+    {
+        publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+        iv::ProjectAckBuilder response;
+        in_event_source([&] { project_graph.handle_project_replace_graph({
+            .instances = {{.instance_id = "output", .definition_id = definition_id},
+                {.instance_id = "input", .definition_id = manual_control_leaf_definition_id}},
+        }, response); });
+        EXPECT_NO_THROW(response.build());
+        EXPECT_TRUE(project_graph.wait_for_compilation());
+        return {iv::ManualControlId{.node = {.instance_id = "output"}, .port_name = "main",
+                    .kind = iv::ManualControlKind::output_gain},
+            iv::ManualControlId{.node = {.instance_id = "input"}, .port_name = "gain"}};
+    }
+};
+} // namespace
+
+TEST_F(ProjectGraphFixture, DefinitionAndMutationTransactionsBuildWholeRootGenerations)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    auto generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    EXPECT_EQ(generation->generation, 1u);
+    EXPECT_EQ(generation->definitions_generation, 1u);
+    EXPECT_TRUE(generation->placements.empty());
+
+    iv::ProjectStringBuilder create_builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:a",
+            .definition_id = definition_id,
+        },
+        create_builder); });
+    EXPECT_EQ(create_builder.build(), "instance:a");
+
+    generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    EXPECT_EQ(generation->generation, 2u);
+    ASSERT_EQ(generation->placements.size(), 1u);
+    EXPECT_TRUE(generation->placements.contains("instance:a"));
+    EXPECT_FALSE(project_graph.configuration_failure());
+    EXPECT_EQ(configure_calls.load(), 1);
+
+    iv::ProjectAckBuilder update_builder;
+    in_event_source([&] { return project_graph.handle_project_update_node_instances(
+        iv::ProjectUpdateNodeInstancesRequest{
+            .updates = {{.instance_id = "instance:a", .display_name = "Renamed"}},
+        },
+        update_builder); });
+    EXPECT_NO_THROW(update_builder.build());
+    generation = project_graph.current_generation();
+    EXPECT_EQ(generation->generation, 3u);
+    EXPECT_EQ(generation->placements.size(), 1u);
+    // Same definitions generation + same typed value tuple reuses configuration.
+    EXPECT_EQ(configure_calls.load(), 1);
+
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(2)});
+    generation = project_graph.current_generation();
+    EXPECT_EQ(generation->generation, 4u);
+    EXPECT_EQ(generation->definitions_generation, 2u);
+    EXPECT_EQ(generation->placements.size(), 1u);
+    EXPECT_EQ(configure_calls.load(), 2);
+
+    iv::ProjectAckBuilder delete_builder;
+    in_event_source([&] { return project_graph.handle_project_delete_node_instance(
+        iv::ProjectDeleteNodeInstanceRequest{.instance_id = "instance:a"},
+        delete_builder); });
+    EXPECT_NO_THROW(delete_builder.build());
+    generation = project_graph.current_generation();
+    EXPECT_EQ(generation->generation, 5u);
+    EXPECT_TRUE(generation->placements.empty());
+    EXPECT_TRUE(instances.list_instances().empty());
+}
+
+TEST_F(ProjectGraphFixture, FailedGraphCompilationPublishesTheDiagnosticWithDesiredInterfaces)
+{
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    struct RestoreCompiler {
+        iv::ProjectGraphGraphJitRequestedEvent previous;
+        ~RestoreCompiler() { iv::iv_runtime_project_graph_graph_jit_requested_event = previous; }
+    } restore{std::exchange(iv::iv_runtime_project_graph_graph_jit_requested_event,
+        +[](iv::ProjectGraphGraphJitRequest const&) -> iv::GraphJitCompileResult {
+            return {.attempted = true, .diagnostics = {{
+                .stage = iv::GraphJitDiagnosticStage::lowering,
+                .message = "test lowering failure: output buffer unavailable",
+                .node_type_id = definition_id,
+                .package_root = package_root,
+            }}};
+        })};
+    iv::ProjectStringBuilder create;
+    in_event_source([&] {
+        project_graph.handle_project_create_node_instance({
+            .instance_id = "instance:failed-audio", .definition_id = definition_id,
+        }, create);
+    });
+    EXPECT_EQ(create.build(), "instance:failed-audio");
+    EXPECT_FALSE(create.take_publication().execution_failure);
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    auto const generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    EXPECT_TRUE(generation->placements.contains("instance:failed-audio"));
+    EXPECT_TRUE(generation->graph_jit_attempted);
+    EXPECT_FALSE(generation->compiled_graph);
+    EXPECT_FALSE(generation->graph_executor_attempted);
+    auto const failure = execution.failure();
+    ASSERT_TRUE(failure);
+    EXPECT_EQ(failure->code, "graphCompilationFailed");
+    EXPECT_EQ(failure->level, "error");
+    auto const& message = failure->message;
+    EXPECT_NE(message.find("test lowering failure: output buffer unavailable"), std::string::npos);
+    EXPECT_NE(message.find(definition_id), std::string::npos);
+    EXPECT_NE(message.find(package_root), std::string::npos);
+    EXPECT_NE(message.find("No audio graph has been accepted yet"), std::string::npos);
+}
+
+TEST_F(ProjectGraphFixture, MissingDefinitionFailsThePassAndRealizesWhenDefinitionArrives)
+{
+    iv::ProjectStringBuilder builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:pending",
+            .definition_id = definition_id,
+            .package_root = std::filesystem::path(package_root),
+        },
+        builder); });
+    EXPECT_EQ(builder.build(), "instance:pending");
+
+    // The instance stays desired, but its configuration pass fails. This is
+    // the project's first build, so no generation becomes current.
+    EXPECT_FALSE(project_graph.current_generation());
+    auto failure = project_graph.configuration_failure();
+    ASSERT_TRUE(failure);
+    ASSERT_EQ(failure->node_instance_diagnostics.size(), 1u);
+    EXPECT_EQ(failure->node_instance_diagnostics.front().instance_id, "instance:pending");
+    auto listed = instances.list_instances();
+    ASSERT_EQ(listed.size(), 1u);
+    EXPECT_FALSE(listed.front().realized);
+
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    auto generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    ASSERT_TRUE(generation->placements.contains("instance:pending"));
+    EXPECT_FALSE(project_graph.configuration_failure());
+    listed = instances.list_instances();
+    ASSERT_EQ(listed.size(), 1u);
+    EXPECT_TRUE(listed.front().realized);
+}
+
+TEST_F(ProjectGraphFixture, InvalidEditKeepsThePreviousGenerationCurrent)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    iv::ProjectStringBuilder create_builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:a",
+            .definition_id = definition_id,
+        },
+        create_builder); });
+    EXPECT_EQ(create_builder.build(), "instance:a");
+    auto const good = project_graph.current_generation();
+    ASSERT_TRUE(good);
+    ASSERT_TRUE(good->placements.contains("instance:a"));
+
+    // A second instance of an unknown definition fails the pass; the
+    // previous generation, with instance:a, stays current.
+    iv::ProjectStringBuilder invalid_builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:b",
+            .definition_id = "iv.test.project_graph.unknown",
+            .package_root = std::filesystem::path(package_root),
+        },
+        invalid_builder); });
+    EXPECT_EQ(invalid_builder.build(), "instance:b");
+    expect_same_configuration(project_graph.current_generation(), good);
+    auto failure = project_graph.configuration_failure();
+    ASSERT_TRUE(failure);
+    ASSERT_EQ(failure->node_instance_diagnostics.size(), 1u);
+    EXPECT_EQ(failure->node_instance_diagnostics.front().instance_id, "instance:b");
+
+    // Removing the invalid instance succeeds again and clears the failure.
+    iv::ProjectAckBuilder delete_builder;
+    in_event_source([&] { return project_graph.handle_project_delete_node_instance(
+        iv::ProjectDeleteNodeInstanceRequest{.instance_id = "instance:b"},
+        delete_builder); });
+    EXPECT_NO_THROW(delete_builder.build());
+    EXPECT_NE(project_graph.current_generation(), good);
+    EXPECT_FALSE(project_graph.configuration_failure());
+}
+
+TEST_F(ProjectGraphFixture, NodeMessageReplacementPersistsCompleteSuccessorArguments)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{
+            .snapshot = make_replacement_snapshot(1),
+        });
+    iv::ProjectStringBuilder create_builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:replaceable",
+            .definition_id = replacing_definition_id,
+            .configuration_source = "30",
+        },
+        create_builder); });
+    ASSERT_EQ(create_builder.build(), "instance:replaceable");
+    auto const before = project_graph.current_generation();
+    ASSERT_TRUE(before);
+
+    auto result = in_event_source([&] { return project_graph.dispatch_node_message(
+        iv::NodeAddress{.instance_id = "instance:replaceable"},
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 37})); });
+
+    EXPECT_TRUE(result.diagnostics.empty());
+    EXPECT_TRUE(result.project_state_changed);
+    auto const replaced = project_graph.current_generation();
+    ASSERT_TRUE(replaced);
+    EXPECT_GT(replaced->generation, before->generation);
+    ASSERT_EQ(replaced->node_replacements.size(), 1u);
+    EXPECT_EQ(
+        replaced->node_replacements[0].definition_id,
+        successor_definition_id);
+    EXPECT_EQ(
+        nlohmann::ordered_json::parse(
+            replaced->node_replacements[0].configuration_arguments_json),
+        nlohmann::ordered_json::array({67}));
+    ASSERT_TRUE(replaced->placements.contains("instance:replaceable"));
+    EXPECT_EQ(
+        replaced->placements.at("instance:replaceable")
+            .configured->definition_id,
+        successor_definition_id);
+    EXPECT_EQ(successor_value.load(), 67);
+
+    iv::ProjectAckBuilder update_builder;
+    in_event_source([&] { return project_graph.handle_project_update_node_instances(
+        iv::ProjectUpdateNodeInstancesRequest{
+            .updates = {{
+                .instance_id = "instance:replaceable",
+                .display_name = "Renamed after replacement",
+            }},
+        },
+        update_builder); });
+    EXPECT_NO_THROW(update_builder.build());
+    auto const after_unrelated_rebuild = project_graph.current_generation();
+    ASSERT_TRUE(after_unrelated_rebuild);
+    ASSERT_EQ(after_unrelated_rebuild->node_replacements.size(), 1u);
+    EXPECT_EQ(
+        after_unrelated_rebuild->placements.at("instance:replaceable")
+            .configured->definition_id,
+        successor_definition_id);
+    EXPECT_EQ(successor_value.load(), 67);
+}
+
+TEST_F(ProjectGraphFixture, EventProtocolListsPackageSchemasAndActiveAddressSupport)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{
+            .snapshot = make_protocol_snapshot(9),
+        });
+    iv::ProjectStringBuilder create_builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:protocol",
+            .definition_id = replacing_definition_id,
+            .configuration_source = "30",
+        },
+        create_builder); });
+    ASSERT_EQ(create_builder.build(), "instance:protocol");
+
+    auto const protocol = project_graph.node_event_protocol();
+    EXPECT_EQ(protocol.format_version, 0u);
+    EXPECT_EQ(protocol.definitions_generation, 9u);
+    EXPECT_EQ(
+        protocol.project_graph_generation,
+        project_graph.current_generation()->generation);
+    ASSERT_EQ(protocol.event_types.size(), 1u);
+    auto const& event = protocol.event_types.front();
+    EXPECT_EQ(event.id.nominal_id, protocol_event_nominal_id);
+    EXPECT_EQ(event.id.definition_fingerprint, protocol_event_fingerprint);
+    EXPECT_EQ(event.display_name, "ReplaceWithValue");
+    EXPECT_EQ(event.payload.kind, iv::NodeEventValueKind::aggregate);
+    ASSERT_EQ(event.payload.fields.size(), 1u);
+    EXPECT_EQ(event.payload.fields[0].name, "value");
+    ASSERT_NE(event.payload.fields[0].value, nullptr);
+    EXPECT_EQ(
+        event.payload.fields[0].value->kind,
+        iv::NodeEventValueKind::signed_integer);
+
+    ASSERT_EQ(protocol.definitions.size(), 2u);
+    EXPECT_EQ(
+        protocol.definitions[0].definition_id,
+        replacing_definition_id);
+    ASSERT_EQ(protocol.definitions[0].supported_event_types.size(), 1u);
+    EXPECT_EQ(protocol.definitions[0].supported_event_types[0], event.id);
+    EXPECT_EQ(
+        protocol.definitions[1].definition_id,
+        successor_definition_id);
+    ASSERT_EQ(protocol.definitions[1].supported_event_types.size(), 1u);
+    EXPECT_EQ(protocol.definitions[1].supported_event_types[0], event.id);
+
+    ASSERT_EQ(protocol.receivers.size(), 1u);
+    EXPECT_EQ(protocol.receivers[0].address.instance_id, "instance:protocol");
+    EXPECT_TRUE(protocol.receivers[0].address.path.empty());
+    ASSERT_EQ(protocol.receivers[0].supported_event_types.size(), 1u);
+    EXPECT_EQ(protocol.receivers[0].supported_event_types[0], event.id);
+}
+
+TEST_F(ProjectGraphFixture, FailedReplacementPreviewDoesNotCommitReplacement)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{
+            .snapshot = make_replacement_snapshot(1),
+        });
+    iv::ProjectStringBuilder create_builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:replaceable",
+            .definition_id = replacing_definition_id,
+            .configuration_source = "30",
+        },
+        create_builder); });
+    ASSERT_EQ(create_builder.build(), "instance:replaceable");
+    auto const before = project_graph.current_generation();
+    ASSERT_TRUE(before);
+
+    EXPECT_THROW(
+        (void)in_event_source([&] { return project_graph.dispatch_node_message(
+            iv::NodeAddress{.instance_id = "instance:replaceable"},
+            iv::OwnedNodeMessage(ReplaceWithoutArguments{})); }),
+        std::runtime_error);
+
+    expect_same_configuration(project_graph.current_generation(), before);
+    EXPECT_TRUE(project_graph.current_generation()->node_replacements.empty());
+    EXPECT_TRUE(instances.desired_node_replacements().empty());
+    EXPECT_EQ(successor_configure_calls.load(), 0);
+}
+
+TEST_F(ProjectGraphFixture, ReplacementThenSendUsesTheSuccessorHandler)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{
+            .snapshot = make_replacement_snapshot(1),
+        });
+    iv::ProjectStringBuilder create_builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:replaceable",
+            .definition_id = replacing_definition_id,
+            .configuration_source = "30",
+        },
+        create_builder); });
+    ASSERT_EQ(create_builder.build(), "instance:replaceable");
+
+    auto result = in_event_source([&] { return project_graph.dispatch_node_message(
+        iv::NodeAddress{.instance_id = "instance:replaceable"},
+        iv::OwnedNodeMessage(ReplaceThenSend{.value = 12})); });
+
+    EXPECT_TRUE(result.diagnostics.empty());
+    EXPECT_TRUE(result.project_state_changed);
+    EXPECT_EQ(successor_message_calls.load(), 1);
+    EXPECT_EQ(successor_message_value.load(), 42);
+    ASSERT_EQ(project_graph.current_generation()->node_replacements.size(), 1u);
+    EXPECT_EQ(
+        project_graph.current_generation()->placements
+            .at("instance:replaceable")
+            .configured->definition_id,
+        successor_definition_id);
+}
+
+TEST_F(ProjectGraphFixture, OneInteractionRejectsASecondDeliveryToTheSameNode)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{
+            .snapshot = make_replacement_snapshot(1),
+        });
+    iv::ProjectStringBuilder create_builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:replaceable",
+            .definition_id = replacing_definition_id,
+            .configuration_source = "30",
+        },
+        create_builder); });
+    ASSERT_EQ(create_builder.build(), "instance:replaceable");
+    auto const before = project_graph.current_generation();
+
+    EXPECT_THROW(
+        (void)in_event_source([&] { return project_graph.dispatch_node_message(
+            iv::NodeAddress{.instance_id = "instance:replaceable"},
+            iv::OwnedNodeMessage(RepeatDelivery{})); }),
+        std::runtime_error);
+
+    expect_same_configuration(project_graph.current_generation(), before);
+    EXPECT_TRUE(project_graph.current_generation()->node_replacements.empty());
+}
+
+TEST_F(ProjectGraphFixture, ModuleHandlerSendsToACapturedNodeRef)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{
+            .snapshot = make_replacement_snapshot(1),
+        });
+    iv::ProjectStringBuilder create_builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:sender",
+            .definition_id = sender_definition_id,
+        },
+        create_builder); });
+    ASSERT_EQ(create_builder.build(), "instance:sender");
+
+    auto result = in_event_source([&] { return project_graph.dispatch_node_message(
+        iv::NodeAddress{.instance_id = "instance:sender"},
+        iv::OwnedNodeMessage(SendToReceiver{.value = 91})); });
+
+    EXPECT_TRUE(result.diagnostics.empty())
+        << (result.diagnostics.empty()
+                ? std::string{}
+                : result.diagnostics.front().message);
+    EXPECT_FALSE(result.project_state_changed);
+    EXPECT_EQ(receiver_message_calls.load(), 1);
+    EXPECT_EQ(receiver_message_value.load(), 91);
+}
+
+TEST_F(ProjectGraphFixture, SerializedModuleMessageSendsToACapturedNodeRef)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{
+            .snapshot = make_serialized_sender_snapshot(1),
+        });
+    iv::ProjectStringBuilder create_builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:sender",
+            .definition_id = sender_definition_id,
+        },
+        create_builder); });
+    ASSERT_EQ(create_builder.build(), "instance:sender");
+
+    auto result = in_event_source([&] { return project_graph.dispatch_node_message(
+        iv::NodeAddress{.instance_id = "instance:sender"},
+        iv::SerializedNodeMessage{
+            .event_type_nominal_id = "iv.test.SendToReceiver",
+            .event_type_definition_fingerprint =
+                "iv.test.SendToReceiver:v1",
+            .payload = std::make_shared<nlohmann::ordered_json const>(
+                nlohmann::ordered_json{{"value", 73}}),
+        }); });
+
+    EXPECT_TRUE(result.diagnostics.empty())
+        << (result.diagnostics.empty()
+                ? std::string{}
+                : result.diagnostics.front().message);
+    EXPECT_FALSE(result.project_state_changed);
+    EXPECT_EQ(receiver_message_calls.load(), 1);
+    EXPECT_EQ(receiver_message_value.load(), 73);
+}
+
+TEST_F(ProjectGraphFixture, ModuleMessageSelectorsReachOneTiledConcreteReceiver)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{
+            .snapshot = make_replacement_snapshot(1),
+        });
+    iv::ProjectStringBuilder create_builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:selector-sender",
+            .definition_id = selector_sender_definition_id,
+        },
+        create_builder); });
+    ASSERT_EQ(create_builder.build(), "instance:selector-sender");
+
+    auto result = in_event_source([&] { return project_graph.dispatch_node_message(
+        iv::NodeAddress{.instance_id = "instance:selector-sender"},
+        iv::OwnedNodeMessage(SendToSelectedReceiver{.value = 64})); });
+
+    EXPECT_TRUE(result.diagnostics.empty())
+        << (result.diagnostics.empty()
+                ? std::string{}
+                : result.diagnostics.front().message);
+    EXPECT_EQ(receiver_message_calls.load(), 1);
+    EXPECT_EQ(receiver_message_value.load(), 64);
+}
+
+TEST_F(ProjectGraphFixture, AncestorReplacementCreatesANewDescendantDeliveryWorld)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{
+            .snapshot = make_replacement_snapshot(1),
+        });
+    iv::ProjectStringBuilder create_builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:sender",
+            .definition_id = sender_definition_id,
+        },
+        create_builder); });
+    ASSERT_EQ(create_builder.build(), "instance:sender");
+
+    auto result = in_event_source([&] { return project_graph.dispatch_node_message(
+        iv::NodeAddress{.instance_id = "instance:sender"},
+        iv::OwnedNodeMessage(ReplaceAncestorThenRepeat{})); });
+
+    EXPECT_TRUE(result.diagnostics.empty());
+    EXPECT_TRUE(result.project_state_changed);
+    EXPECT_EQ(receiver_message_calls.load(), 2);
+    EXPECT_EQ(receiver_message_value.load(), 2);
+    ASSERT_EQ(project_graph.current_generation()->node_replacements.size(), 1u);
+    EXPECT_EQ(
+        project_graph.current_generation()->node_replacements[0].address,
+        (iv::NodeAddress{.instance_id = "instance:sender"}));
+}
+
+TEST_F(ProjectGraphFixture, UnrelatedReplacementDoesNotResetReceiverDelivery)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{
+            .snapshot = make_replacement_snapshot(1),
+        });
+    for (auto const& [instance, definition] : std::array{
+             std::pair{"instance:sender", sender_definition_id},
+             std::pair{"instance:receiver", receiver_definition_id},
+         }) {
+        iv::ProjectStringBuilder create_builder;
+        in_event_source([&] { return project_graph.handle_project_create_node_instance(
+            iv::ProjectCreateNodeInstanceRequest{
+                .instance_id = instance,
+                .definition_id = definition,
+            },
+            create_builder); });
+        ASSERT_EQ(create_builder.build(), instance);
+    }
+    auto const before = project_graph.current_generation();
+
+    EXPECT_THROW(
+        (void)in_event_source([&] { return project_graph.dispatch_node_message(
+            iv::NodeAddress{.instance_id = "instance:sender"},
+            iv::OwnedNodeMessage(ReplaceUnrelatedThenRepeat{
+                .target = {.instance_id = "instance:receiver"},
+            })); }),
+        std::runtime_error);
+
+    EXPECT_EQ(receiver_message_calls.load(), 1);
+    expect_same_configuration(project_graph.current_generation(), before);
+    EXPECT_TRUE(project_graph.current_generation()->node_replacements.empty());
+}
+
+TEST_F(ProjectGraphFixture, SuccessiveReplacementsReplaceTheCompletePriorRecord)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{
+            .snapshot = make_replacement_snapshot(1),
+        });
+    iv::ProjectStringBuilder create_builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:replaceable",
+            .definition_id = replacing_definition_id,
+            .configuration_source = "30",
+        },
+        create_builder); });
+    ASSERT_EQ(create_builder.build(), "instance:replaceable");
+
+    auto first = in_event_source([&] { return project_graph.dispatch_node_message(
+        iv::NodeAddress{.instance_id = "instance:replaceable"},
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 12})); });
+    ASSERT_TRUE(first.project_state_changed);
+
+    auto second = in_event_source([&] { return project_graph.dispatch_node_message(
+        iv::NodeAddress{.instance_id = "instance:replaceable"},
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 99})); });
+
+    EXPECT_TRUE(second.project_state_changed);
+    auto const generation = project_graph.current_generation();
+    ASSERT_EQ(generation->node_replacements.size(), 1u);
+    EXPECT_EQ(
+        nlohmann::ordered_json::parse(
+            generation->node_replacements[0].configuration_arguments_json),
+        nlohmann::ordered_json::array({99}));
+    EXPECT_EQ(successor_value.load(), 99);
+}
+
+TEST_F(ProjectGraphFixture, ProjectGraphDispatchesToALeafHandler)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{
+            .snapshot = make_replacement_snapshot(1),
+        });
+    iv::ProjectStringBuilder create_builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:leaf",
+            .definition_id = leaf_receiver_definition_id,
+        },
+        create_builder); });
+    ASSERT_EQ(create_builder.build(), "instance:leaf");
+
+    auto result = in_event_source([&] { return project_graph.dispatch_node_message(
+        iv::NodeAddress{.instance_id = "instance:leaf"},
+        iv::OwnedNodeMessage(LeafMessage{.value = 57})); });
+
+    EXPECT_TRUE(result.diagnostics.empty());
+    EXPECT_FALSE(result.project_state_changed);
+    EXPECT_EQ(leaf_message_calls.load(), 1);
+    EXPECT_EQ(leaf_message_value.load(), 57);
+}
+
+TEST_F(ProjectGraphFixture, StaleDefinitionsSnapshotCannotRollBackRootGeneration)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(2)});
+    auto const current = project_graph.current_generation();
+    ASSERT_TRUE(current);
+
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    auto const after_stale = project_graph.current_generation();
+    ASSERT_TRUE(after_stale);
+    EXPECT_EQ(after_stale->generation, current->generation);
+    EXPECT_EQ(after_stale->definitions_generation, 2u);
+}
+
+TEST(ProjectGraphBridge, NodeDefinitionsSnapshotFlowsThroughProjectGraphBeforeNodeInstances)
+{
+    iv::NodeDefinitions definitions;
+    iv::ProjectGraph project_graph;
+    iv::NodeInstances instances;
+    iv::GraphConnections connections;
+    auto definitions_scope = iv::node_definitions_project_graph_bridge::bind(
+        definitions, project_graph);
+    auto instances_scope = iv::project_graph_node_instances_bridge::bind(
+        project_graph, instances);
+    auto connections_scope = iv::project_graph_graph_connections_bridge::bind(
+        project_graph, connections);
+
+    in_event_source([&] { IV_INVOKE_LINKER_EVENT(
+        iv::iv_runtime_node_definitions_snapshot_changed_event,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(7)}); });
+
+    auto const generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    EXPECT_EQ(generation->definitions_generation, 7u);
+    EXPECT_EQ(instances.configuration_cache_size(), 0u);
+}
+
+TEST(ProjectGraph, FailedRootBuildDoesNotCommitDefinitionsAndSameSnapshotCanRetry)
+{
+    iv::ProjectGraph project_graph;
+    iv::NodeInstances instances;
+    auto instances_scope = iv::project_graph_node_instances_bridge::bind(
+        project_graph, instances);
+    auto snapshot = make_snapshot(1);
+    EXPECT_THROW(
+        publish_definitions_snapshot(project_graph, 
+            iv::NodeDefinitionsSnapshotChanged{.snapshot = snapshot}),
+        std::runtime_error);
+    EXPECT_FALSE(project_graph.current_generation());
+    EXPECT_EQ(project_graph.definitions_snapshot()->generation, 0u);
+
+    iv::GraphConnections connections;
+    auto connections_scope = iv::project_graph_graph_connections_bridge::bind(
+        project_graph, connections);
+    EXPECT_NO_THROW(publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = snapshot}));
+    auto generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    EXPECT_EQ(generation->definitions_generation, 1u);
+}
+
+TEST_F(ProjectGraphFixture, InvalidUpdateBatchDoesNotPartiallyMutateDesiredState)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    iv::ProjectStringBuilder create_builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:a",
+            .definition_id = definition_id,
+            .display_name = "Original",
+        },
+        create_builder); });
+    (void)create_builder.build();
+    auto const before = project_graph.current_generation();
+    ASSERT_TRUE(before);
+
+    iv::ProjectAckBuilder update_builder;
+    EXPECT_THROW(
+        in_event_source([&] { return project_graph.handle_project_update_node_instances(
+            iv::ProjectUpdateNodeInstancesRequest{
+                .updates = {
+                    {.instance_id = "instance:a", .display_name = "Changed"},
+                    {.instance_id = "instance:missing", .display_name = "Invalid"},
+                },
+            },
+            update_builder); }),
+        std::runtime_error);
+
+    auto listed = instances.list_instances();
+    ASSERT_EQ(listed.size(), 1u);
+    EXPECT_EQ(listed.front().display_name, "Original");
+    EXPECT_EQ(project_graph.current_generation()->generation, before->generation);
+}
+
+TEST_F(ProjectGraphFixture, LaneNameOverridesAreDurableAndUndoRestoresTheAuthoredDefault)
+{
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1, &configure_module, "Voice")});
+    iv::ProjectStringBuilder created;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "instance:voice", .definition_id = definition_id,
+    }, created); });
+    (void)created.build();
+    ASSERT_EQ(instances.list_instances().size(), 1u);
+    EXPECT_EQ(instances.list_instances().front().display_name, "Voice");
+    EXPECT_FALSE(instances.desired_instances().front().display_name);
+
+    auto rename = [&](std::string name) {
+        iv::ProjectAckBuilder renamed;
+        in_event_source([&] { project_graph.handle_project_update_node_instances({.updates = {
+            {.instance_id = "instance:voice", .display_name = std::move(name)},
+        }}, renamed); });
+        renamed.build();
+    };
+    rename("Bass");
+    EXPECT_EQ(instances.list_instances().front().display_name, "Bass");
+    EXPECT_EQ(instances.list_instances().front().default_display_name, "Voice");
+    EXPECT_EQ(instances.desired_instances().front().display_name, "Bass");
+
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    undo.build();
+    EXPECT_EQ(instances.list_instances().front().display_name, "Voice");
+    EXPECT_FALSE(instances.desired_instances().front().display_name);
+
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    redo.build();
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(2, &configure_module, "Synth voice")});
+    EXPECT_EQ(instances.list_instances().front().display_name, "Bass");
+    EXPECT_EQ(instances.list_instances().front().default_display_name, "Synth voice");
+    rename("");
+    EXPECT_EQ(instances.list_instances().front().display_name, "Synth voice");
+    EXPECT_FALSE(instances.desired_instances().front().display_name);
+}
+
+
+TEST_F(ProjectGraphFixture, ConnectionMutationRebuildsWholeRootAndDanglingIntentRecovers)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+
+    iv::ProjectStringBuilder source_builder;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "instance:source", .definition_id = definition_id}, source_builder); });
+    ASSERT_EQ(source_builder.build(), "instance:source");
+
+    iv::ProjectAckBuilder connect_builder;
+    in_event_source([&] { return project_graph.handle_project_upsert_graph_connection(
+        iv::ProjectUpsertGraphConnectionRequest{
+            .connection = iv::ProjectSampleConnection{
+                .connection_id = "connection:main",
+                .outputs = {{
+                    .instance_id = "instance:source",
+                    .port = {.name = "main"},
+                }},
+                .inputs = {{
+                    .instance_id = "instance:sink",
+                    .port = {.name = "main"},
+                }},
+            },
+        },
+        connect_builder); });
+    EXPECT_NO_THROW(connect_builder.build());
+    auto generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    EXPECT_TRUE(generation->applied_connection_ids.empty());
+    ASSERT_EQ(generation->connection_diagnostics.size(), 1u);
+    EXPECT_EQ(connections.desired_connections().size(), 1u);
+
+    iv::ProjectStringBuilder sink_builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:sink",
+            .definition_id = definition_id,
+        },
+        sink_builder); });
+    EXPECT_EQ(sink_builder.build(), "instance:sink");
+    generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    EXPECT_EQ(generation->applied_connection_ids,
+              std::vector<std::string>{"connection:main"});
+    EXPECT_TRUE(generation->connection_diagnostics.empty());
+}
+
+namespace {
+struct NamedSamplePass {
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+            {.channel_layout = iv::mono_planar_channel_layout, .default_value = 0.25f})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential,
+            {.channel_layout = iv::mono_planar_channel_layout})};
+    }
+
+    void tick(iv::TickSampleContext<NamedSamplePass> const& ctx) const
+    {
+        ctx.output<"out">().push(ctx.input<"in">().get());
+    }
+};
+
+nlohmann::ordered_json read_graph_scope(iv::ProjectGraph& project_graph,
+    std::vector<iv::NodeAddress> expanded = {})
+{
+    iv::SocketRpcGraphScopeResultBuilder builder;
+    in_event_source([&] {
+        project_graph.handle_socket_rpc_get_graph_scope({.expanded = std::move(expanded)}, builder);
+    });
+    return nlohmann::ordered_json::parse(builder.build(1)).at("result");
+}
+
+nlohmann::ordered_json const& scope_node(
+    nlohmann::ordered_json const& scope,
+    std::string_view instance_id)
+{
+    for (auto const& node : scope.at("nodes")) {
+        if (node.at("instance").at("instanceId") == std::string(instance_id)) return node;
+    }
+    throw std::runtime_error("graph scope has no node " + std::string(instance_id));
+}
+
+void node_message_gesture(iv::ProjectGraph& graph, iv::NodeMessageGestureId const& id,
+    iv::NodeAddress const& target, bool begin)
+{
+    iv::SocketRpcAckResponseBuilder response;
+    in_event_source([&] { graph.handle_socket_rpc_node_message_gesture({.id = id, .target = target, .begin = begin}, response); });
+    auto result = nlohmann::ordered_json::parse(response.build(1));
+    if (result.contains("error")) throw std::runtime_error(result["error"]["message"].get<std::string>());
+}
+} // namespace
+
+TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
+{
+    using namespace iv;
+    auto configure_children = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
+        using Pass = Sum<mono, SampleStreamLayout::planar, 1>;
+        auto input = graph.input<"main">();
+        auto named = details::configure_concrete_node<NamedSamplePass>(graph);
+        named(input);
+        named._annotate_source_info("source-local:/tmp/module_children.cpp:1@named", "/tmp/module_children.cpp", 1, 2, "named");
+        auto second = details::configure_concrete_node<Pass>(graph);
+        second(named);
+        second._annotate_source_info("second", "/tmp/module_children.cpp", 3, 4);
+        named._annotate_source_info("alias", "/tmp/module_children.cpp", 5, 6);
+        auto anonymous = details::configure_concrete_node<Pass>(graph);
+        anonymous(second);
+        graph.outputs("main"_P = anonymous, "tap"_P = second);
+    };
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1, configure_children)});
+    ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance(
+        {.instance_id = "module", .definition_id = definition_id}, create); });
+    ASSERT_EQ(create.build(), "module");
+    NodeAddress const module{.instance_id = "module"};
+    EXPECT_TRUE(read_graph_scope(project_graph).at("childScopes").empty());
+    auto const scope = read_graph_scope(project_graph, {module});
+    ASSERT_EQ(scope.at("nodes").size(), 1u);
+    EXPECT_TRUE(scope.at("childScopes").at(0).at("hasBoundary").get<bool>());
+    auto const& children = scope.at("childScopes").at(0).at("nodes");
+    ASSERT_EQ(children.size(), 3u) << scope.dump();
+    auto const& child = children.at(0);
+    EXPECT_EQ(child.at("childDisplayName"), "NamedSamplePass");
+    EXPECT_EQ(child.at("childSourceLabel"), "named");
+    EXPECT_EQ(child.at("virtualMemberCount"), 1);
+    auto parse_address = [](auto const& node) {
+        return parse_node_address_json(node.at("address"), ProjectConnectionJsonNames::socket_rpc);
+    };
+    auto const named = parse_address(child);
+    auto const& child_input = child.at("sampleInputs").at(0);
+    EXPECT_EQ(child_input.at("name"), "in");
+    ASSERT_TRUE(child_input.contains("manualControl")) << child_input.dump();
+    EXPECT_FALSE(child_input.at("manualControl").at("enabled").get<bool>());
+    EXPECT_EQ(child.at("sampleOutputs").at(0).at("name"), "out");
+    EXPECT_TRUE(child.at("sampleOutputs").at(0).at("manualControl").at("enabled").get<bool>());
+    auto const second = parse_address(children.at(1));
+    auto const& unnamed_input = children.at(1).at("sampleInputs").at(0);
+    EXPECT_EQ(unnamed_input.at("displayName"), "Input");
+    EXPECT_FALSE(unnamed_input.contains("manualControl"));
+    auto const alias = parse_address(children.at(2));
+    ASSERT_EQ(named.path.size(), 1u);
+    auto const expanded = read_graph_scope(project_graph, {module, named, second, alias});
+    EXPECT_FALSE(expanded.at("childScopes").at(1).at("hasBoundary").get<bool>());
+    auto const& member = expanded.at("childScopes").at(1).at("nodes").at(0);
+    auto const& alias_member = expanded.at("childScopes").at(3).at("nodes").at(0);
+    EXPECT_EQ(member.at("childDisplayName"), "NamedSamplePass");
+    EXPECT_EQ(alias_member.at("childDisplayName"), member.at("childDisplayName"));
+    EXPECT_EQ(member.at("childSourceLabel"), "named 1");
+    EXPECT_FALSE(member.contains("virtualMemberCount"));
+    EXPECT_EQ(alias_member.at("childSourceLabel"), "alias 1");
+    EXPECT_EQ(alias_member.at("address"), member.at("address"));
+    EXPECT_NE(alias_member.at("membershipAddress"), member.at("address"));
+    EXPECT_EQ(alias_member.at("sampleInputs"), member.at("sampleInputs"));
+    auto const& member_input = member.at("sampleInputs").at(0);
+    ASSERT_TRUE(member_input.contains("manualControl")) << member_input.dump();
+    EXPECT_TRUE(member_input.at("manualControl").at("enabled").get<bool>());
+    EXPECT_EQ(member_input.at("manualControl").at("value"), 0.25f);
+    auto const& member_gain = member.at("sampleOutputs").at(0).at("manualControl");
+    EXPECT_TRUE(member_gain.at("enabled").get<bool>());
+    EXPECT_TRUE(member_gain.at("available").get<bool>());
+    EXPECT_EQ(member_gain.at("value"), 1);
+    auto const address = parse_address(member);
+    auto const generation = project_graph.current_generation();
+    ASSERT_TRUE(generation && generation->graph);
+    auto const matches = resolve_node_address(*generation->graph, generation->placements, address);
+    ASSERT_EQ(matches.size(), 1u);
+    EXPECT_EQ(matches.front().kind, ProjectNodePathMatch::Kind::bundle);
+    EXPECT_EQ(child.at("sampleOutputs").size(), 1u);
+    EXPECT_TRUE(read_graph_scope(project_graph, {address}).at("childScopes").at(0).at("nodes").empty());
+    auto const& source_wires = expanded.at("connections");
+    ASSERT_EQ(source_wires.size(), 3u) << expanded.dump();
+    for (auto const& wire : source_wires) EXPECT_TRUE(wire.at("sourceOwned").get<bool>());
+    EXPECT_EQ(source_wires.at(0).at("boundarySources").at(0).at("instanceId"), "module");
+    EXPECT_EQ(source_wires.at(0).at("boundarySources").at(0).at("port").at("index"), 0);
+    EXPECT_EQ(source_wires.at(1).at("connection").at("outputs").at(0).at("path"), member.at("address").at("path"));
+    EXPECT_EQ(source_wires.at(2).at("boundaryTargets").at(0).at("instanceId"), "module");
+    EXPECT_EQ(source_wires.at(2).at("boundaryTargets").at(0).at("port").at("index"), 1);
+
+    ProjectStringBuilder create_sink;
+    in_event_source([&] { project_graph.handle_project_create_node_instance(
+        {.instance_id = "sink", .definition_id = definition_id}, create_sink); });
+    ASSERT_EQ(create_sink.build(), "sink");
+    ProjectAckBuilder connect;
+    in_event_source([&] { project_graph.handle_project_upsert_graph_connection({
+        .connection = ProjectSampleConnection{
+            .connection_id = "child-wire",
+            .source_type = ChannelTypeId::mono,
+            .outputs = {{.instance_id = address.instance_id, .path = address.path, .port = {.index = 0}}},
+            .target_type = ChannelTypeId::mono,
+            .inputs = {{.instance_id = "sink", .port = {.name = "main"}}},
+        },
+    }, connect); });
+    ASSERT_NO_THROW(connect.build());
+    EXPECT_EQ(project_graph.current_generation()->applied_connection_ids,
+        std::vector<std::string>{"child-wire"});
+    auto const expanded_after_wiring = read_graph_scope(project_graph, {module, named, second});
+    auto const& wires = expanded_after_wiring.at("connections");
+    ASSERT_EQ(wires.size(), 4u);
+    EXPECT_EQ(wires.at(0).at("id"), "child-wire");
+    EXPECT_FALSE(wires.at(0).at("sourceOwned").get<bool>());
+    EXPECT_TRUE(wires.at(1).at("sourceOwned").get<bool>());
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeShowsConnectionsFromNamedSamplePortAliases)
+{
+    using namespace iv;
+    auto configure = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
+        using Pass = Sum<mono, SampleStreamLayout::planar, 1>;
+        auto producer = details::configure_concrete_node<Pass>(graph);
+        auto output = producer[std::size_t{0}];
+        output._annotate_source_info("output_alias", "/tmp/module_alias.cpp", 1, 2);
+        auto consumer = details::configure_concrete_node<Pass>(graph);
+        consumer(output);
+        consumer._annotate_source_info("consumer", "/tmp/module_alias.cpp", 3, 4);
+        graph.outputs("main"_P = consumer);
+    };
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1, configure)});
+    ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance(
+        {.instance_id = "module", .definition_id = definition_id}, create); });
+    ASSERT_EQ(create.build(), "module");
+    auto const scope = read_graph_scope(project_graph, {{.instance_id = "module"}});
+    auto const& wires = scope.at("connections");
+    auto const alias = std::ranges::find_if(wires, [](auto const& wire) {
+        auto const& outputs = wire.at("connection").at("outputs");
+        return !outputs.empty() && outputs.at(0).at("path").at(0).value("typeIdentity", "") == "sample-port";
+    });
+    ASSERT_NE(alias, wires.end()) << scope.dump();
+    EXPECT_EQ(alias->at("sourceOwned"), true);
+    EXPECT_EQ(alias->at("connection").at("outputs").at(0).at("port").at("index"), 0);
+    EXPECT_EQ(alias->at("connection").at("inputs").size(), 1u);
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForANamedMonoQuotientWithoutATile)
+{
+    using namespace iv;
+    auto configure = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
+        auto const detune = graph.input<"main">(0, -100, 100);
+        // Use private constant nodes because this fixture has no package-generated type metadata.
+        auto const numerator_scale = graph.node<Constant>(Sample{2});
+        auto const denominator = graph.node<Constant>(Sample{15});
+        auto detune_pair = detune * numerator_scale / denominator;
+        detune_pair._annotate_source_info("detune_pair", "/tmp/quotient.cpp", 1, 2, "detune_pair");
+        graph.outputs("main"_P = detune_pair);
+    };
+    auto definitions = std::const_pointer_cast<NodeDefinitionsSnapshot>(make_snapshot(1, configure));
+    definitions->by_id.emplace("test.quotient", NodeDefinitionEntry{
+        .definition_id = "test.quotient",
+        .kind = NodeDefinitionKind::leaf,
+        .version = 1,
+        .definition = LeafNodeDefinition{
+            .definition_id = "test.quotient",
+            .display_name = "Quotient",
+            .compiler_record = details::node_compiler_record<Quotient>,
+        },
+    });
+    publish_definitions_snapshot(project_graph, {.snapshot = definitions});
+    ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance(
+        {.instance_id = "module", .definition_id = definition_id}, create); });
+    ASSERT_EQ(create.build(), "module");
+    ASSERT_FALSE(project_graph.configuration_failure());
+
+    auto const scope = read_graph_scope(project_graph, {{.instance_id = "module"}});
+    auto const& children = scope.at("childScopes").at(0).at("nodes");
+    ASSERT_EQ(children.size(), 1u) << scope.dump();
+    auto const& node = children.at(0);
+    EXPECT_EQ(node.at("childDisplayName"), "Quotient");
+    EXPECT_EQ(node.at("childSourceLabel"), "detune_pair");
+    auto const& inputs = node.at("sampleInputs");
+    ASSERT_EQ(inputs.size(), 2u);
+    EXPECT_EQ(inputs.at(0).at("name"), "left");
+    EXPECT_EQ(inputs.at(1).at("name"), "right");
+    for (auto const& input : inputs) {
+        ASSERT_TRUE(input.contains("manualControl")) << input.dump();
+        EXPECT_EQ(input.at("manualControl").at("available"), true);
+        EXPECT_EQ(input.at("manualControl").at("enabled"), false);
+    }
+    auto const& output = node.at("sampleOutputs").at(0);
+    EXPECT_EQ(output.at("name"), "out");
+    ASSERT_TRUE(output.contains("manualControl")) << output.dump();
+    EXPECT_EQ(output.at("manualControl").at("available"), true);
+    EXPECT_EQ(output.at("manualControl").at("value"), 1);
+
+    auto const declaration = parse_node_address_json(node.at("address"), ProjectConnectionJsonNames::socket_rpc);
+    auto const expanded = read_graph_scope(project_graph, {declaration});
+    auto const& members = expanded.at("childScopes").at(0).at("nodes");
+    ASSERT_EQ(members.size(), 1u);
+    EXPECT_EQ(members.at(0).at("childDisplayName"), "Quotient");
+    EXPECT_EQ(members.at(0).at("childSourceLabel"), "detune_pair 1");
+    auto const member = parse_node_address_json(members.at(0).at("address"), ProjectConnectionJsonNames::socket_rpc);
+    auto const generation = project_graph.current_generation();
+    ASSERT_TRUE(generation && generation->graph);
+    auto const matches = resolve_node_address(*generation->graph, generation->placements, member);
+    ASSERT_EQ(matches.size(), 1u);
+    EXPECT_TRUE(generation->graph->node_bundles.bundle(matches.front().bundle).is_concrete());
+    EXPECT_TRUE(read_graph_scope(project_graph, {member}).at("childScopes").at(0).at("nodes").empty());
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForTiledMultiplicationAndItsMembers)
+{
+    using namespace iv;
+    auto configure = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
+        auto const left = graph.node<Constant>(Sample{0.25});
+        auto const right = graph.node<Constant>(Sample{0.75});
+        auto const level = graph.node<Constant>(Sample{0.5});
+        auto const balance = graph.tile<stereo>(left, right);
+        auto const gain = level * balance;
+        gain._annotate_source_info("gain", "/tmp/gain.cpp", 1, 2, "gain");
+        graph.outputs("main"_P = gain);
+    };
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1, configure)});
+    ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance(
+        {.instance_id = "module", .definition_id = definition_id}, create); });
+    ASSERT_EQ(create.build(), "module");
+    ASSERT_FALSE(project_graph.configuration_failure());
+
+    auto expect_knobs = [](auto const& node, bool input_enabled) {
+        auto const& inputs = node.at("sampleInputs");
+        ASSERT_EQ(inputs.size(), 2u);
+        EXPECT_EQ(inputs.at(0).at("name"), "left");
+        EXPECT_EQ(inputs.at(1).at("name"), "right");
+        for (auto const& input : inputs) {
+            ASSERT_TRUE(input.contains("manualControl")) << input.dump();
+            EXPECT_EQ(input.at("manualControl").at("available"), true);
+            EXPECT_EQ(input.at("manualControl").at("enabled"), input_enabled);
+        }
+        auto const& output = node.at("sampleOutputs").at(0);
+        EXPECT_EQ(output.at("name"), "out");
+        ASSERT_TRUE(output.contains("manualControl")) << output.dump();
+        EXPECT_EQ(output.at("manualControl").at("available"), true);
+    };
+    auto address = [](auto const& node) {
+        return parse_node_address_json(node.at("address"), ProjectConnectionJsonNames::socket_rpc);
+    };
+    auto const module = read_graph_scope(project_graph, {{.instance_id = "module"}});
+    auto const& virtual_gain = module.at("childScopes").at(0).at("nodes").at(0);
+    ASSERT_EQ(virtual_gain.at("childSourceLabel"), "gain");
+    expect_knobs(virtual_gain, false);
+
+    auto const expanded_gain = read_graph_scope(project_graph, {address(virtual_gain)});
+    auto const& tiled_gain = expanded_gain.at("childScopes").at(0).at("nodes").at(0);
+    expect_knobs(tiled_gain, true);
+
+    auto const expanded_tile = read_graph_scope(project_graph, {address(tiled_gain)});
+    auto const& channels = expanded_tile.at("childScopes").at(0).at("nodes");
+    ASSERT_EQ(channels.size(), 2u);
+    for (auto const& channel : channels) expect_knobs(channel, true);
+}
+
+TEST_F(ProjectGraphFixture, VirtualDeclarationsKeepSeparateLanesAndInputsForEachType)
+{
+    using namespace iv;
+    auto configure_children = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
+        auto single = details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 1>>(graph);
+        auto pair = details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 2>>(graph);
+        single._annotate_source_info("voice", "/tmp/voice.cpp", 1, 2, "voice");
+        pair._annotate_source_info("voice", "/tmp/voice.cpp", 1, 2, "voice");
+        graph.outputs("main"_P = single);
+    };
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1, configure_children)});
+    ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance(
+        {.instance_id = "module", .definition_id = definition_id}, create); });
+    ASSERT_EQ(create.build(), "module");
+    auto const graph_scope = read_graph_scope(project_graph, {{.instance_id = "module"}});
+    auto const& children = graph_scope.at("childScopes").at(0).at("nodes");
+    ASSERT_EQ(children.size(), 2u);
+    EXPECT_NE(children[0].at("childDisplayName"), children[1].at("childDisplayName"));
+    for (std::size_t i = 0; i < children.size(); ++i) {
+        auto const label = children[i].at("childDisplayName").get<std::string>();
+        EXPECT_TRUE(label.contains("Sum"));
+        EXPECT_EQ(children[i].at("childSourceLabel"), "voice");
+        EXPECT_EQ(children[i].at("sampleInputs").size(), i + 1);
+        EXPECT_EQ(children[i].at("sampleOutputs").at(0).at("name"), "out");
+    }
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeReportsAcceptedArgumentsAfterReplacementUndoAndFailedConfiguration)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({.instance_id = "curve",
+        .definition_id = replacing_definition_id, .configuration_source = "30"}, create); });
+    ASSERT_EQ(create.build(), "curve");
+    auto original = project_graph.current_generation()->placements.at("curve").configured;
+    auto scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(scope, "curve")["construction"]["arguments"], nlohmann::ordered_json::array({30}));
+    auto result = in_event_source([&] { return project_graph.dispatch_node_message(
+        {.instance_id = "curve"}, iv::OwnedNodeMessage(ReplaceWithValue{.value = 12})); });
+    ASSERT_TRUE(result.project_state_changed);
+    scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(scope, "curve")["construction"]["definitionId"], successor_definition_id);
+    EXPECT_EQ(scope_node(scope, "curve")["definitionId"], successor_definition_id);
+    EXPECT_EQ(scope_node(scope, "curve")["construction"]["arguments"], nlohmann::ordered_json::array({42}));
+    EXPECT_EQ(nlohmann::ordered_json::parse(original->read_construction_arguments().json.value()), nlohmann::ordered_json::array({30}));
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(scope, "curve")["construction"]["arguments"], nlohmann::ordered_json::array({30}));
+    iv::ProjectAckBuilder invalid;
+    in_event_source([&] { project_graph.handle_project_update_node_instances({.updates = {{.instance_id = "curve",
+        .configuration_source = "unknown_argument"}}}, invalid); });
+    ASSERT_NO_THROW(invalid.build());
+    scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(scope, "curve")["loadState"], "failed");
+    EXPECT_EQ(scope_node(scope, "curve")["construction"]["arguments"], nlohmann::ordered_json::array({30}));
+}
+
+TEST_F(ProjectGraphFixture, NodeMessageGestureCombinesAcceptedMessagesAndRedoDoesNotInvokeThemAgain)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({.instance_id = "curve",
+        .definition_id = replacing_definition_id, .configuration_source = "30"}, create); });
+    ASSERT_EQ(create.build(), "curve");
+    iv::NodeAddress target{.instance_id = "curve"};
+    iv::NodeMessageGestureId gesture{.client_id = "editor", .interaction_id = "drag"};
+    ASSERT_NO_THROW(node_message_gesture(project_graph, gesture, target, true));
+    for (int value : {12, 99}) {
+        auto result = in_event_source([&] { return project_graph.dispatch_node_message(target,
+            iv::OwnedNodeMessage(ReplaceWithValue{.value = value}), gesture); });
+        ASSERT_TRUE(result.project_state_changed);
+    }
+    ASSERT_NO_THROW(node_message_gesture(project_graph, gesture, target, false));
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_TRUE(instances.desired_node_replacements().empty());
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    EXPECT_EQ(nlohmann::ordered_json::parse(instances.desired_node_replacements()[0].configuration_arguments_json),
+        nlohmann::ordered_json::array({99}));
+    EXPECT_THROW(in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 101}), gesture); }), std::invalid_argument);
+}
+
+TEST_F(ProjectGraphFixture, ConflictingEditClosesNodeGestureBeforeItsOwnHistoryAndRejectsLateUpdates)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({.instance_id = "curve",
+        .definition_id = replacing_definition_id, .configuration_source = "30"}, create); });
+    ASSERT_EQ(create.build(), "curve");
+    iv::NodeAddress target{.instance_id = "curve"};
+    iv::NodeMessageGestureId gesture{.client_id = "editor", .interaction_id = "drag"};
+    node_message_gesture(project_graph, gesture, target, true);
+    auto first = in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 12}), gesture); });
+    ASSERT_TRUE(first.project_state_changed);
+    auto other = in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 99})); });
+    ASSERT_TRUE(other.project_state_changed);
+    EXPECT_THROW(in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 101}), gesture); }), std::invalid_argument);
+    for (int expected : {42, 30}) {
+        iv::ProjectAckBuilder undo;
+        in_event_source([&] { project_graph.handle_project_undo(undo); });
+        ASSERT_NO_THROW(undo.build());
+        auto scope = read_graph_scope(project_graph);
+        EXPECT_EQ(scope_node(scope, "curve")["construction"]["arguments"], nlohmann::ordered_json::array({expected}));
+    }
+}
+
+TEST_F(ProjectGraphFixture, ClientDisconnectClosesNodeMessageHistoryAtItsLastAcceptedValue)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({.instance_id = "curve",
+        .definition_id = replacing_definition_id, .configuration_source = "30"}, create); });
+    ASSERT_EQ(create.build(), "curve");
+    iv::NodeAddress target{.instance_id = "curve"};
+    iv::NodeMessageGestureId gesture{.client_id = "editor", .interaction_id = "drag"};
+    node_message_gesture(project_graph, gesture, target, true);
+    auto changed = in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 12}), gesture); });
+    ASSERT_TRUE(changed.project_state_changed);
+    iv::SocketRpcClientDisconnectedRequest disconnect{.client_id = "editor"};
+    in_event_source([&] { project_graph.handle_socket_rpc_client_disconnected(disconnect); });
+    EXPECT_TRUE(disconnect.project_state_changed);
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_TRUE(instances.desired_node_replacements().empty());
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeListsInstancesWithRealizedPortsAndConnectionState)
+{
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    for (auto const* instance_id : {"instance:source", "instance:sink"}) {
+        iv::ProjectStringBuilder builder;
+        in_event_source([&] { return project_graph.handle_project_create_node_instance(
+            iv::ProjectCreateNodeInstanceRequest{
+                .instance_id = std::string(instance_id),
+                .definition_id = definition_id,
+            },
+            builder); });
+        EXPECT_EQ(builder.build(), instance_id);
+    }
+    iv::ProjectAckBuilder connect_builder;
+    in_event_source([&] { return project_graph.handle_project_upsert_graph_connection(
+        iv::ProjectUpsertGraphConnectionRequest{
+            .connection = iv::ProjectSampleConnection{
+                .connection_id = "connection:main",
+                .outputs = {{.instance_id = "instance:source", .port = {.name = "main"}}},
+                .inputs = {{.instance_id = "instance:sink", .port = {.name = "main"}}},
+            },
+        },
+        connect_builder); });
+    EXPECT_NO_THROW(connect_builder.build());
+
+    auto scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope.at("generation"), project_graph.current_generation()->generation);
+    EXPECT_TRUE(scope.at("editable").get<bool>());
+    ASSERT_EQ(scope.at("nodes").size(), 2u);
+    auto const& source = scope_node(scope, "instance:source");
+    EXPECT_EQ(source.at("address").at("instanceId"), "instance:source");
+    EXPECT_TRUE(source.at("instance").at("realized").get<bool>());
+    ASSERT_FALSE(source.at("sampleInputs").empty());
+    EXPECT_EQ(source.at("sampleInputs")[0].at("access"), "sequential");
+    EXPECT_FALSE(source.at("sampleInputs")[0].contains("realization"));
+    auto const outputs = source.at("sampleOutputs");
+    ASSERT_FALSE(outputs.empty());
+    bool has_main_output = false;
+    for (auto const& port : outputs) {
+        if (port.at("name") == "main" && port.contains("channelType")) {
+            has_main_output = true;
+            EXPECT_EQ(port.at("production"), "sequential");
+            EXPECT_EQ(port.at("realization"), "computed");
+            ASSERT_FALSE(port.at("valueTypes").empty());
+            EXPECT_TRUE(port.at("valueTypes")[0].contains("type"));
+        }
+    }
+    EXPECT_TRUE(has_main_output);
+    ASSERT_EQ(scope.at("connections").size(), 1u);
+    EXPECT_EQ(scope.at("connections")[0].at("id"), "connection:main");
+    EXPECT_TRUE(scope.at("connections")[0].at("applied").get<bool>());
+
+    // The single-node route publishes the deletion and wire cleanup together.
+    iv::ProjectAckBuilder delete_builder;
+    in_event_source([&] { return project_graph.handle_project_delete_node_instance(
+        iv::ProjectDeleteNodeInstanceRequest{.instance_id = "instance:sink"},
+        delete_builder); });
+    EXPECT_NO_THROW(delete_builder.build());
+
+    scope = read_graph_scope(project_graph);
+    ASSERT_EQ(scope.at("nodes").size(), 1u);
+    EXPECT_TRUE(scope.at("connections").empty());
+}
+
+TEST_F(ProjectGraphFixture, RootBuildPublicationMarksTheGraphChanged)
+{
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    iv::ProjectStringBuilder builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:changed",
+            .definition_id = definition_id,
+        },
+        builder); });
+    EXPECT_EQ(builder.build(), "instance:changed");
+    EXPECT_TRUE(builder.take_publication().graph_changed);
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeReportsInstanceConfigurationFailureAndClearsItOnRecovery)
+{
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:failure",
+            .definition_id = definition_id,
+            .package_root = std::filesystem::path(package_root),
+        }, create); });
+    EXPECT_EQ(create.build(), "instance:failure");
+    auto failed_scope = read_graph_scope(project_graph);
+    auto const& failed = scope_node(failed_scope, "instance:failure");
+    EXPECT_FALSE(failed.at("errorMessage").get<std::string>().empty());
+    EXPECT_EQ(failed.at("loadState"), "waitingForDefinition");
+    EXPECT_FALSE(failed.at("instance").at("realized").get<bool>());
+
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    auto recovered_scope = read_graph_scope(project_graph);
+    auto const& recovered = scope_node(recovered_scope, "instance:failure");
+    EXPECT_TRUE(recovered.at("errorMessage").get<std::string>().empty());
+    EXPECT_TRUE(recovered.at("instance").at("realized").get<bool>());
+    EXPECT_EQ(recovered.at("loadState"), "ready");
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeShowsHealthyInterfacesBeforeTheFirstSuccessfulGraph)
+{
+    iv::ProjectAckBuilder replace;
+    in_event_source([&] {
+        project_graph.handle_project_replace_graph(iv::ProjectReplaceGraphRequest{
+            .instances = {
+                {.instance_id = "healthy", .definition_id = definition_id,
+                 .package_root = std::filesystem::path(package_root)},
+                {.instance_id = "missing", .definition_id = "iv.test.unavailable",
+                 .package_root = std::filesystem::path(package_root)},
+            },
+        }, replace);
+    });
+    EXPECT_NO_THROW(replace.build());
+    EXPECT_FALSE(project_graph.current_generation());
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    EXPECT_FALSE(project_graph.current_generation());
+    auto scope = read_graph_scope(project_graph);
+    auto const& healthy = scope_node(scope, "healthy");
+    ASSERT_EQ(healthy.at("sampleInputs").size(), 1u);
+    ASSERT_EQ(healthy.at("sampleOutputs").size(), 1u);
+    EXPECT_EQ(healthy.at("sampleInputs")[0].at("name"), "main");
+    EXPECT_EQ(healthy.at("sampleOutputs")[0].at("name"), "main");
+    EXPECT_FALSE(healthy.at("sampleOutputs")[0].at("valueTypes").empty());
+    EXPECT_TRUE(scope_node(scope, "missing").at("sampleOutputs").empty());
+    auto const calls = configure_calls.load();
+    (void)read_graph_scope(project_graph);
+    EXPECT_EQ(configure_calls.load(), calls); // Scope reads run no constructors.
+
+    iv::ProjectAckBuilder remove;
+    in_event_source([&] {
+        project_graph.handle_project_delete_node_instance(
+            iv::ProjectDeleteNodeInstanceRequest{.instance_id = "missing"}, remove);
+    });
+    EXPECT_NO_THROW(remove.build());
+    ASSERT_TRUE(project_graph.current_generation());
+    EXPECT_FALSE(project_graph.configuration_failure());
+    EXPECT_EQ(scope_node(read_graph_scope(project_graph), "healthy").at("sampleInputs").size(), 1u);
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeDoesNotUseOldPortsForAnInvalidDesiredConfiguration)
+{
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] {
+        project_graph.handle_project_create_node_instance(iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "changed", .definition_id = definition_id,
+        }, create);
+    });
+    ASSERT_EQ(create.build(), "changed");
+    auto const previous = project_graph.current_generation();
+    ASSERT_TRUE(previous);
+
+    iv::ProjectAckBuilder replace;
+    in_event_source([&] {
+        project_graph.handle_project_replace_graph(iv::ProjectReplaceGraphRequest{
+            .instances = {
+                {.instance_id = "changed", .definition_id = definition_id,
+                 .package_root = std::filesystem::path(package_root),
+                 .configuration_source = "invalid configuration expression"},
+                {.instance_id = "healthy", .definition_id = definition_id,
+                 .package_root = std::filesystem::path(package_root)},
+            },
+        }, replace);
+    });
+    EXPECT_NO_THROW(replace.build());
+    expect_same_configuration(project_graph.current_generation(), previous);
+    auto const scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(scope, "healthy").at("sampleOutputs").size(), 1u);
+    auto const& changed = scope_node(scope, "changed");
+    EXPECT_TRUE(changed.at("sampleInputs").empty());
+    EXPECT_TRUE(changed.at("sampleOutputs").empty());
+    EXPECT_EQ(changed.at("loadState"), "failed");
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeReportsConfirmedPackageFailureWhilePreviousGenerationStaysActive)
+{
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:build",
+            .definition_id = definition_id,
+            .package_root = std::filesystem::path(package_root),
+        }, create); });
+    ASSERT_EQ(create.build(), "instance:build");
+    auto const active = project_graph.current_generation();
+    ASSERT_TRUE(active);
+
+    iv::PackageRefreshTransaction failed;
+    failed.failed_builds.push_back(iv::PackageJitFailure{
+        .package_id = "iv.test.project_graph.package",
+        .package_root = package_root,
+        .message = "compiler rejected the edited source",
+    });
+    in_event_source([&] { packages.handle_package_refresh(failed); });
+    auto failed_scope = read_graph_scope(project_graph);
+    auto const& node = scope_node(failed_scope, "instance:build");
+    EXPECT_EQ(node.at("loadState"), "failed");
+    EXPECT_NE(node.at("errorMessage").get<std::string>().find("compiler rejected"), std::string::npos);
+    EXPECT_TRUE(node.at("instance").at("realized").get<bool>());
+    expect_same_configuration(project_graph.current_generation(), active);
+
+    iv::PackageRefreshTransaction recovered;
+    recovered.successful_revisions.push_back(*make_snapshot(2)->package_revisions.front());
+    in_event_source([&] { packages.handle_package_refresh(recovered); });
+    auto recovered_scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(recovered_scope, "instance:build").at("loadState"), "ready");
+    EXPECT_TRUE(scope_node(recovered_scope, "instance:build").at("errorMessage").get<std::string>().empty());
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeDistinguishesWaitingFromMissingDefinitionInACompletedPackage)
+{
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:waiting",
+            .definition_id = definition_id,
+            .package_root = std::filesystem::path(package_root),
+        }, create); });
+    ASSERT_EQ(create.build(), "instance:waiting");
+    auto waiting = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(waiting, "instance:waiting").at("loadState"), "waitingForDefinition");
+
+    // A completed package that does not publish the requested definition is
+    // a confirmed failure, unlike the initial absence of a built package.
+    iv::PackageRefreshTransaction completed;
+    completed.successful_revisions.push_back(iv::PackageRevision{
+        .package_id = "iv.test.project_graph.package",
+        .package_root = package_root,
+        .revision = 1,
+    });
+    in_event_source([&] { packages.handle_package_refresh(completed); });
+    auto missing = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(missing, "instance:waiting").at("loadState"), "failed");
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeMarksInvalidConfigurationAsFailedEvenWhenPackageStatusIsAbsent)
+{
+    publish_definitions_snapshot(project_graph,
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:invalid",
+            .definition_id = definition_id,
+            .configuration_source = "this is not a configuration expression",
+        }, create); });
+    EXPECT_EQ(create.build(), "instance:invalid");
+    auto invalid = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(invalid, "instance:invalid").at("loadState"), "failed");
+    EXPECT_FALSE(scope_node(invalid, "instance:invalid").at("errorMessage").get<std::string>().empty());
+}
+
+TEST_F(ProjectGraphFixture, ReplaceGraphReplaysNodesAndConnectionsInOneGeneration)
+{
+    iv::ProjectAckBuilder builder;
+    in_event_source([&] { return project_graph.handle_project_replace_graph(
+        iv::ProjectReplaceGraphRequest{
+            .instances = {
+                {
+                    .instance_id = "instance:source",
+                    .definition_id = definition_id,
+                    .package_root = std::filesystem::path(package_root),
+                    .display_name = "Source",
+                },
+                {
+                    .instance_id = "instance:target",
+                    .definition_id = definition_id,
+                    .package_root = std::filesystem::path(package_root),
+                    .configuration_source = "",
+                },
+            },
+            .connections = {iv::ProjectSampleConnection{
+                .connection_id = "connection:main",
+                .outputs = {{
+                    .instance_id = "instance:source",
+                    .port = {.name = "main"},
+                }},
+                .inputs = {{
+                    .instance_id = "instance:target",
+                    .port = {.name = "main"},
+                }},
+            }},
+        },
+        builder); });
+    EXPECT_NO_THROW(builder.build());
+
+    // No definition is available yet, so the pass fails; the replaced
+    // instances and connection are still the desired revision.
+    EXPECT_FALSE(project_graph.current_generation());
+    auto const failure = project_graph.configuration_failure();
+    ASSERT_TRUE(failure);
+    EXPECT_EQ(failure->node_instance_diagnostics.size(), 2u);
+    ASSERT_EQ(instances.desired_instances().size(), 2u);
+    ASSERT_EQ(connections.desired_connections().size(), 1u);
+
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
+    auto generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    EXPECT_EQ(generation->generation, 1u);
+    EXPECT_EQ(generation->placements.size(), 2u);
+    EXPECT_EQ(
+        generation->applied_connection_ids,
+        std::vector<std::string>{"connection:main"});
+
+    iv::ProjectAckBuilder replacement_builder;
+    in_event_source([&] { return project_graph.handle_project_replace_graph(
+        iv::ProjectReplaceGraphRequest{},
+        replacement_builder); });
+    EXPECT_NO_THROW(replacement_builder.build());
+    EXPECT_TRUE(instances.desired_instances().empty());
+    EXPECT_TRUE(connections.desired_connections().empty());
+    EXPECT_EQ(project_graph.current_generation()->generation, 2u);
+}
+
+TEST_F(ProjectGraphFixture,
+       ManualControlsResolveStableAddressesAndInputNamesPerGeneration)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{
+            .snapshot = make_replacement_snapshot(1),
+        });
+
+    iv::ProjectAckBuilder builder;
+    in_event_source([&] { return project_graph.handle_project_replace_graph(
+        iv::ProjectReplaceGraphRequest{
+            .instances = {{
+                .instance_id = "instance:manual",
+                .definition_id = manual_control_leaf_definition_id,
+            }},
+            .manual_controls = {
+                iv::ProjectManualControl{
+                    .id = {
+                        .node = {.instance_id = "instance:manual"},
+                        .port_name = "gain",
+                    },
+                    .stored_value = iv::Sample{0.625f},
+                    .participation = iv::ManualControlParticipation::
+                        participate_with_connections,
+                },
+                iv::ProjectManualControl{
+                    .id = {
+                        .node = {.instance_id = "instance:manual"},
+                        .port_name = "missing",
+                    },
+                    .stored_value = iv::Sample{0.25f},
+                },
+            },
+        },
+        builder); });
+    EXPECT_NO_THROW(builder.build());
+
+    auto const generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    ASSERT_EQ(generation->manual_controls.size(), 2u);
+    ASSERT_EQ(generation->graph->manual_controls.size(), 1u);
+    auto const& configured = generation->graph->manual_controls.front();
+    EXPECT_EQ(configured.id.port_name, "gain");
+    EXPECT_FLOAT_EQ(static_cast<float>(configured.settled_value), 0.625f);
+    EXPECT_EQ(
+        configured.participation,
+        iv::ManualControlParticipation::participate_with_connections);
+    EXPECT_FALSE(configured.dynamic);
+    EXPECT_EQ(
+        generation->graph->node_bundles
+            .resolve_sample_input(configured.input)
+            .config.name,
+        "gain");
+    ASSERT_EQ(generation->manual_control_diagnostics.size(), 1u);
+    EXPECT_EQ(
+        generation->manual_control_diagnostics.front().id.port_name,
+        "missing");
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       HoverCompilationDoesNotActivateAndInteractionRejectsStaleResult)
+{
+    auto const controls = realize_controls(2);
+    ASSERT_EQ(controls.size(), 2u);
+    auto const baseline_compilations = probe.compilation_count();
+    EXPECT_TRUE(probe.stages().empty());
+
+    probe.block_next_compilation();
+    iv::ProjectAckBuilder hover_first;
+    in_event_source([&] { return project_graph.handle_project_set_manual_control_hover(
+        iv::ProjectSetManualControlHoverRequest{
+            .client_id = "client:hover",
+            .id = controls[0],
+        },
+        hover_first); });
+    EXPECT_NO_THROW(hover_first.build());
+    EXPECT_TRUE(probe.wait_for_blocked_compilation());
+
+    // Replacing the hover invalidates the in-flight result for controls[0].
+    iv::ProjectAckBuilder hover_second;
+    in_event_source([&] { return project_graph.handle_project_set_manual_control_hover(
+        iv::ProjectSetManualControlHoverRequest{
+            .client_id = "client:hover",
+            .id = controls[1],
+        },
+        hover_second); });
+    EXPECT_NO_THROW(hover_second.build());
+    probe.release_blocked_compilation();
+
+    ASSERT_TRUE(probe.wait_for_compilations(baseline_compilations + 2));
+    auto const compilations = probe.compilations();
+    ASSERT_GE(compilations.size(), baseline_compilations + 2);
+    EXPECT_EQ(
+        compilations[baseline_compilations].dynamic_inputs,
+        std::vector<iv::ManualControlId>{controls[0]});
+    EXPECT_EQ(
+        compilations[baseline_compilations + 1].dynamic_inputs,
+        std::vector<iv::ManualControlId>{controls[1]});
+    EXPECT_TRUE(probe.stages().empty());
+
+    // Beginning the matching interaction either consumes already-ready hover
+    // code or upgrades its in-flight request to activate when ready.
+    auto const interaction = iv::ManualControlInteractionId{
+        .client_id = "client:hover",
+        .interaction_id = "pointer:1",
+    };
+    iv::ProjectAckBuilder begin;
+    in_event_source([&] { return project_graph.handle_project_begin_manual_control_interaction(
+        iv::ProjectBeginManualControlInteractionRequest{
+            .interaction = interaction,
+            .id = controls[1],
+            .value = iv::Sample{0.25f},
+        },
+        begin); });
+    ASSERT_NO_THROW(begin.build());
+
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    auto const stages = probe.stages();
+    ASSERT_EQ(stages.size(), 1u);
+    EXPECT_EQ(
+        stages.front().dynamic_inputs,
+        std::vector<iv::ManualControlId>{controls[1]});
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       StorageChangingControlVariantsUseTheAcceptedGenerationChain)
+{
+    auto const controls = realize_controls(1);
+    ASSERT_EQ(controls.size(), 1u);
+    auto const initial = project_graph.current_generation();
+    auto const baseline = probe.structural_stage_count();
+    probe.require_storage_for_dynamic_controls();
+    iv::ManualControlInteractionId interaction{.client_id = "ui", .interaction_id = "storage"};
+    iv::ProjectAckBuilder begin;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction(
+        {interaction, controls[0], .25f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    ASSERT_TRUE(probe.wait_for_structural_stages(baseline + 1));
+    auto const live = project_graph.current_generation();
+    ASSERT_TRUE(live);
+    EXPECT_GT(live->generation, initial->generation);
+    ASSERT_EQ(live->graph->manual_controls.size(), 1u);
+    EXPECT_TRUE(live->graph->manual_controls[0].override_connections);
+    EXPECT_EQ(live->graph->manual_controls[0].participation,
+        iv::ManualControlParticipation::disconnected_only);
+    EXPECT_TRUE(probe.compilations().back().has_predecessor);
+    EXPECT_TRUE(probe.stages().empty());
+
+    iv::ProjectAckBuilder end;
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction(
+        {interaction, .5f}, end); });
+    ASSERT_NO_THROW(end.build());
+    ASSERT_TRUE(probe.wait_for_structural_stages(baseline + 2));
+    auto const restored = project_graph.current_generation();
+    ASSERT_TRUE(restored);
+    EXPECT_GT(restored->generation, live->generation);
+    EXPECT_FALSE(restored->graph->manual_controls[0].dynamic);
+    EXPECT_FALSE(restored->graph->manual_controls[0].override_connections);
+    EXPECT_FLOAT_EQ(restored->graph->manual_controls[0].settled_value.value, .5f);
+    EXPECT_EQ(restored->graph->connections.configured_sample_connections().size(),
+        initial->graph->connections.configured_sample_connections().size());
+    EXPECT_TRUE(probe.compilations().back().has_predecessor);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       HoveredControlDoesNotJoinAnotherClientsActiveOverride)
+{
+    auto const controls = realize_controls(2);
+    ASSERT_EQ(controls.size(), 2u);
+    iv::ManualControlInteractionId interaction{.client_id = "active", .interaction_id = "drag"};
+    iv::ProjectAckBuilder begin;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction(
+        {interaction, controls[0], .25f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    auto const compiled_before_hover = probe.compilation_count();
+    iv::ProjectAckBuilder hover;
+    in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
+        {.client_id = "other", .id = controls[1]}, hover); });
+    ASSERT_NO_THROW(hover.build());
+    EXPECT_EQ(probe.compilation_count(), compiled_before_hover);
+    for (auto const& staged : probe.stages()) {
+        EXPECT_EQ(staged.dynamic_inputs, std::vector<iv::ManualControlId>{controls[0]});
+    }
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, ControlCompilationReportsSupersessionPreparationAndStaging)
+{
+    auto const controls = realize_controls(1);
+    ASSERT_EQ(controls.size(), 1u);
+    probe.block_next_compilation();
+    auto hover = [&](bool present) {
+        iv::ProjectAckBuilder response;
+        in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
+            {.client_id = "ui", .id = present ? std::optional{controls[0]} : std::nullopt}, response); });
+        response.build();
+    };
+    hover(true);
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    auto started = probe.control_statuses();
+    ASSERT_GE(started.size(), 2u);
+    EXPECT_EQ(started[0].phase, "queued");
+    EXPECT_EQ(started[1].phase, "compiling");
+    EXPECT_EQ(started[0].request_id, started[1].request_id);
+    EXPECT_TRUE(started[0].predictive);
+    EXPECT_EQ(started[0].inputs, std::vector<std::string>{"gain"});
+    hover(false);
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_control_status("superseded"));
+
+    hover(true);
+    ASSERT_TRUE(probe.wait_for_control_status("prepared"));
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "drag"};
+    iv::ProjectAckBuilder response;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction(
+        {gesture, controls[0], .25f}, response); });
+    ASSERT_NO_THROW(response.build());
+    ASSERT_TRUE(probe.wait_for_control_status("staged"));
+    auto statuses = probe.control_statuses();
+    auto const prepared = std::ranges::find(statuses, std::string{"prepared"}, &iv::ProjectControlCompileStatus::phase);
+    auto const staged = std::ranges::find(statuses, std::string{"staged"}, &iv::ProjectControlCompileStatus::phase);
+    ASSERT_NE(prepared, statuses.end());
+    ASSERT_NE(staged, statuses.end());
+    EXPECT_EQ(prepared->request_id, staged->request_id);
+    EXPECT_TRUE(prepared->predictive);
+    EXPECT_FALSE(staged->predictive);
+    EXPECT_GE(prepared->preparation_us, prepared->queue_us);
+    EXPECT_GE(staged->elapsed_us, prepared->preparation_us);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       ReleasePreparesTheLatestConstantAndLeaveReusesItWithoutRecompiling)
+{
+    auto const controls = realize_controls(1);
+    hover("ui", controls[0]);
+    iv::ManualControlInteractionId first{.client_id = "ui", .interaction_id = "first"};
+    begin(first, controls[0], .25f);
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    auto const before_release = probe.compilation_count();
+    end(first, .5f);
+    ASSERT_TRUE(probe.wait_for_control_status("prepared", 2));
+    EXPECT_EQ(probe.compilation_count(), before_release + 1);
+    EXPECT_EQ(probe.stages().size(), 1u);
+    EXPECT_TRUE(probe.compilations().back().dynamic_inputs.empty());
+    EXPECT_FLOAT_EQ(probe.compilations().back().controls[0].settled_value.value, .5f);
+
+    iv::ManualControlInteractionId second{.client_id = "ui", .interaction_id = "second"};
+    begin(second, controls[0], .75f);
+    EXPECT_EQ(probe.compilation_count(), before_release + 1);
+    end(second, .9f);
+    ASSERT_TRUE(probe.wait_for_control_status("prepared", 3));
+    EXPECT_EQ(probe.compilation_count(), before_release + 2);
+    EXPECT_EQ(probe.stages().size(), 1u);
+    EXPECT_FLOAT_EQ(probe.compilations().back().controls[0].settled_value.value, .9f);
+
+    hover("ui", std::nullopt);
+    ASSERT_TRUE(probe.wait_for_stages(2));
+    EXPECT_TRUE(probe.stages().back().dynamic_inputs.empty());
+    EXPECT_FLOAT_EQ(probe.stages().back().controls[0].settled_value.value, .9f);
+    EXPECT_EQ(probe.compilation_count(), before_release + 2);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       LeavePromotesTheRunningReleaseCompilationWithoutRestartingIt)
+{
+    auto const controls = realize_controls(1);
+    hover("ui", controls[0]);
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "drag"};
+    begin(gesture, controls[0], .25f);
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    auto const before_release = probe.compilation_count();
+    probe.block_next_compilation();
+    end(gesture, .5f);
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    EXPECT_EQ(probe.stages().size(), 1u);
+    hover("ui", std::nullopt);
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_control_status("staged", 2));
+    ASSERT_EQ(probe.stages().size(), 2u);
+    EXPECT_TRUE(probe.stages().back().dynamic_inputs.empty());
+    EXPECT_FLOAT_EQ(probe.stages().back().controls[0].settled_value.value, .5f);
+    EXPECT_EQ(probe.compilation_count(), before_release + 1);
+    auto const statuses = probe.control_statuses();
+    auto const last_id = statuses.back().request_id;
+    EXPECT_EQ(std::ranges::count_if(statuses, [&](auto const& status) {
+        return status.request_id == last_id && status.phase == "compiling";
+    }), 1);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       ASecondReleaseSupersedesAnOlderConstantStillCompiling)
+{
+    auto const controls = realize_controls(1);
+    hover("ui", controls[0]);
+    iv::ManualControlInteractionId first{.client_id = "ui", .interaction_id = "first"};
+    iv::ManualControlInteractionId second{.client_id = "ui", .interaction_id = "second"};
+    begin(first, controls[0], .25f);
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    auto const before_release = probe.compilation_count();
+    probe.block_next_compilation();
+    end(first, .5f);
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    begin(second, controls[0], .75f);
+    end(second, .9f);
+    hover("ui", std::nullopt);
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_control_status("staged", 2));
+    ASSERT_TRUE(probe.wait_for_control_status("superseded"));
+    ASSERT_EQ(probe.stages().size(), 2u);
+    EXPECT_FLOAT_EQ(probe.stages().back().controls[0].settled_value.value, .9f);
+    EXPECT_EQ(probe.compilation_count(), before_release + 2);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       LeavingAtTheOriginalValueRejectsTheUnfinishedDynamicVariant)
+{
+    auto const controls = realize_controls(1);
+    auto const value = project_graph.current_generation()->graph->manual_controls[0].settled_value.value;
+    probe.block_next_compilation();
+    hover("ui", controls[0]);
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "drag"};
+    begin(gesture, controls[0], .25f);
+    end(gesture, value);
+    hover("ui", std::nullopt);
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_control_status("superseded"));
+    EXPECT_TRUE(probe.stages().empty());
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       ReleasePreparationKeepsAnotherClientsGestureDynamic)
+{
+    auto const controls = realize_controls(2);
+    hover("first", controls[0]);
+    iv::ManualControlInteractionId first{.client_id = "first", .interaction_id = "drag"};
+    iv::ManualControlInteractionId other{.client_id = "other", .interaction_id = "drag"};
+    begin(first, controls[0], .25f);
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    begin(other, controls[1], .75f);
+    ASSERT_TRUE(probe.wait_for_stages(2));
+    end(first, .5f);
+    ASSERT_TRUE(probe.wait_for_control_status("prepared", 3));
+    EXPECT_EQ(probe.stages().size(), 2u);
+    EXPECT_EQ(probe.compilations().back().dynamic_inputs,
+        std::vector<iv::ManualControlId>{controls[1]});
+    EXPECT_FLOAT_EQ(probe.compilations().back().controls[0].settled_value.value, .5f);
+    auto const compiled = probe.compilation_count();
+    hover("first", std::nullopt);
+    ASSERT_TRUE(probe.wait_for_stages(3));
+    EXPECT_EQ(probe.stages().back().dynamic_inputs,
+        std::vector<iv::ManualControlId>{controls[1]});
+    EXPECT_EQ(probe.compilation_count(), compiled);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       ReleaseBeforeDynamicCodeIsReadyDoesNotSupersedeItsActivation)
+{
+    auto const controls = realize_controls(1);
+    probe.block_next_compilation();
+    hover("ui", controls[0]);
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "drag"};
+    begin(gesture, controls[0], .25f);
+    end(gesture, .5f);
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_control_status("prepared", 2));
+    ASSERT_EQ(probe.stages().size(), 1u);
+    EXPECT_EQ(probe.stages()[0].dynamic_inputs, controls);
+    EXPECT_TRUE(probe.compilations().back().dynamic_inputs.empty());
+    hover("ui", std::nullopt);
+    ASSERT_TRUE(probe.wait_for_stages(2));
+    EXPECT_FLOAT_EQ(probe.stages().back().controls[0].settled_value.value, .5f);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       StorageChangingSettlementReusesThePreparedSteadyCandidate)
+{
+    auto const controls = realize_controls(1);
+    auto const initial_stages = probe.structural_stage_count();
+    probe.require_storage_for_dynamic_controls();
+    hover("ui", controls[0]);
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "drag"};
+    begin(gesture, controls[0], .25f);
+    ASSERT_TRUE(probe.wait_for_control_status("staged"));
+    ASSERT_EQ(probe.structural_stage_count(), initial_stages + 1);
+    auto const before_release = probe.compilation_count();
+    end(gesture, .5f);
+    // Dynamic preparation and its storage transition each report prepared.
+    ASSERT_TRUE(probe.wait_for_control_status("prepared", 3));
+    EXPECT_EQ(probe.compilation_count(), before_release + 1);
+    EXPECT_EQ(probe.structural_stage_count(), initial_stages + 1);
+
+    hover("ui", std::nullopt);
+    ASSERT_TRUE(probe.wait_for_control_status("staged", 2));
+    EXPECT_EQ(probe.structural_stage_count(), initial_stages + 2);
+    // Leave needs the existing predecessor-aware transition compile, but does
+    // not compile the already prepared steady candidate a second time.
+    EXPECT_EQ(probe.compilation_count(), before_release + 2);
+    EXPECT_TRUE(probe.compilations().back().has_predecessor);
+    EXPECT_TRUE(probe.compilations().back().dynamic_inputs.empty());
+    EXPECT_FLOAT_EQ(probe.compilations().back().controls[0].settled_value.value, .5f);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       InputHoverPrecompilesAfterOutputGainSettlesThroughAStorageTransition)
+{
+    auto const [output, input] = realize_output_and_input_controls();
+    auto const initial_stages = probe.structural_stage_count();
+    probe.require_storage_for_dynamic_controls();
+    hover("ui", output);
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "output"};
+    begin(gesture, output, 1);
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    ASSERT_EQ(probe.structural_stage_count(), initial_stages + 1);
+    end(gesture, .5f);
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    hover("ui", std::nullopt);
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    ASSERT_EQ(probe.structural_stage_count(), initial_stages + 2);
+    auto const settled = project_graph.current_generation();
+    ASSERT_TRUE(settled->graph_executor_accepted);
+    auto const before_hover = probe.compilation_count();
+
+    // No click or gesture is needed to resume predictive compilation.
+    hover("ui", input);
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    ASSERT_EQ(probe.compilation_count(), before_hover + 1);
+    EXPECT_EQ(probe.compilations().back().dynamic_inputs, std::vector<iv::ManualControlId>{input});
+    EXPECT_EQ(probe.structural_stage_count(), initial_stages + 2);
+    EXPECT_TRUE(probe.stages().empty());
+    EXPECT_EQ(project_graph.current_generation(), settled);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       InputHoverDuringOutputGainSettlementIsPreparedAfterTheStorageTransition)
+{
+    auto const [output, input] = realize_output_and_input_controls();
+    auto const initial_stages = probe.structural_stage_count();
+    probe.require_storage_for_dynamic_controls();
+    hover("ui", output);
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "output"};
+    begin(gesture, output, 1);
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    end(gesture, .5f);
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    probe.block_next_compilation();
+    hover("ui", std::nullopt);
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    auto const before_hover = probe.compilation_count();
+    hover("ui", input);
+    EXPECT_EQ(probe.compilation_count(), before_hover);
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    ASSERT_EQ(probe.compilation_count(), before_hover + 1);
+    EXPECT_EQ(probe.compilations().back().dynamic_inputs, std::vector<iv::ManualControlId>{input});
+    EXPECT_EQ(probe.structural_stage_count(), initial_stages + 2);
+    EXPECT_TRUE(probe.stages().empty());
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, DisabledInputKeepsItsOverrideUntilHoverLeave)
+{
+    auto const controls = realize_controls(1, false);
+    auto const& control = controls.front();
+    hover("ui", control);
+    ASSERT_TRUE(probe.wait_for_control_status("prepared"));
+    EXPECT_TRUE(probe.stages().empty());
+
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "drag"};
+    begin(gesture, control, .25f);
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    EXPECT_EQ(probe.stages().back().dynamic_inputs, controls);
+    end(gesture, .5f);
+    ASSERT_TRUE(probe.wait_for_control_status("prepared", 2));
+    EXPECT_EQ(probe.stages().size(), 1u);
+    ASSERT_EQ(project_graph.manual_controls().size(), 1u);
+    EXPECT_FALSE(project_graph.manual_controls()[0].enabled);
+    EXPECT_FLOAT_EQ(project_graph.manual_controls()[0].stored_value.value, .5f);
+
+    hover("ui", std::nullopt);
+    ASSERT_TRUE(probe.wait_for_stages(2));
+    EXPECT_TRUE(probe.stages().back().dynamic_inputs.empty());
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       AnotherClientsHoverDoesNotRetainAReleasedOverride)
+{
+    auto const controls = realize_controls(1);
+    iv::ProjectAckBuilder predictive;
+    in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
+        {.client_id = "observer", .id = controls[0]}, predictive); });
+    ASSERT_NO_THROW(predictive.build());
+    iv::ManualControlInteractionId interaction{.client_id = "editor", .interaction_id = "drag"};
+    iv::ProjectAckBuilder begin, end;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction(
+        {interaction, controls[0], .25f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction(
+        {interaction, .5f}, end); });
+    ASSERT_NO_THROW(end.build());
+    ASSERT_TRUE(probe.wait_for_stages(2));
+    EXPECT_TRUE(probe.stages().back().dynamic_inputs.empty());
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       RegrabDoesNotReuseCodeWithAnotherControlsOutdatedConstant)
+{
+    auto const controls = realize_controls(2);
+    auto hover = [&](iv::ManualControlId const& id) {
+        iv::ProjectAckBuilder ack;
+        in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
+            {.client_id = "ui", .id = id}, ack); });
+        ASSERT_NO_THROW(ack.build());
+    };
+    auto begin = [&](iv::ManualControlInteractionId const& interaction,
+                     iv::ManualControlId const& id, float value) {
+        iv::ProjectAckBuilder ack;
+        in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction(
+            {interaction, id, value}, ack); });
+        ASSERT_NO_THROW(ack.build());
+    };
+    auto end = [&](iv::ManualControlInteractionId const& interaction, float value) {
+        iv::ProjectAckBuilder ack;
+        in_event_source([&] { project_graph.handle_project_end_manual_control_interaction(
+            {interaction, value}, ack); });
+        ASSERT_NO_THROW(ack.build());
+    };
+    iv::ManualControlInteractionId first{.client_id = "ui", .interaction_id = "first"};
+    hover(controls[0]);
+    begin(first, controls[0], .25f);
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    end(first, .25f);
+    ASSERT_TRUE(probe.wait_for_control_status("prepared", 2));
+
+    // Change a different control before its dynamic variant can activate.
+    // Returning to the first dynamic set still needs the new constant value.
+    probe.block_next_compilation();
+    iv::ManualControlInteractionId other{.client_id = "ui", .interaction_id = "other"};
+    begin(other, controls[1], .9f);
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    end(other, .9f);
+    hover(controls[0]);
+    iv::ManualControlInteractionId regrab{.client_id = "ui", .interaction_id = "regrab"};
+    begin(regrab, controls[0], .5f);
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_stages(2));
+    EXPECT_EQ(probe.stages().back().dynamic_inputs,
+        std::vector<iv::ManualControlId>{controls[0]});
+    end(regrab, .5f);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       HoverCannotSupersedeRequiredSettlingAndDisconnectReleasesRetainedControl)
+{
+    auto const controls = realize_controls(2);
+    iv::ProjectAckBuilder hover, begin, end;
+    in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
+        {.client_id = "ui", .id = controls[0]}, hover); });
+    ASSERT_NO_THROW(hover.build());
+    iv::ManualControlInteractionId interaction{.client_id = "ui", .interaction_id = "drag"};
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction(
+        {interaction, controls[0], .25f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    probe.block_next_compilation();
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({interaction, .5f}, end); });
+    ASSERT_NO_THROW(end.build());
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    iv::SocketRpcClientDisconnectedRequest closed{.client_id = "ui"};
+    in_event_source([&] { project_graph.handle_socket_rpc_client_disconnected(closed); });
+    iv::ProjectAckBuilder predictive;
+    in_event_source([&] { project_graph.handle_project_set_manual_control_hover(
+        {.client_id = "other", .id = controls[1]}, predictive); });
+    ASSERT_NO_THROW(predictive.build());
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_stages(2));
+    EXPECT_TRUE(probe.stages().back().dynamic_inputs.empty());
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture,
+       EndingOrDisconnectingRejectsDynamicResultAndRequestsConstantCode)
+{
+    auto const controls = realize_controls(1);
+    probe.require_storage_for_dynamic_controls();
+    ASSERT_EQ(controls.size(), 1u);
+    auto const& control = controls.front();
+
+    auto verify_settlement = [&](iv::ManualControlInteractionId interaction,
+                                 bool disconnect) {
+        auto const baseline_compilations = probe.compilation_count();
+        auto const baseline_stages = probe.stages().size();
+        probe.block_next_compilation();
+
+        iv::ProjectAckBuilder begin;
+        in_event_source([&] { return project_graph.handle_project_begin_manual_control_interaction(
+            iv::ProjectBeginManualControlInteractionRequest{
+                .interaction = interaction,
+                .id = control,
+                .value = iv::Sample{0.5f},
+            },
+            begin); });
+        EXPECT_NO_THROW(begin.build());
+        EXPECT_TRUE(probe.wait_for_blocked_compilation());
+
+        if (disconnect) {
+            iv::SocketRpcClientDisconnectedRequest closed{.client_id = interaction.client_id};
+            in_event_source([&] { return project_graph.handle_socket_rpc_client_disconnected(closed); });
+        } else {
+            iv::ProjectAckBuilder end;
+            in_event_source([&] { return project_graph.handle_project_end_manual_control_interaction(
+                iv::ProjectEndManualControlInteractionRequest{
+                    .interaction = interaction,
+                    .value = iv::Sample{0.75f},
+                },
+                end); });
+            EXPECT_NO_THROW(end.build());
+        }
+        probe.release_blocked_compilation();
+
+        EXPECT_TRUE(probe.wait_for_stages(baseline_stages + 1));
+        auto const compilations = probe.compilations();
+        ASSERT_GE(compilations.size(), baseline_compilations + 2);
+        EXPECT_EQ(
+            compilations[baseline_compilations].dynamic_inputs,
+            std::vector<iv::ManualControlId>{control});
+        EXPECT_TRUE(
+            compilations[baseline_compilations + 1].dynamic_inputs.empty());
+
+        auto const stages = probe.stages();
+        ASSERT_EQ(stages.size(), baseline_stages + 1);
+        EXPECT_TRUE(stages.back().dynamic_inputs.empty());
+    };
+
+    verify_settlement(
+        iv::ManualControlInteractionId{
+            .client_id = "client:end",
+            .interaction_id = "pointer:1",
+        },
+        false);
+    verify_settlement(
+        iv::ManualControlInteractionId{
+            .client_id = "client:disconnect",
+            .interaction_id = "pointer:2",
+        },
+        true);
+}
+
+TEST_F(ProjectGraphFixture,
+       DisconnectInvalidatesClientOwnedManualControlInteraction)
+{
+    publish_definitions_snapshot(project_graph, 
+        iv::NodeDefinitionsSnapshotChanged{
+            .snapshot = make_replacement_snapshot(1),
+        });
+    auto const control_id = iv::ManualControlId{
+        .node = {.instance_id = "instance:manual"},
+        .port_name = "gain",
+    };
+    iv::ProjectAckBuilder replacement;
+    in_event_source([&] { return project_graph.handle_project_replace_graph(
+        iv::ProjectReplaceGraphRequest{
+            .instances = {{
+                .instance_id = "instance:manual",
+                .definition_id = manual_control_leaf_definition_id,
+            }},
+            .manual_controls = {{.id = control_id}},
+        },
+        replacement); });
+    ASSERT_NO_THROW(replacement.build());
+
+    auto const interaction = iv::ManualControlInteractionId{
+        .client_id = "socket:17",
+        .interaction_id = "pointer:3",
+    };
+    iv::ProjectAckBuilder begin;
+    in_event_source([&] { return project_graph.handle_project_begin_manual_control_interaction(
+        iv::ProjectBeginManualControlInteractionRequest{
+            .interaction = interaction,
+            .id = control_id,
+            .value = iv::Sample{0.25f},
+        },
+        begin); });
+    ASSERT_NO_THROW(begin.build());
+
+    iv::SocketRpcClientDisconnectedRequest closed{.client_id = "socket:17"};
+    in_event_source([&] { return project_graph.handle_socket_rpc_client_disconnected(closed); });
+
+    // The disconnected client's interaction identity is no longer active, so
+    // a late live value is dropped rather than applied.
+    iv::LiveManualControlUpdateRequest update{.interaction = interaction, .value = iv::Sample{0.5f}};
+    project_graph.handle_live_manual_control_update(update);
+    EXPECT_FALSE(update.applied);
+
+    iv::ProjectAckBuilder begin_again;
+    in_event_source([&] { return project_graph.handle_project_begin_manual_control_interaction(
+        iv::ProjectBeginManualControlInteractionRequest{
+            .interaction = interaction,
+            .id = control_id,
+            .value = iv::Sample{0.75f},
+        },
+        begin_again); });
+    EXPECT_NO_THROW(begin_again.build());
+
+    iv::ProjectAckBuilder remove_target;
+    in_event_source([&] { return project_graph.handle_project_delete_node_instance(
+        iv::ProjectDeleteNodeInstanceRequest{
+            .instance_id = "instance:manual",
+        },
+        remove_target); });
+    ASSERT_NO_THROW(remove_target.build());
+
+    iv::LiveManualControlUpdateRequest update_after_removal{
+        .interaction = interaction, .value = iv::Sample{1.0f}};
+    project_graph.handle_live_manual_control_update(update_after_removal);
+    EXPECT_FALSE(update_after_removal.applied);
+
+    iv::ProjectAckBuilder begin_after_removal;
+    EXPECT_THROW(
+        in_event_source([&] { return project_graph.handle_project_begin_manual_control_interaction(
+            iv::ProjectBeginManualControlInteractionRequest{
+                .interaction = interaction,
+                .id = control_id,
+                .value = iv::Sample{1.0f},
+            },
+            begin_after_removal); }),
+        std::invalid_argument);
+}
+
+TEST_F(ProjectGraphFixture, InvalidReplacementDoesNotChangeEitherDesiredOwner)
+{
+    iv::ProjectStringBuilder create_builder;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:existing",
+            .definition_id = definition_id,
+            .package_root = std::filesystem::path(package_root),
+        },
+        create_builder); });
+    EXPECT_EQ(create_builder.build(), "instance:existing");
+    auto const generation_before = project_graph.current_generation();
+    auto const instances_before = instances.desired_instances();
+    auto const connections_before = connections.desired_connections();
+
+    iv::ProjectAckBuilder builder;
+    EXPECT_THROW(
+        in_event_source([&] { return project_graph.handle_project_replace_graph(
+            iv::ProjectReplaceGraphRequest{
+                .instances = {{
+                    .instance_id = "instance:replacement",
+                    .definition_id = definition_id,
+                    .package_root = std::filesystem::path(package_root),
+                }},
+                .connections = {iv::ProjectEventConnection{
+                    .connection_id = "event:invalid",
+                    .source_type = iv::EventTypeId::midi,
+                    .outputs = {{
+                        .instance_id = "instance:replacement",
+                        .port = {.name = "events", .channel = 0},
+                    }},
+                    .target_type = iv::EventTypeId::midi,
+                    .inputs = {{
+                        .instance_id = "instance:replacement",
+                        .port = {.name = "events"},
+                    }},
+                }},
+            },
+            builder); }),
+        std::invalid_argument);
+
+    expect_same_configuration(project_graph.current_generation(), generation_before);
+    EXPECT_EQ(instances.desired_instances(), instances_before);
+    EXPECT_EQ(connections.desired_connections(), connections_before);
+}
+
+TEST_F(ProjectGraphFixture, HistoryRestoresDeletedNodesAndTheirIncidentConnectionsInOneEdit)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectConnection wire = iv::ProjectSampleConnection{
+        .connection_id = "direct-wire",
+        .outputs = {{.instance_id = "a", .port = {.name = "main"}}},
+        .inputs = {{.instance_id = "b", .port = {.name = "main"}}},
+    };
+    iv::ProjectSampleConnection shared_wire{
+        .connection_id = "shared-wire",
+        .outputs = {{.instance_id = "c", .port = {.name = "main"}}},
+        .inputs = {{.instance_id = "a", .port = {.name = "main"}}, {.instance_id = "b", .port = {.name = "main"}}},
+    };
+    iv::ProjectEventConnection child_wire{
+        .connection_id = "child-wire",
+        .source_type = iv::EventTypeId::midi,
+        .outputs = {{.instance_id = "a", .path = {iv::ProjectVirtualMemberSelector{.index = 0}}, .port = {.name = "events"}}},
+        .target_type = iv::EventTypeId::midi,
+        .inputs = {{.instance_id = "b", .port = {.name = "events"}}},
+    };
+    iv::ProjectSampleConnection dangling_wire{
+        .connection_id = "unresolved-wire",
+        .outputs = {{.instance_id = "future", .port = {.name = "main"}}},
+        .inputs = {{.instance_id = "b", .port = {.name = "main"}}},
+    };
+    iv::ProjectAckBuilder load;
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {
+            {.instance_id = "a", .definition_id = definition_id, .display_name = "Source"},
+            {.instance_id = "b", .definition_id = definition_id},
+            {.instance_id = "c", .definition_id = definition_id},
+            {.instance_id = "manual", .definition_id = manual_control_leaf_definition_id},
+        },
+        .node_replacements = {{.address = {.instance_id = "a"},
+            .definition_id = definition_id, .configuration_arguments_json = "[]"}},
+        .connections = {wire, shared_wire, child_wire, dangling_wire},
+        .manual_controls = {{.id = {.node = {.instance_id = "manual"}, .port_name = "gain"}, .stored_value = .75f}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    auto const before_nodes = instances.desired_instances();
+    auto const before_replacements = instances.desired_node_replacements();
+    auto const before_controls = project_graph.manual_controls();
+    auto const before_connections = connections.desired_connections();
+    ASSERT_EQ(before_connections.size(), 4u);
+    auto const generation = project_graph.current_generation()->generation;
+    iv::ProjectEditBatch remove;
+    remove.instances = {{"a", std::nullopt}, {"manual", std::nullopt}};
+    iv::ProjectAckBuilder deleted;
+    // This source's whole propagation includes both owners only once, despite
+    // preparing and committing several records. Re-entry is checked at runtime.
+    in_event_source([&] { project_graph.handle_project_apply_edit(remove, deleted); });
+    ASSERT_NO_THROW(deleted.build());
+    EXPECT_TRUE(deleted.take_publication().graph_changed);
+    EXPECT_EQ(project_graph.current_generation()->generation, generation + 1);
+    ASSERT_EQ(instances.desired_instances().size(), 2u);
+    EXPECT_TRUE(instances.desired_node_replacements().empty());
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    shared_wire.inputs.erase(shared_wire.inputs.begin());
+    auto const after_connections = std::vector<iv::ProjectConnection>{shared_wire, dangling_wire};
+    EXPECT_EQ(connections.desired_connections(), after_connections);
+
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_TRUE(undo.take_publication().graph_changed);
+    EXPECT_EQ(project_graph.current_generation()->generation, generation + 2);
+    EXPECT_EQ(instances.desired_instances(), before_nodes);
+    EXPECT_EQ(instances.desired_node_replacements(), before_replacements);
+    EXPECT_EQ(project_graph.manual_controls(), before_controls);
+    EXPECT_EQ(connections.desired_connections(), before_connections);
+
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    EXPECT_EQ(project_graph.current_generation()->generation, generation + 3);
+    EXPECT_EQ(instances.desired_instances().size(), 2u);
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    EXPECT_EQ(connections.desired_connections(), after_connections);
+}
+
+TEST_F(ProjectGraphFixture, DuplicatingSeveralNodesCopiesOwnedRecordsAndInternalConnectionsInOneEdit)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectConnection wire = iv::ProjectSampleConnection{
+        .connection_id = "fanout",
+        .outputs = {{.instance_id = "a", .port = {.name = "main"}}},
+        .inputs = {{.instance_id = "b", .port = {.name = "main"}}, {.instance_id = "outside", .port = {.name = "main"}}},
+    };
+    iv::ProjectAckBuilder load;
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {
+            {.instance_id = "a", .definition_id = definition_id, .display_name = "Source"},
+            {.instance_id = "b", .definition_id = definition_id},
+            {.instance_id = "outside", .definition_id = definition_id},
+            {.instance_id = "manual", .definition_id = manual_control_leaf_definition_id},
+        },
+        .node_replacements = {{.address = {.instance_id = "a"},
+            .definition_id = definition_id, .configuration_arguments_json = "[]"}},
+        .connections = {wire},
+        .manual_controls = {{.id = {.node = {.instance_id = "manual"}, .port_name = "gain"}, .stored_value = .75f}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    auto const before_nodes = instances.desired_instances();
+    auto const before_replacements = instances.desired_node_replacements();
+    auto const before_controls = project_graph.manual_controls();
+    auto const parsed = iv::parse_socket_rpc_request(R"({"id":1,"method":"project.applyEdit","params":{"operations":[{"method":"nodeInstances.duplicate","params":{"copies":[{"sourceInstanceId":"a","instanceId":"a-copy"},{"sourceInstanceId":"b","instanceId":"b-copy"},{"sourceInstanceId":"manual","instanceId":"manual-copy"}]}}]}})");
+    auto const& batch = std::get<iv::ApplyProjectEditRequest>(parsed.payload).batch;
+    iv::ProjectAckBuilder duplicate;
+    in_event_source([&] { project_graph.handle_project_apply_edit(batch, duplicate); });
+    ASSERT_NO_THROW(duplicate.build());
+
+    auto const after_nodes = instances.desired_instances();
+    auto const after_replacements = instances.desired_node_replacements();
+    auto const after_controls = project_graph.manual_controls();
+    auto const after_wires = connections.desired_connections();
+    ASSERT_EQ(after_nodes.size(), 7u);
+    auto const copied_node = std::ranges::find(after_nodes, "a-copy", &iv::ProjectNodeInstanceDeclaration::instance_id);
+    ASSERT_NE(copied_node, after_nodes.end());
+    EXPECT_EQ(copied_node->display_name, "Source");
+    ASSERT_EQ(after_replacements.size(), 2u);
+    EXPECT_EQ(after_replacements[1].address.instance_id, "a-copy");
+    ASSERT_EQ(after_controls.size(), 2u);
+    EXPECT_EQ(after_controls[1].id.node.instance_id, "manual-copy");
+    EXPECT_EQ(after_controls[1].stored_value, iv::Sample{.75f});
+    ASSERT_EQ(after_wires.size(), 2u);
+    ASSERT_TRUE(std::ranges::contains(after_wires, wire));
+    auto const& copied_wire = std::get<iv::ProjectSampleConnection>(after_wires[after_wires[0] == wire ? 1 : 0]);
+    ASSERT_EQ(copied_wire.outputs.size(), 1u);
+    ASSERT_EQ(copied_wire.inputs.size(), 1u);
+    EXPECT_EQ(copied_wire.outputs.front().instance_id, "a-copy");
+    EXPECT_EQ(copied_wire.inputs.front().instance_id, "b-copy");
+
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_EQ(instances.desired_instances(), before_nodes);
+    EXPECT_EQ(instances.desired_node_replacements(), before_replacements);
+    EXPECT_EQ(project_graph.manual_controls(), before_controls);
+    EXPECT_EQ(connections.desired_connections(), std::vector<iv::ProjectConnection>{wire});
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    EXPECT_EQ(instances.desired_instances(), after_nodes);
+    EXPECT_EQ(instances.desired_node_replacements(), after_replacements);
+    EXPECT_EQ(project_graph.manual_controls(), after_controls);
+    EXPECT_EQ(connections.desired_connections(), after_wires);
+}
+
+TEST_F(ProjectGraphFixture, HistoryRejectsAnInvalidBatchBeforeAnyOwnerCommits)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1)});
+    iv::ProjectStringBuilder created;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "a", .definition_id = definition_id}, created); });
+    ASSERT_EQ(created.build(), "a");
+    auto const before = instances.desired_instances();
+    auto const generation = project_graph.current_generation();
+    iv::ProjectEditBatch invalid;
+    invalid.instances = {{"a", std::nullopt}};
+    invalid.connections = {{"broken", iv::ProjectSampleConnection{.connection_id = "broken"}}};
+    iv::ProjectAckBuilder rejected;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_apply_edit(invalid, rejected); }), std::invalid_argument);
+    EXPECT_EQ(instances.desired_instances(), before);
+    EXPECT_TRUE(connections.desired_connections().empty());
+    expect_same_configuration(project_graph.current_generation(), generation);
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_TRUE(instances.desired_instances().empty()); // Still reverses creation.
+}
+
+TEST_F(ProjectGraphFixture, HistoryRestoresExistingConnectionUpsertAndKeepsRedoAcrossNoopEdits)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1)});
+    iv::ProjectConnection first = iv::ProjectSampleConnection{
+        .connection_id = "wire", .outputs = {{.instance_id = "missing-source"}},
+        .inputs = {{.instance_id = "missing-target"}},
+    };
+    iv::ProjectAckBuilder insert;
+    in_event_source([&] { project_graph.handle_project_upsert_graph_connection({first}, insert); });
+    ASSERT_NO_THROW(insert.build());
+    auto second = first;
+    std::get<iv::ProjectSampleConnection>(second).inputs[0].instance_id = "another-target";
+    iv::ProjectAckBuilder update;
+    in_event_source([&] { project_graph.handle_project_upsert_graph_connection({second}, update); });
+    ASSERT_NO_THROW(update.build());
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_EQ(connections.desired_connections(), std::vector<iv::ProjectConnection>{first});
+    iv::ProjectAckBuilder noop;
+    in_event_source([&] { project_graph.handle_project_upsert_graph_connection({first}, noop); });
+    ASSERT_NO_THROW(noop.build());
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    EXPECT_EQ(connections.desired_connections(), std::vector<iv::ProjectConnection>{second});
+    iv::ProjectAckBuilder undo_again;
+    in_event_source([&] { project_graph.handle_project_undo(undo_again); });
+    iv::ProjectStringBuilder unrelated;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "new-action", .definition_id = definition_id}, unrelated); });
+    iv::ProjectAckBuilder no_redo;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_redo(no_redo); }), std::runtime_error);
+    EXPECT_EQ(connections.desired_connections(), std::vector<iv::ProjectConnection>{first});
+}
+
+TEST_F(ProjectGraphFixture, HistoryFollowsAcceptedDesiredStateWhenConfigurationFailsAndReplayClearsHistory)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1)});
+    auto const executable = project_graph.current_generation();
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "missing", .definition_id = "unavailable.definition",
+        .package_root = std::filesystem::path(package_root)}, create); });
+    ASSERT_EQ(create.build(), "missing");
+    ASSERT_TRUE(project_graph.configuration_failure());
+    expect_same_configuration(project_graph.current_generation(), executable);
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_TRUE(instances.desired_instances().empty());
+    EXPECT_FALSE(project_graph.configuration_failure());
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    EXPECT_EQ(instances.desired_instances().size(), 1u);
+    EXPECT_TRUE(project_graph.configuration_failure());
+    iv::ProjectAckBuilder replay;
+    in_event_source([&] { project_graph.handle_project_replace_graph({}, replay); });
+    ASSERT_NO_THROW(replay.build());
+    iv::ProjectAckBuilder empty;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(empty); }), std::runtime_error);
+}
+
+TEST_F(ProjectGraphFixture, HistoryRecordsFinalSemanticReplacementWithoutReplayingTheMessage)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "replaceable", .definition_id = replacing_definition_id,
+        .configuration_source = "30"}, create); });
+    ASSERT_EQ(create.build(), "replaceable");
+    auto first = in_event_source([&] { return project_graph.dispatch_node_message(
+        {.instance_id = "replaceable"}, iv::OwnedNodeMessage(ReplaceWithValue{.value = 12})); });
+    ASSERT_TRUE(first.project_state_changed);
+    auto const first_replacements = instances.desired_node_replacements();
+    auto second = in_event_source([&] { return project_graph.dispatch_node_message(
+        {.instance_id = "replaceable"}, iv::OwnedNodeMessage(ReplaceWithValue{.value = 99})); });
+    ASSERT_TRUE(second.project_state_changed);
+    auto const final_replacements = instances.desired_node_replacements();
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_EQ(instances.desired_node_replacements(), first_replacements);
+    EXPECT_EQ(nlohmann::ordered_json::parse(instances.desired_node_replacements()[0].configuration_arguments_json),
+        nlohmann::ordered_json::array({42}));
+    iv::ProjectAckBuilder undo_first;
+    in_event_source([&] { project_graph.handle_project_undo(undo_first); });
+    ASSERT_NO_THROW(undo_first.build());
+    EXPECT_TRUE(instances.desired_node_replacements().empty());
+    for (int step = 0; step < 2; ++step) {
+        iv::ProjectAckBuilder redo;
+        in_event_source([&] { project_graph.handle_project_redo(redo); });
+        ASSERT_NO_THROW(redo.build());
+    }
+    EXPECT_EQ(instances.desired_node_replacements(), final_replacements);
+    EXPECT_EQ(nlohmann::ordered_json::parse(instances.desired_node_replacements()[0].configuration_arguments_json),
+        nlohmann::ordered_json::array({99}));
+}
+
+TEST_F(ProjectGraphFixture, ManualGestureStaysTransientAndCommitsOneHistoryEntryWhenItCompletes)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ManualControlId id{.node = {.instance_id = "manual"}, .port_name = "gain"};
+    iv::ProjectAckBuilder load;
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {{.instance_id = "manual", .definition_id = manual_control_leaf_definition_id}},
+        .manual_controls = {{.id = id, .stored_value = .1f}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    auto const live_value = [&] {
+        auto const scope = read_graph_scope(project_graph);
+        auto const& control = scope_node(scope, "manual").at("sampleInputs").at(0).at("manualControl");
+        return std::pair{control.at("value").get<float>(),
+            control.at("live").get<bool>() ? control.at("liveValue").get<float>() : -1.f};
+    };
+    iv::ManualControlInteractionId gesture{.client_id = "client-a", .interaction_id = "drag"};
+    iv::ProjectAckBuilder begin;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, .2f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    iv::LiveManualControlUpdateRequest update{.interaction = gesture, .value = .3f};
+    project_graph.handle_live_manual_control_update(update);
+    EXPECT_TRUE(update.applied);
+    EXPECT_EQ(update.control, id);
+    // Nothing durable changes mid-gesture; readers see the open live value.
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.1f});
+    EXPECT_EQ(live_value(), std::pair(.1f, .3f));
+    iv::ProjectAckBuilder blocked;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(blocked); }), std::runtime_error);
+    iv::ProjectAckBuilder end;
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({gesture, .4f}, end); });
+    ASSERT_NO_THROW(end.build());
+    EXPECT_EQ(live_value(), std::pair(.4f, -1.f));
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    ASSERT_EQ(project_graph.manual_controls().size(), 1u);
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.1f});
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.4f});
+
+    // An edit accepted while a gesture is open precedes that gesture in history,
+    // because the gesture becomes one accepted action only when it ends.
+    iv::ProjectAckBuilder begin_again;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, .5f}, begin_again); });
+    ASSERT_NO_THROW(begin_again.build());
+    iv::ProjectAckBuilder other_client;
+    in_event_source([&] { project_graph.handle_project_update_node_instances({
+        .updates = {{.instance_id = "manual", .display_name = "Other client"}}}, other_client); });
+    ASSERT_NO_THROW(other_client.build());
+    iv::LiveManualControlUpdateRequest after_edit{.interaction = gesture, .value = .55f};
+    project_graph.handle_live_manual_control_update(after_edit);
+    EXPECT_TRUE(after_edit.applied);
+    iv::ProjectAckBuilder finish;
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({gesture, .6f}, finish); });
+    ASSERT_NO_THROW(finish.build());
+    iv::ProjectAckBuilder undo_tail;
+    in_event_source([&] { project_graph.handle_project_undo(undo_tail); });
+    ASSERT_NO_THROW(undo_tail.build());
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.4f});
+    EXPECT_EQ(instances.desired_instances()[0].display_name, "Other client");
+    iv::ProjectAckBuilder undo_name;
+    in_event_source([&] { project_graph.handle_project_undo(undo_name); });
+    ASSERT_NO_THROW(undo_name.build());
+    EXPECT_FALSE(instances.desired_instances()[0].display_name);
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.4f});
+}
+
+TEST_F(ProjectGraphFixture, DisconnectEndsOpenGesturesAtTheirLastReceivedValues)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ManualControlId id{.node = {.instance_id = "manual"}, .port_name = "gain"};
+    iv::ProjectAckBuilder load;
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {{.instance_id = "manual", .definition_id = manual_control_leaf_definition_id}},
+        .manual_controls = {{.id = id, .stored_value = .1f}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    iv::ManualControlInteractionId gesture{.client_id = "client-a", .interaction_id = "drag"};
+    iv::ProjectAckBuilder begin;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, .2f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+
+    // Another client's disconnect commits nothing.
+    iv::SocketRpcClientDisconnectedRequest other{.client_id = "client-b"};
+    in_event_source([&] { project_graph.handle_socket_rpc_client_disconnected(other); });
+    EXPECT_FALSE(other.project_state_changed);
+    iv::LiveManualControlUpdateRequest update{.interaction = gesture, .value = .7f};
+    project_graph.handle_live_manual_control_update(update);
+    ASSERT_TRUE(update.applied);
+
+    iv::SocketRpcClientDisconnectedRequest closed{.client_id = "client-a"};
+    in_event_source([&] { project_graph.handle_socket_rpc_client_disconnected(closed); });
+    EXPECT_TRUE(closed.project_state_changed);
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.7f});
+    iv::LiveManualControlUpdateRequest late{.interaction = gesture, .value = .9f};
+    project_graph.handle_live_manual_control_update(late);
+    EXPECT_FALSE(late.applied);
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.1f});
+
+    // A begin with no update before the disconnect keeps the begin value.
+    iv::ManualControlInteractionId unchanged{.client_id = "client-c", .interaction_id = "press"};
+    iv::ProjectAckBuilder press;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({unchanged, id, .1f}, press); });
+    ASSERT_NO_THROW(press.build());
+    iv::SocketRpcClientDisconnectedRequest released{.client_id = "client-c"};
+    in_event_source([&] { project_graph.handle_socket_rpc_client_disconnected(released); });
+    EXPECT_FALSE(released.project_state_changed);
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.1f});
+}
+
+TEST_F(ProjectGraphFixture, ProjectEditParserRejectsNestedOrUnsupportedOperationsAndKeepsOneBatch)
+{
+    auto parsed = iv::parse_socket_rpc_request(R"({"id":1,"method":"project.applyEdit","params":{"expectedRevision":17,"operations":[{"method":"nodeInstances.delete","params":{"instanceId":"a"}},{"method":"nodeInstances.delete","params":{"instanceId":"b"}}]}})");
+    ASSERT_TRUE(std::holds_alternative<iv::ApplyProjectEditRequest>(parsed.payload));
+    auto const& batch = std::get<iv::ApplyProjectEditRequest>(parsed.payload).batch;
+    ASSERT_EQ(batch.instances.size(), 2u);
+    EXPECT_EQ(batch.instances[0].key, "a");
+    EXPECT_EQ(batch.instances[1].key, "b");
+    EXPECT_FALSE(batch.instances[0].value);
+    EXPECT_EQ(parsed.expected_revision, 17u);
+    EXPECT_THROW(iv::parse_socket_rpc_request(R"({"id":1,"method":"project.applyEdit","params":{"operations":[{"method":"project.applyEdit","params":{"operations":[]}}]}})"), std::invalid_argument);
+    EXPECT_THROW(iv::parse_socket_rpc_request(R"({"id":1,"method":"project.applyEdit","params":{"operations":[{"method":"project.save","params":{}}]}})"), std::invalid_argument);
+    EXPECT_TRUE(std::holds_alternative<iv::UndoProjectEditRequest>(iv::parse_socket_rpc_request(R"({"id":1,"method":"project.undo","params":{}})").payload));
+    EXPECT_TRUE(std::holds_alternative<iv::RedoProjectEditRequest>(iv::parse_socket_rpc_request(R"({"id":1,"method":"project.redo","params":{}})").payload));
+}
+
+TEST_F(ProjectGraphFixture, StaleHistoryDoesNotOverwriteAnOwnersNewerAcceptedRecord)
+{
+    auto snapshot = make_snapshot(1);
+    publish_definitions_snapshot(project_graph, {.snapshot = snapshot});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "a", .definition_id = definition_id}, create); });
+    ASSERT_EQ(create.build(), "a");
+    // Exercise an out-of-history owner update. A reverse transaction must
+    // verify the actual owner record, not assume its cached effect still fits.
+    iv::GraphBuilder root;
+    iv::NodeInstancesProjectGraphRequest changed{
+        .snapshot = snapshot, .root_builder = &root,
+        .mutation = iv::NodeInstanceUpdateMutation{
+            .updates = {{.instance_id = "a", .display_name = "Newer"}}},
+    };
+    in_event_source([&] { instances.handle_project_graph_transaction(changed); });
+    auto const before = instances.desired_instances();
+    auto const generation = project_graph.current_generation();
+    iv::ProjectAckBuilder rejected;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(rejected); }), std::runtime_error);
+    EXPECT_EQ(instances.desired_instances(), before);
+    expect_same_configuration(project_graph.current_generation(), generation);
+    iv::GraphBuilder restore_root;
+    iv::NodeInstancesProjectGraphRequest restored{
+        .snapshot = snapshot, .root_builder = &restore_root,
+        .mutation = iv::NodeInstanceUpdateMutation{
+            .updates = {{.instance_id = "a", .display_name = std::string{}}}},
+    };
+    in_event_source([&] { instances.handle_project_graph_transaction(restored); });
+    iv::ProjectAckBuilder retry;
+    in_event_source([&] { project_graph.handle_project_undo(retry); });
+    ASSERT_NO_THROW(retry.build()); // Failed undo did not move the position.
+    EXPECT_TRUE(instances.desired_instances().empty());
+}
+
+TEST_F(ProjectGraphFixture, SuccessiveProvisionalReplacementsCommitOnlyOneHistoryEntry)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "replaceable", .definition_id = replacing_definition_id,
+        .configuration_source = "30"}, create); });
+    ASSERT_EQ(create.build(), "replaceable");
+    auto const before = project_graph.current_generation()->generation;
+    auto result = in_event_source([&] { return project_graph.dispatch_node_message(
+        {.instance_id = "replaceable"}, iv::OwnedNodeMessage(ReplaceTwice{.value = 70})); });
+    ASSERT_TRUE(result.project_state_changed);
+    EXPECT_TRUE(result.publication.graph_changed);
+    EXPECT_EQ(project_graph.current_generation()->generation, before + 1);
+    EXPECT_EQ(nlohmann::ordered_json::parse(instances.desired_node_replacements()[0].configuration_arguments_json),
+        nlohmann::ordered_json::array({71}));
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_TRUE(instances.desired_node_replacements().empty()); // No intermediate 70 entry.
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    EXPECT_EQ(nlohmann::ordered_json::parse(instances.desired_node_replacements()[0].configuration_arguments_json),
+        nlohmann::ordered_json::array({71}));
+}
+
+TEST_F(ProjectGraphFixture, ImplicitManualDefaultIsVisibleButHoverAndNoopGestureCreateNoSavedRecord)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectAckBuilder load;
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {{.instance_id = "manual", .definition_id = manual_control_leaf_definition_id}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    iv::ManualControlId id{.node = {.instance_id = "manual"}, .port_name = "gain"};
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    auto before = project_graph.current_generation();
+    ASSERT_TRUE(before);
+    ASSERT_EQ(before->graph->manual_controls.size(), 1u);
+    auto scope = read_graph_scope(project_graph);
+    auto const& port = scope_node(scope, "manual").at("sampleInputs").at(0);
+    EXPECT_EQ(port.at("manualControl").at("value"), 0);
+    EXPECT_TRUE(port.at("manualControl").at("available").get<bool>());
+    EXPECT_TRUE(port.at("manualControl").at("participates").get<bool>());
+    iv::ProjectAckBuilder hover;
+    in_event_source([&] { project_graph.handle_project_set_manual_control_hover({.client_id = "ui", .id = id}, hover); });
+    ASSERT_NO_THROW(hover.build());
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "noop"};
+    iv::ProjectAckBuilder begin, end;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, 0.f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({gesture, 0.f}, end); });
+    ASSERT_NO_THROW(end.build());
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    // Executable-status publication can replace the enclosing snapshot while
+    // the committed configuration and its identity stay unchanged.
+    auto const after = project_graph.current_generation();
+    EXPECT_EQ(after->configured_generation, before->configured_generation);
+    EXPECT_EQ(after->graph, before->graph);
+    iv::ProjectAckBuilder undo;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(undo); }), std::runtime_error);
+}
+
+TEST_F(ProjectGraphFixture, FirstManualGestureCreatesOneHistoryEntryAndUndoRestoresImplicitDefault)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectAckBuilder load;
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {{.instance_id = "manual", .definition_id = manual_control_leaf_definition_id}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    iv::ManualControlId id{.node = {.instance_id = "manual"}, .port_name = "gain"};
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "first-drag"};
+    iv::ProjectAckBuilder begin, end;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, .2f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    iv::LiveManualControlUpdateRequest update{.interaction = gesture, .value = .4f};
+    project_graph.handle_live_manual_control_update(update);
+    EXPECT_TRUE(update.applied);
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({gesture, .6f}, end); });
+    ASSERT_NO_THROW(end.build());
+    ASSERT_EQ(project_graph.manual_controls().size(), 1u);
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.6f});
+    auto scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(scope, "manual").at("sampleInputs").at(0).at("manualControl").at("value"), float(.6f));
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    iv::ProjectAckBuilder no_more;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(no_more); }), std::runtime_error);
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    ASSERT_EQ(project_graph.manual_controls().size(), 1u);
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.6f});
+}
+
+TEST_F(ProjectGraphFixture, ReturningToImplicitDefaultRemovesTheUninterruptedGestureHistory)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectAckBuilder load;
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {{.instance_id = "manual", .definition_id = manual_control_leaf_definition_id}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    iv::ManualControlId id{.node = {.instance_id = "manual"}, .port_name = "gain"};
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "round-trip"};
+    iv::ProjectAckBuilder begin, end;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, .4f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({gesture, 0.f}, end); });
+    ASSERT_NO_THROW(end.build());
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    iv::ProjectAckBuilder undo;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(undo); }), std::runtime_error);
+}
+
+TEST_F(ProjectGraphFixture, DisabledModuleManualValueUsesNeutralAndKeepsItsStoredOverride)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1)});
+    iv::ProjectAckBuilder load;
+    iv::ManualControlId id{.node = {.instance_id = "module"}, .port_name = "main"};
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {{.instance_id = "module", .definition_id = definition_id}},
+        .manual_controls = {{.id = id, .stored_value = .75f, .enabled = false}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    auto generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    auto input = std::ranges::find(generation->graph->manual_controls, id, &iv::ConfiguredManualControl::id);
+    ASSERT_NE(input, generation->graph->manual_controls.end());
+    EXPECT_EQ(input->settled_value, iv::Sample{.75f});
+    EXPECT_FALSE(input->enabled);
+    auto scope = read_graph_scope(project_graph);
+    auto const& control = scope_node(scope, "module").at("sampleInputs").at(0).at("manualControl");
+    EXPECT_EQ(control.at("value"), .75f);
+    EXPECT_FALSE(control.at("enabled").get<bool>());
+    EXPECT_FALSE(control.at("participates").get<bool>());
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.75f});
+}
+
+TEST_F(ProjectGraphFixture, DisjointNodeEditsStayOutsideTheGestureAndUndoDuringADragEndsIt)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    for (auto const* id : {"a", "b"}) {
+        iv::ProjectStringBuilder create;
+        in_event_source([&] { project_graph.handle_project_create_node_instance({.instance_id = id,
+            .definition_id = replacing_definition_id, .configuration_source = "30"}, create); });
+        ASSERT_EQ(create.build(), id);
+    }
+    iv::NodeAddress target{.instance_id = "a"};
+    iv::NodeMessageGestureId gesture{.client_id = "editor", .interaction_id = "drag"};
+    node_message_gesture(project_graph, gesture, target, true);
+    auto first = in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 12}), gesture); });
+    ASSERT_TRUE(first.project_state_changed);
+    auto other = in_event_source([&] { return project_graph.dispatch_node_message({.instance_id = "b"},
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 12})); });
+    ASSERT_TRUE(other.project_state_changed);
+    auto second = in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 99}), gesture); });
+    ASSERT_TRUE(second.project_state_changed);
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    auto scope = read_graph_scope(project_graph);
+    EXPECT_EQ(scope_node(scope, "a")["construction"]["arguments"], nlohmann::ordered_json::array({30}));
+    EXPECT_EQ(scope_node(scope, "b")["construction"]["arguments"], nlohmann::ordered_json::array({42}));
+    EXPECT_THROW(in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 101}), gesture); }), std::invalid_argument);
+}
+
+TEST_F(ProjectGraphFixture, BeginningAnotherGestureDoesNotCloseHistoryButItsFirstConflictingEditDoes)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({.instance_id = "curve",
+        .definition_id = replacing_definition_id, .configuration_source = "30"}, create); });
+    ASSERT_EQ(create.build(), "curve");
+    iv::NodeAddress target{.instance_id = "curve"};
+    iv::NodeMessageGestureId first{.client_id = "one", .interaction_id = "drag"};
+    iv::NodeMessageGestureId second{.client_id = "two", .interaction_id = "drag"};
+    node_message_gesture(project_graph, first, target, true);
+    node_message_gesture(project_graph, second, target, true);
+    auto changed = in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 12}), first); });
+    ASSERT_TRUE(changed.project_state_changed);
+    EXPECT_THROW(in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 99}), second); }), std::invalid_argument);
+    iv::ProjectAckBuilder replay;
+    in_event_source([&] { project_graph.handle_project_replace_graph({}, replay); });
+    ASSERT_NO_THROW(replay.build());
+    EXPECT_THROW(in_event_source([&] { return project_graph.dispatch_node_message(target,
+        iv::OwnedNodeMessage(ReplaceWithValue{.value = 99}), first); }), std::exception);
+    iv::ProjectAckBuilder undo;
+    EXPECT_THROW(in_event_source([&] { project_graph.handle_project_undo(undo); }), std::runtime_error);
+}
+
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, ObservationRevisionSurvivesStructuralAndControlCompilation)
+{
+    auto const controls = realize_controls(1);
+    iv::ObservationGraphRequest observations{.requirements = iv::ObservationRequirements{.revision = 42,
+        .probes = {{.id = 1, .source = {.node = {.instance_id = "removed"}, .member = "out"}, .operation = "level"}}}};
+    in_event_source([&] { project_graph.handle_observation_request(observations); });
+    ASSERT_TRUE(observations.error.empty()) << observations.error;
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    EXPECT_EQ(probe.compilations().back().observation_revision, 42u);
+    hover("ui", controls[0]);
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "observed"};
+    begin(gesture, controls[0], .25f);
+    ASSERT_TRUE(probe.wait_for_stages(1));
+    EXPECT_EQ(probe.stages().back().observation_revision, 42u);
+    end(gesture, .5f);
+    hover("ui", std::nullopt);
+    ASSERT_TRUE(probe.wait_for_stages(2));
+    EXPECT_EQ(probe.stages().back().observation_revision, 42u);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, MatchingObservationPredictionStagesWithoutAnotherCompilation)
+{
+    realize_controls(1);
+    auto const base_compiles = probe.compilations().size();
+    auto const base_stages = probe.structural_stage_count();
+    iv::ObservationRequirements viewport{.revision = 1,
+        .probes = {{.id = 1, .source = {.node = {.instance_id = "next"}, .member = "out"}, .operation = "level"}}};
+    iv::ObservationGraphRequest predict{.prediction_changed = true, .prediction = viewport};
+    in_event_source([&] { project_graph.handle_observation_request(predict); });
+    ASSERT_TRUE(predict.error.empty()) << predict.error;
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    ASSERT_EQ(probe.compilations().size(), base_compiles + 1);
+    EXPECT_EQ(probe.compilations().back().observation_revision, viewport.revision);
+    EXPECT_EQ(probe.structural_stage_count(), base_stages);
+
+    iv::ObservationGraphRequest visible{.requirements = viewport, .prediction_changed = true};
+    in_event_source([&] { project_graph.handle_observation_request(visible); });
+    ASSERT_TRUE(visible.error.empty()) << visible.error;
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    EXPECT_EQ(probe.compilations().size(), base_compiles + 1);
+    EXPECT_EQ(probe.structural_stage_count(), base_stages + 1);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, DifferentObservationProbeSetUsesRequiredCompilation)
+{
+    realize_controls(1);
+    auto const base_compiles = probe.compilations().size();
+    auto const base_stages = probe.structural_stage_count();
+    iv::ObservationRequirements viewport{.revision = 1,
+        .probes = {{.id = 1, .source = {.node = {.instance_id = "next"}, .member = "out"}, .operation = "level"}}};
+    iv::ObservationGraphRequest predict{.prediction_changed = true, .prediction = viewport};
+    in_event_source([&] { project_graph.handle_observation_request(predict); });
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+
+    viewport.probes.front().source.node.instance_id = "different";
+    iv::ObservationGraphRequest visible{.requirements = viewport, .prediction_changed = true};
+    in_event_source([&] { project_graph.handle_observation_request(visible); });
+    ASSERT_TRUE(visible.error.empty()) << visible.error;
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    EXPECT_EQ(probe.compilations().size(), base_compiles + 2);
+    EXPECT_EQ(probe.structural_stage_count(), base_stages + 1);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, MatchingViewportPromotesAnInflightObservationCompile)
+{
+    realize_controls(1);
+    auto const base_compiles = probe.compilations().size();
+    auto const base_stages = probe.structural_stage_count();
+    probe.block_next_compilation();
+    iv::ObservationRequirements viewport{.revision = 1,
+        .probes = {{.id = 1, .source = {.node = {.instance_id = "next"}, .member = "out"}, .operation = "level"}}};
+    iv::ObservationGraphRequest predict{.prediction_changed = true, .prediction = viewport};
+    in_event_source([&] { project_graph.handle_observation_request(predict); });
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+
+    iv::ObservationGraphRequest visible{.requirements = viewport, .prediction_changed = true};
+    in_event_source([&] { project_graph.handle_observation_request(visible); });
+    ASSERT_TRUE(visible.error.empty()) << visible.error;
+    EXPECT_EQ(probe.structural_stage_count(), base_stages);
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    EXPECT_EQ(probe.compilations().size(), base_compiles + 1);
+    EXPECT_EQ(probe.structural_stage_count(), base_stages + 1);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, NewObservationPlanSupersedesAnInflightHoverVariant)
+{
+    auto const controls = realize_controls(1);
+    probe.block_next_compilation();
+    hover("ui", controls[0]);
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    iv::ObservationGraphRequest observations{.requirements = iv::ObservationRequirements{.revision = 43}};
+    in_event_source([&] { project_graph.handle_observation_request(observations); });
+    ASSERT_TRUE(observations.error.empty()) << observations.error;
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_control_status("superseded"));
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    EXPECT_TRUE(probe.stages().empty());
+    EXPECT_EQ(probe.compilations().back().observation_revision, 43u);
+}
+
+
+TEST_F(ProjectGraphFixture, ObservationCapabilitiesResolveModuleOutputTypesWithoutAnAudioCompilation)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "observed-module", .definition_id = definition_id,
+    }, create); });
+    ASSERT_EQ(create.build(), "observed-module");
+    ASSERT_TRUE(project_graph.current_generation());
+    ASSERT_FALSE(project_graph.current_generation()->compiled_graph);
+    iv::ObservationGraphRequest describe{.describe_nodes = {{.instance_id = "observed-module"}}};
+    in_event_source([&] { project_graph.handle_observation_request(describe); });
+    ASSERT_TRUE(describe.error.empty()) << describe.error;
+    ASSERT_TRUE(describe.capabilities);
+    EXPECT_TRUE(std::ranges::any_of(*describe.capabilities, [](auto const& capability) {
+        return capability["kind"] == "output" && capability["member"] == "main"
+            && capability["operations"] == nlohmann::ordered_json::array({"level", "value"})
+            && capability["channels"] == nlohmann::ordered_json::array({{{"index", 0}, {"name", "center"}}});
+    })) << describe.capabilities->dump();
+}
+
+
+TEST_F(ProjectGraphFixture, ObservationCapabilitiesUseHealthyDesiredInstancesWhenTheRootConfigurationFails)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1)});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "changed", .definition_id = definition_id}, create); });
+    ASSERT_EQ(create.build(), "changed");
+    auto const previous = project_graph.current_generation();
+    ASSERT_TRUE(previous);
+    iv::ProjectAckBuilder replace;
+    in_event_source([&] { project_graph.handle_project_replace_graph({.instances = {
+        {.instance_id = "changed", .definition_id = definition_id,
+         .configuration_source = "invalid configuration expression"},
+        {.instance_id = "healthy", .definition_id = definition_id},
+    }}, replace); });
+    ASSERT_NO_THROW(replace.build());
+    ASSERT_TRUE(project_graph.configuration_failure());
+    expect_same_configuration(project_graph.current_generation(), previous);
+
+    iv::ObservationGraphRequest describe{.describe_nodes = {
+        {.instance_id = "changed"}, {.instance_id = "healthy"}}};
+    in_event_source([&] { project_graph.handle_observation_request(describe); });
+    ASSERT_TRUE(describe.error.empty()) << describe.error;
+    EXPECT_FALSE(describe.configured_generation);
+    ASSERT_TRUE(describe.capabilities);
+    EXPECT_TRUE(std::ranges::none_of(*describe.capabilities, [](auto const& capability) {
+        return capability["nodeIndex"] == 0;
+    })) << describe.capabilities->dump();
+    EXPECT_TRUE(std::ranges::any_of(*describe.capabilities, [](auto const& capability) {
+        return capability["nodeIndex"] == 1 && capability["kind"] == "output"
+            && capability["member"] == "main"
+            && capability["operations"] == nlohmann::ordered_json::array({"level", "value"});
+    })) << describe.capabilities->dump();
+
+    // Subscriptions must not turn the retained executable's configuration into
+    // a new target while the desired root is invalid.
+    iv::ObservationGraphRequest subscribe{.requirements = iv::ObservationRequirements{.revision = 91}};
+    in_event_source([&] { project_graph.handle_observation_request(subscribe); });
+    EXPECT_TRUE(subscribe.error.empty()) << subscribe.error;
+    expect_same_configuration(project_graph.current_generation(), previous);
+}
+
+TEST_F(ProjectGraphFixture, RegisteredBuiltinConstructionIsAnImplicitPackageDependency)
+{
+    auto snapshot = std::const_pointer_cast<iv::NodeDefinitionsSnapshot>(make_snapshot(1,
+        +[](iv::GraphBuilder& graph, std::span<ConfigurationArgument>) {
+            graph.outputs(graph.node<"builtin.test">());
+        }));
+    auto owner = std::const_pointer_cast<iv::PackageRevision>(snapshot->package_revisions.front());
+    owner->package_namespace = "iv.test.project_graph";
+    ASSERT_TRUE(owner->package_dependencies.empty());
+    auto builtin = std::make_shared<iv::PackageRevision>();
+    builtin->package_id = "builtin";
+    builtin->package_namespace = "builtin";
+    static constexpr char builtin_root[] = "/tmp/iv-project-graph-builtin-tests";
+    static constexpr char builtin_source[] = "/tmp/iv-project-graph-builtin-tests/module.cpp";
+    builtin->package_root = builtin_root;
+    builtin->revision = 1;
+    static constexpr char builtin_id[] = "builtin.test";
+    auto provider = owner->provider_definitions.front();
+    provider.id = builtin_id;
+    provider.id_size = sizeof(builtin_id) - 1;
+    provider.package_root = builtin_root;
+    provider.package_root_size = sizeof(builtin_root) - 1;
+    provider.source_file = builtin_source;
+    provider.source_file_size = sizeof(builtin_source) - 1;
+    provider.module_build = &configure_module;
+    builtin->provider_definitions.push_back(provider);
+    auto entry = snapshot->by_id.at(definition_id);
+    entry.definition_id = builtin_id;
+    auto& module = std::get<iv::ModuleNodeDefinition>(entry.definition);
+    module.definition_id = builtin_id;
+    module.module_id = builtin_id;
+    module.package_id = builtin->package_id;
+    module.package_root = builtin->package_root;
+    module.provider.module_build = &configure_module;
+    snapshot->by_id.emplace(builtin_id, std::move(entry));
+    snapshot->package_revisions.push_back(builtin);
+    publish_definitions_snapshot(project_graph, {.snapshot = snapshot});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "implicit-builtin", .definition_id = definition_id}, create); });
+    ASSERT_EQ(create.build(), "implicit-builtin");
+    ASSERT_FALSE(project_graph.configuration_failure());
+    ASSERT_TRUE(project_graph.current_generation());
+    EXPECT_TRUE(project_graph.current_generation()->placements.contains("implicit-builtin"));
+}
+
+TEST_F(ProjectGraphFixture, StereoObservationCapabilitiesKeepPublicChannelNamesAndOperationSchemas)
+{
+    auto snapshot = make_snapshot(1, +[](iv::GraphBuilder& graph, std::span<ConfigurationArgument>) {
+        auto input = graph.input<"main">();
+        graph.outputs(graph.tile<iv::stereo>(input, input));
+    });
+    publish_definitions_snapshot(project_graph, {.snapshot = snapshot});
+    iv::ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "stereo-module", .definition_id = definition_id,
+    }, create); });
+    ASSERT_EQ(create.build(), "stereo-module");
+    auto const generation = project_graph.current_generation();
+    ASSERT_TRUE(generation);
+    auto const root = generation->placements.at("stereo-module").root;
+    auto const output_config = generation->graph->node_bundles.resolve_sample_output(
+        {root, iv::PortKind::sample, 0}).config;
+    ASSERT_EQ(output_config.channel_layout.channel_type, iv::ChannelTypeId::stereo);
+    EXPECT_EQ(output_config.name, "value");
+    iv::ObservationGraphRequest describe{.describe_nodes = {{.instance_id = "stereo-module"}}};
+    in_event_source([&] { project_graph.handle_observation_request(describe); });
+    ASSERT_TRUE(describe.error.empty()) << describe.error;
+    ASSERT_TRUE(describe.capabilities);
+    auto const output = std::ranges::find_if(*describe.capabilities, [](auto const& capability) {
+        return capability["kind"] == "output" && capability["member"] == "value";
+    });
+    ASSERT_NE(output, describe.capabilities->end()) << describe.capabilities->dump();
+    EXPECT_EQ((*output)["channels"], nlohmann::ordered_json::array({
+        {{"index", 0}, {"name", "left"}}, {{"index", 1}, {"name", "right"}},
+    }));
+    EXPECT_EQ((*output)["operations"], nlohmann::ordered_json::array({"level", "value"}));
+    EXPECT_EQ((*output)["resultSchemas"][1]["fields"][0]["name"], "value");
+    EXPECT_EQ((*output)["resultSchemas"][1]["fields"][0]["type"], "float32");
+}
+
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, ConfigurationCommitsAndCoalescesWhileCompilerIsBlocked)
+{
+    (void)realize_controls(1);
+    auto const baseline = probe.structural_stage_count();
+    auto const initial = project_graph.current_generation();
+    probe.defer_activation();
+    probe.block_next_compilation();
+    iv::ProjectStringBuilder first;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "queued:first", .definition_id = manual_control_leaf_definition_id}, first); });
+    ASSERT_EQ(first.build(), "queued:first");
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    auto const blocked = project_graph.current_generation();
+    auto edit = std::async(std::launch::async, [&] {
+        iv::ProjectStringBuilder added;
+        in_event_source([&] { project_graph.handle_project_create_node_instance({
+            .instance_id = "queued:latest", .definition_id = manual_control_leaf_definition_id}, added); });
+        (void)added.build();
+        iv::ProjectAckBuilder removed;
+        in_event_source([&] { project_graph.handle_project_delete_node_instance({"queued:first"}, removed); });
+        removed.build();
+    });
+    auto const status = edit.wait_for(std::chrono::seconds(2));
+    if (status != std::future_status::ready) probe.release_blocked_compilation();
+    ASSERT_EQ(status, std::future_status::ready);
+    ASSERT_NO_THROW(edit.get());
+    auto const configured = project_graph.current_generation();
+    ASSERT_TRUE(configured);
+    EXPECT_GT(configured->generation, blocked->generation);
+    EXPECT_TRUE(configured->placements.contains("queued:latest"));
+    EXPECT_FALSE(configured->placements.contains("queued:first"));
+    EXPECT_FALSE(configured->compiled_graph);
+    iv::ObservationGraphRequest metadata{.describe_nodes = {{.instance_id = "queued:latest"}}};
+    in_event_source([&] { project_graph.handle_observation_request(metadata); });
+    ASSERT_TRUE(metadata.error.empty()) << metadata.error;
+    ASSERT_TRUE(metadata.capabilities);
+    EXPECT_EQ(metadata.configured_generation, configured->configured_generation);
+    EXPECT_EQ(metadata.window_execution_generation, initial->generation);
+    auto const inputs = iv::read_node_instance_interface(configured->graph->node_bundles,
+        configured->placements.at("queued:latest").root).sample_inputs;
+    ASSERT_EQ(inputs.size(), 1u);
+    EXPECT_EQ(inputs.front().name, "gain");
+    EXPECT_EQ(probe.structural_stage_count(), baseline);
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_structural_stages(baseline + 1));
+    iv::ObservationGraphRequest before_activation;
+    in_event_source([&] { project_graph.handle_observation_request(before_activation); });
+    EXPECT_EQ(before_activation.window_execution_generation, initial->generation);
+    EXPECT_EQ(probe.structural_stage_count(), baseline + 1);
+    EXPECT_EQ(project_graph.current_generation()->generation, configured->generation);
+
+    project_graph.acknowledge_execution(blocked->generation);
+    iv::ObservationGraphRequest intermediate;
+    in_event_source([&] { project_graph.handle_observation_request(intermediate); });
+    EXPECT_EQ(intermediate.configured_generation, configured->configured_generation);
+    EXPECT_EQ(intermediate.window_configured_generation, blocked->configured_generation);
+    EXPECT_EQ(intermediate.window_execution_generation, blocked->generation);
+
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    auto const ready = project_graph.current_generation();
+    ASSERT_TRUE(ready->compiled_graph);
+    EXPECT_EQ(ready->compiled_graph->project_generation, configured->generation);
+    EXPECT_TRUE(ready->graph_executor_accepted);
+    EXPECT_EQ(probe.structural_stage_count(), baseline + 2);
+    project_graph.acknowledge_execution(ready->generation);
+    iv::ObservationGraphRequest settled;
+    in_event_source([&] { project_graph.handle_observation_request(settled); });
+    EXPECT_EQ(settled.window_execution_generation, ready->generation);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, RecompilesAcceptedSuccessorsBeforeEditsArrivingDuringRecovery)
+{
+    (void)realize_controls(1);
+    auto const first = project_graph.current_generation();
+    auto add = [&](std::string const& id) {
+        iv::ProjectStringBuilder response;
+        in_event_source([&] { project_graph.handle_project_create_node_instance({
+            .instance_id = id, .definition_id = manual_control_leaf_definition_id}, response); });
+        EXPECT_EQ(response.build(), id);
+    };
+    add("recovery:failed");
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    auto const failed = project_graph.current_generation();
+    add("recovery:third");
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    auto const third = project_graph.current_generation();
+    add("recovery:fourth");
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    auto const fourth = project_graph.current_generation();
+    ASSERT_TRUE(first->compiled_graph && failed->compiled_graph && third->compiled_graph && fourth->compiled_graph);
+
+    auto recompile = [](iv::ProjectGraphGeneration const& generation) -> iv::GraphJitCompileRequest {
+        return {.project_generation = generation.generation, .graph = generation.compiled_graph->configured_graph,
+            .definitions = generation.definitions, .observations = generation.compiled_graph->observations,
+            .configured_generation = generation.configured_generation};
+    };
+    auto const before = probe.compilations().size();
+    probe.reject_execution({.failed = failed->compiled_graph, .predecessor = first->compiled_graph,
+        .successors = {recompile(*third), recompile(*fourth)}, .message = "cannot initialize"});
+    probe.block_next_compilation();
+    project_graph.request_execution_recovery();
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+    EXPECT_EQ(project_graph.current_generation()->graph, fourth->graph);
+    auto edit = std::async(std::launch::async, [&] { add("recovery:fifth"); });
+    auto const edit_status = edit.wait_for(std::chrono::seconds(2));
+    if (edit_status != std::future_status::ready) probe.release_blocked_compilation();
+    ASSERT_EQ(edit_status, std::future_status::ready);
+    ASSERT_NO_THROW(edit.get());
+    auto const fifth = project_graph.current_generation();
+    EXPECT_TRUE(fifth->placements.contains("recovery:failed"));
+    EXPECT_TRUE(fifth->placements.contains("recovery:fifth"));
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+
+    auto const compilations = probe.compilations();
+    ASSERT_EQ(compilations.size(), before + 3);
+    EXPECT_EQ(compilations[before].project_generation, third->generation);
+    EXPECT_EQ(compilations[before].predecessor, first->compiled_graph);
+    EXPECT_EQ(compilations[before + 1].project_generation, fourth->generation);
+    ASSERT_TRUE(compilations[before + 1].predecessor);
+    EXPECT_EQ(compilations[before + 1].predecessor->project_generation, third->generation);
+    EXPECT_NE(compilations[before + 1].predecessor, third->compiled_graph);
+    EXPECT_EQ(compilations[before + 2].project_generation, fifth->generation);
+    ASSERT_TRUE(compilations[before + 2].predecessor);
+    EXPECT_EQ(compilations[before + 2].predecessor->project_generation, fourth->generation);
+    EXPECT_NE(compilations[before + 2].predecessor, fourth->compiled_graph);
+    EXPECT_EQ(project_graph.current_generation()->graph, fifth->graph);
+    EXPECT_TRUE(project_graph.current_generation()->graph_executor_accepted);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, RejectionWithoutASuccessorPreservesTheConfiguredEdit)
+{
+    (void)realize_controls(1);
+    auto const first = project_graph.current_generation();
+    iv::ProjectStringBuilder response;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "keep:failed-edit", .definition_id = manual_control_leaf_definition_id}, response); });
+    ASSERT_EQ(response.build(), "keep:failed-edit");
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    auto const failed = project_graph.current_generation();
+    ASSERT_TRUE(first->compiled_graph && failed->compiled_graph);
+    probe.reject_execution({.failed = failed->compiled_graph, .predecessor = first->compiled_graph,
+        .message = "cannot initialize"});
+    project_graph.request_execution_recovery();
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    EXPECT_EQ(project_graph.current_generation()->graph, failed->graph);
+    EXPECT_EQ(project_graph.current_generation()->execution_phase, "failed");
+    EXPECT_FALSE(project_graph.current_generation()->graph_executor_accepted);
+
+    iv::ProjectStringBuilder following;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "keep:following-edit", .definition_id = manual_control_leaf_definition_id}, following); });
+    ASSERT_EQ(following.build(), "keep:following-edit");
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    EXPECT_EQ(probe.compilations().back().predecessor, first->compiled_graph);
+    EXPECT_TRUE(project_graph.current_generation()->placements.contains("keep:failed-edit"));
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, UnrelatedDefinitionPublicationKeepsTheConfiguredAndExecutableGeneration)
+{
+    (void)realize_controls(1);
+    auto before = project_graph.current_generation();
+    auto const count = probe.compilations().size();
+    auto next = std::make_shared<iv::NodeDefinitionsSnapshot>(*before->definitions);
+    next->generation += 100;
+    auto entry = next->by_id.at(manual_control_leaf_definition_id);
+    entry.definition_id = "iv.test.unrelated.catalog";
+    std::visit([&](auto& definition) {
+        definition.definition_id = entry.definition_id;
+        definition.package_id = "package:unrelated";
+    }, entry.definition);
+    auto unrelated_package = std::make_shared<iv::PackageRevision>();
+    unrelated_package->package_id = "package:unrelated";
+    next->package_revisions.push_back(unrelated_package);
+    next->by_id.emplace(entry.definition_id, std::move(entry));
+    iv::NodeDefinitionsSnapshotChanged update{.snapshot = next};
+    in_event_source([&] { project_graph.handle_node_definitions_snapshot_changed(update); });
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    EXPECT_EQ(project_graph.current_generation(), before);
+    EXPECT_EQ(project_graph.definitions_snapshot(), next);
+    EXPECT_EQ(probe.compilations().size(), count);
+}
+
+
+TEST_F(ProjectGraphFixture, ImplicitOutputGainDefaultsToUnityAndItsGestureIsOneUndoableEdit)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1)});
+    iv::ProjectAckBuilder load;
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {{.instance_id = "module", .definition_id = definition_id}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    iv::ManualControlId id{.node = {.instance_id = "module"}, .port_name = "main",
+        .kind = iv::ManualControlKind::output_gain};
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    auto scope = read_graph_scope(project_graph);
+    auto const& knob = scope_node(scope, "module").at("sampleOutputs").at(0).at("manualControl");
+    EXPECT_EQ(knob.at("value"), 1);
+    EXPECT_TRUE(knob.at("available").get<bool>());
+    EXPECT_TRUE(knob.at("participates").get<bool>());
+    auto generation = project_graph.current_generation();
+    auto gain = std::ranges::find(generation->graph->manual_controls, id, &iv::ConfiguredManualControl::id);
+    ASSERT_NE(gain, generation->graph->manual_controls.end());
+    EXPECT_TRUE(gain->output.has_value());
+    EXPECT_EQ(gain->settled_value, iv::Sample{1});
+
+    iv::ManualControlInteractionId gesture{.client_id = "ui", .interaction_id = "gain"};
+    iv::ProjectAckBuilder begin, end;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, 1}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    iv::LiveManualControlUpdateRequest update{.interaction = gesture, .value = .5f};
+    project_graph.handle_live_manual_control_update(update);
+    EXPECT_TRUE(update.applied);
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({gesture, .25f}, end); });
+    ASSERT_NO_THROW(end.build());
+    ASSERT_EQ(project_graph.manual_controls().size(), 1u);
+    EXPECT_EQ(project_graph.manual_controls()[0].id, id);
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.25f});
+    // End is authoritative even if a late transport update follows it.
+    update.value = .75f; update.applied = false;
+    project_graph.handle_live_manual_control_update(update);
+    EXPECT_FALSE(update.applied);
+    iv::ProjectAckBuilder undo, redo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_TRUE(project_graph.manual_controls().empty());
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    ASSERT_EQ(project_graph.manual_controls().size(), 1u);
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.25f});
+}

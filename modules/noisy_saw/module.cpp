@@ -55,4 +55,4 @@ void noisy_saw_project(iv::GraphBuilder& g)
     g.outputs("main"_P = g.tile<stereo>(left, right));
 }
 
-IV_MODULE("iv.test.noisy_saw", noisy_saw_project);
+IV_MODULE("iv.test.noisy_saw", noisy_saw_project, "Noisy Saw");

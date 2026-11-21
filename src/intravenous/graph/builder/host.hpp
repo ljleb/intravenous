@@ -45,7 +45,7 @@ inline GraphBuilderState::VirtualPorts virtual_ports(GraphBuilder const& builder
         const_cast<GraphBuilder&>(builder)).virtual_ports();
 }
 
-inline GraphBuilderPublicSamplePortFamilies
+inline GraphBuilderPublicContinuousPortFamilies
 public_sample_input_families(GraphBuilder const& builder)
 {
     return details::builder_graph_state(
@@ -53,10 +53,10 @@ public_sample_input_families(GraphBuilder const& builder)
 }
 
 inline bool public_sample_input_is_connected(
-    GraphBuilder const& builder, size_t ordinal)
+    GraphBuilder const& builder, size_t index)
 {
     return details::builder_graph_state(
-        const_cast<GraphBuilder&>(builder)).public_sample_input_is_connected(ordinal);
+        const_cast<GraphBuilder&>(builder)).public_sample_input_is_connected(index);
 }
 
 inline std::vector<GraphBuilderPublicEventInput>
@@ -67,20 +67,20 @@ public_event_inputs(GraphBuilder const& builder)
 }
 
 inline bool public_event_input_is_connected(
-    GraphBuilder const& builder, size_t ordinal)
+    GraphBuilder const& builder, size_t index)
 {
     return details::builder_graph_state(
-        const_cast<GraphBuilder&>(builder)).public_event_input_is_connected(ordinal);
+        const_cast<GraphBuilder&>(builder)).public_event_input_is_connected(index);
 }
 
 inline std::span<SourceInfo const>
-public_event_input_source_infos(GraphBuilder const& builder, size_t ordinal)
+public_event_input_source_infos(GraphBuilder const& builder, size_t index)
 {
     return details::builder_graph_state(
-        const_cast<GraphBuilder&>(builder)).public_event_input_source_infos(ordinal);
+        const_cast<GraphBuilder&>(builder)).public_event_input_source_infos(index);
 }
 
-inline GraphBuilderPublicSamplePortFamilies
+inline GraphBuilderPublicContinuousPortFamilies
 public_sample_output_families(GraphBuilder const& builder)
 {
     return details::builder_graph_state(

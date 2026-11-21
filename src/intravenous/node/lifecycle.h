@@ -5,9 +5,12 @@
 
 namespace iv {
     template<typename Node, typename Ctx>
-    constexpr void do_declare(Node const& node, Ctx& ctx)
+    constexpr void do_declare(
+        Node const& node,
+        Ctx& ctx,
+        ReflectedNodePortRealization ports)
     {
-        DeclarationContext<Node> node_ctx(ctx, node);
+        DeclarationContext<Node> node_ctx(ctx, node, ports);
         if constexpr (details::has_declare<Node>)
         {
             node.declare(node_ctx);

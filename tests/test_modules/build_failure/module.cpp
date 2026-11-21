@@ -9,4 +9,4 @@ void build_failure(iv::GraphBuilder& g)
 
 this will not compile
 
-IV_MODULE("iv.test.build_failure", build_failure);
+IV_MODULE("iv.test.build_failure", build_failure, "Build failure");

@@ -12,4 +12,4 @@ void nested_loader_voice(iv::GraphBuilder& g)
     g.outputs("out"_P = saw * amplitude);
 }
 
-IV_MODULE("iv.test.nested_loader_voice", nested_loader_voice);
+IV_MODULE("iv.test.nested_loader_voice", nested_loader_voice, "Nested loader voice");

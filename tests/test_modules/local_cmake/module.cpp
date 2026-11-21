@@ -16,4 +16,4 @@ void local_cmake_module(iv::GraphBuilder& g)
     );
 }
 
-IV_MODULE("iv.test.local_cmake", local_cmake_module);
+IV_MODULE("iv.test.local_cmake", local_cmake_module, "Local cmake");

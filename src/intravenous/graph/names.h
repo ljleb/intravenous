@@ -39,6 +39,12 @@ constexpr std::string event_type_name(EventTypeId type)
         return "boundary";
     case EventTypeId::empty:
         return "empty";
+    case EventTypeId::sample:
+        return "sample";
+    case EventTypeId::curve_point:
+        return "curve_point";
+    case EventTypeId::beat:
+        return "beat";
     case EventTypeId::count:
         break;
     }

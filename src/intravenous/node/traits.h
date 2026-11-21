@@ -1,4 +1,6 @@
 #pragma once
+#include <intravenous/node/coverage_task.h>
+#include <intravenous/node/tick_replay_mode.h>
 
 #include <intravenous/ports.h>
 
@@ -15,28 +17,48 @@
 
 namespace iv {
     template<typename Node>
-    struct AccessBlockContext;
+    struct TockCoverageContext;
 
     template<typename Node>
-    struct AccessBlockBatchContext;
+    struct PropagateForwardCoverageContext;
 
     template<typename Node>
-    struct PropagateBlockAccessContext;
+    struct PropagateReverseCoverageContext;
 
     template<typename Node>
-    struct PropagateBlockAccessBatchContext;
+    struct TickSampleContext;
 
     template<typename Node>
-    using PropagateBlockAccessBatchedOperation = void (*) (
-        Node const&, PropagateBlockAccessBatchContext<Node>&);
+    struct TickBlockContext;
 
     template<typename Node>
-    void do_access_block_batched(
-        Node const&, AccessBlockBatchContext<Node>&);
+    class TickBlockBatchContext;
 
     template<typename Node>
-    constexpr PropagateBlockAccessBatchedOperation<Node>
-    do_propagate_block_access_batched();
+    struct SkipBlockContext;
+
+    template<typename Node>
+    class SkipBlockBatchContext;
+
+    template<typename Node>
+    class TockCoverageBatchContext;
+
+    template<typename Node>
+    class PropagateForwardCoverageBatchContext;
+
+    template<typename Node>
+    class PropagateReverseCoverageBatchContext;
+
+    template<typename Node>
+    void do_tock_coverage(Node const&, TockCoverageContext<Node>&);
+
+    template<typename Node>
+    void do_propagate_forward_coverage(
+        Node const&, PropagateForwardCoverageContext<Node>&);
+
+    template<typename Node>
+    void do_propagate_reverse_coverage(
+        Node const&, PropagateReverseCoverageContext<Node>&);
 
     template<typename Node>
     struct NodeState {
@@ -56,33 +78,6 @@ namespace iv {
         using Type = typename Node::State;
     };
 
-    // CompiledState belongs exclusively to arbitrary compiled-port access.
-    // Its lifetime and storage are intentionally not coupled to Node::State.
-    template<typename Node>
-    struct NodeCompiledState {
-        using Type = void;
-    };
-
-    namespace details {
-        template<typename Node>
-        concept has_CompiledState = requires {
-            typename Node::CompiledState;
-        };
-    }
-
-    template<typename Node>
-    requires(details::has_CompiledState<Node>)
-    struct NodeCompiledState<Node> {
-        using Type = typename Node::CompiledState;
-    };
-
-    enum class CompiledPortCallbackKind {
-        none,
-        unbatched,
-        batch,
-        conflicting,
-    };
-
     template<typename A>
     struct NoCopy : public A
     {
@@ -99,44 +94,65 @@ namespace iv {
 
     namespace details
     {
+        template<class Tuple, std::size_t... I>
+        consteval bool tuple_contains_only_input_configs(
+            std::index_sequence<I...>)
+        {
+            return (AuthoredInputConfig<
+                std::tuple_element_t<I, std::remove_cvref_t<Tuple>>> && ...);
+        }
+
+        template<class Tuple, std::size_t... I>
+        consteval bool tuple_contains_only_output_configs(
+            std::index_sequence<I...>)
+        {
+            return (AuthoredOutputConfig<
+                std::tuple_element_t<I, std::remove_cvref_t<Tuple>>> && ...);
+        }
+
+        template<class Tuple>
+        concept input_config_tuple =
+            PortConfigTuple<Tuple>
+            && tuple_contains_only_input_configs<Tuple>(
+                std::make_index_sequence<port_config_count_v<Tuple>>{});
+
+        template<class Tuple>
+        concept output_config_tuple =
+            PortConfigTuple<Tuple>
+            && tuple_contains_only_output_configs<Tuple>(
+                std::make_index_sequence<port_config_count_v<Tuple>>{});
+
         template <typename Node>
         concept has_outputs = requires(Node const& node)
         {
-            std::begin(node.outputs());
-            std::end(node.outputs());
+            { node.outputs() };
+            requires output_config_tuple<decltype(node.outputs())>;
         };
 
         template <typename Node>
         concept has_inputs = requires(Node const& node)
         {
-            std::begin(node.inputs());
-            std::end(node.inputs());
+            { node.inputs() };
+            requires input_config_tuple<decltype(node.inputs())>;
         };
-
-        template<typename Range, typename Config>
-        concept port_config_range =
-            std::ranges::input_range<Range>
-            && std::convertible_to<std::ranges::range_value_t<Range>, Config>;
 
         template<typename Node>
         concept has_declared_inputs =
-            has_inputs<Node>
-            && port_config_range<decltype(std::declval<Node const&>().inputs()), InputConfig>;
+            has_inputs<Node>;
 
         template<typename Node>
         concept has_declared_outputs =
-            has_outputs<Node>
-            && port_config_range<decltype(std::declval<Node const&>().outputs()), OutputConfig>;
+            has_outputs<Node>;
 
         template<typename Node>
         concept has_static_port_config_members =
             (!has_inputs<Node> || requires {
                 { Node::inputs() };
-                requires port_config_range<decltype(Node::inputs()), InputConfig>;
+                requires input_config_tuple<decltype(Node::inputs())>;
             })
             && (!has_outputs<Node> || requires {
                 { Node::outputs() };
-                requires port_config_range<decltype(Node::outputs()), OutputConfig>;
+                requires output_config_tuple<decltype(Node::outputs())>;
             });
 
         template<typename Node>
@@ -159,161 +175,348 @@ namespace iv {
             };
 
         template<typename Node>
-        consteval bool declares_compiled_inputs()
+        consteval bool declares_random_access_inputs()
         {
             if constexpr (!has_inputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
-                for (auto const& config : Node::inputs()) {
-                    if (config.compiled) return true;
-                }
-                return false;
+                return any_port_config(
+                    Node::inputs(),
+                    [](auto const& config) { return is_random_access(config); });
             }
         }
 
         template<typename Node>
-        consteval bool declares_compiled_outputs()
+        consteval bool declares_tock_outputs()
         {
             if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
-                for (auto const& config : Node::outputs()) {
-                    if (config.compiled) return true;
-                }
-                return false;
+                return any_port_config(
+                    Node::outputs(),
+                    [](auto const& config) { return is_random_access_output(config); });
             }
         }
 
         template<typename Node>
-        consteval bool declares_compiled_sample_inputs()
+        consteval bool declares_tick_outputs()
+        {
+            if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
+                return false;
+            } else {
+                return any_port_config(
+                    Node::outputs(),
+                    [](auto const& config) { return is_sequential_output(config); });
+            }
+        }
+
+        template<typename Node>
+        consteval bool declares_random_access_sample_inputs()
         {
             if constexpr (!has_inputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
-                for (auto const& config : Node::inputs()) {
-                    if (is_sample(config) && config.compiled) return true;
-                }
-                return false;
+                return any_port_config(Node::inputs(), [](auto const& config) {
+                    return is_continuous(config) && is_random_access(config);
+                });
             }
         }
 
         template<typename Node>
-        consteval bool declares_compiled_sample_outputs()
+        consteval bool declares_tock_sample_outputs()
         {
             if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
             } else {
-                for (auto const& config : Node::outputs()) {
-                    if (is_sample(config) && config.compiled) return true;
-                }
+                return any_port_config(Node::outputs(), [](auto const& config) {
+                    return is_continuous(config) && is_random_access_output(config);
+                });
+            }
+        }
+
+        template<typename Node>
+        consteval bool declares_random_access_event_inputs()
+        {
+            if constexpr (!has_inputs<Node> || !has_constexpr_port_configs<Node>) {
                 return false;
-            }
-        }
-
-        template<typename Node>
-        inline constexpr bool declares_compiled_inputs_v =
-            declares_compiled_inputs<Node>();
-
-        template<typename Node>
-        inline constexpr bool declares_compiled_outputs_v =
-            declares_compiled_outputs<Node>();
-
-        template<typename Node>
-        inline constexpr bool declares_compiled_sample_inputs_v =
-            declares_compiled_sample_inputs<Node>();
-
-        template<typename Node>
-        inline constexpr bool declares_compiled_sample_outputs_v =
-            declares_compiled_sample_outputs<Node>();
-
-        template<typename Node>
-        inline constexpr bool declares_compiled_sample_ports_v =
-            declares_compiled_sample_inputs_v<Node>
-            || declares_compiled_sample_outputs_v<Node>;
-
-        template<typename Node>
-        concept has_access_block = requires(Node const& node) {
-            { node.access_block(std::declval<AccessBlockContext<Node>&>()) }
-                -> std::same_as<void>;
-        };
-
-        template<typename Node>
-        concept has_access_block_batch = requires(Node const& node) {
-            { node.access_block_batch(std::declval<AccessBlockBatchContext<Node>&>()) }
-                -> std::same_as<void>;
-        };
-
-        template<typename Node>
-        concept has_propagate_block_access = requires(Node const& node) {
-            { node.propagate_block_access(
-                std::declval<PropagateBlockAccessContext<Node>&>()) }
-                -> std::same_as<void>;
-        };
-
-        template<typename Node>
-        concept has_propagate_block_access_batch = requires(Node const& node) {
-            { node.propagate_block_access_batch(
-                std::declval<PropagateBlockAccessBatchContext<Node>&>()) }
-                -> std::same_as<void>;
-        };
-
-        template<typename Node>
-        consteval CompiledPortCallbackKind access_block_callback_kind()
-        {
-            if constexpr (has_access_block<Node> && has_access_block_batch<Node>) {
-                return CompiledPortCallbackKind::conflicting;
-            } else if constexpr (has_access_block<Node>) {
-                return CompiledPortCallbackKind::unbatched;
-            } else if constexpr (has_access_block_batch<Node>) {
-                return CompiledPortCallbackKind::batch;
             } else {
-                return CompiledPortCallbackKind::none;
+                return any_port_config(Node::inputs(), [](auto const& config) {
+                    return !is_continuous(config) && is_random_access(config);
+                });
             }
         }
 
         template<typename Node>
-        consteval CompiledPortCallbackKind propagate_block_access_callback_kind()
+        consteval bool declares_tock_event_outputs()
         {
-            if constexpr (has_propagate_block_access<Node>
-                && has_propagate_block_access_batch<Node>) {
-                return CompiledPortCallbackKind::conflicting;
-            } else if constexpr (has_propagate_block_access<Node>) {
-                return CompiledPortCallbackKind::unbatched;
-            } else if constexpr (has_propagate_block_access_batch<Node>) {
-                return CompiledPortCallbackKind::batch;
+            if constexpr (!has_outputs<Node> || !has_constexpr_port_configs<Node>) {
+                return false;
             } else {
-                return CompiledPortCallbackKind::none;
+                return any_port_config(Node::outputs(), [](auto const& config) {
+                    return !is_continuous(config) && is_random_access_output(config);
+                });
             }
         }
 
         template<typename Node>
-        inline constexpr CompiledPortCallbackKind access_block_callback_kind_v =
-            access_block_callback_kind<Node>();
+        inline constexpr bool declares_random_access_inputs_v =
+            declares_random_access_inputs<Node>();
 
         template<typename Node>
-        inline constexpr CompiledPortCallbackKind propagate_block_access_callback_kind_v =
-            propagate_block_access_callback_kind<Node>();
+        inline constexpr bool declares_tock_outputs_v =
+            declares_tock_outputs<Node>();
 
         template<typename Node>
-        inline constexpr bool has_valid_access_block_callback_v =
-            access_block_callback_kind_v<Node> == CompiledPortCallbackKind::unbatched
-            || access_block_callback_kind_v<Node> == CompiledPortCallbackKind::batch;
+        inline constexpr bool declares_tick_outputs_v =
+            declares_tick_outputs<Node>();
 
         template<typename Node>
-        inline constexpr bool has_valid_propagate_block_access_callback_v =
-            propagate_block_access_callback_kind_v<Node>
-                == CompiledPortCallbackKind::unbatched
-            || propagate_block_access_callback_kind_v<Node>
-                == CompiledPortCallbackKind::batch;
+        inline constexpr bool declares_random_access_sample_inputs_v =
+            declares_random_access_sample_inputs<Node>();
 
         template<typename Node>
-        inline constexpr bool compiled_dsp_node_declaration_is_valid_v =
-            (!has_constexpr_port_configs<Node>
-                || (
-                    (!declares_compiled_sample_ports_v<Node>
-                        || has_valid_access_block_callback_v<Node>)
-                    && propagate_block_access_callback_kind_v<Node>
-                        != CompiledPortCallbackKind::conflicting));
+        inline constexpr bool declares_tock_sample_outputs_v =
+            declares_tock_sample_outputs<Node>();
+
+        template<typename Node>
+        inline constexpr bool declares_random_access_event_inputs_v =
+            declares_random_access_event_inputs<Node>();
+
+        template<typename Node>
+        inline constexpr bool declares_tock_event_outputs_v =
+            declares_tock_event_outputs<Node>();
+
+        template<typename Node>
+        inline constexpr bool declares_random_access_or_tock_sample_ports_v =
+            declares_random_access_sample_inputs_v<Node>
+            || declares_tock_sample_outputs_v<Node>;
+
+        template<typename Node>
+        inline constexpr bool declares_random_access_or_tock_event_ports_v =
+            declares_random_access_event_inputs_v<Node>
+            || declares_tock_event_outputs_v<Node>;
+
+        template<typename Node>
+        concept has_tock_coverage = requires(Node const& node) {
+            { node.tock_coverage(std::declval<TockCoverageContext<Node>&>()) }
+                -> std::same_as<void>;
+        };
+
+        template<typename Node>
+        concept has_tock_coverage_batch = requires(
+            TockCoverageBatchContext<Node>& context) {
+            { Node::tock_coverage_batch(context) } -> std::same_as<void>;
+        };
+
+        template<class Result>
+        concept coverage_callback_result = std::same_as<Result, void> || std::same_as<Result, CoverageTask>;
+
+        template<typename Node>
+        concept has_propagate_forward_coverage = requires(Node const& node) {
+            { node.propagate_forward_coverage(
+                std::declval<PropagateForwardCoverageContext<Node>&>()) }
+                -> coverage_callback_result;
+        };
+
+        template<typename Node>
+        concept has_suspendable_forward_coverage = requires(Node const& node, PropagateForwardCoverageContext<Node>& context) {
+            { node.propagate_forward_coverage(context) } -> std::same_as<CoverageTask>;
+        };
+
+        template<typename Node>
+        concept has_propagate_forward_coverage_batch = requires(
+            PropagateForwardCoverageBatchContext<Node>& context) {
+            { Node::propagate_forward_coverage_batch(context) }
+                -> std::same_as<void>;
+        };
+
+        template<typename Node>
+        concept has_propagate_reverse_coverage = requires(Node const& node) {
+            { node.propagate_reverse_coverage(
+                std::declval<PropagateReverseCoverageContext<Node>&>()) }
+                -> coverage_callback_result;
+        };
+
+        template<typename Node>
+        concept has_suspendable_reverse_coverage = requires(Node const& node, PropagateReverseCoverageContext<Node>& context) {
+            { node.propagate_reverse_coverage(context) } -> std::same_as<CoverageTask>;
+        };
+
+        template<typename Node>
+        concept has_propagate_reverse_coverage_batch = requires(
+            PropagateReverseCoverageBatchContext<Node>& context) {
+            { Node::propagate_reverse_coverage_batch(context) }
+                -> std::same_as<void>;
+        };
+
+        template<typename Node>
+        concept has_tick = requires(
+            Node const& node, TickSampleContext<Node> const& context) {
+            { node.tick(context) } -> std::same_as<void>;
+        };
+
+        template<typename Node>
+        concept has_tick_block = requires(
+            Node const& node, TickBlockContext<Node> const& context) {
+            { node.tick_block(context) } -> std::same_as<void>;
+        };
+
+        template<typename Node>
+        concept has_tick_block_batch = requires(
+            TickBlockBatchContext<Node> const& context) {
+            { Node::tick_block_batch(context) } -> std::same_as<void>;
+        };
+
+        template<typename Node>
+        concept has_skip_block = requires(
+            Node const& node, SkipBlockContext<Node> const& context) {
+            { node.skip_block(context) } -> std::same_as<void>;
+        };
+
+        template<typename Node>
+        concept has_skip_block_batch = requires(
+            SkipBlockBatchContext<Node> const& context) {
+            { Node::skip_block_batch(context) } -> std::same_as<void>;
+        };
+
+        template<typename Node>
+        inline constexpr bool has_tick_family_v =
+            has_tick<Node> || has_tick_block<Node> || has_tick_block_batch<Node>;
+
+        template<typename Node>
+        inline constexpr bool has_tock_family_v =
+            has_tock_coverage<Node> || has_tock_coverage_batch<Node>;
+
+        template<typename Node>
+        consteval bool tick_input_content_is_valid()
+        {
+            if constexpr (!has_tick_family_v<Node> || !has_inputs<Node>
+                || !has_constexpr_port_configs<Node>) return true;
+            else return !any_port_config(Node::inputs(), [](auto const& config) {
+                if constexpr (std::remove_cvref_t<decltype(config)>::access != InputAccessKind::sequential)
+                    return config.content_access != InputContentAccess::complete_buffer;
+                else return false;
+            });
+        }
+
+        // One concrete primitive has one authored execution domain. Tick and
+        // tick_block are alternative realtime forms; tock_coverage is the
+        // background form. A module node is the composition mechanism when a
+        // developer wants to group realtime and background work.
+        template<typename Node>
+        inline constexpr bool primary_callback_declaration_is_valid_v =
+            (static_cast<unsigned>(has_tick<Node>)
+                + static_cast<unsigned>(has_tick_block<Node>)
+                + static_cast<unsigned>(has_tick_block_batch<Node>)
+                + static_cast<unsigned>(has_tock_coverage<Node>)
+                + static_cast<unsigned>(has_tock_coverage_batch<Node>) == 1)
+            && (static_cast<unsigned>(has_skip_block<Node>)
+                + static_cast<unsigned>(has_skip_block_batch<Node>) <= 1)
+            && (static_cast<unsigned>(has_propagate_forward_coverage<Node>)
+                + static_cast<unsigned>(
+                    has_propagate_forward_coverage_batch<Node>) <= 1)
+            && (static_cast<unsigned>(has_propagate_reverse_coverage<Node>)
+                + static_cast<unsigned>(
+                    has_propagate_reverse_coverage_batch<Node>) <= 1)
+            && (!(has_skip_block<Node> || has_skip_block_batch<Node>)
+                || has_tick_family_v<Node>)
+            && tick_input_content_is_valid<Node>()
+            && (!declares_tock_outputs_v<Node> || has_tock_family_v<Node>)
+            && (!has_tock_family_v<Node>
+                || (declares_tock_outputs_v<Node> && !declares_tick_outputs_v<Node>));
+
+        // The author opts into a deterministic, side-effect-free Tick contract
+        // with `static constexpr TickReplayMode replay_mode`. This is a
+        // type-level fact, not a producer mode; contextual replay is
+        // established by the whole-graph planner after checking live sources.
+        template<typename Node>
+        consteval TickReplayMode tick_replay_mode()
+        {
+            static_assert(!requires { Node::intrinsically_replayable; },
+                "intrinsically_replayable was replaced by "
+                "static constexpr TickReplayMode replay_mode");
+            if constexpr (requires { Node::replay_mode; }) {
+                static_assert(std::is_same_v<
+                        std::remove_cvref_t<decltype(Node::replay_mode)>,
+                        TickReplayMode>,
+                    "replay_mode must be a TickReplayMode");
+                return Node::replay_mode;
+            } else {
+                return TickReplayMode::disabled;
+            }
+        }
+
+        template<typename Node>
+        inline constexpr TickReplayMode tick_replay_mode_v =
+            tick_replay_mode<Node>();
+
+        template<typename Node>
+        inline constexpr bool intrinsically_replayable_v =
+            tick_replay_mode_v<Node> != TickReplayMode::disabled;
+
+        template<typename Node>
+        inline constexpr bool has_coverage_propagation_domain_v =
+            has_tock_family_v<Node>;
+
+        template<typename Node>
+        inline constexpr bool background_state_type_is_valid_v = [] {
+            using State = typename NodeState<Node>::Type;
+            if constexpr (requires { typename Node::TockState; }) {
+                return false;
+            } else if constexpr (!has_tock_family_v<Node> || std::is_void_v<State>) {
+                return true;
+            } else {
+                return std::is_object_v<State> && !std::is_const_v<State>
+                    && !std::is_volatile_v<State>
+                    && std::is_default_constructible_v<State>
+                    && std::is_destructible_v<State>;
+            }
+        }();
+
+        template<typename Node>
+        inline constexpr bool background_dsp_node_declaration_is_valid_v =
+            background_state_type_is_valid_v<Node>
+            && has_constexpr_port_configs<Node>
+            && primary_callback_declaration_is_valid_v<Node>
+            && (!has_tock_family_v<Node>
+                || has_propagate_forward_coverage<Node>
+                || has_propagate_forward_coverage_batch<Node>)
+            && (!(has_propagate_forward_coverage<Node>
+                    || has_propagate_forward_coverage_batch<Node>)
+                || has_coverage_propagation_domain_v<Node>)
+            && (!(has_propagate_reverse_coverage<Node>
+                    || has_propagate_reverse_coverage_batch<Node>)
+                || (has_coverage_propagation_domain_v<Node>
+                    && declares_random_access_inputs_v<Node>));
+
+        template<typename Node>
+        consteval bool replay_outputs_are_valid()
+        {
+            if constexpr (!has_constexpr_port_configs<Node>) {
+                return false;
+            } else {
+                if constexpr (has_outputs<Node>) {
+                    if (any_port_config(Node::outputs(), [](auto const& config) {
+                        return !is_sequential_output(config)
+                            || config.realization != OutputRealization::computed;
+                    })) return false;
+                }
+                return true;
+            }
+        }
+
+        template<typename Node>
+        inline constexpr bool replay_declaration_is_valid_v =
+            !intrinsically_replayable_v<Node>
+            || (has_constexpr_port_configs<Node>
+                && has_tick_family_v<Node>
+                && !has_State<Node>
+                && !declares_random_access_inputs_v<Node>
+                && !has_propagate_forward_coverage<Node>
+                && !has_propagate_forward_coverage_batch<Node>
+                && !has_propagate_reverse_coverage<Node>
+                && !has_propagate_reverse_coverage_batch<Node>
+                && replay_outputs_are_valid<Node>());
 
         template <typename Node>
         concept has_internal_latency = requires(Node node, size_t internal_latency)
@@ -344,79 +547,33 @@ namespace iv {
     template<typename Node>
     constexpr auto get_declared_outputs(Node const& node)
     {
-        if constexpr (details::has_declared_outputs<Node>)
-        {
-            return node.outputs();
-        }
-        else
-        {
-            return std::span<OutputConfig const, 0>{};
-        }
+        (void)node;
+        static_assert(details::has_constexpr_port_configs<Node>,
+            "concrete node ports must be declared by static constexpr inputs() and outputs()");
+        if constexpr (details::has_outputs<Node>) return Node::outputs();
+        else return std::span<OutputConfig const, 0>{};
     }
 
     template<typename Node>
     constexpr auto get_declared_inputs(Node const& node)
     {
-        if constexpr (details::has_declared_inputs<Node>)
-        {
-            return node.inputs();
-        }
-        else
-        {
-            return std::span<InputConfig const, 0>{};
-        }
-    }
-
-    template<typename Node>
-    std::vector<SampleInputConfig> get_inputs(Node const& node)
-    {
-        std::vector<SampleInputConfig> result;
-        for (InputConfig const& input : get_declared_inputs(node)) {
-            if (is_sample(input)) result.push_back(materialize_sample_config(input));
-        }
-        return result;
-    }
-
-    template<typename Node>
-    std::vector<SampleOutputConfig> get_outputs(Node const& node)
-    {
-        std::vector<SampleOutputConfig> result;
-        for (OutputConfig const& output : get_declared_outputs(node)) {
-            if (is_sample(output)) result.push_back(materialize_sample_config(output));
-        }
-        return result;
-    }
-
-    template<typename Node>
-    std::vector<EventInputConfig> get_event_inputs(Node const& node)
-    {
-        std::vector<EventInputConfig> result;
-        for (InputConfig const& input : get_declared_inputs(node)) {
-            if (!is_sample(input)) result.push_back(materialize_event_config(input));
-        }
-        return result;
-    }
-
-    template<typename Node>
-    std::vector<EventOutputConfig> get_event_outputs(Node const& node)
-    {
-        std::vector<EventOutputConfig> result;
-        for (OutputConfig const& output : get_declared_outputs(node)) {
-            if (!is_sample(output)) result.push_back(materialize_event_config(output));
-        }
-        return result;
+        (void)node;
+        static_assert(details::has_constexpr_port_configs<Node>,
+            "concrete node ports must be declared by static constexpr inputs() and outputs()");
+        if constexpr (details::has_inputs<Node>) return Node::inputs();
+        else return std::span<InputConfig const, 0>{};
     }
 
     template<typename Node>
     constexpr size_t get_num_inputs(Node const& node)
     {
-        return count_sample_ports(get_declared_inputs(node));
+        return count_continuous_ports(get_declared_inputs(node));
     }
 
     template<typename Node>
     constexpr size_t get_num_outputs(Node const& node)
     {
-        return count_sample_ports(get_declared_outputs(node));
+        return count_continuous_ports(get_declared_outputs(node));
     }
 
     template<typename Node>
@@ -482,5 +639,20 @@ namespace iv {
                     || get_num_event_inputs(node) > 0);
         }
     }
+
+    // Declaration-only helpers retain their owning realtime declaration layout.
+    // A concrete Tock primitive instead stores its one authored State in the
+    // background sidecar. This does not classify helpers as executable nodes.
+    template<typename Node>
+    struct NodeRealtimeState {
+        using Type = std::conditional_t<details::has_tock_family_v<Node>,
+            void, typename NodeState<Node>::Type>;
+    };
+
+    template<typename Node>
+    struct NodeBackgroundState {
+        using Type = std::conditional_t<details::has_tock_family_v<Node>,
+            typename NodeState<Node>::Type, void>;
+    };
 
 }

@@ -16,6 +16,7 @@ struct SourceSpan {
 struct SourceInfo {
   std::string declaration_identity{};
   SourceSpan span{};
+  std::string declaration_name{};
 
   bool operator==(SourceInfo const&) const = default;
 };

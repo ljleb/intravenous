@@ -20,7 +20,9 @@ AudioInputSynchronizer::AudioInputSynchronizer(
     : timeline_sample_rate_(timeline_sample_rate),
       timeline_block_size_(timeline_block_size),
       input_sample_rate_(input_sample_rate),
-      target_buffer_frames_(std::max(target_buffer_frames, timeline_block_size))
+      target_buffer_frames_(std::max(target_buffer_frames, timeline_block_size)),
+      output_storage_(
+          timeline_block_size * channel_count(kStereoInterleaved), 0.0f)
 {
     if (timeline_sample_rate_ == 0 || timeline_block_size_ == 0 || input_sample_rate_ == 0) {
         throw std::invalid_argument("audio input synchronizer requires non-zero rates and block size");
@@ -93,14 +95,35 @@ void AudioInputSynchronizer::push_captured_block(AudioInputBlock const &block)
     }
 }
 
-OwnedSampleBlock AudioInputSynchronizer::render_timeline_block()
+void AudioInputSynchronizer::render_timeline_block(
+    std::span<Sample> destination)
 {
-    std::vector<Sample::storage> output_storage(
-        timeline_block_size_ * channel_count(kStereoInterleaved),
+    if (destination.size() % channel_count(kStereoInterleaved) != 0
+        || destination.size()
+            > timeline_block_size_ * channel_count(kStereoInterleaved)) {
+        throw std::invalid_argument(
+            "audio input render destination has an invalid frame count");
+    }
+    auto const requested_frames =
+        destination.size() / channel_count(kStereoInterleaved);
+    std::fill(
+        output_storage_.begin(),
+        output_storage_.begin()
+            + static_cast<std::ptrdiff_t>(destination.size()),
         0.0f);
 
     {
-        std::scoped_lock lock(mutex_);
+        // The hardware-output callback is the consumer. It must never wait for
+        // the input-capture thread while that thread extends or compacts the
+        // FIFO. On contention this slice remains silent and the captured data
+        // stays queued for the next callback.
+        std::unique_lock lock(mutex_, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            for (size_t i = 0; i < destination.size(); ++i) {
+                destination[i] = output_storage_[i];
+            }
+            return;
+        }
         if (discontinuity_pending_) {
             ma_resampler_reset(&resampler_);
             discontinuity_pending_ = false;
@@ -129,12 +152,12 @@ OwnedSampleBlock AudioInputSynchronizer::render_timeline_block()
             auto *input =
                 fifo_.data() + fifo_read_frame_offset_ * channel_count(kStereoInterleaved);
             ma_uint64 input_frames = available_frames;
-            ma_uint64 output_frames = timeline_block_size_;
+            ma_uint64 output_frames = requested_frames;
             if (ma_resampler_process_pcm_frames(
                     &resampler_,
                     input,
                     &input_frames,
-                    output_storage.data(),
+                    output_storage_.data(),
                     &output_frames)
                 != MA_SUCCESS) {
                 throw std::runtime_error("failed to resample captured audio input");
@@ -149,13 +172,18 @@ OwnedSampleBlock AudioInputSynchronizer::render_timeline_block()
         }
     }
 
+    for (size_t i = 0; i < destination.size(); ++i) {
+        destination[i] = output_storage_[i];
+    }
+}
+
+OwnedSampleBlock AudioInputSynchronizer::render_timeline_block()
+{
     OwnedSampleBlock block;
     block.channel_layout = kStereoInterleaved;
     block.frame_count = timeline_block_size_;
-    block.samples.resize(output_storage.size());
-    for (size_t i = 0; i < output_storage.size(); ++i) {
-        block.samples[i] = output_storage[i];
-    }
+    block.samples.resize(output_storage_.size());
+    render_timeline_block(block.samples);
     return block;
 }
 

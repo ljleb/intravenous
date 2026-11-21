@@ -1,0 +1,9 @@
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "rootDir": "src",
+        "outDir": "dist-tools",
+        "noEmit": false
+    },
+    "include": ["src/generateNodeEventBindings.ts"]
+}

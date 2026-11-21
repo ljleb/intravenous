@@ -1,0 +1,246 @@
+#include <intravenous/runtime/realtime_persisted_state.h>
+
+#include <cassert>
+#include <stdexcept>
+#include <utility>
+
+namespace iv {
+
+RealtimePersistedState::RealtimePersistedState(
+    std::uint64_t generation,
+    PersistedDataStore::ReaderSlot data_slot,
+    TickMaterializationStore::ReaderSlot materialization_slot) noexcept
+    : generation_(generation)
+    , data_slot_(std::move(data_slot))
+    , materialization_slot_(std::move(materialization_slot))
+{}
+
+RealtimePersistedState::RealtimePersistedState(
+    std::uint64_t generation,
+    PersistedDataStore::ReaderSlot data_slot) noexcept
+    : generation_(generation)
+    , data_slot_(std::move(data_slot))
+{}
+
+std::unique_ptr<RealtimePersistedState> RealtimePersistedState::prepare(
+    std::uint64_t generation,
+    PersistedDataStore& data,
+    TickMaterializationStore& materializations)
+{
+    return std::unique_ptr<RealtimePersistedState>{
+        new RealtimePersistedState{
+            generation,
+            data.register_reader(),
+            materializations.register_reader(),
+        }};
+}
+
+std::unique_ptr<RealtimePersistedState>
+RealtimePersistedState::prepare_initial(
+    std::uint64_t generation,
+    PersistedDataStore& data)
+{
+    auto state = std::unique_ptr<RealtimePersistedState>{
+        new RealtimePersistedState{generation, data.register_reader()}};
+    state->initial_materialization_ = std::make_unique<TickMaterializationSnapshot>();
+    state->initial_data_ = std::make_unique<PersistedDataStore::Snapshot>();
+    return state;
+}
+
+std::unique_ptr<RealtimePersistedState> RealtimePersistedState::prepare_owned(
+    std::uint64_t generation,
+    std::shared_ptr<PersistedDataStore::Snapshot const> data,
+    std::shared_ptr<TickMaterializationSnapshot const> materialization)
+{
+    if (!data || !materialization || materialization->generation() != generation
+        || materialization->data_version() != data->version())
+        throw std::invalid_argument("private playback preparation has mismatched roots");
+    auto state = std::unique_ptr<RealtimePersistedState>(new RealtimePersistedState{generation, {}});
+    state->owned_data_ = std::move(data);
+    state->owned_materialization_ = std::move(materialization);
+    state->captured_ = true;
+    return state;
+}
+
+bool RealtimePersistedState::capture_initial() noexcept
+{
+    if (captured_ || !initial_materialization_) return false;
+    data_ = data_slot_.pin();
+    auto const version = data_.snapshot().version();
+    initial_data_->copy_identity_from(data_.snapshot());
+    data_ = {};
+    initial_materialization_->generation_ = generation_;
+    initial_materialization_->semantic_version_ = version.semantic;
+    initial_materialization_->data_version_ = version;
+    captured_ = true;
+    return true;
+}
+
+std::expected<void, std::string>
+RealtimePersistedState::capture_current()
+{
+    if (captured_) {
+        return std::unexpected(
+            "realtime persisted state has already captured its roots");
+    }
+    data_ = data_slot_.pin();
+    materialization_ = materialization_slot_.pin();
+    captured_ = true;
+    if (materialization().generation() != generation_) {
+        return std::unexpected(
+            "realtime persisted state has an incompatible materialization generation");
+    }
+    if (materialization().data_version() != data().version()) {
+        return std::unexpected(
+            "realtime persisted state data and materialization roots disagree");
+    }
+    return {};
+}
+
+std::expected<void, std::string> RealtimePersistedState::select_payload(
+    graph_jit::BackgroundEvaluationPlan const& plan, PersistedDataStore& store)
+{
+    try {
+        std::vector<PersistedPayloadSelection> selected;
+        auto append = [&](auto const& bindings, PortKind kind) {
+            for (auto const& binding : bindings) {
+                if ((kind == PortKind::sample && materialization().find_sample(binding.port))
+                    || (kind == PortKind::event && materialization().find_event(binding.port))) continue;
+                for (auto index : binding.storage) {
+                    auto const& storage = plan.storage.ports.at(index);
+                    if (storage.storage != graph_jit::PortStorageKind::persisted_data) continue;
+                    auto output = store.resolve_output(persisted_output_id(plan, index, generation_));
+                    auto const* coverage = kind == PortKind::sample
+                        ? data().find_sample_coverage(output, storage.sample_layout, storage.continuous_geometry)
+                        : data().find_event_coverage(output, storage.event_type);
+                    if (coverage) selected.push_back({output, *coverage});
+                }
+            }
+        };
+        append(plan.tick_runtime.sequential_sample_inputs, PortKind::sample);
+        append(plan.tick_runtime.sequential_event_inputs, PortKind::event);
+        append(plan.tick_runtime.random_access_sample_inputs, PortKind::sample);
+        append(plan.tick_runtime.random_access_event_inputs, PortKind::event);
+        std::vector<PersistedOutputHandle> outputs;
+        for (auto const& selection : selected) outputs.push_back(selection.output);
+        if (owned_data_) {
+            auto lease = std::make_shared<PersistedDataStore::Snapshot>(*owned_data_);
+            lease->select_outputs(outputs);
+            lease->retain_payload(selected);
+            owned_data_ = std::move(lease);
+        } else if (!initial_data_) {
+            data_.select_outputs(outputs);
+            data_.retain_payload(selected);
+        }
+        return {};
+    } catch (std::exception const& error) {
+        return std::unexpected(error.what());
+    }
+}
+
+RealtimePersistedStateMailbox::RealtimePersistedStateMailbox()
+{
+    static_assert(
+        std::atomic<RealtimePersistedState*>::is_always_lock_free);
+}
+
+RealtimePersistedStateMailbox::~RealtimePersistedStateMailbox()
+{
+    delete pending_.exchange(nullptr, std::memory_order_relaxed);
+    delete std::exchange(active_, nullptr);
+    auto* returned = returned_.exchange(nullptr, std::memory_order_relaxed);
+    while (returned) {
+        auto* next = returned->returned_next_;
+        delete returned;
+        returned = next;
+    }
+}
+
+void RealtimePersistedStateMailbox::publish(
+    std::unique_ptr<RealtimePersistedState> state)
+{
+    if (!state) {
+        throw std::invalid_argument(
+            "cannot publish an empty realtime persisted state");
+    }
+    if (!state->captured_) {
+        throw std::logic_error(
+            "cannot publish an uncaptured realtime persisted state");
+    }
+    auto* superseded = pending_.exchange(
+        state.release(), std::memory_order_acq_rel);
+    if (superseded) return_for_reclamation(*superseded);
+}
+
+void RealtimePersistedStateMailbox::activate_generation(
+    std::unique_ptr<RealtimePersistedState> initial_state)
+{
+    if (!initial_state) {
+        throw std::invalid_argument(
+            "cannot activate an empty realtime persisted state");
+    }
+    if (!initial_state->captured_) {
+        throw std::logic_error(
+            "cannot activate an uncaptured realtime persisted state");
+    }
+    auto* superseded_pending = pending_.exchange(
+        nullptr, std::memory_order_acquire);
+    if (superseded_pending) {
+        return_for_reclamation(*superseded_pending);
+    }
+    if (active_) return_for_reclamation(*active_);
+    active_ = initial_state.release();
+}
+
+void RealtimePersistedStateMailbox::return_for_reclamation(
+    RealtimePersistedState& state) noexcept
+{
+    auto* head = returned_.load(std::memory_order_relaxed);
+    do {
+        state.returned_next_ = head;
+    } while (!returned_.compare_exchange_weak(
+        head,
+        &state,
+        std::memory_order_release,
+        std::memory_order_relaxed));
+}
+
+std::unique_ptr<RealtimePersistedState> RealtimePersistedStateMailbox::take_active() noexcept
+{
+    return std::unique_ptr<RealtimePersistedState>(std::exchange(active_, nullptr));
+}
+
+std::unique_ptr<RealtimePersistedState> RealtimePersistedStateMailbox::take_pending() noexcept
+{
+    return std::unique_ptr<RealtimePersistedState>(pending_.exchange(nullptr, std::memory_order_acq_rel));
+}
+
+RealtimePersistedState const* RealtimePersistedStateMailbox::adopt(
+    std::uint64_t generation) noexcept
+{
+    auto* selected = pending_.exchange(nullptr, std::memory_order_acquire);
+    if (selected && selected->generation() != generation) {
+        return_for_reclamation(*selected);
+        selected = nullptr;
+    }
+    if (selected) {
+        if (active_) return_for_reclamation(*active_);
+        active_ = selected;
+    }
+    return active_ && active_->generation() == generation ? active_ : nullptr;
+}
+
+std::size_t RealtimePersistedStateMailbox::reclaim_returned() noexcept
+{
+    auto* returned = returned_.exchange(nullptr, std::memory_order_acquire);
+    std::size_t reclaimed = 0;
+    while (returned) {
+        auto* next = returned->returned_next_;
+        delete returned;
+        returned = next;
+        ++reclaimed;
+    }
+    return reclaimed;
+}
+
+} // namespace iv
