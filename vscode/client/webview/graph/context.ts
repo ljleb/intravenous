@@ -4,13 +4,17 @@ import type { GraphScope } from "../../src/graphScope";
 import type { GraphLane } from "../../src/laneSelection";
 import type { GraphConnectionEnd, GraphPortEndpoint } from "../../src/graphConnectionEditing";
 import type { PortConnectionDrag } from "../../src/portConnectionGesture";
-import type { CurveAxes, CurveDragKind } from "../../src/automationCurveEditing";
 import type { KnobLimits } from "../../src/knobScrub";
 import type { StatusHint } from "../../src/statusBarText";
 import type { CursorFollow, CursorFollowTarget, CursorTrace } from "./cursorReturn";
 
 export type ObjectDrag = {
     trace?: CursorTrace;
+    lock?: false;
+    hideCursor?: boolean;
+    begin?: () => boolean;
+    wheel?: (delta: number) => boolean;
+    hint?: () => StatusHint | undefined;
     move: (point: Point) => void;
     moveBy: (delta: Point) => void;
     modifiers?: (event: MouseEvent | KeyboardEvent) => void;
@@ -45,8 +49,10 @@ type GraphEditorContext = {
     portsChanged: () => void;
     profileGraphUi: <T>(label: string, run: () => T) => T;
     elementAtPointer: () => Element | null;
-    takePlayheadTrace: () => CursorTrace | undefined;
+    takeCursorReturnTrace: () => CursorTrace | undefined;
     startObjectDrag: (event: PointerEvent, drag: ObjectDrag) => (() => void) | undefined;
+    refreshPointerHint: () => void;
+    registerPresentationInterrupt: (interrupt: (reason: "history" | "disconnected") => void) => () => void;
     finishPointerLock: (release: Point | null, lockOrigin: Point | null, follow?: CursorFollow, lockError?: string) => void;
     setTimelineZoomHint: (hint: string | null) => void;
     connectionDrag: Ref<PortConnectionDrag | null>;
@@ -60,8 +66,6 @@ type GraphEditorContext = {
     openKnobValue: (anchor: HTMLElement, label: string, value: number, limits: () => KnobLimits,
         apply: (value: number) => void, bindValueEntry?: (anchor: DOMRect) => void) => void;
     closeKnobValueWithin: (panel: HTMLElement) => void;
-    startAutomation: (event: PointerEvent, target: NodeAddress, pointId: number | null, axes: CurveAxes, kind: CurveDragKind,
-        visiblePointCenter?: (id: number) => Point | null) => void;
 };
 const key: InjectionKey<GraphEditorContext> = Symbol("graphEditor");
 export function provideGraphEditor(context: GraphEditorContext) { provide(key, context); }

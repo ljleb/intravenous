@@ -65,6 +65,13 @@ export class PresentationEdits {
         this.timer = undefined;
     }
 
+    discardPending(): PresentationEdit[] {
+        this.clearTimer();
+        const discarded = this.queued.splice(0);
+        this.changed();
+        return discarded;
+    }
+
     dispose(): void {
         this.closed = true;
         this.clearTimer();

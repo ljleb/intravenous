@@ -7151,6 +7151,17 @@ acknowledgements, retained observation windows, and native cursor placement.
 Measure observation copies and worker startup before choosing a bulk data
 format or sharing execution across open graph views.
 
+**Automation Curve migration, 2026-11-21.** Automation Curve runs in
+`PluginLane` through `createAutomationCurvePresentation`. Its snapshot
+includes accepted points and retained min and max observation spans. The
+presentation owns selection and the curve draft. The host owns pointer
+lock, cursor return, context menus, and the project state write.
+`PresentationEditRequests` delivers replies per command so a point edit can
+wait for acceptance before sending a dependent edit. The existing saved
+scale, pan, and zoom have the same presentation ID and state fields.
+The separate Vue curve editor is superseded. Check the native release
+position in a running editor.
+
 **Package ownership and lane choices.** A package can ship zero or more
 presentations for its own definitions and for public definitions available
 through its package dependencies. The provider package owns the presentation,

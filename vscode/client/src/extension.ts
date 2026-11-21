@@ -15,7 +15,7 @@ import type { GraphEditorAction } from "./graphEditorProtocol";
 import { knobPointerLockVersionWarning } from "./editorCompatibility";
 import { NativeClientHelper } from "./nativeClientHelper";
 import { resolveIntravenousBinary } from "./serverBinaryPaths";
-import { prepareVSCodeRelaunch, readVSCodeXWaylandRelaunch } from "./vscodeRelaunch";
+import { prepareVSCodeRelaunch, readVSCodeXWaylandRelaunch, requestVSCodeApplicationQuit } from "./vscodeRelaunch";
 
 async function configureXWaylandRelaunch(context: vscode.ExtensionContext, folder: vscode.WorkspaceFolder | undefined,
     localDesktop: boolean, log: (message: string) => void): Promise<void> {
@@ -76,9 +76,15 @@ async function configureXWaylandRelaunch(context: vscode.ExtensionContext, folde
                 pending = null;
                 log(`XWayland restart launcher exited while the extension host was still running (code ${code}, signal ${signal}).`);
             });
-            log(`XWayland restart launcher ${worker.pid} is ready. Requesting a normal VS Code quit for editor PID ${plan.pid}.`);
-            await vscode.commands.executeCommand("workbench.action.quit");
-            log("The VS Code quit command returned. The launcher is waiting for the editor process to exit.");
+            if (context.extensionMode === vscode.ExtensionMode.Development) {
+                // The workbench Quit command can close just the development window.
+                log(`XWayland restart launcher ${worker.pid} is ready. Requesting an application quit for editor PID ${plan.pid}.`);
+                requestVSCodeApplicationQuit(plan);
+            } else {
+                log(`XWayland restart launcher ${worker.pid} is ready. Requesting a normal VS Code quit for editor PID ${plan.pid}.`);
+                await vscode.commands.executeCommand("workbench.action.quit");
+            }
+            log("The launcher is waiting for the editor process to exit.");
         } catch (error) {
             cancel();
             log(`Could not arrange an XWayland restart. ${error instanceof Error ? error.message : String(error)}`);
@@ -143,9 +149,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     const localDesktop = vscode.env.uiKind === vscode.UIKind.Desktop
         && (!vscode.env.remoteName || context.extension.extensionKind === vscode.ExtensionKind.UI);
-    if (!bundledRuntime) {
-        void configureXWaylandRelaunch(context, workspaceFolder, localDesktop, (message) => outputChannel.appendLine(message));
-    }
+    void configureXWaylandRelaunch(context, workspaceFolder, localDesktop, (message) => outputChannel.appendLine(message));
     let nativeHelper: NativeClientHelper | undefined;
     if (process.platform === "linux" && localDesktop) {
         const name = "intravenous-client-helper";

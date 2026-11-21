@@ -4,7 +4,7 @@ import type { PointerLockExitGuard } from "../../src/pointerLockExitGuard";
 
 export type CursorWarpAnchor = { screenOrigin: Point; scale: number };
 export type CursorFollowTarget = {
-    destination: () => Point | null;
+    destination: () => Point | null | Promise<Point | null>;
     initialCenter?: Point | null;
     policy?: CursorReturnPolicy;
 };
@@ -16,7 +16,7 @@ export function cursorWarpAnchor(event: Pick<PointerEvent, "pointerType" | "scre
     return event.pointerType === "mouse" ? { screenOrigin: { x: event.screenX, y: event.screenY }, scale } : null;
 }
 
-type PendingReturn = CursorFollow & { lockOrigin: Point; expiresAt: number; trace?: CursorTrace };
+type PendingReturn = CursorFollow & { lockOrigin: Point; expiresAt: number; resolving?: true; trace?: CursorTrace };
 const returnLifetimeMs = 100;
 
 export class PointerLockCursorReturn {
@@ -44,53 +44,62 @@ export class PointerLockCursorReturn {
                 : "The drag ended before a normal pointer-lock release.", trace);
             return;
         }
-        const pending = { ...follow, lockOrigin, expiresAt: Date.now() + returnLifetimeMs, trace };
+        const pending: PendingReturn = { ...follow, lockOrigin, expiresAt: Date.now() + returnLifetimeMs, trace };
         this.pending = pending;
         this.timer = setTimeout(() => {
-            if (this.pending === pending) this.cancel("The browser did not finish releasing pointer lock in time.");
+            if (this.pending === pending) this.cancel(pending.resolving
+                ? "The release destination was unavailable before the cursor return deadline."
+                : "The browser did not finish releasing pointer lock in time.");
         }, returnLifetimeMs);
     }
 
     unlocked(): void {
         const pending = this.pending;
-        if (!pending || this.locked()) return;
+        if (!pending || this.locked() || pending.resolving) return;
+        pending.resolving = true;
         pending.trace?.log("Browser released pointer lock");
         this.afterRender(() => {
             if (this.pending !== pending) return;
-            this.clearPending();
-            if (Date.now() >= pending.expiresAt || this.locked()) {
-                this.skipped(this.locked() ? "Another gesture acquired pointer lock."
-                    : "The cursor return request expired before the graph finished rendering.", pending.trace);
-                return;
-            }
             const center = pending.destination();
-            if (!center) {
-                this.skipped("The drag surface is no longer visible at release.", pending.trace);
-                return;
-            }
-            if (center.x === pending.initialCenter?.x && center.y === pending.initialCenter?.y) {
-                pending.trace?.log("Destination matches the original object position", { center });
-                return;
-            }
-            const { screenOrigin, scale, lockOrigin, expiresAt, policy } = pending;
-            const dx = Math.round((center.x - lockOrigin.x) * scale);
-            const dy = Math.round((center.y - lockOrigin.y) * scale);
-            if (!dx && !dy) {
-                pending.trace?.log("Destination is already at the lock origin", { center });
-                return;
-            }
-            const requestId = ++this.nextRequestId;
-            this.submitted = { requestId, trace: pending.trace };
-            // Window zoom can affect viewport scale without changing screenX/Y.
-            const warp = {
-                originX: Math.round(screenOrigin.x * scale), originY: Math.round(screenOrigin.y * scale),
-                screenOrigin: { x: Math.round(screenOrigin.x), y: Math.round(screenOrigin.y) },
-                deltaX: dx, deltaY: dy, expiresAt,
-            };
-            pending.trace?.log("Sending cursor return to the extension", { requestId, center, warp });
-            this.send({ type: "returnCursor", requestId, policy, warp,
-                ...(pending.trace && { traceId: pending.trace.id }) });
+            if (center instanceof Promise) void center.then((point) => this.sendPending(pending, point),
+                () => this.sendPending(pending, null));
+            else this.sendPending(pending, center);
         });
+    }
+
+    private sendPending(pending: PendingReturn, center: Point | null): void {
+        if (this.pending !== pending) return;
+        this.clearPending();
+        if (Date.now() >= pending.expiresAt || this.locked()) {
+            this.skipped(this.locked() ? "Another gesture acquired pointer lock."
+                : "The cursor return request expired before the graph finished rendering.", pending.trace);
+            return;
+        }
+        if (!center) {
+            this.skipped("The drag surface is no longer visible at release.", pending.trace);
+            return;
+        }
+        if (center.x === pending.initialCenter?.x && center.y === pending.initialCenter?.y) {
+            pending.trace?.log("Destination matches the original object position", { center });
+            return;
+        }
+        const { screenOrigin, scale, lockOrigin, expiresAt, policy } = pending;
+        const dx = Math.round((center.x - lockOrigin.x) * scale);
+        const dy = Math.round((center.y - lockOrigin.y) * scale);
+        if (!dx && !dy) {
+            pending.trace?.log("Destination is already at the lock origin", { center });
+            return;
+        }
+        const requestId = ++this.nextRequestId;
+        this.submitted = { requestId, trace: pending.trace };
+        // Window zoom can affect viewport scale without changing screenX/Y.
+        const warp = {
+            originX: Math.round(screenOrigin.x * scale), originY: Math.round(screenOrigin.y * scale),
+            screenOrigin: { x: Math.round(screenOrigin.x), y: Math.round(screenOrigin.y) },
+            deltaX: dx, deltaY: dy, expiresAt,
+        };
+        pending.trace?.log("Sending cursor return to the extension", { requestId, center, warp });
+        this.send({ type: "returnCursor", requestId, policy, warp, ...(pending.trace && { traceId: pending.trace.id }) });
     }
 
     complete(requestId: number): void {

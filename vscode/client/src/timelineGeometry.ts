@@ -1,6 +1,6 @@
-import { automationSampleIndex, automationSampleOffset } from "../../src/automationCurveGeometry";
-import type { ObservationWindow } from "../../src/observations";
-import { observationViewportWindow } from "../../src/observationWindows";
+import { automationSampleIndex, automationSampleOffset } from "./automationCurveGeometry";
+import type { ObservationWindow } from "./observations";
+import { observationViewportWindow } from "./observationWindows";
 
 export type RulerTick = { key: number | string; x: number; label: string; sampleLabel?: string; minor?: boolean };
 export const rulerMarkerPoints = "-5.5,0 5.5,0 0,7";

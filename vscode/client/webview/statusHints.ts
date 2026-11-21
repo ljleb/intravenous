@@ -1,6 +1,5 @@
 import { onBeforeUnmount, onMounted, shallowRef } from "vue";
 import type { HoverElement } from "../src/trustedHover";
-import type { AutomationPointPosition } from "../src/automationCurveGeometry";
 import type { StatusHint } from "../src/statusBarText";
 
 const hintSelector = '[data-status-hint]:not([data-status-hint=""]), [data-status-shortcuts]:not([data-status-shortcuts=""])';
@@ -9,7 +8,6 @@ function elementHint(target: Element | null): StatusHint | null {
     return target ? { text: target.getAttribute("data-status-hint") || undefined,
         shortcuts: target.getAttribute("data-status-shortcuts") || undefined } : null;
 }
-
 export function useElementStatusHint() {
     const hint = shallowRef<StatusHint | null>(null);
     let hovered: Element | null = null;
@@ -54,10 +52,4 @@ export function useElementStatusHint() {
             refresh();
         },
     };
-}
-
-export function automationPointStatus(point: AutomationPointPosition): string {
-    const time = point.sampleIndex !== undefined ? `${point.sampleIndex} smp` : `${Number(point.seconds.toPrecision(6))} s`;
-    return `${time} · Value ${Number(point.value.toPrecision(6))}`
-        + (point.tension === undefined ? "" : ` · Tension ${Number(point.tension.toFixed(2))}`);
 }

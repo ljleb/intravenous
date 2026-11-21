@@ -40,7 +40,7 @@ body:is(.vscode-high-contrast, .vscode-high-contrast-light) {
     outline: none !important;
 }
 
-[data-automation-drag], [data-automation-drag] * {
+[data-hidden-drag-cursor], [data-hidden-drag-cursor] * {
     cursor: none !important;
 }
 

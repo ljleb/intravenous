@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { ObservationWindow } from "../../src/observations";
-import { rulerMarkerPoints, timelineSampleFraction } from "./geometry";
+import { rulerMarkerPoints, timelineSampleFraction } from "../../src/timelineGeometry";
 import { usePlayback } from "./playbackContext";
 import { useTimelineWindow, type PresentationTimeWindow } from "./timelineContext";
 

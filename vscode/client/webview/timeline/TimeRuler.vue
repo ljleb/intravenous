@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { BeatRulerLabel } from "../../src/beatGrid";
-import { rulerMarkerPoints, timelineSampleFraction, timelineTicks } from "./geometry";
+import { rulerMarkerPoints, timelineSampleFraction, timelineTicks } from "../../src/timelineGeometry";
 import RulerGraduations from "./RulerGraduations.vue";
 import GridGuides from "./GridGuides.vue";
 import { usePresentationSize } from "../presentation/presentationSize";

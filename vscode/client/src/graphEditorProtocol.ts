@@ -19,7 +19,7 @@ export type CursorWarp = {
     deltaX: number; deltaY: number;
     expiresAt: number;
 };
-export type CursorReturnPolicy = "automationPoint" | "playhead" | "wrapped";
+export type CursorReturnPolicy = "presentationPoint" | "playhead" | "wrapped";
 export type TraceDetails = Record<string, unknown>;
 export type TraceLog = (step: string, details?: TraceDetails) => void;
 export type CursorReturnMessage =
@@ -49,7 +49,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "observationUpdate"; update: ObservationDelivery; sequence: number; previousSequence?: number }
     | { type: "startObservationProfile"; durationMs: number }
     | { type: "startGraphUiProfile"; profileId: string; durationMs: number }
-    | { type: "startPlayheadTrace"; traceId: string }
+    | { type: "startCursorReturnTrace"; traceId: string }
     | NodeEventResponse
     | { type: "manualControlState"; interactions: ManualControlInteractionState[]; live: ManualControlLiveValue[] }
     | { type: "graphWindowFocus"; focused: boolean }
@@ -69,7 +69,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "observationResync" }
     | { type: "observationProfile"; summary: ObservationProfileSummary }
     | { type: "graphUiProfile"; profileId: string; summary: GraphUiProfileSummary }
-    | { type: "playheadTrace"; traceId: string; step: string; details?: TraceDetails }
+    | { type: "cursorReturnTrace"; traceId: string; step: string; details?: TraceDetails }
     | NodeEventHostRequest
     | { type: "graphInteractionHint"; hint: StatusHint | null }
     | CursorReturnMessage

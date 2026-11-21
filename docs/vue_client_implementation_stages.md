@@ -3896,6 +3896,9 @@ is preserved. The client build and visual checks remain owner-run.
 
 ### Automation clip editing, 2026-11-18
 
+This section records the original editor. The current curve editor uses the
+[presentation plugin contract](./project_presentation_plugins.md#frame-and-input-contract).
+
 `AutomationCurvePresentation.vue` uses the timeline's ruler ticks and adds
 sample subdivisions when they fit. Its point markers use separate hit areas.
 Shift-click removes a point. Right-click opens the segment menu on a point
@@ -4085,8 +4088,8 @@ work takes priority over prefetched windows.
 
 #### Automation bound preview during panning
 
-`AutomationCurvePresentation.vue` requests a fine waveform window with a budget
-of 1,024 positions in the visible span for each connected bound. Six aligned
+`automationCurvePresentationManifest` requests a fine waveform window with a
+budget of 1,024 positions in the visible span for each connected bound. Six aligned
 coarse windows request 128 positions in total. The outer two are sparser.
 [Earlier aligned fine-window policy](./historical/automation_bound_previews_before_visible_sample_budget_2026-11-19.md).
 

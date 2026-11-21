@@ -23,7 +23,7 @@ small visual adjustments; no backend rebuild is needed for these values.
 | Meter scale labels | `LiveOutputMeters.vue` shows them in `editable`, at the same height as automation point editing. |
 | Meter scale bounds | [`meterPresentation.ts`](../vscode/client/src/meterPresentation.ts): `levelDomain`, `valueDomain` |
 | Peak hold and fall speed | [`meterBallistics.ts`](../vscode/client/src/meterBallistics.ts): `holdMilliseconds`, `relativeAcceleration`; only the held marker is animated, while the fill uses the latest received peak |
-| Curve colour, stroke, point size | [`AutomationCurvePresentation.vue`](../vscode/client/webview/presentation/AutomationCurvePresentation.vue): `.curve-line`, `.curve-point`, circle `r`; the same curve path is scaled at every height |
+| Curve colour, stroke, point size | [`automationCurvePresentation.ts`](../vscode/client/src/automationCurvePresentation.ts) sets the ink, stroke width, and marker radius. [`PresentationScene.vue`](../vscode/client/webview/presentation/PresentationScene.vue) maps the ink to theme colours and scales the hovered mark. |
 
 CSS is in each Vue file's `<style scoped>` block. Theme colours come from the
 `--vscode-*` variables. Prefer changing the visible shape separately from its mouse

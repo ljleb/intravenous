@@ -12,7 +12,7 @@ export class PresentationPluginSession {
     private closed = false;
 
     constructor(private readonly run: Run, private readonly schedule: () => void,
-        private readonly accept: (frame: PresentationFrame, draw: boolean, hasInput: boolean) => void,
+        private readonly accept: (frame: PresentationFrame, draw: boolean, inputs: readonly PresentationInput[]) => void,
         private readonly fail: (error: unknown) => void) {}
 
     update(snapshot: PresentationSnapshot, pacing: "frame" | "immediate" = "frame"): void {
@@ -23,14 +23,15 @@ export class PresentationPluginSession {
         else this.request();
     }
 
-    input(input: PresentationInput): void {
+    input(input: PresentationInput, pacing: "frame" | "immediate" = "frame"): void {
         if (this.closed) return;
         if (this.inputs.length >= 512) {
             this.stop(new Error("Presentation input queue exceeded its limit"));
             return;
         }
         this.inputs.push(input);
-        this.request();
+        if (pacing === "immediate") void this.flush();
+        else this.request();
     }
 
     suspend(): void { this.dirty = false; }
@@ -47,9 +48,9 @@ export class PresentationPluginSession {
         this.inputs = [];
         const viewport = this.viewport;
         try {
-            const reply = this.run(this.snapshot, inputs);
+            const reply = this.run({ ...this.snapshot, clockMs: performance.now() }, inputs);
             const result = reply instanceof Promise ? await reply : reply;
-            if (!this.closed) this.accept(readPresentationFrame(result), viewport === this.viewport, inputs.length > 0);
+            if (!this.closed) this.accept(readPresentationFrame(result), viewport === this.viewport, inputs);
         } catch (error) { this.stop(error); }
         finally {
             this.running = false;

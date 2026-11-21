@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { RulerTick } from "./geometry";
+import type { RulerTick } from "../../src/timelineGeometry";
 defineProps<{ ticks: RulerTick[]; compact?: boolean; labelInset?: number; hideLabels?: boolean }>();
 </script>
 

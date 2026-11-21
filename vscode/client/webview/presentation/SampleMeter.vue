@@ -2,7 +2,7 @@
 import { computed, ref, watch } from "vue";
 import type { MeterMode, ObservationDisplayValue } from "../../src/observations";
 import { levelDomain, meterPosition, MeterPresentationState, valueDomain } from "../../src/meterPresentation";
-import { numericTicks } from "../timeline/geometry";
+import { numericTicks } from "../../src/timelineGeometry";
 import RulerGraduations from "../timeline/RulerGraduations.vue";
 import { rightClickHint } from "../../src/statusBarText";
 import { usePresentationFrame } from "./presentationFrames";

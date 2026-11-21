@@ -13,7 +13,7 @@ import { KnobPointerLock } from "../src/knobPointerLock";
 import { knobFraction, valueScaleFraction } from "../src/knobPresentation";
 import { serializeNodeEvent, type NodeEvent } from "../src/nodeEvents";
 import { wrapTimelineCursor } from "../src/timelineViewport";
-import { automationTimelineTicks, timelineTicks } from "../webview/timeline/geometry";
+import { automationTimelineTicks, timelineTicks } from "../src/timelineGeometry";
 
 const target: NodeAddress = { instanceId: "curve" };
 const curvedAxes: CurveAxes = { left: 0, top: 0, width: 100, height: 100, begin: 0, end: 10 };

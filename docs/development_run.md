@@ -39,7 +39,12 @@ stays in `iv_project.jsonl`.
 
 For cursor wrapping and cursor return on Wayland, start VSCodium with XWayland
 if your desktop provides an X11 display. An existing VSCodium process keeps its
-current display backend.
+current display backend. Development windows honor the
+`intravenous.autoRelaunchWithXWayland` user setting. If you enable it,
+Intravenous can restart all open VSCodium windows with XWayland.
+VSCodium restores windows according to its restore settings and original launch
+arguments. If you added the development window to a running VSCodium instance,
+you may need to open it again after the restart.
 
 ```sh
 INTRAVENOUS_DEV_XWAYLAND=1 nix develop --command ./scripts/run_dev.sh projects/simple_sine

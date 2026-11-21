@@ -66,8 +66,9 @@ await drag.finish();
 
 The first send opens the server group. Each accepted message publishes normally;
 finish closes its one history entry. Capture the handle outside the component
-lifetime if the interaction can survive remounts. The bundled editor does this in
-its webview-owned `AutomationCurveEditing`. Closing a view or disconnecting closes
+lifetime if the interaction can survive remounts. `PluginLane` owns the handle
+and passes replies to `AutomationCurveEditing` through
+`PresentationEditRequests`. Closing a view or disconnecting closes
 accepted history. Conflicting edits end the old group; later updates reject rather
 than retry against the new curve. Gesture closure does not cancel accepted data.
 

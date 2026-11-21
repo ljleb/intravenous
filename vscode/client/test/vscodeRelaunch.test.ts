@@ -5,7 +5,8 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { prepareVSCodeRelaunch, processStartTime, readVSCodeXWaylandRelaunch, xWaylandArguments } from "../src/vscodeRelaunch";
+import { prepareVSCodeRelaunch, processStartTime, readVSCodeXWaylandRelaunch, requestVSCodeApplicationQuit,
+    xWaylandArguments } from "../src/vscodeRelaunch";
 
 test("XWayland restart preserves editor arguments and respects an explicit graphics backend", () => {
     assert.deepEqual(xWaylandArguments(["--user-data-dir=/tmp/editor profile", "--", "--ozone-platform.txt"]),
@@ -23,6 +24,30 @@ test("a launcher can distinguish a running Linux process from a missing one", { 
     assert.equal(processStartTime(process.pid), started);
     assert.equal(processStartTime(2 ** 31 - 1), null);
 });
+
+test("application quit signals the recorded desktop process and lets its handler finish",
+    { skip: process.platform !== "linux", timeout: 5000 }, async () => {
+        const desktop = spawn(process.execPath, ["-e", `
+            process.on("SIGTERM", () => process.send("shutdown", () => process.exit(0)));
+            process.send("ready");
+            setInterval(() => {}, 1000);
+        `], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+        try {
+            const [ready] = await once(desktop, "message");
+            assert.equal(ready, "ready");
+            const pid = desktop.pid!;
+            const started = processStartTime(pid)!;
+            assert.throws(() => requestVSCodeApplicationQuit({ pid, started: "0" }), /desktop process changed/);
+            const shutdown = once(desktop, "message");
+            const exit = once(desktop, "exit");
+            requestVSCodeApplicationQuit({ pid, started });
+            const [message] = await shutdown;
+            assert.equal(message, "shutdown");
+            assert.deepEqual(await exit, [0, null]);
+        } finally {
+            if (desktop.exitCode === null && desktop.signalCode === null) desktop.kill();
+        }
+    });
 
 test("an explicit X11 flag explains the restart skip even without Wayland environment variables",
     { skip: process.platform !== "linux" }, async () => {

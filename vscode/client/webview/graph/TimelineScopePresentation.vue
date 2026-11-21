@@ -21,7 +21,7 @@ import { usePresentationFrame } from "../presentation/presentationFrames";
 import { usePresentationSize } from "../presentation/presentationSize";
 import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
 import type { SeekBeatReader } from "../timeline/usePlayheadSeek";
-import { timelineBeatObservationWindow } from "../timeline/geometry";
+import { timelineBeatObservationWindow } from "../../src/timelineGeometry";
 import { beatGridTicks, beatRulerLabels, minimumBeatMarkSpacing, readBeatGrid, sameBeatGrid, selectVisibleBeatMarks,
     type BeatGrid } from "../../src/beatGrid";
 import { gridGuideStrengths } from "../../src/gridGuideStrength";

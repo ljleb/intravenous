@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { playheadTimeDrag, timelineTimeDrag } from "../src/timelineTimeDrag";
 import { minimumBeatMarkSpacing, selectVisibleBeatMarks } from "../src/beatGrid";
 import { gridGuideStrengths } from "../src/gridGuideStrength";
-import { seekBeatWindow, snapTimelineSample, timelineBeatObservationWindow, timelineTicks } from "../webview/timeline/geometry";
+import { seekBeatWindow, snapTimelineSample, timelineBeatObservationWindow, timelineTicks } from "../src/timelineGeometry";
 import { compactWidthPx, editableHeightPx, effectiveDisplayMode, nanoHeightPx } from "../webview/presentation/displayMode";
 
 test("the ruler keeps coarser coincident beats and snapping only uses the displayed marks", () => {

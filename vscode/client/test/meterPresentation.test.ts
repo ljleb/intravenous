@@ -24,7 +24,7 @@ test("a returning meter displays its last compatible reading while its probe pre
     assert.equal(meter.reading("value").available, false);
     assert.equal(observations.previousLiveValue("meter"), undefined);
 });
-import { numericTicks } from "../webview/timeline/geometry";
+import { numericTicks } from "../src/timelineGeometry";
 
 test("level grading uses dBFS rather than a linear amplitude fraction", () => {
     assert.equal(sampleDecibels(1), 0);

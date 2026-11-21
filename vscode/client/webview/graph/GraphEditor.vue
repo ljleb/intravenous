@@ -10,7 +10,6 @@ import { ObservationDeliverySequence } from "../../src/observationDelivery";
 import { addressKey, graphScopeNodeLabel, isProjectInstance, newGraphLayout, readGraphViewState, type NodeAddress, type Point,
     type PresentationState } from "../../src/graphScope";
 import { isTimelineSnapNode } from "../../src/timelineSnap";
-import type { CurveAxes, CurveDragKind } from "../../src/automationCurveEditing";
 import { webviewApi } from "../host";
 import PresentationHost from "../presentation/PresentationHost.vue";
 import type { SemanticNode } from "../presentation/semanticNode";
@@ -34,10 +33,8 @@ import { PointerLockExitGuard } from "../../src/pointerLockExitGuard";
 import { PointerLockExitRedirect } from "../../src/pointerLockExitRedirect";
 import { TrustedHover } from "../../src/trustedHover";
 import { providePlayback } from "../timeline/playbackContext";
-import { useAutomationEditing } from "../presentation/automationEditingContext";
 import { useBeatGridEditing } from "../presentation/beatGridEditingContext";
-import { automationPointStatus, useElementStatusHint } from "../statusHints";
-import { scrubSensitivityShortcut } from "../../src/scrubSensitivity";
+import { useElementStatusHint } from "../statusHints";
 import type { StatusHint } from "../../src/statusBarText";
 import { projectHistoryShortcut } from "../../src/projectHistoryShortcut";
 import { graphEditorShortcut, isTextEditingTarget } from "../../src/graphEditorShortcuts";
@@ -56,7 +53,6 @@ const wireOpacity = { faint: .19, emphasized: .72 };
 const state = shallowRef<GraphEditorState>({ sessionStatus: "starting", scope: null,
     definitions: null, definitionUsage: {}, error: "" });
 const playback = providePlayback();
-const automation = useAutomationEditing();
 const beats = useBeatGridEditing();
 const elementStatus = useElementStatusHint();
 onBeforeUnmount(() => playback.dispose());
@@ -84,16 +80,16 @@ function profileVueFlush(recording: GraphUiRecording) {
         if (recording === graphUiRecording) recording.work.record("Wait for Vue update after message", performance.now() - start);
     });
 }
-let armedPlayheadTrace: string | undefined;
-let playheadTraceTimer: ReturnType<typeof setTimeout> | undefined;
-function takePlayheadTrace(): CursorTrace | undefined {
-    const id = armedPlayheadTrace;
+let armedCursorReturnTrace: string | undefined;
+let cursorReturnTraceTimer: ReturnType<typeof setTimeout> | undefined;
+function takeCursorReturnTrace(): CursorTrace | undefined {
+    const id = armedCursorReturnTrace;
     if (!id) return;
-    clearTimeout(playheadTraceTimer);
-    armedPlayheadTrace = undefined;
+    clearTimeout(cursorReturnTraceTimer);
+    armedCursorReturnTrace = undefined;
     const start = performance.now();
     return { id, log: (step, details) => webviewApi.postMessage({
-        type: "playheadTrace", traceId: id, step, details: { ...details, elapsedMs: Math.round(performance.now() - start) },
+        type: "cursorReturnTrace", traceId: id, step, details: { ...details, elapsedMs: Math.round(performance.now() - start) },
     } satisfies GraphEditorWebviewMessage) };
 }
 const layout = ref(newGraphLayout());
@@ -101,9 +97,7 @@ const manualVersion = ref(0);
 const timelineZoomHint = ref<string | null>(null);
 let lastInteractionHint: StatusHint | null | undefined;
 let pointerLockError = "";
-let automationPointerId: number | null = null;
-let automationShift = false;
-let suppressAutomationContextMenu = false;
+let suppressDragContextMenu = false;
 let objectDrag: (ObjectDrag & {
     pointerId: number; button: number; buttonMask: number; anchor: CursorWarpAnchor | null; moved: boolean;
 }) | null = null;
@@ -148,6 +142,7 @@ const pointerLock = new KnobPointerLock<Point>({
             objectDrag.trace?.log("First relative pointer movement", delta);
         }
         objectDrag.moveBy(delta);
+        if (objectDrag?.hint) publishInteractionHint();
     } else {
         knobClicks.move(delta.x, delta.y);
         knobDrag?.moveBy(delta);
@@ -157,10 +152,12 @@ const pointerLock = new KnobPointerLock<Point>({
     if (objectDrag?.pointerId === id) {
         const drag = objectDrag;
         objectDrag = null;
+        document.documentElement.removeAttribute("data-hidden-drag-cursor");
         const target = drag.finish(point, lockOrigin);
         const follow = drag.moved && drag.anchor && target ? { ...drag.anchor, ...target } : undefined;
         drag.trace?.log("Object drag finished", { moved: drag.moved, mouse: !!drag.anchor, targetProvided: !!target });
         cursorReturn.finish(point, lockOrigin, follow, pointerLockError, drag.trace);
+        publishInteractionHint();
     } else {
         cursorReturn.finish(point, lockOrigin);
         if (!point) knobClicks.cancel();
@@ -175,41 +172,15 @@ const pointerLock = new KnobPointerLock<Point>({
     objectDrag?.trace?.log("Pointer lock failed", { message });
     pointerLockError = message; publishInteractionHint();
 });
-watch([automation.version, beats.version], () => {
+watch(beats.version, () => {
     // Graph replacement, undo, or a failed edit can end the gesture before mouseup.
-    if (automationPointerId !== null && automation.edits.pointerId() === null) pointerLock.cancel();
     if (knobDrag?.active && !knobDrag.active()) pointerLock.cancel();
 }, { flush: "sync" });
-function startAutomation(event: PointerEvent, target: NodeAddress, pointId: number | null, axes: CurveAxes, kind: CurveDragKind,
-    visiblePointCenter?: (id: number) => Point | null) {
-    if (event.button !== (pointId === null ? 2 : 0) || !canStartObjectDrag(surface.value)) return;
-    const origin = { x: event.clientX, y: event.clientY };
-    if (!automation.edits.begin(target, pointId, event.pointerId, axes, origin, kind, event.shiftKey)) return;
-    const point = automation.edits.activePoint()!;
-    const destination = visiblePointCenter ? () => visiblePointCenter(point.id) : undefined;
-    const mouse = event.pointerType === "mouse";
-    const initialCenter = mouse && pointId !== null ? destination?.() : null;
-    suppressAutomationContextMenu = pointId === null;
-    automationPointerId = event.pointerId;
-    automationShift = event.shiftKey;
-    if (mouse) document.documentElement.setAttribute("data-automation-drag", "");
-    startObjectDrag(event, {
-        move: (position) => automation.edits.move(event.pointerId, position),
-        moveBy: (delta) => automation.edits.moveBy(event.pointerId, delta),
-        finish(release, lockOrigin) {
-            automationPointerId = null;
-            document.documentElement.removeAttribute("data-automation-drag");
-            if (release && !lockOrigin) automation.edits.move(event.pointerId, release);
-            void automation.edits.finish(!!release && automationShift);
-            return destination ? { destination, initialCenter, policy: "automationPoint" } : undefined;
-        },
-    });
-}
-function capturePointerControl(event: PointerEvent, element: HTMLElement, origin: Point) {
+function capturePointerControl(event: PointerEvent, element: HTMLElement, origin: Point, lock: boolean) {
     event.preventDefault(); event.stopPropagation();
     pointerLockError = "";
     element.setPointerCapture(event.pointerId);
-    pointerLock.start(event.pointerId, origin, event.pointerType === "mouse");
+    pointerLock.start(event.pointerId, origin, lock && event.pointerType === "mouse");
 }
 function canStartObjectDrag(element: HTMLElement | null): element is HTMLElement {
     return !!element && !objectDrag && !knobDrag && !connectionDrag.value
@@ -223,10 +194,14 @@ function startObjectDrag(event: PointerEvent, drag: ObjectDrag) {
             knobDrag: !!knobDrag, connectionDrag: !!connectionDrag.value, lockHeld: !!document.pointerLockElement });
         return;
     }
+    if (drag.begin?.() === false) return;
     const session = { ...drag, pointerId: event.pointerId, button: event.button, buttonMask,
         anchor: cursorWarpAnchor(event, window.devicePixelRatio), moved: false };
     objectDrag = session;
-    capturePointerControl(event, element, { x: event.clientX, y: event.clientY });
+    suppressDragContextMenu = event.button === 2;
+    if (drag.hideCursor && event.pointerType === "mouse") document.documentElement.setAttribute("data-hidden-drag-cursor", "");
+    capturePointerControl(event, element, { x: event.clientX, y: event.clientY }, drag.lock !== false);
+    publishInteractionHint();
     drag.trace?.log("Pointer session started", { ...pointerLock.status(), capture: element.hasPointerCapture(event.pointerId) });
     return () => { if (objectDrag === session) pointerLock.cancel(); };
 }
@@ -256,15 +231,12 @@ function startKnob(event: PointerEvent, key: string, begin: () => KnobDrag | und
 function publishInteractionHint() {
     const manual = document.hasFocus() ? manualGestures.hint() : null;
     const adjustingKnob = manualGestures.pointerControl();
-    const point = document.hasFocus() ? automation.edits.activePoint() : null;
-    const sensitivity = point ? automation.edits.sensitivityHint() : undefined;
-    const edit = point ? automationPointStatus(point) : null;
+    const edit = document.hasFocus() ? objectDrag?.hint?.() : undefined;
     const drag = playback.dragPosition.value;
     const hint: StatusHint | null = (manual && (adjustingKnob || manualGestures.valueEditing.view())
         ? { ...manual, text: manual.text + (adjustingKnob && pointerLockError ? ` · Pointer lock unavailable. ${pointerLockError}` : "") } : null)
         ?? (document.hasFocus() ? knobDrag?.hint?.() : undefined)
-        ?? (edit ? { text: edit + (sensitivity ? ` · ${sensitivity}` : "") + (pointerLockError ? " · Pointer lock unavailable" : ""),
-            shortcuts: sensitivity ? scrubSensitivityShortcut : undefined } : null)
+        ?? (edit ? { ...edit, text: edit.text + (pointerLockError ? " · Pointer lock unavailable" : "") } : null)
         ?? (timelineZoomHint.value ? { text: timelineZoomHint.value } : null)
         ?? (drag === null ? null : { text: `Start ${drag} smp${pointerLockError ? " · Pointer lock unavailable" : ""}` })
         ?? knobClipboardStatus ?? elementStatus.hint.value ?? manual ?? null;
@@ -273,7 +245,7 @@ function publishInteractionHint() {
     lastInteractionHint = hint;
     webviewApi.postMessage({ type: "graphInteractionHint", hint });
 }
-watch([elementStatus.hint, playback.dragPosition, automation.version, timelineZoomHint], publishInteractionHint);
+watch([elementStatus.hint, playback.dragPosition, timelineZoomHint], publishInteractionHint);
 function focusPointerHint() {
     if (document.hasFocus()) pointerLock.retryAfterFocus();
     lastInteractionHint = undefined; publishInteractionHint();
@@ -282,7 +254,6 @@ function moveCapturedControl(event: PointerEvent) {
     if (objectDrag?.pointerId === event.pointerId) {
         event.preventDefault(); event.stopImmediatePropagation();
         if (document.pointerLockElement === surface.value) return;
-        updateAutomationShift(event.shiftKey);
         objectDrag.modifiers?.(event);
         if (!(event.buttons & objectDrag.buttonMask)) { releaseCapturedControl(event); return; }
         const origin = pointerLock.status().origin;
@@ -291,6 +262,7 @@ function moveCapturedControl(event: PointerEvent) {
             objectDrag.trace?.log("First captured pointer movement", { x: event.clientX, y: event.clientY });
         }
         objectDrag.move({ x: event.clientX, y: event.clientY });
+        if (objectDrag?.hint) publishInteractionHint();
         return;
     }
     if (knobDrag?.pointerId !== event.pointerId) return;
@@ -308,7 +280,6 @@ function releaseCapturedControl(event: PointerEvent) {
         event.stopImmediatePropagation();
         drag.trace?.log("Pointer release event", { type: event.type, x: event.clientX, y: event.clientY, buttons: event.buttons });
         if (event.type !== "pointerup" && event.type !== "pointermove") { pointerLock.cancel(); return; }
-        updateAutomationShift(event.shiftKey);
         drag.modifiers?.(event);
     }
     if (knobDrag?.pointerId === event.pointerId) knobClicks.release(performance.now());
@@ -317,7 +288,6 @@ function releaseCapturedControl(event: PointerEvent) {
 function lockedControlMove(event: MouseEvent) {
     if (document.pointerLockElement !== surface.value) return;
     event.stopImmediatePropagation();
-    updateAutomationShift(event.shiftKey);
     objectDrag?.modifiers?.(event);
     // A synthesized move with an empty buttons mask is not a mouse release.
     // Mouseup, pointerup, native focus loss and pointerlockchange own termination.
@@ -325,11 +295,10 @@ function lockedControlMove(event: MouseEvent) {
 }
 function lockedControlRelease(event: MouseEvent) {
     if (event.button !== (objectDrag?.button ?? 0)) return;
-    if (automationPointerId !== null && document.pointerLockElement !== surface.value) return;
+    if (objectDrag && document.pointerLockElement !== surface.value) return;
     const id = objectDrag?.pointerId ?? knobDrag?.pointerId;
     if (id === undefined) return;
     objectDrag?.trace?.log("Mouse release event", { type: event.type, x: event.clientX, y: event.clientY, buttons: event.buttons });
-    updateAutomationShift(event.shiftKey);
     objectDrag?.modifiers?.(event);
     if (knobDrag) knobClicks.release(performance.now());
     pointerLock.release(id, { x: event.clientX, y: event.clientY });
@@ -351,29 +320,24 @@ function controlLockFailed() { pointerLock.error(); }
 function wheelControl(event: WheelEvent) {
     const delta = event.deltaY || event.deltaX;
     if (knobDrag) knobDrag.changeSensitivity(delta);
-    else if (!automation.edits.changeSensitivity(delta)) return;
+    else if (!objectDrag?.wheel?.(delta)) return;
     event.preventDefault(); event.stopImmediatePropagation();
     publishInteractionHint();
 }
 function clickOutsideManual(event: PointerEvent) {
-    if (automationPointerId === null) suppressAutomationContextMenu = false;
+    if (!objectDrag) suppressDragContextMenu = false;
     cursorReturn.cancel("A new pointer press arrived.");
     const target = event.target instanceof Element ? event.target : null;
     if (target?.closest(".manual-value-popover")) return;
     manualGestures.cancelEntry();
     if (!target?.closest(".manual-input, .knob-control") || event.button !== 0) knobClicks.cancel();
-    if (!target?.closest(".manual-input, .knob-control") && automationPointerId === null) { pointerLock.cancel(); manualGestures.finish(); }
+    if (!target?.closest(".manual-input, .knob-control") && !objectDrag) { pointerLock.cancel(); manualGestures.finish(); }
 }
-function guardAutomationContextMenu(event: MouseEvent) {
-    if (suppressAutomationContextMenu && event.button === 2) {
+function guardDragContextMenu(event: MouseEvent) {
+    if (suppressDragContextMenu && event.button === 2) {
         event.preventDefault();
         event.stopImmediatePropagation();
     }
-}
-function updateAutomationShift(shift: boolean) {
-    if (automationPointerId === null || automationShift === shift) return;
-    automationShift = shift;
-    automation.edits.setPreservePointType(shift);
 }
 function blurPointerControls() {
     cursorReturn.cancel("The editor released its pointer controls.");
@@ -600,6 +564,7 @@ function selectNewLanes(lanes: readonly GraphLaneInsertion[]) {
     insertedSelection = lanes.map(({ instanceId }) => addressKey({ instanceId }));
     selectInsertedLanes();
 }
+const presentationInterrupts = new Set<(reason: "history" | "disconnected") => void>();
 provideGraphEditor({ layout, save, profileGraphUi,
     readPresentationState: (key) => {
         const pending = changedPresentationStates.get(key);
@@ -608,12 +573,17 @@ provideGraphEditor({ layout, save, profileGraphUi,
     },
     presentationStateChanged: (key, serialize) => changedPresentationStates.set(key, serialize),
     finishPointerLock: (release, lockOrigin, follow, error) => cursorReturn.finish(release, lockOrigin, follow, error),
-    startObjectDrag, takePlayheadTrace,
+    startObjectDrag, takeCursorReturnTrace,
+    refreshPointerHint: publishInteractionHint,
+    registerPresentationInterrupt(interrupt) {
+        presentationInterrupts.add(interrupt);
+        return () => { presentationInterrupts.delete(interrupt); };
+    },
     setTimelineZoomHint: (hint) => { timelineZoomHint.value = hint; },
     copyNodeDebugDetails: (address) => webviewApi.postMessage({ type: "copyNodeDebugDetails", nodeKey: addressKey(address) }),
     scope: visibleScope, lanes, expandedModules, toggleModule,
     shiftHeld: computed(() => hoverShift.value.held),
-    connectionDrag, hoveredPortGroup, startConnection, cancelConnection, startAutomation, activeKnob, startKnob,
+    connectionDrag, hoveredPortGroup, startConnection, cancelConnection, activeKnob, startKnob,
     cancelKnob() {
         if (!knobDrag) return false;
         knobClicks.cancel();
@@ -1058,13 +1028,12 @@ function handleProjectHistory(event: KeyboardEvent) {
     event.preventDefault();
     event.stopImmediatePropagation();
     cancelConnection();
-    automation.edits.abandon();
+    for (const interrupt of presentationInterrupts) interrupt("history");
     beats.edits.abandon();
     save();
     webviewApi.postMessage({ type: "projectHistory", direction });
 }
 function keyDown(event: KeyboardEvent) {
-    updateAutomationShift(event.shiftKey);
     objectDrag?.modifiers?.(event);
     const target = event.target instanceof Element ? event.target : null;
     const editingText = isTextEditingTarget(event.target);
@@ -1103,7 +1072,6 @@ function keyDown(event: KeyboardEvent) {
     if (event.key === "Escape") { cancelConnection(); knobClicks.cancel(); pointerLock.cancel(); }
 }
 function keyUp(event: KeyboardEvent) {
-    updateAutomationShift(event.shiftKey);
     objectDrag?.modifiers?.(event);
     hoverShift.value = keyboardPortHoverShift(hoverShift.value, event.shiftKey);
 }
@@ -1191,14 +1159,14 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
         observations.setVisible(event.data.visible);
         return;
     }
-    if (event.data?.type === "startPlayheadTrace") {
+    if (event.data?.type === "startCursorReturnTrace") {
         const { traceId } = event.data;
-        clearTimeout(playheadTraceTimer);
-        armedPlayheadTrace = traceId;
-        playheadTraceTimer = setTimeout(() => {
-            armedPlayheadTrace = undefined;
-            webviewApi.postMessage({ type: "playheadTrace", traceId,
-                step: "Trace expired before a playhead press" } satisfies GraphEditorWebviewMessage);
+        clearTimeout(cursorReturnTraceTimer);
+        armedCursorReturnTrace = traceId;
+        cursorReturnTraceTimer = setTimeout(() => {
+            armedCursorReturnTrace = undefined;
+            webviewApi.postMessage({ type: "cursorReturnTrace", traceId,
+                step: "Trace expired before a playhead or control-point press" } satisfies GraphEditorWebviewMessage);
         }, 30_000);
         return;
     }
@@ -1294,6 +1262,7 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
     } else {
         observationConfiguration = undefined;
         observations.disconnect();
+        for (const interrupt of presentationInterrupts) interrupt("disconnected");
     }
     const entry = manualGestures.numericEntry();
     if (entry && !canEditManualControl(entry.control, resolveManualControl(visibleScope.value, entry.control)))
@@ -1335,7 +1304,7 @@ onMounted(() => {
     document.addEventListener("visibilitychange", cancelHiddenObjectDrag);
     window.addEventListener("pointerdown", clickOutsideManual, true);
     window.addEventListener("pointerdown", selectLaneAtPointer, true);
-    window.addEventListener("contextmenu", guardAutomationContextMenu, true);
+    window.addEventListener("contextmenu", guardDragContextMenu, true);
     window.addEventListener("wheel", wheelControl, { capture: true, passive: false });
     window.addEventListener("focus", focusPointerHint);
     window.addEventListener("focus", focusIdleSurface);
@@ -1360,7 +1329,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
     clearTimeout(knobClipboardStatusTimer);
     pendingKnobPastes.clear();
-    clearTimeout(playheadTraceTimer);
+    clearTimeout(cursorReturnTraceTimer);
     clearTimeout(observationProfileTimer);
     observationProfile = undefined;
     observations.stopProfile();
@@ -1388,7 +1357,7 @@ onBeforeUnmount(() => {
     document.removeEventListener("visibilitychange", cancelHiddenObjectDrag);
     window.removeEventListener("pointerdown", clickOutsideManual, true);
     window.removeEventListener("pointerdown", selectLaneAtPointer, true);
-    window.removeEventListener("contextmenu", guardAutomationContextMenu, true);
+    window.removeEventListener("contextmenu", guardDragContextMenu, true);
     window.removeEventListener("wheel", wheelControl, true);
     window.removeEventListener("focus", focusPointerHint);
     window.removeEventListener("focus", focusIdleSurface);

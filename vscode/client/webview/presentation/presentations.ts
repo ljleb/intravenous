@@ -1,10 +1,10 @@
 import { markRaw, shallowRef, type Component } from "vue";
 
 import GenericPresentation from "./GenericPresentation.vue";
-import AutomationCurvePresentation from "./AutomationCurvePresentation.vue";
 import PluginLane from "./PluginLane.vue";
 import { PresentationRegistry } from "./registry";
 import { beatsPresentationManifest, createBeatsPresentation } from "../../src/beatsPresentationPlugin";
+import { automationCurvePresentationManifest, createAutomationCurvePresentation } from "../../src/automationCurvePresentation";
 import type { PresentationProgram, PresentationScript } from "../../src/presentationPlugin";
 
 export const genericPresentationId = "iv.generic";
@@ -16,9 +16,6 @@ const presentations = new PresentationRegistry<Component>({
     displayName: "Generic",
     component: markRaw(GenericPresentation),
 });
-presentations.register({ presentationId: "builtin.automation.curve", displayName: "Automation curve",
-    definitionIds: ["builtin.automation.curve"], component: markRaw(AutomationCurvePresentation), timeline: true,
-    icon: "M2 12C5 12 5 4 14 4M2 10v4m12-12v4" });
 presentations.register({ presentationId: "builtin.timeline", displayName: "Timeline",
     definitionIds: ["builtin.timeline"], component: markRaw(GenericPresentation), timeline: true,
     icon: "M2 5h12v7H2zm3 0v3m3-3v4m3-4v3" });
@@ -26,6 +23,7 @@ presentations.register({ presentationId: "builtin.timeline", displayName: "Timel
 const hosted = markRaw(PluginLane);
 const builtinPrograms = new Map<string, PresentationProgram>([
     ["builtin.beats", { manifest: beatsPresentationManifest, create: createBeatsPresentation }],
+    ["builtin.automation.curve", { manifest: automationCurvePresentationManifest, create: createAutomationCurvePresentation }],
 ]);
 const projectPrograms = shallowRef(new Map<string, { program: PresentationScript; serial: number }>());
 let nextSerial = 0;

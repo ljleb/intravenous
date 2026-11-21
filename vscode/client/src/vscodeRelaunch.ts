@@ -1,6 +1,6 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { userInfo } from "node:os";
+import { constants, userInfo } from "node:os";
 import { dirname } from "node:path";
 
 export type VSCodeRelaunch = {
@@ -39,6 +39,19 @@ export function processStartTime(pid: number): string | null {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw error;
     }
+}
+
+export function requestVSCodeApplicationQuit(plan: Pick<VSCodeRelaunch, "pid" | "started">): void {
+    const { pid, started } = plan;
+    const status = readFileSync(`/proc/${pid}/status`, "utf8");
+    const caught = /^SigCgt:\s+([\da-f]+)$/im.exec(status);
+    const sigterm = 1n << BigInt(constants.signals.SIGTERM - 1);
+    // Electron routes the first signal through its application quit lifecycle.
+    // Chromium restores the default signal handler as soon as it catches it.
+    if (!caught || (BigInt(`0x${caught[1]}`) & sigterm) === 0n)
+        throw new Error("The editor has no active graceful shutdown handler. Quit VSCodium and start it with --ozone-platform=x11");
+    if (processStartTime(pid) !== started) throw new Error("The VS Code desktop process changed before it could quit");
+    process.kill(pid, "SIGTERM");
 }
 
 export function readVSCodeXWaylandRelaunch(pid = Number(process.env.VSCODE_PID),

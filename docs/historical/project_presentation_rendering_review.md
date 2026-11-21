@@ -57,3 +57,21 @@ The implementation front described its original discovery path:
 > The pilot discovers `.intravenous/presentations/` and takes one candidate per
 > definition. Package discovery should publish a catalog of candidates from
 > the resolved packages.
+
+## Automation Curve during the pilot
+
+On 2026-11-21, the Automation Curve migration superseded this status from
+the [project presentation guide](../project_presentation_plugins.md#frame-and-input-contract).
+The guide now describes the shared gesture and edit contract.
+
+> The pilot supports local project artifacts, continuous waveform observations,
+> and visible snap marks for project scripts. Beats also keeps its built-in
+> seek reader for extrapolating past the viewport. Automation Curve remains on
+> its current editor while selection, scroll sensitivity, and release cursor
+> placement are worked through the portable gesture contract.
+
+The [visual tuning guide](../vue_ui_tuning.md) formerly pointed curve colour,
+stroke, and point-size changes at the curve's own Vue file.
+
+> `AutomationCurvePresentation.vue`: `.curve-line`, `.curve-point`, circle
+> `r`; the same curve path is scaled at every height.

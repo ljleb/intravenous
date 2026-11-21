@@ -18,7 +18,7 @@ function harness() {
 
 test("object and wrapped drags share one native request after unlock and render", (t) => {
     t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
-    const policies: (CursorReturnPolicy | undefined)[] = [undefined, "automationPoint", "playhead", "wrapped"];
+    const policies: (CursorReturnPolicy | undefined)[] = [undefined, "presentationPoint", "playhead", "wrapped"];
     for (const policy of policies) {
         const { cursor, guard, unlock, render, messages } = harness();
         cursor.finish(origin, origin, { ...anchor, destination, policy });
@@ -54,6 +54,32 @@ test("a new press or an expired unlock cannot move the native cursor", (t) => {
     assert.equal(render.length, 0);
     assert.deepEqual(messages.at(-1), { type: "cursorReturnSkipped",
         detail: "The browser did not finish releasing pointer lock in time." });
+});
+
+test("cursor return waits for the release frame and ignores replies that arrive after its deadline", async (t) => {
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
+    const { cursor, render, unlock, messages } = harness();
+    let reply!: (point: ReturnType<typeof destination>) => void;
+    const delayed = () => new Promise<ReturnType<typeof destination>>((resolve) => { reply = resolve; });
+
+    cursor.finish(origin, origin, { ...anchor, destination: delayed, policy: "presentationPoint" });
+    unlock();
+    cursor.unlocked();
+    assert.equal(render.length, 1);
+    render.shift()!();
+    assert.deepEqual(messages, []);
+    reply(destination());
+    await Promise.resolve();
+    assert.equal(messages[0].type, "returnCursor");
+
+    cursor.finish(origin, origin, { ...anchor, destination: delayed, policy: "presentationPoint" });
+    cursor.unlocked();
+    render.shift()!();
+    t.mock.timers.tick(100);
+    reply(destination());
+    await Promise.resolve();
+    assert.equal(messages.length, 2);
+    assert.equal(messages[1].type, "cursorReturnSkipped");
 });
 
 test("playhead tracing follows one cursor return through unlock and native confirmation", (t) => {

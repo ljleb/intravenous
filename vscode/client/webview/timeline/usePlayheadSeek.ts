@@ -4,7 +4,7 @@ import { playheadTimeDrag } from "../../src/timelineTimeDrag";
 import { useOptionalGraphEditor } from "../graph/context";
 import { visibleCursorDestination } from "../graph/cursorReturn";
 import { webviewApi } from "../host";
-import { seekBeatWindow, snapTimelineSample, timelineSampleFraction, timelineSnapRadiusPx, type SeekBeatWindow } from "./geometry";
+import { seekBeatWindow, snapTimelineSample, timelineSampleFraction, timelineSnapRadiusPx, type SeekBeatWindow } from "../../src/timelineGeometry";
 import { usePlayback } from "./playbackContext";
 import type { PresentationTimeWindow } from "./timelineContext";
 import { usePresentationFrame } from "../presentation/presentationFrames";
@@ -27,7 +27,7 @@ export function usePlayheadSeek(surface: Ref<HTMLElement | null>, timeWindow: ()
     return function beginSeek(event: PointerEvent) {
         const element = surface.value, time = timeWindow();
         if (event.button !== 0 || !editor || !element || !time || cancel) return;
-        const trace = editor.takePlayheadTrace();
+        const trace = editor.takeCursorReturnTrace();
         const bounds = element.getBoundingClientRect();
         const span = time.spanSeconds ?? time.endSeconds - time.beginSeconds;
         trace?.log("Playhead press", { surface: element.classList.contains("time-ruler") ? "ruler" : "lane",

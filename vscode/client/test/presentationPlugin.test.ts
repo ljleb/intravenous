@@ -138,7 +138,7 @@ test("a slow presentation preserves gesture ordering while coalescing viewport c
     const session = new PresentationPluginSession((view, inputs) => {
         calls.push({ width: view.viewport.width, inputs });
         return new Promise((resolve) => replies.push(resolve));
-    }, () => {}, (frame, draw, hasInput) => accepted.push({ state: frame.commands, draw, hasInput }), (error) => errors.push(error));
+    }, () => {}, (frame, draw, inputs) => accepted.push({ state: frame.commands, draw, hasInput: inputs.length > 0 }), (error) => errors.push(error));
     const modifiers = { shift: false, control: false, alt: false, meta: false };
     const begin: PresentationInput = { type: "gesture", id: "handle", phase: "begin", point: { x: 5, y: 12 }, modifiers };
     const move: PresentationInput = { ...begin, phase: "move", point: { x: 8, y: 12 }, delta: { x: 3, y: 0 } };

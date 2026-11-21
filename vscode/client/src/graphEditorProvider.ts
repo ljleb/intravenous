@@ -229,9 +229,9 @@ export class GraphEditorProvider implements vscode.Disposable {
         const profileDurationMs = 10_000;
         const traceId = crypto.randomUUID();
         const actions: Array<vscode.QuickPickItem & { request: GraphEditorHostMessage; status: string; durationMs: number }> = [
-            { label: "Trace Playhead Cursor Return", description: "Records the next ruler or Beats-lane seek drag",
-                request: { type: "startPlayheadTrace", traceId },
-                status: "Playhead trace armed. Drag the background playhead once, then check Intravenous output.", durationMs: 30_000 },
+            { label: "Trace Cursor Return", description: "Records the next playhead or control-point drag",
+                request: { type: "startCursorReturnTrace", traceId },
+                status: "Cursor return trace armed. Drag the playhead or a control point, then check Intravenous output.", durationMs: 30_000 },
             { label: "Profile Observation Updates", description: "Records lane requests and replies for 10 seconds",
                 request: { type: "startObservationProfile", durationMs: profileDurationMs },
                 status: "Recording observation updates for 10 seconds. See Intravenous output for the report.", durationMs: profileDurationMs },
@@ -258,7 +258,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                 void vscode.window.showInformationMessage("The Intravenous Graph editor could not start the diagnostic.");
                 return;
             }
-            if (action.request.type === "startPlayheadTrace") this.logPlayheadTrace(action.request.traceId, action.status);
+            if (action.request.type === "startCursorReturnTrace") this.logCursorReturnTrace(action.request.traceId, action.status);
             else this.outputChannel.appendLine(action.status);
             vscode.window.setStatusBarMessage(action.status, action.durationMs);
         } catch (error) {
@@ -267,8 +267,8 @@ export class GraphEditorProvider implements vscode.Disposable {
         }
     }
 
-    private logPlayheadTrace(id: string, step: string, details?: TraceDetails): void {
-        this.outputChannel.appendLine(`Playhead cursor trace [${id.slice(0, 8)}]. ${step}${details ? ` ${JSON.stringify(details)}` : ""}`);
+    private logCursorReturnTrace(id: string, step: string, details?: TraceDetails): void {
+        this.outputChannel.appendLine(`Cursor return trace [${id.slice(0, 8)}]. ${step}${details ? ` ${JSON.stringify(details)}` : ""}`);
     }
 
     private notifyProfileFinished(profile: string): void {
@@ -387,8 +387,8 @@ export class GraphEditorProvider implements vscode.Disposable {
                 }
             } else if (message?.type === "observationResync") {
                 this.postObservationSnapshot(panel);
-            } else if (message?.type === "playheadTrace") {
-                this.logPlayheadTrace(message.traceId, message.step, message.details);
+            } else if (message?.type === "cursorReturnTrace") {
+                this.logCursorReturnTrace(message.traceId, message.step, message.details);
             } else if (message?.type === "graphUiProfile") {
                 const profile = this.graphUiProfiles.get(panel);
                 if (!profile || profile.id !== message.profileId) return;
@@ -422,11 +422,11 @@ export class GraphEditorProvider implements vscode.Disposable {
                 this.outputChannel.appendLine(`Cursor return skipped. ${message.detail}`);
             } else if (message?.type === "returnCursor") {
                 const { traceId } = message;
-                const trace = traceId ? (step: string, details?: TraceDetails) => this.logPlayheadTrace(traceId, step, details) : undefined;
+                const trace = traceId ? (step: string, details?: TraceDetails) => this.logCursorReturnTrace(traceId, step, details) : undefined;
                 trace?.("Extension received cursor return", { requestId: message.requestId, panelActive: panel.active,
                     windowFocused: vscode.window.state.focused, helperAvailable: !!this.nativeHelper, policy: message.policy });
                 const skipped = !panel.active || !vscode.window.state.focused ? "graph editor lost focus"
-                    : message.policy === "automationPoint"
+                    : message.policy === "presentationPoint"
                         && !vscode.workspace.getConfiguration("intravenous").get("warpCursorAfterPointDrag", true) ? "cursor return is disabled"
                     : !this.nativeHelper ? "no local native helper" : null;
                 if (skipped) {

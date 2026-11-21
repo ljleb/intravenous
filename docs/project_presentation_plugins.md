@@ -79,16 +79,30 @@ through the normal node creation route.
 - `present(snapshot, inputs)` returns a frame synchronously. The snapshot
   includes accepted construction arguments, port metadata, the viewport,
   display mode, edit availability, declared observations, and the lane's
-  saved JSON state.
+  saved JSON state. `clockMs` gives the host's current monotonic time in
+  milliseconds. Use it with `wakeAfterMs` in a frame to request another
+  update during an edit, even when the user stops moving the pointer.
 - Coordinates are measured in logical pixels from the top left of the
   content area. Sample indices are decimal strings. A frame may include
-  polylines, rectangles, text, and rectangular hit targets. Keep IDs stable
-  when geometry changes. Return `seekMarks` to opt into the host's playhead
-  gesture and provide snap targets from the current viewport.
+  polylines, rectangles, circles, text, and rectangular hit targets. Keep
+  IDs stable when geometry changes. Return `seekMarks` to use the host's
+  playhead gesture with the snap targets in the current viewport. Set
+  `timelineSnapping: true` in a timeline manifest to receive the current
+  snap marks and playhead position when a hit target's gesture starts.
 - A settings panel can contain rows of labels, knobs, choices, and actions.
-  The host sends control input as `preview`, `commit`, and `finish`.
-  Hit targets receive `begin`, relative `move`, `modifiers`, `finish`,
-  and `cancel` with the current modifier keys.
+  A context menu uses those same controls. A hit target can ask for
+  primary or secondary drag, a context menu, and wheel input during a
+  drag. It receives `begin`, `move`, `modifiers`, `finish`, and `cancel`
+  with the current modifier keys. The default relative drag can use
+  pointer lock. Use `drag: "absolute"` for a rectangle selection.
+  Control input arrives as `preview`, `commit`, and `finish`.
+  Use `itemEditing` to receive item shortcuts while the lane content has
+  focus, and `valueNavigation` to receive lane-local pan, zoom, and reset.
+- A target with `cursorReturn: true` can return `drag.cursor` in its release
+  frame. The host resolves that lane coordinate against the visible area
+  and moves the cursor when the platform supports it. The host owns the
+  native pointer lock, capture, and release. A worker frame must arrive
+  within the same cursor return deadline as a built-in frame.
 - Commands may edit the lane's own node through a supported serialized node
   event, finish an edit gesture, or update the lane's own JSON state. The
   host accepts commands in response to user input. The server validates node
@@ -98,14 +112,22 @@ through the normal node creation route.
   replacement for earlier previews of that event in the same gesture. The
   host can pace those updates and deliver only the newest pending value.
   Finishing the gesture flushes that value before closing the edit.
-  Store persistent state via the host. A worker can be discarded when its
-  lane has been off screen for a while.
+  For edits that depend on the result of an earlier edit, give each
+  command a unique `requestId`. The host sends back `editResult` with that
+  ID and the accepted revision or error. Use `replacePending` for
+  replaceable previews and `requestId` for edits that require a reply.
+  On history navigation or disconnect, the host sends `interrupt`.
+  Store persistent state as a JSON object through the host. A worker can
+  be discarded when its lane has been off screen for a while.
 - A manifest can declare continuous waveform observations as
   `{ "id": "wave", "direction": "output", "port": "value", "points": 256 }`
   entries in `observations`. The host resolves ports on the lane's node and
   picks the observation tiers. Read the result and its visible spans from
   `snapshot.observations.wave`. The result carries the observation status,
   sample points, and coverage regions. A missing observation is `null`.
+  Use `whenConnected` to observe only a connected port. Use
+  `completeOnly` if a partial result should leave the previous complete
+  spans in view.
 
 The VS Code host runs each project script on demand in a web worker. Supply
 one self-contained script with a top-level `present` function. Keep frames
@@ -113,8 +135,8 @@ bounded. The host validates them before drawing or dispatching commands.
 The portable contract is defined in
 [`presentationPlugin.ts`](../vscode/client/src/presentationPlugin.ts).
 
-The pilot supports local project artifacts, continuous waveform observations,
-and visible snap marks for project scripts. Beats also keeps its built-in
-seek reader for extrapolating past the viewport. Automation Curve remains on
-its current editor while selection, scroll sensitivity, and release cursor
-placement are worked through the portable gesture contract.
+The built-in Automation Curve uses this contract for authoring, selection,
+lane navigation, and the connected min and max traces. Beats also has a
+built-in seek reader for extrapolating past the viewport. The
+[rendering review](historical/project_presentation_rendering_review.md#automation-curve-during-the-pilot)
+records the earlier pilot status.

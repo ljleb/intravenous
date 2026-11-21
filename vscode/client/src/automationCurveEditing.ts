@@ -1,4 +1,4 @@
-import { addressKey, type GraphScope, type GraphScopeNode, type NodeAddress, type Point as ScreenPoint } from "./graphScope";
+import { addressKey, type GraphScopeNode, type NodeAddress, type Point as ScreenPoint } from "./graphScope";
 import { MovePoint, PlacePoint, RemovePoint, SetSegment, type SetSegmentPayload } from "./generated/automationEvents";
 import type { NodeEvent } from "./nodeEvents";
 import type { NodeEventGesture } from "./nodeEventMessaging";
@@ -141,7 +141,8 @@ export class AutomationCurveEditing {
     private readonly selection = new Map<string, ReadonlySet<number>>();
     constructor(private readonly transport: Transport, private readonly changed: () => void,
         private readonly timers?: NodeEventUpdateTimers) {}
-    reconcile(scope: GraphScope | null): void {
+    reconcile(scope: { nodes: readonly Pick<GraphScopeNode, "address" | "construction">[];
+        sessionRevision?: number; sampleRate?: number | null } | null): void {
         if (scope?.sessionRevision !== undefined && scope.sessionRevision < this.readRevision) return;
         this.readRevision = scope?.sessionRevision ?? this.readRevision;
         const next = new Map<string, AutomationCurve>();
