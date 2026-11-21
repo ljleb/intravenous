@@ -17,6 +17,9 @@
 namespace iv {
 
 inline constexpr std::size_t maximum_live_observation_probes = 256;
+inline constexpr std::size_t maximum_observation_windows = 256;
+inline constexpr std::size_t maximum_observation_interests =
+    maximum_live_observation_probes + maximum_observation_windows;
 
 enum class ObservationSourceKind : std::uint8_t { output, input, state_field };
 struct ObservationSource {
@@ -25,7 +28,7 @@ struct ObservationSource {
     std::string member{};
     std::optional<std::size_t> channel{};
     PortKind port_kind = PortKind::sample;
-    bool operator==(ObservationSource const&) const = default;
+    auto operator<=>(ObservationSource const&) const = default;
 };
 struct ObservationRequirement {
     std::uint64_t id = 0;
@@ -48,6 +51,7 @@ struct ResolvedObservationProbe {
     NodeBundleHandle bundle = 0;
     std::size_t port = 0;
     std::vector<std::size_t> channels{};
+    std::vector<SampleOutputChannelId> output_sources{};
     std::size_t state_field_offset = 0;
     std::size_t state_field_size = 0;
     bool available = false;
@@ -113,6 +117,7 @@ struct ObservationWindowQuery {
     NodeBundlePortId port{};
     ObservationSourceKind kind = ObservationSourceKind::output;
     std::size_t channel = 0;
+    std::vector<SampleOutputChannelId> output_sources{};
     ObservationOperation const* operation = nullptr;
     ObservationWindow window{};
     std::atomic<bool> prefetch{false};

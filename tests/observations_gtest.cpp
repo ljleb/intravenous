@@ -258,12 +258,14 @@ struct ProtocolCaller {};
 struct Graph {
     std::optional<std::uint64_t> generation = 0;
     ObservationRequirements accepted{};
+    std::optional<ObservationRequirements> prediction{};
     std::size_t compilations = 0;
     void apply(ObservationGraphRequest& request)
     {
         request.handled = true;
         request.configured_generation = generation;
         if (request.requirements) { accepted = *request.requirements; ++compilations; }
+        if (request.prediction_changed) prediction = request.prediction;
         for (auto const& window : request.windows) {
             window.query->configured_generation = generation.value_or(0);
             window.query->operation = &observation_details::sample_operations.back();
@@ -325,10 +327,12 @@ protected:
     std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
     ObservationInterest interest(std::string id = "meter", std::string node = "node")
     { return {.id = std::move(id), .source = {.node = {.instance_id = std::move(node)}, .member = "out"}, .operation = "level"}; }
-    ObservationProtocolRequest reconcile(std::string client, std::string scope, std::vector<ObservationInterest> interests)
+    ObservationProtocolRequest reconcile(std::string client, std::string scope, std::vector<ObservationInterest> interests,
+        std::vector<ObservationInterest> prediction = {})
     {
         ObservationProtocolRequest request{.kind = ObservationProtocolRequest::Kind::reconcile,
-            .client_id = std::move(client), .scope_id = std::move(scope), .interests = std::move(interests)};
+            .client_id = std::move(client), .scope_id = std::move(scope), .interests = std::move(interests),
+            .predicted_interests = std::move(prediction)};
         in_event_source([&] { observations.handle_protocol(request); });
         return request;
     }
@@ -349,6 +353,33 @@ TEST_F(ObservationService, SharesOneCaptureAcrossClientsAndRenewsWithoutCompilat
     ASSERT_EQ(delivery.batches.size(), 2u);
     EXPECT_EQ((*delivery.batches[0].payload)["scopes"][0]["values"][0]["id"], "meter");
     EXPECT_EQ((*delivery.batches[1].payload)["scopes"][0]["values"][0]["id"], "other");
+}
+
+TEST_F(ObservationService, PredictionReservesProbeIdsAndKeepsOtherScopesActive)
+{
+    auto current = interest("a", "row-1"), next = interest("b", "row-2"), other = interest("c", "other-panel");
+    ASSERT_TRUE(reconcile("other", "panel", {other}).error.empty());
+    ASSERT_TRUE(reconcile("a", "panel", {current}).error.empty());
+    auto const active = graph.accepted;
+    auto const compiles = graph.compilations;
+    ASSERT_TRUE(reconcile("a", "panel", {current}, {next}).error.empty());
+    EXPECT_EQ(graph.accepted, active);
+    EXPECT_EQ(graph.compilations, compiles);
+    ASSERT_TRUE(graph.prediction);
+    auto const prepared = *graph.prediction;
+    ASSERT_EQ(prepared.probes.size(), 2u);
+    EXPECT_EQ(prepared.probes[0], active.probes[0]);
+    EXPECT_EQ(prepared.probes[1].source, next.source);
+
+    ASSERT_TRUE(reconcile("a", "panel", {next}).error.empty());
+    EXPECT_EQ(graph.accepted, prepared);
+    EXPECT_FALSE(graph.prediction);
+    ASSERT_TRUE(reconcile("a", "panel", {next}, {current}).error.empty());
+    ASSERT_TRUE(graph.prediction);
+    ASSERT_TRUE(reconcile("a", "panel", {}).error.empty());
+    EXPECT_FALSE(graph.prediction);
+    ASSERT_EQ(graph.accepted.probes.size(), 1u);
+    EXPECT_EQ(graph.accepted.probes[0], active.probes[0]);
 }
 
 TEST_F(ObservationService, SharesOnlyMatchingChannelsAndOperationsAcrossClients)
@@ -614,6 +645,42 @@ TEST_F(ObservationService, OnlyNewerExecutionDataInvalidatesWindowContents)
     collect(); collect(); collect();
     EXPECT_TRUE(query->canceled.load(std::memory_order_acquire));
     EXPECT_EQ(executor.windows.size(), 2u);
+    EXPECT_EQ(graph.compilations, 0u);
+}
+
+TEST_F(ObservationService, PrefetchRefreshesLessOftenThanVisibleWindows)
+{
+    auto visible = interest("visible");
+    visible.operation = "waveform";
+    visible.window = ObservationWindow{GlobalIndex{}, 64, 32};
+    auto prefetch = visible;
+    prefetch.id = "nearby";
+    prefetch.window->points = 4;
+    prefetch.prefetch = true;
+    executor.data_version = 1;
+    ASSERT_TRUE(reconcile("a", "lane", {visible, prefetch}).error.empty());
+    collect();
+    ASSERT_EQ(executor.windows.size(), 2u);
+    auto const visible_query = executor.windows[0];
+    auto const prefetch_query = executor.windows[1];
+    for (auto const& query : {visible_query, prefetch_query}) {
+        query->result.status = ObservationWindowResult::Status::ready;
+        query->result.data_version = 1;
+        query->complete.store(true, std::memory_order_release);
+    }
+
+    executor.data_version = 2;
+    for (int i = 0; i < 6; ++i) collect();
+    EXPECT_TRUE(visible_query->canceled.load());
+    EXPECT_FALSE(prefetch_query->canceled.load());
+    ASSERT_EQ(executor.windows.size(), 3u);
+    EXPECT_FALSE(executor.windows.back()->prefetch.load());
+
+    now += std::chrono::seconds(2);
+    collect();
+    EXPECT_TRUE(prefetch_query->canceled.load());
+    ASSERT_EQ(executor.windows.size(), 4u);
+    EXPECT_TRUE(executor.windows.back()->prefetch.load());
     EXPECT_EQ(graph.compilations, 0u);
 }
 

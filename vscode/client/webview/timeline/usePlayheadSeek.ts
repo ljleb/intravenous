@@ -7,6 +7,7 @@ import { webviewApi } from "../host";
 import { seekBeatWindow, snapTimelineSample, timelineSampleFraction, timelineSnapRadiusPx, type SeekBeatWindow } from "./geometry";
 import { usePlayback } from "./playbackContext";
 import type { PresentationTimeWindow } from "./timelineContext";
+import { usePresentationFrame } from "../presentation/presentationFrames";
 
 export type SeekBeatReader = {
     marks: (window: SeekBeatWindow, sampleRate: number, width: number) => readonly bigint[] | undefined;
@@ -19,6 +20,8 @@ export function usePlayheadSeek(surface: Ref<HTMLElement | null>, timeWindow: ()
     const { backgroundPlayhead, dragPosition, releaseDrag, state } = usePlayback();
     let cancel: (() => void) | undefined;
     let closeReader: (() => void) | undefined;
+    let publishMove: (() => void) | undefined;
+    const frame = usePresentationFrame("update", () => publishMove?.());
     onBeforeUnmount(() => { cancel?.(); closeReader?.(); });
 
     return function beginSeek(event: PointerEvent) {
@@ -62,7 +65,11 @@ export function usePlayheadSeek(surface: Ref<HTMLElement | null>, timeWindow: ()
         let travel = 0;
         let position: string | null = null;
         let posted: string | null = null;
-        let frame = 0;
+        publishMove = () => {
+            if (position === null || position === posted) return;
+            posted = position;
+            webviewApi.postMessage({ type: "playbackDrag", phase: "move", position });
+        };
 
         const update = (pixels: number) => {
             if (pixels === travel) return;
@@ -74,12 +81,7 @@ export function usePlayheadSeek(surface: Ref<HTMLElement | null>, timeWindow: ()
             if (!began) {
                 posted = next;
                 webviewApi.postMessage({ type: "playbackDrag", phase: "begin", position: next });
-            } else if (!frame) frame = requestAnimationFrame(() => {
-                frame = 0;
-                if (position === null || position === posted) return;
-                posted = position;
-                webviewApi.postMessage({ type: "playbackDrag", phase: "move", position });
-            });
+            } else frame.schedule();
         };
         cancel = editor.startObjectDrag(event, {
             trace,
@@ -90,7 +92,8 @@ export function usePlayheadSeek(surface: Ref<HTMLElement | null>, timeWindow: ()
                 if (point && !lockOrigin) update(point.x - pressX);
                 closeReader?.();
                 closeReader = undefined;
-                cancelAnimationFrame(frame);
+                frame.cancel();
+                publishMove = undefined;
                 const finalPosition = position;
                 trace?.log("Seek gesture ended", { finalPosition, travel, release: point, lockOrigin });
                 if (finalPosition === null) {
@@ -121,6 +124,6 @@ export function usePlayheadSeek(surface: Ref<HTMLElement | null>, timeWindow: ()
                 } };
             },
         });
-        if (!cancel) { closeReader?.(); closeReader = undefined; }
+        if (!cancel) { closeReader?.(); closeReader = undefined; publishMove = undefined; }
     };
 }

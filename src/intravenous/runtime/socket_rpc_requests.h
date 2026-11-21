@@ -32,9 +32,8 @@ struct GraphQueryBySpansRequest {
 struct GraphQueryActiveRegionsRequest { std::filesystem::path file_path{}; };
 struct GetVirtualNodeRequest { std::string node_id{}; };
 struct GetVirtualNodesRequest { std::vector<std::string> node_ids{}; };
-// An absent subject requests the project root. Otherwise return the addressed
-// node's direct children from the latest configured graph.
-struct GetGraphScopeRequest { std::optional<NodeAddress> subject{}; };
+// Return the root and the direct children of each requested expanded node.
+struct GetGraphScopeRequest { std::vector<NodeAddress> expanded{}; };
 struct SearchNodeDefinitionsRequest { std::string source; std::optional<std::size_t> cursor; };
 struct ApplyProjectEditRequest { ProjectEditBatch batch{}; };
 struct UndoProjectEditRequest { std::function<void()> authorize_audio_control{}; };

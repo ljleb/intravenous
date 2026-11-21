@@ -155,6 +155,9 @@ NodeRef configure_package_definition_impl(
     auto* const session = builder._session;
     auto const prepared = consume_builder_node_source_identity(session);
     try {
+        if (tiled_layout && tiled_layout->channel_type == ChannelTypeId::mono) {
+            error("a tiled NodeBundle requires a multichannel layout");
+        }
         record_builder_module_message_local_ref(session, prepared);
         auto const relative_path = claim_builder_invocation_path(
             session, prepared.source_identity);

@@ -61,6 +61,7 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: M
     return {
         value, signedValue, available, limits, state, descriptor, activity, dragging, inverted, port,
         key: computed(() => id.value ? manualControlKey(id.value) : ""),
+        canToggleEnabled: computed(() => id.value?.inputName !== undefined),
         hover(hovered: boolean) {
             if (!context || !id.value) return;
             if (hovered && available.value && descriptor.value)

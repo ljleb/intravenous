@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { addressKey, type GraphScopeConnection } from "../../src/graphScope";
+import { addressKey, graphScopeNodeLabel, scopeNodeForAddress, type GraphScopeConnection } from "../../src/graphScope";
 import { canMoveConnectionEnd, connectionEndsAtPort, type GraphConnectionEnd, type GraphPortEndpoint } from "../../src/graphConnectionEditing";
 import { useOptionalGraphEditor } from "../graph/context";
 import { useTimelineNavigation } from "../timeline/timelineContext";
@@ -14,8 +14,10 @@ import ManualInput from "./ManualInput.vue";
 import NodePortRow from "./NodePortRow.vue";
 import { useOptionalManualControls } from "./manualControlContext";
 import { lanePortLayout, lanePortRowGap } from "../../src/lanePortLayout";
+import { usePresentationFrame } from "./presentationFrames";
+import { usePresentationSize } from "./presentationSize";
 
-const props = defineProps<{ inline: boolean; node?: SemanticNode }>();
+const props = defineProps<{ inline: boolean; node?: SemanticNode; moduleBoundary?: boolean }>();
 const presentedNode = useNode();
 const node = computed(() => props.node ?? presentedNode.value);
 const editor = useOptionalGraphEditor();
@@ -25,23 +27,21 @@ const editingControl = computed(() => {
     void manualControls?.version.value;
     return !!node.value.address && !!manualControls?.gestures.isEditingNode(node.value.address);
 });
-const hasKnob = (port: SemanticPort) => port.kind === "continuous"
-    && !!port.manualControl?.available;
+const hasKnob = (port: SemanticPort) => port.kind === "continuous" && !!port.manualControl?.available;
 const compactKnobSize = 24;
 const fullKnobSize = 31;
 const foldedSocketHeight = 8;
 const panel = ref<HTMLElement | null>(null);
 const portArea = ref<HTMLElement | null>(null);
-const portAreaHeight = ref(compactKnobSize + foldedSocketHeight);
+const portAreaSize = usePresentationSize(portArea);
+const portAreaHeight = computed(() => portAreaSize.value?.height ?? compactKnobSize + foldedSocketHeight);
 const knobSize = computed(() => portAreaHeight.value >= fullKnobSize + foldedSocketHeight ? fullKnobSize : compactKnobSize);
 let header: HTMLElement | null = null;
-let portAreaObserver: ResizeObserver | null = null;
 const expanded = ref<"header" | SemanticPortDirection | null>(null);
 const chooserPort = ref<SemanticPort | null>(null);
 const hoveredPort = ref<SemanticPort | null>(null);
 let hoveredPortRect: DOMRect | null = null;
 let popoverPointer: { x: number; y: number } | null = null;
-let overflowFrame = 0;
 let panelPositionVersion = 0;
 const panelPositioned = ref(false);
 const panelPosition = ref<Record<string, string>>({ left: "0px", top: "0px" });
@@ -49,6 +49,7 @@ const continuationOffsets = ref<Partial<Record<SemanticPortDirection, number>>>(
 const above = ref(false);
 const groups: Partial<Record<SemanticPortDirection, HTMLElement>> = {};
 const nodeKey = computed(() => node.value.address ? addressKey(node.value.address) : "");
+const rowKey = ref<string>();
 const directions: SemanticPortDirection[] = ["input", "output"];
 const ports = (direction: SemanticPortDirection) => node.value.ports.filter((port) => port.direction === direction);
 function layoutDirection(direction: SemanticPortDirection) {
@@ -76,9 +77,11 @@ const linksByPort = computed(() => {
         for (const port of node.value.ports) {
             if (entry.connection.kind !== (port.kind === "continuous" ? "sample" : "event")) continue;
             const matchers = port.direction === "input" ? entry.connection.inputs : entry.connection.outputs;
-            if (!matchers.some((matcher) => matcher.instanceId === node.value.instanceId && !matcher.path?.length
+            const boundary = props.moduleBoundary ? port.direction === "input" ? entry.boundarySources : entry.boundaryTargets : undefined;
+            const matches = (matcher: typeof matchers[number]) => addressKey(matcher) === nodeKey.value
                 && (matcher.port.name === undefined || matcher.port.name === port.name)
-                && (matcher.port.index === undefined || matcher.port.index === port.index))) continue;
+                && (matcher.port.index === undefined || matcher.port.index === port.index);
+            if (!matchers.some(matches) && !boundary?.some(matches)) continue;
             const key = portKey(port);
             links.set(key, [...(links.get(key) ?? []), entry]);
         }
@@ -183,14 +186,14 @@ function validOrigin(rect: DOMRect | null): rect is DOMRect {
 function hoverHeader() {
     if (!chooserPort.value && !dragPort.value && !editingControl.value && expanded.value !== "header") expandContinuation();
 }
+const hoverContinuationFrame = usePresentationFrame("measure", () => {
+    const target = editor?.elementAtPointer();
+    if (target && header?.contains(target)) hoverHeader();
+});
 function scheduleHoveredContinuation() {
-    if (props.inline || !editor || overflowFrame || dragPort.value || editingControl.value || !header?.hasAttribute("data-hovered")) return;
+    if (props.inline || !editor || dragPort.value || editingControl.value || !header?.hasAttribute("data-hovered")) return;
     // Resizing can create a folded socket under a stationary pointer.
-    overflowFrame = requestAnimationFrame(() => {
-        overflowFrame = 0;
-        const target = editor.elementAtPointer();
-        if (target && header?.contains(target)) hoverHeader();
-    });
+    hoverContinuationFrame.schedule();
 }
 function leave() {
     // Boundary events only request a check. A row replacement must not
@@ -275,8 +278,9 @@ function groupAccepts(direction: SemanticPortDirection) {
 }
 function connectionLabel(connection: GraphScopeConnection["connection"]) {
     const label = (matcher: typeof connection.outputs[number]) => {
-        const instance = editor?.scope.value?.nodes.find((entry) => entry.address.instanceId === matcher.instanceId)?.instance;
-        const name = instance?.displayName || instance?.definitionId.split(".").pop() || "Unavailable node";
+        const scope = editor?.scope.value;
+        const node = scope && scopeNodeForAddress(scope, matcher);
+        const name = node ? graphScopeNodeLabel(node) : "Unavailable node";
         return `${name}.${matcher.port.name || (matcher.port.index === undefined ? "*" : matcher.port.index + 1)}`;
     };
     return `${connection.outputs.map(label).join(", ")} → ${connection.inputs.map(label).join(", ")}`;
@@ -284,16 +288,18 @@ function connectionLabel(connection: GraphScopeConnection["connection"]) {
 function portStatus(port: SemanticPort) {
     const links = portLinks(port);
     const pending = links.filter((entry) => !entry.applied).length;
-    const first = links[0]?.connection;
-    const route = first && links.length === 1 && first.outputs.length === 1 && first.inputs.length === 1
-        ? connectionLabel(first)
+    const first = links[0];
+    const route = first?.sourceOwned && links.length === 1 ? "C++ connection"
+        : first && links.length === 1 && first.connection.outputs.length === 1 && first.connection.inputs.length === 1
+        ? connectionLabel(first.connection)
         : links.length ? `${links.length} ${links.length === 1 ? "connection" : "connections"}` : "";
-    const name = `${port.direction === "input" ? "In" : "Out"} ${port.name || port.index + 1}`;
+    const name = `${port.direction === "input" ? "In" : "Out"} ${port.displayName || port.name || port.index + 1}`;
     return [name, route, pending ? `${pending} pending` : "", portTypeSummary(port)].filter(Boolean).join(" · ");
 }
 watch(() => editor?.hoveredPortGroup.value, (group) => {
     if (!dragPort.value) return;
-    if (group && group.nodeKey === nodeKey.value && group.direction === destinationDirection.value && groupAccepts(group.direction)) {
+    if (group && group.nodeKey === nodeKey.value && group.rowKey === rowKey.value
+        && group.direction === destinationDirection.value && groupAccepts(group.direction)) {
         expandContinuation(group.direction);
     }
     else closePanel();
@@ -348,8 +354,7 @@ function viewportChanged(event: Event) {
 }
 function dismissPanel(event: KeyboardEvent) {
     if (event.key !== "Escape" || editingControl.value) return;
-    cancelAnimationFrame(overflowFrame);
-    overflowFrame = 0;
+    hoverContinuationFrame.cancel();
     closePanel();
 }
 function windowBlurred() { if (!editingControl.value) closePanel(); }
@@ -364,14 +369,11 @@ function leaveFocus() {
 }
 onMounted(() => {
     header = portArea.value?.closest("header") ?? null;
+    rowKey.value = header?.closest<HTMLElement>("[data-lane-row]")?.dataset.laneRow;
     header?.addEventListener("iv-hoverenter", hoverHeader);
     header?.addEventListener("iv-hoverleave", leave);
     header?.addEventListener("focusin", hoverHeader);
     header?.addEventListener("focusout", leaveFocus);
-    portAreaObserver = new ResizeObserver(([entry]) => {
-        if (entry) portAreaHeight.value = entry.contentRect.height;
-    });
-    if (portArea.value) portAreaObserver.observe(portArea.value);
     editor?.portsChanged();
     window.addEventListener("resize", viewportChanged);
     window.addEventListener("scroll", viewportChanged, true);
@@ -383,9 +385,7 @@ onBeforeUnmount(() => {
     header?.removeEventListener("iv-hoverleave", leave);
     header?.removeEventListener("focusin", hoverHeader);
     header?.removeEventListener("focusout", leaveFocus);
-    portAreaObserver?.disconnect();
-    cancelAnimationFrame(overflowFrame);
-    overflowFrame = 0;
+    hoverContinuationFrame.cancel();
     window.removeEventListener("pointermove", movePopoverPointer, true);
     window.removeEventListener("pointerout", leavePopoverWindow, true);
     editor?.portsChanged();
@@ -398,7 +398,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-    <div ref="portArea" class="node-ports" :class="{ inline }"
+    <div ref="portArea" class="node-ports" :class="{ inline }" :data-module-boundary="moduleBoundary ? '' : undefined"
         :style="{ '--folded-socket-height': `${foldedSocketHeight}px`, '--port-row-height': `${knobSize}px`,
             '--port-row-gap': `${lanePortRowGap}px` }">
         <div v-for="direction in directions" :key="direction" :ref="(element) => setGroup(direction, element)"
@@ -432,7 +432,8 @@ onBeforeUnmount(() => {
             :class="{ above, continuation: !chooserPort, positioning: !panelPositioned }"
             :style="[panelPosition, { '--port-row-gap': `${lanePortRowGap}px`, '--port-row-height': `${knobSize}px` }]"
             :aria-hidden="!panelPositioned"
-            :data-lane-key="nodeKey"
+            :data-lane-key="moduleBoundary ? undefined : nodeKey"
+            :data-lane-row="rowKey" :data-module-boundary="moduleBoundary ? '' : undefined"
             :data-port-group="chooserPort?.direction" :data-node-key="nodeKey" :data-direction="chooserPort?.direction"
             @iv-hoverleave="leave" @focusout="leaveFocus" @keydown.esc="closePanel"
             @wheel="timelineNavigation?.wheel($event)" @pointerdown.capture="timelineNavigation?.beginMiddleDrag($event)">

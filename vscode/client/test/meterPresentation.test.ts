@@ -1,7 +1,29 @@
+import { receiveSnapshot, type ObservationSnapshotFixture } from "./observationFixtures";
+import type { ObservationDelivery } from "../src/observationDelivery";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { levelDomain, meterPosition, meterReading, MeterPresentationState, sampleDecibels } from "../src/meterPresentation";
-import { ObservationValues, type ObservationDisplayValue, type ObservationUpdate } from "../src/observations";
+import { ObservationValues, type ObservationDisplayValue } from "../src/observations";
+
+test("a returning meter displays its last compatible reading while its probe prepares", () => {
+    const observations = new ObservationValues();
+    const wire: ObservationDelivery = { snapshot: true, generation: "1", activationId: "2", revision: "1", index: "0",
+        blockSize: 64, dataVersion: "0", scopes: { viewport: { values: {
+            meter: { available: true, value: { peak: .5, rms: .25, samples: "64" } },
+        } } } };
+    observations.receive(wire);
+    observations.receive({ ...wire, snapshot: false, scopes: { viewport: { values: { meter: null } } } });
+    assert.equal(observations.values.has("meter"), false);
+    const meter = new MeterPresentationState();
+    meter.update(undefined, true, 0, observations.previousLiveValue("meter"));
+    assert.equal(meter.status("value"), "Updating · previous reading: 0.5 peak · 0.25 RMS");
+    assert.equal(meter.reading("value").position, .5);
+
+    observations.receive({ ...wire, snapshot: false, scopes: { viewport: { values: { meter: { available: false } } } } });
+    meter.update(observations.values.get("meter"), true, 10, observations.previousLiveValue("meter"));
+    assert.equal(meter.reading("value").available, false);
+    assert.equal(observations.previousLiveValue("meter"), undefined);
+});
 import { numericTicks } from "../webview/timeline/geometry";
 
 test("level grading uses dBFS rather than a linear amplitude fraction", () => {
@@ -81,7 +103,7 @@ test("meter and timeline graduations share finite ordered numeric geometry", () 
 test("compatible graph transitions keep latest and held peaks through pending telemetry", () => {
     const meter = new MeterPresentationState(), uninterrupted = new MeterPresentationState();
     const values = new ObservationValues();
-    const frame = (generation: string, activationId: string, value: ObservationDisplayValue): ObservationUpdate => ({
+    const frame = (generation: string, activationId: string, value: ObservationDisplayValue): ObservationSnapshotFixture => ({
         generation, activationId, revision: "1", index: "0", blockSize: 64, dataVersion: "0",
         scopes: [{ scopeId: "viewport", values: [{ id: "meter", ...value }] }],
     });
@@ -100,15 +122,15 @@ test("compatible graph transitions keep latest and held peaks through pending te
     assert.deepEqual(meter.reading("value"), before);
     assert.equal(meter.updating, true);
 
-    assert.equal(values.receive(frame("2", "1", { available: false, pending: true }), "viewport"), true);
+    assert.equal(receiveSnapshot(values, frame("2", "1", { available: false, pending: true })), true);
     meter.update(values.values.get("meter"), true, 220);
     assert.equal(meter.reading("value").available, true);
     assert.match(meter.status("value"), /Updating.*previous reading/);
 
     // A delayed frame remains rejected; retaining the picture does not accept
     // an obsolete execution as the configured graph's current measurement.
-    assert.equal(values.receive(frame("1", "1", sample(1, 1)), "viewport"), false);
-    assert.equal(values.receive(frame("2", "2", sample(.1, .1)), "viewport"), true);
+    assert.equal(receiveSnapshot(values, frame("1", "1", sample(1, 1))), false);
+    assert.equal(receiveSnapshot(values, frame("2", "2", sample(.1, .1))), true);
     meter.update(values.values.get("meter"), true, 230);
     uninterrupted.update(sample(.1, .1), true, 230);
     assert.equal(meter.updating, false);

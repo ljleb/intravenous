@@ -11,6 +11,7 @@ import { AutomationCurveEditing } from "../src/automationCurveEditing";
 import { automationEditingKey } from "./presentation/automationEditingContext";
 import { BeatGridEditing } from "../src/beatGridEditing";
 import { beatGridEditingKey } from "./presentation/beatGridEditingContext";
+import { createPresentationFrames, presentationFramesKey } from "./presentation/presentationFrames";
 
 const nodeEvents = new NodeEventMessaging((request) => webviewApi.postMessage(request), () => crypto.randomUUID());
 const automationVersion = ref(0);
@@ -39,5 +40,6 @@ window.addEventListener("pagehide", disconnectEditing);
 
 const graphEditor = document.body.dataset.surface === "graphEditor";
 createApp(graphEditor ? GraphEditor : App).provide(nodeEventMessagingKey, nodeEvents)
+    .provide(presentationFramesKey, createPresentationFrames())
     .provide(automationEditingKey, automationContext).provide(beatGridEditingKey, beatsContext).mount("#app");
 if (!graphEditor) connectToHost();

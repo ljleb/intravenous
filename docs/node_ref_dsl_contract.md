@@ -100,6 +100,9 @@ Output-selection rules superseded on 2026-11-14 are preserved in
   and the [earlier DSL](historical/node_construction_before_package_private_types_2026-11-19.md).
 - `g.subgraph(...)`, embedding, and module loading return `NodeRef` to one
   subgraph bundle.
+- Tiled bundle construction requires a multichannel layout. Mono arithmetic
+  creates one concrete node. `g.tile<mono>(source)` reuses the existing mono
+  sample expression, including its connection settings.
 - `ref(...)`, `connect_input`, and `connect_event_input` connect positional or
   named inputs. Named resolution is bundle-level for erased refs and static
   where typed information is available.

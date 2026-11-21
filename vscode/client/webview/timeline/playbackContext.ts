@@ -1,6 +1,7 @@
 import { computed, inject, provide, shallowRef, type InjectionKey, type Ref, type ShallowRef } from "vue";
 import { PlaybackDisplay, type PlaybackSnapshot } from "../../src/playback";
 import type { GraphEditorHostMessage } from "../../src/graphEditorProtocol";
+import { usePresentationFrame } from "../presentation/presentationFrames";
 
 type PlaybackPresentation = {
     state: ShallowRef<PlaybackSnapshot | null>;
@@ -24,13 +25,13 @@ export function providePlayback() {
         ? localRelease.value?.position ?? pendingRelease.value : BigInt(dragPosition.value));
     const backgroundPlayhead = computed(() => dragPreview.value ?? appliedBackgroundPlayhead.value);
     const display = new PlaybackDisplay();
-    let frame = 0;
     const animate = () => {
         const now = performance.now();
         appliedBackgroundPlayhead.value = display.backgroundPlayhead(now);
         foregroundPlayhead.value = display.foregroundPlayhead(now);
-        frame = display.isAnimating(now) ? requestAnimationFrame(animate) : 0;
+        if (display.isAnimating(now)) frame.schedule();
     };
+    const frame = usePresentationFrame("update", animate);
     provide(key, { state, backgroundPlayhead, foregroundPlayhead, requestedPosition, dragPosition, dragPreview,
         releaseDrag(position) {
             const id = crypto.randomUUID();
@@ -42,7 +43,7 @@ export function providePlayback() {
         dragPosition,
         receive({ snapshot, requestedPosition: requested, releasedDragPosition: released, dragReleaseId: releaseId }
             : Extract<GraphEditorHostMessage, { type: "playbackUpdate" }>) {
-            cancelAnimationFrame(frame);
+            frame.cancel();
             display.update(snapshot, performance.now());
             state.value = snapshot;
             requestedPosition.value = requested === null ? null : BigInt(requested);
@@ -50,7 +51,7 @@ export function providePlayback() {
             if (localRelease.value?.id === releaseId) localRelease.value = null;
             animate();
         },
-        dispose() { cancelAnimationFrame(frame); },
+        dispose: frame.cancel,
     };
 }
 export function usePlayback(): PlaybackPresentation {

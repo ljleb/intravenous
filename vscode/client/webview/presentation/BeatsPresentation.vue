@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { beatBpm, beatGridTicks, readBeatGrid } from "../../src/beatGrid";
+import { computed, ref } from "vue";
+import { beatBpm, beatGridTicks, readBeatGrid, type BeatGridTick } from "../../src/beatGrid";
 import { gridGuideStrengths } from "../../src/gridGuideStrength";
 import { useOptionalGraphEditor } from "../graph/context";
 import { useTimelineWindow } from "../timeline/timelineContext";
@@ -12,6 +12,9 @@ import LaneSettings from "./LaneSettings.vue";
 import NodeLane from "./NodeLane.vue";
 import { useNode } from "./nodeContext";
 import { useBeatGridEditing } from "./beatGridEditingContext";
+import { usePresentationActive } from "./observationContext";
+import GridGuides from "../timeline/GridGuides.vue";
+import { usePresentationSize } from "./presentationSize";
 
 const props = defineProps<{ mode: NodeDisplayMode }>();
 const node = useNode();
@@ -19,7 +22,9 @@ const time = useTimelineWindow();
 const editor = useOptionalGraphEditor();
 const { edits, version } = useBeatGridEditing();
 const surface = ref<HTMLElement | null>(null);
-const width = ref(0);
+const size = usePresentationSize(surface);
+const width = computed(() => size.value?.width ?? 0);
+const drawing = usePresentationActive();
 const grid = computed(() => {
     const construction = node.value.construction;
     return construction?.definitionId === "builtin.beats" ? readBeatGrid(construction.arguments) : null;
@@ -35,12 +40,16 @@ const editError = computed(() => {
     return edits.error(node.value.address);
 });
 const ticks = computed(() => {
+    if (!drawing.value) return [];
     const window = time?.value;
     return preview.value && window?.sampleRate ? beatGridTicks(preview.value, {
         beginSeconds: window.beginSeconds, spanSeconds: window.spanSeconds ?? window.endSeconds - window.beginSeconds,
     }, window.sampleRate, width.value) : [];
 });
-const strengths = computed(() => gridGuideStrengths(ticks.value, ({ x }) => x));
+const tickKey = ({ sample }: BeatGridTick) => String(sample);
+const tickPosition = ({ x }: BeatGridTick) => x;
+const tickStart = ({ depth }: BeatGridTick) => depth === 0 ? "0%" : depth === 1 ? "40%" : `${100 - 40 / depth}%`;
+const strengths = computed(() => gridGuideStrengths(ticks.value, tickPosition));
 const beginSeek = usePlayheadSeek(surface, () => time?.value, () => ticks.value.map(({ sample }) => sample), () => {
     const grid = preview.value;
     if (!grid) return;
@@ -74,13 +83,6 @@ const status = computed(() => {
         || (node.value.construction ? "Beat grid preview unavailable for these arguments" : "Waiting for accepted Beats arguments");
 });
 
-let resize: ResizeObserver | undefined;
-onMounted(() => {
-    if (!surface.value) return;
-    resize = new ResizeObserver(([entry]) => { width.value = entry.contentRect.width; });
-    resize.observe(surface.value);
-});
-onBeforeUnmount(() => resize?.disconnect());
 </script>
 
 <template>
@@ -88,12 +90,7 @@ onBeforeUnmount(() => resize?.disconnect());
         <div ref="surface" class="beat-grid" :data-status-hint="status" data-status-shortcuts="Click/drag seek · Space ▶/Ⅱ"
             @pointerdown="beginSeek">
             <svg class="beat-grid-marks" role="img" aria-label="Beats grid preview" :aria-description="status">
-                <TransitionGroup name="iv-grid">
-                    <line v-for="tick in ticks" :key="String(tick.sample)" class="iv-grid-guide"
-                        :style="{ '--iv-grid-strength': strengths.get(tick.depth) }" :x1="tick.x" :x2="tick.x"
-                        :y1="tick.depth === 0 ? '0%' : tick.depth === 1 ? '40%' : `${100 - 40 / tick.depth}%`" y2="100%"
-                        vector-effect="non-scaling-stroke" />
-                </TransitionGroup>
+                <GridGuides :marks="ticks" :strengths="strengths" :mark-key="tickKey" :position="tickPosition" :start="tickStart" />
                 <text v-for="tick in labels" :key="String(tick.sample)" :x="tick.x" y="100%" dx="4" dy="-4">{{ tick.bar }}</text>
             </svg>
             <LaneSettings v-if="editable && preview && node.address" :label="`${beatBpm(preview)} BPM`"

@@ -218,6 +218,9 @@ void ProjectGraph::stop_compilation()
     {
         std::scoped_lock lock(mutex_);
         pending_graph_compile_.reset();
+        observation_candidate_.reset();
+        predicted_observation_requirements_.reset();
+        observation_prediction_pending_ = false;
         execution_recovery_requested_ = false;
         pending_control_compile_.reset();
         inflight_control_compile_.reset();
@@ -232,7 +235,7 @@ bool ProjectGraph::wait_for_compilation(std::chrono::milliseconds timeout)
     std::unique_lock lock(mutex_);
     return control_compile_changed_.wait_for(lock, timeout, [&] {
         return !pending_graph_compile_ && !execution_recovery_requested_ && !compile_inflight_ && !restore_live_targets_
-            && !pending_control_compile_ && !inflight_control_compile_;
+            && !pending_control_compile_ && !inflight_control_compile_ && !can_compile_observation_prediction_locked();
     });
 }
 
@@ -348,7 +351,9 @@ void ProjectGraph::schedule_control_compile_locked(
         configured.dynamic = std::ranges::contains(
             dynamic_inputs, configured.id);
         configured.override_connections = configured.dynamic && configured.id.kind == ManualControlKind::input;
-        if (auto const* durable = find_manual_control_locked(configured.id); durable && (!configured.output || durable->enabled)) {
+        auto const* durable = find_manual_control_locked(configured.id);
+        if (!configured.output) configured.authored = durable != nullptr;
+        if (durable) {
             configured.settled_value = durable->stored_value;
             configured.participation = durable->participation;
         }
@@ -441,7 +446,8 @@ bool ProjectGraph::control_configuration_matches_locked(ConfiguredGraph const& c
             || code.override_connections != (dynamic && control.id.kind == ManualControlKind::input)) return false;
         if (dynamic && !control.requires_preparation) continue;
         auto const saved = std::ranges::find(manual_controls_, control.id, &ProjectManualControl::id);
-        auto value = saved != manual_controls_.end() && (!control.output || saved->enabled)
+        if (!control.output && !dynamic && code.authored != (saved != manual_controls_.end())) return false;
+        auto value = saved != manual_controls_.end()
             ? saved->stored_value : control.settled_value;
         if (control.requires_preparation) {
             std::scoped_lock live(live_mutex_);
@@ -593,28 +599,54 @@ void ProjectGraph::publish_control_compile_status()
     }
 }
 
-void ProjectGraph::schedule_graph_compile_locked(std::shared_ptr<ControlCompileTrace> trace)
+std::shared_ptr<ConfiguredGraph> ProjectGraph::graph_for_compile_locked()
 {
-    if (!current_generation_ || !current_generation_->graph
-        || configuration_failure_ || compile_worker_.get_stop_token().stop_requested()) return;
     auto graph = std::make_shared<ConfiguredGraph>(*current_generation_->graph);
     auto const inputs = desired_dynamic_inputs_locked(false);
     for (auto& control : graph->manual_controls) {
         control.dynamic = std::ranges::contains(inputs, control.id);
         control.override_connections = control.dynamic && control.id.kind == ManualControlKind::input;
-        if (auto const* saved = find_manual_control_locked(control.id); saved && (!control.output || saved->enabled))
+        auto const* saved = find_manual_control_locked(control.id);
+        if (!control.output) control.authored = saved != nullptr;
+        if (saved)
             control.settled_value = saved->stored_value;
         if (control.requires_preparation) {
             std::scoped_lock live(live_mutex_);
             for (auto const& entry : live_interactions_) if (entry.control == control.id) control.settled_value = entry.value;
         }
     }
+    return graph;
+}
+
+bool ProjectGraph::can_compile_observation_prediction_locked() const
+{
+    return observation_prediction_pending_ && predicted_observation_requirements_
+        && predicted_observation_requirements_->revision == observation_requirements_.revision + 1
+        && current_generation_ && current_generation_->graph && current_generation_->graph_executor_accepted
+        && !configuration_failure_ && accepted_execution_graph_;
+}
+
+void ProjectGraph::schedule_graph_compile_locked(std::shared_ptr<ControlCompileTrace> trace)
+{
+    if (!current_generation_ || !current_generation_->graph
+        || configuration_failure_ || compile_worker_.get_stop_token().stop_requested()) return;
+    auto candidate = std::exchange(observation_candidate_, {});
+    if (candidate && (candidate->requirements != observation_requirements_
+        || candidate->predecessor != accepted_execution_graph_
+        || candidate->inputs.project_generation != current_generation_->generation
+        || candidate->inputs.configured_generation != current_generation_->configured_generation
+        || candidate->inputs.definitions != current_generation_->definitions
+        || !control_configuration_matches_locked(*candidate->inputs.graph, desired_dynamic_inputs_locked(false))))
+        candidate.reset();
+    auto inputs = candidate ? candidate->inputs : capture_compile_inputs_locked(graph_for_compile_locked());
+    observation_prediction_pending_ = predicted_observation_requirements_.has_value();
     if (pending_graph_compile_ && pending_graph_compile_->trace)
         queue_control_compile_status_locked(pending_graph_compile_->trace, "superseded");
     pending_graph_compile_ = GraphCompileRequest{
         .request_id = ++latest_graph_compile_request_,
-        .inputs = capture_compile_inputs_locked(std::move(graph)),
+        .inputs = std::move(inputs),
         .trace = std::move(trace),
+        .observation_candidate = std::move(candidate),
     };
     control_compile_changed_.notify_all();
 }
@@ -667,7 +699,10 @@ void ProjectGraph::compile_graph(GraphCompileRequest request, std::stop_token st
         GraphJitCompileResult compiled;
         ProjectGraphPublication publication;
         try {
-            compiled = IV_INVOKE_SINGLETON_EVENT(iv_runtime_project_graph_graph_jit_requested_event,
+            auto const& candidate = request.observation_candidate;
+            if (candidate && candidate->predecessor == predecessor && candidate->result.compiled_graph)
+                compiled = std::move(candidate->result);
+            else compiled = IV_INVOKE_SINGLETON_EVENT(iv_runtime_project_graph_graph_jit_requested_event,
                 ProjectGraphGraphJitRequest{
                     .successor = request.inputs,
                     .predecessor = predecessor, .initial_generation = !predecessor,
@@ -933,6 +968,7 @@ void ProjectGraph::compile_worker(std::stop_token stop)
         control_compile_changed_.notify_all();
         std::optional<ControlCompileRequest> request;
         std::optional<GraphCompileRequest> graph_request;
+        std::shared_ptr<ObservationCompileCandidate> observation_prediction;
         bool recover_execution = false;
         {
             std::unique_lock lock(mutex_);
@@ -942,7 +978,8 @@ void ProjectGraph::compile_worker(std::stop_token stop)
             control_compile_changed_.notify_all();
             control_compile_changed_.wait(lock, [&] {
                 return stop.stop_requested() || execution_recovery_requested_ || pending_graph_compile_.has_value()
-                    || pending_control_compile_.has_value() || !control_compile_notifications_.empty();
+                    || pending_control_compile_.has_value() || !control_compile_notifications_.empty()
+                    || can_compile_observation_prediction_locked();
             });
             if (stop.stop_requested()) return;
             if (execution_recovery_requested_) {
@@ -957,6 +994,20 @@ void ProjectGraph::compile_worker(std::stop_token stop)
                 pending_control_compile_.reset();
                 inflight_control_compile_ = *request;
                 if (!request->prepared_graph) queue_control_compile_status_locked(request->trace, "compiling");
+            } else if (can_compile_observation_prediction_locked()) {
+                observation_prediction_pending_ = false;
+                try {
+                    auto graph = graph_for_compile_locked();
+                    // Only the matching required reconcile advances the counters.
+                    GraphJitCompileRequest inputs{.project_generation = next_generation_, .graph = std::move(graph),
+                        .definitions = current_generation_->definitions,
+                        .observations = resolve_observation_requirements(*current_generation_->graph,
+                            current_generation_->placements, *predicted_observation_requirements_),
+                        .configured_generation = current_generation_->configured_generation};
+                    observation_prediction = observation_candidate_ = std::make_shared<ObservationCompileCandidate>(
+                        ObservationCompileCandidate{*predicted_observation_requirements_, std::move(inputs), accepted_execution_graph_});
+                    compile_inflight_ = true;
+                } catch (...) { observation_candidate_.reset(); }
             }
         }
         // Requests queue notifications; this independent cause publishes them
@@ -975,6 +1026,30 @@ void ProjectGraph::compile_worker(std::stop_token stop)
             catch (std::exception const& error) {
                 try { diagnostic_stream() << "graph compilation worker: " << error.what() << '\n';
                     flush_diagnostic_stream(); } catch (...) {}
+            }
+            continue;
+        }
+        if (observation_prediction) {
+            {
+                std::scoped_lock lock(mutex_);
+                auto const claimed = pending_graph_compile_
+                    && pending_graph_compile_->observation_candidate == observation_prediction;
+                if (!claimed && observation_candidate_ != observation_prediction) continue;
+                if (!claimed && (pending_graph_compile_ || pending_control_compile_ || execution_recovery_requested_)) {
+                    observation_candidate_.reset();
+                    observation_prediction_pending_ = true;
+                    continue;
+                }
+            }
+            try {
+                IV_EVENT_SOURCE(ProjectGraph, "predictive observation compilation") {
+                    observation_prediction->result = IV_INVOKE_SINGLETON_EVENT(iv_runtime_project_graph_graph_jit_requested_event,
+                        ProjectGraphGraphJitRequest{.successor = observation_prediction->inputs,
+                            .predecessor = observation_prediction->predecessor});
+                }
+            } catch (...) {
+                // The required compilation reports its own diagnostics if
+                // this viewport eventually becomes active.
             }
             continue;
         }
@@ -1363,15 +1438,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         if (accepted_effect) *accepted_effect = std::move(effect);
         else record_edit_locked(std::move(effect));
     }
-    if (publish_execution) {
-        // Disabled inputs retain their temporary editing gesture. Disabled
-        // output gains and removed controls still end independently.
-        std::erase_if(manual_interactions_, [&](auto const& interaction) {
-            auto const* control = find_manual_control_locked(interaction.control);
-            return control && !control->enabled && control->id.kind == ManualControlKind::output_gain;
-        });
-        prune_live_interactions_locked();
-    }
+    if (publish_execution) prune_live_interactions_locked();
     if (instances_failed) {
         return fail(ProjectGraphConfigurationFailure{
             .definitions_generation = definitions_generation,
@@ -1411,6 +1478,8 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     generation->definitions_generation = definitions_snapshot_->generation;
     generation->definitions = definitions_snapshot_;
     generation->placements = std::move(request.result.placements);
+    generation->source_sample_connection_count = connections_request.result.source_sample_count;
+    generation->source_event_connection_count = connections_request.result.source_event_count;
     generation->applied_connection_ids =
         std::move(connections_request.result.applied_connection_ids);
     generation->connection_diagnostics =
@@ -1437,26 +1506,54 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         return type && continuous_value_type_info(*type).apply_output_gain != nullptr;
     };
     auto effective_controls = manual_controls_;
-    std::unordered_map<std::string, std::unordered_set<std::string>> explicit_root_controls;
+    std::unordered_map<std::string, std::vector<ManualControlId>> declared_controls;
     for (auto const& control : manual_controls_)
-        if (control.id.node.path.empty() && control.id.kind == ManualControlKind::input)
-            explicit_root_controls[control.id.node.instance_id].insert(control.id.port_name);
+        declared_controls[control.id.node.instance_id].push_back(control.id);
     for (auto const& [instance_id, placement] : generation->placements) {
-        auto const interface = read_node_instance_interface(finished_graph.node_bundles, placement.root);
-        for (auto const& port : interface.sample_inputs) {
-            if (!port.manual_defaults) continue;
-            ManualControlId id{.node = NodeAddress{.instance_id = instance_id}, .port_name = port.name};
-            if (explicit_root_controls[instance_id].contains(port.name)) continue;
-            effective_controls.push_back({.id = std::move(id), .stored_value = port.manual_defaults->value,
-                .enabled = port.manual_defaults->enabled});
-        }
-        for (auto const& port : interface.sample_outputs) {
-            ManualControlId id{.node = NodeAddress{.instance_id = instance_id}, .port_name = port.name,
-                .kind = ManualControlKind::output_gain};
-            if (std::ranges::any_of(manual_controls_, [&](auto const& value) { return value.id == id; })) continue;
-            if (supports_gain({placement.root, PortKind::sample, port.index}))
-                effective_controls.push_back({.id = std::move(id), .stored_value = 1.0f});
-        }
+        auto add_control = [&](ManualControlId id, Sample value, bool enabled) {
+            auto& declared = declared_controls[instance_id];
+            if (std::ranges::contains(declared, id)) return;
+            declared.push_back(id);
+            effective_controls.push_back({.id = std::move(id), .stored_value = value, .enabled = enabled});
+        };
+        std::unordered_set<NodeBundleHandle> seen_members;
+        auto register_scope = [&](auto const& self, NodeAddress address, ProjectNodePathMatch match,
+                                  NodeBundleHandle representative) -> void {
+            bool const is_root = address.path.empty();
+            if (match.kind == ProjectNodePathMatch::Kind::bundle) {
+                if (!seen_members.insert(representative).second) return;
+                if (!is_root) {
+                    auto path = project_member_path(finished_graph, placement.root, representative);
+                    if (!path) return;
+                    address.path = std::move(*path);
+                }
+            }
+            auto const interface = match.kind == ProjectNodePathMatch::Kind::virtual_node
+                ? read_virtual_node_interface(finished_graph.node_bundles, finished_graph.virtual_nodes.record(match.virtual_node), representative)
+                : read_node_instance_interface(finished_graph.node_bundles, representative);
+            for (auto const& port : interface.sample_inputs) {
+                if (port.name.empty() || !port.manual_defaults) continue;
+                add_control({.node = address, .port_name = port.name}, port.manual_defaults->value,
+                    match.kind == ProjectNodePathMatch::Kind::bundle && port.manual_defaults->enabled);
+            }
+            for (auto const& port : interface.sample_outputs) {
+                if (!port.name.empty() && port.index < finished_graph.node_bundles.bundle(representative).sample_output_count()
+                        && supports_gain({representative, PortKind::sample, port.index}))
+                    add_control({.node = address, .port_name = port.name, .kind = ManualControlKind::output_gain},
+                        Sample{1}, true);
+            }
+            if (is_root || interface.has_children || match.kind == ProjectNodePathMatch::Kind::virtual_node
+                || finished_graph.node_bundles.bundle(representative).is_tiled()) {
+                for (auto const& child : project_child_nodes(finished_graph, match)) {
+                    auto child_address = address;
+                    child_address.path.insert(child_address.path.end(), child.path.begin(), child.path.end());
+                    auto const matches = resolve_node_address(finished_graph, generation->placements, child_address);
+                    if (matches.size() == 1) self(self, std::move(child_address), matches.front(), child.bundle);
+                }
+            }
+        };
+        register_scope(register_scope, NodeAddress{.instance_id = instance_id},
+            {.kind = ProjectNodePathMatch::Kind::bundle, .bundle = placement.root}, placement.root);
     }
     for (auto const& control : effective_controls) {
         auto const matches = resolve_node_address(
@@ -1486,6 +1583,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
             });
             continue;
         }
+        auto const first_binding = finished_graph.manual_controls.size();
         for (std::size_t selection_index = 0;
              selection_index < bundles.size(); ++selection_index) {
             auto const bundle = bundles[selection_index];
@@ -1496,18 +1594,17 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
                     if (finished_graph.node_bundles.resolve_sample_output({bundle, PortKind::sample, index}).config.name == control.id.port_name)
                         port = index;
                 if (!port) {
-                    if (control.enabled) generation->manual_control_diagnostics.push_back({control.id, "gain output name is unavailable"});
+                    generation->manual_control_diagnostics.push_back({control.id, "gain output name is unavailable"});
                     continue;
                 }
                 auto const source = NodeBundlePortId{bundle, PortKind::sample, *port};
                 if (!supports_gain(source)) {
-                    if (control.enabled) generation->manual_control_diagnostics.push_back({control.id, "output value type has no scalar gain operation"});
+                    generation->manual_control_diagnostics.push_back({control.id, "output value type has no scalar gain operation"});
                     continue;
                 }
                 finished_graph.manual_controls.push_back({.id = control.id,
                     .concrete_selection_index = selection_index,
-                    .settled_value = control.enabled ? control.stored_value : Sample{1},
-                    .output = source});
+                    .settled_value = control.stored_value, .output = source});
                 continue;
             }
             std::vector<ContinuousInputConfig> sample_inputs;
@@ -1542,10 +1639,25 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
                 .participation = control.participation,
                 .requires_preparation = coverage_control,
                 .enabled = control.enabled,
+                .authored = find_manual_control_locked(control.id) != nullptr,
             });
+        }
+        if (std::ranges::any_of(matches, [](auto const& match) {
+                return match.kind == ProjectNodePathMatch::Kind::virtual_node;
+            }) && finished_graph.manual_controls.size() - first_binding != bundles.size()) {
+            finished_graph.manual_controls.resize(first_binding);
         }
     }
     graph_jit::detail::classify_output_gain_consumers(finished_graph);
+    std::vector<ManualControlId> prepared_groups;
+    for (auto const& control : finished_graph.manual_controls)
+        if (control.requires_preparation && !control.id.node.path.empty()
+            && std::holds_alternative<ProjectVirtualNodeSelector>(control.id.node.path.back())
+            && !std::ranges::contains(prepared_groups, control.id))
+            prepared_groups.push_back(control.id);
+    for (auto& control : finished_graph.manual_controls)
+        if (std::ranges::contains(prepared_groups, control.id)) control.requires_preparation = true;
+
     auto next_manual_interactions = manual_interactions_;
     auto next_hovered_controls = hovered_controls_;
     auto next_retained_inputs = hover_retained_inputs_;
@@ -2246,8 +2358,6 @@ void ProjectGraph::set_interaction_value_locked(ActiveManualControlInteraction& 
     std::optional<ProjectManualControl> before = current ? std::optional(*current) : std::nullopt;
     ProjectManualControl next;
     if (current) {
-        if (!current->enabled && current->id.kind == ManualControlKind::output_gain)
-            throw std::invalid_argument("manual control is disabled");
         next = *current;
     } else {
         if (!current_generation_ || !current_generation_->graph)
@@ -2787,6 +2897,8 @@ void ProjectGraph::handle_project_replace_graph(
         std::scoped_lock lock(mutex_);
         auto previous_manual_controls = manual_controls_;
         manual_controls_ = request.manual_controls;
+        for (auto& control : manual_controls_)
+            if (control.id.kind == ManualControlKind::output_gain) control.enabled = true;
         try {
             auto rebuilt = rebuild_locked(
                 NodeInstanceReplaceAllMutation{
@@ -2833,10 +2945,12 @@ void ProjectGraph::handle_project_upsert_manual_control(
         auto previous_manual_controls = manual_controls_;
         auto found = std::ranges::find(
             manual_controls_, request.control.id, &ProjectManualControl::id);
+        auto control = request.control;
+        if (control.id.kind == ManualControlKind::output_gain) control.enabled = true;
         if (found == manual_controls_.end()) {
-            manual_controls_.push_back(request.control);
+            manual_controls_.push_back(std::move(control));
         } else {
-            *found = request.control;
+            *found = std::move(control);
         }
         try {
             auto rebuilt = rebuild_locked(std::monostate{}, std::monostate{}, true, nullptr, nullptr, &previous_manual_controls);
@@ -2883,9 +2997,7 @@ void ProjectGraph::handle_project_set_manual_control_hover(
     {
         std::scoped_lock lock(mutex_);
         if (request.id) {
-            auto const* control = find_manual_control_locked(*request.id);
-            if ((control && !control->enabled && control->id.kind == ManualControlKind::output_gain)
-                || !current_generation_ || !current_generation_->graph
+            if (!current_generation_ || !current_generation_->graph
                 || !manual_control_is_available(
                     *current_generation_->graph, *request.id)) {
                 throw std::invalid_argument(
@@ -2930,8 +3042,7 @@ void ProjectGraph::handle_project_begin_manual_control_interaction(
     {
         std::scoped_lock lock(mutex_);
         auto* control = find_manual_control_locked(request.id);
-        if ((control && !control->enabled && control->id.kind == ManualControlKind::output_gain)
-            || !current_generation_ || !current_generation_->graph
+        if (!current_generation_ || !current_generation_->graph
             || !manual_control_is_available(
                 *current_generation_->graph, request.id)) {
             throw std::invalid_argument(
@@ -3527,6 +3638,134 @@ void classify_scope_node(
         node.load_state = node.instance.realized ? State::ready : State::waiting_for_graph;
     }
 }
+
+struct SourceScopeOutputAliases {
+    std::map<std::tuple<NodeBundleHandle, std::size_t, std::size_t>, std::vector<ProjectNodePortMatcher>> sample;
+    std::map<std::pair<NodeBundleHandle, std::size_t>, std::vector<ProjectNodePortMatcher>> event;
+};
+
+std::string unqualified_child_type(std::string_view type)
+{
+    constexpr std::string_view anonymous_namespace = "(anonymous namespace)::";
+    std::string label;
+    while (!type.empty()) {
+        if (type.starts_with(anonymous_namespace)) type.remove_prefix(anonymous_namespace.size());
+        auto const end = type.find_first_of("<>, &*()");
+        auto const word = type.substr(0, end);
+        auto const qualifier = word.find_last_of(":.");
+        label += qualifier == std::string_view::npos ? word : word.substr(qualifier + 1);
+        if (end == std::string_view::npos) break;
+        label += type[end];
+        type.remove_prefix(end + 1);
+    }
+    return label.empty() ? "Node" : label;
+}
+
+std::string child_lane_display_name(
+    ProjectGraphGeneration const& generation, ProjectChildNode const& child,
+    std::unordered_map<std::string_view, std::string_view> const& leaf_names_by_type)
+{
+    auto const& graph = *generation.graph;
+    if (child.virtual_node) {
+        auto const& record = graph.virtual_nodes.record(*child.virtual_node);
+        if (record.type_identity == "sample-port") return "Sample Port";
+        if (record.type_identity == "event-port") return "Event Port";
+    }
+
+    auto const& bundle = graph.node_bundles.bundle(child.bundle);
+    auto const type = bundle.is_subgraph() ? bundle.subgraph_kind() : bundle.type_identity();
+    if (generation.definitions) {
+        auto const* identity = graph.node_bundles.registered_node_type_identity(child.bundle);
+        auto const definition_id = bundle.is_subgraph() ? type
+            : identity ? std::string_view(identity->node_type_id) : std::string_view{};
+        if (!definition_id.empty()) {
+            auto const it = generation.definitions->by_id.find(std::string(definition_id));
+            if (it != generation.definitions->by_id.end()) {
+                auto const& name = std::visit([](auto const& definition) -> std::string const& {
+                    return definition.display_name;
+                }, it->second.definition);
+                if (!name.empty()) return name;
+            }
+        } else if (auto const it = leaf_names_by_type.find(type);
+                   it != leaf_names_by_type.end() && !it->second.empty()) {
+            return std::string(it->second);
+        }
+    }
+    return unqualified_child_type(type);
+}
+
+void append_source_scope_connections(ProjectGraphScope& scope,
+    ProjectGraphGeneration const& generation,
+    std::unordered_map<NodeBundleHandle, std::vector<NodeAddress>> const& children,
+    std::unordered_map<NodeBundleHandle, std::vector<NodeAddress>> const& boundaries,
+    SourceScopeOutputAliases const& aliases)
+{
+    auto const& connections = generation.graph->connections;
+    std::unordered_set<std::string> ids;
+    for (auto const& entry : scope.connections) ids.insert(project_connection_id(entry.connection));
+    auto append = [&](auto connection, std::vector<ProjectNodePortMatcher> boundary_sources,
+                      std::vector<ProjectNodePortMatcher> boundary_targets, std::string id) {
+        if ((connection.inputs.empty() && boundary_targets.empty())
+            || (connection.outputs.empty() && boundary_sources.empty())) return;
+        while (!ids.insert(id).second) id.push_back('_');
+        connection.connection_id = std::move(id);
+        scope.connections.push_back({
+            .connection = std::move(connection), .applied = true, .source_owned = true,
+            .boundary_sources = std::move(boundary_sources), .boundary_targets = std::move(boundary_targets),
+        });
+    };
+    auto add_port = [](auto port, auto const& addresses, std::vector<ProjectNodePortMatcher>& endpoints) {
+        auto const found = addresses.find(port.bundle);
+        if (found == addresses.end()) return;
+        for (auto const& address : found->second) {
+            ProjectNodePortMatcher matcher{
+                .instance_id = address.instance_id, .path = address.path, .port = {.index = port.port},
+            };
+            if (!std::ranges::contains(endpoints, matcher)) endpoints.push_back(std::move(matcher));
+        }
+    };
+    auto add_aliases = [](auto const& index, auto key, std::vector<ProjectNodePortMatcher>& endpoints) {
+        auto const found = index.find(key);
+        if (found == index.end()) return;
+        for (auto const& matcher : found->second)
+            if (!std::ranges::contains(endpoints, matcher)) endpoints.push_back(matcher);
+    };
+    auto const samples = connections.configured_sample_connections();
+    for (std::size_t index = 0; index < generation.source_sample_connection_count; ++index) {
+        auto const& wiring = samples[index];
+        ProjectSampleConnection connection{.source_type = wiring.source_type, .target_type = wiring.target_type};
+        std::vector<ProjectNodePortMatcher> boundary_sources, boundary_targets;
+        for (auto const& source : wiring.source_channels) {
+            add_port(source.channel, children, connection.outputs);
+            add_port(source.channel, boundaries, boundary_sources);
+            add_aliases(aliases.sample, std::tuple{source.channel.bundle, source.channel.port, source.channel.channel},
+                connection.outputs);
+        }
+        for (auto const target : wiring.target_channels) {
+            add_port(target, children, connection.inputs);
+            add_port(target, boundaries, boundary_targets);
+        }
+        append(std::move(connection), std::move(boundary_sources), std::move(boundary_targets),
+            "source:sample:" + std::to_string(index));
+    }
+    auto const events = connections.configured_event_connections();
+    for (std::size_t index = 0; index < generation.source_event_connection_count; ++index) {
+        auto const& wiring = events[index];
+        ProjectEventConnection connection{.source_type = wiring.source_type, .target_type = wiring.target_type};
+        std::vector<ProjectNodePortMatcher> boundary_sources, boundary_targets;
+        for (auto const& source : wiring.sources) {
+            add_port(source.port, children, connection.outputs);
+            add_port(source.port, boundaries, boundary_sources);
+            add_aliases(aliases.event, std::pair{source.port.bundle, source.port.port}, connection.outputs);
+        }
+        for (auto const target : wiring.targets) {
+            add_port(target, children, connection.inputs);
+            add_port(target, boundaries, boundary_targets);
+        }
+        append(std::move(connection), std::move(boundary_sources), std::move(boundary_targets),
+            "source:event:" + std::to_string(index));
+    }
+}
 } // namespace
 
 void ProjectGraph::handle_socket_rpc_get_graph_scope(
@@ -3583,51 +3822,134 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                 }
             }
         }
-        if (request.subject) {
-            if (!generation || !generation->graph) {
-                builder.fail("the project has no configured graph");
-                return;
+        auto describe_manual_controls = [&](ProjectGraphScopeNode& node) {
+            auto describe = [&](NodeInstancePortInfo const& port, ManualControlKind kind) {
+                ManualControlId id{.node = node.address, .port_name = port.name, .kind = kind};
+                ConfiguredManualControl const* configured = nullptr;
+                if (generation && generation->graph) {
+                    auto const& controls = generation->graph->manual_controls;
+                    auto const found = std::ranges::find(controls, id, &ConfiguredManualControl::id);
+                    if (found != controls.end()) configured = std::addressof(*found);
+                }
+                if (!configured && (!node.address.path.empty() || kind == ManualControlKind::output_gain
+                        || !port.manual_defaults)) return;
+                auto const* saved = find_manual_control_locked(id);
+                std::optional<Sample> live_value;
+                {
+                    std::scoped_lock live(live_mutex_);
+                    for (auto const& entry : live_interactions_ | std::views::reverse)
+                        if (entry.control == id) { live_value = entry.value; break; }
+                }
+                bool const available = configured && node.load_state == ProjectGraphScopeNodeState::ready;
+                bool const enabled = kind == ManualControlKind::output_gain
+                    || (saved ? saved->enabled : configured ? configured->enabled : port.manual_defaults->enabled);
+                auto const value = kind == ManualControlKind::output_gain ? Sample{1}
+                    : port.manual_defaults ? port.manual_defaults->value : configured->settled_value;
+                node.manual_controls.push_back({
+                    .control = saved ? *saved : ProjectManualControl{.id = std::move(id), .stored_value = value, .enabled = enabled},
+                    .available = available, .participates = available && enabled, .live_value = live_value,
+                });
+                node.manual_controls.back().control.enabled = enabled;
+            };
+            for (auto const& port : node.interface.sample_inputs) describe(port, ManualControlKind::input);
+            for (auto const& port : node.interface.sample_outputs) describe(port, ManualControlKind::output_gain);
+        };
+        std::unordered_map<NodeBundleHandle, std::vector<NodeAddress>> expanded_children;
+        std::unordered_map<NodeBundleHandle, std::vector<NodeAddress>> expanded_boundaries;
+        SourceScopeOutputAliases expanded_aliases;
+        std::unordered_map<std::string_view, std::string_view> leaf_names_by_type;
+        if (!request.expanded.empty() && generation && generation->graph && generation->definitions) {
+            for (auto const& [id, entry] : generation->definitions->by_id) {
+                auto const* leaf = std::get_if<LeafNodeDefinition>(&entry.definition);
+                if (!leaf || leaf->display_name.empty() || !leaf->compiler_record.type_name
+                    || leaf->compiler_record.type_name_size == 0) continue;
+                std::string_view const type(leaf->compiler_record.type_name, leaf->compiler_record.type_name_size);
+                auto const [it, inserted] = leaf_names_by_type.try_emplace(type, leaf->display_name);
+                // A type created directly by C++ has no specific registration.
+                // Use the C++ name when registrations disagree on its display name.
+                if (!inserted && it->second != leaf->display_name) it->second = {};
             }
+        }
+        for (auto const& address : request.expanded) {
+            if (!generation || !generation->graph) break;
             auto const owner = std::ranges::find(instances.instances,
-                request.subject->instance_id, &IvModuleInstanceInfo::instance_id);
-            if (owner == instances.instances.end()) {
-                builder.fail("the scope's project instance does not exist");
-                return;
-            }
+                address.instance_id, &IvModuleInstanceInfo::instance_id);
+            if (owner == instances.instances.end()) continue;
             auto const& graph = *generation->graph;
-            auto const matches = resolve_node_address(graph, generation->placements, *request.subject);
-            auto const subject = require_single_project_node_path_match(matches, "graph scope address");
-            if (subject.kind != ProjectNodePathMatch::Kind::bundle) {
-                builder.fail("a graph scope address must select an individual node");
-                return;
+            auto const matches = resolve_node_address(graph, generation->placements, address);
+            if (matches.size() != 1) continue;
+            auto& child_scope = scope.child_scopes.emplace_back(ProjectGraphChildScope{.subject = address});
+            if (matches.front().kind == ProjectNodePathMatch::Kind::bundle) {
+                if (auto const boundary = graph.node_bundles.bundle(matches.front().bundle).subgraph_boundary_handle()) {
+                    child_scope.has_boundary = true;
+                    expanded_boundaries[*boundary].push_back(address);
+                }
             }
-            for (auto const& child : project_child_nodes(graph, subject.bundle)) {
-                auto address = *request.subject;
-                address.path.insert(address.path.end(), child.path.begin(), child.path.end());
+            for (auto const& child : project_child_nodes(graph, matches.front())) {
+                auto child_address = address;
+                child_address.path.insert(child_address.path.end(), child.path.begin(), child.path.end());
+                std::optional<NodeAddress> membership_address;
+                if (!child.virtual_node) {
+                    auto const placement = generation->placements.find(address.instance_id);
+                    if (placement != generation->placements.end()) {
+                        auto path = project_member_path(graph, placement->second.root, child.bundle);
+                        if (path && *path != child_address.path) {
+                            membership_address = child_address;
+                            child_address.path = std::move(*path);
+                        }
+                    }
+                    auto& addresses = expanded_children[child.bundle];
+                    if (!std::ranges::contains(addresses, child_address))
+                        addresses.insert(addresses.begin(), child_address);
+                } else {
+                    auto const& record = graph.virtual_nodes.record(*child.virtual_node);
+                    auto const selected = resolve_node_address(graph, generation->placements, child_address);
+                    if (selected.size() == 1) {
+                        auto const& members = selected.front().virtual_member_indices;
+                        if (record.type_identity == "sample-port" || record.type_identity == "event-port") {
+                            auto includes_bundle = [&](NodeBundleHandle bundle) {
+                                return std::ranges::any_of(members, [&](auto index) { return record.node_bundle_handles[index] == bundle; });
+                            };
+                            auto matcher = [&](std::size_t port_index) {
+                                return ProjectNodePortMatcher{.instance_id = child_address.instance_id,
+                                    .path = child_address.path, .port = {.index = port_index}};
+                            };
+                            for (auto const& output : record.sample_outputs) for (auto const channel : output.channels) {
+                                if (includes_bundle(channel.bundle))
+                                    expanded_aliases.sample[{channel.bundle, channel.port, channel.channel}].push_back(matcher(output.index));
+                            }
+                            for (auto const& output : record.event_outputs) for (auto const port : output.node_bundle_ports) {
+                                if (includes_bundle(port.node_bundle_handle))
+                                    expanded_aliases.event[{port.node_bundle_handle, port.port_index}].push_back(matcher(output.index));
+                            }
+                        } else {
+                            // NodeRef mappings preserve their member port indexes.
+                            for (auto const index : members)
+                                expanded_children[record.node_bundle_handles[index]].push_back(child_address);
+                        }
+                    }
+                }
                 auto const& bundle = graph.node_bundles.bundle(child.bundle);
-                auto interface = read_node_instance_interface(graph.node_bundles, child.bundle);
-                interface.has_children = interface.has_children || bundle.is_tiled();
-                auto const display_name = std::visit([](auto const& selector) -> std::string {
-                    using Selector = std::decay_t<decltype(selector)>;
-                    if constexpr (std::is_same_v<Selector, ProjectVirtualNodeSelector>)
-                        return selector.source_identity;
-                    else if constexpr (std::is_same_v<Selector, ProjectTiledChildSelector>)
-                        return selector.name;
-                    else
-                        return {};
-                }, child.path.front());
-                scope.nodes.push_back({
-                    .address = std::move(address),
+                auto interface = child.virtual_node
+                    ? read_virtual_node_interface(graph.node_bundles, graph.virtual_nodes.record(*child.virtual_node), child.bundle)
+                    : read_node_instance_interface(graph.node_bundles, child.bundle);
+                interface.has_children = child.virtual_node || interface.has_children || bundle.is_tiled();
+                auto& node = child_scope.nodes.emplace_back(ProjectGraphScopeNode{
+                    .address = std::move(child_address),
+                    .membership_address = std::move(membership_address),
+                    .virtual_node = child.virtual_node.has_value(),
                     .instance = *owner,
-                    .child_display_name = display_name,
+                    .child_display_name = child_lane_display_name(*generation, child, leaf_names_by_type),
+                    .child_source_label = child.source_label,
                     .load_state = ProjectGraphScopeNodeState::ready,
                     .interface = std::move(interface),
                     .construction_definition_id = std::string(bundle.is_subgraph()
                         ? bundle.subgraph_kind() : bundle.type_identity()),
                 });
+                describe_manual_controls(node);
             }
         }
-        if (!request.subject) for (auto& instance : instances.instances) {
+        for (auto& instance : instances.instances) {
             ProjectGraphScopeNode node{
                 .address = NodeAddress{.instance_id = instance.instance_id},
             };
@@ -3678,48 +4000,10 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
             }
             classify_scope_node(node, definitions_snapshot_ && definitions_snapshot_->by_id.contains(node.instance.definition_id),
                 package, packages.publication_pending);
-            for (auto const& port : node.interface.sample_inputs) {
-                if (!port.manual_defaults) continue;
-                ManualControlId id{.node = node.address, .port_name = port.name};
-                auto const* saved = find_manual_control_locked(id);
-                bool const available = node.load_state == ProjectGraphScopeNodeState::ready
-                    && generation && generation->graph && manual_control_is_available(*generation->graph, id);
-                std::optional<Sample> live_value;
-                {
-                    std::scoped_lock live(live_mutex_);
-                    // The newest open gesture on this control, if any.
-                    for (auto const& entry : live_interactions_ | std::views::reverse) {
-                        if (entry.control == id) { live_value = entry.value; break; }
-                    }
-                }
-                node.manual_controls.push_back({
-                    .control = saved ? *saved : ProjectManualControl{.id = id, .stored_value = port.manual_defaults->value,
-                        .enabled = port.manual_defaults->enabled},
-                    .available = available,
-                    .participates = available && (saved ? saved->enabled : port.manual_defaults->enabled),
-                    .live_value = live_value,
-                });
-            }
-            if (generation && generation->graph) for (auto const& port : node.interface.sample_outputs) {
-                ManualControlId id{.node = node.address, .port_name = port.name, .kind = ManualControlKind::output_gain};
-                auto const configured = std::ranges::find(generation->graph->manual_controls, id, &ConfiguredManualControl::id);
-                if (configured == generation->graph->manual_controls.end()) continue;
-                auto const* saved = find_manual_control_locked(id);
-                std::optional<Sample> live_value;
-                {
-                    std::scoped_lock live(live_mutex_);
-                    for (auto const& entry : live_interactions_ | std::views::reverse)
-                        if (entry.control == id) { live_value = entry.value; break; }
-                }
-                node.manual_controls.push_back({
-                    .control = saved ? *saved : ProjectManualControl{.id = id, .stored_value = 1.0f},
-                    .available = node.load_state == ProjectGraphScopeNodeState::ready,
-                    .participates = !saved || saved->enabled, .live_value = live_value,
-                });
-            }
+            describe_manual_controls(node);
             scope.nodes.push_back(std::move(node));
         }
-        if (!request.subject && generation && !configuration_failure_) {
+        if (generation && !configuration_failure_) {
             auto const& graph = *generation->graph;
             for (NodeBundleHandle bundle = 0; bundle < graph.node_bundles.size(); ++bundle) {
                 auto const& candidate = graph.node_bundles.bundle(bundle);
@@ -3744,6 +4028,10 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                 .connection = std::move(connection),
                 .applied = is_applied,
             });
+        }
+        if (generation && generation->graph && (!expanded_children.empty() || !expanded_boundaries.empty()
+                || !expanded_aliases.sample.empty() || !expanded_aliases.event.empty())) {
+            append_source_scope_connections(scope, *generation, expanded_children, expanded_boundaries, expanded_aliases);
         }
         builder.succeed(std::move(scope));
     } catch (std::exception const& error) {
@@ -3785,6 +4073,12 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
                 schedule_graph_compile_locked();
             }
         }
+        if (request.prediction_changed) {
+            observation_candidate_.reset();
+            predicted_observation_requirements_ = std::move(request.prediction);
+            observation_prediction_pending_ = predicted_observation_requirements_.has_value();
+            control_compile_changed_.notify_all();
+        }
         request.scheduling_us = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - scheduling_begin).count());
         using Json = nlohmann::ordered_json;
@@ -3799,6 +4093,11 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
         };
         request.configured_generation = current_generation_ && !configuration_failure_
             ? std::optional(current_generation_->configured_generation) : std::nullopt;
+        auto const* observation_graph = current_generation_ ? current_generation_->compiled_graph.get() : nullptr;
+        if (!observation_graph && request.configured_generation && accepted_execution_graph_
+            && accepted_execution_graph_->configured_generation == request.configured_generation) {
+            observation_graph = accepted_execution_graph_.get();
+        }
         Json capabilities = Json::array();
         auto describe = [&](ConfiguredGraph const& graph,
                             std::unordered_map<std::string, NodeInstancePlacement> const& placements,
@@ -3842,8 +4141,12 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
                                              std::string const& name, ChannelTypeId channel_type) {
                     auto const input = kind == ObservationSourceKind::input;
                     auto const* kind_name = input ? "input" : "output";
+                    auto const summed = observes_virtual_output({.node = address, .kind = kind});
+                    auto const& public_layout = channel_type_info(channel_type);
+                    auto const channel_count = summed ? public_layout.channel_count : sources.size();
+                    if (sources.empty()) return;
                     Json channels = Json::array(), window_channels = Json::array();
-                    for (std::size_t channel = 0; channel < sources.size(); ++channel) {
+                    for (std::size_t channel = 0; channel < channel_count; ++channel) {
                         ObservationRequirements requirements{.probes = {{.source = {
                             .node = address, .kind = kind, .member = name,
                             .channel = channel}, .operation = "level"}}};
@@ -3852,14 +4155,13 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
                         bool const window_available = resolve_observation_window_source(graph, placements,
                             requirements.probes.front().source, "waveform", window_query, port_realization, compiled);
                         if (!plan.probes.front().available && !window_available) continue;
-                        auto const source = sources[channel];
+                        auto const source = sources[std::min(channel, sources.size() - 1)];
                         NodeBundlePortId const port{source.bundle, PortKind::sample, source.port};
                         auto const physical_type = input
                             ? graph.node_bundles.resolve_sample_input(port).config.channel_layout.channel_type
                             : graph.node_bundles.resolve_sample_output(port).config.channel_layout.channel_type;
                         auto const& physical_layout = channel_type_info(physical_type);
-                        auto const& public_layout = channel_type_info(channel_type);
-                        auto const label = sources.size() == public_layout.channel_count
+                        auto const label = summed || sources.size() == public_layout.channel_count
                             ? public_layout.channel_names[channel] : physical_layout.channel_names[source.channel];
                         if (plan.probes.front().available)
                             channels.push_back({{"index", channel}, {"name", label}});
@@ -3878,6 +4180,7 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
                             {"member", name}, {"channels", std::move(channels)}, {"operations", std::move(operations)},
                             {"resultSchemas", std::move(schemas)}};
                         if (window) capability["delivery"] = "window";
+                        else if (summed) capability["gainApplied"] = true;
                         capabilities.push_back(std::move(capability));
                     };
                     describe_delivery(std::move(window_channels), true);
@@ -3920,7 +4223,7 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
                 }
             } else if (!configuration_failure_ && current_generation_) {
                 describe(*current_generation_->graph, current_generation_->placements,
-                    current_generation_->compiled_graph.get());
+                    observation_graph);
             }
         }
         for (auto const& window : request.windows) {
@@ -3928,7 +4231,7 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
             query.configured_generation = current_generation_ && !configuration_failure_
                 ? current_generation_->configured_generation : 0;
             if (current_generation_ && !configuration_failure_) {
-                auto const* compiled = current_generation_->compiled_graph.get();
+                auto const* compiled = observation_graph;
                 if (resolve_observation_window_source(*current_generation_->graph, current_generation_->placements,
                         window.source, window.operation, query, compiled ? &compiled->port_realization : nullptr, compiled))
                     continue;

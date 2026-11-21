@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, toRef, watch } from "vue";
+import { computed, ref, toRef, watch } from "vue";
 
 import { effectiveDisplayMode, type NodeDisplayMode, type NodeViewChoice } from "./displayMode";
 import { provideNode } from "./nodeContext";
@@ -11,6 +11,9 @@ import type { NodeEvent } from "../../src/nodeEvents";
 import { presentationStateKey } from "../../src/graphScope";
 import { useOptionalGraphEditor } from "../graph/context";
 import { providePresentationState } from "./presentationStateContext";
+import { provideObservationTier } from "./observationContext";
+import NodeLane from "./NodeLane.vue";
+import { usePresentationSize } from "./presentationSize";
 
 // Hosts one node: selects its presentation, provides its semantic node, and
 // supplies the one display mode that presentation receives.
@@ -20,10 +23,11 @@ const props = defineProps<{
     regionHeight?: number;
     scale?: number;
     lane?: boolean;
+    moduleBoundary?: boolean;
     renameLane?: (name: string, previousName: string) => void;
 }>();
 const emit = defineEmits<{ copyDebugDetails: [] }>();
-provideLane(props.lane ? {
+provideLane(props.lane || props.moduleBoundary ? {
     copyDebugDetails: () => emit("copyDebugDetails"),
     get rename() { return props.renameLane; },
     regionHeight: toRef(() => props.regionHeight),
@@ -44,6 +48,9 @@ providePresentationState(({ serialize, restore }) => {
     const key = stateKey.value;
     restore(editor && key !== null ? editor.readPresentationState(key) : undefined);
     if (!editor || key === null) return () => {};
+    watch(() => JSON.stringify(editor.readPresentationState(key) ?? null), (serialized) => {
+        if (serialized !== JSON.stringify(serialize())) restore(JSON.parse(serialized) ?? undefined);
+    });
     return (saveNow = true) => {
         editor.presentationStateChanged(key, serialize);
         if (saveNow) editor.save();
@@ -51,7 +58,9 @@ providePresentationState(({ serialize, restore }) => {
 });
 
 const root = ref<HTMLElement | null>(null);
-const width = ref<number | null>(null);
+provideObservationTier(root);
+const size = usePresentationSize(root);
+const width = computed(() => size.value?.width ?? null);
 const mode = ref<NodeDisplayMode>(props.viewChoice ?? "mini");
 
 watch(
@@ -63,22 +72,6 @@ watch(
     { immediate: true },
 );
 
-let observer: ResizeObserver | null = null;
-onMounted(() => {
-    observer = new ResizeObserver((entries) => {
-        const entry = entries[entries.length - 1];
-        if (entry) {
-            width.value = entry.contentRect.width;
-        }
-    });
-    if (root.value) {
-        observer.observe(root.value);
-    }
-});
-onBeforeUnmount(() => {
-    observer?.disconnect();
-    observer = null;
-});
 </script>
 
 <template>
@@ -86,10 +79,11 @@ onBeforeUnmount(() => {
         ref="root"
         class="presentation-host"
         :data-mode="mode"
-        :data-presentation="selection.presentationId"
+        :data-presentation="moduleBoundary ? undefined : selection.presentationId"
         :style="regionHeight === undefined ? undefined : { height: `${regionHeight}px`, overflow: 'hidden' }"
     >
-        <component :is="selection.component" :key="stateKey ?? selection.presentationId" :mode="mode" />
+        <NodeLane v-if="moduleBoundary" :mode="mode" module-boundary />
+        <component v-else :is="selection.component" :key="stateKey ?? selection.presentationId" :mode="mode" />
     </div>
 </template>
 

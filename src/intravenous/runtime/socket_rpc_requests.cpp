@@ -291,8 +291,10 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
     }
     if (method == "graph.getScope") {
         GetGraphScopeRequest query;
-        if (auto const subject = params.find("subject"); subject != params.end()) {
-            query.subject = parse_node_address_json(*subject, ProjectConnectionJsonNames::socket_rpc);
+        if (auto const expanded = params.find("expanded"); expanded != params.end()) {
+            if (!expanded->is_array()) throw std::invalid_argument("expanded must be an array of node addresses");
+            for (auto const& address : *expanded)
+                query.expanded.push_back(parse_node_address_json(address, ProjectConnectionJsonNames::socket_rpc));
         }
         return parsed(std::move(query));
     }
@@ -530,14 +532,14 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
             : ObservationProtocolRequest::Kind::reconcile;
         if (request.kind == ObservationProtocolRequest::Kind::describe) {
             auto const& nodes = params.at("nodes");
-            if (!nodes.is_array() || nodes.size() > 64) throw std::invalid_argument("invalid observation nodes");
+            if (!nodes.is_array() || nodes.size() > maximum_observation_interests) throw std::invalid_argument("invalid observation nodes");
             for (auto const& node : nodes)
                 request.nodes.push_back(parse_node_address_json(node, ProjectConnectionJsonNames::socket_rpc));
         } else {
             request.scope_id = parse_string_param(params, "scopeId");
             auto const& interests = params.at("interests");
-            if (!interests.is_array() || interests.size() > 64) throw std::invalid_argument("invalid observation interests");
-            for (auto const& item : interests) {
+            if (!interests.is_array() || interests.size() > maximum_observation_interests) throw std::invalid_argument("invalid observation interests");
+            auto parse_interest = [&](Json const& item) {
                 auto const& source = item.at("source");
                 auto const kind = source.at("kind").get<std::string>();
                 if (kind != "output" && kind != "input" && kind != "stateField")
@@ -594,7 +596,17 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
                         throw std::invalid_argument("observation prefetch requires a window and a boolean priority flag");
                     interest.prefetch = item.at("prefetch").get<bool>();
                 }
-                request.interests.push_back(std::move(interest));
+                return interest;
+            };
+            for (auto const& item : interests) request.interests.push_back(parse_interest(item));
+            if (auto const prediction = params.find("predictedInterests"); prediction != params.end()) {
+                if (!prediction->is_array() || prediction->size() > maximum_live_observation_probes)
+                    throw std::invalid_argument("invalid predicted observation interests");
+                for (auto const& item : *prediction) {
+                    auto interest = parse_interest(item);
+                    if (interest.window) throw std::invalid_argument("observation predictions require live probes");
+                    request.predicted_interests.push_back(std::move(interest));
+                }
             }
         }
         if (request.kind == ObservationProtocolRequest::Kind::describe)

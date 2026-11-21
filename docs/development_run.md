@@ -16,16 +16,20 @@ nix develop --command ./scripts/run_dev.sh projects/simple_sine
 ```
 
 Inside the development shell, run `./scripts/run_dev.sh projects/simple_sine`
-directly. To use a CMake tree outside the managed cache, pass its directory
-as the second argument. You can also use the **Run Intravenous Development** editor task.
+directly. The launcher uses the checkout's `build-release` directory, which
+`test_release.sh` also uses. Pass a preconfigured local CMake tree as the second
+argument to use a different directory. You can also use the **Run Intravenous Development** editor task.
 The launcher uses `codium` from your PATH. Use `INTRAVENOUS_DEV_CODIUM` to
 select a specific VSCodium executable.
 
-The launcher configures a Release tree in the build cache on first use. It
-runs the incremental `intravenous` build before it builds the extension.
+On first use, the launcher configures `build-release` if needed. It asks CMake
+to bring the server and VS Code client targets up to date and copies their
+outputs into the development bundle. A launch with current outputs reuses
+those files. See the [former managed launch workflow](./historical/dev_launch_before_local_build_reuse_2026-11-20.md).
 A failed build or a server executable older than its staged inputs stops the launch.
 Nix prepares the DSL precompiled header and built-in packages for that server
-and stores them with its SDK and tools. The extension uses the matching server
+when it needs a new runtime snapshot and stores them with its SDK and tools.
+The extension uses the matching server
 from its bundle. Client-only changes can reuse the prepared server files.
 Close the development window and run the launcher again to pick up a new revision.
 

@@ -413,7 +413,7 @@ source selection can dynamically change the visible lanes without changing the
 project graph. The prior prohibition is preserved in
 [Lane Layout Before Fixed Vertical Zoom And Source Selection](./historical/vue_lane_layout_before_fixed_zoom_and_selection_2026-11-12.md).
 
-**Expanded C++ module interaction (clarified 2026-11-15; unimplemented UI work).**
+**Expanded C++ module interaction (clarified 2026-11-15).**
 A module lane can show a collapsible region of the C++-constructed child
 structure, not only a separate inspector. The module still owns its authored
 children and internal edges; project-owned wiring may target their semantically
@@ -571,6 +571,31 @@ implementation. When a new lane needs a variation of an existing control,
 extend the shared component and check its existing callers as part of the same
 change.
 
+### Shared presentation performance
+
+The owner accepted shared viewport and drawing policies on 2026-11-21.
+The presentation host applies these policies to built-in and custom lanes.
+
+1. A lane declares which port, operation, and resolution it needs. The
+   observation service owns window reuse, nearby prefetch, priorities, and
+   the choice of data to display while an update is pending. It preserves
+   the distinction between an empty result and data that is unavailable.
+2. A lane keeps its header, port anchors, and interaction state as it
+   moves off screen. Nearby lanes can prepare observations. Expensive body
+   drawing follows the visibility supplied by the host.
+3. Timeline views draw guides through the shared grid component. Each mark
+   keeps its key as its screen position changes. The mark data and line
+   heights belong to the caller.
+4. Frame work uses a shared scheduler for layout reads and visual updates.
+   It combines repeated requests and stops idle animation. Gestures preserve
+   accumulated movement and apply the final update on release.
+
+Use `usePortObservationViewport` for a windowed port display and
+`usePresentationActive` to gate drawing that depends on the viewport.
+`NodeLane` lets the browser skip drawing its offscreen body. Use
+`GridGuides` for SVG guides, `usePresentationSize` for element size, and
+`usePresentationFrame` for work that runs once per frame.
+
 ### Webview focus and keyboard shortcuts
 
 Keep controls and scrollable regions out of the Tab order with `tabindex="-1"`.
@@ -650,6 +675,24 @@ saved control. Toggling or connecting a port preserves its stored value. The
 toggle and value belong to the same durable project record. An existing
 explicit participate-with-connections policy still permits additive Sequential
 composition.
+
+The same knob components serve the ports of C++-constructed nodes. Virtual
+input knobs start disabled. Concrete member input knobs start at the value
+and enable state declared by the port. See the former
+[member input defaults](historical/member_input_knob_defaults_2026-11-20.md).
+Output gains are editable at all times and start at unity. GraphJit omits an unused virtual
+output gain when the output has no consumer, no live observation, and no
+active gesture. See the former
+[virtual switch](historical/virtual_output_gain_switch_2026-11-20.md) and
+[member switch](historical/member_output_gain_switch_2026-11-20.md) rules.
+A virtual knob stores one value and applies it to the ports in its mapping.
+An explicitly enabled or edited concrete member input takes precedence at
+its port. An enabled virtual input takes precedence over an implicit
+member default. A concrete member output gain takes precedence when its
+value differs from unity.
+A temporary drag takes precedence over settled controls. If two controls of
+the same kind and specificity still overlap, the first saved control takes
+precedence.
 
 See the [superseded input rules](historical/coverage_before_instance_knob_fallback_2026-11-18.md)
 for the previous port-level fallback policy.

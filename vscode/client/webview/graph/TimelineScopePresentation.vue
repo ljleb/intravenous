@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, onScopeDispose } from "vue";
-import { addressKey, type Point } from "../../src/graphScope";
-import { isTimelineSnapAddress, isTimelineSnapNode, managedBeats, managedTimeline, timelineGridMode, type TimelineGridMode } from "../../src/timelineSnap";
-import { orderLanes, laneRuns } from "../../src/laneSelection";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { addressKey, formatLaneLabel, isProjectInstance, type Point } from "../../src/graphScope";
+import { isTimelineSnapAddress, managedBeats, managedTimeline, timelineGridMode, type TimelineGridMode } from "../../src/timelineSnap";
+import { laneRuns } from "../../src/laneSelection";
 import { KnobPointerLock } from "../../src/knobPointerLock";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
 import { useNode } from "../presentation/nodeContext";
@@ -15,12 +15,15 @@ import BeatsSettings from "../presentation/BeatsSettings.vue";
 import NodePorts from "../presentation/NodePorts.vue";
 import { useBeatGridEditing } from "../presentation/beatGridEditingContext";
 import TimeRuler from "../timeline/TimeRuler.vue";
+import GridGuides from "../timeline/GridGuides.vue";
+import { usePresentationFrame } from "../presentation/presentationFrames";
+import { usePresentationSize } from "../presentation/presentationSize";
 import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
 import type { SeekBeatReader } from "../timeline/usePlayheadSeek";
 import { timelineBeatObservationWindow } from "../timeline/geometry";
 import { beatRulerLabels, minimumBeatMarkSpacing, readBeatGrid, selectVisibleBeatMarks } from "../../src/beatGrid";
 import { gridGuideStrengths } from "../../src/gridGuideStrength";
-import { provideTimelineMarks, provideTimelineNavigation, provideTimelineWindow, type TimelineMark,
+import { provideTimelineMarks, provideTimelineNavigation, provideTimelineWindow, timelineMarkKey, timelineMarkPosition, type TimelineMark,
     type LaneHorizontalZoomGesture, type LaneValueGesture, type LaneValueNavigation } from "../timeline/timelineContext";
 import { initialTimelineViewport, isMiddleDoubleClick, middleClickMode, middleDragZoomFactor, middleZoomPickup, moveMiddleDrag,
     panTimeline, resetTimelineZoom, timelineMiddleDragAction, timelineWheelAction, wheelPixels, wrapTimelineCursor,
@@ -29,7 +32,8 @@ import { initialTimelineViewport, isMiddleDoubleClick, middleClickMode, middleDr
 import { useGraphEditor } from "./context";
 import { cursorWarpAnchor, type CursorWarpAnchor } from "./cursorReturn";
 import { usePlayback } from "../timeline/playbackContext";
-import { useObservations } from "../presentation/observationContext";
+import { useObservations, usePortObservationViewport } from "../presentation/observationContext";
+import { predictedObservationRows } from "../../src/observationWindows";
 import { sameObservationWindow, type ObservationWindow, type ObservationWindowResult } from "../../src/observations";
 import { automationSampleIndex, automationSampleOffset } from "../../src/automationCurveGeometry";
 import { webviewApi } from "../host";
@@ -39,16 +43,49 @@ const playback = usePlayback();
 const backgroundPlayheadSeconds = computed(() => playback.backgroundPlayhead.value === null ? null
     : Number(playback.backgroundPlayhead.value) / (playback.state.value?.sampleRate ?? 48000));
 const scope = computed(() => node.value.scope!);
-const { layout, save, copyNodeDebugDetails, selectedLanes, finishPointerLock, setTimelineZoomHint } = useGraphEditor();
+const { layout, lanes, save, copyNodeDebugDetails, selectedLanes, expandedModules, finishPointerLock, setTimelineZoomHint,
+    profileGraphUi } = useGraphEditor();
 function renameLane(instanceId: string, displayName: string, previousDisplayName: string) {
     webviewApi.postMessage({ type: "renameGraphLane", instanceId, displayName, previousDisplayName });
 }
-const children = computed(() => orderLanes(scope.value.nodes.filter((node) => !isTimelineSnapNode(node)), layout.value.laneOrder).map((child) => ({
-    child, semantic: semanticNodeFromScopeChild(child, scope.value),
-})));
-const laneOrder = computed(() => children.value.map(({ child }) => addressKey(child.address)));
+const children = computed(() => profileGraphUi("Build lane presentation data", () => {
+    const boundaries = new Set(scope.value.childScopes?.filter((scope) => scope.hasBoundary).map(({ subject }) => addressKey(subject)));
+    return lanes.value.flatMap(({ node: child, depth, rowKey }) => {
+        const address = addressKey(child.address);
+        const semantic = semanticNodeFromScopeChild(child, scope.value);
+        const lane = { child, depth, rowKey, semantic, moduleBoundary: false };
+        if (!expandedModules.value.has(address) || !boundaries.has(address) || !semantic.ports.length) return [lane];
+        return [lane, { ...lane, depth: depth + 1, rowKey: `${rowKey}/module-ports`, moduleBoundary: true }];
+    });
+}));
+const laneOrder = computed(() => children.value.map(({ child, moduleBoundary, rowKey }) =>
+    moduleBoundary ? rowKey : addressKey(child.address)));
 const viewport = computed({ get: () => layout.value.timeline,
     set: (value) => { layout.value.timeline = value; } });
+let pendingMiddleViewport: TimelineViewport | undefined;
+const middleViewportFrame = usePresentationFrame("update", commitMiddleViewport);
+
+function queueMiddleViewport(next: TimelineViewport) {
+    const current = pendingMiddleViewport ?? viewport.value;
+    if (next === current) return;
+    // Apply the scroll bound to each input before composing the next one.
+    // Reversing direction at the last lane can then move immediately.
+    if (root.value && (next.scrollTop !== current.scrollTop || next.laneHeight !== current.laneHeight)) {
+        const bottom = headerHeight.value + children.value.length * next.laneHeight;
+        const maxScroll = Math.max(0, bottom - root.value.clientHeight);
+        if (next.scrollTop > maxScroll) next = { ...next, scrollTop: maxScroll };
+    }
+    pendingMiddleViewport = next;
+    middleViewportFrame.schedule();
+}
+
+function commitMiddleViewport() {
+    middleViewportFrame.cancel();
+    const next = pendingMiddleViewport;
+    pendingMiddleViewport = undefined;
+    if (next) applyViewport(next);
+    wrappedCursor.value = latestWrappedCursor;
+}
 const gridMode = computed(() => timelineGridMode(scope.value));
 const gridModes = [
     { mode: "seconds", label: "Seconds", description: "Time graduations" },
@@ -69,8 +106,28 @@ async function setGridMode(mode: TimelineGridMode) {
     webviewApi.postMessage({ type: "setTimelineSnapMode", mode });
 }
 const laneHeight = computed(() => viewport.value.laneHeight);
+const nestedAreas = computed(() => {
+    const rows = children.value;
+    const open: Array<{ depth: number; first: number; key: string }> = [];
+    const areas: Array<{ key: string; style: Record<string, string> }> = [];
+    for (let index = 0; index <= rows.length; ++index) {
+        const depth = rows[index]?.depth ?? 0;
+        while (open.length && open.at(-1)!.depth > depth) {
+            const area = open.pop()!;
+            areas.push({ key: area.key, style: {
+                insetInlineStart: `${Math.min(area.depth - 1, 5) * 12}px`,
+                top: `${area.first * laneHeight.value}px`,
+                height: `${(index - area.first) * laneHeight.value}px`,
+            } });
+        }
+        if (rows[index + 1]?.depth > depth)
+            open.push({ depth: depth + 1, first: index + 1, key: rows[index].rowKey });
+    }
+    return areas.reverse();
+});
 const timelineRuns = computed(() => {
-    const timelineLanes = new Set(children.value.filter(({ semantic }) => presentations.select(semantic.definitionId).timeline)
+    const timelineLanes = new Set(children.value.filter(({ semantic, moduleBoundary }) =>
+        !moduleBoundary && presentations.select(semantic.definitionId).timeline)
         .map(({ child }) => addressKey(child.address)));
     const height = laneHeight.value;
     return laneRuns(laneOrder.value, timelineLanes).map(({ begin, end }) => ({
@@ -92,7 +149,9 @@ const scrollbarStyle = computed(() => {
 });
 const root = ref<HTMLElement | null>(null);
 const timeRegion = ref<HTMLElement | null>(null);
-const timeWidth = ref(0);
+const timelineSize = usePresentationSize(root);
+const timeRegionSize = usePresentationSize(timeRegion);
+const timeWidth = computed(() => timeRegionSize.value?.width ?? 0);
 const timeWindow = computed(() => {
     const { beginSeconds, secondsPerPixel } = viewport.value;
     const spanSeconds = Math.max(1, timeWidth.value) * secondsPerPixel;
@@ -101,7 +160,6 @@ const timeWindow = computed(() => {
 });
 provideTimelineWindow(timeWindow);
 const observations = useObservations();
-const timelineInterest = shallowRef<string>();
 const observedTimeline = computed(() => scope.value.timelineNodes?.find(isTimelineSnapAddress));
 const decodedBeatMarks = new WeakMap<NonNullable<ObservationWindowResult["marks"]>, Array<Pick<TimelineMark, "index" | "depth">>>();
 const beatViewport = computed(() => {
@@ -111,27 +169,29 @@ const beatViewport = computed(() => {
     const last = automationSampleIndex(beginSeconds, sampleRate, spanSeconds);
     return first === undefined || last === undefined || last < first ? undefined : { first, length: last - first + 1n };
 });
-const observedTimelineWindow = computed<ObservationWindow | undefined>((previous) => {
+const visibleBeatWindow = computed<ObservationWindow | undefined>((previous) => {
     const visible = beatViewport.value;
     if (!visible) return;
-    const window = timelineBeatObservationWindow(visible.first, visible.length, timeWidth.value);
+    const window = timelineBeatObservationWindow(visible.first, visible.length, timeWidth.value, false);
     return sameObservationWindow(window, previous) ? previous : window;
 });
-watch([gridMode, observedTimeline, observedTimelineWindow], ([mode, node, window], previous) => {
-    if (!observations) return;
-    if (timelineInterest.value && (mode !== previous[0] || !node || !window
-        || !previous[1] || addressKey(node) !== addressKey(previous[1]))) {
-        observations.observePort(timelineInterest.value, undefined, "viewport");
-        timelineInterest.value = undefined;
-    }
+const beatWindows = usePortObservationViewport(() => {
+    const node = observedTimeline.value, window = visibleBeatWindow.value;
     if (!node || !window) return;
-    const id = timelineInterest.value ??= observations.portObservationId();
-    observations.observePort(id, {
-        source: { node, kind: "input", member: "beats", portKind: "event" }, operation: "beat-grid", window,
-    }, "viewport");
-}, { immediate: true });
-onScopeDispose(() => {
-    if (timelineInterest.value) observations?.observePort(timelineInterest.value, undefined);
+    return { source: { node, kind: "input", member: "beats", portKind: "event" }, operation: "beat-grid",
+        window, indexedEvents: gridMode.value === "beats", consumer: "Timeline ruler" };
+});
+const observedBeatMarks = computed<NonNullable<ObservationWindowResult["marks"]>>((previous) => {
+    const window = visibleBeatWindow.value, observation = beatWindows.value;
+    if (!window || !observation) return [];
+    const origin = BigInt(window.begin);
+    const marks = observation.spans.flatMap(({ result, begin, end }) =>
+        (result.marks ?? []).filter(({ index }) => {
+            const offset = BigInt.asIntN(64, BigInt(index) - origin);
+            return begin <= offset && offset < end;
+        }));
+    if (previous?.length === marks.length && marks.every((mark, index) => mark === previous[index])) return previous;
+    return marks;
 });
 function projectBeatMarks(raw: NonNullable<ObservationWindowResult["marks"]>, first: bigint,
     pixelsPerSample: number, width: number, originX = 0) {
@@ -145,22 +205,19 @@ function projectBeatMarks(raw: NonNullable<ObservationWindowResult["marks"]>, fi
         .filter(({ x }) => x >= -minimumBeatMarkSpacing && x <= width + minimumBeatMarkSpacing);
     return selectVisibleBeatMarks(candidates, width);
 }
-const timelineMarks = computed<readonly TimelineMark[]>((previous) => {
-    const interest = timelineInterest.value;
-    if (gridMode.value === "seconds" || !observations || !interest) return [];
+const timelineMarks = computed<readonly TimelineMark[]>((previous) => profileGraphUi("Project timeline beat grid", () => {
+    if (gridMode.value === "seconds" || !observedTimeline.value) return [];
     const { beginSeconds, spanSeconds, sampleRate } = timeWindow.value;
-    const visible = beatViewport.value, window = observedTimelineWindow.value;
+    const visible = beatViewport.value;
     const width = timeWidth.value;
-    if (!sampleRate || !visible || !window) return [];
+    if (!sampleRate || !visible) return [];
     const pixelsPerSample = width / (spanSeconds * sampleRate);
     const originX = automationSampleOffset(visible.first, beginSeconds, sampleRate) / spanSeconds * width;
-    const result = observations.windowForDisplay(interest, window);
-    if (result?.status !== "ready" || !result.marks) return [];
-    const displayed = projectBeatMarks(result.marks, visible.first, pixelsPerSample, width, originX);
+    const displayed = projectBeatMarks(observedBeatMarks.value, visible.first, pixelsPerSample, width, originX);
     if (previous?.length === displayed.length && displayed.every(({ index, depth, x }, i) =>
         index === previous[i].index && depth === previous[i].depth && x === previous[i].x)) return previous;
     return displayed;
-});
+}));
 function openBeatReader(): SeekBeatReader | undefined {
     const node = observedTimeline.value;
     const mode = gridMode.value;
@@ -178,18 +235,16 @@ function openBeatReader(): SeekBeatReader | undefined {
             close();
             return;
         }
-        const window = timelineBeatObservationWindow(first, length, width);
+        const window = timelineBeatObservationWindow(first, length, width, mode === "beats");
         if (!window) return;
         if (!sameObservationWindow(window, requested)) {
             requested = window;
             observations.observePort(id, {
                 source: { node, kind: "input", member: "beats", portKind: "event" }, operation: "beat-grid", window,
-            }, "viewport");
+            }, "viewport", "Playhead snapping");
         }
         const result = observations.windowForDisplay(id, window);
-        const viewport = result?.status !== "ready" && timelineInterest.value
-            ? observations.windowForDisplay(timelineInterest.value, observedTimelineWindow.value) : undefined;
-        const raw = result?.status === "ready" ? result.marks : viewport?.status === "ready" ? viewport.marks : undefined;
+        const raw = result?.status === "ready" ? result.marks : observedBeatMarks.value;
         if (!raw) return result?.status === "ready" || result?.status === "unavailable" ? [] : undefined;
         if (cache?.raw !== raw || cache.first !== first || cache.length !== length) {
             const targets = projectBeatMarks(raw, first, width / Number(length), width).map(({ index }) => index);
@@ -199,7 +254,7 @@ function openBeatReader(): SeekBeatReader | undefined {
     } };
 }
 provideTimelineMarks(timelineMarks);
-const beatStrengths = computed(() => gridGuideStrengths(timelineMarks.value, ({ x }) => x));
+const beatStrengths = computed(() => gridGuideStrengths(timelineMarks.value, timelineMarkPosition));
 const beatLabels = computed(() => {
     const sampleRate = timeWindow.value.sampleRate;
     if (gridMode.value !== "beats" || !settingsGrid.value || !sampleRate) return [];
@@ -212,7 +267,16 @@ provideTimelineNavigation({ wheel, beginMiddleDrag, registerValueNavigation(elem
     return () => { valueNavigationTargets.delete(element); };
 } });
 const middleDrag = shallowRef<MiddleDrag | null>(null);
-const wrappedCursor = shallowRef<(Point & { action: MiddleDrag["action"] | "valueZoom" }) | null>(null);
+type WrappedMiddleCursor = Point & { action: MiddleDrag["action"] | "valueZoom" };
+const wrappedCursor = shallowRef<WrappedMiddleCursor | null>(null);
+let latestWrappedCursor: WrappedMiddleCursor | null = null;
+function moveWrappedCursor(next: WrappedMiddleCursor) {
+    latestWrappedCursor = next;
+    middleViewportFrame.schedule();
+}
+function clearWrappedCursor() {
+    latestWrappedCursor = wrappedCursor.value = null;
+}
 let laneValueGesture: { lane: Element; gesture: LaneValueGesture } | null = null;
 let laneHorizontalZoom: LaneHorizontalZoomGesture | null = null;
 let lockedTravel: Point = { x: 0, y: 0 };
@@ -229,7 +293,7 @@ const middlePointerLock = new KnobPointerLock<Point>({
     exit: () => document.exitPointerLock(),
     locked: () => !!root.value && document.pointerLockElement === root.value,
 }, moveLockedMiddleDrag, (id, release, lockOrigin) => {
-    const destination = wrappedCursor.value;
+    const destination = latestWrappedCursor;
     finishPointerLock(release, lockOrigin, middleCursorAnchor?.moved
         ? { ...middleCursorAnchor, destination: () => destination, policy: "wrapped" } : undefined, middlePointerLockError);
     middleCursorAnchor = null;
@@ -240,11 +304,22 @@ const middlePointerLock = new KnobPointerLock<Point>({
     const drag = middleDrag.value;
     if (drag && !root.value?.hasPointerCapture(drag.pointerId)) endMiddleDrag();
 });
-let observer: ResizeObserver | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let scrollRequest = 0;
 let disposed = false;
 let stopListeningForFocus: (() => void) | undefined;
+let lastScroll: { top: number; at: number } | undefined;
+let scrollSpeed = 0;
+
+function predictObservationViewport() {
+    const surface = root.value;
+    if (!surface || !observations) return;
+    const prediction = predictedObservationRows(surface.scrollTop, surface.clientHeight, headerHeight.value,
+        laneHeight.value, children.value.length, scrollSpeed);
+    observations.predictViewport(prediction ? children.value.slice(prediction.begin, prediction.end)
+        .filter(({ moduleBoundary }) => !moduleBoundary).map(({ child }) => child.address) : []);
+}
+watch([children, laneHeight, headerHeight, timelineSize], predictObservationViewport, { flush: "post" });
 
 function scheduleSave() {
     clearTimeout(saveTimer);
@@ -256,10 +331,15 @@ async function applyScroll() {
     if (disposed || request !== scrollRequest || !root.value) return;
     root.value.scrollTop = viewport.value.scrollTop;
     viewport.value.scrollTop = root.value.scrollTop;
+    predictObservationViewport();
 }
 function scrolled() {
     if (!root.value) return;
-    viewport.value.scrollTop = root.value.scrollTop;
+    const top = root.value.scrollTop, at = performance.now();
+    if (lastScroll && top !== lastScroll.top) scrollSpeed = (top - lastScroll.top) / Math.max(16, at - lastScroll.at);
+    lastScroll = { top, at };
+    viewport.value.scrollTop = top;
+    predictObservationViewport();
 }
 function zoomAnchor(action: TimelineZoomAction, x: number, y: number, unwrapped = false): number {
     if (action === "horizontalZoom") {
@@ -272,6 +352,10 @@ function zoomAnchor(action: TimelineZoomAction, x: number, y: number, unwrapped 
     return unwrapped ? y - contentTop : Math.max(0, y - contentTop);
 }
 function wheel(event: WheelEvent) {
+    profileGraphUi("Handle timeline wheel", () => applyWheel(event));
+}
+function applyWheel(event: WheelEvent) {
+    if (pendingMiddleViewport) commitMiddleViewport();
     const lane = event.shiftKey && event.target instanceof Element ? event.target.closest(".lane") : null;
     const navigation = lane && valueNavigationTargets.get(lane);
     const action = timelineWheelAction(event, !!navigation);
@@ -357,15 +441,16 @@ function updateMiddleDrag(event: PointerEvent) {
     }
     const anchor = { x: action === "horizontalZoom" ? zoomAnchor(action, event.clientX, event.clientY) : 0,
         y: action === "verticalZoom" ? zoomAnchor(action, event.clientX, event.clientY) : 0 };
-    const moved = moveMiddleDrag(viewport.value, drag, event.buttons, event.clientX, event.clientY, anchor, laneValueGesture !== null);
-    if (moved && laneValueGesture?.gesture.mode !== "zoom") applyMiddleDrag(moved);
+    const moved = moveMiddleDrag(pendingMiddleViewport ?? viewport.value, drag, event.buttons, event.clientX, event.clientY, anchor,
+        laneValueGesture !== null);
+    if (moved && laneValueGesture?.gesture.mode !== "zoom") queueMiddleViewport(moved);
     moveLaneValueDrag(delta, event.clientY);
 }
 function applyCombinedMiddleZoom(delta: Point, pickup: MiddleZoomPickup) {
     const laneVertical = laneValueGesture?.gesture;
     if (delta.x) laneHorizontalZoom?.zoom(middleDragZoomFactor(delta.x), pickup.cursor.x);
     if (delta.y && laneVertical?.mode === "zoom") laneVertical.zoom(middleDragZoomFactor(delta.y), pickup.cursor.y);
-    applyMiddleDrag(zoomMiddleDragAtPickup(viewport.value, delta, pickup, {
+    queueMiddleViewport(zoomMiddleDragAtPickup(pendingMiddleViewport ?? viewport.value, delta, pickup, {
         horizontal: !laneHorizontalZoom, vertical: laneVertical?.mode !== "zoom",
     }));
 }
@@ -417,6 +502,9 @@ function wrappedPosition(point: Point, travel: Point) {
 function moveLockedMiddleDrag(id: number, delta: Point) {
     const drag = middleDrag.value;
     if (!drag || drag.pointerId !== id || !root.value || !(delta.x || delta.y)) return;
+    profileGraphUi("Handle timeline middle drag", () => applyLockedMiddleDrag(drag, delta));
+}
+function applyLockedMiddleDrag(drag: MiddleDrag, delta: Point) {
     if (middleCursorAnchor) middleCursorAnchor.moved = true;
     cancelMiddleClick();
     const { action } = drag;
@@ -424,22 +512,22 @@ function moveLockedMiddleDrag(id: number, delta: Point) {
         lockedTravel.x += delta.x;
         lockedTravel.y += delta.y;
         const { visible, virtual, screens } = wrappedPosition(drag, lockedTravel);
-        wrappedCursor.value = { ...visible, action: "valueZoom" };
+        moveWrappedCursor({ ...visible, action: "valueZoom" });
         setTimelineZoomHint(zoomAnchorHint("valueZoom", screens));
         moveLaneValueDrag(delta, virtual.y);
         return;
     }
     if (action === "pan") {
-        const { visible } = wrappedPosition(wrappedCursor.value ?? drag, delta);
-        wrappedCursor.value = { ...visible, action };
-        applyMiddleDrag(panTimeline(viewport.value, delta, laneValueGesture !== null));
+        const { visible } = wrappedPosition(latestWrappedCursor ?? drag, delta);
+        moveWrappedCursor({ ...visible, action });
+        queueMiddleViewport(panTimeline(pendingMiddleViewport ?? viewport.value, delta, laneValueGesture !== null));
         moveLaneValueDrag(delta, visible.y);
         return;
     }
     lockedTravel.x += delta.x;
     lockedTravel.y += delta.y;
     const { virtual, visible, screens } = wrappedPosition(drag, lockedTravel);
-    wrappedCursor.value = { ...visible, action };
+    moveWrappedCursor({ ...visible, action });
     if (action === "bothZoom") {
         applyCombinedMiddleZoom(delta, drag.zoomPickup);
         return;
@@ -448,9 +536,9 @@ function moveLockedMiddleDrag(id: number, delta: Point) {
     // the glyph wraps. Neither zoom anchor is calculated from the glyph.
     showMiddleZoomHint(action, screens);
     const anchor = zoomAnchor(action, virtual.x, virtual.y, true);
-    applyMiddleDrag(zoomMiddleDrag(viewport.value, action, delta, anchor));
+    queueMiddleViewport(zoomMiddleDrag(pendingMiddleViewport ?? viewport.value, action, delta, anchor));
 }
-function applyMiddleDrag(moved: TimelineViewport) {
+function applyViewport(moved: TimelineViewport) {
     const current = viewport.value;
     if (moved === current) return;
     viewport.value = moved;
@@ -469,7 +557,7 @@ function completeMiddleClick() {
         return;
     }
     const axis = click.mode;
-    applyMiddleDrag(axis === "view" ? { ...initialTimelineViewport }
+    applyViewport(axis === "view" ? { ...initialTimelineViewport }
         : resetTimelineZoom(viewport.value, axis, zoomAnchor(axis, click.x, click.y)));
 }
 function endMiddleDrag(event?: PointerEvent) {
@@ -487,10 +575,11 @@ function middlePointerCancelled(event: PointerEvent) {
 function finishMiddleDrag(pointerId: number) {
     const drag = middleDrag.value;
     if (drag?.pointerId !== pointerId) return;
+    commitMiddleViewport();
     if (middlePress) cancelMiddleClick();
     middleDrag.value = null;
     // Keep the wrapped cursor visible until the browser restores its cursor.
-    if (document.pointerLockElement !== root.value) wrappedCursor.value = null;
+    if (document.pointerLockElement !== root.value) clearWrappedCursor();
     if (drag.action !== "pan" || laneValueGesture?.gesture.mode === "zoom") setTimelineZoomHint(null);
     const laneChanged = laneValueGesture?.gesture.changed() || laneHorizontalZoom?.changed();
     laneValueGesture = null;
@@ -504,11 +593,11 @@ function finishMiddleDrag(pointerId: number) {
 function middleLockChanged() {
     middlePointerLock.changed();
     const drag = middleDrag.value;
-    if (!drag && document.pointerLockElement !== root.value) wrappedCursor.value = null;
+    if (!drag && document.pointerLockElement !== root.value) clearWrappedCursor();
     if (!drag || !root.value || !middlePointerLock.status().granted) return;
     lockedTravel = { x: 0, y: 0 };
     const { visible, screens } = wrappedPosition(drag, lockedTravel);
-    wrappedCursor.value = { ...visible, action: drag.action !== "bothZoom" && laneValueGesture?.gesture.mode === "zoom" ? "valueZoom" : drag.action };
+    moveWrappedCursor({ ...visible, action: drag.action !== "bothZoom" && laneValueGesture?.gesture.mode === "zoom" ? "valueZoom" : drag.action });
     if (drag.action !== "bothZoom") showMiddleZoomHint(drag.action, screens);
     if (root.value.hasPointerCapture(drag.pointerId)) root.value.releasePointerCapture(drag.pointerId);
 }
@@ -531,6 +620,7 @@ function releaseMiddleDrag(event: MouseEvent) {
     if (!drag || event.button !== 1) return;
     if ("pointerId" in event && event.pointerId !== drag.pointerId) return;
     try {
+        commitMiddleViewport();
         completeMiddleClick();
     } finally {
         middlePointerLock.release(drag.pointerId, { x: event.clientX, y: event.clientY });
@@ -549,10 +639,6 @@ function middleVisibilityChanged() {
     }
 }
 onMounted(() => {
-    observer = new ResizeObserver((entries) => {
-        for (const entry of entries) if (entry.target === timeRegion.value) timeWidth.value = entry.contentRect.width;
-    });
-    if (timeRegion.value) observer.observe(timeRegion.value);
     // Chromium can blur the webview while activating its native window.
     // Keep the drag through that blur and end it on native focus loss.
     stopListeningForFocus = listenPortConnectionFocus(window, () => {
@@ -569,7 +655,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
     disposed = true;
-    observer?.disconnect();
+    observations?.predictViewport([]);
     stopListeningForFocus?.();
     window.removeEventListener("mousedown", preventMiddleDragDefault, true);
     window.removeEventListener("mousemove", lockedMiddleMove, true);
@@ -620,23 +706,28 @@ onBeforeUnmount(() => {
             </div>
         </header>
         <div class="lanes">
+            <div v-for="area in nestedAreas" :key="area.key" class="nested-lane-area"
+                :style="area.style" aria-hidden="true" />
             <template v-if="gridMode !== 'seconds'">
                 <svg v-for="run in timelineRuns" :key="run.begin" class="lane-timeline-overlay lane-snap-grid" aria-hidden="true"
                     :style="run.style">
-                    <TransitionGroup name="iv-grid">
-                        <line v-for="mark in timelineMarks" :key="mark.index.toString()" class="iv-grid-guide"
-                            :style="{ '--iv-grid-strength': beatStrengths.get(mark.depth) }"
-                            :x1="mark.x" :x2="mark.x" y1="0" y2="100%" vector-effect="non-scaling-stroke" />
-                    </TransitionGroup>
+                    <GridGuides :marks="timelineMarks" :strengths="beatStrengths"
+                        :mark-key="timelineMarkKey" :position="timelineMarkPosition" />
                 </svg>
             </template>
-            <section v-for="{ child, semantic } in children" :key="addressKey(child.address)"
-                class="lane" :class="{ selected: selectedLanes.has(addressKey(child.address)) }"
-                :data-lane-key="addressKey(child.address)"
-                :style="{ height: `${laneHeight}px` }" tabindex="-1"
-                :aria-label="nodeDisplayName(semantic) + (selectedLanes.has(addressKey(child.address)) ? ', selected' : '')">
-                <PresentationHost :node="semantic" :region-height="laneHeight - 1" lane
-                    :rename-lane="scope.editable ? (name, previousName) => renameLane(child.instance.instanceId, name, previousName) : undefined"
+            <section v-for="{ child, depth, rowKey, semantic, moduleBoundary } in children" :key="rowKey"
+                class="lane" :class="{ selected: !moduleBoundary && selectedLanes.has(addressKey(child.address)), 'module-boundary': moduleBoundary }"
+                :data-lane-row="rowKey"
+                :data-lane-address="addressKey(child.address)"
+                :data-lane-key="moduleBoundary ? undefined : addressKey(child.address)"
+                :style="{ height: `${laneHeight}px`, '--iv-lane-indent': `${Math.min(depth, 5) * 12}px` }" tabindex="-1"
+                :aria-label="moduleBoundary ? `${nodeDisplayName(semantic)} module ports`
+                    : formatLaneLabel(nodeDisplayName(semantic), semantic.sourceLabel)
+                        + (selectedLanes.has(addressKey(child.address)) ? ', selected' : '')">
+                <PresentationHost v-if="moduleBoundary" :node="semantic" :region-height="laneHeight - 1" module-boundary />
+                <PresentationHost v-else :node="semantic" :region-height="laneHeight - 1" lane
+                    :rename-lane="scope.editable && isProjectInstance(child.address)
+                        ? (name, previousName) => renameLane(child.instance.instanceId, name, previousName) : undefined"
                     @copy-debug-details="copyNodeDebugDetails(child.address)" />
             </section>
             <svg v-for="run in timelineRuns" :key="run.begin" class="lane-timeline-overlay" aria-hidden="true"
@@ -695,6 +786,15 @@ onBeforeUnmount(() => {
 .timeline-snap-input { padding-inline: 12px; }
 .timeline-snap-input :deep(.node-ports) { height: var(--port-row-height); margin: 0; }
 .lanes { flex: 0 0 auto; min-height: 0; position: relative; isolation: isolate; }
+.nested-lane-area {
+    position: absolute; inset-inline-end: 0; z-index: -3; pointer-events: none;
+    box-shadow: inset 6px 0 9px -6px var(--vscode-scrollbar-shadow, #0009),
+        inset 0 6px 10px -7px var(--vscode-scrollbar-shadow, #0009),
+        inset 0 -5px 8px -6px var(--vscode-scrollbar-shadow, #0009);
+    border-start-start-radius: 3px; border-end-start-radius: 3px;
+    border-inline-start: 1px solid var(--vscode-panel-border);
+    background: color-mix(in srgb, var(--vscode-editor-background) 97%, black);
+}
 .lane-timeline-overlay { position: absolute; inset-inline-start: var(--node-label-width);
     width: calc(100% - var(--node-label-width)); pointer-events: none; }
 .lane-snap-grid { z-index: -1; }
@@ -702,6 +802,7 @@ onBeforeUnmount(() => {
     white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--iv-lane-title-color); }
 .playback-position small { color: var(--iv-port-label-base); margin-left: 6px; }
 .lane { position: relative; box-sizing: border-box; border-bottom: 1px solid transparent; }
+.module-boundary :deep(.lane-name) { color: var(--vscode-descriptionForeground); }
 /* The snap grid passes over lane separators and under their contents. */
 .lane::before {
     content: ""; position: absolute; z-index: -2; pointer-events: none;

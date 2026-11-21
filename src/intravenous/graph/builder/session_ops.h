@@ -76,7 +76,8 @@ iv_builder_event_port_sources(EventPortRef const&);
 void iv_builder_apply_ttl(BuilderSession*, NodeBundleHandle, std::size_t samples);
 void iv_builder_annotate_node(
     BuilderSession*, NodeBundleHandle, std::string_view declaration_identity,
-    std::string_view file_path, std::uint32_t begin, std::uint32_t end);
+    std::string_view file_path, std::uint32_t begin, std::uint32_t end,
+    std::string_view declaration_name = {});
 void iv_builder_annotate_node_input(
     BuilderSession*, NodeBundleHandle, PortKind, std::string_view port_name,
     std::string_view declaration_identity, std::string_view file_path,

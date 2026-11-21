@@ -4119,6 +4119,41 @@ forwards it to the graph panel. A new or reloaded panel receives a snapshot. If 
 panel misses a patch, its message sequence tells it to request a fresh snapshot.
 [Earlier body ID protocol](./historical/observation_window_bodies_before_scoped_patches_2026-11-19.md).
 
+In the webview, live values and window results update by observation ID. A
+reader of one ID reacts to changes for that ID. If a patch arrives before the
+matching graph scope, the webview accumulates it and applies the resulting
+snapshot once the graph catches up. The observation profiler reports the time
+from viewport eligibility to submission and from submission to a usable reply.
+
+The generic lane observes ports. A custom presentation can request a named Tick
+State field through an explicit observation interest.
+
+Sample waveforms, automation bounds, and the timeline beat grid use the same
+aligned sparse window plan. A visible window gets the requested resolution.
+Nearby rows prefetch two sparse windows that cover the current horizontal view.
+Visible rows also prefetch lateral tiles. Readers clip those previews to their
+viewport while the fine result loads. Prefetch refreshes wait at least two
+seconds between requests for the same window, compared with 250 ms for visible
+windows. Live meter probes become active when their rows enter the viewport.
+The webview retains their last compatible reading for display while the next
+probe plan activates.
+
+`Observations` keeps a shared window capture for each source, operation, and
+window. It updates subscription links when a scope changes or expires. During
+collection it reuses the window captures and the live probe index. It rebuilds
+the live probe index when the executable or its observation plan changes.
+
+The active graph panel predicts one complete viewport from its row positions,
+scroll direction, and speed. `observations.reconcile` carries those live probe
+interests separately from the current interests. `Observations` resolves the
+candidate against the live interests of other scopes and reserves IDs for
+its probes. `ProjectGraph` compiles the candidate on its existing worker after
+queued required work. A matching reconcile can reuse that artifact only when
+the probe plan, predecessor, graph configuration, and manual controls still
+match. GraphExecutor prepares the transition when the viewport needs it. The
+worker can finish an in-flight speculative GraphJit call before servicing a
+new required request.
+
 ### Event observation for arbitrary beat distributions, 2026-11-19
 
 The owner wants the grid to support noisy and arbitrary BeatEvent patterns

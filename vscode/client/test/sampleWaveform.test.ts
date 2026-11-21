@@ -1,7 +1,8 @@
+import { receiveSnapshot, type ObservationSnapshotFixture } from "./observationFixtures";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { sampleWindow, sampleWaveform } from "../src/sampleWaveform";
-import { ObservationValues, type ObservationWindowResult, type ObservationUpdate } from "../src/observations";
+import { ObservationValues, type ObservationWindowResult } from "../src/observations";
 
 function result(): ObservationWindowResult {
     return { id: "wave", window: { begin: "0", length: "10", points: 10 }, status: "ready",
@@ -39,23 +40,23 @@ test("window results reject obsolete viewport positions and data versions withou
     const source = { node: { instanceId: "curve" }, kind: "output" as const, member: "value" };
     const data = result();
     values.expectWindows([{ id: "wave", source, operation: "waveform", window: data.window }]);
-    const update = (window: ObservationWindowResult): ObservationUpdate => ({
+    const update = (window: ObservationWindowResult): ObservationSnapshotFixture => ({
         activationId: "0", generation: "7", revision: "0", index: "0", blockSize: 0, dataVersion: "0",
         scopes: [{ scopeId: "viewport", values: [], windows: [window] }],
     });
-    assert.equal(values.receive(update(data), "viewport"), true);
+    assert.equal(receiveSnapshot(values, update(data)), true);
     assert.equal(values.windowForDisplay("wave")?.dataVersion, "4");
-    values.receive(update({ ...data, dataVersion: "3" }), "viewport");
+    receiveSnapshot(values, update({ ...data, dataVersion: "3" }));
     assert.equal(values.windowForDisplay("wave")?.dataVersion, "4");
     const next = { ...data.window, begin: "100" };
     values.expectWindows([{ id: "wave", source, operation: "waveform", window: next }]);
     assert.equal(values.windowForDisplay("wave"), undefined);
-    values.receive(update(data), "viewport");
+    receiveSnapshot(values, update(data));
     assert.equal(values.windowForDisplay("wave"), undefined);
-    values.receive(update({ ...data, window: next, regions: [] }), "viewport");
+    receiveSnapshot(values, update({ ...data, window: next, regions: [] }));
     assert.deepEqual(values.windowForDisplay("wave")?.window, next);
     values.acceptGeneration(8);
-    values.receive(update({ ...data, window: next }), "viewport");
+    receiveSnapshot(values, update({ ...data, window: next }));
     assert.equal(values.windowForDisplay("wave")?.outdated, true);
 });
 test("window previews reproject the last ready result while an overlapping viewport loads", () => {
@@ -64,10 +65,10 @@ test("window previews reproject the last ready result while an overlapping viewp
     const data = result();
     const source = { node: { instanceId: "curve" }, kind: "output" as const, member: "value" };
     const request = { id: "wave", source, operation: "waveform", window: data.window };
-    const receive = (window: ObservationWindowResult) => values.receive({
+    const receive = (window: ObservationWindowResult) => receiveSnapshot(values, {
         activationId: "0", generation: "7", revision: "0", index: "0", blockSize: 0, dataVersion: "4",
         scopes: [{ scopeId: "viewport", values: [], windows: [window] }],
-    }, "viewport");
+    });
     values.expectWindows([request]);
     receive(data);
     const next = { ...data.window, begin: "6" };
@@ -94,8 +95,8 @@ test("a ready window overlaps a new request across the signed timeline seam", ()
     const source = { node: { instanceId: "curve" }, kind: "output" as const, member: "value" };
     const request = { id: "wave", source, operation: "waveform", window: data.window };
     values.expectWindows([request]);
-    values.receive({ activationId: "0", generation: "7", revision: "0", index: "0", blockSize: 0, dataVersion: "4",
-        scopes: [{ scopeId: "viewport", values: [], windows: [data] }] }, "viewport");
+    receiveSnapshot(values, { activationId: "0", generation: "7", revision: "0", index: "0", blockSize: 0, dataVersion: "4",
+        scopes: [{ scopeId: "viewport", values: [], windows: [data] }] });
     const next = { ...data.window, begin: String(5n - seam) };
     values.expectWindows([{ ...request, window: next }]);
     assert.equal(values.windowForDisplay("wave")?.outdated, true);
@@ -108,11 +109,11 @@ test("bound windows arriving before the matching graph scope are used when it ar
     const bounds = ["min", "max"] as const;
     values.expectWindows(bounds.map((id) => ({ id, window: data.window, operation: "waveform",
         source: { node: { instanceId: "curve" }, kind: "input", member: id } })));
-    const update: ObservationUpdate = {
+    const update: ObservationSnapshotFixture = {
         activationId: "1", generation: "8", revision: "0", index: "0", blockSize: 0, dataVersion: "0",
         scopes: [{ scopeId: "viewport", values: [], windows: bounds.map((id) => ({ ...data, id })) }],
     };
-    assert.equal(values.receive(update, "viewport"), false);
+    assert.equal(receiveSnapshot(values, update), false);
     assert.equal(values.windowForDisplay("min"), undefined);
     values.acceptGeneration(8);
     for (const id of bounds) assert.deepEqual(values.windowForDisplay(id)?.regions, data.regions);
@@ -123,10 +124,10 @@ test("window display retains the last compatible samples across graph refreshes"
     const data = { ...result(), sampleRate: 48000 };
     const source = { node: { instanceId: "curve" }, kind: "input" as const, member: "max" };
     const request = { id: data.id, source, operation: "waveform", window: data.window };
-    const publish = (generation: string, window: ObservationWindowResult) => values.receive({
+    const publish = (generation: string, window: ObservationWindowResult) => receiveSnapshot(values, {
         activationId: "1", generation, revision: "0", index: "0", blockSize: 64, dataVersion: "0",
         scopes: [{ scopeId: "viewport", values: [], windows: [window] }],
-    }, "viewport");
+    });
     values.acceptGeneration(7, 48000);
     values.expectWindows([request]);
     publish("7", data);
@@ -173,14 +174,24 @@ test("viewport Tock interests carry windows and panning never requests live obse
     try {
         const owner = Symbol(), node = { instanceId: "tock" };
         const window = { begin: "0", length: "1000", points: 200 };
-        scope.node(owner, node, true, window);
+        scope.node(owner, node, "prefetch", window);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const nearby = requests.at(-1);
+        assert.ok(nearby?.type === "observationReconcile");
+        assert.equal(nearby.interests.length, 2);
+        assert.ok(nearby.interests.every((entry) => entry.prefetch && entry.window && entry.window.points < window.points));
+
+        scope.node(owner, node, "visible", window);
         await new Promise((resolve) => setTimeout(resolve, 250));
         const first = requests.at(-1);
         assert.ok(first?.type === "observationReconcile");
-        assert.equal(first.interests.length, 1);
+        assert.equal(first.interests.filter(({ prefetch }) => !prefetch).length, 1);
+        assert.equal(first.interests.filter(({ prefetch }) => prefetch).length, 6);
         assert.equal(first.interests[0].operation, "waveform");
         assert.deepEqual(first.interests[0].window, window);
-        scope.node(owner, node, true, { ...window, begin: "1000" });
+        for (const preview of nearby.interests) assert.deepEqual(first.interests.find(({ id }) => id === preview.id), preview);
+        assert.equal(requests.filter(({ type }) => type === "observationDescribe").length, 1);
+        scope.node(owner, node, "visible", { ...window, begin: "1000" });
         await new Promise((resolve) => setTimeout(resolve, 250));
         const next = requests.at(-1);
         assert.ok(next?.type === "observationReconcile");

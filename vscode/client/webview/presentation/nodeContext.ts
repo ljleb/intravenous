@@ -16,9 +16,10 @@ export function provideNode(node: Readonly<Ref<PresentedNode>>): void {
 // The semantic node of the enclosing presentation host. Templates read it
 // directly (`node.ports`); scripts read `node.value`.
 export function useNode(): Readonly<Ref<PresentedNode>> {
-    const node = inject(nodeKey, null);
+    const node = useOptionalNode();
     if (!node) {
         throw new Error("useNode() requires an enclosing node presentation host");
     }
     return node;
 }
+export function useOptionalNode(): Readonly<Ref<PresentedNode>> | null { return inject(nodeKey, null); }

@@ -1,8 +1,8 @@
 import type { ObservationInterest } from "./observations";
 import type { ObservationDelivery } from "./observationDelivery";
-import { ManualControlInteractions, resolveManualControl } from "./manualControls";
+import { ManualControlInteractions, resolveManualControl, type ManualControlId } from "./manualControls";
 import { ControlCompilationProgress, type ControlCompileStatus } from "./controlCompilation";
-import { addressFromKey, addressKey, laneViewFromKey, type GraphLaneCopy, type GraphScope, type NodeAddress } from "./graphScope";
+import { addressFromKey, addressKey, graphScopeWithChildren, laneViewFromKey, type GraphLaneCopy, type GraphScope, type NodeAddress } from "./graphScope";
 import type { GraphPresentationPatch } from "./graphEditorProtocol";
 import { insertLanes, mergeLaneOrder, orderLanes } from "./laneSelection";
 import { validateNodeEventTarget, type SerializedNodeEvent } from "./nodeEvents";
@@ -155,14 +155,14 @@ export class WorkspaceSession {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         return this.rpc.describeObservations(nodes);
     }
-    async reconcileObservations(scopeId: string, interests: ObservationInterest[]) {
+    async reconcileObservations(scopeId: string, interests: ObservationInterest[], predictedInterests?: ObservationInterest[]) {
         if (!this.rpc || this.graphSessionStatus !== "running") throw new Error("The server is unavailable");
-        return this.rpc.reconcileObservations(scopeId, interests);
+        return this.rpc.reconcileObservations(scopeId, interests, predictedInterests);
     }
 
-    async readGraphScope() {
+    async readGraphScope(expanded: NodeAddress[] = []) {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
-        return this.rpc.getGraphScope();
+        return this.rpc.getGraphScope(expanded);
     }
 
     private timelineSnapChange: Promise<void> = Promise.resolve();
@@ -199,13 +199,13 @@ export class WorkspaceSession {
         return change;
     }
 
-    async setManualInputEnabled(node: NodeAddress, inputName: string, enabled: boolean): Promise<void> {
+    async setManualControlEnabled(control: ManualControlId, enabled: boolean, expanded: NodeAddress[]): Promise<void> {
+        if (control.inputName === undefined) throw new Error("Only input knobs have an enable setting");
         const rpc = this.rpc;
         if (!rpc || this.graphSessionStatus !== "running") throw new Error("The server is unavailable");
         await this.manualControls.settled();
-        const scope = await rpc.getGraphScope();
+        const scope = graphScopeWithChildren(await rpc.getGraphScope(expanded));
         if (rpc !== this.rpc) throw new Error("The session changed before editing the input");
-        const control = { node, inputName };
         const descriptor = resolveManualControl(scope, control);
         if (!descriptor?.available || descriptor.live) throw new Error("The manual input is unavailable");
         if (descriptor.enabled === enabled) return;
@@ -230,11 +230,11 @@ export class WorkspaceSession {
         return result.sessionRevision ?? this.lastSessionRevision;
     }
 
-    async connectGraphPorts(id: string, first: GraphPortEndpoint, second: GraphPortEndpoint): Promise<void> {
+    async connectGraphPorts(id: string, first: GraphPortEndpoint, second: GraphPortEndpoint, expanded: NodeAddress[]): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         const rpc = this.rpc;
         const revision = this.lastSessionRevision;
-        const scope = await rpc.getGraphScope();
+        const scope = graphScopeWithChildren(await rpc.getGraphScope(expanded));
         const connection = connectionFromPorts(scope, id, first, second);
         await rpc.upsertGraphConnection(connection, scope.sessionRevision ?? revision);
     }
@@ -247,13 +247,13 @@ export class WorkspaceSession {
         await this.rpc!.deleteGraphConnection(id);
     }
 
-    async editGraphConnectionEnd(edit: GraphConnectionEdit): Promise<void> {
+    async editGraphConnectionEnd(edit: GraphConnectionEdit, expanded: NodeAddress[]): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         const rpc = this.rpc;
         // Bind the mutation to a revision from before the read. A notification
         // arriving between the read and the write must not validate an old edit.
         const revision = this.lastSessionRevision;
-        const mutation = connectionEndMutation(await rpc.getGraphScope(), edit);
+        const mutation = connectionEndMutation(graphScopeWithChildren(await rpc.getGraphScope(expanded)), edit);
         if (mutation?.type === "delete") await rpc.deleteGraphConnection(mutation.id, revision);
         else if (mutation?.type === "upsert") await rpc.upsertGraphConnection(mutation.connection, revision);
     }

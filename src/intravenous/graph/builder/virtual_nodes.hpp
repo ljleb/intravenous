@@ -228,6 +228,7 @@ constexpr void GraphBuilderVirtualNodes::attach_sample_output(
     record.source_infos.push_back(source_info);
   if (record.sample_outputs.empty()) {
     record.sample_outputs.push_back({
+        .name = "value",
         .index = 0,
         .channel_layout = {
             .channel_type = channel_type,
@@ -255,6 +256,7 @@ constexpr void GraphBuilderVirtualNodes::attach_event_output(
     record.source_infos.push_back(source_info);
   if (record.event_outputs.empty()) {
     record.event_outputs.push_back({
+        .name = "value",
         .index = 0,
         .type = type,
     });

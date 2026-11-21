@@ -13,6 +13,7 @@ struct ObservationInterest {
     std::string operation;
     std::optional<ObservationWindow> window{};
     bool prefetch = false;
+    bool operator==(ObservationInterest const&) const = default;
 };
 struct ObservationProtocolRequest {
     enum class Kind { describe, reconcile } kind = Kind::describe;
@@ -20,6 +21,7 @@ struct ObservationProtocolRequest {
     std::string scope_id;
     std::vector<NodeAddress> nodes{};
     std::vector<ObservationInterest> interests{};
+    std::vector<ObservationInterest> predicted_interests{};
     std::shared_ptr<nlohmann::ordered_json const> result{};
     std::string error{};
     bool handled = false;
@@ -28,6 +30,8 @@ struct DescribeObservationsRequest : ObservationProtocolRequest {};
 struct ReconcileObservationsRequest : ObservationProtocolRequest {};
 struct ObservationGraphRequest {
     std::optional<ObservationRequirements> requirements{};
+    bool prediction_changed = false;
+    std::optional<ObservationRequirements> prediction{};
     std::vector<NodeAddress> describe_nodes{};
     struct WindowSource {
         ObservationSource source{};

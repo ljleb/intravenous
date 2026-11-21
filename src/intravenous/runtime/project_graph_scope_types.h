@@ -34,10 +34,13 @@ struct ProjectGraphScopeManualControl {
 // one desired project instance.
 struct ProjectGraphScopeNode {
     NodeAddress address{};
+    std::optional<NodeAddress> membership_address{};
+    bool virtual_node = false;
     // The project instance owns the address. For a source-owned child, the
     // selector path identifies the row within that instance.
     IvModuleInstanceInfo instance{};
     std::optional<std::string> child_display_name{};
+    std::optional<std::string> child_source_label{};
     // A diagnostic from the latest configuration pass, not merely a pending
     // realization. The previous executable generation may still be running.
     std::string error_message{};
@@ -58,11 +61,21 @@ struct ProjectGraphScopeConnection {
     // The current generation applied the connection; false while one of its
     // endpoints is missing or the connection has not been realized yet.
     bool applied = false;
+    bool source_owned = false;
+    // In the module interior, public inputs supply data and public outputs
+    // receive it. These endpoints are displayed on the module's boundary lane.
+    std::vector<ProjectNodePortMatcher> boundary_sources{};
+    std::vector<ProjectNodePortMatcher> boundary_targets{};
 };
 
-// The graph editor's read model of one scope: its children, their ports, and
-// the connections among them, read under ProjectGraph's lock so that they
-// describe one revision.
+struct ProjectGraphChildScope {
+    NodeAddress subject{};
+    std::vector<ProjectGraphScopeNode> nodes{};
+    bool has_boundary = false;
+};
+
+// The project root, its requested child scopes, and their connections share
+// one configured graph and project revision.
 struct ProjectGraphScope {
     // The successful configured-generation identity. Executable-only probe
     // and control variants do not change it. A failed desired configuration
@@ -75,6 +88,7 @@ struct ProjectGraphScope {
     std::optional<std::uint64_t> active_generation{};
     bool editable = true;
     std::vector<ProjectGraphScopeNode> nodes{};
+    std::vector<ProjectGraphChildScope> child_scopes{};
     std::vector<ProjectGraphScopeConnection> connections{};
     std::vector<NodeAddress> timeline_nodes{};
     ProjectPresentation presentation{};

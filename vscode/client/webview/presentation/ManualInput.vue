@@ -34,9 +34,10 @@ onBeforeUnmount(() => control.hover(false));
         :data-status-hint="description" @pointerdown.stop @click.stop @contextmenu="knob?.entry($event)"
         @iv-hoverenter="control.hover(true)" @iv-hoverleave="control.hover(false)">
         <span v-if="showName" class="manual-name">{{ name }}</span>
-        <button v-if="direction !== 'output'" type="button" tabindex="-1" class="knob-side-toggle knob-enable-toggle manual-input-toggle"
+        <button v-if="control.canToggleEnabled.value" type="button" tabindex="-1" class="knob-side-toggle knob-enable-toggle manual-input-toggle"
             :aria-pressed="!!descriptor?.enabled" :disabled="!descriptor?.available || descriptor.live || control.dragging.value"
-            :aria-label="`${name} manual value`" :data-status-hint="descriptor?.enabled ? 'Disable manual value' : 'Enable manual value'"
+            :aria-label="`${name} manual value`"
+            :data-status-hint="descriptor?.enabled ? 'Disable knob' : 'Enable knob'"
             @pointerdown.stop @mousedown.left.prevent @click.stop="control.toggleEnabled" @contextmenu.stop.prevent>
             <span aria-hidden="true">{{ descriptor?.enabled ? '●' : '○' }}</span>
         </button>

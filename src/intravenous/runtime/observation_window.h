@@ -154,6 +154,77 @@ inline std::optional<graph_jit::PortStorageIndex> observation_output_storage(
     return std::nullopt;
 }
 
+struct ObservationOutputSource {
+    graph_jit::BackgroundPortIndex port;
+    std::size_t channel;
+};
+
+inline void project_summed_observation_window(ObservationWindowQuery& query,
+    std::span<ObservationOutputSource const> sources, GlobalIndexRange window,
+    std::span<GlobalIndex const> positions, graph_jit::BackgroundEvaluationPlan const& plan,
+    PreparedCoveragePropagation const& prepared, BackgroundStorageRealization const& storage)
+{
+    IndexCoverage coverage;
+    IndexCoverage const visible{window};
+    std::vector<Sample> values(positions.size());
+    std::vector<bool> missing(positions.size());
+    for (auto const& source : sources) {
+        auto const slot = observation_output_storage(plan, storage, source.port, source.channel);
+        auto const* view = slot ? storage.sample_read(*slot) : nullptr;
+        auto const& native = plan.ports[source.port];
+        auto ranges = prepared.output_regions(source.port);
+        std::vector<GlobalIndexRange> recorded;
+        if (view && ranges.empty()) {
+            for (auto const& region : view->regions) recorded.push_back(region.range);
+            ranges = recorded;
+        }
+        for (std::size_t index = 0; index < ranges.size(); ++index) {
+            if (query.canceled.load(std::memory_order_relaxed)) return;
+            auto const range = ranges[index];
+            auto clipped = IndexCoverage{range} & visible;
+            if (clipped.empty()) continue;
+            coverage.include(clipped);
+            ContinuousRegionStorageView const* region = nullptr;
+            if (view && native.authored_tock_output) {
+                auto const local = storage.prepared_region_index(*slot, index);
+                if (local && *local < view->regions.size() && view->regions[*local].range == range)
+                    region = &view->regions[*local];
+            }
+            for (std::size_t point = 0; point < positions.size(); ++point) {
+                auto const position = positions[point];
+                if (!range.contains(position) || missing[point]) continue;
+                auto const* selected = region;
+                if (view && !native.authored_tock_output) {
+                    auto const found = std::ranges::find_if(view->regions,
+                        [&](auto const& chunk) { return chunk.range.contains(position); });
+                    if (found != view->regions.end()) selected = &*found;
+                }
+                auto const* bytes = selected ? selected->value_storage(position, source.channel) : nullptr;
+                if (bytes) {
+                    Sample sample;
+                    std::memcpy(&sample, bytes, sizeof(sample));
+                    values[point] += sample;
+                } else missing[point] = true;
+            }
+        }
+    }
+    for (auto const range : coverage) {
+        if (query.result.regions.size() == maximum_observation_window_values) {
+            query.result.truncated = true;
+            return;
+        }
+        auto& region = query.result.regions.emplace_back();
+        region.range = range;
+        for (std::size_t point = 0; point < positions.size(); ++point) {
+            auto const position = positions[point];
+            if (!range.contains(position)) continue;
+            ObservationCaptureState captured;
+            if (!missing[point]) query.operation->capture_point(captured, &values[point]);
+            region.values.emplace_back(position, captured);
+        }
+    }
+}
+
 inline void project_public_coverage_input(ObservationWindowQuery& query,
     graph_jit::PublicCoverageInputView const& input, GlobalIndexRange window,
     std::span<GlobalIndex const> positions, graph_jit::BackgroundEvaluationPlan const& plan,

@@ -652,7 +652,12 @@ void GraphConnections::apply_project_graph_transaction(
     for (auto const& [id, _] : staged) ordered_ids.push_back(id);
     std::ranges::sort(ordered_ids);
 
-    GraphConnectionsBatchResult result;
+    // Project connections append to these lists. Retain the source-owned
+    // prefixes so the graph editor can display them without exposing edits.
+    GraphConnectionsBatchResult result{
+        .source_sample_count = snapshot.connections.configured_sample_connections().size(),
+        .source_event_count = snapshot.connections.configured_event_connections().size(),
+    };
     for (auto const& id : ordered_ids) {
         auto const& connection = staged.at(id);
         try {

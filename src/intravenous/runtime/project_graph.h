@@ -100,6 +100,8 @@ struct ProjectGraphGeneration {
     std::shared_ptr<NodeDefinitionsSnapshot const> definitions{};
     std::shared_ptr<ConfiguredGraph const> graph{};
     std::unordered_map<std::string, NodeInstancePlacement> placements{};
+    std::size_t source_sample_connection_count = 0;
+    std::size_t source_event_connection_count = 0;
     std::vector<std::string> applied_connection_ids{};
     std::vector<GraphConnectionDiagnostic> connection_diagnostics{};
     // Structural interfaces are committed even while execution is queued.
@@ -205,16 +207,30 @@ class ProjectGraph {
     };
     struct ControlCompileTrace;
     bool restore_live_targets_ = false;
+    struct ObservationCompileCandidate {
+        ObservationRequirements requirements{};
+        GraphJitCompileRequest inputs{};
+        std::shared_ptr<CompiledGraph const> predecessor{};
+        // Only the compile worker reads or writes the result. Reconcile may
+        // attach the candidate to a queued request while it is in flight.
+        GraphJitCompileResult result{};
+    };
     struct GraphCompileRequest {
         std::uint64_t request_id = 0;
         GraphJitCompileRequest inputs{};
         std::shared_ptr<ControlCompileTrace> trace{};
+        std::shared_ptr<ObservationCompileCandidate> observation_candidate{};
     };
+    std::optional<ObservationRequirements> predicted_observation_requirements_{};
+    std::shared_ptr<ObservationCompileCandidate> observation_candidate_{};
+    bool observation_prediction_pending_ = false;
     std::optional<GraphCompileRequest> pending_graph_compile_{};
     bool execution_recovery_requested_ = false;
     std::uint64_t latest_graph_compile_request_ = 0;
     bool compile_inflight_ = false;
     void schedule_graph_compile_locked(std::shared_ptr<ControlCompileTrace> trace = {});
+    [[nodiscard]] std::shared_ptr<ConfiguredGraph> graph_for_compile_locked();
+    [[nodiscard]] bool can_compile_observation_prediction_locked() const;
     void compile_graph(GraphCompileRequest request, std::stop_token stop);
     void recover_failed_execution(std::stop_token stop);
     struct ControlCompileTrace {

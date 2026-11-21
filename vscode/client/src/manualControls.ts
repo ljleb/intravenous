@@ -61,8 +61,8 @@ type Interaction = ManualControlInteractionState & {
 };
 
 // Workspace-owned, independent of Vue and its component lifetimes. Hover, begin
-// and end share one queue, so each mutation uses the revision returned by the
-// preceding request. Once a begin is acknowledged, its pointer updates go out at
+// and end share one queue to keep gesture boundaries in order. Once a begin
+// is acknowledged, its pointer updates go out at
 // once as unacknowledged notifications: they never wait for a reply, and the end
 // carries the value that is committed.
 export class ManualControlInteractions {
@@ -102,9 +102,9 @@ export class ManualControlInteractions {
                 throw new Error("This manual interaction is already active");
             if ([...this.entries.values()].some((entry) => entry.phase !== "failed" && entry.phase !== "settled"
                 && manualControlKey(entry.control) === manualControlKey(action.control)
-                && !(entry.owner === owner && entry.ending)))
+                && !entry.ending))
                 throw new Error("This control already has an active interaction");
-            const predecessors = [...this.entries.values()].filter((entry) => entry.owner === owner && entry.ending
+            const predecessors = [...this.entries.values()].filter((entry) => entry.ending
                 && entry.phase !== "failed" && entry.phase !== "settled"
                 && manualControlKey(entry.control) === manualControlKey(action.control));
             for (const [previousKey, previous] of this.entries)
@@ -134,7 +134,8 @@ export class ManualControlInteractions {
                             previous.phase = "settled";
                         }
                         entry.fallbackValue = previous.fallbackValue;
-                        this.entries.delete(this.key(previous.owner, previous.interactionId));
+                        if (previous.owner === owner || previous.discardAfterEnd)
+                            this.entries.delete(this.key(previous.owner, previous.interactionId));
                     }
                     const value = entry.value;
                     await rpc.beginManualControl(entry.remoteId, entry.control, value);
@@ -233,6 +234,9 @@ export class ManualControlInteractions {
     }
     reconcile(scope: GraphScope): void {
         this.scope = scope;
+        const heldHere = new Set([...this.entries.values()]
+            .filter(({ phase }) => phase !== "failed" && phase !== "settled")
+            .map(({ control }) => manualControlKey(control)));
         let retiredFailure = false;
         for (const node of scope.nodes) {
             for (const { port, control } of [
@@ -242,7 +246,7 @@ export class ManualControlInteractions {
                 const descriptor = port.manualControl;
                 if (!descriptor) continue;
                 const key = manualControlKey(control);
-                if (!descriptor.live) this.remoteLive.delete(key);
+                if (!descriptor.live || heldHere.has(key)) this.remoteLive.delete(key);
                 else if (descriptor.liveValue !== undefined && !this.remoteLive.has(key))
                     this.remoteLive.set(key, { control, value: descriptor.liveValue });
             }

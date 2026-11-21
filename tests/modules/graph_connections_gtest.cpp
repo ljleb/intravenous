@@ -571,7 +571,8 @@ TEST(GraphConnections, TiledChildPathSelectorChoosesNodeBeforePortResolution)
     source_matcher.port.name.reset();
     source_matcher.port.index = 0;
     source_matcher.path = {iv::ProjectTiledChildSelector{.name = "right"}};
-    auto const children = iv::project_child_nodes(source_fixture.graph, source_fixture.local_root);
+    auto const children = iv::project_child_nodes(source_fixture.graph,
+        {.kind = iv::ProjectNodePathMatch::Kind::bundle, .bundle = source_fixture.local_root});
     ASSERT_EQ(children.size(), 2u);
     EXPECT_EQ(children[1].path, source_matcher.path);
     EXPECT_EQ(iv::project_member_path(source_fixture.graph, source_fixture.local_root, children[1].bundle),

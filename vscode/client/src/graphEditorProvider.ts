@@ -1,9 +1,12 @@
 import * as crypto from "node:crypto";
 import * as vscode from "vscode";
 import { isGeneratedSnapConnection, isTimelineSnapNode } from "./timelineSnap";
-import { addressKey, type GraphScope } from "./graphScope";
+import { addressKey, graphScopeNodeLabel, graphScopeWithChildren, type GraphScope, type NodeAddress } from "./graphScope";
 import { nodeDebugDetails } from "./nodeDebugDetails";
 import { ObservationDeliveryState, type ObservationDelivery } from "./observationDelivery";
+import { observationInterestReport } from "./observationProfile";
+import { GraphUiTimings, graphUiProfileReport } from "./graphUiProfile";
+import type { ObservationResponse } from "./observations";
 import type { GraphEditorAction, GraphEditorHostMessage, GraphEditorState, GraphEditorWebviewMessage, TraceDetails } from "./graphEditorProtocol";
 import type { WorkspaceSession } from "./workspaceSession";
 import { formatStatusHint, isStatusHint, playbackShortcut, rightClickHint, type StatusHint } from "./statusBarText";
@@ -14,6 +17,7 @@ import type { NativeClientHelper } from "./nativeClientHelper";
 
 export class GraphEditorProvider implements vscode.Disposable {
     private readonly panels = new Set<vscode.WebviewPanel>();
+    private readonly expandedByPanel = new Map<vscode.WebviewPanel, NodeAddress[]>();
     private readonly interactionHints = new Map<vscode.WebviewPanel, StatusHint>();
     private inspectionHint: StatusHint | null = null;
     private readonly interactionStatus = vscode.window.createStatusBarItem(
@@ -26,6 +30,7 @@ export class GraphEditorProvider implements vscode.Disposable {
     private nextObservationSequence = 0;
     private readonly ready = new Set<vscode.WebviewPanel>();
     private lastActivePanel: vscode.WebviewPanel | null = null;
+    private readonly graphUiProfiles = new Map<vscode.WebviewPanel, { id: string; waits: GraphUiTimings }>();
     private readonly pendingActions = new Map<vscode.WebviewPanel, GraphEditorAction[]>();
     private readonly changed: vscode.Disposable;
     private readonly windowFocusChanged: vscode.Disposable;
@@ -125,8 +130,8 @@ export class GraphEditorProvider implements vscode.Disposable {
     }
 
     constructor(private readonly extensionUri: vscode.Uri,
-        private readonly session: WorkspaceSession, private readonly nativeHelper?: NativeClientHelper,
-        private readonly log: (message: string) => void = () => {}, private readonly pickerStorage?: vscode.Memento) {
+        private readonly session: WorkspaceSession, private readonly outputChannel: vscode.OutputChannel,
+        private readonly nativeHelper?: NativeClientHelper, private readonly pickerStorage?: vscode.Memento) {
         this.state.definitionUsage = pickerStorage?.get<Record<string, number>>("nodeDefinitionUsage") ?? {};
         this.changed = session.onDidChangeGraph(() => {
             if (session.graphSessionStatus !== "running") {
@@ -223,9 +228,13 @@ export class GraphEditorProvider implements vscode.Disposable {
             { label: "Trace Playhead Cursor Return", description: "Records the next ruler or Beats-lane seek drag",
                 request: { type: "startPlayheadTrace", traceId },
                 status: "Playhead trace armed. Drag the background playhead once, then check Intravenous output.", durationMs: 30_000 },
-            { label: "Profile Observation Updates", description: "Measures observation traffic for 10 seconds",
+            { label: "Profile Observation Updates", description: "Records lane requests and replies for 10 seconds",
                 request: { type: "startObservationProfile", durationMs: profileDurationMs },
                 status: "Recording observation updates for 10 seconds. See Intravenous output for the report.", durationMs: profileDurationMs },
+            { label: "Profile Project Graph UI", description: "Measures frame stalls, webview work, and server waits for 10 seconds",
+                request: { type: "startGraphUiProfile", profileId: traceId, durationMs: profileDurationMs },
+                status: "Recording project graph UI for 10 seconds. Reproduce the slowdown, then check Intravenous output.",
+                durationMs: profileDurationMs },
         ];
         const action = await vscode.window.showQuickPick(actions, { placeHolder: "Choose an Intravenous diagnostic" });
         if (!action) return;
@@ -236,21 +245,33 @@ export class GraphEditorProvider implements vscode.Disposable {
             return;
         }
         panel.reveal(panel.viewColumn, false);
+        const profile = action.request.type === "startGraphUiProfile"
+            ? { id: action.request.profileId, waits: new GraphUiTimings() } : undefined;
+        if (profile) this.graphUiProfiles.set(panel, profile);
         try {
             if (!await panel.webview.postMessage(action.request)) {
+                if (profile && this.graphUiProfiles.get(panel) === profile) this.graphUiProfiles.delete(panel);
                 void vscode.window.showInformationMessage("The Intravenous Graph editor could not start the diagnostic.");
                 return;
             }
             if (action.request.type === "startPlayheadTrace") this.logPlayheadTrace(action.request.traceId, action.status);
-            else this.log(action.status);
+            else this.outputChannel.appendLine(action.status);
             vscode.window.setStatusBarMessage(action.status, action.durationMs);
         } catch (error) {
+            if (profile && this.graphUiProfiles.get(panel) === profile) this.graphUiProfiles.delete(panel);
             void vscode.window.showErrorMessage(`Cannot start the Intravenous diagnostic: ${error}`);
         }
     }
 
     private logPlayheadTrace(id: string, step: string, details?: TraceDetails): void {
-        this.log(`Playhead cursor trace [${id.slice(0, 8)}]. ${step}${details ? ` ${JSON.stringify(details)}` : ""}`);
+        this.outputChannel.appendLine(`Playhead cursor trace [${id.slice(0, 8)}]. ${step}${details ? ` ${JSON.stringify(details)}` : ""}`);
+    }
+
+    private notifyProfileFinished(profile: string): void {
+        const showOutput = "Show Output";
+        void vscode.window.showInformationMessage(`Intravenous finished recording the ${profile}.`, showOutput).then((action) => {
+            if (action === showOutput && !this.disposed) this.outputChannel.show(true);
+        });
     }
 
     async runAction(action: GraphEditorAction, target?: vscode.WebviewPanel): Promise<void> {
@@ -266,9 +287,11 @@ export class GraphEditorProvider implements vscode.Disposable {
             await this.refresh();
             return;
         }
-        const [scope, definitions] = await Promise.all([this.session.readGraphScope(), this.session.graphDefinitions()]);
+        const [scope, definitions] = await Promise.all([
+            this.session.readGraphScope(this.expandedModules()), this.session.graphDefinitions(),
+        ]);
         if (!this.panels.has(panel)) return;
-        this.session.manualControls.reconcile(scope);
+        this.session.manualControls.reconcile(graphScopeWithChildren(scope));
         this.state = { ...this.state, scope, definitions, sessionStatus: this.session.graphSessionStatus };
         this.post(panel);
         if (action === "addNode" || action === "createPackage") {
@@ -276,11 +299,13 @@ export class GraphEditorProvider implements vscode.Disposable {
             return;
         }
         if (action === "deleteConnection") {
+            const nodes = graphScopeWithChildren(scope).nodes;
             const label = (matcher: GraphScope["connections"][number]["connection"]["outputs"][number]) => {
-                const instance = scope.nodes.find((node) => node.instance.instanceId === matcher.instanceId)?.instance;
-                return `${instance?.displayName || instance?.definitionId.split(".").pop() || "Unavailable node"}.${matcher.port.name ?? matcher.port.index ?? "*"}`;
+                const node = nodes.find((candidate) => addressKey(candidate.address) === addressKey(matcher));
+                const name = node ? graphScopeNodeLabel(node) : "Unavailable node";
+                return `${name}.${matcher.port.name ?? matcher.port.index ?? "*"}`;
             };
-            const selected = await vscode.window.showQuickPick(scope.connections.filter((entry) => !isGeneratedSnapConnection(entry)).map((entry) => ({
+            const selected = await vscode.window.showQuickPick(scope.connections.filter((entry) => !entry.sourceOwned && !isGeneratedSnapConnection(entry)).map((entry) => ({
                 label: `${entry.connection.outputs.map(label).join(", ")} → ${entry.connection.inputs.map(label).join(", ")}`,
                 description: entry.applied ? "" : "Not applied", id: entry.id,
             })), { title: "Intravenous: Delete Connection", placeHolder: "Select a connection" });
@@ -306,7 +331,7 @@ export class GraphEditorProvider implements vscode.Disposable {
             placeHolder: "Select a node" });
         if (!selected || !this.panels.has(panel)) return;
         if (action === "editNode") {
-            const current = await this.session.readGraphScope();
+            const current = await this.session.readGraphScope(this.expandedModules());
             if (!current.nodes.some((node) => node.instance.instanceId === selected.instanceId)) {
                 throw new Error("The selected node is no longer available");
             }
@@ -345,9 +370,13 @@ export class GraphEditorProvider implements vscode.Disposable {
                 const owner = this.controlOwners.get(panel);
                 if (!owner) return;
                 try {
-                    const result = message.type === "observationDescribe"
-                        ? await this.session.describeObservations(message.nodes)
-                        : await this.session.reconcileObservations(owner, panel.visible ? message.interests : []);
+                    const read = (): Promise<ObservationResponse["result"]> => message.type === "observationDescribe"
+                        ? this.session.describeObservations(message.nodes)
+                        : this.session.reconcileObservations(owner, panel.visible ? message.interests : [],
+                            panel.active && panel.visible ? message.predictedInterests : undefined);
+                    const waits = this.graphUiProfiles.get(panel)?.waits;
+                    const result = await (waits ? waits.measureAsync(message.type === "observationDescribe"
+                        ? "Describe observations" : "Reconcile observation interests", read) : read());
                     if (this.panels.has(panel)) void panel.webview.postMessage({ type: "observationResponse", requestId: message.requestId, result });
                 } catch (error) {
                     if (this.panels.has(panel)) void panel.webview.postMessage({ type: "observationResponse", requestId: message.requestId, error: String(error) });
@@ -356,18 +385,26 @@ export class GraphEditorProvider implements vscode.Disposable {
                 this.postObservationSnapshot(panel);
             } else if (message?.type === "playheadTrace") {
                 this.logPlayheadTrace(message.traceId, message.step, message.details);
+            } else if (message?.type === "graphUiProfile") {
+                const profile = this.graphUiProfiles.get(panel);
+                if (!profile || profile.id !== message.profileId) return;
+                this.graphUiProfiles.delete(panel);
+                for (const line of graphUiProfileReport(message.summary, profile.waits.summary())) this.outputChannel.appendLine(line);
+                this.notifyProfileFinished("project graph UI profile");
             } else if (message?.type === "observationProfile") {
                 const s = message.summary;
                 const updateRate = (s.updates / s.seconds).toFixed(2);
                 const dataRate = (s.messageBytes / 1024 / s.seconds).toFixed(2);
-                this.log(`Observation profile over ${s.seconds.toFixed(2)} s`);
-                this.log(`  Webview received ${s.updates} updates (${updateRate}/s, about ${dataRate} KiB/s as JSON).`
-                    + ` ${s.presentationUpdates} triggered a presentation update.`);
-                this.log(`  ${s.snapshots} snapshots, ${s.metadataOnly} updates with only frame metadata,`
+                this.outputChannel.appendLine(`Observation profile over ${s.seconds.toFixed(2)} s`);
+                this.outputChannel.appendLine(`  Webview received ${s.updates} updates (${updateRate}/s, about ${dataRate} KiB/s as JSON).`
+                    + ` ${s.presentationUpdates} changed at least one stored observation.`);
+                this.outputChannel.appendLine(`  ${s.snapshots} snapshots, ${s.metadataOnly} updates with only frame metadata,`
                     + ` ${s.liveValues} live readings, and ${s.removals} removals.`);
-                this.log(`  ${s.windowChanges} window updates (${s.statusChanges} included status),`
+                this.outputChannel.appendLine(`  ${s.windowChanges} window updates (${s.statusChanges} included status),`
                     + ` ${s.windowBodies} included sample or event data (${(s.windowBytes / 1024).toFixed(2)} KiB).`);
-                this.log(`  Measurement took ${s.measurementMs.toFixed(2)} ms in the webview.`);
+                this.outputChannel.appendLine(`  Measurement took ${s.measurementMs.toFixed(2)} ms in the webview.`);
+                for (const line of observationInterestReport(s)) this.outputChannel.appendLine(line);
+                this.notifyProfileFinished("observation profile");
             } else if (isNodeEventRequest(message) || isNodeEventGestureRequest(message)) {
                 const owner = this.controlOwners.get(panel);
                 if (!owner) return;
@@ -378,7 +415,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                 if (this.panels.has(panel)) void panel.webview.postMessage(response);
                 if (response.error) void vscode.window.showErrorMessage(`Cannot send node event: ${response.error}`);
             } else if (message?.type === "cursorReturnSkipped" && typeof message.detail === "string") {
-                this.log(`Cursor return skipped. ${message.detail}`);
+                this.outputChannel.appendLine(`Cursor return skipped. ${message.detail}`);
             } else if (message?.type === "returnCursor") {
                 const { traceId } = message;
                 const trace = traceId ? (step: string, details?: TraceDetails) => this.logPlayheadTrace(traceId, step, details) : undefined;
@@ -390,7 +427,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                     : !this.nativeHelper ? "no local native helper" : null;
                 if (skipped) {
                     trace?.("Extension skipped cursor return", { reason: skipped });
-                    if (skipped === "graph editor lost focus") this.log(`Cursor return skipped. ${skipped}.`);
+                    if (skipped === "graph editor lost focus") this.outputChannel.appendLine(`Cursor return skipped. ${skipped}.`);
                 } else this.nativeHelper?.warpCursor(message.warp, {
                     hideCursor: message.policy === "wrapped" || message.policy === "playhead",
                     followPointer: message.policy === "wrapped",
@@ -409,6 +446,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                 catch (error) { void vscode.window.showErrorMessage(`Cannot change playback: ${error.message}`); }
             } else if (message?.type === "graphReady") {
                 if (!this.panels.has(panel)) return;
+                this.expandedByPanel.delete(panel);
                 this.interactionHints.delete(panel);
                 this.updateInteractionStatus();
                 if (this.ready.has(panel)) {
@@ -465,9 +503,9 @@ export class GraphEditorProvider implements vscode.Disposable {
                     void panel.webview.postMessage({ type: "graphLanesInserted", duplicateRequestId: requestId, lanes: [] });
                     void vscode.window.showErrorMessage(`Cannot duplicate lanes: ${error.message}`);
                 }
-            } else if (message?.type === "setManualInputEnabled") {
-                try { await this.session.setManualInputEnabled(message.target, message.inputName, message.enabled); }
-                catch (error) { void vscode.window.showErrorMessage(`Cannot change manual input: ${error.message}`); }
+            } else if (message?.type === "setManualControlEnabled") {
+                try { await this.session.setManualControlEnabled(message.control, message.enabled, this.expandedByPanel.get(panel) ?? []); }
+                catch (error) { void vscode.window.showErrorMessage(`Cannot change knob: ${error.message}`); }
             } else if (message?.type === "projectHistory") {
                 try {
                     await this.session.projectHistory(message.direction);
@@ -488,8 +526,11 @@ export class GraphEditorProvider implements vscode.Disposable {
                     }
                     if (this.panels.has(panel)) void panel.webview.postMessage(reply);
                 });
+            } else if (message?.type === "setExpandedModules" && Array.isArray(message.modules)) {
+                this.expandedByPanel.set(panel, message.modules);
+                await this.refresh();
             } else if (message?.type === "copyNodeDebugDetails") {
-                const scope = this.state.scope;
+                const scope = this.state.scope && graphScopeWithChildren(this.state.scope);
                 const node = scope?.nodes.find((entry) => addressKey(entry.address) === message.nodeKey);
                 if (!scope || !node) return;
                 try { await vscode.env.clipboard.writeText(nodeDebugDetails(scope, node)); }
@@ -502,9 +543,10 @@ export class GraphEditorProvider implements vscode.Disposable {
                 } catch (error) { void vscode.window.showErrorMessage(`Cannot change timeline snapping: ${error.message}`); }
             } else if (message?.type === "connectGraphPorts" || message?.type === "editGraphConnectionEnd") {
                 try {
+                    const expanded = this.expandedByPanel.get(panel) ?? [];
                     if (message.type === "connectGraphPorts") {
-                        await this.session.connectGraphPorts(crypto.randomUUID(), message.first, message.second);
-                    } else await this.session.editGraphConnectionEnd(message.edit);
+                        await this.session.connectGraphPorts(crypto.randomUUID(), message.first, message.second, expanded);
+                    } else await this.session.editGraphConnectionEnd(message.edit, expanded);
                     await this.refresh();
                 } catch (error) {
                     void vscode.window.showErrorMessage(`Cannot edit connection: ${error.message}`);
@@ -527,7 +569,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                         this.state.definitionUsage = { ...usage, [message.definitionId]:
                             (Object.hasOwn(usage, message.definitionId) ? usage[message.definitionId] : 0) + 1 };
                         void this.pickerStorage?.update("nodeDefinitionUsage", this.state.definitionUsage).then(undefined,
-                            (error) => this.log(`Cannot save node picker usage: ${error.message}`));
+                            (error) => this.outputChannel.appendLine(`Cannot save node picker usage: ${error.message}`));
                         void panel.webview.postMessage({ type: "graphLanesInserted",
                             lanes: [{ instanceId }] });
                     } else if (message.type === "updateGraphNode") {
@@ -554,7 +596,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                 }
             } else if (message?.type === "flushProjectAutosave") {
                 try { await this.session.saveProject(true); }
-                catch (error) { this.log(`Project autosave failed: ${error.message}`); }
+                catch (error) { this.outputChannel.appendLine(`Project autosave failed: ${error.message}`); }
             }
         });
         panel.onDidDispose(() => {
@@ -568,6 +610,8 @@ export class GraphEditorProvider implements vscode.Disposable {
             this.panelObservations.delete(panel);
             this.interactionHints.delete(panel);
             messages.dispose(); viewState.dispose(); this.panels.delete(panel); this.ready.delete(panel);
+            this.graphUiProfiles.delete(panel);
+            this.expandedByPanel.delete(panel);
             this.updateInteractionStatus();
             this.pendingActions.delete(panel);
             if (this.lastActivePanel === panel) this.lastActivePanel = null;
@@ -591,7 +635,26 @@ export class GraphEditorProvider implements vscode.Disposable {
     }
 
     private post(panel: vscode.WebviewPanel): void {
-        if (this.ready.has(panel)) void panel.webview.postMessage({ type: "graphState", state: this.state });
+        if (!this.ready.has(panel)) return;
+        const waits = this.graphUiProfiles.get(panel)?.waits;
+        const message: GraphEditorHostMessage = { type: "graphState", state: this.state };
+        if (!waits) void panel.webview.postMessage(message);
+        else void waits.measureAsync("Post graph state to webview", () => panel.webview.postMessage(message));
+    }
+
+    private expandedModules(): NodeAddress[] {
+        const addresses = [...this.expandedByPanel.values()].flat();
+        return [...new Map(addresses.map((address) => [addressKey(address), address])).values()];
+    }
+
+    private measureGraphRead<T>(label: string, read: () => Promise<T>): Promise<T> {
+        if (!this.graphUiProfiles.size) return read();
+        const profiles = [...this.graphUiProfiles.values()];
+        const start = performance.now();
+        return read().finally(() => {
+            const elapsed = performance.now() - start;
+            for (const profile of profiles) profile.waits.record(label, elapsed);
+        });
     }
 
     private async refresh(): Promise<void> {
@@ -609,12 +672,13 @@ export class GraphEditorProvider implements vscode.Disposable {
                 } else {
                     try {
                         const [scope, definitions] = await Promise.all([
-                            this.session.readGraphScope(), this.session.graphDefinitions(),
+                            this.measureGraphRead("Read graph scope", () => this.session.readGraphScope(this.expandedModules())),
+                            this.measureGraphRead("Read node definitions", () => this.session.graphDefinitions()),
                         ]);
                         // A change while reading requires another complete read.
                         // Do not show a stale response, especially after restart.
                         if (this.dirty || this.disposed) continue;
-                        this.session.manualControls.reconcile(scope);
+                        this.session.manualControls.reconcile(graphScopeWithChildren(scope));
                         this.state.scope = scope;
                         this.state.definitions = definitions;
                         this.state.error = "";
@@ -638,6 +702,7 @@ export class GraphEditorProvider implements vscode.Disposable {
         this.shortcutSettingChanged.dispose();
         for (const panel of this.panels) panel.dispose();
         this.panels.clear();
+        this.graphUiProfiles.clear();
         this.interactionStatus.dispose();
     }
 }

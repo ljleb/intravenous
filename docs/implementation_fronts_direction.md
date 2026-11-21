@@ -7058,11 +7058,37 @@ continue to govern observable behavior._
   Discover C++-authored children through the same selector paths used by
   project connections. Named tile paths such as `#right` count as addresses.
   Hide children that the selector resolver cannot reach.
-  `graph.getScope` now accepts a subject `NodeAddress` and returns its direct
-  selector-reachable children and their port interfaces. The root response
-  still describes project instances. The editor and source panel still need
-  to consume child scopes.
+  `graph.getScope` returns project instances and the direct children of the
+  requested expanded addresses in one snapshot. The main editor shows those
+  children with the shared lane UI. Source-owned connections between visible
+  child ports are read-only. The source panel still uses its own view.
+  For expanded modules with public ports, the first child lane shows the
+  module's public interface. `graph.getScope` includes the C++ routes to and
+  from that interface, which the editor draws in gray along with the other
+  visible C++ connections. Project cables can use the boundary lane's sockets.
+  The editor resolves cable endpoints when the graph scope changes and
+  indexes the row span of each cable. Panning updates the spans crossed by
+  the viewport edges. Gray cable segments stay visible across the viewport
+  even when their sockets scroll out of view. Changing the lane order or
+  expanding and collapsing a module rebuilds the row index.
   [Module interaction](./module_interoperability_and_graph_macros_direction.md#nested-module-presentation-and-project-owned-scopes)
+- **Virtual node membership in the project editor.** `graph.getScope`
+  exposes virtual nodes and the concrete members of each expanded record.
+  Each membership has its own row key. Rows for one member use the same
+  `NodeAddress` for wiring, presentation state, knobs, and observations.
+  Source annotations supply C++ declaration names. The runtime still
+  uses selector paths for persisted identities. If a source edit removes
+  a selector used by a saved edit, the edit can become unavailable.
+  Native runtime verification is pending.
+- **Observation budget at small lane heights.** Live probes and windows
+  use separate limits of 256 each. The webview gives each visible node
+  a port before assigning extra ports to a node. Mini and nano lanes
+  skip hidden numeric State fields. Capacity is limited across open
+  views by the server. The webview batches newly visible nodes on a
+  fixed deadline during panning, reuses capability descriptions for
+  the same configuration, and skips unchanged interest sets between
+  lease renewals.
+  [Observation work priority](./vue_output_observation_direction.md#7-work-priority-backpressure-and-reuse)
 - **Compilation staging eligibility.** Structural graph builds, speculative
   control builds, and failed-generation recovery now use `GraphJitCompileRequest`
   for their inputs. `ProjectGraph` shares the generation and observation

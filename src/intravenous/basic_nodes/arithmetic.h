@@ -54,20 +54,21 @@ namespace iv {
     public:
         static constexpr auto inputs()
         {
-            return std::array<SequentialInputConfig<Sample>, 2>{};
+            return std::array{SequentialInputConfig<Sample>{.name = "left"},
+                SequentialInputConfig<Sample>{.name = "right"}};
         }
 
         static constexpr auto outputs()
         {
-            return std::array<SequentialOutputConfig<Sample>, 1>{};
+            return std::array{SequentialOutputConfig<Sample>{.name = "out"}};
         }
 
         void tick(auto const& ctx) const
         {
-            auto out = ctx.template output<0>();
-            auto in0 = ctx.template input<0>();
-            auto in1 = ctx.template input<1>();
-            out.push(BinaryOp{}(in0.get(), in1.get()));
+            auto out = ctx.template output<"out">();
+            auto left = ctx.template input<"left">();
+            auto right = ctx.template input<"right">();
+            out.push(BinaryOp{}(left.get(), right.get()));
         }
     };
 
@@ -117,6 +118,7 @@ namespace iv {
     // registry binds its stable ID to this one specialization, not to the
     // BinaryOpNode template family as a whole.
     using Subtract = BinaryOpNode<std::minus<Sample>>;
+    using Multiply = BinaryOpNode<std::multiplies<Sample>>;
 
     template<size_t NumInputs>
     using Product = FixedBinaryOpNode<std::multiplies<Sample>, NumInputs>;

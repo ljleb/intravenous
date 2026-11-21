@@ -33,6 +33,12 @@ struct ManualControlId {
     bool operator==(ManualControlId const&) const = default;
 };
 
+inline bool is_virtual_output_gain(ManualControlId const& id)
+{
+    return id.kind == ManualControlKind::output_gain && !id.node.path.empty()
+        && std::holds_alternative<ProjectVirtualNodeSelector>(id.node.path.back());
+}
+
 // One frontend gesture. client_id prevents two attached clients from sharing
 // an interaction lifetime accidentally; interaction_id is client-local.
 struct ManualControlInteractionId {
@@ -85,6 +91,9 @@ struct ConfiguredManualControl {
     // The compiler's Coverage fallback producer for this input, if any.
     std::optional<NodeBundleHandle> coverage_source{};
     bool enabled = true;
+    // An implicit member input supplies its declared default when no authored
+    // virtual control takes its place.
+    bool authored = true;
 
     bool operator==(ConfiguredManualControl const&) const = default;
 };

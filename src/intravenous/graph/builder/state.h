@@ -188,7 +188,7 @@ public:
 
   // ---- annotations ------------------------------------------------------
   void annotate_node(NodeBundleHandle, std::string_view, std::string_view,
-      uint32_t, uint32_t);
+      uint32_t, uint32_t, std::string_view);
   void annotate_node_input_source_info(NodeBundleHandle, PortKind,
       std::string_view, std::string_view, std::string_view, uint32_t, uint32_t);
   void annotate_public_sample_input_source_info(SamplePortRef const&,

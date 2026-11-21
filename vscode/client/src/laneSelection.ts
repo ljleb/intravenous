@@ -1,4 +1,4 @@
-import { addressKey, type NodeAddress } from "./graphScope";
+import { addressKey, isProjectInstance, type GraphScope, type GraphScopeNode, type NodeAddress } from "./graphScope";
 import { updateSelection } from "./selection";
 
 export function orderLanes<T extends { address: NodeAddress }>(lanes: readonly T[], order: readonly string[]): T[] {
@@ -11,6 +11,31 @@ export function orderLanes<T extends { address: NodeAddress }>(lanes: readonly T
         remaining.delete(key);
     }
     return [...ordered, ...remaining.values()];
+}
+
+export type GraphLane = { node: GraphScopeNode; depth: number; rowKey: string };
+
+export function expandedGraphLanes(scope: GraphScope, order: readonly string[],
+    expanded: Pick<ReadonlySet<string>, "has">): GraphLane[] {
+    const childNodes = new Map(scope.childScopes?.map(({ subject, nodes }) => [addressKey(subject), nodes]));
+    const lanes: GraphLane[] = [];
+    const append = (nodes: readonly GraphScopeNode[], depth: number, parentKey?: string) => {
+        for (const node of nodes) {
+            const key = addressKey(node.address);
+            const membership = addressKey(node.membershipAddress ?? node.address);
+            const rowKey = parentKey === undefined ? membership : `${parentKey}/${membership}`;
+            lanes.push({ node, depth, rowKey });
+            const children = childNodes.get(key);
+            if (children && expanded.has(key)) append(children, depth + 1, rowKey);
+        }
+    };
+    append(orderLanes(scope.nodes, order), 0);
+    return lanes;
+}
+
+export function selectedProjectLaneIds(lanes: readonly GraphLane[], selected: ReadonlySet<string>): string[] {
+    return lanes.filter(({ node }) => isProjectInstance(node.address) && selected.has(addressKey(node.address)))
+        .map(({ node }) => node.address.instanceId);
 }
 
 export function selectLaneRange(selected: ReadonlySet<string>, order: readonly string[], anchor: string | null,

@@ -176,6 +176,42 @@ test("two panels cannot reuse one another's interaction IDs or end one another's
     manager.releaseOwner("a"); await manager.settled();
 });
 
+test("a live scope refresh during a paste does not make its owner look like another client is dragging", async () => {
+    const end = deferred();
+    const { manager } = harness({ endManualControl: async () => end.promise });
+    manager.action("panel", { action: "begin", interactionId: "paste", control, value: 440 });
+    manager.action("panel", { action: "end", interactionId: "paste", value: 660 });
+    await Promise.resolve();
+    const graph = scope();
+    Object.assign(graph.nodes[0].sampleInputs[0].manualControl!, { live: true, liveValue: 660 });
+    manager.reconcile(graph);
+    assert.deepEqual(manager.live("panel"), []);
+    assert.deepEqual(manager.live("other"), [{ control, value: 660 }]);
+    end.resolve();
+    await manager.settled();
+    assert.deepEqual(manager.live("panel"), []);
+    assert.deepEqual(manager.live("other"), []);
+});
+
+test("a second panel can move a knob while the preceding paste is committing", async () => {
+    const end = deferred();
+    const { manager, calls } = harness({ endManualControl: async (id, value) => {
+        calls.push({ action: "end", id, value });
+        await end.promise;
+    } });
+    manager.action("first", { action: "begin", interactionId: "paste", control, value: 440 });
+    await manager.settled();
+    manager.action("first", { action: "end", interactionId: "paste", value: 660 });
+    manager.action("second", { action: "begin", interactionId: "drag", control, value: 660 });
+    manager.action("second", { action: "update", interactionId: "drag", value: 690 });
+    end.resolve();
+    await manager.settled();
+    assert.deepEqual(calls.map(({ action, value }) => [action, value]),
+        [["begin", 440], ["end", 660], ["begin", 690]]);
+    assert.equal(manager.states("second")[0].phase, "active");
+    assert.equal(manager.states("first")[0].phase, "settled");
+});
+
 test("presentation remount does not restart or end a pointer gesture", () => {
     const actions: unknown[] = [];
     const gestures = new ManualControlGestures((action) => actions.push(action), () => "gesture", () => {});
@@ -592,16 +628,6 @@ test("quick successive gestures from one view close in order even while the firs
     ]);
     assert.equal(manager.states("panel").length, 1);
     assert.equal(manager.states("panel")[0].value, 470);
-});
-
-test("a different view cannot take over an input while its previous gesture is ending", async () => {
-    const end = deferred();
-    const { manager } = harness({ endManualControl: async () => end.promise });
-    manager.action("a", { action: "begin", interactionId: "first", control, value: 440 });
-    await manager.settled();
-    manager.action("a", { action: "end", interactionId: "first", value: 450 });
-    assert.throws(() => manager.action("b", { action: "begin", interactionId: "other", control, value: 450 }), /active interaction/);
-    end.resolve(); await manager.settled();
 });
 
 test("a queued predecessor end is not sent twice and its final value survives a rejected re-grab", async () => {

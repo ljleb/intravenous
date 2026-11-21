@@ -107,6 +107,9 @@ NodeBundleHandle iv_builder_append_tiled_node(
     GraphBuilder& builder, NodeBuildRequest const& request,
     ChannelLayout layout)
 try {
+    if (layout.channel_type == ChannelTypeId::mono) {
+        error("a tiled NodeBundle requires a multichannel layout");
+    }
     auto paths = claim_builder_concrete_node_paths(builder._session, layout);
     if (paths.size() != channel_count(layout.channel_type)) {
         throw std::logic_error(
@@ -496,9 +499,10 @@ try {
 }
 void iv_builder_annotate_node(
     BuilderSession* value, NodeBundleHandle handle, std::string_view id,
-    std::string_view file, std::uint32_t begin, std::uint32_t end)
+    std::string_view file, std::uint32_t begin, std::uint32_t end,
+    std::string_view name)
 try {
-    session(value).annotate_node(handle, id, file, begin, end);
+    session(value).annotate_node(handle, id, file, begin, end, name);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     record_builder_failure(value, std::current_exception(), {});
@@ -933,11 +937,12 @@ try {
             + ": sample operands must have matching channel types, except that mono broadcasts");
     }
 
-    auto handle = details::iv_builder_append_tiled_node(
-        *this, request, {
-            .channel_type = result_type,
-            .sample_layout = SampleStreamLayout::planar,
-        });
+    auto const handle = result_type == ChannelTypeId::mono
+        ? details::iv_builder_append_node(*this, request)
+        : details::iv_builder_append_tiled_node(*this, request, {
+              .channel_type = result_type,
+              .sample_layout = SampleStreamLayout::planar,
+          });
     NodeRef result(_session, handle);
     std::array<details::NodeCallSampleInput, 2> inputs{{
         {.source = std::move(lhs),

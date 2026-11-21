@@ -10,11 +10,11 @@ import type {
     VirtualPortConnectivity,
 } from "../../src/graphModel";
 import type { GraphScope, GraphScopeNode, GraphScopePort, NodeAddress } from "../../src/graphScope";
-import { resolveScopePorts } from "../../src/graphScope";
+import { addressKey, isProjectInstance, resolveScopePorts } from "../../src/graphScope";
 
 export type SemanticPortDirection = "input" | "output";
 
-type SemanticPortFields = Pick<GraphScopePort, "access" | "production" | "realization"> & {
+type SemanticPortFields = Pick<GraphScopePort, "access" | "production" | "realization" | "displayName"> & {
     direction: SemanticPortDirection;
     index: number;
     name: string;
@@ -50,7 +50,10 @@ export type SemanticNode = {
     loadState?: GraphScopeNode["loadState"];
     displayName?: string;
     defaultDisplayName?: string;
+    sourceLabel?: string;
     realized?: boolean;
+    hasChildren?: boolean;
+    virtualNode?: boolean;
     errorMessage?: string;
     address?: NodeAddress;
     construction?: GraphScopeNode["construction"];
@@ -77,11 +80,12 @@ export function semanticNodeFromScopeChild(child: GraphScopeNode, scope: GraphSc
             const matchers = direction === "input" ? connection.inputs : connection.outputs;
             return matchers.some((matcher) => {
                 return resolveScopePorts(scope, matcher, connection.kind, direction)
-                    .some((resolved) => resolved.node === child && resolved.port.index === entry.index);
+                    .some((resolved) => addressKey(resolved.node.address) === addressKey(child.address)
+                        && resolved.port.index === entry.index);
             });
         });
         const base: SemanticPortFields = {
-            index: entry.index, name: entry.name, direction,
+            index: entry.index, name: entry.name, displayName: entry.displayName, direction,
             access: entry.access, production: entry.production, realization: entry.realization,
             connectivity: connected ? "connected" : "disconnected", binding: "interface",
         };
@@ -89,17 +93,22 @@ export function semanticNodeFromScopeChild(child: GraphScopeNode, scope: GraphSc
             ? { ...base, kind, valueTypes: entry.valueTypes ?? [], channelType: entry.channelType ?? null, manualControl: entry.manualControl }
             : { ...base, kind, eventType: entry.eventType ?? "" };
     };
+    const definitionId = child.definitionId ?? child.instance.definitionId;
     return {
-        address: child.address, id: child.instance.instanceId,
+        address: child.address,
+        id: isProjectInstance(child.address) ? child.instance.instanceId : addressKey(child.address),
         construction: child.construction,
         constructionError: child.constructionError,
-        displayName: child.instance.displayName,
-        defaultDisplayName: child.instance.defaultDisplayName,
+        displayName: child.childDisplayName ?? child.instance.displayName,
+        defaultDisplayName: child.childDisplayName ?? child.instance.defaultDisplayName,
+        sourceLabel: child.childSourceLabel,
+        hasChildren: child.hasChildren,
+        virtualNode: child.virtualNode,
         realized: child.instance.realized,
         loadState: child.loadState,
         errorMessage: child.errorMessage,
-        instanceId: child.instance.instanceId, definitionId: child.definitionId ?? child.instance.definitionId,
-        kind: child.definitionId ?? child.instance.definitionId, sourceIdentity: "", memberCount: 1,
+        instanceId: child.instance.instanceId, definitionId: child.virtualNode ? "" : definitionId,
+        kind: definitionId, sourceIdentity: "", memberCount: 1,
         members: [], sourceSpans: [],
         ports: [
             ...child.sampleInputs.map((entry) => port(entry, "continuous", "input")),

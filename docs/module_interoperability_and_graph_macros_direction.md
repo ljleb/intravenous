@@ -54,6 +54,36 @@ children, and project connections can target their ports. Children that no
 selector can reach stay hidden. A future inspection or module-copy operation
 can revisit their visibility.
 
+When a module with public ports expands, **Module Ports** is its first child
+lane. It gives project edits access to the same public ports as the module
+header. External cables terminate on the module header. Connections between
+the public ports and the module's children use the boundary lane. C++
+connections between shown nodes and to or from these boundary ports appear
+as solid gray cables. Editing those cables belongs to the module source.
+The boundary lane has no independent node or saved state.
+Its knobs edit the same manual input values and output gains as the module
+header.
+
+The Add Node picker lists exported definitions. An addressable package-private
+child can appear in its module's expanded lanes and take part in project
+connections. Only project instances can be duplicated. Duplicating a module
+runs its constructor to create its children.
+
+Each virtual node has a lane with the node type as its primary label and
+the C++ declaration name as its secondary label. Expanding the lane shows
+its concrete members. A member lane uses its own type and adds a one-based
+index to the declaration name. When a tile expands, its children show
+their channel names as secondary labels.
+
+A concrete member can appear under several virtual nodes. Those rows
+share project edits and saved presentation settings.
+Each virtual port maps to the matching ports of its members.
+
+When a C++ declaration produces several concrete types, each type has
+its own virtual lane. Each lane exposes the inputs, outputs, and members
+for that type. A virtual output meter measures the sum of the members on
+each shared channel.
+
 Project-authored nested subgraph scopes remain planned separately; see
 [Subgraph presentation layout](./node_presentation_and_manual_controls_direction.md#subgraph-presentation-layout).
 Their nodes and connections are project-owned and editable. Scope boundary

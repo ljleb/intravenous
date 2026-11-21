@@ -2450,7 +2450,7 @@ void GraphExecutor::BackgroundExecutor::queue_windows(
         });
         for (auto const& query : queries) {
             if (query->complete.load(std::memory_order_acquire)) continue;
-            if (stopping_ || observation_windows_.size() >= maximum_live_observation_probes) {
+            if (stopping_ || observation_windows_.size() >= maximum_observation_windows) {
                 query->result.status = ObservationWindowResult::Status::failed;
                 query->result.error = "background observation queue is full or stopped";
                 query->complete.store(true, std::memory_order_release);
@@ -2593,6 +2593,21 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
         }
         auto const port = static_cast<graph_jit::BackgroundPortIndex>(found - plan.ports.begin());
         auto const pace = public_input ? public_input->pace_exponent : found->absolute_pace_exponent;
+        std::vector<ObservationOutputSource> output_sources;
+        for (auto const source : query.output_sources) {
+            NodeBundlePortId const candidate{source.bundle, PortKind::sample, source.port};
+            auto const output = std::ranges::find_if(plan.ports, [&](auto const& item) {
+                return item.direction == graph_jit::PortDirection::output && item.configured_port == candidate;
+            });
+            if (output == plan.ports.end() || output->continuous_geometry.value_type != ContinuousValueTypeId::sample
+                || (!output->authored_tock_output && !output->persisted_tick_output)
+                || output->absolute_pace_exponent != pace || source.channel >= channel_count(output->sample_layout)) {
+                result.status = ObservationWindowResult::Status::unavailable;
+                query.complete.store(true, std::memory_order_release);
+                return;
+            }
+            output_sources.push_back({static_cast<graph_jit::BackgroundPortIndex>(output - plan.ports.begin()), source.channel});
+        }
         result.execution_generation = graph.project_generation;
         result.sample_rate = graph.specialization.sample_rate;
         result.pace_exponent = pace;
@@ -2610,12 +2625,12 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
         if (!lattice) throw std::invalid_argument("observation window cannot be represented on the port lattice");
         GlobalIndexRange window{GlobalIndex::from_bits(lattice->begin_index_bits), lattice->count};
         auto positions = observation_window_positions(window, query.window.points);
-        auto const cacheable = public_input
+        auto const cacheable = output_sources.empty() && (public_input
             ? std::ranges::all_of(public_input->projections, [&](auto const& projection) {
                 return std::ranges::all_of(projection.sources, [&](auto const& source) {
                     return plan.ports[source.output].authored_tock_output;
                 });
-            }) : !observing_input && found->authored_tock_output;
+            }) : !observing_input && found->authored_tock_output);
         auto const matches_source = [&](CachedObservationWindow const& previous) {
             return previous.port == query.port && previous.kind == query.kind
                 && previous.channel == query.channel && previous.operation == query.operation;
@@ -2633,14 +2648,22 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
             graph_jit::PublicCoverageInputView const* public_input;
             GlobalIndexRange window;
             std::span<GlobalIndex const> positions;
+            std::span<ObservationOutputSource const> output_sources;
             std::span<CachedObservationWindow const* const> previous;
             ObservationWindowReuse reuse;
             PersistedDataVersion reuse_version;
-        } projection{query, port, public_input, window, positions, previous, {}, {}};
+        } projection{query, port, public_input, window, positions, output_sources, previous, {}, {}};
         CoveragePropagationRequest roots;
         // Forward metadata is semantic, independent of what previous playback
         // happened to materialize. The ordinary transaction discovers dependencies.
-        if (public_input) {
+        if (!output_sources.empty()) {
+            for (auto const source : output_sources) {
+                if (std::ranges::contains(roots.output_demands, source.port, &OutputCoverageRequest::port)) continue;
+                roots.output_demands.push_back({.port = source.port, .sample_positions = demand});
+                auto const node = plan.ports[source.port].node;
+                if (!std::ranges::contains(roots.forward_nodes, node)) roots.forward_nodes.push_back(node);
+            }
+        } else if (public_input) {
             for (auto const& projection : public_input->projections) {
                 for (auto const& source : projection.sources) {
                     auto const node = plan.ports[source.output].node;
@@ -2674,6 +2697,11 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
                         throw std::runtime_error("observation snapshot changed during sample reuse");
                     result.semantic_version = version.semantic;
                     result.data_version = version.revision;
+                    if (!selected.output_sources.empty()) {
+                        project_summed_observation_window(selected.query, selected.output_sources,
+                            selected.window, selected.positions, plan, prepared, storage);
+                        return;
+                    }
                     if (selected.public_input) {
                         project_public_coverage_input(selected.query, *selected.public_input, selected.window,
                             selected.positions, plan, prepared, storage, &selected.reuse);

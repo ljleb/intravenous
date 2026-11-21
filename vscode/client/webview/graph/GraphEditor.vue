@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { PresentationObservations, provideObservations } from "../presentation/observationContext";
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowReactive, shallowRef, watch } from "vue";
 import type { GraphEditorHostMessage, GraphEditorState, GraphEditorWebviewMessage,
     GraphLaneInsertion, GraphPresentationPatch } from "../../src/graphEditorProtocol";
 import { ObservationProfile } from "../../src/observationProfile";
-import { ObservationDeliveryReceiver } from "../../src/observationDelivery";
-import { addressKey, newGraphLayout, readGraphViewState, type NodeAddress, type Point,
+import { GraphUiRecording } from "./graphUiRecording";
+import { usePresentationFrame } from "../presentation/presentationFrames";
+import { ObservationDeliverySequence } from "../../src/observationDelivery";
+import { addressKey, graphScopeNodeLabel, isProjectInstance, newGraphLayout, readGraphViewState, type NodeAddress, type Point,
     type PresentationState } from "../../src/graphScope";
 import { isTimelineSnapNode } from "../../src/timelineSnap";
 import type { CurveAxes, CurveDragKind } from "../../src/automationCurveEditing";
@@ -40,11 +42,12 @@ import type { StatusHint } from "../../src/statusBarText";
 import { projectHistoryShortcut } from "../../src/projectHistoryShortcut";
 import { graphEditorShortcut, isTextEditingTarget } from "../../src/graphEditorShortcuts";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
-import { mergeLaneOrder, moveSelectedLanes, orderLanes, selectLaneRange } from "../../src/laneSelection";
-import { connectionEndKey, connectionWirePath, portEndpointKey, portSlotKey, selectedLaneConnections, selectedLaneWirePath,
-    type PortWireAnchor, type RevealedConnectionEnd, type SelectedLaneWire } from "../../src/selectedLaneConnections";
+import { expandedGraphLanes, mergeLaneOrder, moveSelectedLanes, selectedProjectLaneIds, selectLaneRange } from "../../src/laneSelection";
+import { connectionEndKey, connectionWirePath, LaneConnectionViewport, portEndpointKey, portSlotKey,
+    resolveLaneConnectionEnds, selectedLaneConnections, selectedLaneWirePath,
+    type PortWireAnchor, type ResolvedLaneConnections, type RevealedConnectionEnd, type SelectedLaneWire } from "../../src/selectedLaneConnections";
 
-type HoveredPortGroup = { nodeKey: string; direction: "input" | "output" };
+type HoveredPortGroup = { nodeKey: string; rowKey?: string; direction: "input" | "output" };
 type PreviewAnchor = PortWireAnchor & { direction: "input" | "output" };
 type WireOcclusions = { labels: DOMRect[]; knobs: DOMRect[] };
 
@@ -61,9 +64,26 @@ const observations = new PresentationObservations((request) => webviewApi.postMe
     initial: webviewApi.getState()?.meterModes,
     save: (meterModes) => webviewApi.setState({ ...webviewApi.getState(), meterModes }) });
 provideObservations(observations);
-const observationDelivery = new ObservationDeliveryReceiver();
+let observationConfiguration: string | undefined;
+const observationDelivery = new ObservationDeliverySequence();
 let observationProfile: ObservationProfile | undefined;
 let observationProfileTimer: ReturnType<typeof setTimeout> | undefined;
+let graphUiRecording: GraphUiRecording | undefined;
+let graphUiProfileTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingVueFlush: GraphUiRecording | undefined;
+let graphVisible = true;
+function profileGraphUi<T>(label: string, run: () => T): T {
+    return graphUiRecording ? graphUiRecording.work.measure(label, run) : run();
+}
+function profileVueFlush(recording: GraphUiRecording) {
+    if (pendingVueFlush === recording) return;
+    pendingVueFlush = recording;
+    const start = performance.now();
+    void nextTick(() => {
+        if (pendingVueFlush === recording) pendingVueFlush = undefined;
+        if (recording === graphUiRecording) recording.work.record("Wait for Vue update after message", performance.now() - start);
+    });
+}
 let armedPlayheadTrace: string | undefined;
 let playheadTraceTimer: ReturnType<typeof setTimeout> | undefined;
 function takePlayheadTrace(): CursorTrace | undefined {
@@ -211,8 +231,7 @@ function startObjectDrag(event: PointerEvent, drag: ObjectDrag) {
     return () => { if (objectDrag === session) pointerLock.cancel(); };
 }
 provideManualControls({ gestures: manualGestures, version: manualVersion, setEnabled: (control, enabled) => {
-    if (control.inputName !== undefined)
-        webviewApi.postMessage({ type: "setManualInputEnabled", target: control.node, inputName: control.inputName, enabled });
+    webviewApi.postMessage({ type: "setManualControlEnabled", control, enabled });
 } });
 function startKnob(event: PointerEvent, key: string, begin: () => KnobDrag | undefined, reset?: () => void) {
     const element = surface.value;
@@ -397,20 +416,93 @@ const hoveredPortGroup = shallowRef<HoveredPortGroup | null>(null);
 const previewColorColumns = shallowRef<PortColorColumns[]>([]);
 let sourceGroupToLeave: HoveredPortGroup | null = null;
 const selectedLanes = shallowRef<ReadonlySet<string>>(new Set());
-const visibleNodes = computed(() => state.value.scope?.nodes.filter((node) => !isTimelineSnapNode(node)) ?? []);
-const orderedLanes = computed(() => orderLanes(visibleNodes.value, layout.value.laneOrder));
-const laneKeys = computed(() => orderedLanes.value.map(({ address }) => addressKey(address)));
-const selectedLaneIds = computed(() => orderedLanes.value.filter(({ address }) => selectedLanes.value.has(addressKey(address)))
-    .map(({ instance }) => instance.instanceId));
+const expandedModules = shallowRef<ReadonlyMap<string, NodeAddress>>(new Map());
+const lanes = computed(() => profileGraphUi("Build lane list", () => {
+    const scope = state.value.scope;
+    return scope ? expandedGraphLanes(scope, layout.value.laneOrder, expandedModules.value)
+        .filter(({ node }) => !isTimelineSnapNode(node)) : [];
+}));
+const visibleScope = computed(() => {
+    const scope = state.value.scope;
+    if (!scope) return null;
+    const children = new Map(lanes.value.filter(({ depth }) => depth > 0)
+        .map(({ node }) => [addressKey(node.address), node]));
+    return children.size ? { ...scope, nodes: [...scope.nodes, ...children.values()] } : scope;
+});
+const wireConnections = computed(() => visibleScope.value ? resolveLaneConnectionEnds(visibleScope.value) : []);
+const wireConnectionsById = computed(() => new Map(wireConnections.value.map((entry) => [entry.id, entry])));
+let wireLaneLayout: {
+    container: HTMLElement;
+    lanes: typeof lanes.value;
+    connections: ResolvedLaneConnections;
+    rows: HTMLElement[];
+    byAddress: Map<string, HTMLElement[]>;
+    index: LaneConnectionViewport;
+} | undefined;
+function readWireLaneLayout(container: HTMLElement, connections: ResolvedLaneConnections) {
+    const currentLanes = lanes.value;
+    if (wireLaneLayout?.container === container && wireLaneLayout.lanes === currentLanes
+        && wireLaneLayout.connections === connections) return wireLaneLayout;
+    const rows = [...container.querySelectorAll<HTMLElement>(":scope > [data-lane-address]")];
+    const byAddress = new Map<string, HTMLElement[]>();
+    const addresses = rows.map((row) => {
+        const address = row.dataset.laneAddress!;
+        const group = byAddress.get(address);
+        if (group) group.push(row);
+        else byAddress.set(address, [row]);
+        return address;
+    });
+    return wireLaneLayout = { container, lanes: currentLanes, connections, rows, byAddress,
+        index: new LaneConnectionViewport(connections, addresses) };
+}
+const observationLaneNames = computed(() => new Map(visibleScope.value?.nodes.map((node) => [addressKey(node.address),
+    graphScopeNodeLabel(node)])));
+const observationLaneCopies = computed(() => {
+    const counts = new Map<string, number>();
+    for (const { node } of lanes.value) {
+        const key = addressKey(node.address);
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+});
+function observationLaneName(address: NodeAddress): string {
+    const key = addressKey(address);
+    const name = observationLaneNames.value.get(key);
+    const identity = address.path?.length ? key : address.instanceId.slice(0, 8);
+    const copies = observationLaneCopies.value.get(key) ?? 0;
+    const label = name ? `${name} [${identity}]` : identity;
+    return copies > 1 ? `${label} (${copies} lane rows)` : label;
+}
+const laneKeys = computed(() => lanes.value.map(({ node }) => addressKey(node.address)));
+const projectLanes = computed(() => lanes.value.filter(({ node }) => isProjectInstance(node.address)).map(({ node }) => node));
+const selectedLaneIds = computed(() => selectedProjectLaneIds(lanes.value, selectedLanes.value));
+
+function toggleModule(address: NodeAddress) {
+    const expanded = new Map(expandedModules.value);
+    const key = addressKey(address);
+    if (expanded.delete(key)) {
+        const scope = state.value.scope;
+        if (scope) {
+            const remaining = expandedGraphLanes(scope, layout.value.laneOrder, expanded);
+            const keys = new Set(remaining.map(({ node }) => addressKey(node.address)));
+            for (const candidate of expanded.keys())
+                if (!keys.has(candidate)) expanded.delete(candidate);
+        }
+    } else expanded.set(key, address);
+    expandedModules.value = expanded;
+    webviewApi.postMessage({ type: "setExpandedModules", modules: [...expanded.values()] } satisfies GraphEditorWebviewMessage);
+}
 let laneSelectionAnchor: string | null = null;
 let pendingLaneCopies: string | undefined;
 let insertedSelection: string[] = [];
 const selectedWires = shallowRef<SelectedLaneWire[]>([]);
 const movingWireId = computed(() => connectionDrag.value?.edit?.connection.id);
+const sourceWires = computed(() => selectedWires.value.filter((wire) => wire.sourceOwned));
 const wireLayers = computed(() => {
     const layers: Record<keyof typeof wireOpacity, { wire: SelectedLaneWire; index: number }[]> = { faint: [], emphasized: [] };
     const moving = movingWireId.value;
     selectedWires.value.forEach((wire, index) => {
+        if (wire.sourceOwned) return;
         const layer = wire.emphasized && (moving === undefined || !wire.connectionIds.includes(moving)) ? "emphasized" : "faint";
         layers[layer].push({ wire, index });
     });
@@ -419,7 +511,7 @@ const wireLayers = computed(() => {
 const dragAnchors = shallowRef<PreviewAnchor[]>([]);
 const wireClips = shallowRef<Array<{ x: number; y: number; width: number; height: number }>>([]);
 const wireOcclusions = shallowRef<WireOcclusions>({ labels: [], knobs: [] });
-let wireFrame = 0;
+let pendingWireUpdate = false;
 let disposed = false;
 let wireResizeObserver: ResizeObserver | null = null;
 let stopListeningForFocus: (() => void) | undefined;
@@ -432,7 +524,7 @@ const packageName = ref("");
 const editedNode = computed(() => state.value.scope?.nodes.find((entry) => entry.instance.instanceId === editing.value));
 const root = computed<SemanticNode>(() => ({
     id: "", instanceId: "", definitionId: "", kind: "Project graph", sourceIdentity: "",
-    memberCount: 0, ports: [], members: [], sourceSpans: [], scope: state.value.scope ?? undefined,
+    memberCount: 0, ports: [], members: [], sourceSpans: [], scope: visibleScope.value ?? undefined,
 }));
 const cursorOutputFraction = computed(() => connectionDrag.value
     ? connectionCursorOutputFraction(connectionDrag.value.end, previewColorColumns.value) : 0.5);
@@ -455,7 +547,7 @@ const dropPreviewWires = computed(() => {
     return target ? previewWires.value.map((wire) => ({ ...wire, target,
         path: connectionWirePath(wire.anchor, target) })) : [];
 });
-const changedPresentationStates = new Map<string, () => PresentationState | null>();
+const changedPresentationStates = shallowReactive(new Map<string, () => PresentationState | null>());
 const pendingPresentation = new Map<number, { patch: GraphPresentationPatch; revision?: number }>();
 let nextPresentationRequest = 0;
 function updateProjectPresentation() {
@@ -504,7 +596,7 @@ function selectNewLanes(lanes: readonly GraphLaneInsertion[]) {
     insertedSelection = lanes.map(({ instanceId }) => addressKey({ instanceId }));
     selectInsertedLanes();
 }
-provideGraphEditor({ layout, save,
+provideGraphEditor({ layout, save, profileGraphUi,
     readPresentationState: (key) => {
         const pending = changedPresentationStates.get(key);
         const state = pending ? pending() : layout.value.presentationStates[key];
@@ -515,7 +607,8 @@ provideGraphEditor({ layout, save,
     startObjectDrag, takePlayheadTrace,
     setTimelineZoomHint: (hint) => { timelineZoomHint.value = hint; },
     copyNodeDebugDetails: (address) => webviewApi.postMessage({ type: "copyNodeDebugDetails", nodeKey: addressKey(address) }),
-    scope: computed(() => state.value.scope), shiftHeld: computed(() => hoverShift.value.held),
+    scope: visibleScope, lanes, expandedModules, toggleModule,
+    shiftHeld: computed(() => hoverShift.value.held),
     connectionDrag, hoveredPortGroup, startConnection, cancelConnection, startAutomation, activeKnob, startKnob,
     cancelKnob() {
         if (!knobDrag) return false;
@@ -551,7 +644,8 @@ function measureWireAnchor(element: HTMLElement, id: string, direction: "input" 
     const circle = circles.item(direction === "input" ? circles.length - 1 : 0) ?? element;
     const rect = circle.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
-    const point = { id, x: direction === "input" ? rect.right : rect.left, y: rect.top + rect.height / 2 };
+    const point = { id, x: direction === "input" ? rect.right : rect.left, y: rect.top + rect.height / 2,
+        moduleBoundary: !!element.closest("[data-module-boundary]") };
     const body = element.closest(".expansion-body");
     if (body) {
         const clip = body.getBoundingClientRect();
@@ -559,10 +653,10 @@ function measureWireAnchor(element: HTMLElement, id: string, direction: "input" 
     }
     return point;
 }
-function measureWireOcclusions(top: number, bottom: number): WireOcclusions {
+function measureWireOcclusions(top: number, bottom: number, roots: readonly ParentNode[]): WireOcclusions {
     const range = document.createRange();
     const occlusions: WireOcclusions = { labels: [], knobs: [] };
-    for (const element of document.querySelectorAll(".lane-name, .direct-port-name, .port-entry .port-name, .manual-knob")) {
+    for (const root of roots) for (const element of root.querySelectorAll(".lane-name, .lane-source-label, .direct-port-name, .port-entry .port-name, .manual-knob")) {
         if (element.closest(".port-panel.positioning")) continue;
         const bounds = element.getBoundingClientRect();
         const popup = element.closest(".expansion-body")?.getBoundingClientRect();
@@ -590,7 +684,8 @@ function portGroupAt(point: Point): HoveredPortGroup | null {
     const group = hit?.closest<HTMLElement>("[data-folded-ports], .port-panel[data-port-group]");
     const nodeKey = group?.dataset.nodeKey ?? group?.closest<HTMLElement>("[data-node-key]")?.dataset.nodeKey;
     const direction = group?.dataset.foldedPorts ?? group?.dataset.portGroup;
-    return nodeKey && (direction === "input" || direction === "output") ? { nodeKey, direction } : null;
+    const rowKey = group?.closest<HTMLElement>("[data-lane-row]")?.dataset.laneRow;
+    return nodeKey && (direction === "input" || direction === "output") ? { nodeKey, direction, rowKey } : null;
 }
 function measurePortColorColumns(): PortColorColumns[] {
     const columns: PortColorColumns[] = [];
@@ -610,70 +705,131 @@ function measurePortColorColumns(): PortColorColumns[] {
     return columns;
 }
 function updateWires() {
-    const scope = state.value.scope;
+    const scope = visibleScope.value;
     if (!scope || !surface.value) { selectedWires.value = []; dragAnchors.value = []; connectionStartAnchor.value = null; return; }
-    const exact = new Map<string, PortWireAnchor>();
-    const slots = new Map<string, PortWireAnchor>();
-    const connectionEnds = new Map<string, PortWireAnchor>();
-    const revealedEnds: RevealedConnectionEnd[] = [];
-    for (const element of document.querySelectorAll<HTMLElement>("[data-connection-end]")) {
-        const end = JSON.parse(element.dataset.connectionEnd!) as RevealedConnectionEnd;
-        revealedEnds.push(end);
-        const key = connectionEndKey(end.connectionId, end.port);
-        const anchor = measureWireAnchor(element, `connection:${key}`, end.port.direction);
-        if (anchor) connectionEnds.set(key, anchor);
-    }
-    for (const element of document.querySelectorAll<HTMLElement>("[data-port-endpoint]")) {
-        const port = JSON.parse(element.dataset.portEndpoint!) as GraphPortEndpoint;
-        const key = portEndpointKey(port);
-        const anchor = measureWireAnchor(element, `port:${key}`, port.direction);
-        if (anchor) exact.set(key, anchor);
-    }
-    for (const element of document.querySelectorAll<HTMLElement>("[data-port-slot]")) {
-        const direction = element.closest<HTMLElement>("[data-direction]")?.dataset.direction;
-        if (direction !== "input" && direction !== "output") continue;
-        const key = element.dataset.portSlot!;
-        const anchor = measureWireAnchor(element, `slot:${key}`, direction);
-        if (anchor) slots.set(key, anchor);
-    }
-    const anchorFor = (port: GraphPortEndpoint, connectionId: string) =>
-        connectionEnds.get(connectionEndKey(connectionId, port))
-        ?? exact.get(portEndpointKey(port)) ?? slots.get(portSlotKey(port.address, port.direction)) ?? null;
+    const drag = connectionDrag.value;
     const timeline = surface.value.querySelector(".timeline-scope");
     const viewport = (timeline ?? surface.value).getBoundingClientRect();
-    const header = timeline?.querySelector(".timeline-heading");
+    const header = timeline?.querySelector<HTMLElement>(".timeline-heading");
     const heading = header?.getBoundingClientRect();
     const snapInput = header?.querySelector(".timeline-snap-input [data-port-endpoint]")
         ?.closest(".timeline-snap-input")?.getBoundingClientRect();
     const top = heading ? Math.max(viewport.top, heading.bottom) : viewport.top;
-    selectedWires.value = selectedLaneConnections(scope, selectedLanes.value, anchorFor, revealedEnds,
-        { top, bottom: viewport.bottom, headerTarget: snapInput });
-    wireOcclusions.value = measureWireOcclusions(top, viewport.bottom);
-    const drag = connectionDrag.value;
-    connectionStartAnchor.value = drag && !drag.edit ? anchorFor(drag.port, "") : null;
+    const popovers = [...document.querySelectorAll<HTMLElement>(".port-panel")];
+    const auxiliaryRoots = header ? [header, ...popovers] : popovers;
+    const revealedEnds = popovers.flatMap((panel) => [...panel.querySelectorAll<HTMLElement>("[data-connection-end]")]
+        .map((element) => ({ element, end: JSON.parse(element.dataset.connectionEnd!) as RevealedConnectionEnd })));
+    const connections = wireConnections.value;
+    let candidates: Iterable<ResolvedLaneConnections[number]> = connections;
+    let anchorRoots: readonly ParentNode[] = [document];
+    let occlusionRoots: readonly ParentNode[] = anchorRoots;
+    const container = timeline?.querySelector<HTMLElement>(":scope > .lanes");
+    if (container && !drag) {
+        const lanes = readWireLaneLayout(container, connections);
+        const laneBounds = container.getBoundingClientRect();
+        // Use the rendered height so fractional CSS pixels cannot shift
+        // the viewport range after scrolling through many rows.
+        const rowHeight = lanes.rows.length && laneBounds.height
+            ? laneBounds.height / lanes.rows.length : layout.value.timeline.laneHeight;
+        const first = Math.floor((top - laneBounds.top) / rowHeight) - 1;
+        const last = Math.floor((viewport.bottom - laneBounds.top) / rowHeight) + 1;
+        const inView = lanes.index.inRows(first, last);
+        if (revealedEnds.length) {
+            const withRevealed = new Set(inView);
+            for (const { end } of revealedEnds) {
+                const connection = wireConnectionsById.value.get(end.connectionId);
+                if (connection) withRevealed.add(connection);
+            }
+            candidates = withRevealed;
+        } else candidates = inView;
+        const roots = new Set(auxiliaryRoots);
+        const addresses = new Set<string>();
+        for (const { inputs, outputs } of candidates) {
+            for (const { address } of [...inputs, ...outputs]) addresses.add(address);
+        }
+        for (const address of addresses) for (const row of lanes.byAddress.get(address) ?? []) roots.add(row);
+        anchorRoots = [...roots];
+        occlusionRoots = [...auxiliaryRoots, ...lanes.rows.slice(Math.max(0, first), Math.max(0, last + 1))];
+    }
+    const exact = new Map<string, PortWireAnchor[]>();
+    const slots = new Map<string, PortWireAnchor[]>();
+    const connectionEnds = new Map<string, PortWireAnchor[]>();
+    const addAnchor = (anchors: Map<string, PortWireAnchor[]>, key: string, kind: string,
+        direction: "input" | "output", element: HTMLElement) => {
+        const row = element.closest<HTMLElement>("[data-lane-row]")?.dataset.laneRow;
+        const anchor = measureWireAnchor(element, JSON.stringify([kind, key, row]), direction);
+        if (!anchor) return;
+        const existing = anchors.get(key);
+        if (existing) existing.push(anchor);
+        else anchors.set(key, [anchor]);
+    };
+    for (const { element, end } of revealedEnds) {
+        const key = connectionEndKey(end.connectionId, end.port);
+        addAnchor(connectionEnds, key, "connection", end.port.direction, element);
+    }
+    for (const root of anchorRoots) for (const element of root.querySelectorAll<HTMLElement>("[data-port-endpoint]")) {
+        const port = JSON.parse(element.dataset.portEndpoint!) as GraphPortEndpoint;
+        const key = portEndpointKey(port);
+        addAnchor(exact, key, "port", port.direction, element);
+    }
+    for (const root of anchorRoots) for (const element of root.querySelectorAll<HTMLElement>("[data-port-slot]")) {
+        const direction = element.closest<HTMLElement>("[data-direction]")?.dataset.direction;
+        if (direction !== "input" && direction !== "output") continue;
+        const key = element.dataset.portSlot!;
+        addAnchor(slots, key, "slot", direction, element);
+    }
+    const portAnchors = (port: GraphPortEndpoint, moduleBoundary: boolean) => {
+        const direct = exact.get(portEndpointKey(port))?.filter((anchor) => anchor.moduleBoundary === moduleBoundary);
+        return direct?.length ? direct : slots.get(portSlotKey(port.address, port.direction))
+            ?.filter((anchor) => anchor.moduleBoundary === moduleBoundary) ?? [];
+    };
+    const anchorFor = (port: GraphPortEndpoint, connectionId: string, moduleBoundary = false) => {
+        if (wireConnectionsById.value.get(connectionId)?.sourceOwned) return portAnchors(port, moduleBoundary);
+        const revealed = connectionEnds.get(connectionEndKey(connectionId, port))
+            ?.filter((anchor) => anchor.moduleBoundary === moduleBoundary);
+        if (revealed?.length) return revealed;
+        if (moduleBoundary) {
+            const anchors = portAnchors(port, true);
+            if (anchors.length) return anchors;
+        }
+        return portAnchors(port, false);
+    };
+    selectedWires.value = profileGraphUi("Route connections", () => selectedLaneConnections(candidates, selectedLanes.value,
+        anchorFor, revealedEnds.map(({ end }) => end), { top, bottom: viewport.bottom, headerTarget: snapInput }));
+    if (selectedWires.value.length || drag) {
+        wireOcclusions.value = profileGraphUi("Measure wire occlusions", () => measureWireOcclusions(top, viewport.bottom, occlusionRoots));
+        wireClips.value = [{ x: viewport.left, y: top, width: viewport.width, height: Math.max(0, viewport.bottom - top) },
+            ...(snapInput ? [{ x: snapInput.x, y: snapInput.y, width: snapInput.width, height: snapInput.height }] : []),
+            ...popovers.map((element) => {
+                const rect = element.getBoundingClientRect();
+                return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+            })];
+    }
+    const starts = drag && !drag.edit ? portAnchors(drag.port, !!connectionStartAnchor.value?.moduleBoundary) : null;
+    if (starts?.length) {
+        const previous = connectionStartAnchor.value;
+        connectionStartAnchor.value = starts.reduce((closest, candidate) => previous
+            && Math.abs(candidate.y - previous.y) < Math.abs(closest.y - previous.y) ? candidate : closest);
+    } else connectionStartAnchor.value = null;
     previewColorColumns.value = drag ? measurePortColorColumns() : [];
-    const end = connectionDrag.value?.edit;
-    const anchors = end ? fixedConnectionPorts(scope, end).map((port): PreviewAnchor | null => {
-        const anchor = anchorFor(port, end.connection.id);
-        return anchor ? { ...anchor, direction: port.direction } : null;
-    }).filter((anchor): anchor is PreviewAnchor => !!anchor) : [];
+    const end = drag?.edit;
+    const anchors: PreviewAnchor[] = end ? fixedConnectionPorts(scope, end).flatMap((port) =>
+        (anchorFor(port, end.connection.id) ?? []).map((anchor) => ({ ...anchor, direction: port.direction }))) : [];
     dragAnchors.value = [...new Map(anchors.map((anchor) => [anchor.id, anchor])).values()];
-    wireClips.value = [{ x: viewport.left, y: top, width: viewport.width, height: Math.max(0, viewport.bottom - top) },
-        ...(snapInput ? [{ x: snapInput.x, y: snapInput.y, width: snapInput.width, height: snapInput.height }] : []),
-        ...[...document.querySelectorAll(".port-panel")].map((element) => {
-            const rect = element.getBoundingClientRect();
-            return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
-        })];
     updateDropPreview();
 }
+const wireUpdate = usePresentationFrame("measure", () => {
+    if (!disposed) profileGraphUi("Measure and route wires", updateWires);
+});
 function scheduleWireUpdate() {
-    if (disposed || wireFrame) return;
+    if (disposed || pendingWireUpdate) return;
+    pendingWireUpdate = true;
     void nextTick(() => {
-        if (disposed || wireFrame) return;
-        wireFrame = requestAnimationFrame(() => { wireFrame = 0; if (!disposed) updateWires(); });
+        pendingWireUpdate = false;
+        if (!disposed) wireUpdate.schedule();
     });
 }
-watch([selectedLanes, () => state.value.scope, () => layout.value.timeline.laneHeight, () => layout.value.laneOrder],
+watch([selectedLanes, visibleScope, lanes, () => layout.value.timeline.laneHeight],
     scheduleWireUpdate, { flush: "post" });
 function startConnection(event: PointerEvent, port: GraphPortEndpoint, edit?: GraphConnectionEnd) {
     if (!surface.value || !state.value.scope?.editable || connectionDrag.value) return;
@@ -690,7 +846,8 @@ function startConnection(event: PointerEvent, port: GraphPortEndpoint, edit?: Gr
     surface.value.setPointerCapture(event.pointerId);
     connectionDrag.value = drag;
     connectionStartAnchor.value = edit ? null : anchor;
-    sourceGroupToLeave = { nodeKey: addressKey(port.address), direction: port.direction };
+    sourceGroupToLeave = { nodeKey: addressKey(port.address), direction: port.direction,
+        rowKey: handle.closest<HTMLElement>("[data-lane-row]")?.dataset.laneRow };
     hoveredPortGroup.value = null;
     scheduleWireUpdate();
 }
@@ -702,7 +859,7 @@ function updateDropPreview() {
     const drag = connectionDrag.value;
     const handle = drag?.moved ? destinationHandle(document.elementFromPoint(drag.end.x, drag.end.y)) : null;
     const target = handle?.dataset.portEndpoint ? JSON.parse(handle.dataset.portEndpoint) as GraphPortEndpoint : null;
-    const anchor = handle && drag && target && canDropPortConnection(state.value.scope, drag, target)
+    const anchor = handle && drag && target && canDropPortConnection(visibleScope.value, drag, target)
         ? measureWireAnchor(handle, "drop-preview", target.direction) : null;
     dropPreviewAnchor.value = anchor && target ? { ...anchor, direction: target.direction } : null;
 }
@@ -717,13 +874,15 @@ function moveConnection(event: PointerEvent) {
     updateDropPreview();
     const hovered = portGroupAt(next.end);
     if (sourceGroupToLeave) {
-        if (hovered?.nodeKey === sourceGroupToLeave.nodeKey && hovered.direction === sourceGroupToLeave.direction) {
+        if (hovered?.nodeKey === sourceGroupToLeave.nodeKey && hovered.rowKey === sourceGroupToLeave.rowKey
+            && hovered.direction === sourceGroupToLeave.direction) {
             hoveredPortGroup.value = null;
             return;
         }
         sourceGroupToLeave = null;
     }
-    if (hovered?.nodeKey !== hoveredPortGroup.value?.nodeKey || hovered?.direction !== hoveredPortGroup.value?.direction) {
+    if (hovered?.nodeKey !== hoveredPortGroup.value?.nodeKey || hovered?.direction !== hoveredPortGroup.value?.direction
+        || hovered?.rowKey !== hoveredPortGroup.value?.rowKey) {
         hoveredPortGroup.value = hovered;
     }
 }
@@ -736,7 +895,7 @@ function releaseConnection(event: PointerEvent) {
     const hit = document.elementFromPoint(event.clientX, event.clientY);
     const handle = destinationHandle(hit);
     const target = handle?.dataset.portEndpoint ? JSON.parse(handle.dataset.portEndpoint) as GraphPortEndpoint : null;
-    if (target && !canDropPortConnection(state.value.scope, drag, target)) {
+    if (target && !canDropPortConnection(visibleScope.value, drag, target)) {
         cancelConnection(); return;
     }
     const emptyEditorSpace = !!hit && !!surface.value?.contains(hit)
@@ -911,9 +1070,9 @@ function keyDown(event: KeyboardEvent) {
         return;
     }
     if (event.shiftKey && (event.key === "ArrowUp" || event.key === "ArrowDown") && !event.defaultPrevented
-        && !editingText && !event.altKey && !event.ctrlKey && !event.metaKey && selectedLanes.value.size) {
+        && !editingText && !event.altKey && !event.ctrlKey && !event.metaKey && selectedLaneIds.value.length) {
         event.preventDefault();
-        const current = laneKeys.value;
+        const current = projectLanes.value.map(({ address }) => addressKey(address));
         const next = moveSelectedLanes(current, selectedLanes.value, event.key === "ArrowUp" ? -1 : 1);
         if (next !== current) {
             save(mergeLaneOrder(layout.value.laneOrder, next));
@@ -928,8 +1087,7 @@ function keyDown(event: KeyboardEvent) {
     if (event.key === "Delete" && !event.defaultPrevented && !editingText
         && !editingLaneItems
         && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-        const instanceIds = visibleNodes.value.filter((node) => selectedLanes.value.has(addressKey(node.address)))
-            .map((node) => node.instance.instanceId);
+        const instanceIds = selectedLaneIds.value;
         if (instanceIds.length) {
             event.preventDefault();
             if (!event.repeat) webviewApi.postMessage({ type: "deleteSelectedLanes", instanceIds });
@@ -978,6 +1136,18 @@ function createPackage() {
     creatingPackage.value = false;
 }
 function receive(event: MessageEvent<GraphEditorHostMessage>) {
+    const recording = graphUiRecording;
+    const type = event.data?.type;
+    if (!recording || (type !== "graphState" && type !== "playbackUpdate" && type !== "manualControlState"
+        && type !== "observationUpdate" && type !== "observationResponse")) {
+        applyMessage(event);
+        return;
+    }
+    recording.work.measure(`Apply ${type} message`, () => applyMessage(event));
+    profileVueFlush(recording);
+}
+
+function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
     if (event.data?.type === "graphPresentationAccepted") {
         const { requestId, revision } = event.data;
         const pending = pendingPresentation.get(requestId);
@@ -1010,6 +1180,8 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
         return;
     }
     if (event.data?.type === "observationVisibility") {
+        graphVisible = event.data.visible;
+        graphUiRecording?.setVisible(graphVisible);
         observations.setVisible(event.data.visible);
         return;
     }
@@ -1024,27 +1196,42 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
         }, 30_000);
         return;
     }
+    if (event.data?.type === "startGraphUiProfile") {
+        clearTimeout(graphUiProfileTimer);
+        graphUiRecording?.dispose();
+        const recording = graphUiRecording = new GraphUiRecording();
+        recording.setVisible(graphVisible);
+        const { profileId, durationMs } = event.data;
+        graphUiProfileTimer = setTimeout(() => {
+            graphUiRecording = undefined;
+            const summary = recording.finish({
+                lanes: lanes.value.length, expandedModules: expandedModules.value.size,
+                connections: state.value.scope?.connections.length ?? 0,
+                drawnWires: selectedWires.value.length, laneHeight: layout.value.timeline.laneHeight,
+            });
+            webviewApi.postMessage({ type: "graphUiProfile", profileId, summary } satisfies GraphEditorWebviewMessage);
+        }, durationMs);
+        return;
+    }
     if (event.data?.type === "startObservationProfile") {
         clearTimeout(observationProfileTimer);
         const profile = new ObservationProfile();
         observationProfile = profile;
+        observations.startProfile(profile, observationLaneName);
         observationProfileTimer = setTimeout(() => {
             observationProfile = undefined;
             observationProfileTimer = undefined;
-            webviewApi.postMessage({ type: "observationProfile", summary: profile.summary() } satisfies GraphEditorWebviewMessage);
+            observations.stopProfile();
+            webviewApi.postMessage({ type: "observationProfile", summary: profile.summary(observations.values) } satisfies GraphEditorWebviewMessage);
         }, event.data.durationMs);
         return;
     }
     if (event.data?.type === "observationUpdate") {
-        const previousVersion = observationProfile ? observations.version.value : undefined;
         const { update, sequence, previousSequence } = event.data;
         const delivery = observationDelivery.receive(update, sequence, previousSequence);
         if (delivery === "resync") webviewApi.postMessage({ type: "observationResync" } satisfies GraphEditorWebviewMessage);
-        if (delivery === "applied") {
-            const current = observationDelivery.read("viewport");
-            if (current) observations.receive({ type: "observationUpdate", update: current });
-        }
-        observationProfile?.record(event.data, observations.version.value !== previousVersion);
+        const changed = delivery === "applied" && observations.receiveUpdate(update);
+        observationProfile?.record(event.data, changed);
         return;
     }
     if (event.data?.type === "observationResponse") {
@@ -1085,12 +1272,22 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     if (editing.value !== null && !editedNode.value) editing.value = null;
     if (!state.value.scope?.editable && pickerOpen.value) closeNodePicker();
     manualGestures.configuredGeneration(state.value.scope?.generation ?? null);
-    observations.configuredGeneration(state.value.scope?.execution?.phase === "configurationFailed"
-        ? null : state.value.scope?.generation ?? null, state.value.scope?.sampleRate);
-    if (state.value.sessionStatus === "running") observations.refresh();
-    else observations.disconnect();
+    const scope = state.value.scope;
+    const generation = scope?.execution?.phase === "configurationFailed" ? null : scope?.generation ?? null;
+    observations.configuredGeneration(generation, scope?.sampleRate);
+    if (state.value.sessionStatus === "running") {
+        const prepared = generation !== null && scope?.execution?.preparedGeneration === generation;
+        const configuration = JSON.stringify([generation, prepared]);
+        if (configuration !== observationConfiguration) {
+            observationConfiguration = configuration;
+            observations.refresh();
+        }
+    } else {
+        observationConfiguration = undefined;
+        observations.disconnect();
+    }
     const entry = manualGestures.numericEntry();
-    if (entry && !canEditManualControl(entry.control, resolveManualControl(state.value.scope, entry.control)))
+    if (entry && !canEditManualControl(entry.control, resolveManualControl(visibleScope.value, entry.control)))
         manualGestures.cancelEntry();
     if (state.value.sessionStatus !== "running") {
         pendingPresentation.clear();
@@ -1102,9 +1299,9 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
     }
     const drag = connectionDrag.value;
     if (drag && (state.value.sessionStatus !== "running"
-        || !canContinuePortConnection(state.value.scope, drag.port, drag.edit))) cancelConnection();
+        || !canContinuePortConnection(visibleScope.value, drag.port, drag.edit))) cancelConnection();
     if (selectedLanes.value.size) {
-        const addresses = new Set(visibleNodes.value.map((node) => addressKey(node.address)));
+        const addresses = new Set(laneKeys.value);
         const remaining = new Set([...selectedLanes.value].filter((key) => addresses.has(key)));
         if (remaining.size !== selectedLanes.value.size) selectedLanes.value = remaining;
     }
@@ -1157,13 +1354,17 @@ onBeforeUnmount(() => {
     clearTimeout(playheadTraceTimer);
     clearTimeout(observationProfileTimer);
     observationProfile = undefined;
+    observations.stopProfile();
+    clearTimeout(graphUiProfileTimer);
+    graphUiRecording?.dispose();
+    graphUiRecording = undefined;
     observations.dispose();
     disposed = true;
     blurPointerControls();
     for (const type of pointerLockExitTypes) window.removeEventListener(type, guardPointerLockExit, true);
     trustedHover.dispose();
     webviewApi.postMessage({ type: "graphInteractionHint", hint: null });
-    cancelAnimationFrame(wireFrame);
+    wireUpdate.cancel();
     wireResizeObserver?.disconnect();
     window.removeEventListener("scroll", scheduleWireUpdate, true);
     window.removeEventListener("message", receive);
@@ -1246,7 +1447,7 @@ onBeforeUnmount(() => {
                             :x="label.x - 4" :y="label.y - 4" :width="label.width + 8" :height="label.height + 8" />
                     </g>
                 </mask>
-                <linearGradient v-for="(wire, index) in selectedWires" :id="`selected-wire-${index}`" :key="wire.key"
+                <linearGradient v-for="{ wire, index } in [...wireLayers.faint, ...wireLayers.emphasized]" :id="`selected-wire-${index}`" :key="wire.key"
                     gradientUnits="userSpaceOnUse" :x1="wire.source.x" :y1="wire.source.y" :x2="wire.target.x" :y2="wire.target.y">
                     <stop offset="0" :style="{ stopColor: wireColor('output') }" />
                     <stop offset="1" :style="{ stopColor: wireColor('input') }" />
@@ -1264,6 +1465,11 @@ onBeforeUnmount(() => {
             </defs>
             <g mask="url(#wire-knob-mask)">
                 <g clip-path="url(#selected-wire-clip)">
+                    <g mask="url(#wire-label-fade)">
+                        <path v-for="wire in sourceWires" :key="wire.key" class="selected-wire"
+                            :d="selectedLaneWirePath(wire)" stroke="var(--vscode-descriptionForeground)"
+                            :stroke-opacity="wire.emphasized ? .82 : .48" />
+                    </g>
                     <g v-for="(wires, layer) in wireLayers" :key="layer"
                         :mask="layer === 'emphasized' ? 'url(#wire-label-fade)' : undefined">
                         <path v-for="{ wire, index } in wires" :key="wire.key" class="selected-wire"

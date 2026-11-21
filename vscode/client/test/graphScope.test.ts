@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { addressFromKey, addressKey, laneViewFromKey, newGraphLayout, placeNodes, presentationStateKey,
+import { addressFromKey, addressKey, graphScopeNodeLabel, laneViewFromKey, newGraphLayout, placeNodes, presentationStateKey,
     readGraphViewState, resolveScopePorts, zoomAt,
     type GraphScope, type GraphScopeNode } from "../src/graphScope";
 import { semanticNodeFromScopeChild } from "../webview/presentation/semanticNode";
@@ -114,6 +114,22 @@ test("default lane names honor user labels without exposing instance identifiers
     assert.equal(nodeDisplayName(lane), "Bass voice");
     assert.equal(lane.definitionId, "test.filter");
     assert.equal(lane.address?.instanceId, "sink");
+});
+
+test("child lanes show their own type and preserve the source label", () => {
+    const scope = graph();
+    const owner = scope.nodes[0];
+    owner.instance.displayName = "My Oscillator";
+    const declaration = { kind: "virtual", sourceIdentity: "detune_pair", typeIdentity: "Quotient" };
+    const child: GraphScopeNode = {
+        ...owner, address: { ...owner.address, path: [declaration, { kind: "member", index: 0 }] },
+        childDisplayName: "Quotient", childSourceLabel: "detune_pair 1",
+    };
+    const semantic = semanticNodeFromScopeChild(child, scope);
+    assert.equal(nodeDisplayName(semantic), "Quotient");
+    assert.equal(semantic.sourceLabel, "detune_pair 1");
+    assert.equal(graphScopeNodeLabel(child), "Quotient · detune_pair 1");
+    assert.equal(graphScopeNodeLabel(owner), "My Oscillator");
 });
 
 test("pending realization is distinct from a reported configuration failure", () => {

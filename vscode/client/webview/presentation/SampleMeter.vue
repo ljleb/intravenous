@@ -1,33 +1,34 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import type { MeterMode, ObservationDisplayValue } from "../../src/observations";
 import { levelDomain, meterPosition, MeterPresentationState, valueDomain } from "../../src/meterPresentation";
 import { numericTicks } from "../timeline/geometry";
 import RulerGraduations from "../timeline/RulerGraduations.vue";
 import { rightClickHint } from "../../src/statusBarText";
+import { usePresentationFrame } from "./presentationFrames";
+import { usePresentationSize } from "./presentationSize";
 
-const props = defineProps<{ mode: MeterMode; label: string; result?: ObservationDisplayValue; active?: boolean; gain?: number;
+const props = defineProps<{ mode: MeterMode; label: string; result?: ObservationDisplayValue; retained?: ObservationDisplayValue; active?: boolean; gain?: number;
     showScaleLabels: boolean }>();
-const root = ref<HTMLElement | null>(null), width = ref(0);
+const root = ref<HTMLElement | null>(null);
+const size = usePresentationSize(root);
+const width = computed(() => size.value?.width ?? 0);
 const domain = computed(() => props.mode === "level" ? levelDomain : valueDomain);
 const presentation = new MeterPresentationState();
 const motionVersion = ref(0);
 const updating = computed(() => { void motionVersion.value; return presentation.updating; });
 const reading = computed(() => { void motionVersion.value; return presentation.reading(props.mode, props.gain); });
 const status = computed(() => { void motionVersion.value; return presentation.status(props.mode, props.gain); });
-let animation = 0;
-function stopAnimation(): void { cancelAnimationFrame(animation); animation = 0; }
-function animate(now: number): void {
-    animation = 0;
+const frame = usePresentationFrame("update", (now) => {
     presentation.advance(now);
     ++motionVersion.value;
-    if (presentation.moving) animation = requestAnimationFrame(animate);
-}
-watch([() => props.result, () => props.active], () => {
-    stopAnimation();
-    presentation.update(props.result, !!props.active, performance.now());
+    if (presentation.moving) frame.schedule();
+});
+watch([() => props.result, () => props.active, () => props.retained], () => {
+    frame.cancel();
+    presentation.update(props.result, !!props.active, performance.now(), props.retained);
     ++motionVersion.value;
-    if (presentation.moving) animation = requestAnimationFrame(animate);
+    if (presentation.moving) frame.schedule();
 }, { immediate: true });
 const ticks = computed(() => {
     const { min, max } = domain.value;
@@ -36,7 +37,7 @@ const ticks = computed(() => {
     // Explicit scale endpoints and unity must remain visible across widths.
     for (const value of [min, max, ...(props.mode === "level" ? [0] : [])]) {
         const x = meterPosition(value, min, max) * width.value;
-        if (!ticks.some((tick) => Math.abs(tick.x - x) < 1)) ticks.push({ value, x,
+        if (!ticks.some((tick) => Math.abs(tick.x - x) < 1)) ticks.push({ key: value, value, x,
             label: `${value > 0 && props.mode === "level" ? "+" : ""}${value}` });
     }
     return ticks.sort((a, b) => a.x - b.x).map((tick, index, all) => ({ ...tick,
@@ -51,12 +52,6 @@ const meterShortcuts = `${rightClickHint} scale`;
 function focusLane(event: MouseEvent) {
     (event.currentTarget as HTMLElement).closest<HTMLElement>(".lane")?.focus({ preventScroll: true });
 }
-let resize: ResizeObserver | undefined;
-onMounted(() => {
-    resize = new ResizeObserver(([entry]) => { width.value = entry?.contentRect.width ?? 0; });
-    if (root.value) resize.observe(root.value);
-});
-onBeforeUnmount(() => { stopAnimation(); resize?.disconnect(); });
 </script>
 
 <template>

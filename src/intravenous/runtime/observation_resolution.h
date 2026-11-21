@@ -48,6 +48,57 @@ inline graph_jit::PublicEventCoverageInputView const* observation_public_event_c
     return found == views.end() ? nullptr : &*found;
 }
 
+template<class Channel>
+inline std::optional<Channel> observation_channel(std::vector<Channel> const& channels,
+    std::optional<std::size_t> index)
+{
+    if (index && *index < channels.size()) return channels[*index];
+    if (!index && channels.size() == 1) return channels.front();
+    return std::nullopt;
+}
+
+inline auto resolve_observation_channel(ConfiguredGraph const& graph,
+    std::unordered_map<std::string, NodeInstancePlacement> const& placements,
+    ObservationSource const& source, auto resolve)
+{
+    bool const group = !source.node.path.empty()
+        && std::holds_alternative<ProjectVirtualNodeSelector>(source.node.path.back());
+    return observation_channel(resolve(graph, placements, source.node, source.member,
+        group ? std::nullopt : source.channel), group ? source.channel : std::nullopt);
+}
+
+inline bool observes_virtual_output(ObservationSource const& source)
+{
+    if (source.kind != ObservationSourceKind::output || source.node.path.empty()) return false;
+    auto const* selector = std::get_if<ProjectVirtualNodeSelector>(&source.node.path.back());
+    return selector && selector->type_identity.has_value();
+}
+
+inline std::vector<SampleOutputChannelId> resolve_virtual_output_observation(
+    ConfiguredGraph const& graph,
+    std::unordered_map<std::string, NodeInstancePlacement> const& placements,
+    ObservationSource const& source)
+{
+    auto channels = resolve_project_sample_output(graph, placements, source.node, source.member, source.channel);
+    if (!source.channel && std::ranges::any_of(channels, [&](auto channel) {
+            return channel_count(graph.node_bundles.resolve_sample_output(
+                {channel.bundle, PortKind::sample, channel.port}).config.channel_layout) != 1;
+        })) return {};
+    return channels;
+}
+
+inline bool observation_outputs_share_pace(std::span<SampleOutputChannelId const> sources,
+    graph_jit::ResolvedPortRealization const* realization)
+{
+    if (sources.size() <= 1) return true;
+    if (!realization) return false;
+    auto const first = sources.front();
+    auto const pace = realization->output(first.bundle, first.port).absolute_pace;
+    return std::ranges::all_of(sources, [&](auto source) {
+        return realization->output(source.bundle, source.port).absolute_pace == pace;
+    });
+}
+
 inline bool resolve_observation_window_source(
     ConfiguredGraph const& graph,
     std::unordered_map<std::string, NodeInstancePlacement> const& placements,
@@ -78,9 +129,9 @@ inline bool resolve_observation_window_source(
     }
     if (source.kind == ObservationSourceKind::input) {
         if (!compiled) return false;
-        auto const channels = resolve_project_sample_input(graph, placements, source.node, source.member, source.channel);
-        if (channels.size() != 1) return false;
-        auto const selected = channels.front();
+        auto const channel = resolve_observation_channel(graph, placements, source, resolve_project_sample_input);
+        if (!channel) return false;
+        auto const selected = *channel;
         NodeBundlePortId const port{selected.bundle, PortKind::sample, selected.port};
         auto const* public_input = observation_public_coverage_input(*compiled, port);
         if (!observation_input_window_port(*compiled, port) && (!public_input || !public_input->reconstructible))
@@ -95,30 +146,42 @@ inline bool resolve_observation_window_source(
         return true;
     }
     if (source.kind != ObservationSourceKind::output) return false;
-    auto channels = resolve_project_sample_output(graph, placements, source.node, source.member, source.channel);
-    if (channels.size() != 1) return false;
-    auto const selected = channels.front();
-    auto const output = graph.node_bundles.resolve_sample_output(
-        {selected.bundle, PortKind::sample, selected.port}).config;
-    if (is_sequential_output(output) && output.realization != OutputRealization::buffered) return false;
-    auto type = continuous_value_type_domain(output).sole_type();
+    auto const virtual_output = observes_virtual_output(source);
+    std::vector<SampleOutputChannelId> sources;
+    if (virtual_output) sources = resolve_virtual_output_observation(graph, placements, source);
+    else if (auto const channel = resolve_observation_channel(graph, placements, source, resolve_project_sample_output))
+        sources.push_back(*channel);
     std::optional<graph_jit::ResolvedPortRealization> inferred;
-    if (!type) {
-        if (!realization || realization->bundle_count() < graph.node_bundles.size()) {
-            auto resolved = graph_jit::resolve_port_realization(graph);
-            if (!resolved) return false;
-            inferred.emplace(std::move(*resolved));
-            realization = &*inferred;
-        }
-        type = realization->output(selected.bundle, selected.port).value_type;
+    if (sources.size() > 1 && (!realization || realization->bundle_count() < graph.node_bundles.size())) {
+        auto resolved = graph_jit::resolve_port_realization(graph);
+        if (!resolved) return false;
+        inferred.emplace(std::move(*resolved));
+        realization = &*inferred;
     }
-    if (type != ContinuousValueTypeId::sample) return false;
-    auto const& operations = continuous_value_type_info(*type).observation_operations;
+    if (!observation_outputs_share_pace(sources, realization)) return false;
+    if (sources.empty() || !std::ranges::all_of(sources, [&](auto selected) {
+            auto const output = graph.node_bundles.resolve_sample_output(
+                {selected.bundle, PortKind::sample, selected.port}).config;
+            if (is_sequential_output(output) && output.realization != OutputRealization::buffered) return false;
+            auto type = continuous_value_type_domain(output).sole_type();
+            if (!type) {
+                if (!realization || realization->bundle_count() < graph.node_bundles.size()) {
+                    auto resolved = graph_jit::resolve_port_realization(graph);
+                    if (!resolved) return false;
+                    inferred.emplace(std::move(*resolved));
+                    realization = &*inferred;
+                }
+                type = realization->output(selected.bundle, selected.port).value_type;
+            }
+            return type == ContinuousValueTypeId::sample;
+        })) return false;
+    auto const& operations = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations;
     auto operation = std::ranges::find(operations, operation_id, &ObservationOperation::id);
     if (operation == operations.end() || !operation->capture_point || !operation->project) return false;
-    query.port = {selected.bundle, PortKind::sample, selected.port};
+    query.port = {sources.front().bundle, PortKind::sample, sources.front().port};
     query.kind = source.kind;
-    query.channel = selected.channel;
+    query.channel = sources.front().channel;
+    if (virtual_output && sources.size() > 1) query.output_sources = std::move(sources);
     query.operation = &*operation;
     return true;
 }
@@ -135,30 +198,48 @@ inline CompiledObservationPlan resolve_observation_requirements(
     if (port_realization && port_realization->bundle_count() < graph.node_bundles.size())
         port_realization = nullptr;
     bool attempted_resolution = false;
+    auto ensure_realization = [&] {
+        if (port_realization || attempted_resolution) return;
+        attempted_resolution = true;
+        auto resolved = graph_jit::resolve_port_realization(graph);
+        if (!resolved) return;
+        inferred_ports.emplace(std::move(*resolved));
+        port_realization = &*inferred_ports;
+    };
     auto value_type = [&](SampleOutputChannelId source, ContinuousOutputConfig const& output)
         -> std::optional<ContinuousValueTypeId> {
         if (auto sole = continuous_value_type_domain(output).sole_type()) return sole;
-        if (!port_realization && !attempted_resolution) {
-            attempted_resolution = true;
-            auto resolved = graph_jit::resolve_port_realization(graph);
-            if (resolved) {
-                inferred_ports.emplace(std::move(*resolved));
-                port_realization = &*inferred_ports;
-            }
-        }
+        ensure_realization();
         if (!port_realization) return std::nullopt;
         return port_realization->output(source.bundle, source.port).value_type;
     };
     CompiledObservationPlan result{.revision = requirements.revision};
     for (auto const& requirement : requirements.probes) {
         ResolvedObservationProbe probe{.id = requirement.id, .kind = requirement.source.kind};
-        if (probe.kind == ObservationSourceKind::output) {
-            auto channels = resolve_project_sample_output(graph, placements,
-                requirement.source.node, requirement.source.member, requirement.source.channel);
+        if (observes_virtual_output(requirement.source)) {
+            auto channels = resolve_virtual_output_observation(graph, placements, requirement.source);
+            if (channels.size() > 1) ensure_realization();
+            auto const& operations = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations;
+            auto const operation = std::ranges::find(operations, requirement.operation, &ObservationOperation::id);
+            if (!channels.empty() && observation_outputs_share_pace(channels, port_realization)
+                && operation != operations.end() && operation->capture_block
+                && std::ranges::all_of(channels, [&](auto source) {
+                    auto const output = graph.node_bundles.resolve_sample_output(
+                        {source.bundle, PortKind::sample, source.port}).config;
+                    return is_sequential_output(output) && value_type(source, output) == ContinuousValueTypeId::sample;
+                })) {
+                probe.operation = &*operation;
+                probe.channels = {0};
+                probe.output_sources = std::move(channels);
+                probe.available = true;
+            }
+        } else if (probe.kind == ObservationSourceKind::output) {
+            auto const channel = resolve_observation_channel(
+                graph, placements, requirement.source, resolve_project_sample_output);
             // Each result names one physical channel. Multichannel callers
             // use the explicit selectors advertised by capability discovery.
-            if (channels.size() == 1) {
-                auto const source = channels.front();
+            if (channel) {
+                auto const source = *channel;
                 auto const output = graph.node_bundles.resolve_sample_output(
                     {source.bundle, PortKind::sample, source.port}).config;
                 if (is_sequential_output(output)
@@ -170,26 +251,20 @@ inline CompiledObservationPlan resolve_observation_requirements(
                         probe.operation = &*operation;
                         probe.bundle = source.bundle;
                         probe.port = source.port;
-                        for (auto const& channel : channels) probe.channels.push_back(channel.channel);
+                        probe.channels = {source.channel};
                         probe.available = true;
                     }
                 }
             }
         } else if (probe.kind == ObservationSourceKind::input) {
-            auto const channels = resolve_project_sample_input(graph, placements,
-                requirement.source.node, requirement.source.member, requirement.source.channel);
-            if (channels.size() == 1) {
-                auto const source = channels.front();
+            auto const channel = resolve_observation_channel(
+                graph, placements, requirement.source, resolve_project_sample_input);
+            if (channel) {
+                auto const source = *channel;
                 auto const input = graph.node_bundles.resolve_sample_input(
                     {source.bundle, PortKind::sample, source.port}).config;
                 auto type = continuous_value_type_domain(input).sole_type();
-                if (!type && !port_realization && !attempted_resolution) {
-                    attempted_resolution = true;
-                    if (auto resolved = graph_jit::resolve_port_realization(graph)) {
-                        inferred_ports.emplace(std::move(*resolved));
-                        port_realization = &*inferred_ports;
-                    }
-                }
+                if (!type) ensure_realization();
                 if (!type && port_realization)
                     type = port_realization->input(source.bundle, source.port).value_type;
                 auto const& operations = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations;

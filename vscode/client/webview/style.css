@@ -35,10 +35,6 @@ body:is(.vscode-high-contrast, .vscode-high-contrast-light) {
     stroke-opacity: calc(var(--iv-grid-strength, 1) * var(--iv-grid-max-opacity, .48));
     transition: stroke-opacity 120ms ease-out;
 }
-.iv-grid-enter-active, .iv-grid-leave-active {
-    transition: opacity 120ms ease-out, stroke-opacity 120ms ease-out;
-}
-.iv-grid-enter-from, .iv-grid-leave-to { opacity: 0; }
 
 :focus {
     outline: none !important;

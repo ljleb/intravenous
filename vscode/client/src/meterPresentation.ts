@@ -60,7 +60,7 @@ export class MeterPresentationState {
     private previous?: ObservationDisplayValue;
     private active = false;
 
-    update(result: ObservationDisplayValue | undefined, active: boolean, now: number): void {
+    update(result: ObservationDisplayValue | undefined, active: boolean, now: number, retained?: ObservationDisplayValue): void {
         this.current = result;
         this.active = active;
         const available = meterReading("value", result).available;
@@ -71,6 +71,9 @@ export class MeterPresentationState {
             const peak = result!.value!.peak as number;
             this.displayed = this.previous ? this.motion.update(peak, now) : this.motion.reset(peak, now);
             this.previous = result;
+        } else if (!this.previous && retained && meterReading("value", retained).available) {
+            this.previous = retained;
+            this.displayed = this.motion.reset(retained.value!.peak as number, now);
         } else this.advance(now);
     }
     advance(now: number): void {

@@ -9,6 +9,7 @@ export type PortRealization = "buffered" | "computed";
 export type GraphScopePort = {
     name: string;
     index: number;
+    displayName?: string;
     channelType?: string;
     eventType?: string;
     valueTypes?: ContinuousValueAlternative[];
@@ -20,6 +21,10 @@ export type GraphScopePort = {
 export type GraphScopeNode = {
     loadState: "waitingForDefinition" | "waitingForGraph" | "ready" | "failed";
     address: NodeAddress;
+    membershipAddress?: NodeAddress;
+    virtualNode?: boolean;
+    childDisplayName?: string;
+    childSourceLabel?: string;
     // Accepted definition when realized; instance.definitionId is the desired
     // declaration and can differ after a durable node replacement.
     definitionId?: string;
@@ -42,12 +47,26 @@ export type GraphScopeNode = {
     construction?: { definitionId: string; arguments: unknown[] } | null;
     constructionError?: string;
 };
+
+export function formatLaneLabel(name: string, sourceLabel?: string): string {
+    return sourceLabel ? `${name} · ${sourceLabel}` : name;
+}
+
+export function graphScopeNodeLabel(node: GraphScopeNode): string {
+    const name = node.childDisplayName || node.instance.displayName || node.instance.defaultDisplayName
+        || node.instance.definitionId.split(".").pop() || node.instance.definitionId;
+    return formatLaneLabel(name, node.childSourceLabel);
+}
+
 export type GraphPortMatcher = NodeAddress & {
     port: { name?: string; index?: number; channel?: number };
 };
 export type GraphScopeConnection = {
     id: string;
     applied: boolean;
+    sourceOwned?: boolean;
+    boundarySources?: GraphPortMatcher[];
+    boundaryTargets?: GraphPortMatcher[];
     connection: {
         connectionId?: string;
         kind: "sample" | "event";
@@ -64,6 +83,7 @@ export type GraphScope = {
     generation: number | null;
     editable: boolean;
     nodes: GraphScopeNode[];
+    childScopes?: Array<{ subject: NodeAddress; nodes: GraphScopeNode[]; hasBoundary?: boolean }>;
     connections: GraphScopeConnection[];
     timelineNodes?: NodeAddress[];
     presentation?: ProjectPresentation;
@@ -103,6 +123,18 @@ export function nodeHeightFor(node: GraphScopeNode): number {
 // equivalent root addresses use the same persisted layout key.
 export function addressKey(address: NodeAddress): string {
     return JSON.stringify([address.instanceId, address.path ?? []]);
+}
+
+export function isProjectInstance(address: NodeAddress): boolean {
+    return !address.path?.length;
+}
+
+export function graphScopeWithChildren(scope: GraphScope): GraphScope {
+    if (!scope.childScopes?.length) return scope;
+    const unique = new Map(scope.nodes.map((node) => [addressKey(node.address), node]));
+    for (const { nodes } of scope.childScopes)
+        for (const node of nodes) unique.set(addressKey(node.address), node);
+    return { ...scope, nodes: [...unique.values()] };
 }
 
 export function presentationStateKey(address: NodeAddress, presentationId: string): string {
@@ -165,13 +197,24 @@ export function zoomAt(viewport: GraphLayout["viewport"], cursor: Point, scale: 
         y: cursor.y - (cursor.y - viewport.y) * ratio, scale: next };
 }
 
-// A matcher into a module's interior cannot be attached to a guessed root
-// port. Keep it in the connection list until that scope can be displayed.
+export function scopeNodeForAddress(scope: GraphScope, address: NodeAddress): GraphScopeNode | undefined {
+    const key = addressKey(address);
+    const exact = scope.nodes.find((entry) => addressKey(entry.address) === key);
+    if (exact) return exact;
+    for (const childScope of scope.childScopes ?? []) {
+        const member = childScope.nodes.find((entry) => entry.membershipAddress && addressKey(entry.membershipAddress) === key);
+        if (member) return scope.nodes.find((entry) => addressKey(entry.address) === addressKey(member.address));
+    }
+}
+
 export function resolveScopePorts(scope: GraphScope, matcher: GraphPortMatcher,
     kind: "sample" | "event", direction: "input" | "output") {
-    if (matcher.path?.length) return [];
-    const node = scope.nodes.find((entry) => entry.address.instanceId === matcher.instanceId);
-    if (!node) return [];
+    const node = scopeNodeForAddress(scope, matcher);
+    return node ? matchingScopePorts(node, matcher, kind, direction) : [];
+}
+
+export function matchingScopePorts(node: GraphScopeNode, matcher: GraphPortMatcher,
+    kind: "sample" | "event", direction: "input" | "output") {
     const ports = kind === "sample"
         ? direction === "input" ? node.sampleInputs : node.sampleOutputs
         : direction === "input" ? node.eventInputs : node.eventOutputs;

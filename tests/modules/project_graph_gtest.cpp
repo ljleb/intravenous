@@ -2296,12 +2296,31 @@ TEST_F(ProjectGraphFixture, ConnectionMutationRebuildsWholeRootAndDanglingIntent
 }
 
 namespace {
+struct NamedSamplePass {
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+            {.channel_layout = iv::mono_planar_channel_layout, .default_value = 0.25f})};
+    }
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential,
+            {.channel_layout = iv::mono_planar_channel_layout})};
+    }
+
+    void tick(iv::TickSampleContext<NamedSamplePass> const& ctx) const
+    {
+        ctx.output<"out">().push(ctx.input<"in">().get());
+    }
+};
+
 nlohmann::ordered_json read_graph_scope(iv::ProjectGraph& project_graph,
-    std::optional<iv::NodeAddress> subject = std::nullopt)
+    std::vector<iv::NodeAddress> expanded = {})
 {
     iv::SocketRpcGraphScopeResultBuilder builder;
     in_event_source([&] {
-        project_graph.handle_socket_rpc_get_graph_scope({.subject = std::move(subject)}, builder);
+        project_graph.handle_socket_rpc_get_graph_scope({.expanded = std::move(expanded)}, builder);
     });
     return nlohmann::ordered_json::parse(builder.build(1)).at("result");
 }
@@ -2332,32 +2351,83 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
     auto configure_children = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
         using Pass = Sum<mono, SampleStreamLayout::planar, 1>;
         auto input = graph.input<"main">();
-        auto named = details::configure_concrete_node<Pass>(graph);
+        auto named = details::configure_concrete_node<NamedSamplePass>(graph);
         named(input);
-        named._annotate_source_info("named", "/tmp/module_children.cpp", 1, 2);
+        named._annotate_source_info("source-local:/tmp/module_children.cpp:1@named", "/tmp/module_children.cpp", 1, 2, "named");
+        auto second = details::configure_concrete_node<Pass>(graph);
+        second(named);
+        second._annotate_source_info("second", "/tmp/module_children.cpp", 3, 4);
+        named._annotate_source_info("alias", "/tmp/module_children.cpp", 5, 6);
         auto anonymous = details::configure_concrete_node<Pass>(graph);
-        anonymous(named);
-        graph.outputs("main"_P = anonymous);
+        anonymous(second);
+        graph.outputs("main"_P = anonymous, "tap"_P = second);
     };
     publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1, configure_children)});
     ProjectStringBuilder create;
     in_event_source([&] { project_graph.handle_project_create_node_instance(
         {.instance_id = "module", .definition_id = definition_id}, create); });
     ASSERT_EQ(create.build(), "module");
-    auto const scope = read_graph_scope(project_graph, NodeAddress{.instance_id = "module"});
-    auto const& children = scope.at("nodes");
-    ASSERT_EQ(children.size(), 1u) << scope.dump();
+    NodeAddress const module{.instance_id = "module"};
+    EXPECT_TRUE(read_graph_scope(project_graph).at("childScopes").empty());
+    auto const scope = read_graph_scope(project_graph, {module});
+    ASSERT_EQ(scope.at("nodes").size(), 1u);
+    EXPECT_TRUE(scope.at("childScopes").at(0).at("hasBoundary").get<bool>());
+    auto const& children = scope.at("childScopes").at(0).at("nodes");
+    ASSERT_EQ(children.size(), 3u) << scope.dump();
     auto const& child = children.at(0);
-    EXPECT_EQ(child.at("childDisplayName"), "named");
-    auto const address = parse_node_address_json(child.at("address"), ProjectConnectionJsonNames::socket_rpc);
-    ASSERT_EQ(address.path.size(), 2u);
+    EXPECT_EQ(child.at("childDisplayName"), "NamedSamplePass");
+    EXPECT_EQ(child.at("childSourceLabel"), "named");
+    auto parse_address = [](auto const& node) {
+        return parse_node_address_json(node.at("address"), ProjectConnectionJsonNames::socket_rpc);
+    };
+    auto const named = parse_address(child);
+    auto const& child_input = child.at("sampleInputs").at(0);
+    EXPECT_EQ(child_input.at("name"), "in");
+    ASSERT_TRUE(child_input.contains("manualControl")) << child_input.dump();
+    EXPECT_FALSE(child_input.at("manualControl").at("enabled").get<bool>());
+    EXPECT_EQ(child.at("sampleOutputs").at(0).at("name"), "out");
+    EXPECT_TRUE(child.at("sampleOutputs").at(0).at("manualControl").at("enabled").get<bool>());
+    auto const second = parse_address(children.at(1));
+    auto const& unnamed_input = children.at(1).at("sampleInputs").at(0);
+    EXPECT_EQ(unnamed_input.at("displayName"), "Input");
+    EXPECT_FALSE(unnamed_input.contains("manualControl"));
+    auto const alias = parse_address(children.at(2));
+    ASSERT_EQ(named.path.size(), 1u);
+    auto const expanded = read_graph_scope(project_graph, {module, named, second, alias});
+    EXPECT_FALSE(expanded.at("childScopes").at(1).at("hasBoundary").get<bool>());
+    auto const& member = expanded.at("childScopes").at(1).at("nodes").at(0);
+    auto const& alias_member = expanded.at("childScopes").at(3).at("nodes").at(0);
+    EXPECT_EQ(member.at("childDisplayName"), "NamedSamplePass");
+    EXPECT_EQ(alias_member.at("childDisplayName"), member.at("childDisplayName"));
+    EXPECT_EQ(member.at("childSourceLabel"), "named 1");
+    EXPECT_EQ(alias_member.at("childSourceLabel"), "alias 1");
+    EXPECT_EQ(alias_member.at("address"), member.at("address"));
+    EXPECT_NE(alias_member.at("membershipAddress"), member.at("address"));
+    EXPECT_EQ(alias_member.at("sampleInputs"), member.at("sampleInputs"));
+    auto const& member_input = member.at("sampleInputs").at(0);
+    ASSERT_TRUE(member_input.contains("manualControl")) << member_input.dump();
+    EXPECT_TRUE(member_input.at("manualControl").at("enabled").get<bool>());
+    EXPECT_EQ(member_input.at("manualControl").at("value"), 0.25f);
+    auto const& member_gain = member.at("sampleOutputs").at(0).at("manualControl");
+    EXPECT_TRUE(member_gain.at("enabled").get<bool>());
+    EXPECT_TRUE(member_gain.at("available").get<bool>());
+    EXPECT_EQ(member_gain.at("value"), 1);
+    auto const address = parse_address(member);
     auto const generation = project_graph.current_generation();
     ASSERT_TRUE(generation && generation->graph);
     auto const matches = resolve_node_address(*generation->graph, generation->placements, address);
     ASSERT_EQ(matches.size(), 1u);
     EXPECT_EQ(matches.front().kind, ProjectNodePathMatch::Kind::bundle);
     EXPECT_EQ(child.at("sampleOutputs").size(), 1u);
-    EXPECT_TRUE(read_graph_scope(project_graph, address).at("nodes").empty());
+    EXPECT_TRUE(read_graph_scope(project_graph, {address}).at("childScopes").at(0).at("nodes").empty());
+    auto const& source_wires = expanded.at("connections");
+    ASSERT_EQ(source_wires.size(), 3u) << expanded.dump();
+    for (auto const& wire : source_wires) EXPECT_TRUE(wire.at("sourceOwned").get<bool>());
+    EXPECT_EQ(source_wires.at(0).at("boundarySources").at(0).at("instanceId"), "module");
+    EXPECT_EQ(source_wires.at(0).at("boundarySources").at(0).at("port").at("index"), 0);
+    EXPECT_EQ(source_wires.at(1).at("connection").at("outputs").at(0).at("path"), member.at("address").at("path"));
+    EXPECT_EQ(source_wires.at(2).at("boundaryTargets").at(0).at("instanceId"), "module");
+    EXPECT_EQ(source_wires.at(2).at("boundaryTargets").at(0).at("port").at("index"), 1);
 
     ProjectStringBuilder create_sink;
     in_event_source([&] { project_graph.handle_project_create_node_instance(
@@ -2376,6 +2446,180 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
     ASSERT_NO_THROW(connect.build());
     EXPECT_EQ(project_graph.current_generation()->applied_connection_ids,
         std::vector<std::string>{"child-wire"});
+    auto const expanded_after_wiring = read_graph_scope(project_graph, {module, named, second});
+    auto const& wires = expanded_after_wiring.at("connections");
+    ASSERT_EQ(wires.size(), 4u);
+    EXPECT_EQ(wires.at(0).at("id"), "child-wire");
+    EXPECT_FALSE(wires.at(0).at("sourceOwned").get<bool>());
+    EXPECT_TRUE(wires.at(1).at("sourceOwned").get<bool>());
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeShowsConnectionsFromNamedSamplePortAliases)
+{
+    using namespace iv;
+    auto configure = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
+        using Pass = Sum<mono, SampleStreamLayout::planar, 1>;
+        auto producer = details::configure_concrete_node<Pass>(graph);
+        auto output = producer[std::size_t{0}];
+        output._annotate_source_info("output_alias", "/tmp/module_alias.cpp", 1, 2);
+        auto consumer = details::configure_concrete_node<Pass>(graph);
+        consumer(output);
+        consumer._annotate_source_info("consumer", "/tmp/module_alias.cpp", 3, 4);
+        graph.outputs("main"_P = consumer);
+    };
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1, configure)});
+    ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance(
+        {.instance_id = "module", .definition_id = definition_id}, create); });
+    ASSERT_EQ(create.build(), "module");
+    auto const scope = read_graph_scope(project_graph, {{.instance_id = "module"}});
+    auto const& wires = scope.at("connections");
+    auto const alias = std::ranges::find_if(wires, [](auto const& wire) {
+        auto const& outputs = wire.at("connection").at("outputs");
+        return !outputs.empty() && outputs.at(0).at("path").at(0).value("typeIdentity", "") == "sample-port";
+    });
+    ASSERT_NE(alias, wires.end()) << scope.dump();
+    EXPECT_EQ(alias->at("sourceOwned"), true);
+    EXPECT_EQ(alias->at("connection").at("outputs").at(0).at("port").at("index"), 0);
+    EXPECT_EQ(alias->at("connection").at("inputs").size(), 1u);
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForANamedMonoQuotientWithoutATile)
+{
+    using namespace iv;
+    auto configure = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
+        auto const detune = graph.input<"main">(0, -100, 100);
+        auto detune_pair = detune * 2 / 15;
+        detune_pair._annotate_source_info("detune_pair", "/tmp/quotient.cpp", 1, 2, "detune_pair");
+        graph.outputs("main"_P = detune_pair);
+    };
+    auto definitions = std::const_pointer_cast<NodeDefinitionsSnapshot>(make_snapshot(1, configure));
+    definitions->by_id.emplace("test.quotient", NodeDefinitionEntry{
+        .definition_id = "test.quotient",
+        .kind = NodeDefinitionKind::leaf,
+        .version = 1,
+        .definition = LeafNodeDefinition{
+            .definition_id = "test.quotient",
+            .display_name = "Quotient",
+            .compiler_record = details::node_compiler_record<Quotient>,
+        },
+    });
+    publish_definitions_snapshot(project_graph, {.snapshot = definitions});
+    ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance(
+        {.instance_id = "module", .definition_id = definition_id}, create); });
+    ASSERT_EQ(create.build(), "module");
+
+    auto const scope = read_graph_scope(project_graph, {{.instance_id = "module"}});
+    auto const& children = scope.at("childScopes").at(0).at("nodes");
+    ASSERT_EQ(children.size(), 1u) << scope.dump();
+    auto const& node = children.at(0);
+    EXPECT_EQ(node.at("childDisplayName"), "Quotient");
+    EXPECT_EQ(node.at("childSourceLabel"), "detune_pair");
+    auto const& inputs = node.at("sampleInputs");
+    ASSERT_EQ(inputs.size(), 2u);
+    EXPECT_EQ(inputs.at(0).at("name"), "left");
+    EXPECT_EQ(inputs.at(1).at("name"), "right");
+    for (auto const& input : inputs) {
+        ASSERT_TRUE(input.contains("manualControl")) << input.dump();
+        EXPECT_EQ(input.at("manualControl").at("available"), true);
+        EXPECT_EQ(input.at("manualControl").at("enabled"), false);
+    }
+    auto const& output = node.at("sampleOutputs").at(0);
+    EXPECT_EQ(output.at("name"), "out");
+    ASSERT_TRUE(output.contains("manualControl")) << output.dump();
+    EXPECT_EQ(output.at("manualControl").at("available"), true);
+    EXPECT_EQ(output.at("manualControl").at("value"), 1);
+
+    auto const declaration = parse_node_address_json(node.at("address"), ProjectConnectionJsonNames::socket_rpc);
+    auto const expanded = read_graph_scope(project_graph, {declaration});
+    auto const& members = expanded.at("childScopes").at(0).at("nodes");
+    ASSERT_EQ(members.size(), 1u);
+    EXPECT_EQ(members.at(0).at("childDisplayName"), "Quotient");
+    EXPECT_EQ(members.at(0).at("childSourceLabel"), "detune_pair 1");
+    auto const member = parse_node_address_json(members.at(0).at("address"), ProjectConnectionJsonNames::socket_rpc);
+    auto const generation = project_graph.current_generation();
+    ASSERT_TRUE(generation && generation->graph);
+    auto const matches = resolve_node_address(*generation->graph, generation->placements, member);
+    ASSERT_EQ(matches.size(), 1u);
+    EXPECT_TRUE(generation->graph->node_bundles.bundle(matches.front().bundle).is_concrete());
+    EXPECT_TRUE(read_graph_scope(project_graph, {member}).at("childScopes").at(0).at("nodes").empty());
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForTiledMultiplicationAndItsMembers)
+{
+    using namespace iv;
+    auto configure = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
+        auto const balance = graph.tile<stereo>(0.25, 0.75);
+        auto const gain = 0.5 * balance;
+        gain._annotate_source_info("gain", "/tmp/gain.cpp", 1, 2, "gain");
+        graph.outputs("main"_P = gain);
+    };
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1, configure)});
+    ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance(
+        {.instance_id = "module", .definition_id = definition_id}, create); });
+    ASSERT_EQ(create.build(), "module");
+
+    auto expect_knobs = [](auto const& node, bool input_enabled) {
+        auto const& inputs = node.at("sampleInputs");
+        ASSERT_EQ(inputs.size(), 2u);
+        EXPECT_EQ(inputs.at(0).at("name"), "left");
+        EXPECT_EQ(inputs.at(1).at("name"), "right");
+        for (auto const& input : inputs) {
+            ASSERT_TRUE(input.contains("manualControl")) << input.dump();
+            EXPECT_EQ(input.at("manualControl").at("available"), true);
+            EXPECT_EQ(input.at("manualControl").at("enabled"), input_enabled);
+        }
+        auto const& output = node.at("sampleOutputs").at(0);
+        EXPECT_EQ(output.at("name"), "out");
+        ASSERT_TRUE(output.contains("manualControl")) << output.dump();
+        EXPECT_EQ(output.at("manualControl").at("available"), true);
+    };
+    auto address = [](auto const& node) {
+        return parse_node_address_json(node.at("address"), ProjectConnectionJsonNames::socket_rpc);
+    };
+    auto const module = read_graph_scope(project_graph, {{.instance_id = "module"}});
+    auto const& virtual_gain = module.at("childScopes").at(0).at("nodes").at(0);
+    ASSERT_EQ(virtual_gain.at("childSourceLabel"), "gain");
+    expect_knobs(virtual_gain, false);
+
+    auto const expanded_gain = read_graph_scope(project_graph, {address(virtual_gain)});
+    auto const& tiled_gain = expanded_gain.at("childScopes").at(0).at("nodes").at(0);
+    expect_knobs(tiled_gain, true);
+
+    auto const expanded_tile = read_graph_scope(project_graph, {address(tiled_gain)});
+    auto const& channels = expanded_tile.at("childScopes").at(0).at("nodes");
+    ASSERT_EQ(channels.size(), 2u);
+    for (auto const& channel : channels) expect_knobs(channel, true);
+}
+
+TEST_F(ProjectGraphFixture, VirtualDeclarationsKeepSeparateLanesAndInputsForEachType)
+{
+    using namespace iv;
+    auto configure_children = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
+        auto single = details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 1>>(graph);
+        auto pair = details::configure_concrete_node<Sum<mono, SampleStreamLayout::planar, 2>>(graph);
+        single._annotate_source_info("voice", "/tmp/voice.cpp", 1, 2, "voice");
+        pair._annotate_source_info("voice", "/tmp/voice.cpp", 1, 2, "voice");
+        graph.outputs("main"_P = single);
+    };
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1, configure_children)});
+    ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance(
+        {.instance_id = "module", .definition_id = definition_id}, create); });
+    ASSERT_EQ(create.build(), "module");
+    auto const graph_scope = read_graph_scope(project_graph, {{.instance_id = "module"}});
+    auto const& children = graph_scope.at("childScopes").at(0).at("nodes");
+    ASSERT_EQ(children.size(), 2u);
+    EXPECT_NE(children[0].at("childDisplayName"), children[1].at("childDisplayName"));
+    for (std::size_t i = 0; i < children.size(); ++i) {
+        auto const label = children[i].at("childDisplayName").get<std::string>();
+        EXPECT_TRUE(label.contains("Sum"));
+        EXPECT_EQ(children[i].at("childSourceLabel"), "voice");
+        EXPECT_EQ(children[i].at("sampleInputs").size(), i + 1);
+        EXPECT_EQ(children[i].at("sampleOutputs").at(0).at("name"), "out");
+    }
 }
 
 TEST_F(ProjectGraphFixture, GraphScopeReportsAcceptedArgumentsAfterReplacementUndoAndFailedConfiguration)
@@ -4248,6 +4492,71 @@ TEST_F(ProjectGraphManualControlSchedulingFixture, ObservationRevisionSurvivesSt
     hover("ui", std::nullopt);
     ASSERT_TRUE(probe.wait_for_stages(2));
     EXPECT_EQ(probe.stages().back().observation_revision, 42u);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, MatchingObservationPredictionStagesWithoutAnotherCompilation)
+{
+    realize_controls(1);
+    auto const base_compiles = probe.compilations().size();
+    auto const base_stages = probe.structural_stage_count();
+    iv::ObservationRequirements viewport{.revision = 1,
+        .probes = {{.id = 1, .source = {.node = {.instance_id = "next"}, .member = "out"}, .operation = "level"}}};
+    iv::ObservationGraphRequest predict{.prediction_changed = true, .prediction = viewport};
+    in_event_source([&] { project_graph.handle_observation_request(predict); });
+    ASSERT_TRUE(predict.error.empty()) << predict.error;
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    ASSERT_EQ(probe.compilations().size(), base_compiles + 1);
+    EXPECT_EQ(probe.compilations().back().observation_revision, viewport.revision);
+    EXPECT_EQ(probe.structural_stage_count(), base_stages);
+
+    iv::ObservationGraphRequest visible{.requirements = viewport, .prediction_changed = true};
+    in_event_source([&] { project_graph.handle_observation_request(visible); });
+    ASSERT_TRUE(visible.error.empty()) << visible.error;
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    EXPECT_EQ(probe.compilations().size(), base_compiles + 1);
+    EXPECT_EQ(probe.structural_stage_count(), base_stages + 1);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, DifferentObservationProbeSetUsesRequiredCompilation)
+{
+    realize_controls(1);
+    auto const base_compiles = probe.compilations().size();
+    auto const base_stages = probe.structural_stage_count();
+    iv::ObservationRequirements viewport{.revision = 1,
+        .probes = {{.id = 1, .source = {.node = {.instance_id = "next"}, .member = "out"}, .operation = "level"}}};
+    iv::ObservationGraphRequest predict{.prediction_changed = true, .prediction = viewport};
+    in_event_source([&] { project_graph.handle_observation_request(predict); });
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+
+    viewport.probes.front().source.node.instance_id = "different";
+    iv::ObservationGraphRequest visible{.requirements = viewport, .prediction_changed = true};
+    in_event_source([&] { project_graph.handle_observation_request(visible); });
+    ASSERT_TRUE(visible.error.empty()) << visible.error;
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    EXPECT_EQ(probe.compilations().size(), base_compiles + 2);
+    EXPECT_EQ(probe.structural_stage_count(), base_stages + 1);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, MatchingViewportPromotesAnInflightObservationCompile)
+{
+    realize_controls(1);
+    auto const base_compiles = probe.compilations().size();
+    auto const base_stages = probe.structural_stage_count();
+    probe.block_next_compilation();
+    iv::ObservationRequirements viewport{.revision = 1,
+        .probes = {{.id = 1, .source = {.node = {.instance_id = "next"}, .member = "out"}, .operation = "level"}}};
+    iv::ObservationGraphRequest predict{.prediction_changed = true, .prediction = viewport};
+    in_event_source([&] { project_graph.handle_observation_request(predict); });
+    ASSERT_TRUE(probe.wait_for_blocked_compilation());
+
+    iv::ObservationGraphRequest visible{.requirements = viewport, .prediction_changed = true};
+    in_event_source([&] { project_graph.handle_observation_request(visible); });
+    ASSERT_TRUE(visible.error.empty()) << visible.error;
+    EXPECT_EQ(probe.structural_stage_count(), base_stages);
+    probe.release_blocked_compilation();
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    EXPECT_EQ(probe.compilations().size(), base_compiles + 1);
+    EXPECT_EQ(probe.structural_stage_count(), base_stages + 1);
 }
 
 TEST_F(ProjectGraphManualControlSchedulingFixture, NewObservationPlanSupersedesAnInflightHoverVariant)

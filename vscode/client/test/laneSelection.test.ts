@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { addressKey } from "../src/graphScope";
+import { addressKey, graphScopeWithChildren, type GraphScope, type GraphScopeNode, type NodeAddress } from "../src/graphScope";
 import { graphEditorShortcut } from "../src/graphEditorShortcuts";
-import { insertLanes, mergeLaneOrder, moveSelectedLanes, orderLanes, selectLaneRange, laneRuns } from "../src/laneSelection";
+import { expandedGraphLanes, insertLanes, mergeLaneOrder, moveSelectedLanes, orderLanes,
+    selectedProjectLaneIds, selectLaneRange, laneRuns } from "../src/laneSelection";
 
 test("Shift-click extends or shrinks an inclusive range from the same lane", () => {
     const order = ["a", "b", "c", "d", "e"];
@@ -44,6 +45,42 @@ test("each duplicate follows its original even when selected lanes are separated
     assert.deepEqual(insertLanes(lanes, copies), placed);
     assert.deepEqual(insertLanes([...lanes, "a-copy", "c-copy"], copies), placed);
     assert.deepEqual(insertLanes(lanes, []), lanes);
+});
+
+test("expanded module children follow their parents and cannot be duplicated on their own", () => {
+    const node = (address: NodeAddress, hasChildren = false): GraphScopeNode => ({
+        address, instance: { instanceId: address.instanceId, definitionId: "test.node", realized: true },
+        loadState: "ready", hasChildren, sampleInputs: [], sampleOutputs: [], eventInputs: [], eventOutputs: [],
+    });
+    const module = node({ instanceId: "module" }, true);
+    const child = node({ instanceId: "module", path: [
+        { kind: "virtualNode", sourceIdentity: "voice" }, { kind: "virtualMember", index: 0 },
+    ] }, true);
+    const tile = node({ instanceId: "module", path: [...child.address.path!, { kind: "tiledChild", name: "right" }] });
+    const sink = node({ instanceId: "sink" });
+    const scope: GraphScope = { generation: 1, editable: true, nodes: [module, sink], connections: [],
+        childScopes: [{ subject: module.address, nodes: [child] }, { subject: child.address, nodes: [tile] }] };
+    const order = [addressKey(sink.address), addressKey(module.address)];
+    const childKey = addressKey(child.address);
+    const tileKey = addressKey(tile.address);
+    const expanded = expandedGraphLanes(scope, order, new Set([order[1], childKey]));
+    assert.deepEqual(expanded.map(({ node, depth }) => [node, depth]), [
+        [sink, 0], [module, 0], [child, 1], [tile, 2],
+    ]);
+    assert.deepEqual(selectedProjectLaneIds(expanded, new Set([childKey, tileKey])), []);
+    assert.deepEqual(selectedProjectLaneIds(expanded, new Set([order[1], childKey, tileKey])), ["module"]);
+    assert.deepEqual(expandedGraphLanes(scope, order, new Set([childKey])), expanded.slice(0, 2));
+    const alias = node({ instanceId: "module", path: [{ kind: "virtualNode", sourceIdentity: "alias" }] }, true);
+    const otherRow = { ...tile, membershipAddress: { instanceId: "module", path: [
+        ...alias.address.path!, { kind: "virtualMember", index: 0 },
+    ] } };
+    scope.childScopes![0].nodes.push(alias);
+    scope.childScopes!.push({ subject: alias.address, nodes: [otherRow] });
+    const withAliases = expandedGraphLanes(scope, order, new Set([order[1], childKey, addressKey(alias.address)]));
+    const memberRows = withAliases.filter(({ node }) => addressKey(node.address) === tileKey);
+    assert.equal(memberRows.length, 2);
+    assert.notEqual(memberRows[0].rowKey, memberRows[1].rowKey);
+    assert.equal(graphScopeWithChildren(scope).nodes.filter(({ address }) => addressKey(address) === tileKey).length, 1);
 });
 
 test("adding a lane uses its selected anchor or appends if no anchor remains", () => {

@@ -8,6 +8,8 @@ export function provideTimelineWindow(window: Readonly<Ref<PresentationTimeWindo
 export function useTimelineWindow(): Readonly<Ref<PresentationTimeWindow>> | null { return inject(timeWindowKey, null); }
 
 export type TimelineMark = { index: bigint; depth: number; x: number };
+export const timelineMarkKey = ({ index }: TimelineMark): string => index.toString();
+export const timelineMarkPosition = ({ x }: TimelineMark): number => x;
 const marksKey: InjectionKey<Readonly<Ref<readonly TimelineMark[]>>> = Symbol("iv.timelineMarks");
 export function provideTimelineMarks(marks: Readonly<Ref<readonly TimelineMark[]>>): void { provide(marksKey, marks); }
 export function useTimelineMarks(): Readonly<Ref<readonly TimelineMark[]>> | null { return inject(marksKey, null); }

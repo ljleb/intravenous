@@ -111,6 +111,49 @@ iv::ConfiguredGraph make_frozen_pass()
 }
 } // namespace
 
+TEST(ScopedGraphBuilder, MonoTileReusesTheSampleExpression)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = graph.node<Pass>();
+    auto const source_port = static_cast<SamplePortRef>(source);
+    auto const output = graph.tile<mono>(source_port);
+    EXPECT_EQ(output.erased().handle, source_port.handle);
+    auto const node_output = graph.tile<mono>(source);
+    EXPECT_TRUE(std::ranges::equal(node_output.erased().channels(), source_port.channels()));
+}
+
+TEST(ScopedGraphBuilder, StereoArithmeticStillCreatesOneMemberPerChannel)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto source = graph.node<Pass>();
+    auto quotient = graph.tile<stereo>(source, source) / 2;
+    auto const handle = quotient.node_bundle_handle();
+    graph.outputs("out"_P = quotient);
+    auto const configured = std::move(graph).finish();
+    auto const& bundle = configured.node_bundles.bundle(handle);
+    ASSERT_TRUE(bundle.is_tiled());
+    EXPECT_EQ(bundle.tiled_channel_type(), ChannelTypeId::stereo);
+    EXPECT_EQ(bundle.tiled_members().size(), 2u);
+}
+
+TEST(ScopedGraphBuilder, MonoLayoutIsRejectedForTiledBundles)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    EXPECT_THROW((graph.node<Pass, mono>()), std::exception);
+
+    auto const configured = make_frozen_pass();
+    auto bundles = configured.node_bundles;
+    std::array const members{NodeBundleHandle{0}};
+    EXPECT_THROW(bundles.append_tiled(members, mono_planar_channel_layout), std::exception);
+
+    std::array const records{ConfiguredNodeBundleRecord{
+        .kind = ConfiguredNodeBundleKind::tiled, .tiled_channel_type = ChannelTypeId::mono}};
+    EXPECT_THROW(GraphBuilderNodeBundles::from_configured_records(records), std::exception);
+}
+
 TEST(ScopedGraphBuilder, PrivateModuleConstructionPreservesItsBoundary)
 {
     using namespace iv;

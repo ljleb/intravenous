@@ -1097,12 +1097,13 @@ private:
         if (!specialization) return nullptr;
         auto* callee = make_decl_ref(specialization, location);
         if (!callee) return nullptr;
-        llvm::SmallVector<Expr*, 5> arguments{
+        llvm::SmallVector<Expr*, 6> arguments{
             pointer,
             make_string(annotation.declaration_identity, location),
             make_string(annotation.span.file, location),
             make_u32(annotation.span.begin, location),
             make_u32(annotation.span.end, location),
+            make_string(annotation.declaration->getNameAsString(), location),
         };
         auto result = sema().BuildCallExpr(
             nullptr, callee, location, arguments, location);

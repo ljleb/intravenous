@@ -1472,7 +1472,7 @@ std::expected<void, std::string> normalize_sample_target_projections(
 
         auto const target_channel_total = canonical_targets.size();
         std::vector<bool> claimed(target_channel_total, false);
-        std::vector<bool> authored_claimed(target_channel_total, false);
+        std::vector<std::optional<std::size_t>> authored_sources(target_channel_total);
 
         auto const& first = plan.sample_connections[first_index];
         auto target_history = first.target_history;
@@ -1584,11 +1584,26 @@ std::expected<void, std::string> normalize_sample_target_projections(
                 }
                 auto const target_index = static_cast<std::size_t>(
                     std::distance(canonical_targets.begin(), found));
-                if (!manual && authored_claimed[target_index]) {
-                    return std::unexpected(
-                        "GraphJit sample target channel has more than one source");
+                if (!manual && authored_sources[target_index]) {
+                    auto const& prior = plan.sample_connections[*authored_sources[target_index]];
+                    std::ostringstream detail;
+                    detail << "GraphJit sample target channel has more than one source\n"
+                           << "Input '" << target.name << "' on "
+                           << graph.node_bundles.bundle(target_port.node_bundle_handle).type_identity()
+                           << " (bundle " << target_port.node_bundle_handle << ", port "
+                           << target_port.port_index << ", channel " << target_channel.channel << ")";
+                    for (auto const* route : {&prior, &connection}) {
+                        detail << "\n  Configured connection " << route->configured_connection_index << " reads";
+                        for (auto const source : route->source_channels) {
+                            auto const output = graph.node_bundles.resolve_sample_output(
+                                {source.bundle, PortKind::sample, source.port}).config;
+                            detail << " '" << output.name << "' (bundle " << source.bundle
+                                   << ", port " << source.port << ", channel " << source.channel << ')';
+                        }
+                    }
+                    return std::unexpected(std::move(detail).str());
                 }
-                if (!manual) authored_claimed[target_index] = true;
+                if (!manual) authored_sources[target_index] = connection_index;
                 claimed[target_index] = true;
                 contribution.target_channels.push_back(target_index);
             }

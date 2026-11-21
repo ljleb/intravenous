@@ -18,13 +18,13 @@ const emit = defineEmits<{
         <ManualInput v-if="hasKnob" class="port-knob" :name="port.name" :direction="port.direction" port-cutout />
         <button type="button" tabindex="-1" class="port-handle" :class="{ connected, pending }"
             :data-port-endpoint="JSON.stringify(endpoint)" :data-status-hint="hint" :aria-description="portDescription(port)"
-            :aria-disabled="unavailable" :aria-label="`${port.direction} ${port.name || port.index + 1}`"
+            :aria-disabled="unavailable" :aria-label="`${port.direction} ${port.displayName || port.name || port.index + 1}`"
             @iv-hoverenter="emit('handleHover', $event)" @pointermove="emit('handleHover', $event)"
             @iv-hoverleave="emit('handleLeave')" @pointerdown="emit('wireStart', $event)">
             <span class="port-circle" />
         </button>
         <span class="direct-port-name" :data-status-hint="hint">
-            {{ port.name || port.index + 1 }}
+            {{ port.displayName || port.name || port.index + 1 }}
         </span>
     </div>
 </template>

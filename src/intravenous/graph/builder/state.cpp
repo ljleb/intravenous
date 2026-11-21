@@ -1046,11 +1046,7 @@ SamplePortRef GraphBuilderState::make_tiled_sample_port(
     ChannelTypeId type, std::span<SamplePortRef const> members)
 {
   if (members.empty()) details::error("cannot tile an empty sample output");
-  std::vector<SampleOutputChannelId> channels;
-  std::vector<std::optional<ConfiguredSampleConnectionDetach>> detaches;
-  channels.reserve(members.size());
-  detaches.reserve(members.size());
-  for (auto const& member : members) {
+  auto scalar_expression = [&](SamplePortRef const& member) -> auto const& {
     if (member.session != _session
         || member.handle >= _sample_port_expressions.size())
       details::error("cannot tile sample outputs from different builder sessions");
@@ -1058,6 +1054,21 @@ SamplePortRef GraphBuilderState::make_tiled_sample_port(
     if (member.channel_type != ChannelTypeId::mono
         || expression.channels.size() != 1)
       details::error("each g.tile channel must be a scalar sample expression");
+    return expression;
+  };
+  if (type == ChannelTypeId::mono) {
+    if (members.size() != 1) details::error("g.tile<mono> requires one sample output");
+    auto const& member = members.front();
+    scalar_expression(member);
+    return member;
+  }
+
+  std::vector<SampleOutputChannelId> channels;
+  std::vector<std::optional<ConfiguredSampleConnectionDetach>> detaches;
+  channels.reserve(members.size());
+  detaches.reserve(members.size());
+  for (auto const& member : members) {
+    auto const& expression = scalar_expression(member);
     channels.push_back(expression.channels.front());
     detaches.push_back(expression.detaches.front());
   }
@@ -1502,13 +1513,14 @@ size_t GraphBuilderState::event_port_index(
 
 void GraphBuilderState::annotate_node(
     NodeBundleHandle handle, std::string_view id, std::string_view file,
-    uint32_t begin, uint32_t end) {
+    uint32_t begin, uint32_t end, std::string_view name) {
   if (id.empty()) return;
   if (handle >= _node_bundles.size())
     details::error(
         "builder " + _identity.value +
         ": cannot record source info for an unknown NodeBundle");
-  auto const info = make_source_info(id, file, begin, end);
+  auto info = make_source_info(id, file, begin, end);
+  info.declaration_name = name;
   auto& infos = _node_bundles.bundle(handle).source_annotations().infos;
   if (!std::ranges::contains(infos, info)) infos.push_back(info);
   attach_virtual_bundle_member(handle, id, &info);

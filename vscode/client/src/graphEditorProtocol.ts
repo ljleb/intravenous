@@ -1,7 +1,8 @@
 import type { ObservationHostRequest, ObservationResponse } from "./observations";
 import type { ObservationDelivery } from "./observationDelivery";
 import type { ObservationProfileSummary } from "./observationProfile";
-import type { ManualControlAction, ManualControlInteractionState, ManualControlLiveValue } from "./manualControls";
+import type { GraphUiProfileSummary } from "./graphUiProfile";
+import type { ManualControlAction, ManualControlId, ManualControlInteractionState, ManualControlLiveValue } from "./manualControls";
 import type { GraphLaneCopy, GraphScope, NodeAddress, PresentationState } from "./graphScope";
 import type { LiveGraphSessionStatus } from "./liveGraphProtocol";
 import type { GraphConnectionEdit, GraphPortEndpoint } from "./graphConnectionEditing";
@@ -45,6 +46,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "observationVisibility"; visible: boolean }
     | { type: "observationUpdate"; update: ObservationDelivery; sequence: number; previousSequence?: number }
     | { type: "startObservationProfile"; durationMs: number }
+    | { type: "startGraphUiProfile"; profileId: string; durationMs: number }
     | { type: "startPlayheadTrace"; traceId: string }
     | NodeEventResponse
     | { type: "manualControlState"; interactions: ManualControlInteractionState[]; live: ManualControlLiveValue[] }
@@ -56,6 +58,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "nodeDefinitionSearchResult"; requestId: string; result?: NodeDefinitionSearch; error?: string }
     | { type: "graphAction"; action: "addNode" | "editNode" | "createPackage"; instanceId?: string };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
+    | { type: "setExpandedModules"; modules: NodeAddress[] }
     | { type: "setTimelineSnapMode"; mode: TimelineGridMode }
     | { type: "playbackToggle" }
     | { type: "playbackSeek"; position: string }
@@ -63,6 +66,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | ObservationHostRequest
     | { type: "observationResync" }
     | { type: "observationProfile"; summary: ObservationProfileSummary }
+    | { type: "graphUiProfile"; profileId: string; summary: GraphUiProfileSummary }
     | { type: "playheadTrace"; traceId: string; step: string; details?: TraceDetails }
     | NodeEventHostRequest
     | { type: "graphInteractionHint"; hint: StatusHint | null }
@@ -70,7 +74,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "manualControlAction"; action: ManualControlAction }
     | { type: "deleteSelectedLanes"; instanceIds: string[] }
     | { type: "duplicateSelectedLanes"; copies: GraphLaneCopy[]; requestId: string }
-    | { type: "setManualInputEnabled"; target: NodeAddress; inputName: string; enabled: boolean }
+    | { type: "setManualControlEnabled"; control: ManualControlId; enabled: boolean }
     | { type: "projectHistory"; direction: "undo" | "redo" }
     | { type: "copyNodeDebugDetails"; nodeKey: string }
     | { type: "flushProjectAutosave" }

@@ -136,10 +136,13 @@ namespace iv {
         char const* declaration_identity,
         char const* file_path,
         uint32_t begin,
-        uint32_t end)
+        uint32_t end, char const* declaration_name)
     {
         using Value = std::remove_cv_t<Ref>;
-        if constexpr (SourceInfoAnnotatableRef<Value>) {
+        if constexpr (std::is_base_of_v<NodeRef, Value>) {
+            ref->_annotate_source_info(
+                declaration_identity, file_path, begin, end, declaration_name);
+        } else if constexpr (SourceInfoAnnotatableRef<Value>) {
             ref->_annotate_source_info(
                 declaration_identity, file_path, begin, end);
         } else if constexpr (std::same_as<Value, PublicSampleInputRef>
@@ -461,7 +464,7 @@ namespace iv {
         !(TypedSamplePortLike<L> || TypedSamplePortLike<R>))
     constexpr NodeRef operator*(L&& lhs, R&& rhs)
     {
-        return make_binary_op<Product<2>>(
+        return make_binary_op<Multiply>(
             std::forward<L>(lhs),
             std::forward<R>(rhs),
             "operator*"
@@ -476,9 +479,8 @@ namespace iv {
     constexpr auto operator*(L&& lhs, R&& rhs)
     {
         using ChannelType = typename binary_typed_channel<L, R>::type;
-        auto product = make_binary_op<Product<2>, ChannelType>(
+        return make_binary_op<Multiply, ChannelType>(
             std::forward<L>(lhs), std::forward<R>(rhs), "operator*");
-        return product;
     }
 
     template<class L, class R>

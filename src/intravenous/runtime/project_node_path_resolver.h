@@ -70,12 +70,14 @@ struct ProjectNodePathGraph {
 struct ProjectChildNode {
     NodeBundleHandle bundle;
     std::vector<ProjectNodePathSelector> path;
+    std::string source_label;
+    std::optional<VirtualNodeHandle> virtual_node{};
 };
 
 // Direct children whose selector paths resolve uniquely from the subject.
 // Paths are relative to the subject and can be appended to its NodeAddress.
 [[nodiscard]] std::vector<ProjectChildNode> project_child_nodes(
-    ConfiguredGraph const&, NodeBundleHandle subject);
+    ConfiguredGraph const&, ProjectNodePathMatch const& subject);
 
 // Finds a semantic member path when the target belongs to this authored instance.
 [[nodiscard]] std::optional<std::vector<ProjectNodePathSelector>> project_member_path(

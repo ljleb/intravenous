@@ -5,7 +5,7 @@ defineProps<{ ticks: RulerTick[]; compact?: boolean; labelInset?: number; hideLa
 
 <template>
     <div class="ruler-graduations" :class="{ compact }" aria-hidden="true">
-        <div v-for="tick in ticks" :key="tick.x" class="ruler-tick" :class="{ minor: tick.minor }"
+        <div v-for="tick in ticks" :key="tick.key" class="ruler-tick" :class="{ minor: tick.minor }"
             :style="{ left: `${tick.x}px`, '--label-offset': `${Math.max(0, (labelInset ?? 0) - tick.x)}px` }">
             <template v-if="!hideLabels">
                 <span v-if="!tick.minor" :class="{ edge: compact && tick === ticks[ticks.length - 1] }">{{ tick.label }}</span>

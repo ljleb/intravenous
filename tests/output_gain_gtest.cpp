@@ -50,6 +50,20 @@ TEST(OutputGain, UnityHasNoPrivateStageOrControlStorage)
     EXPECT_TRUE(graph.connections.configured_sample_connections().empty());
 }
 
+TEST(OutputGain, VirtualGainNeedsAConsumerOrAnObservation)
+{
+    auto graph = gain_graph(false, 2);
+    graph.manual_controls.front().id.node.path.push_back(ProjectVirtualNodeSelector{.source_identity = "voice"});
+    auto visible = graph;
+    EXPECT_TRUE(expand_output_gains(graph, gain_definitions()).stages.empty());
+    EXPECT_TRUE(graph.connections.configured_sample_connections().empty());
+
+    std::array observed{SampleOutputChannelId{0, 0, 0}};
+    auto expanded = expand_output_gains(visible, gain_definitions(), observed);
+    ASSERT_EQ(expanded.stages.size(), 1u);
+    EXPECT_EQ(expanded.routed_source(visible.node_bundles, observed.front()).bundle, expanded.stages.front().bundle);
+}
+
 TEST(OutputGain, OneTransformFeedsAllConsumersAndItsIngressKeepsTheRawSource)
 {
     auto graph = gain_graph(false, -2);

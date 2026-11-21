@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <compare>
 #include <optional>
 #include <string>
 #include <variant>
@@ -12,17 +13,17 @@ namespace iv {
 struct ProjectVirtualNodeSelector {
     std::string source_identity{};
     std::optional<std::string> type_identity{};
-    bool operator==(ProjectVirtualNodeSelector const&) const = default;
+    auto operator<=>(ProjectVirtualNodeSelector const&) const = default;
 };
 
 struct ProjectVirtualMemberSelector {
     std::size_t index = 0;
-    bool operator==(ProjectVirtualMemberSelector const&) const = default;
+    auto operator<=>(ProjectVirtualMemberSelector const&) const = default;
 };
 
 struct ProjectTiledChildSelector {
     std::string name{};
-    bool operator==(ProjectTiledChildSelector const&) const = default;
+    auto operator<=>(ProjectTiledChildSelector const&) const = default;
 };
 
 using ProjectNodePathSelector = std::variant<
@@ -37,6 +38,6 @@ struct NodeAddress {
     std::string instance_id{};
     std::vector<ProjectNodePathSelector> path{};
 
-    bool operator==(NodeAddress const&) const = default;
+    auto operator<=>(NodeAddress const&) const = default;
 };
 } // namespace iv

@@ -23,6 +23,9 @@ struct GraphConnectionDiagnostic {
 // the configuration pass. `failure` is set when applying a resolved, compatible
 // connection failed; the pass fails and the root builder must not be used.
 struct GraphConnectionsBatchResult {
+    // Project wiring appends to the builder's source-authored connections.
+    std::size_t source_sample_count = 0;
+    std::size_t source_event_count = 0;
     std::vector<std::string> applied_connection_ids{};
     std::vector<GraphConnectionDiagnostic> diagnostics{};
     std::optional<GraphConnectionDiagnostic> failure{};

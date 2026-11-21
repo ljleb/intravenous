@@ -1,21 +1,33 @@
-import type { ObservationUpdate, ObservationWindowResult } from "./observations";
+import type { ObservationDisplayValue, ObservationWindowResult } from "./observations";
 
 type ObservationWindowBody = Pick<ObservationWindowResult, "regions" | "marks" | "unavailableRegions">;
 type ObservationWindowHeader = Omit<ObservationWindowResult, keyof ObservationWindowBody | "id">;
 type ObservationWindowPatch = { [Field in keyof ObservationWindowHeader]?: ObservationWindowHeader[Field] | null }
     & { body?: ObservationWindowBody | null };
-type ObservationValue = Omit<ObservationUpdate["scopes"][number]["values"][number], "id">;
+export type ObservationValue = Omit<ObservationDisplayValue, "activationId">;
 type ObservationScopePatch = {
     values?: Record<string, ObservationValue | null>;
     windows?: Record<string, ObservationWindowPatch | null>;
 };
-export type ObservationDelivery = Omit<ObservationUpdate, "scopes"> & {
+export type ObservationDelivery = {
+    activationId: string; generation: string; revision: string; index: string; blockSize: number; dataVersion: string;
+    captureNs?: number | null;
     snapshot: boolean;
     scopes: Record<string, ObservationScopePatch | null>;
 };
 
 type Window = { header: ObservationWindowHeader; body?: ObservationWindowBody };
 type Scope = { values: Map<string, ObservationValue>; windows: Map<string, Window> };
+const emptyWindowBody: ObservationWindowBody = { regions: [] };
+function windowResult(id: string, { header, body }: Window): ObservationWindowResult {
+    return { id, ...header, ...(body ?? emptyWindowBody) };
+}
+
+export type ObservationScopeChanges = {
+    snapshot: boolean;
+    values: Array<[string, ObservationValue | null]>;
+    windows: Array<[string, ObservationWindowResult | null]>;
+};
 
 export class ObservationDeliveryState {
     private frame?: Omit<ObservationDelivery, "snapshot" | "scopes">;
@@ -69,20 +81,26 @@ export class ObservationDeliveryState {
         } };
     }
 
-    read(scopeId: string): ObservationUpdate | undefined {
-        if (!this.frame) return;
+    changes(scopeId: string, update?: ObservationDelivery): ObservationScopeChanges {
         const scope = this.scopes.get(scopeId);
-        const values = Array.from(scope?.values ?? [], ([id, value]) => ({ id, ...value }));
-        const windows = Array.from(scope?.windows ?? [], ([id, { header, body }]) =>
-            ({ id, ...header, ...(body ?? { regions: [] }) }));
-        return { ...this.frame, scopes: [{ scopeId, values, windows }] };
+        const changes = update?.scopes[scopeId];
+        const snapshot = !update || update.snapshot || changes === null;
+        const entries = <T>(current: Map<string, T> | undefined, patch: Record<string, unknown> | undefined): Array<[string, T | null]> =>
+            snapshot ? [...current ?? []] : Object.keys(patch ?? {}).map((id) => [id, current?.get(id) ?? null]);
+        return { snapshot, values: entries(scope?.values, changes?.values),
+            windows: entries(scope?.windows, changes?.windows).map(([id, window]) => [id,
+                window ? windowResult(id, window) : null]) };
+    }
+
+    window(scopeId: string, id: string): ObservationWindowResult | undefined {
+        const window = this.scopes.get(scopeId)?.windows.get(id);
+        return window && windowResult(id, window);
     }
 }
 
-export class ObservationDeliveryReceiver {
+export class ObservationDeliverySequence {
     private sequence?: number;
     private awaitingSnapshot = false;
-    private readonly state = new ObservationDeliveryState();
 
     receive(update: ObservationDelivery, sequence: number, previousSequence?: number): "applied" | "ignored" | "resync" {
         if (this.sequence !== undefined && sequence <= this.sequence) return "ignored";
@@ -91,11 +109,8 @@ export class ObservationDeliveryReceiver {
             this.awaitingSnapshot = true;
             return "resync";
         }
-        this.state.receive(update);
         this.sequence = sequence;
         this.awaitingSnapshot = false;
         return "applied";
     }
-
-    read(scopeId: string): ObservationUpdate | undefined { return this.state.read(scopeId); }
 }

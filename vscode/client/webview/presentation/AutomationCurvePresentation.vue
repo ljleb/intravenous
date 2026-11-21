@@ -8,11 +8,13 @@ import { automationSampleOffset, automationValueFraction, automationValueGuides,
 import { addressKey, type NodeAddress } from "../../src/graphScope";
 import { graphEditorShortcut, isTextEditingTarget } from "../../src/graphEditorShortcuts";
 import { gridGuideStrengths } from "../../src/gridGuideStrength";
-import { automationBoundWindows, refinedAutomationBoundTracks,
+import { automationBoundTracksForSpans,
     sampleAutomationPreview, automationBoundVisiblePositions, type AutomationBoundInput,
     type BoundSample } from "../../src/automationBoundInputs";
 import { sampleWindow } from "../../src/sampleWaveform";
-import { usePortObservationWindows } from "./observationContext";
+import { usePortObservationViewport, usePresentationActive } from "./observationContext";
+import GridGuides from "../timeline/GridGuides.vue";
+import { usePresentationSize } from "./presentationSize";
 import { rightClickHint } from "../../src/statusBarText";
 import { useOptionalGraphEditor } from "../graph/context";
 import { automationPointStatus } from "../statusHints";
@@ -40,6 +42,7 @@ const hideLabels = computed(() => props.mode === "nano"
     || (props.mode === "compact" && (laneContext?.regionHeight.value ?? Infinity) <= nanoHeightPx));
 const node = useNode();
 const editor = useOptionalGraphEditor();
+const profileGraphUi = editor?.profileGraphUi ?? (<T>(_: string, run: () => T) => run());
 const { edits, version } = useAutomationEditing();
 const time = useTimelineWindow();
 const timelineMarks = useTimelineMarks();
@@ -47,13 +50,19 @@ const { backgroundPlayhead } = usePlayback();
 const showBeats = computed(() => time?.value.gridMode === "beats" || time?.value.gridMode === "custom");
 const navigation = useTimelineNavigation();
 const surface = ref<SVGSVGElement | null>(null);
-const width = ref(1), height = ref(1);
+const size = usePresentationSize(surface);
+const width = computed(() => Math.max(1, size.value?.width ?? 1));
+const height = computed(() => Math.max(1, size.value?.height ?? 1));
 const key = computed(() => node.value.address ? addressKey(node.value.address) : null);
+const drawing = usePresentationActive(() => {
+    void version.value;
+    const address = node.value.address;
+    return !!marquee.value || segmentPoint.value !== null || (!!address && edits.axes(address) !== null);
+});
 const curve = computed(() => {
     void version.value;
     return node.value.address ? edits.view(node.value.address) : null;
 });
-const visible = ref(false);
 function boundPort(side: AutomationBoundInput) {
     const port = node.value.ports.find((entry) => entry.name === side && entry.direction === "input");
     return port?.kind === "continuous" ? port : undefined;
@@ -79,34 +88,36 @@ const timelineWindow = computed<{ beginSeconds: number; endSeconds: number; span
 });
 const observationWindow = computed(() => {
     const timeline = timelineWindow.value;
-    return visible.value && timeline && sampleWindow(timeline.beginSeconds, timeline.endSeconds,
+    return timeline && sampleWindow(timeline.beginSeconds, timeline.endSeconds,
         curve.value?.sampleRate, automationBoundVisiblePositions)
         || undefined;
 });
-const boundWindows = computed(() => observationWindow.value ? automationBoundWindows(observationWindow.value) : []);
 function observeBound(side: AutomationBoundInput) {
-    const windows = usePortObservationWindows(() => {
-        const address = node.value.address, visible = observationWindow.value;
-        if (address && visible && boundPort(side)?.connectivity === "connected") return {
+    const observation = usePortObservationViewport(() => {
+        const address = node.value.address, window = observationWindow.value;
+        if (address && window && boundPort(side)?.connectivity === "connected") return {
             source: { node: address, kind: "input", member: side }, operation: "waveform",
-            windows: boundWindows.value, visible, completeOnly: true,
+            window, completeOnly: true,
         };
     });
-    return computed(() => {
+    return computed(() => profileGraphUi("Refine automation bound tracks", () => {
         const timeline = timelineWindow.value, rate = curve.value?.sampleRate;
-        return timeline && rate ? refinedAutomationBoundTracks(windows.value,
-            timeline.beginSeconds, timeline.spanSeconds, rate, boundWindows.value[0]?.window) : [];
-    });
+        const window = observationWindow.value, view = observation.value;
+        return timeline && rate && window && view ? automationBoundTracksForSpans(view.spans, window,
+            timeline.beginSeconds, timeline.spanSeconds, rate) : [];
+    }));
 }
 const lowerBound = observeBound("min"), upperBound = observeBound("max");
 const view = computed(() => {
+    if (!drawing.value) return null;
     void version.value;
     const timeline = timelineWindow.value, address = node.value.address;
     return curve.value && timeline && address
         ? automationWindow(curve.value, 0, timeline.spanSeconds, edits.drafts(address), timeline.beginSeconds) : null;
 });
-const preview = computed(() => sampleAutomationPreview(view.value?.paths ?? [], lowerBound.value,
-    upperBound.value, manualBounds.value, timelineWindow.value?.spanSeconds ?? 0, width.value));
+const preview = computed(() => drawing.value ? profileGraphUi("Sample automation preview", () => sampleAutomationPreview(
+    view.value?.paths ?? [], lowerBound.value, upperBound.value, manualBounds.value,
+    timelineWindow.value?.spanSeconds ?? 0, width.value)) : undefined);
 const curveView = ref<AutomationCurveView>({});
 const viewChanged = usePresentationState({
     serialize() {
@@ -127,7 +138,7 @@ const axes = computed(() => {
         pan: fixed ? fixed.pan : valuePan.value, zoom: fixed ? fixed.zoom : valueZoom.value,
         display: fixed?.display ?? display.value, ruler: fixed ? fixed.ruler : ruler.value };
 });
-const ticks = computed(() => axes.value ? automationTimelineTicks({
+const ticks = computed(() => drawing.value && axes.value ? automationTimelineTicks({
     beginSeconds: axes.value.begin, endSeconds: axes.value.end, spanSeconds: axes.value.spanSeconds,
 }, width.value, curve.value?.sampleRate) : []);
 const x = (offset: number) => axes.value ? offset / axes.value.spanSeconds * width.value : 0;
@@ -136,19 +147,22 @@ const sampleX = (index: bigint) => curve.value?.sampleRate && axes.value
 const pointX = (point: AutomationPointPosition) => (point.sampleIndex === undefined ? undefined : sampleX(point.sampleIndex))
     ?? x(point.seconds - (axes.value?.begin ?? 0));
 const y = (value: number) => (1 - automationValueFraction(value, axes.value ?? {})) * height.value;
-function previewPath(tracks: BoundSample[][]): string {
-    return tracks.map((track) => track.map(({ seconds, value }, index) =>
-        `${index ? "L" : "M"}${x(seconds)},${y(value)}`).join(" ")).join(" ");
+function previewPath(tracks?: BoundSample[][]): string {
+    if (!tracks?.length) return "";
+    return profileGraphUi("Build automation SVG paths", () => tracks.map((track) => track.map(({ seconds, value }, index) =>
+        `${index ? "L" : "M"}${x(seconds)},${y(value)}`).join(" ")).join(" "));
 }
-const hasOutputBounds = computed(() => preview.value.min.length > 0 || preview.value.max.length > 0);
-const minPath = computed(() => previewPath(preview.value.min));
-const maxPath = computed(() => previewPath(preview.value.max));
-const path = computed(() => previewPath(preview.value.authored));
-const outputPath = computed(() => hasOutputBounds.value ? previewPath(preview.value.output) : "");
+const hasOutputBounds = computed(() => !!(preview.value?.min.length || preview.value?.max.length));
+const minPath = computed(() => previewPath(preview.value?.min));
+const maxPath = computed(() => previewPath(preview.value?.max));
+const path = computed(() => previewPath(preview.value?.authored));
+const outputPath = computed(() => hasOutputBounds.value ? previewPath(preview.value?.output) : "");
 const markerY = (point: AutomationPoint) => Math.max(2, Math.min(height.value - 2, y(point.value)));
-const valueGuides = computed(() => axes.value
+const valueGuides = computed(() => drawing.value && axes.value
     ? rankAutomationValueGuides(automationValueGuides(axes.value, height.value, axes.value.ruler)) : []);
-const valueStrengths = computed(() => gridGuideStrengths(valueGuides.value, ({ y }) => y));
+const valueGuideKey = ({ value }: { value: number }) => value;
+const valueGuidePosition = ({ y }: { y: number }) => y;
+const valueStrengths = computed(() => gridGuideStrengths(valueGuides.value, valueGuidePosition));
 const valueLabelInset = computed(() => hideLabels.value || !valueGuides.value.length ? 0
     : 9 + 6 * Math.max(...valueGuides.value.map(({ value }) => String(value).length)));
 const valueLabelY = (guideY: number) => guideY >= 12 ? guideY - 3 : Math.min(height.value - 1, guideY + 10);
@@ -402,8 +416,6 @@ function tensionKey(event: KeyboardEvent, point: AutomationPoint) {
     if (!adjustTension(event, point)) pointKey(event, point);
 }
 
-let observer: ResizeObserver | null = null;
-let intersection: IntersectionObserver | undefined;
 let unregisterValueNavigation: (() => void) | undefined;
 function updateCurveView(change: AutomationCurveView, saveNow = false) {
     curveView.value = { ...curveView.value, ...change };
@@ -466,21 +478,11 @@ const valueNavigation: LaneValueNavigation = {
     },
 };
 onMounted(() => {
-    observer = new ResizeObserver(([entry]) => {
-        if (entry) { width.value = Math.max(1, entry.contentRect.width); height.value = Math.max(1, entry.contentRect.height); }
-    });
-    if (surface.value) {
-        observer.observe(surface.value);
-        intersection = new IntersectionObserver(([entry]) => { visible.value = !!entry?.isIntersecting; });
-        intersection.observe(surface.value);
-    }
     const lane = surface.value?.closest(".lane");
     if (lane) unregisterValueNavigation = navigation?.registerValueNavigation(lane, valueNavigation);
 });
 onBeforeUnmount(() => {
     unregisterValueNavigation?.();
-    observer?.disconnect();
-    intersection?.disconnect();
 });
 </script>
 
@@ -496,13 +498,13 @@ onBeforeUnmount(() => {
                 @pointercancel="cancelSelection" @lostpointercapture.self="cancelSelection"
                 @keydown="selectAllPoints" @keydown.delete.self="deleteSelected" @contextmenu.self.prevent>
                 <g class="value-guides" aria-hidden="true">
-                    <TransitionGroup name="iv-grid">
-                        <g v-for="guide in valueGuides" :key="guide.value">
-                            <line class="iv-grid-guide" :style="{ '--iv-grid-strength': valueStrengths.get(guide.depth) }"
-                                x1="0" :x2="width" :y1="guide.y" :y2="guide.y" vector-effect="non-scaling-stroke" />
-                            <text v-if="!hideLabels && guide.value !== snapGuide?.value" x="4" :y="valueLabelY(guide.y)">{{ guide.value }}</text>
-                        </g>
-                    </TransitionGroup>
+                    <GridGuides :marks="valueGuides" :strengths="valueStrengths" :mark-key="valueGuideKey"
+                        :position="valueGuidePosition" axis="y" :end="width" />
+                    <template v-if="!hideLabels">
+                        <template v-for="guide in valueGuides" :key="guide.value">
+                            <text v-if="guide.value !== snapGuide?.value" x="4" :y="valueLabelY(guide.y)">{{ guide.value }}</text>
+                        </template>
+                    </template>
                 </g>
                 <path :d="path" class="curve-line" :class="{ 'authored-curve': hasOutputBounds }" />
                 <path v-if="outputPath" :d="outputPath" class="curve-line" />

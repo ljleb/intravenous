@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useNode } from "./nodeContext";
-import { useObservations, type PresentedObservation } from "./observationContext";
+import { useObservations, useObservationTier, type PresentedObservation } from "./observationContext";
 import SampleMeter from "./SampleMeter.vue";
 import OutputWaveforms from "./OutputWaveforms.vue";
 import AnchoredPopover from "./AnchoredPopover.vue";
@@ -13,6 +13,7 @@ import { observationSourceKey, type MeterMode, type ObservationSource } from "..
 import type { NodeDisplayMode } from "./displayMode";
 import { isContextMenuKey, useContextPopover } from "./contextPopover";
 import { readManualControlValue, useOptionalManualControls } from "./manualControlContext";
+import { usePresentationSize } from "./presentationSize";
 
 const props = defineProps<{ mode?: NodeDisplayMode; bounds?: { min: number; max: number } }>();
 const showScaleLabels = computed(() => props.mode === "editable" || props.mode === undefined);
@@ -27,7 +28,7 @@ const outputGains = computed(() => {
     const gains = new Map<string, number>();
     if (!address) return gains;
     for (const port of node.value.ports) {
-        if (port.direction !== "output" || port.kind !== "continuous" || !port.manualControl?.available) continue;
+        if (port.direction !== "output" || port.kind !== "continuous" || !port.manualControl?.enabled) continue;
         const gain = readManualControlValue(manualControls, { node: address, outputName: port.name }, port.manualControl);
         if (gain !== undefined) gains.set(port.name, gain);
     }
@@ -39,18 +40,18 @@ const visualizationModes: Array<{ mode: MeterMode; label: string }> = [
     { mode: "level", label: "Level (dBFS)" }, { mode: "value", label: "Value (linear)" },
 ];
 const { panel: menuRoot, key: menuKey, open: openContext, close: closeMenu, toggled: menuToggled } = useContextPopover<string>();
-let observer: IntersectionObserver | undefined;
-let resize: ResizeObserver | undefined;
 const timeline = useTimelineWindow();
-const width = ref(0);
+const size = usePresentationSize(root);
+const width = computed(() => size.value?.width ?? 0);
 const observationWindow = computed(() => timeline ? sampleWindow(timeline.value.beginSeconds,
     timeline.value.endSeconds, timeline.value.sampleRate, props.mode === "nano" ? 2 : Math.min(512, width.value)) : undefined);
-let intersecting = false;
+const tier = useObservationTier();
 const visible = ref(false);
 let current: NodeAddress | undefined;
 function updateVisibility(): void {
-    visible.value = !!current && intersecting && !document.hidden;
-    if (current) observations?.node(owner, current, visible.value, observationWindow.value, firstInput.value);
+    const active = document.hidden ? undefined : tier.value;
+    visible.value = !!current && active === "visible";
+    if (current) observations?.node(owner, current, active, observationWindow.value, firstInput.value);
 }
 watch(() => node.value.address ? addressKey(node.value.address) : null, () => {
     closeMenu();
@@ -58,14 +59,15 @@ watch(() => node.value.address ? addressKey(node.value.address) : null, () => {
     current = node.value.address;
     updateVisibility();
 }, { immediate: true });
-watch([observationWindow, firstInput], updateVisibility);
+watch([tier, observationWindow, firstInput], updateVisibility);
 const items = computed(() => {
-    observations?.version.value;
     const address = node.value.address;
-    if (!address || !observations) return [];
-    return observations.capabilities.value.filter((entry) => entry.delivery !== "window"
-        && addressKey(entry.source.node) === addressKey(address))
-        .map((entry) => ({ ...entry, result: observations.values.values.get(entry.id) }));
+    if (!visible.value || !address || !observations) return [];
+    return observations.forNode(address).filter((entry) => entry.delivery !== "window")
+        .map((entry) => {
+            const result = observations.values.values.get(entry.id);
+            return { ...entry, result, retained: !result || result.pending ? observations.values.previousLiveValue(entry.id) : undefined };
+        });
 });
 const meters = computed(() => {
     const groups = new Map<string, { key: string; source: ObservationSource; mode: MeterMode; channels: typeof items.value }>();
@@ -81,7 +83,6 @@ const meters = computed(() => {
     }
     return [...groups.values()];
 });
-const state = computed(() => items.value.filter((item) => item.kind === "stateField"));
 const selectedMeter = computed(() => meters.value.find((meter) => meter.key === menuKey.value));
 const selectedMode = computed(() => selectedMeter.value?.mode);
 watch(selectedMeter, () => {
@@ -93,7 +94,8 @@ function switchMode(mode: MeterMode): void {
     closeMenu(true);
 }
 function channelLabel(item: PresentedObservation): string {
-    const name = item.kind === "input" ? `Input ${item.member}` : item.member;
+    const port = node.value.ports.find((port) => port.direction === item.kind && port.name === item.member);
+    const name = port?.displayName ?? (item.kind === "input" ? `Input ${item.member}` : item.member);
     return item.channels && item.channels.length > 1 ? `${name} · ${item.channelName}` : name;
 }
 function openMenu(event: MouseEvent | KeyboardEvent, key: string): void {
@@ -102,25 +104,11 @@ function openMenu(event: MouseEvent | KeyboardEvent, key: string): void {
     openContext(event, key, { anchor: meter, returnFocus: meter === document.activeElement ? meter : null,
         initialFocus: "[aria-checked='true']" });
 }
-function stateText(value: unknown): string {
-    return typeof value === "number" && Number.isFinite(value) ? String(value) : "—";
-}
 onMounted(() => {
     document.addEventListener("visibilitychange", updateVisibility);
-    observer = new IntersectionObserver(([entry]) => {
-        intersecting = !!entry?.isIntersecting;
-        updateVisibility();
-    }, { rootMargin: "100px 0px" });
-    if (root.value) {
-        observer.observe(root.value);
-        resize = new ResizeObserver(([entry]) => { width.value = entry?.contentRect.width ?? 0; });
-        resize.observe(root.value);
-    }
 });
 onBeforeUnmount(() => {
     document.removeEventListener("visibilitychange", updateVisibility);
-    observer?.disconnect();
-    resize?.disconnect();
     observations?.remove(owner);
 });
 </script>
@@ -131,17 +119,13 @@ onBeforeUnmount(() => {
             @contextmenu="openMenu($event, meter.key)" @keydown="openMenu($event, meter.key)">
             <div class="output-channels">
                 <div v-for="item in meter.channels" :key="JSON.stringify([node.definitionId, item.id])" class="channel">
-                    <SampleMeter :mode="meter.mode" :label="channelLabel(item)" :result="item.result" :active="visible"
-                        :gain="item.kind === 'output' ? outputGains.get(item.member) : undefined"
+                    <SampleMeter :mode="meter.mode" :label="channelLabel(item)" :result="item.result" :retained="item.retained" :active="visible"
+                        :gain="item.kind === 'output' && !item.gainApplied ? outputGains.get(item.member) : undefined"
                         :show-scale-labels="showScaleLabels" />
                 </div>
             </div>
         </div>
-        <OutputWaveforms :mode="mode" :bounds="bounds" :input-member="firstInput" />
-        <div v-for="item in state" :key="item.id" class="state-field">
-            <span class="output-name">{{ item.member }}</span>
-            <output :aria-label="item.member">{{ item.result?.available ? stateText(item.result.value?.value) : '—' }}</output>
-        </div>
+        <OutputWaveforms :mode="mode" :bounds="bounds" :input-member="firstInput" :window="observationWindow" />
     </div>
     <Teleport to="body">
         <AnchoredPopover v-if="menuKey !== null" ref="menuRoot" role="menu" label="Visualization mode"
@@ -160,12 +144,8 @@ onBeforeUnmount(() => {
 <style scoped>
 .live-outputs { height: 100%; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 4px; box-sizing: border-box; }
 .output-group { display: flex; flex: 1 1 0; align-items: stretch; gap: 8px; min-height: 0; overflow: hidden; }
-.output-name { max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); font-size: 11px; }
 .output-channels { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; min-height: 0; }
 .channel { display: flex; flex: 1; align-items: stretch; gap: 5px; min-height: 0; min-width: 0; }
-.state-field { display: flex; align-items: center; gap: 8px; font-size: 11px; }
-output { font-variant-numeric: tabular-nums; }
 :is([data-mode="mini"], [data-mode="nano"]).live-outputs { gap: 0; }
-:is([data-mode="mini"], [data-mode="nano"]) .state-field { display: none; }
 :is([data-mode="mini"], [data-mode="nano"]) .output-channels { gap: 1px; }
 </style>

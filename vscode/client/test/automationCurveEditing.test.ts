@@ -1,6 +1,8 @@
-import { automationBoundTracks, automationBoundWindows, refinedAutomationBoundTracks,
+import { observationSpans, observationWindowRequests } from "../src/observationWindows";
+import { receiveSnapshot } from "./observationFixtures";
+import { automationBoundTracks, automationBoundTracksForSpans,
     sampleAutomationPreview } from "../src/automationBoundInputs";
-import { ObservationValues, type ObservationWindowResult } from "../src/observations";
+import { ObservationValues, type ObservationWindow, type ObservationWindowResult } from "../src/observations";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { AutomationCurveEditing, automationCycleSeconds, automationWindow, curvePointAt, readAutomationCurve, type CurveAxes } from "../src/automationCurveEditing";
@@ -721,10 +723,10 @@ test("crossed manual bounds keep their own traces and preview the midpoint", () 
 });
 
 test("automation bounds spend 1024 positions on the viewport and reuse coarse tiles while panning", () => {
-    const requests = automationBoundWindows({ begin: "-100", length: "1000", points: 1024 });
-    const moved = automationBoundWindows({ begin: "-80", length: "1000", points: 1024 });
+    const requests = observationWindowRequests({ begin: "-100", length: "1000", points: 1024 }, "visible");
+    const moved = observationWindowRequests({ begin: "-80", length: "1000", points: 1024 }, "visible");
     assert.deepEqual(requests.slice(1), moved.slice(1));
-    assert.deepEqual(requests[0], { window: { begin: "-100", length: "1000", points: 1024 }, prefetch: false });
+    assert.deepEqual(requests[0], { slot: "visible", window: { begin: "-100", length: "1000", points: 1024 }, prefetch: false });
     assert.deepEqual(moved[0].window, { begin: "-80", length: "1000", points: 1024 });
     assert.equal(requests.reduce((count, request) => count + request.window.points, 0), 1152);
     const coarse = requests.filter((request) => request.prefetch).sort((a, b) => Number(a.window.begin) - Number(b.window.begin));
@@ -744,15 +746,19 @@ test("automation bounds keep their fine outline during successive edits of the c
     const visible = { begin: "16", length: "20" };
     const source = { node: { instanceId: "curve" }, kind: "input" as const, member: "max" };
     const requests = [coarse, fine, empty].map(({ id, window }) => ({ id, source, window, operation: "waveform" }));
-    const publish = (generation: string, ...windows: ObservationWindowResult[]) => values.receive({
+    const publish = (generation: string, ...windows: ObservationWindowResult[]) => receiveSnapshot(values, {
         activationId: "1", generation, revision: "1", index: "0", blockSize: 64, dataVersion: "0",
         scopes: [{ scopeId: "viewport", values: [], windows }],
-    }, "viewport");
+    });
     const retained = () => values.readyWindowsForDisplay(requests.map(({ id }) => id), visible, true);
+    const tracksFor = (begin: number, length: number, fine?: ObservationWindow) => {
+        const visible = { begin: String(begin), length: String(length) };
+        return automationBoundTracksForSpans(observationSpans(retained(), visible, fine), visible, begin, length, 1);
+    };
     values.acceptGeneration(7, 1);
     values.expectWindows(requests);
     publish("7", coarse, fine, empty);
-    const tracks = refinedAutomationBoundTracks(retained(), 16, 20, 1);
+    const tracks = tracksFor(16, 20);
     assert.deepEqual(tracks.map(({ begin, end, samples }) => [begin, end, samples[0].value]),
         [[0, 4, 2], [4, 12, 6], [16, 20, 2]]);
     const curve = [{ begin: { seconds: 0, value: 0 }, end: { seconds: 20, value: 0 }, first: 0, second: 0 }];
@@ -761,15 +767,15 @@ test("automation bounds keep their fine outline during successive edits of the c
 
     for (const generation of [8, 9]) {
         values.acceptGeneration(generation, 1);
-        assert.deepEqual(refinedAutomationBoundTracks(retained(), 20, 8, 1, fine.window)
+        assert.deepEqual(tracksFor(20, 8, fine.window)
             .map(({ samples }) => samples[0].value), [6]);
         publish(String(generation), { ...coarse, dataVersion: "5" }, { ...fine, status: "pending" });
         publish(String(generation), { ...fine, truncated: true, regions: [] });
-        assert.deepEqual(refinedAutomationBoundTracks(retained(), 20, 8, 1, fine.window)
+        assert.deepEqual(tracksFor(20, 8, fine.window)
             .map(({ samples }) => samples[0].value), [6]);
     }
     publish("9", { ...fine, dataVersion: "1", regions: [] });
-    assert.deepEqual(refinedAutomationBoundTracks(retained(), 20, 8, 1, fine.window), []);
+    assert.deepEqual(tracksFor(20, 8, fine.window), []);
     values.expectWindows([]);
     assert.deepEqual(retained(), []);
 });

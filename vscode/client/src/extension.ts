@@ -171,8 +171,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         bundledRuntime,
     );
 
-    const graphEditor = new GraphEditorProvider(context.extensionUri, session, nativeHelper,
-        (message) => outputChannel.appendLine(message), context.globalState);
+    const graphEditor = new GraphEditorProvider(context.extensionUri, session, outputChannel, nativeHelper, context.globalState);
     provider.setInteractionHintHandler((hint) => graphEditor.setInspectionHint(hint));
     context.subscriptions.push(graphEditor);
     for (const seek of [false, true]) context.subscriptions.push(vscode.commands.registerCommand(

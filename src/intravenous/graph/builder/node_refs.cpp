@@ -551,11 +551,11 @@ NodeRef& NodeRef::operator=(NodeRef&& rhs)
 
 void NodeRef::_annotate_source_info(
     std::string_view id, std::string_view file,
-    uint32_t begin, uint32_t end) const
+    uint32_t begin, uint32_t end, std::string_view name) const
 try {
     _has_source_identity = _has_source_identity || !id.empty();
     if (_session) {
-        details::iv_builder_annotate_node(_session, _index, id, file, begin, end);
+        details::iv_builder_annotate_node(_session, _index, id, file, begin, end, name);
     }
 } catch (...) {
     // An exception leaving a session operation fails the session.

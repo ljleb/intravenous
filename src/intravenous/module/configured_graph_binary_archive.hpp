@@ -45,7 +45,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 1;
+inline constexpr std::uint32_t archive_version = 2;
 
 class Writer {
 public:
@@ -179,12 +179,14 @@ inline void write_source_info(Writer& w, SourceInfo const& value)
     w.string(value.span.file_path);
     w.pod(value.span.begin);
     w.pod(value.span.end);
+    w.string(value.declaration_name);
 }
 
 inline SourceInfo read_source_info(Reader& r)
 {
     return {.declaration_identity = r.string(), .span = {
-        .file_path = r.string(), .begin = r.pod<std::uint32_t>(), .end = r.pod<std::uint32_t>()}};
+        .file_path = r.string(), .begin = r.pod<std::uint32_t>(), .end = r.pod<std::uint32_t>()},
+        .declaration_name = r.string()};
 }
 
 template<class Range> void write_source_infos(Writer& w, Range const& values)

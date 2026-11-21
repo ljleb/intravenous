@@ -35,7 +35,8 @@ realtime state from the Vue client. It complements
   intended `IV_NODE_PRESENTATION`, `PresentationInstances`, or C++
   `PresentationState` API. A generic Vue presentation works with arbitrary
   reflected ports; specialized presentations may select supported fields and
-  operations statically using generated typing.
+  operations statically using generated typing. Presentations request each
+  `Node::State` field they display explicitly.
 - No ordinary node needs `publish()`, `on_subscribe`,
   `on_subscription_change`, or a reused `on_message` for observation. New
   node-authored callbacks and field-specific codec overrides are deferred until
@@ -445,6 +446,13 @@ implicitly releases absent interests; explicit unsubscribe is optional.
 Connection disconnection and expiring leases guarantee cleanup even if Vue
 does not send a final release. An interest is associated with an authenticated
 connection, not an arbitrarily trusted client-supplied owner ID.
+
+The [shared presentation performance rules](./node_presentation_and_manual_controls_direction.md#shared-presentation-performance)
+also apply to custom lanes. The observation service owns the request windows
+and selects the result for each span of the visible range. A completed window
+with empty coverage replaces any cached preview in that span. A positional
+event source can require the precise visible window. An indexed source can
+reuse a padded window across nearby views.
 
 Maximum live publication rate, nearby-tier cadence, overscan distance,
 debounce/hysteresis, deactivation grace time, and lease/heartbeat timeout are

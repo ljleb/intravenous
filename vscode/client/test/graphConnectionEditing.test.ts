@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { canContinuePortConnection, canMoveConnectionEnd, connectionEndMutation, connectionEndsAtPort, connectionFromPorts, fixedConnectionPorts,
     type GraphConnectionEnd, type GraphPortEndpoint } from "../src/graphConnectionEditing";
-import type { GraphPortMatcher, GraphScope, GraphScopeConnection, GraphScopeNode } from "../src/graphScope";
+import { graphScopeWithChildren, resolveScopePorts, type GraphPortMatcher, type GraphScope, type GraphScopeConnection, type GraphScopeNode } from "../src/graphScope";
 import { beginPortConnection, canDropPortConnection, finishPortConnection, movePortConnection } from "../src/portConnectionGesture";
 
 function scope(): GraphScope {
@@ -27,6 +27,13 @@ test("connection drag works in either direction and preserves channel conversion
         inputs: [{ instanceId: "b", path: [], port: { name: "in", index: 0 } }] });
 });
 
+test("an unnamed port connects by index and keeps its presentation label separate", () => {
+    const graph = scope();
+    graph.nodes[0].sampleOutputs[0] = { name: "", displayName: "Value", index: 0, channelType: "stereo" };
+    const connection = connectionFromPorts(graph, "wire", { ...output, name: "" }, input);
+    assert.deepEqual(connection.outputs, [{ ...output.address, path: [], port: { index: 0 } }]);
+});
+
 test("connection drag validates the current port identity and editable scope", () => {
     assert.throws(() => connectionFromPorts({ ...scope(), editable: false }, "wire", output, input), /read-only/);
     assert.throws(() => connectionFromPorts(scope(), "wire", output, { ...input, name: "renamed" }), /port changed/);
@@ -44,7 +51,7 @@ test("event connection drag retains distinct registered event types for backend 
     assert.throws(() => connectionFromPorts(scope(), "wire", output, { ...input, kind: "event", name: "gate" }), /same port kind/);
 });
 
-const matcher = (port: GraphPortEndpoint): GraphPortMatcher => ({ ...port.address, path: [],
+const matcher = (port: GraphPortEndpoint): GraphPortMatcher => ({ ...port.address, path: port.address.path ?? [],
     port: { name: port.name, index: port.index } });
 const cInput = { ...input, address: { instanceId: "c" } };
 const cOutput = { ...output, address: { instanceId: "c" } };
@@ -67,6 +74,27 @@ function replacement(graph: GraphScope, end: GraphConnectionEnd, target: GraphPo
     assert.ok(mutation?.type === "upsert");
     return mutation.connection as GraphScopeConnection["connection"];
 }
+
+test("expanded child ports can be wired while module-source cables remain read-only", () => {
+    const graph = connectedScope();
+    const address = { ...output.address, path: [{ kind: "tiledChild", name: "right" }] };
+    const childOutput = { ...output, address };
+    const childInput = { ...input, address };
+    graph.childScopes = [{ subject: output.address, nodes: [{ ...graph.nodes[0], address }] }];
+    const expanded = graphScopeWithChildren(graph);
+    const sourceWire: GraphScopeConnection = { id: "source", applied: true, sourceOwned: true,
+        connection: connectionFromPorts(expanded, "source", childOutput, childInput) };
+    expanded.connections = [...expanded.connections, sourceWire];
+    assert.deepEqual(resolveScopePorts(expanded, matcher(childOutput), "sample", "output")
+        .map(({ node }) => node.address), [address]);
+    assert.deepEqual(connectionEndsAtPort(expanded, childOutput), []);
+    assert.throws(() => connectionEndMutation(expanded, {
+        end: { connection: sourceWire, port: childOutput }, target: null,
+    }), /module source/);
+    const projectWire = replacement(expanded, selectedEnd(expanded, output), childOutput);
+    assert.deepEqual(projectWire.outputs, [matcher(childOutput)]);
+    assert.throws(() => connectionFromPorts(graph, "hidden", childOutput, input), /no longer/);
+});
 
 test("hover feedback permits either drag direction without changing the graph", () => {
     const graph = scope();

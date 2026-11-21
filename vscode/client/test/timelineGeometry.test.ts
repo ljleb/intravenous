@@ -64,15 +64,17 @@ test("guide strengths use the closest pair at each visible depth and adapt to mi
 });
 
 test("beat observations share a padded query across nearby pans and zooms", () => {
-    const base = timelineBeatObservationWindow(-2001n, 3000n, 1200)!;
-    assert.deepEqual(timelineBeatObservationWindow(-1200n, 3300n, 1200), base);
+    const base = timelineBeatObservationWindow(-2001n, 3000n, 1200, true)!;
+    assert.deepEqual(timelineBeatObservationWindow(-1200n, 3300n, 1200, true), base);
     assert.equal(base.points, 1024);
     assert.ok(BigInt(base.begin) < -2001n);
     assert.ok(BigInt(base.begin) + BigInt(base.length) > -1200n + 3300n);
-    assert.notDeepEqual(timelineBeatObservationWindow(50n, 3300n, 1200), base);
-    assert.notDeepEqual(timelineBeatObservationWindow(-1200n, 4300n, 1200), base);
+    assert.notDeepEqual(timelineBeatObservationWindow(50n, 3300n, 1200, true), base);
+    assert.notDeepEqual(timelineBeatObservationWindow(-1200n, 4300n, 1200, true), base);
+    assert.deepEqual(timelineBeatObservationWindow(-2001n, 3000n, 1200, false),
+        { begin: "-2001", length: "3000", points: 1024, maxDepth: 255 });
     const nearSeam = (1n << 63n) + 20n;
-    const wrapped = timelineBeatObservationWindow(nearSeam, 100n, 800)!;
+    const wrapped = timelineBeatObservationWindow(nearSeam, 100n, 800, true)!;
     const offset = BigInt.asUintN(64, nearSeam - BigInt(wrapped.begin));
     assert.ok(offset > 0n && offset + 100n < BigInt(wrapped.length));
 });
@@ -162,14 +164,20 @@ test("timeline ruler handles fractional windows and limits label density", () =>
 });
 
 test("timeline ruler keeps shared labels stable across horizontal zoom", () => {
+    const positions: number[] = [];
     for (const window of [
         { beginSeconds: -2, endSeconds: 4 },
-        { beginSeconds: 0, endSeconds: 2 },
-        { beginSeconds: 0.9, endSeconds: 1.1 },
+        { beginSeconds: 0, endSeconds: 2.5 },
+        { beginSeconds: 0.9, endSeconds: 1.2 },
     ]) {
         const ticks = timelineTicks(window, 900);
-        assert.equal(ticks.find((tick) => Math.abs(tick.seconds - 1) < 1e-12)?.label, "1 s");
+        const tick = ticks.find(({ seconds }) => Math.abs(seconds - 1) < 1e-12);
+        assert.ok(tick);
+        assert.equal(tick.label, "1 s");
+        assert.equal(tick.key, 1);
+        positions.push(tick.x);
     }
+    assert.equal(new Set(positions).size, 3);
     const fractional = timelineTicks({ beginSeconds: -0.5, endSeconds: 0.5 }, 900);
     assert.equal(fractional.find((tick) => Math.abs(tick.seconds - 0.3) < 1e-12)?.label, "0.3 s");
     assert.equal(fractional.find((tick) => Math.abs(tick.seconds + 0.3) < 1e-12)?.label, "-0.3 s");

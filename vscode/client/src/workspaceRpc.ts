@@ -70,19 +70,23 @@ export class WorkspaceRpc {
             nodes: nodes.map((node) => ({ ...node, path: node.path ?? [] })),
         });
     }
-    reconcileObservations(scopeId: string, interests: ObservationInterest[]): Promise<{ revision: string; leaseMs: number }> {
+    reconcileObservations(scopeId: string, interests: ObservationInterest[], predictedInterests?: ObservationInterest[]): Promise<{ revision: string; leaseMs: number }> {
+        const normalize = (interest: ObservationInterest) => ({ ...interest, source: { ...interest.source,
+            node: { ...interest.source.node, path: interest.source.node.path ?? [] },
+        }, ...(interest.window?.maxDepth === undefined ? {} : {
+            window: { ...interest.window, maxMarks: interest.window.points },
+        }) });
         return this.client.request("observations.reconcile", {
             scopeId,
-            interests: interests.map((interest) => ({ ...interest, source: { ...interest.source,
-                node: { ...interest.source.node, path: interest.source.node.path ?? [] },
-            }, ...(interest.window?.maxDepth === undefined ? {} : {
-                window: { ...interest.window, maxMarks: interest.window.points },
-            }) })),
+            interests: interests.map(normalize),
+            ...(predictedInterests?.length ? { predictedInterests: predictedInterests.map(normalize) } : {}),
         });
     }
 
-    getGraphScope(): Promise<GraphScope> {
-        return this.client.request("graph.getScope", {});
+    getGraphScope(expanded: NodeAddress[] = []): Promise<GraphScope> {
+        return this.client.request("graph.getScope", expanded.length ? {
+            expanded: expanded.map((address) => ({ ...address, path: address.path ?? [] })),
+        } : {});
     }
 
     getNodeEventProtocol(): Promise<NodeEventProtocol> {
@@ -178,14 +182,14 @@ export class WorkspaceRpc {
         return this.client.request("manualControls.upsert", this.mutationParams({ ...control, value, enabled, participation }, revision));
     }
     beginManualControl(interactionId: string, control: ManualControlId, value: number): Promise<void> {
-        return this.client.request("manualControls.begin", this.mutationParams({ interactionId, ...control, value }));
+        return this.client.request("manualControls.begin", { interactionId, ...control, value });
     }
     // A live gesture value: unacknowledged, revision-free, latest value wins.
     updateManualControl(interactionId: string, value: number): void {
         this.client.notify("manualControls.update", { interactionId, value });
     }
     endManualControl(interactionId: string, value: number): Promise<void> {
-        return this.client.request("manualControls.end", this.mutationParams({ interactionId, value }));
+        return this.client.request("manualControls.end", { interactionId, value });
     }
 
     getIvPackageDefinitions(): Promise<{ packages?: Array<Record<string, unknown>> }> {

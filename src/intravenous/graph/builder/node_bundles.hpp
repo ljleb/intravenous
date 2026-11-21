@@ -1153,6 +1153,8 @@ constexpr NodeSourceAnnotations const &NodeBundle::source_annotations() const {
 constexpr NodeBundleHandle GraphBuilderNodeBundles::append_tiled(
     std::span<NodeBundleHandle const> members,
     ChannelLayout promoted_channel_layout) {
+  if (promoted_channel_layout.channel_type == ChannelTypeId::mono)
+    details::error("a tiled NodeBundle requires a multichannel layout");
   if (members.empty()) details::error("tiled NodeBundle requires members");
   auto const &first = bundle(members.front());
   if (!first.is_concrete() && !first.is_subgraph()) {
@@ -1618,6 +1620,8 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_configured_recor
       break;
     }
     case ConfiguredNodeBundleKind::tiled:
+      if (record.tiled_channel_type == ChannelTypeId::mono)
+        details::error("a tiled NodeBundle requires a multichannel layout");
       bundle = NodeBundle(NodeBundle::TiledNodeBundle{
           .member_bundles = record.tiled_members,
           .channel_type = record.tiled_channel_type,

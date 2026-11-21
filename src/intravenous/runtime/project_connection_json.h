@@ -18,6 +18,10 @@ enum class ProjectConnectionJsonNames {
     nlohmann::ordered_json const& json,
     ProjectConnectionJsonNames names);
 
+[[nodiscard]] nlohmann::ordered_json project_port_matchers_json(
+    std::vector<ProjectNodePortMatcher> const& matchers,
+    ProjectConnectionJsonNames names);
+
 [[nodiscard]] nlohmann::ordered_json node_address_json(
     NodeAddress const& address,
     ProjectConnectionJsonNames names);

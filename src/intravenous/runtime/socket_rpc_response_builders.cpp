@@ -460,6 +460,7 @@ Json graph_scope_ports_json(std::vector<NodeInstancePortInfo> const& ports,
     };
     for (auto const& port : ports) {
         Json entry{{"name", port.name}, {"index", port.index}};
+        if (!port.display_name.empty()) entry["displayName"] = port.display_name;
         if (port.access) entry["access"] = shape_name(*port.access);
         if (port.production) entry["production"] = shape_name(*port.production);
         if (port.realization) entry["realization"] = *port.realization == OutputRealization::buffered ? "buffered" : "computed";
@@ -498,17 +499,10 @@ std::string_view graph_scope_node_state_json(ProjectGraphScopeNodeState state)
     }
     throw std::logic_error("unknown graph scope node state");
 }
-} // namespace
-
-std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
-    if (!error_message.empty()) {
-        return jsonrpc_error(request_id, error_code, error_message);
-    }
-    if (!result.has_value()) {
-        throw_unbuilt_response("SocketRpcGraphScopeResultBuilder");
-    }
+Json graph_scope_nodes_json(std::span<ProjectGraphScopeNode const> entries)
+{
     auto nodes = Json::array();
-    for (auto const& node : result->nodes) {
+    for (auto const& node : entries) {
         Json entry{
             {"address", node_address_json(node.address, ProjectConnectionJsonNames::socket_rpc)},
             {"instance", iv_module_instance_json(node.instance)},
@@ -527,17 +521,44 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
             } : Json(nullptr)},
             {"constructionError", node.construction_error},
         };
+        if (node.membership_address)
+            entry["membershipAddress"] = node_address_json(*node.membership_address, ProjectConnectionJsonNames::socket_rpc);
+        if (node.virtual_node) entry["virtualNode"] = true;
         if (node.child_display_name) entry["childDisplayName"] = *node.child_display_name;
+        if (node.child_source_label) entry["childSourceLabel"] = *node.child_source_label;
         nodes.push_back(std::move(entry));
+    }
+    return nodes;
+}
+} // namespace
+
+std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
+    if (!error_message.empty()) {
+        return jsonrpc_error(request_id, error_code, error_message);
+    }
+    if (!result.has_value()) {
+        throw_unbuilt_response("SocketRpcGraphScopeResultBuilder");
+    }
+    auto child_scopes = Json::array();
+    for (auto const& scope : result->child_scopes) {
+        child_scopes.push_back({
+            {"subject", node_address_json(scope.subject, ProjectConnectionJsonNames::socket_rpc)},
+            {"nodes", graph_scope_nodes_json(scope.nodes)},
+            {"hasBoundary", scope.has_boundary},
+        });
     }
     auto connections = Json::array();
     for (auto const& entry : result->connections) {
-        connections.push_back(Json{
+        auto& connection = connections.emplace_back(Json{
             {"id", project_connection_id(entry.connection)},
             {"connection", project_connection_json(
                 entry.connection, ProjectConnectionJsonNames::socket_rpc)},
             {"applied", entry.applied},
+            {"sourceOwned", entry.source_owned},
         });
+        constexpr auto names = ProjectConnectionJsonNames::socket_rpc;
+        if (!entry.boundary_sources.empty()) connection["boundarySources"] = project_port_matchers_json(entry.boundary_sources, names);
+        if (!entry.boundary_targets.empty()) connection["boundaryTargets"] = project_port_matchers_json(entry.boundary_targets, names);
     }
     auto timelines = Json::array();
     for (auto const& address : result->timeline_nodes)
@@ -559,7 +580,8 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
         {"timelineNodes", std::move(timelines)},
         {"presentation", {{"laneOrder", std::move(lane_order)}, {"laneViews", std::move(lane_views)},
             {"timelineSnapMemory", Json::parse(result->presentation.timeline_snap_memory_json)}}},
-        {"nodes", std::move(nodes)},
+        {"nodes", graph_scope_nodes_json(result->nodes)},
+        {"childScopes", std::move(child_scopes)},
         {"connections", std::move(connections)},
     });
 }

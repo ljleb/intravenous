@@ -42,6 +42,35 @@ TEST_F(GraphJitRuntimeFixture, LiveOutputObservationUsesTheProducedWindowWithout
     EXPECT_FALSE(executor.background_execution_failures().any());
 }
 
+TEST_F(GraphJitRuntimeFixture, SummedOutputObservationReducesTheMixedSamplesOnce)
+{
+    auto member = configured_module_graph(*revision, "iv.test.graph_jit.state_context.transient_sample_module");
+    auto const bundles = concrete_bundles(*member);
+    ASSERT_GE(bundles.size(), 2u);
+    GraphBuilder builder;
+    auto const left = builder.embed(*member, "left").node_bundle(bundles.front());
+    auto const right = builder.embed(*member, "right").node_bundle(bundles.front());
+    auto graph = std::make_shared<ConfiguredGraph const>(builder.finish());
+    auto const& operation = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations.front();
+    auto compiled = jit->compile(GraphJitCompileRequest{
+        .project_generation = 749, .graph = graph, .definitions = definitions,
+        .observations = {.revision = 9, .probes = {{.id = 17, .operation = &operation,
+            .kind = ObservationSourceKind::output, .channels = {0},
+            .output_sources = {{left, 0, 0}, {right, 0, 0}}, .available = true}}},
+    });
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    GraphExecutor executor(resources);
+    ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(3)));
+    executor.tick_block(index(3), 32);
+    auto const* frame = executor.collect_observations();
+    ASSERT_NE(frame, nullptr);
+    ASSERT_EQ(frame->count, 1u);
+    auto const level = frame->values[0].value.load<observation_details::SampleLevelState>();
+    EXPECT_EQ(level.samples, 32u);
+    EXPECT_DOUBLE_EQ(level.peak, 68.0);
+}
+
 TEST_F(GraphJitRuntimeFixture, LiveInputObservationReadsTheEffectiveValueAfterOverride)
 {
     for (bool override_connections : {false, true}) {

@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, ref } from "vue";
 import type { BeatRulerLabel } from "../../src/beatGrid";
 import { rulerMarkerPoints, timelineSampleFraction, timelineTicks } from "./geometry";
 import RulerGraduations from "./RulerGraduations.vue";
+import GridGuides from "./GridGuides.vue";
+import { usePresentationSize } from "../presentation/presentationSize";
 import TimelinePlayhead from "./TimelinePlayhead.vue";
-import type { PresentationTimeWindow, TimelineMark } from "./timelineContext";
+import { timelineMarkKey, timelineMarkPosition, type PresentationTimeWindow, type TimelineMark } from "./timelineContext";
 import { usePlayback } from "./playbackContext";
 import { usePlayheadSeek, type SeekBeatReader } from "./usePlayheadSeek";
 
@@ -16,8 +18,10 @@ const props = defineProps<{ window: PresentationTimeWindow; marks?: readonly Tim
 const { state, requestedPosition, dragPreview } = usePlayback();
 const sampleRate = computed(() => state.value?.sampleRate ?? props.window.sampleRate ?? 48000);
 const root = ref<HTMLElement | null>(null);
-const width = ref(0);
+const size = usePresentationSize(root);
+const width = computed(() => size.value?.width ?? 0);
 const showBeats = computed(() => props.window.gridMode === "beats" || props.window.gridMode === "custom");
+const beatLineStart = ({ depth }: TimelineMark) => depth === 0 ? "33%" : depth === 1 ? "56%" : depth === 2 ? "75%" : "83%";
 const ticks = computed(() => timelineTicks(props.window, width.value));
 const beginSeek = usePlayheadSeek(root, () => props.playback ? props.window : undefined,
     () => showBeats.value ? props.marks?.map(({ index }) => index) ?? [] : [],
@@ -31,15 +35,6 @@ const startMarker = computed(() => {
 });
 const startLabel = computed(() => `Selected start at sample ${displayedStart.value}`);
 const requestedMarker = computed(() => markerPosition(dragPreview.value === null ? requestedPosition.value : null));
-let observer: ResizeObserver | null = null;
-onMounted(() => {
-    observer = new ResizeObserver((entries) => {
-        const entry = entries[entries.length - 1];
-        if (entry) width.value = entry.contentRect.width;
-    });
-    if (root.value) observer.observe(root.value);
-});
-onBeforeUnmount(() => observer?.disconnect());
 </script>
 
 <template>
@@ -48,12 +43,8 @@ onBeforeUnmount(() => observer?.disconnect());
         :data-status-shortcuts="playback ? 'Click/drag seek · Space ▶/Ⅱ' : undefined">
         <RulerGraduations v-if="!showBeats" :ticks="ticks" />
         <svg v-if="playback || marks?.length" class="ruler-playheads">
-            <TransitionGroup name="iv-grid">
-                <line v-for="mark in showBeats ? marks : []" :key="mark.index.toString()" class="iv-grid-guide"
-                    :style="{ '--iv-grid-strength': beatStrengths?.get(mark.depth) }"
-                    :x1="mark.x" :x2="mark.x" :y1="mark.depth === 0 ? '33%' : mark.depth === 1 ? '56%' : mark.depth === 2 ? '75%' : '83%'"
-                    y2="100%" vector-effect="non-scaling-stroke" />
-            </TransitionGroup>
+            <GridGuides v-if="showBeats && marks" :marks="marks" :strengths="beatStrengths"
+                :mark-key="timelineMarkKey" :position="timelineMarkPosition" :start="beatLineStart" />
             <text v-for="label in showBeats ? beatLabels : []" :key="label.text" class="beat-label"
                 :x="label.x + 4" y="11">{{ label.text }}</text>
 

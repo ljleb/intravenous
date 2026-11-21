@@ -238,6 +238,13 @@ std::vector<ProjectNodePortMatcher> parse_matchers(
 }
 } // namespace
 
+nlohmann::ordered_json project_port_matchers_json(
+    std::vector<ProjectNodePortMatcher> const& matchers,
+    ProjectConnectionJsonNames names)
+{
+    return matchers_json(matchers, fields(names));
+}
+
 nlohmann::ordered_json project_connection_json(
     ProjectConnection const& connection,
     ProjectConnectionJsonNames name_style)

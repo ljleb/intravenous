@@ -34,7 +34,10 @@ test("graph scope reads use the existing session without a mutation revision", a
     const client = { request: async (method, params) => { calls.push({ method, params }); return scope; } } as unknown as JsonRpcSocketClient;
     const rpc = new WorkspaceRpc(client, () => 17);
     assert.deepEqual(await rpc.getGraphScope(), scope);
-    assert.deepEqual(calls, [{ method: "graph.getScope", params: {} }]);
+    const tile = { instanceId: "module", path: [{ kind: "tiledChild", name: "right" }] };
+    assert.deepEqual(await rpc.getGraphScope([{ instanceId: "module" }, tile]), scope);
+    assert.deepEqual(calls, [{ method: "graph.getScope", params: {} },
+        { method: "graph.getScope", params: { expanded: [{ instanceId: "module", path: [] }, tile] } }]);
 });
 
 test("connection edits retain the revision captured before the scope read", async () => {
@@ -91,7 +94,7 @@ test("lane view patches and save on blur do not require a graph revision", async
     ]);
 });
 
-test("manual control mutations use fresh revisions and live updates are revision-free notifications", async () => {
+test("manual control gestures survive revision changes while standalone edits check their revision", async () => {
     const calls: unknown[] = [];
     let revision = 1;
     const client = {
@@ -108,9 +111,9 @@ test("manual control mutations use fresh revisions and live updates are revision
     await rpc.setManualInputEnabled(control, .4, false, "disconnectedOnly", 7);
     assert.deepEqual(calls, [
         { method: "manualControls.hover", params: control },
-        { method: "manualControls.begin", params: { interactionId: "drag", ...control, value: .2, expectedRevision: 2 } },
+        { method: "manualControls.begin", params: { interactionId: "drag", ...control, value: .2 } },
         { notification: "manualControls.update", params: { interactionId: "drag", value: .3 } },
-        { method: "manualControls.end", params: { interactionId: "drag", value: .4, expectedRevision: 3 } },
+        { method: "manualControls.end", params: { interactionId: "drag", value: .4 } },
         { method: "manualControls.hover", params: {} },
         { method: "manualControls.upsert", params: { ...control, value: .4, enabled: false, participation: "disconnectedOnly", expectedRevision: 7 } },
     ]);
@@ -207,6 +210,6 @@ test("output gain requests use outputName without inventing an input identity", 
     await rpc.beginManualControl("gain-drag", gain, 1);
     assert.deepEqual(calls, [
         { method: "manualControls.hover", params: gain },
-        { method: "manualControls.begin", params: { interactionId: "gain-drag", ...gain, value: 1, expectedRevision: 9 } },
+        { method: "manualControls.begin", params: { interactionId: "gain-drag", ...gain, value: 1 } },
     ]);
 });

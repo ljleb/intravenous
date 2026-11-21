@@ -1,4 +1,4 @@
-import { addressKey, resolveScopePorts, type GraphPortMatcher, type GraphScope,
+import { addressKey, resolveScopePorts, scopeNodeForAddress, type GraphPortMatcher, type GraphScope,
     type GraphScopeConnection, type NodeAddress } from "./graphScope";
 import { isGeneratedSnapConnection, isTimelineSnapAddress, timelineGridMode } from "./timelineSnap";
 
@@ -22,7 +22,7 @@ export type GraphConnectionMutation = { type: "delete"; id: string }
 
 function resolveEndpoint(scope: GraphScope, endpoint: GraphPortEndpoint) {
     const node = scope.nodes.find((entry) => addressKey(entry.address) === addressKey(endpoint.address));
-    if (!node || endpoint.address.path?.length) throw new Error("The selected node is no longer available in this scope");
+    if (!node) throw new Error("The selected node is no longer available in this scope");
     const ports = endpoint.kind === "sample"
         ? endpoint.direction === "input" ? node.sampleInputs : node.sampleOutputs
         : endpoint.direction === "input" ? node.eventInputs : node.eventOutputs;
@@ -36,22 +36,25 @@ function endpointType(scope: GraphScope, endpoint: GraphPortEndpoint): string {
     if (!type) throw new Error("The selected port type is unavailable");
     return type;
 }
-function matcherFor(endpoint: GraphPortEndpoint): GraphPortMatcher {
-    return { ...endpoint.address, path: endpoint.address.path ?? [], port: { name: endpoint.name, index: endpoint.index } };
+function matcherFor(endpoint: GraphPortEndpoint, channel?: number): GraphPortMatcher {
+    return { ...endpoint.address, path: endpoint.address.path ?? [],
+        port: { ...(endpoint.name ? { name: endpoint.name } : {}), index: endpoint.index,
+            ...(channel === undefined ? {} : { channel }) } };
 }
 export function sameGraphPort(first: GraphPortEndpoint, second: GraphPortEndpoint): boolean {
     return addressKey(first.address) === addressKey(second.address) && first.kind === second.kind
         && first.direction === second.direction && first.index === second.index && first.name === second.name;
 }
-function matchesPort(matcher: GraphPortMatcher, port: GraphPortEndpoint): boolean {
-    return addressKey(matcher) === addressKey(port.address)
+function matchesPort(scope: GraphScope, matcher: GraphPortMatcher, port: GraphPortEndpoint): boolean {
+    const node = scopeNodeForAddress(scope, matcher);
+    return !!node && addressKey(node.address) === addressKey(port.address)
         && (matcher.port.name === undefined || matcher.port.name === port.name)
         && (matcher.port.index === undefined || matcher.port.index === port.index);
 }
 export function connectionEndsAtPort(scope: GraphScope, port: GraphPortEndpoint): GraphConnectionEnd[] {
-    return scope.connections.filter(({ connection }) => connection.kind === port.kind
+    return scope.connections.filter(({ connection, sourceOwned }) => !sourceOwned && connection.kind === port.kind
         && (port.direction === "input" ? connection.inputs : connection.outputs)
-            .some((matcher) => matchesPort(matcher, port)))
+            .some((matcher) => matchesPort(scope, matcher, port)))
         .map((connection) => ({ connection, port }));
 }
 export function fixedConnectionPorts(scope: GraphScope, end: GraphConnectionEnd): GraphPortEndpoint[] {
@@ -76,6 +79,7 @@ export function connectionEndMutation(scope: GraphScope, edit: GraphConnectionEd
     if (!current || connectionKey(current) !== connectionKey(end.connection)) {
         throw new Error("The selected connection changed; select it again");
     }
+    if (current.sourceOwned) throw new Error("Edit this connection in the module source");
     if (isGeneratedSnapConnection(current)) throw new Error("The ruler manages this connection");
     const originalType = endpointType(scope, end.port);
     const connection = current.connection;
@@ -94,16 +98,16 @@ export function connectionEndMutation(scope: GraphScope, edit: GraphConnectionEd
     // A selector can match several visible ports. Expand only the selector being
     // edited, preserving its channel selection and the order of its other ports.
     for (const matcher of connection[side]) {
-        if (!matchesPort(matcher, end.port)) { matchers.push(matcher); continue; }
+        if (!matchesPort(scope, matcher, end.port)) { matchers.push(matcher); continue; }
         const resolved = resolveScopePorts(scope, matcher, connection.kind, end.port.direction);
         for (const { node, port } of resolved) {
             const endpoint = { address: node.address, kind: connection.kind, direction: end.port.direction,
                 index: port.index, name: port.name };
             if (!sameGraphPort(endpoint, end.port)) {
-                matchers.push({ ...matcherFor(endpoint), port: { ...matcher.port, name: port.name, index: port.index } });
+                matchers.push(matcherFor(endpoint, matcher.port.channel));
             } else {
                 found = true;
-                if (target) matchers.push({ ...matcherFor(target), port: { ...matcher.port, name: target.name, index: target.index } });
+                if (target) matchers.push(matcherFor(target, matcher.port.channel));
             }
         }
     }
@@ -113,11 +117,11 @@ export function connectionEndMutation(scope: GraphScope, edit: GraphConnectionEd
     if (!type || !connection.sourceType || !connection.targetType) throw new Error("The selected connection type is unavailable");
     if (target) {
         const targetType = endpointType(scope, target);
-        const otherEnds = connection[side].some((matcher) => !matchesPort(matcher, end.port)
+        const otherEnds = connection[side].some((matcher) => !matchesPort(scope, matcher, end.port)
             || resolveScopePorts(scope, matcher, connection.kind, end.port.direction)
                 .some(({ node, port }) => !sameGraphPort({ address: node.address, kind: connection.kind,
                     direction: end.port.direction, index: port.index, name: port.name }, end.port)));
-        const selectedChannels = connection[side].some((matcher) => matchesPort(matcher, end.port)
+        const selectedChannels = connection[side].some((matcher) => matchesPort(scope, matcher, end.port)
             && matcher.port.channel !== undefined);
         if (targetType !== originalType && (otherEnds || selectedChannels)) {
             throw new Error("This connection shares a port type or selects individual channels; choose a port of the same type");
@@ -147,7 +151,7 @@ export function canContinuePortConnection(scope: GraphScope | null, port: GraphP
 }
 
 export function connectionFromPorts(scope: GraphScope, id: string,
-    first: GraphPortEndpoint, second: GraphPortEndpoint): Record<string, unknown> {
+    first: GraphPortEndpoint, second: GraphPortEndpoint): GraphScopeConnection["connection"] {
     if (!scope.editable) throw new Error("This graph is read-only");
     if (first.kind !== second.kind || first.direction === second.direction) {
         throw new Error("Connect an input and an output of the same port kind");

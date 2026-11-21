@@ -17,21 +17,22 @@ if [[ ${1:-} != --stage ]]; then
     fail "No VSCodium executable found. Put your regular codium on PATH or set INTRAVENOUS_DEV_CODIUM."
   [[ -x "$client_dir/node_modules/.bin/esbuild" ]] || fail "Run npm --prefix vscode/client ci in the development shell."
   command -v "${IV_DEV_CACHE:-iv-dev-cache}" >/dev/null || fail "iv-dev-cache is missing from the development shell."
-  if [[ $# == 2 ]]; then
-    exec "${IV_DEV_CACHE:-iv-dev-cache}" scratch --external-build-directory "$2" -- "$repo_root/scripts/run_dev.sh" --stage "$@"
-  fi
-  exec "$repo_root/scripts/build_server.sh" --scratch -- "$repo_root/scripts/run_dev.sh" --stage "$1"
+  build_dir="${2:-$repo_root/build-release}"
+  exec "${IV_DEV_CACHE:-iv-dev-cache}" scratch --external-build-directory "$build_dir" -- \
+    "$repo_root/scripts/run_dev.sh" --stage "$1" "$build_dir"
 fi
 shift
 project_dir="$(cd "$1" && pwd -P)"
 [[ -f "$project_dir/iv_project.jsonl" ]] || fail "No iv_project.jsonl in $project_dir"
-build_dir="${2:-${IV_SERVER_BUILD_DIR:?Missing managed server build directory}}"
-[[ -f "$build_dir/CMakeCache.txt" ]] || fail "Configure $build_dir with CMake before launching."
-build_dir="$(cd "$build_dir" && pwd -P)"
+build_dir="$(realpath -m -- "$2")"
+if [[ ! -f "$build_dir/CMakeCache.txt" ]]; then
+  [[ "$build_dir" == "$repo_root/build-release" ]] || fail "Configure $build_dir with CMake before launching."
+  cmake -S "$repo_root" -B "$build_dir" -G Ninja -DCMAKE_BUILD_TYPE=Release -DJUCE_DIR="${JUCE_DIR:-}"
+fi
 server_dir="$build_dir/src/intravenous"
 codium="$(command -v -- "${INTRAVENOUS_DEV_CODIUM:-codium}")"
 
-cmake --build "$build_dir" --target intravenous
+cmake --build "$build_dir" --target intravenous intravenous_vscode_client
 [[ -f "$server_dir/PrepareDevRuntime.cmake" && -f "$server_dir/runtime-sdk/.snapshot" ]] ||
   fail "The intravenous build did not prepare the development runtime inputs in $server_dir."
 
@@ -67,7 +68,7 @@ sed -e 's@^iv_package_pch=.*@iv_package_pch=iv_dsl.pch@' \
     "$server_dir/.intravenous_defaults" > "$snapshot/runtime/.intravenous_defaults"
 
 cp -p "$client_dir/package.json" "$client_snapshot/"
-IV_CLIENT_OUT_DIR="$client_snapshot/dist" npm --prefix "$client_dir" run build
+cp -R "$build_dir/vscode/client/dist" "$client_snapshot/dist"
 
 # Adding a local snapshot does not register the store references embedded in
 # its binaries or in the captured compiler configuration.
@@ -98,7 +99,7 @@ printf 'Opening %s with %s\n' "$project_dir" "$bundle"
 # build or scratch trees after the snapshot is in the store.
 read -r -a cache_fds <<< "${IV_BUILD_CACHE_LEASE_FDS:?Missing build cache leases}"
 for fd in "${cache_fds[@]}"; do exec {fd}>&-; done
-unset IV_BUILD_CACHE_LEASE_FDS IV_BUILD_SCRATCH_DIR IV_SERVER_BUILD_DIR IV_SERVER_BUILD_TYPE
+unset IV_BUILD_CACHE_LEASE_FDS IV_BUILD_SCRATCH_DIR
 # Use the normal desktop CLI so VSCodium can handle the development launch.
 env -u VSCODE_IPC_HOOK_CLI -u ELECTRON_RUN_AS_NODE "$codium" --new-window \
   --extensionDevelopmentPath="$bundle/extension" "${editor_args[@]}" "$project_dir"

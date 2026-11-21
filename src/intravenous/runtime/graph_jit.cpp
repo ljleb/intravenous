@@ -61,6 +61,7 @@
 #include <iterator>
 #include <list>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -2029,9 +2030,46 @@ public:
             return result;
         }
         auto resolved_graph = *request.graph;
+        // A virtual control and a member control can resolve to the same
+        // bundle port. Keep one participating control per direction there.
+        using ControlIndices = std::map<NodeBundlePortId, std::size_t, NodeBundlePortIdLess>;
+        ControlIndices inputs, outputs;
+        auto& controls = resolved_graph.manual_controls;
+        std::vector<bool> keep(controls.size(), true);
+        auto priority = [](ConfiguredManualControl const& control) {
+            auto const& path = control.id.node.path;
+            auto const specificity = path.empty() ? 0
+                : std::holds_alternative<ProjectVirtualNodeSelector>(path.back()) ? 1 : 2;
+            if (specificity == 2 && !control.output && !control.dynamic && !control.authored) return -1;
+            return specificity + (control.dynamic ? 3 : 0);
+        };
+        for (std::size_t index = 0; index < controls.size(); ++index) {
+            auto const& control = controls[index];
+            // A member output at unity leaves the virtual gain in charge.
+            bool const neutral_member_gain = control.output && !is_virtual_output_gain(control.id)
+                && control.settled_value == Sample{1};
+            if (!control.id.node.path.empty() && !control.dynamic && (!control.enabled || neutral_member_gain)) {
+                keep[index] = false;
+                continue;
+            }
+            auto& by_port = control.output ? outputs : inputs;
+            auto [entry, inserted] = by_port.try_emplace(control.output.value_or(control.input), index);
+            if (inserted) continue;
+            auto const previous = entry->second;
+            if (control.id.node.path.empty() && controls[previous].id.node.path.empty()) continue;
+            if (priority(control) > priority(controls[previous])) {
+                keep[previous] = false;
+                entry->second = index;
+            } else keep[index] = false;
+        }
+        std::size_t next_control = 0;
+        std::erase_if(controls, [&](auto const&) { return !keep[next_control++]; });
         graph_jit::detail::OutputGainExpansion output_gains;
         try {
-            output_gains = graph_jit::detail::expand_output_gains(resolved_graph, *request.definitions);
+            std::vector<SampleOutputChannelId> observed_outputs;
+            for (auto const& probe : request.observations.probes)
+                observed_outputs.insert(observed_outputs.end(), probe.output_sources.begin(), probe.output_sources.end());
+            output_gains = graph_jit::detail::expand_output_gains(resolved_graph, *request.definitions, observed_outputs);
         } catch (std::exception const& error) {
             result.diagnostics.push_back(diagnostic(GraphJitDiagnosticStage::input_capture, error.what()));
             return result;
@@ -2334,15 +2372,16 @@ public:
         for (std::size_t slot = 0; slot < request.observations.probes.size(); ++slot) {
             auto probe = request.observations.probes[slot];
             if (!probe.available || probe.kind != ObservationSourceKind::output) continue;
-            auto const source = resolved_graph.node_bundles.resolve_sample_output(
-                {probe.bundle, PortKind::sample, probe.port}).config;
-            if (probe.channels.size() > 1 || (probe.channels.empty() && channel_count(source.channel_layout) != 1))
+            auto const grouped = !probe.output_sources.empty();
+            auto const layout = grouped ? ChannelLayout{ChannelTypeId::mono, SampleStreamLayout::planar}
+                : resolved_graph.node_bundles.resolve_sample_output({probe.bundle, PortKind::sample, probe.port}).config.channel_layout;
+            if (probe.channels.size() > 1 || (probe.channels.empty() && channel_count(layout) != 1))
                 throw std::invalid_argument("sample observation requires one explicit physical channel");
             if (std::ranges::any_of(probe.channels, [&](auto channel) {
-                    return channel >= channel_count(source.channel_layout);
+                    return channel >= channel_count(layout);
                 })) throw std::invalid_argument("observation channel is outside its output");
             ContinuousInputConfig input{
-                .name = "observed", .channel_layout = source.channel_layout,
+                .name = "observed", .channel_layout = layout,
                 .access = SequentialContinuousInputProperties{},
             };
             auto const operations = graph_jit::detail::observation_sink_operations();
@@ -2353,14 +2392,42 @@ public:
             sink.operations.runtime.tick_block = operations.tick_block;
             sink.operations.runtime.skip_block = operations.skip_block;
             auto const bundle = resolved_graph.node_bundles.append_concrete(std::move(sink));
-            ConfiguredSampleConnection connection{
-                .source_type = source.channel_layout.channel_type,
-                .target_type = source.channel_layout.channel_type,
-                .target_channels = resolved_graph.node_bundles.sample_input_channels({bundle, PortKind::sample, 0}),
-            };
-            for (auto channel : resolved_graph.node_bundles.sample_output_channels({probe.bundle, PortKind::sample, probe.port}))
-                connection.source_channels.push_back({.channel = channel});
-            resolved_graph.connections.record_configured_sample_connection(std::move(connection));
+            auto const targets = resolved_graph.node_bundles.sample_input_channels({bundle, PortKind::sample, 0});
+            if (grouped) {
+                auto contribution_targets = targets;
+                if (probe.output_sources.size() > 1) {
+                    // Use the same structural sum as several contributions
+                    // to one module output. Lowering folds it into one route
+                    // to the sink and keeps every producer's timing.
+                    auto& bundles = resolved_graph.node_bundles;
+                    auto const boundary = bundles.append_boundary();
+                    bundles.bundle(boundary).append_boundary_sample_output({
+                        .name = "sum", .channel_layout = layout,
+                        .production = default_sequential_output_properties(
+                            ContinuousValueTypeSet{ContinuousValueTypeId::sample}),
+                    });
+                    auto const sum = bundles.append_subgraph(boundary, boundary, 1, "observation_sum");
+                    resolved_graph.connections.record_configured_sample_connection({
+                        .source_type = ChannelTypeId::mono, .source_channels = {{.channel = {sum, 0, 0}}},
+                        .target_type = ChannelTypeId::mono, .target_channels = targets,
+                    });
+                    contribution_targets = {{boundary, 0, 0}};
+                }
+                for (auto source : probe.output_sources) {
+                    source = output_gains.routed_source(resolved_graph.node_bundles, source);
+                    resolved_graph.connections.record_configured_sample_connection({
+                        .source_type = ChannelTypeId::mono, .source_channels = {{.channel = source}},
+                        .target_type = ChannelTypeId::mono, .target_channels = contribution_targets,
+                    });
+                }
+            } else {
+                ConfiguredSampleConnection connection{
+                    .source_type = layout.channel_type, .target_type = layout.channel_type, .target_channels = targets,
+                };
+                for (auto channel : resolved_graph.node_bundles.sample_output_channels({probe.bundle, PortKind::sample, probe.port}))
+                    connection.source_channels.push_back({.channel = channel});
+                resolved_graph.connections.record_configured_sample_connection(std::move(connection));
+            }
             implementations.push_back(graph_jit::NodeImplementation{
                 .node_bundle = bundle,
                 .observation_slot = slot,
