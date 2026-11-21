@@ -15,10 +15,6 @@ miniaudio. The suggested boundaries are candidates for future changes.
   before adding bindings to `ConfiguredGraph`. `ProjectGraph::rebuild_locked()`
   takes proposed manual controls separately from the stored controls.
   Accepted edits keep their authored controls when configuration fails.
-- `select_event_storage()` reads the costs of the shared conversions and
-  feedback streams. `layout_event_ports()` computes byte offsets and assigns
-  stack space once. When the selected kinds match the initial bindings,
-  `plan_event_ports()` reuses those bindings and updates their costs.
 
 The [original findings](./historical/runtime_responsibility_audit_2026-11-21.md)
 describe the earlier behavior.
@@ -62,12 +58,23 @@ compilation. The executor checks compatibility again when publishing the
 artifact. If it declines and the observation request is still current,
 `ProjectGraph` compiles a structural cutover.
 
+## Event binding
+
+`bind_event_ports()` records streams for producer groups and feedback,
+their conversions, and the sequences that each Tick callback uses. It
+sizes each working sequence from the current Event count and the count
+that must survive between calls.
+
+`realize_event_storage()` applies the selected storage kinds. It assigns
+carry buffers and rings and resolves aliases that let a group reuse its
+raw output. `layout_event_ports()` computes byte offsets and packs the
+transient buffers once.
+
 ## Decisions that come after the work
 
 | Current operation | Work that can be avoided | Where the decision belongs |
 | --- | --- | --- |
-| [`plan_event_ports()`](../src/intravenous/graph_jit/lowering_plan.cpp#L8592) binds the connected streams again if exact operation costs change a storage kind. | The second binding uses the same node inventory. It still rebuilds the connected operations and their callback slots if the first binding used a different raw output alias, carry buffer, or sequence capacity. | Give each operation a logical stream identity and record how its capacity depends on the source streams. Resolve aliases, capacity, and storage after choosing the storage kinds. Keep one record for shared conversions so the new plan counts each conversion once. |
-| [`build_lowering_plan`](../src/intravenous/graph_jit/lowering_plan.cpp#L9903) retries `plan_realtime_ports()` when packed stack size exceeds the budget. After building declarations and imports it can reject a batch and restart planning. | Each stack trial repeats parts of connection analysis and configures background replay. A rejected batch discards declarations and imports as well. | Give storage selection stable inputs for a given callback order and reserve replanning for facts that change with that order. Check batch compatibility as soon as the necessary layouts and callback signatures are known. The packed high-water mark may still require a search. |
+| [`build_lowering_plan`](../src/intravenous/graph_jit/lowering_plan.cpp#L9732) retries `plan_realtime_ports()` when packed stack size exceeds the budget. After building declarations and imports it can reject a batch and restart planning. | Each stack trial repeats parts of connection analysis and configures background replay. A rejected batch discards declarations and imports as well. | Give storage selection stable inputs for a given callback order and reserve replanning for facts that change with that order. Check batch compatibility as soon as the necessary layouts and callback signatures are known. The packed high-water mark may still require a search. |
 
 A failed executor cutover is different. Preparation can become stale against
 the active predecessor after a candidate was eligible. The executor needs to
@@ -79,7 +86,7 @@ recordings stay with `PersistedDataStore`.
 
 | File | Lines | Boundary to scrutinize |
 | --- | ---: | --- |
-| [`lowering_plan.cpp`](../src/intravenous/graph_jit/lowering_plan.cpp#L9615) | 10,287 | `build_lowering_plan()` coordinates connection analysis, storage choice, package imports and scheduling. Event delivery, storage requirements and callback binding have different inputs and can be tested separately. The split between `select_event_storage()` and `layout_event_ports()` makes those responsibilities explicit. The connected-stream bindings still depend on the chosen storage kind. |
+| [`lowering_plan.cpp`](../src/intravenous/graph_jit/lowering_plan.cpp#L9381) | 10,052 | `build_lowering_plan()` coordinates connection analysis, storage choice, package imports and scheduling. Event delivery, storage requirements and callback binding have different inputs and can be tested separately. The split between `select_event_storage()` and `layout_event_ports()` makes those responsibilities explicit. Event routing is built once for each storage trial. |
 | [`connection_plan.cpp`](../src/intravenous/graph_jit/connection_plan.cpp#L7115) | 7,338 | `ConnectionTopology::build_analysis_plan()` turns effective routes into a realtime schedule, derives compensation and in-flight requirements, and selects storage and background bindings. Stack-budget retries still repeat work within this pass. |
 | [`realtime_root.cpp`](../src/intravenous/graph_jit/realtime_root.cpp#L2871) | 5,757 | `RootPlanBuilder::build()` validates addresses and materializes primitive bindings, ready groups and region specializations. `execute_realtime_root()` consumes a completed `RealtimeRootPlan` on the audio thread. Use that plan as the boundary between cold binding and realtime execution, including the layout checks that the executor can then rely on. |
 | [`project_graph.cpp`](../src/intravenous/project/project_graph.cpp#L1558) | 4,390 | `rebuild_locked()` handles authored edits, calls instance and connection configuration, and publishes a snapshot. `configure_manual_controls()` now owns control binding on a finished `ConfiguredGraph`. Read-model projection, edit history, and executor preparation can consume that result. |

@@ -2,13 +2,24 @@
 
 These rows appeared in the runtime responsibility audit on 2026-11-21.
 The [current audit](../runtime_responsibility_audit.md#scope-edits-control-bindings-and-event-planning)
-records the implementation changes and the remaining Event planning work.
+records the implementation changes.
 
 | Current operation | Work that can be avoided | Where the decision belongs |
 | --- | --- | --- |
 | [`Observations::handle_protocol`](../../src/intravenous/observations/observations.cpp#L128) modifies `scopes_` before counting all windows and calling `reconcile_locked()`. On failure it uses `accepted_.revision` to choose whether to restore the old `Scope`. | A request that exceeds a limit copies its old interests, modifies `scopes_`, and then puts the old scope back. `reconcile_locked()` can also consume probe IDs before discovering a limit error. | Derive the combined interests from the existing scopes plus one proposed scope change. Validate that result and allocate IDs locally. Commit the proposed scopes and requirements after local validation and request acceptance. Keep desired requirements when the existing protocol calls for retry after compilation failure. |
 | [`ProjectGraph::rebuild_locked`](../../src/intravenous/project/project_graph.cpp#L1558) appends `ConfiguredManualControl` bindings one by one. A virtual selector that cannot bind every selected bundle then truncates the output vector. [`handle_project_upsert_manual_control`](../../src/intravenous/project/project_graph.cpp#L3071) also changes `manual_controls_` first and restores the copied vector if rebuilding throws. | The first case inserts bindings that cannot participate. The second makes rebuild depend on provisional edits to stored project controls. | A binding operation can return the complete set of bindings and diagnostics for a `ManualControlId`. Pass proposed controls into configuration and give the project edit path the result it needs to distinguish rejected edits from accepted edits awaiting execution. The same binding result can inform graph scope metadata. |
 | [`plan_event_ports_once`](../../src/intravenous/graph_jit/lowering_plan.cpp#L4624) builds an `EventPortBindingPlan` to tally operations, selects `EventPlanningDecisions`, and calls itself with the choices. | It rebuilds the event operation topology to apply storage choices that the first pass could describe separately. | Return event delivery operations and their storage requirements from the first pass. Choose realized storage from those requirements. Bind callback slots and layout once after the choice. The operation inventory is also a useful input to event state transfer and execution tests. |
+
+## Event binding before storage and routing were separate
+
+This finding described the implementation after the first split of Event
+costing and byte layout. At that point, `plan_event_ports()` reused its
+first bindings when the selected storage kinds matched them. See the
+[completed Event binding work](../runtime_responsibility_audit.md#event-binding).
+
+| Current operation | Work that can be avoided | Where the decision belongs |
+| --- | --- | --- |
+| [`plan_event_ports()`](../../src/intravenous/graph_jit/lowering_plan.cpp#L8592) binds the connected streams again if exact operation costs change a storage kind. | The second binding uses the same node inventory. It still rebuilds the connected operations and their callback slots if the first binding used a different raw output alias, carry buffer, or sequence capacity. | Give each operation a logical stream identity and record how its capacity depends on the source streams. Resolve aliases, capacity, and storage after choosing the storage kinds. Keep one record for shared conversions so the new plan counts each conversion once. |
 
 ## Directory proposal before the move
 

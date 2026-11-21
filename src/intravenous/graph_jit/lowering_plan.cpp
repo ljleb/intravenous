@@ -24,7 +24,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <variant>
 
 namespace iv::graph_jit::detail {
 namespace {
@@ -4671,7 +4670,7 @@ std::expected<EventPlanningDecisions, std::string> select_event_storage(
     }
 
     for (std::size_t index = 0; index < group_requirements.size(); ++index) {
-        if (!plan.producer_group_storage_plans[index]) continue;
+        if (!plan.producer_group_representations[index]) continue;
         auto storage = choose_event_connection_storage_plan(group_requirements[index], cost_model);
         if (!storage.candidate_costs.for_kind(storage.kind).legal)
             return std::unexpected(
@@ -4685,19 +4684,6 @@ std::expected<EventPlanningDecisions, std::string> select_event_storage(
                 "GraphJit event feedback has no storage realization within the compile-time stack budget");
     }
     return selected;
-}
-
-bool event_storage_kinds_match(EventPortBindingPlan const& plan, EventPlanningDecisions const& selected)
-{
-    auto group_kind = [](std::optional<EventConnectionStoragePlan> const& storage)
-        -> std::optional<RealtimeBufferStorageKind> {
-        return storage ? std::optional(storage->kind) : std::nullopt;
-    };
-    return std::ranges::equal(plan.producer_group_storage_plans, selected.producer_groups,
-               {}, group_kind, group_kind)
-        && std::ranges::equal(plan.feedback_operations, selected.feedback, {},
-            [](auto const& feedback) { return feedback.storage_plan.kind; },
-            [](auto const& choice) { return choice.storage.kind; });
 }
 
 std::expected<void, std::string> layout_event_sequence(EventRepresentationPlan& port)
@@ -4788,16 +4774,309 @@ struct EventPortInventory {
     std::vector<PlannedGraphNode const*> nodes;
 };
 
-using EventBindingResult = std::variant<EventPortBindingPlan, EventPlanningDecisions>;
+// Group and feedback buffers have the same working capacity in every legal
+// storage kind: transient storage is legal only when there are no retained
+// events. Consumers can size their sequences before choosing where to store
+// those events.
+struct EventSequenceStoragePlan {
+    std::size_t representation = 0;
+    std::size_t retained_event_count = 0;
+    EventOperationScope begin{};
+    EventOperationScope end{};
+    std::size_t history = 0;
+    std::size_t latency = 0;
+    std::string identity_base{};
+    bool ordered_fan_in = false;
+    bool feedback = false;
+    bool reset_transient = false;
+    std::optional<std::size_t> transient_alias{};
+    std::optional<std::size_t> append_merge{};
+};
 
-std::expected<EventBindingResult, std::string> bind_event_ports(
+std::expected<std::size_t, std::string> rounded_event_capacity(std::size_t required)
+{
+    if (required == 0) return std::size_t{0};
+    constexpr auto highest_power_of_two =
+        std::size_t{1} << (std::numeric_limits<std::size_t>::digits - 1);
+    if (required > highest_power_of_two) {
+        return std::unexpected("GraphJit event capacity cannot be rounded to a power of two");
+    }
+    return next_power_of_2(required);
+}
+
+std::expected<std::size_t, std::string> append_event_representation(
+    EventPortBindingPlan& plan,
+    std::size_t group_index,
+    EventTypeId type,
+    std::size_t capacity,
+    bool producer_telemetry = false,
+    bool persistent = false,
+    std::string migration_identity = {},
+    bool persistent_ring = false,
+    bool source_indices = false)
+{
+    if (capacity > std::numeric_limits<std::size_t>::max() / sizeof(TimedEvent)) {
+        return std::unexpected("GraphJit event storage size overflows size_t");
+    }
+    auto const representation_index = plan.ports.size();
+    plan.ports.push_back(EventRepresentationPlan{
+        .producer_group_index = group_index,
+        .type = type,
+        .event_capacity = capacity,
+        .persistent = persistent,
+        .persistent_ring = persistent_ring,
+        .migration_identity = owned_raw_region_identity(std::move(migration_identity)),
+        .has_producer_overflow_counter = producer_telemetry,
+        .has_source_indices = source_indices,
+    });
+    return representation_index;
+}
+
+std::expected<std::size_t, std::string> append_event_working_sequence(
+    EventPortBindingPlan& plan,
+    std::size_t group,
+    EventTypeId type,
+    std::size_t current,
+    std::size_t retained,
+    bool source_indices = false)
+{
+    if (current > std::numeric_limits<std::size_t>::max() - retained) {
+        return std::unexpected("GraphJit Event working sequence capacity overflows size_t");
+    }
+    auto capacity = rounded_event_capacity(current + retained);
+    if (!capacity) return std::unexpected(std::move(capacity.error()));
+    return append_event_representation(
+        plan, group, type, *capacity, false, false, {}, false, source_indices);
+}
+
+std::expected<void, std::string> realize_event_sequence_storage(
+    EventPortBindingPlan& plan,
+    EventSequenceStoragePlan const& sequence,
+    RealtimeBufferStorageKind kind)
+{
+    auto& port = plan.ports[sequence.representation];
+    auto migration_identity = [&](std::string_view storage_kind, std::size_t capacity) {
+        auto identity = sequence.identity_base + ":kind=";
+        if (sequence.ordered_fan_in) identity += "ordered_";
+        identity += storage_kind;
+        if (!sequence.feedback) {
+            identity += ":history=" + std::to_string(sequence.history)
+                + ":latency=" + std::to_string(sequence.latency);
+        }
+        return identity + ":capacity=" + std::to_string(capacity);
+    };
+    auto const retained = kind != RealtimeBufferStorageKind::transient_stack;
+    if (sequence.append_merge && retained) {
+        plan.merges[*sequence.append_merge].preserve_existing_target = true;
+    }
+    switch (kind) {
+    case RealtimeBufferStorageKind::transient_stack:
+        if (sequence.reset_transient) {
+            plan.sequence_resets.push_back({
+                .storage = sequence.representation,
+                .scope = sequence.begin,
+            });
+        }
+        break;
+    case RealtimeBufferStorageKind::stack_with_persistent_carry: {
+        auto capacity = rounded_event_capacity(sequence.retained_event_count);
+        if (!capacity) return std::unexpected(std::move(capacity.error()));
+        auto persistent = append_event_representation(
+            plan, port.producer_group_index, port.type, *capacity,
+            false, true, migration_identity("compact_carry", *capacity),
+            false, port.has_source_indices);
+        if (!persistent) return std::unexpected(std::move(persistent.error()));
+        plan.carry_operations.push_back({
+            .working_representation = sequence.representation,
+            .persistent_representation = *persistent,
+            .restore_scope = sequence.begin,
+            .commit_scope = sequence.end,
+            .retained_history_samples = sequence.history,
+            .retained_latency_samples = sequence.latency,
+        });
+        break;
+    }
+    case RealtimeBufferStorageKind::full_node_storage:
+        port.persistent = true;
+        port.persistent_ring = true;
+        port.migration_identity = owned_raw_region_identity(migration_identity(
+            sequence.feedback ? "full_node_storage" : "persistent_ring",
+            port.event_capacity));
+        if (!sequence.feedback) {
+            plan.persistent_rings.push_back({
+                .storage = sequence.representation,
+                .prune_scope = sequence.begin,
+                .retained_history_samples = sequence.history,
+            });
+        }
+        break;
+    }
+    return {};
+}
+
+void apply_event_sequence_aliases(
+    EventPortBindingPlan& plan, std::vector<std::optional<std::size_t>>& aliases)
+{
+    // A deferred raw-output alias needs neither a merge nor its own buffer.
+    std::erase_if(plan.merges, [&](EventMergePlan const& merge) {
+        return aliases[merge.target_representation].has_value();
+    });
+    // Several logical groups can use the same raw output. Share any
+    // equivalent conversions of that output once the aliases are known.
+    std::vector<std::uint8_t> aliased_sources(plan.ports.size());
+    for (auto const alias : aliases) {
+        if (alias) aliased_sources[*alias] = true;
+    }
+    std::vector<std::vector<std::size_t>> conversions_by_source(plan.ports.size());
+    for (std::size_t index = 0; index < plan.materializations.size(); ++index) {
+        auto& operation = plan.materializations[index];
+        auto const source = aliases[operation.source_representation]
+            .value_or(operation.source_representation);
+        if (!aliased_sources[source]) continue;
+
+        auto& conversions = conversions_by_source[source];
+        auto const found = std::ranges::find_if(conversions, [&](std::size_t candidate_index) {
+            auto const& candidate = plan.materializations[candidate_index];
+            auto const& candidate_target = plan.ports[candidate.target_representation];
+            auto const& target = plan.ports[operation.target_representation];
+            return candidate.conversion == operation.conversion
+                && candidate.source_index_filter == operation.source_index_filter
+                && candidate.preserve_source_indices == operation.preserve_source_indices
+                && candidate.select_invocation_window == operation.select_invocation_window
+                && candidate.before_merge == operation.before_merge
+                && candidate.scope == operation.scope
+                && candidate_target.event_capacity == target.event_capacity
+                && candidate_target.has_source_indices == target.has_source_indices;
+        });
+        if (found == conversions.end()) {
+            conversions.push_back(index);
+            continue;
+        }
+        auto& shared = plan.materializations[*found];
+        aliases[operation.target_representation] = shared.target_representation;
+        shared.history_samples = std::max(shared.history_samples, operation.history_samples);
+        shared.maximum_output_event_count = std::max(
+            shared.maximum_output_event_count, operation.maximum_output_event_count);
+        shared.maximum_source_event_reads = std::max(
+            shared.maximum_source_event_reads, operation.maximum_source_event_reads);
+    }
+    std::erase_if(plan.materializations, [&](EventMaterializationPlan const& operation) {
+        return aliases[operation.target_representation].has_value();
+    });
+
+    std::vector<std::size_t> storage_indices(plan.ports.size());
+    std::size_t storage_count = 0;
+    for (std::size_t index = 0; index < plan.ports.size(); ++index) {
+        if (aliases[index]) continue;
+        storage_indices[index] = storage_count;
+        if (storage_count != index) {
+            plan.ports[storage_count] = std::move(plan.ports[index]);
+        }
+        ++storage_count;
+    }
+    plan.ports.resize(storage_count);
+    auto resolve = [&](std::size_t& representation) {
+        auto const resolved = aliases[representation].value_or(representation);
+        representation = storage_indices[resolved];
+    };
+    auto resolve_optional = [&](std::optional<std::size_t>& representation) {
+        if (representation) resolve(*representation);
+    };
+    for (auto& representation : plan.producer_group_representations) {
+        resolve_optional(representation);
+    }
+    for (auto& sources : plan.producer_group_source_representations) {
+        for (auto& representation : sources) resolve_optional(representation);
+    }
+    for (auto& primitive : plan.primitives) {
+        for (auto& input : primitive.inputs) {
+            resolve_optional(input.storage);
+            resolve_optional(input.realtime_operand_storage);
+            resolve_optional(input.combined_storage);
+        }
+        for (auto& output : primitive.outputs) {
+            resolve_optional(output.storage);
+            resolve_optional(output.canonical_storage);
+        }
+    }
+    for (auto& operation : plan.materializations) {
+        resolve(operation.source_representation);
+        resolve(operation.target_representation);
+    }
+    for (auto& operation : plan.feedback_operations) {
+        resolve(operation.source_representation);
+        resolve(operation.target_representation);
+    }
+    for (auto& merge : plan.merges) {
+        for (auto& source : merge.source_representations) resolve(source);
+        resolve(merge.target_representation);
+    }
+    for (auto& carry : plan.carry_operations) {
+        resolve(carry.working_representation);
+        resolve(carry.persistent_representation);
+    }
+    for (auto& ring : plan.persistent_rings) resolve(ring.storage);
+    for (auto& reset : plan.sequence_resets) resolve(reset.storage);
+}
+
+std::expected<void, std::string> realize_event_storage(
+    EventPortBindingPlan& plan,
+    std::vector<EventConnectionStorageRequirements> group_cost_requirements,
+    std::vector<bool> const& group_requires_retention,
+    std::span<EventSequenceStoragePlan const> group_sequences,
+    std::span<EventSequenceStoragePlan const> feedback_sequences,
+    RealtimeStorageCostModel const& cost_model)
+{
+    auto selected = select_event_storage(
+        plan, std::move(group_cost_requirements), cost_model);
+    if (!selected) return std::unexpected(std::move(selected.error()));
+    plan.producer_group_storage_plans = std::move(selected->producer_groups);
+    for (std::size_t group = 0; group < group_requires_retention.size(); ++group) {
+        if (group_requires_retention[group]
+            && plan.producer_group_storage_plans[group]->kind
+                == RealtimeBufferStorageKind::transient_stack) {
+            return std::unexpected("GraphJit event connection requires retained storage");
+        }
+    }
+
+    std::vector<std::pair<std::size_t, std::size_t>> selected_aliases;
+    for (auto const& sequence : group_sequences) {
+        auto const group = plan.ports[sequence.representation].producer_group_index;
+        auto const kind = plan.producer_group_storage_plans[group]->kind;
+        if (sequence.transient_alias && kind == RealtimeBufferStorageKind::transient_stack) {
+            selected_aliases.emplace_back(
+                sequence.representation, *sequence.transient_alias);
+            continue;
+        }
+        auto storage = realize_event_sequence_storage(plan, sequence, kind);
+        if (!storage) return std::unexpected(std::move(storage.error()));
+    }
+    for (std::size_t index = 0; index < plan.feedback_operations.size(); ++index) {
+        auto& operation = plan.feedback_operations[index];
+        operation.storage_requirements = selected->feedback[index].requirements;
+        operation.storage_plan = selected->feedback[index].storage;
+        auto storage = realize_event_sequence_storage(
+            plan, feedback_sequences[index], operation.storage_plan.kind);
+        if (!storage) return std::unexpected(std::move(storage.error()));
+    }
+    if (!selected_aliases.empty()) {
+        std::vector<std::optional<std::size_t>> aliases(plan.ports.size());
+        for (auto const& [representation, raw] : selected_aliases) {
+            aliases[representation] = raw;
+        }
+        apply_event_sequence_aliases(plan, aliases);
+    }
+
+    return {};
+}
+
+std::expected<EventPortBindingPlan, std::string> bind_event_ports(
     LoweringInput const& input,
     GraphAnalysis const& analysis,
     ConnectionAnalysisPlan const& connections,
     ResolvedPortRealization const& realization,
     RealtimeStorageCostModel const& cost_model,
-    EventPortInventory const& inventory,
-    EventPlanningDecisions const* decisions)
+    EventPortInventory const& inventory)
 {
     EventPortBindingPlan plan;
 
@@ -4827,25 +5106,13 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
         }
     }
 
-    plan.producer_group_storage_plans.resize(
-        connections.event_producer_groups.size());
-    plan.producer_group_representations.resize(
-        connections.event_producer_groups.size());
-    plan.producer_group_source_representations.resize(
-        connections.event_producer_groups.size());
-    std::vector<EventConnectionStorageRequirements> group_cost_requirements;
-    if (!decisions) {
-        group_cost_requirements.resize(connections.event_producer_groups.size());
-    } else if (decisions->producer_groups.size() != connections.event_producer_groups.size()) {
-        return std::unexpected(
-            "GraphJit event costing decisions disagree with producer groups");
-    }
-    auto choose_group_storage = [&](std::size_t index, auto const& describe_cost) {
-        if (decisions) return *decisions->producer_groups[index];
-        auto requirements = describe_cost();
-        group_cost_requirements[index] = requirements;
-        return choose_event_connection_storage_plan(requirements, cost_model);
-    };
+    auto const group_count = connections.event_producer_groups.size();
+    plan.producer_group_representations.resize(group_count);
+    plan.producer_group_source_representations.resize(group_count);
+    std::vector<EventConnectionStorageRequirements> group_cost_requirements(group_count);
+    std::vector<EventSequenceStoragePlan> group_sequences;
+    std::vector<EventSequenceStoragePlan> feedback_sequences;
+    std::vector<bool> group_requires_retention(group_count);
 
     auto append_representation = [&] (
         std::size_t group_index,
@@ -4855,22 +5122,10 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
         bool persistent = false,
         std::string migration_identity = {},
         bool persistent_ring = false,
-        bool source_indices = false)
-        -> std::expected<std::size_t, std::string> {
-        if (capacity > std::numeric_limits<std::size_t>::max() / sizeof(TimedEvent))
-            return std::unexpected("GraphJit event storage size overflows size_t");
-        auto const representation_index = plan.ports.size();
-        plan.ports.push_back(EventRepresentationPlan{
-            .producer_group_index = group_index,
-            .type = type,
-            .event_capacity = capacity,
-            .persistent = persistent,
-            .persistent_ring = persistent_ring,
-            .migration_identity = owned_raw_region_identity(std::move(migration_identity)),
-            .has_producer_overflow_counter = producer_telemetry,
-            .has_source_indices = source_indices,
-        });
-        return representation_index;
+        bool source_indices = false) {
+        return append_event_representation(
+            plan, group_index, type, capacity, producer_telemetry, persistent,
+            std::move(migration_identity), persistent_ring, source_indices);
     };
 
     // One read-only zero-count sequence per event type serves every
@@ -4894,17 +5149,6 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
         return representation;
     };
 
-    auto rounded_event_capacity = [](std::size_t required)
-        -> std::expected<std::size_t, std::string> {
-        if (required == 0) return 0;
-        constexpr auto highest_power_of_two = std::size_t{1}
-            << (std::numeric_limits<std::size_t>::digits - 1);
-        if (required > highest_power_of_two) {
-            return std::unexpected(
-                "GraphJit event aggregate exceeds representable static capacity");
-        }
-        return next_power_of_2(required);
-    };
     auto event_group_identity = [&](EventProducerGroupPlan const& group) {
         std::string identity =
             "graphjit.event:"
@@ -5582,19 +5826,7 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
             return std::unexpected(
                 "GraphJit event planning has no internal realtime storage plan");
         }
-        auto selected_group_plan = decisions
-            ? *decisions->producer_groups[group_index]
-            : *group.storage_plan;
-        auto storage_kind = selected_group_plan.kind;
-        plan.producer_group_storage_plans[group_index] = selected_group_plan;
-        auto compact_carry =
-            storage_kind
-            == RealtimeBufferStorageKind::stack_with_persistent_carry;
-        auto persistent_ring =
-            storage_kind == RealtimeBufferStorageKind::full_node_storage;
-        auto retained_storage = compact_carry || persistent_ring;
-        auto aggregate_sequence =
-            group.requires_invocation_aggregate || retained_storage;
+        group_cost_requirements[group_index] = group.storage_requirements;
 
         plan.producer_group_source_representations[group_index].resize(
             group.sources.size());
@@ -5984,7 +6216,7 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
                     return result;
                 };
 
-                auto const selected_plan = choose_group_storage(group_index, [&] {
+                {
                     auto const retained_values =
                         group.storage_requirements.retained_event_capacity;
                     auto const transient_merge = staged_merge_cost(0);
@@ -6000,67 +6232,22 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
                         .carry_extra_stack_values = staged_local_stack,
                         .full_extra_stack_values = staged_local_stack,
                     };
-                    return staged_requirements;
-                });
-                storage_kind = selected_plan.kind;
-                plan.producer_group_storage_plans[group_index] = selected_plan;
-                compact_carry = storage_kind
-                    == RealtimeBufferStorageKind::stack_with_persistent_carry;
-                persistent_ring = storage_kind
-                    == RealtimeBufferStorageKind::full_node_storage;
-                retained_storage = compact_carry || persistent_ring;
-                aggregate_sequence = true;
-
-                std::size_t carry_capacity = 0;
-                std::size_t canonical_capacity = 0;
-                if (compact_carry || persistent_ring) {
-                    if (retained_history
-                            > std::numeric_limits<std::size_t>::max()
-                                - retained_latency) {
-                        return std::unexpected(
-                            "GraphJit staged event fan-in retained window overflows size_t");
-                    }
-                    auto retained = event_sequence_capacity_for_sample_span(
-                        group.max_events_per_index,
-                        retained_history + retained_latency);
-                    if (!retained
-                        || *retained
-                            > std::numeric_limits<std::size_t>::max()
-                                - total_local_capacity) {
-                        return std::unexpected(
-                            "GraphJit staged event fan-in retained capacity is not representable");
-                    }
-                    if (compact_carry) carry_capacity = *retained;
-                    auto rounded = rounded_event_capacity(
-                        total_local_capacity + *retained);
-                    if (!rounded) {
-                        return std::unexpected(std::move(rounded.error()));
-                    }
-                    canonical_capacity = *rounded;
-                } else {
-                    auto rounded = rounded_event_capacity(total_local_capacity);
-                    if (!rounded) {
-                        return std::unexpected(std::move(rounded.error()));
-                    }
-                    canonical_capacity = *rounded;
+                    group_cost_requirements[group_index] = staged_requirements;
                 }
-
-                auto const identity_base = event_group_identity(group);
-                auto canonical = append_representation(
-                    group_index,
-                    group.source_type,
-                    canonical_capacity,
-                    false,
-                    persistent_ring,
-                    persistent_ring
-                        ? identity_base
-                            + ":kind=ordered_persistent_ring:history="
-                            + std::to_string(retained_history) + ":latency="
-                            + std::to_string(retained_latency) + ":capacity="
-                            + std::to_string(canonical_capacity)
-                        : std::string{},
-                    persistent_ring,
-                    true);
+                if (retained_history > std::numeric_limits<std::size_t>::max()
+                        - retained_latency) {
+                    return std::unexpected(
+                        "GraphJit staged event fan-in retained window overflows size_t");
+                }
+                auto const retained = event_count_for_sample_span(
+                    group.max_events_per_index, retained_history + retained_latency);
+                if (!retained) {
+                    return std::unexpected(
+                        "GraphJit staged event fan-in retained capacity is not representable");
+                }
+                auto canonical = append_event_working_sequence(
+                    plan, group_index, group.source_type,
+                    total_local_capacity, *retained, true);
                 if (!canonical) {
                     return std::unexpected(std::move(canonical.error()));
                 }
@@ -6081,43 +6268,17 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
                         stages.back().execution_position,
                         EventOperationPhase::after);
 
-                if (compact_carry) {
-                    auto persistent = append_representation(
-                        group_index,
-                        group.source_type,
-                        carry_capacity,
-                        false,
-                        true,
-                        identity_base
-                            + ":kind=ordered_compact_carry:history="
-                            + std::to_string(retained_history) + ":latency="
-                            + std::to_string(retained_latency) + ":capacity="
-                            + std::to_string(carry_capacity),
-                        false,
-                        true);
-                    if (!persistent) {
-                        return std::unexpected(std::move(persistent.error()));
-                    }
-                    plan.carry_operations.push_back(EventCarryPlan{
-                        .working_representation = *canonical,
-                        .persistent_representation = *persistent,
-                        .restore_scope = first_scope,
-                        .commit_scope = last_scope,
-                        .retained_history_samples = retained_history,
-                        .retained_latency_samples = retained_latency,
-                    });
-                } else if (persistent_ring) {
-                    plan.persistent_rings.push_back(EventPersistentRingPlan{
-                        .storage = *canonical,
-                        .prune_scope = first_scope,
-                        .retained_history_samples = retained_history,
-                    });
-                } else {
-                    plan.sequence_resets.push_back(EventSequenceResetPlan{
-                        .storage = *canonical,
-                        .scope = first_scope,
-                    });
-                }
+                group_sequences.push_back({
+                    .representation = *canonical,
+                    .retained_event_count = *retained,
+                    .begin = first_scope,
+                    .end = last_scope,
+                    .history = retained_history,
+                    .latency = retained_latency,
+                    .identity_base = event_group_identity(group),
+                    .ordered_fan_in = true,
+                    .reset_transient = true,
+                });
 
                 for (auto const& stage : stages) {
                     EventMergePlan merge{
@@ -6169,11 +6330,12 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
                         || connection.conversion.source_type
                             != connection.source_type
                         || connection.conversion.target_type
-                            != connection.target_type
-                        || (retained_connection && !retained_storage)) {
+                            != connection.target_type) {
                         return std::unexpected(
                             "GraphJit staged event fan-in connection requires unsupported retention, feedback, external, or source semantics");
                     }
+                    group_requires_retention[group_index] =
+                        group_requires_retention[group_index] || retained_connection;
 
                     for (auto const target_id : group_targets(group, connection_index)) {
                         auto const target_primitive = primitive_index_for_bundle(
@@ -6423,7 +6585,7 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
                 return accesses;
             };
 
-            auto const selected_plan = choose_group_storage(group_index, [&] {
+            {
                 auto const transient_merge_writes =
                     sequential_merge_writes(0);
                 auto const retained_merge_writes =
@@ -6441,147 +6603,51 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
                     .carry_extra_stack_values = total_invocation_local_capacity,
                     .full_extra_stack_values = total_invocation_local_capacity,
                 };
-                return group_requirements;
-            });
-            if (!selected_plan.candidate_costs.for_kind(selected_plan.kind).legal) {
+                group_cost_requirements[group_index] = group_requirements;
+            }
+            if (retained_history > std::numeric_limits<std::size_t>::max()
+                    - retained_latency) {
                 return std::unexpected(
-                    "GraphJit event fan-in has no storage realization within the compile-time stack budget");
+                    "GraphJit event fan-in retained window overflows size_t");
             }
-
-            storage_kind = selected_plan.kind;
-            plan.producer_group_storage_plans[group_index] = selected_plan;
-            compact_carry = storage_kind
-                == RealtimeBufferStorageKind::stack_with_persistent_carry;
-            persistent_ring = storage_kind
-                == RealtimeBufferStorageKind::full_node_storage;
-            retained_storage = compact_carry || persistent_ring;
-            aggregate_sequence = true;
-
-            std::size_t carry_capacity = 0;
-            std::size_t canonical_capacity = 0;
-            if (compact_carry) {
-                if (retained_latency > std::numeric_limits<std::size_t>::max()
-                        - retained_history) {
-                    return std::unexpected(
-                        "GraphJit event fan-in retained window overflows size_t");
-                }
-                auto const retained_window = retained_history + retained_latency;
-                auto carry = event_sequence_capacity_for_sample_span(
-                    group.max_events_per_index, retained_window);
-                if (!carry
-                    || *carry > std::numeric_limits<std::size_t>::max()
-                        - total_local_capacity) {
-                    return std::unexpected(
-                        "GraphJit event fan-in compact carry capacity is not representable");
-                }
-                carry_capacity = *carry;
-                auto rounded = rounded_event_capacity(
-                    total_local_capacity + carry_capacity);
-                if (!rounded) return std::unexpected(std::move(rounded.error()));
-                canonical_capacity = *rounded;
-            } else if (persistent_ring) {
-                if (retained_history > std::numeric_limits<std::size_t>::max()
-                        - retained_latency) {
-                    return std::unexpected(
-                        "GraphJit event fan-in retained window overflows size_t");
-                }
-                auto retained = event_sequence_capacity_for_sample_span(
-                    group.max_events_per_index,
-                    retained_history + retained_latency);
-                if (!retained
-                    || *retained > std::numeric_limits<std::size_t>::max()
-                        - total_local_capacity) {
-                    return std::unexpected(
-                        "GraphJit event fan-in persistent capacity is not representable");
-                }
-                auto rounded = rounded_event_capacity(
-                    total_local_capacity + *retained);
-                if (!rounded) return std::unexpected(std::move(rounded.error()));
-                canonical_capacity = *rounded;
-            } else {
-                auto rounded = rounded_event_capacity(total_local_capacity);
-                if (!rounded) return std::unexpected(std::move(rounded.error()));
-                canonical_capacity = *rounded;
+            auto const retained = event_count_for_sample_span(
+                group.max_events_per_index, retained_history + retained_latency);
+            if (!retained) {
+                return std::unexpected(
+                    "GraphJit event fan-in retained capacity is not representable");
             }
-
             auto const preserve_source_identity = requires_source_identity;
-            auto const identity_base = event_group_identity(group);
-            auto canonical = append_representation(
-                group_index,
-                group.source_type,
-                canonical_capacity,
-                false,
-                persistent_ring,
-                persistent_ring
-                    ? identity_base + ":kind=persistent_ring:history="
-                        + std::to_string(retained_history) + ":latency="
-                        + std::to_string(retained_latency) + ":capacity="
-                        + std::to_string(canonical_capacity)
-                    : std::string{},
-                persistent_ring,
-                preserve_source_identity);
+            auto canonical = append_event_working_sequence(
+                plan, group_index, group.source_type, total_local_capacity,
+                *retained, preserve_source_identity);
             if (!canonical) {
                 return std::unexpected(std::move(canonical.error()));
             }
             plan.producer_group_representations[group_index] = *canonical;
-
-            if (compact_carry) {
-                auto persistent = append_representation(
-                    group_index,
-                    group.source_type,
-                    carry_capacity,
-                    false,
-                    true,
-                    identity_base + ":kind=compact_carry:history="
-                        + std::to_string(retained_history) + ":latency="
-                        + std::to_string(retained_latency) + ":capacity="
-                        + std::to_string(carry_capacity),
-                    false,
-                    preserve_source_identity);
-                if (!persistent) {
-                    return std::unexpected(std::move(persistent.error()));
-                }
-                auto const restore_scope = cyclic_source_region
-                    ? region_scope(
-                        *cyclic_source_region, EventOperationPhase::before)
-                    : primitive_scope(
-                        producer_execution_position,
-                        EventOperationPhase::before);
-                auto const commit_scope = cyclic_source_region
-                    ? region_scope(
-                        *cyclic_source_region, EventOperationPhase::after)
-                    : primitive_scope(
-                        producer_execution_position,
-                        EventOperationPhase::after);
-                plan.carry_operations.push_back(EventCarryPlan{
-                    .working_representation = *canonical,
-                    .persistent_representation = *persistent,
-                    .restore_scope = restore_scope,
-                    .commit_scope = commit_scope,
-                    .retained_history_samples = retained_history,
-                    .retained_latency_samples = retained_latency,
-                });
-            } else if (persistent_ring) {
-                plan.persistent_rings.push_back(EventPersistentRingPlan{
-                    .storage = *canonical,
-                    .prune_scope = cyclic_source_region
-                        ? region_scope(
-                            *cyclic_source_region,
-                            EventOperationPhase::before)
-                        : primitive_scope(
-                            producer_execution_position,
-                            EventOperationPhase::before),
-                    .retained_history_samples = retained_history,
-                });
-            }
+            auto const restore_scope = cyclic_source_region
+                ? region_scope(*cyclic_source_region, EventOperationPhase::before)
+                : primitive_scope(producer_execution_position, EventOperationPhase::before);
+            auto const commit_scope = cyclic_source_region
+                ? region_scope(*cyclic_source_region, EventOperationPhase::after)
+                : primitive_scope(producer_execution_position, EventOperationPhase::after);
+            group_sequences.push_back({
+                .representation = *canonical,
+                .retained_event_count = *retained,
+                .begin = restore_scope,
+                .end = commit_scope,
+                .history = retained_history,
+                .latency = retained_latency,
+                .identity_base = event_group_identity(group),
+                .reset_transient = cyclic_source_region.has_value(),
+                .append_merge = plan.merges.size(),
+            });
 
             EventMergePlan merge{
                 .target_representation = *canonical,
                 .scope = primitive_scope(
                     producer_execution_position, EventOperationPhase::after),
                 .ordering_history_samples = retained_history,
-                .preserve_existing_target =
-                    retained_storage || cyclic_source_region.has_value(),
+                .preserve_existing_target = cyclic_source_region.has_value(),
             };
             merge.source_representations.reserve(validated_sources.size());
             if (preserve_source_identity) {
@@ -6608,13 +6674,6 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
                         source.semantic_source_index);
                 }
             }
-            if (cyclic_source_region && !retained_storage) {
-                plan.sequence_resets.push_back(EventSequenceResetPlan{
-                    .storage = *canonical,
-                    .scope = region_scope(
-                        *cyclic_source_region, EventOperationPhase::before),
-                });
-            }
             plan.merges.push_back(std::move(merge));
 
             for (auto const connection_index : group.connection_indices) {
@@ -6633,11 +6692,12 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
                     || connection.conversion.source_type
                         != connection.source_type
                     || connection.conversion.target_type
-                        != connection.target_type
-                    || (retained_connection && !retained_storage)) {
+                        != connection.target_type) {
                     return std::unexpected(
                         "GraphJit event fan-in connection requires unsupported retention, feedback, external, or source semantics");
                 }
+                group_requires_retention[group_index] =
+                    group_requires_retention[group_index] || retained_connection;
 
                 for (auto const target_id : group_targets(group, connection_index)) {
                     auto const target_primitive = primitive_index_for_bundle(
@@ -6775,7 +6835,8 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
             return std::unexpected(
                 "GraphJit event flow requires an internal concrete producer");
         }
-        if (!aggregate_sequence
+        if (!group.requires_invocation_aggregate
+            && group.storage_plan->kind == RealtimeBufferStorageKind::transient_stack
             && analysis.primitives[*source_primitive].bundle.maximum_block_size
                 < input.specialization.block_size) {
             return std::unexpected(
@@ -6900,78 +6961,6 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
                     connection.source_latency,
                     connection_compensation(connection)));
         }
-        if (!decisions) group_cost_requirements[group_index] = group.storage_requirements;
-
-        auto aggregate_capacity = rounded_event_capacity(*base_max_events);
-        if (!aggregate_capacity) {
-            return std::unexpected(std::move(aggregate_capacity.error()));
-        }
-        // A producer inside an SCC is invoked once per slice, but its
-        // canonical sequence is the aggregate for the complete root call.
-        // Size that sequence for every event the SCC can author during the
-        // root call; only producer-local buffers use the single-slice bound.
-        std::size_t working_capacity = aggregate_sequence
-            ? *aggregate_capacity
-            : *base_capacity;
-        std::size_t carry_capacity = 0;
-        std::size_t ring_capacity = 0;
-        if (compact_carry) {
-            if (retained_latency > std::numeric_limits<std::size_t>::max()
-                    - retained_history) {
-                return std::unexpected(
-                    "GraphJit compact event carry retained window overflows size_t");
-            }
-            auto const retained_window_samples = retained_history + retained_latency;
-            auto const carry_capacity_bound = event_sequence_capacity_for_sample_span(
-                source.max_events_per_index, retained_window_samples);
-            if (!carry_capacity_bound) {
-                return std::unexpected(
-                    "GraphJit compact event carry exceeds representable static capacity");
-            }
-            carry_capacity = *carry_capacity_bound;
-            auto const carry_max_events =
-                group.storage_requirements.retained_event_capacity;
-            if (*base_max_events > std::numeric_limits<std::size_t>::max()
-                    - carry_max_events) {
-                return std::unexpected(
-                    "GraphJit compact event carry working event bound overflows size_t");
-            }
-            auto const working_required = *base_max_events + carry_max_events;
-            if (working_required == 0) {
-                working_capacity = 0;
-            } else {
-                constexpr auto highest_power_of_two =
-                    std::size_t{1}
-                    << (std::numeric_limits<std::size_t>::digits - 1);
-                if (working_required > highest_power_of_two) {
-                    return std::unexpected(
-                        "GraphJit compact event carry exceeds representable working capacity");
-                }
-                working_capacity = next_power_of_2(working_required);
-            }
-        } else if (persistent_ring) {
-            if (retained_history > std::numeric_limits<std::size_t>::max()
-                    - input.specialization.block_size
-                || retained_latency > std::numeric_limits<std::size_t>::max()
-                    - input.specialization.block_size - retained_history) {
-                return std::unexpected(
-                    "GraphJit persistent event ring temporal span overflows size_t");
-            }
-            if (*base_max_events
-                > std::numeric_limits<std::size_t>::max()
-                    - group.storage_requirements.retained_event_capacity) {
-                return std::unexpected(
-                    "GraphJit persistent event ring exceeds representable static capacity");
-            }
-            auto ring_capacity_bound = rounded_event_capacity(
-                *base_max_events
-                + group.storage_requirements.retained_event_capacity);
-            if (!ring_capacity_bound) {
-                return std::unexpected(std::move(ring_capacity_bound.error()));
-            }
-            ring_capacity = *ring_capacity_bound;
-        }
-
         auto const raw_has_retained_storage =
             plan.ports[raw_canonical_representation].persistent
             || std::ranges::any_of(
@@ -6985,81 +6974,37 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
         // without compensation.
         auto const source_compensation =
             group.source_compensations.at(semantic_source_index);
-        auto const uses_raw_source_directly =
+        auto const can_alias_raw_source =
             !source_region_is_cyclic
             && source_conversion.size() == 0
             && source_compensation == 0
             && source_history >= retained_history
-            && source_latency >= retained_latency
-            && (!retained_storage || raw_has_retained_storage);
-        auto source_representation = [&]()
-            -> std::expected<std::size_t, std::string> {
-            if (uses_raw_source_directly)
-                return raw_canonical_representation;
-            if (!persistent_ring) {
-                return append_representation(
-                    group_index,
-                    group.source_type,
-                    working_capacity,
-                    false);
+            && source_latency >= retained_latency;
+        // Operations for a single-source group add the same copy costs to all
+        // candidates and can only raise the cost of ring addressing. A
+        // transient choice based on the base requirements is already final
+        // for purposes of aliasing.
+        auto const reuse_raw_source = can_alias_raw_source
+            && (raw_has_retained_storage
+                || group.storage_plan->kind == RealtimeBufferStorageKind::transient_stack);
+        auto source_representation = raw_canonical_representation;
+        if (!reuse_raw_source) {
+            if (retained_history > std::numeric_limits<std::size_t>::max()
+                    - retained_latency) {
+                return std::unexpected("GraphJit event producer retained window overflows size_t");
             }
-            std::string migration_identity =
-                "graphjit.event:" + std::to_string(static_cast<unsigned>(group.source_type))
-                + ':' + raw_region_node_identity_text(connections, source_id.bundle)
-                + '.' + std::to_string(source_id.port)
-                + ":kind=persistent_ring:history=" + std::to_string(retained_history)
-                + ":latency=" + std::to_string(retained_latency)
-                + ":capacity=" + std::to_string(ring_capacity);
-            return append_representation(
-                group_index,
-                group.source_type,
-                ring_capacity,
-                false,
-                true,
-                std::move(migration_identity),
-                true);
-        }();
-        if (!source_representation) {
-            return std::unexpected(std::move(source_representation.error()));
-        }
-        plan.producer_group_representations[group_index] = *source_representation;
-
-        if (compact_carry && !uses_raw_source_directly) {
-            std::string migration_identity =
-                "graphjit.event:" + std::to_string(static_cast<unsigned>(group.source_type))
-                + ':' + raw_region_node_identity_text(connections, source_id.bundle)
-                + '.' + std::to_string(source_id.port)
-                + ":kind=compact_carry:history=" + std::to_string(retained_history)
-                + ":latency=" + std::to_string(retained_latency)
-                + ":capacity=" + std::to_string(carry_capacity);
-            auto persistent_representation = append_representation(
-                group_index,
-                group.source_type,
-                carry_capacity,
-                false,
-                true,
-                std::move(migration_identity));
-            if (!persistent_representation) {
+            auto const retained = event_count_for_sample_span(
+                source.max_events_per_index, retained_history + retained_latency);
+            if (!retained) {
                 return std::unexpected(
-                    std::move(persistent_representation.error()));
+                    "GraphJit event producer retained capacity is not representable");
             }
-            plan.carry_operations.push_back(EventCarryPlan{
-                .working_representation = *source_representation,
-                .persistent_representation = *persistent_representation,
-                .restore_scope = source_before_scope,
-                .commit_scope = source_after_scope,
-                .retained_history_samples = retained_history,
-                .retained_latency_samples = retained_latency,
-            });
-        } else if (persistent_ring && !uses_raw_source_directly) {
-            plan.persistent_rings.push_back(EventPersistentRingPlan{
-                .storage = *source_representation,
-                .prune_scope = source_before_scope,
-                .retained_history_samples = retained_history,
-            });
-        }
+            auto working = append_event_working_sequence(
+                plan, group_index, group.source_type, *base_max_events,
+                group.storage_requirements.retained_event_capacity);
+            if (!working) return std::unexpected(std::move(working.error()));
+            source_representation = *working;
 
-        if (!uses_raw_source_directly) {
             auto producer_representation = *raw_source_representation;
             auto const merge_scope = primitive_scope(
                 group.live_interval.begin, EventOperationPhase::after);
@@ -7082,23 +7027,34 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
                     .scope = merge_scope,
                 });
             }
+            group_sequences.push_back({
+                .representation = source_representation,
+                .retained_event_count = *retained,
+                .begin = source_before_scope,
+                .end = source_after_scope,
+                .history = retained_history,
+                .latency = retained_latency,
+                .identity_base = "graphjit.event:"
+                    + std::to_string(static_cast<unsigned>(group.source_type))
+                    + ':' + raw_region_node_identity_text(connections, source_id.bundle)
+                    + '.' + std::to_string(source_id.port),
+                .reset_transient = true,
+                .transient_alias = can_alias_raw_source
+                        && group.storage_plan->candidate_costs.transient_stack.legal
+                    ? std::optional(raw_canonical_representation) : std::nullopt,
+                .append_merge = plan.merges.size(),
+            });
             plan.merges.push_back(EventMergePlan{
                 .source_representations = {producer_representation},
                 .source_delays = {iv::detail::saturating_add(
                     source_latency, source_compensation)},
-                .target_representation = *source_representation,
+                .target_representation = source_representation,
                 .scope = merge_scope,
                 .ordering_history_samples = retained_history,
-                .preserve_existing_target = retained_storage
-                    || source_region_is_cyclic,
+                .preserve_existing_target = source_region_is_cyclic,
             });
-            if (!retained_storage) {
-                plan.sequence_resets.push_back(EventSequenceResetPlan{
-                    .storage = *source_representation,
-                    .scope = source_before_scope,
-                });
-            }
         }
+        plan.producer_group_representations[group_index] = source_representation;
 
         for (auto const connection_index : group.connection_indices) {
             auto const& connection = connections.event_connections[connection_index];
@@ -7113,11 +7069,12 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
                 || !realtime_sources_match(group, connection)
                 || connection.source_type != group.source_type
                 || connection.conversion.source_type != connection.source_type
-                || connection.conversion.target_type != connection.target_type
-                || (retained_connection && !retained_storage)) {
+                || connection.conversion.target_type != connection.target_type) {
                 return std::unexpected(
                     "GraphJit event connection requires unsupported retention, feedback, external, or source-composition semantics");
             }
+            group_requires_retention[group_index] =
+                group_requires_retention[group_index] || retained_connection;
             for (auto const target_id : group_targets(group, connection_index)) {
                 auto const target_primitive = primitive_index_for_bundle(
                     target_id.bundle);
@@ -7136,7 +7093,7 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
                     return std::unexpected(
                         "GraphJit event consumer disagrees with its declaration");
                 }
-                auto target_representation = *source_representation;
+                auto target_representation = source_representation;
                 if (connection.conversion.size() != 0) {
                     auto scope = materialization_scope_for_target(
                         connection.sources,
@@ -7166,7 +7123,7 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
                         plan.materializations,
                         [&](EventMaterializationPlan const& candidate) {
                             return candidate.source_representation
-                                    == *source_representation
+                                    == source_representation
                                 && !candidate.source_index_filter
                                 && candidate.conversion == connection.conversion
                                 && candidate.scope == *scope
@@ -7191,14 +7148,14 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
                         auto derived = append_representation(
                             group_index,
                             connection.target_type,
-                            plan.ports[*source_representation]
+                            plan.ports[source_representation]
                                 .event_capacity);
                         if (!derived) {
                             return std::unexpected(std::move(derived.error()));
                         }
                         target_representation = *derived;
                         plan.materializations.push_back(EventMaterializationPlan{
-                            .source_representation = *source_representation,
+                            .source_representation = source_representation,
                             .target_representation = target_representation,
                             .conversion = connection.conversion,
                             .history_samples = connection.target_history,
@@ -7339,103 +7296,25 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
         if (existing != plan.feedback_operations.end())
             return existing->target_representation;
 
-        auto const feedback_index = plan.feedback_operations.size();
-        EventConnectionStoragePlan feedback_storage;
-        if (decisions) {
-            if (feedback_index >= decisions->feedback.size()) {
-                return std::unexpected(
-                    "GraphJit event costing lost a per-source feedback decision");
-            }
-            feedback_requirements =
-                decisions->feedback[feedback_index].requirements;
-            feedback_storage = decisions->feedback[feedback_index].storage;
-        } else {
-            feedback_storage = choose_event_connection_storage_plan(feedback_requirements, cost_model);
-        }
-        auto const identity_base =
-            "graphjit.event.feedback:group=" + event_group_identity(group)
-            + ":source=" + std::to_string(source_index)
-            + ":type="
-            + std::to_string(static_cast<unsigned>(connection.source_type))
-            + ":latency=" + std::to_string(latency)
-            + ":retained=" + std::to_string(retained_window_samples);
-
-        std::size_t target_representation = 0;
-        switch (feedback_storage.kind) {
-        case RealtimeBufferStorageKind::transient_stack: {
-            auto capacity = rounded_event_capacity(*authored_event_count);
-            if (!capacity) return std::unexpected(std::move(capacity.error()));
-            auto target = append_representation(
-                source_group_index, connection.source_type, *capacity);
-            if (!target) return std::unexpected(std::move(target.error()));
-            target_representation = *target;
-            break;
-        }
-        case RealtimeBufferStorageKind::stack_with_persistent_carry: {
-            if (*authored_event_count
-                > std::numeric_limits<std::size_t>::max()
-                    - *retained_event_count) {
-                return std::unexpected(
-                    "GraphJit per-source event feedback compact capacity overflows size_t");
-            }
-            auto working_capacity = rounded_event_capacity(
-                *authored_event_count + *retained_event_count);
-            auto carry_capacity = event_sequence_capacity_for_sample_span(
-                source.max_events_per_index, retained_window_samples);
-            if (!working_capacity || !carry_capacity) {
-                return std::unexpected(
-                    "GraphJit per-source event feedback compact capacity is not representable");
-            }
-            auto working = append_representation(
-                source_group_index, connection.source_type, *working_capacity);
-            if (!working) return std::unexpected(std::move(working.error()));
-            target_representation = *working;
-            auto persistent = append_representation(
-                source_group_index,
-                connection.source_type,
-                *carry_capacity,
-                false,
-                true,
-                identity_base + ":kind=compact_carry:capacity="
-                    + std::to_string(*carry_capacity));
-            if (!persistent)
-                return std::unexpected(std::move(persistent.error()));
-            plan.carry_operations.push_back(EventCarryPlan{
-                .working_representation = target_representation,
-                .persistent_representation = *persistent,
-                .restore_scope = reset_scope,
-                .commit_scope = region_scope(
-                    *source.detach_region, EventOperationPhase::after),
-                .retained_history_samples = retained_history,
-                .retained_latency_samples = latency,
-            });
-            break;
-        }
-        case RealtimeBufferStorageKind::full_node_storage: {
-            if (*authored_event_count
-                > std::numeric_limits<std::size_t>::max()
-                    - *retained_event_count) {
-                return std::unexpected(
-                    "GraphJit per-source event feedback persistent capacity overflows size_t");
-            }
-            auto ring_capacity = rounded_event_capacity(
-                *authored_event_count + *retained_event_count);
-            if (!ring_capacity)
-                return std::unexpected(std::move(ring_capacity.error()));
-            auto target = append_representation(
-                source_group_index,
-                connection.source_type,
-                *ring_capacity,
-                false,
-                true,
-                identity_base + ":kind=full_node_storage:capacity="
-                    + std::to_string(*ring_capacity),
-                true);
-            if (!target) return std::unexpected(std::move(target.error()));
-            target_representation = *target;
-            break;
-        }
-        }
+        auto target = append_event_working_sequence(
+            plan, source_group_index, connection.source_type, *authored_event_count,
+            *retained_event_count);
+        if (!target) return std::unexpected(std::move(target.error()));
+        auto const target_representation = *target;
+        feedback_sequences.push_back({
+            .representation = target_representation,
+            .retained_event_count = *retained_event_count,
+            .begin = reset_scope,
+            .end = region_scope(*source.detach_region, EventOperationPhase::after),
+            .history = retained_history,
+            .latency = latency,
+            .identity_base = "graphjit.event.feedback:group=" + event_group_identity(group)
+                + ":source=" + std::to_string(source_index)
+                + ":type=" + std::to_string(static_cast<unsigned>(connection.source_type))
+                + ":latency=" + std::to_string(latency)
+                + ":retained=" + std::to_string(retained_window_samples),
+            .feedback = true,
+        });
         plan.feedback_operations.push_back(EventFeedbackPlan{
             .source_representation = source_representation,
             .target_representation = target_representation,
@@ -7443,7 +7322,6 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
             .append_scope = append_scope,
             .reset_scope = reset_scope,
             .storage_requirements = feedback_requirements,
-            .storage_plan = feedback_storage,
             .authored_event_count = *authored_event_count,
             .source_event_reads = *source_event_reads,
             .retained_event_count = *retained_event_count,
@@ -7636,119 +7514,27 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
                     "GraphJit shared event feedback has an invalid reset scope");
             }
         } else {
-            auto const feedback_index = plan.feedback_operations.size();
-            EventConnectionStoragePlan feedback_storage;
-            if (decisions) {
-                if (feedback_index >= decisions->feedback.size()) {
-                    return std::unexpected(
-                        "GraphJit event costing lost a feedback decision");
-                }
-                feedback_requirements =
-                    decisions->feedback[feedback_index].requirements;
-                feedback_storage = decisions->feedback[feedback_index].storage;
-            } else {
-                feedback_storage = choose_event_connection_storage_plan(feedback_requirements, cost_model);
-            }
-            auto identity_base =
-                "graphjit.event.feedback:group="
-                + event_group_identity(*source_group_it)
-                + ":type="
-                + std::to_string(static_cast<unsigned>(connection.source_type))
-                + ":latency=" + std::to_string(latency)
-                + ":retained=" + std::to_string(retained_window_samples);
-
-            switch (feedback_storage.kind) {
-            case RealtimeBufferStorageKind::transient_stack: {
-                auto capacity = rounded_event_capacity(*authored_event_count);
-                if (!capacity) {
-                    return std::unexpected(std::move(capacity.error()));
-                }
-                auto appended = append_representation(
-                    source_group_index,
-                    connection.source_type,
-                    *capacity);
-                if (!appended) {
-                    return std::unexpected(std::move(appended.error()));
-                }
-                target_representation = *appended;
-                break;
-            }
-            case RealtimeBufferStorageKind::stack_with_persistent_carry: {
-                if (*authored_event_count
-                    > std::numeric_limits<std::size_t>::max()
-                        - *retained_event_count) {
-                    return std::unexpected(
-                        "GraphJit event feedback compact working capacity overflows size_t");
-                }
-                auto working_capacity = rounded_event_capacity(
-                    *authored_event_count + *retained_event_count);
-                auto carry_capacity = event_sequence_capacity_for_sample_span(
-                    source_group_it->max_events_per_index,
-                    retained_window_samples);
-                if (!working_capacity || !carry_capacity) {
-                    return std::unexpected(
-                        "GraphJit event feedback compact capacity is not representable");
-                }
-                auto working = append_representation(
-                    source_group_index,
-                    connection.source_type,
-                    *working_capacity);
-                if (!working) {
-                    return std::unexpected(std::move(working.error()));
-                }
-                target_representation = *working;
-                auto persistent = append_representation(
-                    source_group_index,
-                    connection.source_type,
-                    *carry_capacity,
-                    false,
-                    true,
-                    identity_base + ":kind=compact_carry:capacity="
-                        + std::to_string(*carry_capacity));
-                if (!persistent) {
-                    return std::unexpected(std::move(persistent.error()));
-                }
-                plan.carry_operations.push_back(EventCarryPlan{
-                    .working_representation = target_representation,
-                    .persistent_representation = *persistent,
-                    .restore_scope = region_scope(
-                        *connection.detach_region, EventOperationPhase::before),
-                    .commit_scope = region_scope(
-                        *connection.detach_region, EventOperationPhase::after),
-                    .retained_history_samples = retained_history,
-                    .retained_latency_samples =
-                        connection.source_latency + latency,
-                });
-                break;
-            }
-            case RealtimeBufferStorageKind::full_node_storage: {
-                if (*authored_event_count
-                    > std::numeric_limits<std::size_t>::max()
-                        - *retained_event_count) {
-                    return std::unexpected(
-                        "GraphJit event feedback persistent capacity overflows size_t");
-                }
-                auto ring_capacity = rounded_event_capacity(
-                    *authored_event_count + *retained_event_count);
-                if (!ring_capacity) {
-                    return std::unexpected(std::move(ring_capacity.error()));
-                }
-                auto appended = append_representation(
-                    source_group_index,
-                    connection.source_type,
-                    *ring_capacity,
-                    false,
-                    true,
-                    identity_base + ":kind=full_node_storage:capacity="
-                        + std::to_string(*ring_capacity),
-                    true);
-                if (!appended) {
-                    return std::unexpected(std::move(appended.error()));
-                }
-                target_representation = *appended;
-                break;
-            }
-            }
+            auto const reset_scope = region_scope(
+                *connection.detach_region, EventOperationPhase::before);
+            auto target = append_event_working_sequence(
+                plan, source_group_index, connection.source_type, *authored_event_count,
+                *retained_event_count);
+            if (!target) return std::unexpected(std::move(target.error()));
+            target_representation = *target;
+            feedback_sequences.push_back({
+                .representation = target_representation,
+                .retained_event_count = *retained_event_count,
+                .begin = reset_scope,
+                .end = region_scope(*connection.detach_region, EventOperationPhase::after),
+                .history = retained_history,
+                .latency = connection.source_latency + latency,
+                .identity_base = "graphjit.event.feedback:group="
+                    + event_group_identity(*source_group_it)
+                    + ":type=" + std::to_string(static_cast<unsigned>(connection.source_type))
+                    + ":latency=" + std::to_string(latency)
+                    + ":retained=" + std::to_string(retained_window_samples),
+                .feedback = true,
+            });
 
             plan.feedback_operations.push_back(EventFeedbackPlan{
                 .source_representation = source_representation,
@@ -7759,7 +7545,6 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
                 .reset_scope = region_scope(
                     *connection.detach_region, EventOperationPhase::before),
                 .storage_requirements = feedback_requirements,
-                .storage_plan = feedback_storage,
                 .authored_event_count = *authored_event_count,
                 .source_event_reads = *authored_event_count,
                 .retained_event_count = *retained_event_count,
@@ -8125,21 +7910,6 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
         }
     }
 
-    if (!decisions) {
-        auto selected = select_event_storage(plan, std::move(group_cost_requirements), cost_model);
-        if (!selected) return std::unexpected(std::move(selected.error()));
-        if (!event_storage_kinds_match(plan, *selected))
-            return std::move(*selected);
-        plan.producer_group_storage_plans = std::move(selected->producer_groups);
-        for (std::size_t index = 0; index < plan.feedback_operations.size(); ++index) {
-            plan.feedback_operations[index].storage_requirements = selected->feedback[index].requirements;
-            plan.feedback_operations[index].storage_plan = selected->feedback[index].storage;
-        }
-    } else if (plan.feedback_operations.size() != decisions->feedback.size()) {
-        return std::unexpected(
-            "GraphJit event costing decisions disagree with feedback operations");
-    }
-
     // Complete disconnected realtime ports explicitly. Inputs supplied by
     // background evaluation bind their TickInvocationCall slot; disconnected
     // inputs bind the immutable empty sequence of their type. Outputs use the
@@ -8242,6 +8012,10 @@ std::expected<EventBindingResult, std::string> bind_event_ports(
         }
     }
 
+    auto storage = realize_event_storage(
+        plan, std::move(group_cost_requirements), group_requires_retention,
+        group_sequences, feedback_sequences, cost_model);
+    if (!storage) return std::unexpected(std::move(storage.error()));
     return plan;
 }
 
@@ -8611,17 +8385,9 @@ std::expected<EventPortBindingPlan, std::string> plan_event_ports(
         if (node.bundle >= bundle_count) return std::unexpected("GraphJit event planning found an invalid planned bundle");
         inventory.nodes[node.bundle] = &node;
     }
-    auto bound = bind_event_ports(input, analysis, connections, realization, cost_model, inventory, nullptr);
+    auto bound = bind_event_ports(input, analysis, connections, realization, cost_model, inventory);
     if (!bound) return std::unexpected(std::move(bound.error()));
-    if (auto const* selected = std::get_if<EventPlanningDecisions>(&*bound)) {
-        // A different kind can change raw output aliases, carry operations
-        // and downstream sequence capacities. Apply the selected kinds before
-        // laying out any buffers or packing their lifetimes.
-        auto rebound = bind_event_ports(input, analysis, connections, realization, cost_model, inventory, selected);
-        if (!rebound) return std::unexpected(std::move(rebound.error()));
-        bound = std::move(rebound);
-    }
-    auto plan = std::get<EventPortBindingPlan>(std::move(*bound));
+    auto plan = std::move(*bound);
     auto layout = layout_event_ports(plan, analysis, connections);
     if (!layout) return std::unexpected(std::move(layout.error()));
     return plan;

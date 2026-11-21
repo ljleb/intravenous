@@ -1168,9 +1168,16 @@ TEST_F(GraphJitRuntimeFixture, ConvertedEventFanout)
     auto converted_event_graph = configured_module_graph(
         *revision, graph_jit_converted_event_fanout_module_id);
     ASSERT_TRUE(converted_event_graph);
+    // Base storage costs favor a ring. Accounting for reads by the shared
+    // conversion makes it cheaper to reuse the raw transient output.
+    auto const cost_model = iv::RealtimeStorageCostModel{
+        .ring_addressed_byte_weight = 2,
+        .stack_footprint_byte_weight = 1,
+        .persistent_footprint_byte_weight = 0,
+    };
     auto converted_event_analysis =
         build_connection_analysis_plan(
-            *converted_event_graph, 64);
+            *converted_event_graph, 64, cost_model);
     ASSERT_TRUE(converted_event_analysis.has_value())
         << (converted_event_analysis
                 ? std::string{}
@@ -1182,7 +1189,7 @@ TEST_F(GraphJitRuntimeFixture, ConvertedEventFanout)
     ASSERT_TRUE(converted_event_group.storage_plan.has_value());
     EXPECT_EQ(
         converted_event_group.storage_plan->kind,
-        iv::RealtimeBufferStorageKind::transient_stack);
+        iv::RealtimeBufferStorageKind::full_node_storage);
     EXPECT_TRUE(converted_event_group.requires_invocation_aggregate);
     ASSERT_EQ(converted_event_group.connection_indices.size(), 2u);
     for (auto const& connection : converted_event_analysis->event_connections) {
@@ -1197,7 +1204,16 @@ TEST_F(GraphJitRuntimeFixture, ConvertedEventFanout)
             iv::EventConversionStepId::midi_to_trigger);
     }
 
-    auto converted_event = compile_graph(converted_event_graph, 125);
+    iv::GraphJit jit(iv::GraphJitConfig{
+        .sample_rate = 88200,
+        .block_size = 64,
+        .realtime_storage_cost_model = cost_model,
+    });
+    auto converted_event = jit.compile(iv::GraphJitCompileRequest{
+        .project_generation = 125,
+        .graph = converted_event_graph,
+        .definitions = definitions,
+    });
     ASSERT_TRUE(converted_event.succeeded())
         << (converted_event.diagnostics.empty()
                 ? ""
@@ -1206,6 +1222,12 @@ TEST_F(GraphJitRuntimeFixture, ConvertedEventFanout)
     // Both sequences are root-stack allocations; the sole raw region is the
     // MIDI producer's overflow counter.
     ASSERT_EQ(count_raw_regions(converted_event.compiled_graph->node_layout), 1u);
+    ASSERT_FALSE(converted_event.timings.empty());
+    auto const& storage_plan = converted_event.timings.back().realtime_storage;
+    EXPECT_EQ(storage_plan.transient_stack_decisions, 1u);
+    EXPECT_EQ(storage_plan.selected_copied_bytes,
+        converted_event_group.storage_requirements.current_event_capacity
+            * sizeof(iv::TimedEvent));
 
     auto converted_event_storage =
         converted_event.compiled_graph->node_layout.create_storage(resources);
