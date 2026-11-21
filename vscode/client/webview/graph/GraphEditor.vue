@@ -619,7 +619,8 @@ function measureWireAnchor(element: HTMLElement, id: string, direction: "input" 
     const rect = circle.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
     const point = { id, x: direction === "input" ? rect.right : rect.left, y: rect.top + rect.height / 2,
-        moduleBoundary: !!element.closest("[data-module-boundary]") };
+        moduleBoundary: !!element.closest("[data-module-boundary]"),
+        rulerInput: direction === "input" && !!element.closest(".timeline-snap-input") };
     const body = element.closest(".expansion-body");
     if (body) {
         const clip = body.getBoundingClientRect();
@@ -769,7 +770,7 @@ function updateWires() {
         return portAnchors(port, false);
     };
     selectedWires.value = profileGraphUi("Route connections", () => selectedLaneConnections(candidates, selectedLanes.value,
-        anchorFor, revealedEnds.map(({ end }) => end), { top, bottom: viewport.bottom, headerTarget: snapInput }));
+        anchorFor, revealedEnds.map(({ end }) => end), { top, bottom: viewport.bottom }));
     if (selectedWires.value.length || drag) {
         wireOcclusions.value = profileGraphUi("Measure wire occlusions", () => measureWireOcclusions(top, viewport.bottom, occlusionRoots));
         wireClips.value = [{ x: viewport.left, y: top, width: viewport.width, height: Math.max(0, viewport.bottom - top) },

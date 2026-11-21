@@ -53,14 +53,16 @@ test("each selected lane emphasizes its own connections without doubling a share
         [["a to b", true], ["b to c", true]]);
 });
 
-test("viewport context keeps visible unrelated cables faint and selected cables emphasized", () => {
+test("viewport context keeps intersecting project cables faint and selected cables emphasized", () => {
     const graph = scope([connection("selected", "a", 1, "b", 1),
-        connection("context", "b", 1, "c", 1), connection("offscreen", "c", 2, "b", 1)]);
+        connection("context", "b", 1, "c", 1), connection("enters", "c", 0, "b", 1),
+        connection("leaves", "b", 1, "c", 2), connection("crosses", "c", 0, "b", 2),
+        connection("above", "c", 0, "b", 0), connection("below", "c", 2, "c", 2)]);
     const direct = anchors([group("a", "output"), group("b", "input"), group("b", "output"),
         group("c", "input"), group("c", "output")]);
     const wires = selectedLaneConnections(resolveLaneConnectionEnds(graph), selected, direct, [], { top: 10, bottom: 30 });
     assert.deepEqual(wires.map((wire) => [wire.connectionIds[0], wire.emphasized]),
-        [["selected", true], ["context", false]]);
+        [["selected", true], ["context", false], ["enters", false], ["leaves", false], ["crosses", false]]);
 });
 
 test("visible C++ cable segments stay on screen regardless of selection", () => {
@@ -77,6 +79,27 @@ test("visible C++ cable segments stay on screen regardless of selection", () => 
         const wires = selectedLaneConnections(endpoints, selection, anchor, [], { top: 40, bottom: 60 });
         assert.deepEqual(wires.map((wire) => wire.connectionIds[0]), ["crosses viewport", "enters viewport"]);
         assert.ok(wires.every((wire) => wire.emphasized === selection.has(addressKey({ instanceId: "a" }))));
+    }
+});
+
+test("the ruler input draws cables from visible and lower ports and hides ports above the viewport", () => {
+    const graph = scope(["b", "c"].map((target) => ({ id: target, applied: true, connection: { kind: "event",
+        outputs: [{ instanceId: "a", port: { name: "events" } }],
+        inputs: [{ instanceId: target, port: { name: "gate" } }],
+    } })));
+    const endpoints = resolveLaneConnectionEnds(graph);
+    const viewport = { top: 40, bottom: 100 };
+    const wires = (sourceY: number, selection: ReadonlySet<string>) =>
+        selectedLaneConnections(endpoints, selection, (port) => {
+            const instance = port.address.instanceId;
+            return { id: portEndpointKey(port), x: 10, y: instance === "a" ? sourceY : instance === "b" ? 20 : 60,
+                rulerInput: instance === "b" };
+        }, [], viewport).map(({ connectionIds }) => connectionIds[0]);
+    for (const selection of [new Set<string>(), selected]) {
+        assert.deepEqual(wires(39, selection), ["c"]);
+        assert.deepEqual(wires(40, selection), ["b", "c"]);
+        assert.deepEqual(wires(60, selection), ["b", "c"]);
+        assert.deepEqual(wires(150, selection), ["b", "c"]);
     }
 });
 

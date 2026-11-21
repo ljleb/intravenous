@@ -1,7 +1,7 @@
 import { addressKey, matchingScopePorts, type GraphPortMatcher, type GraphScope, type NodeAddress, type Point } from "./graphScope";
 import type { GraphPortEndpoint } from "./graphConnectionEditing";
 
-export type PortWireAnchor = { id: string; x: number; y: number; moduleBoundary?: boolean };
+export type PortWireAnchor = { id: string; x: number; y: number; moduleBoundary?: boolean; rulerInput?: boolean };
 export type RevealedConnectionEnd = { connectionId: string; port: GraphPortEndpoint };
 export type SelectedLaneWire = {
     key: string;
@@ -129,7 +129,7 @@ export function selectedLaneConnections(connections: Iterable<ResolvedLaneConnec
     anchorFor: (port: GraphPortEndpoint, connectionId: string, moduleBoundary?: boolean) =>
         PortWireAnchor | readonly PortWireAnchor[] | null,
     revealedEnds: readonly RevealedConnectionEnd[] = [],
-    context?: { top: number; bottom: number; headerTarget?: { left: number; right: number; top: number; bottom: number } }): SelectedLaneWire[] {
+    context?: { top: number; bottom: number }): SelectedLaneWire[] {
     if (!selected.size && !revealedEnds.length && !context) return [];
     const revealed = new Map<string, Set<string>>();
     for (const end of revealedEnds) {
@@ -166,17 +166,14 @@ export function selectedLaneConnections(connections: Iterable<ResolvedLaneConnec
                 const source = output.anchor;
                 const target = input.anchor;
                 const emphasized = output.selected || input.selected;
-                const header = context?.headerTarget;
-                const inHeader = header && target.x >= header.left && target.x <= header.right && target.y >= header.top && target.y <= header.bottom;
                 const sourceOwned = entry.sourceOwned;
-                if (sourceOwned && context) {
-                    // The curve stays within the vertical span of its ports.
-                    // Even two offscreen ports can have a cable in view.
-                    if (!inHeader && (Math.max(source.y, target.y) < context.top
-                        || Math.min(source.y, target.y) > context.bottom)) continue;
-                } else if (!emphasized && !output.revealed && !input.revealed
-                    && (!context || source.y < context.top || source.y > context.bottom
-                        || (!inHeader && (target.y < context.top || target.y > context.bottom)))) continue;
+                // The sticky ruler accepts cables from the lanes beneath it.
+                if (context && target.rulerInput && source.y < context.top) continue;
+                // The curve stays within the vertical span of its ports.
+                const inViewport = context && (target.rulerInput || (Math.max(source.y, target.y) >= context.top
+                    && Math.min(source.y, target.y) <= context.bottom));
+                const requested = emphasized || output.revealed || input.revealed;
+                if (!inViewport && (!requested || (context && sourceOwned))) continue;
                 const key = JSON.stringify([source.id, target.id, sourceOwned]);
                 const existing = wires.get(key);
                 if (existing) {

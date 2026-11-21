@@ -7068,9 +7068,11 @@ continue to govern observable behavior._
   visible C++ connections. Project cables can use the boundary lane's sockets.
   The editor resolves cable endpoints when the graph scope changes and
   indexes the row span of each cable. Panning updates the spans crossed by
-  the viewport edges. Gray cable segments stay visible across the viewport
-  even when their sockets scroll out of view. Changing the lane order or
-  expanding and collapsing a module rebuilds the row index.
+  the viewport edges. Project and C++ cable segments stay visible across
+  the viewport when their sockets scroll out of view, including when neither
+  lane is selected. The ruler's Beats input shows cables from ports within
+  or below the lane viewport. Changing the lane order or expanding and
+  collapsing a module rebuilds the row index.
   [Module interaction](./module_interoperability_and_graph_macros_direction.md#nested-module-presentation-and-project-owned-scopes)
 - **Virtual node membership in the project editor.** `graph.getScope`
   exposes virtual nodes and the concrete members of each expanded record.
