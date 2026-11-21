@@ -234,11 +234,20 @@ public:
         if (thread_) return;
         thread_.emplace([this](std::stop_token stop) {
             std::uint64_t reported_underruns = 0;
+            std::optional<std::uint64_t> reported_execution;
             auto next_underrun_report = std::chrono::steady_clock::now();
             while (!stop.stop_requested()) {
+                GraphExecutorExecutionReadRequest execution;
+                executor_->handle_execution_read(execution);
+                bool const activated = execution.active_project_generation
+                    && execution.active_project_generation != reported_execution;
+                if (activated) {
+                    project_graph_->acknowledge_execution(*execution.active_project_generation);
+                    reported_execution = execution.active_project_generation;
+                }
                 if (executor_->has_failed_pending_generation()) project_graph_->request_execution_recovery();
-                observations_->collect();
                 auto const now = std::chrono::steady_clock::now();
+                observations_->collect(now, activated);
                 if (now >= next_underrun_report) {
                     auto const underruns = executor_->playback_underrun_blocks();
                     if (underruns != reported_underruns) {

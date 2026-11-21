@@ -755,7 +755,6 @@ test("automation bounds keep their fine outline during successive edits of the c
         const visible = { begin: String(begin), length: String(length) };
         return automationBoundTracksForSpans(observationSpans(retained(), visible, fine), visible, begin, length, 1);
     };
-    values.acceptGeneration(7, 1);
     values.expectWindows(requests);
     publish("7", coarse, fine, empty);
     const tracks = tracksFor(16, 20);
@@ -766,10 +765,9 @@ test("automation bounds keep their fine outline during successive edits of the c
         [2, 6, 0, 2]);
 
     for (const generation of [8, 9]) {
-        values.acceptGeneration(generation, 1);
+        publish(String(generation), { ...coarse, dataVersion: "5" }, { ...fine, status: "pending" });
         assert.deepEqual(tracksFor(20, 8, fine.window)
             .map(({ samples }) => samples[0].value), [6]);
-        publish(String(generation), { ...coarse, dataVersion: "5" }, { ...fine, status: "pending" });
         publish(String(generation), { ...fine, truncated: true, regions: [] });
         assert.deepEqual(tracksFor(20, 8, fine.window)
             .map(({ samples }) => samples[0].value), [6]);

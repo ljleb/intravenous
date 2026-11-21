@@ -216,17 +216,23 @@ class ProjectGraph {
         GraphJitCompileResult result{};
     };
     struct GraphCompileRequest {
-        std::uint64_t request_id = 0;
+        std::shared_ptr<ProjectGraphGeneration const> configured{};
         GraphJitCompileRequest inputs{};
         std::shared_ptr<ControlCompileTrace> trace{};
         std::shared_ptr<ObservationCompileCandidate> observation_candidate{};
     };
+    struct ExecutionCheckpoint {
+        std::shared_ptr<ProjectGraphGeneration const> configured;
+        std::shared_ptr<CompiledGraph const> compiled;
+    };
+    std::optional<ExecutionCheckpoint> staged_execution_{};
+    std::optional<ExecutionCheckpoint> active_execution_{};
     std::optional<ObservationRequirements> predicted_observation_requirements_{};
     std::shared_ptr<ObservationCompileCandidate> observation_candidate_{};
     bool observation_prediction_pending_ = false;
     std::optional<GraphCompileRequest> pending_graph_compile_{};
     bool execution_recovery_requested_ = false;
-    std::uint64_t latest_graph_compile_request_ = 0;
+    std::uint64_t last_scheduled_execution_generation_ = 0;
     bool compile_inflight_ = false;
     void schedule_graph_compile_locked(std::shared_ptr<ControlCompileTrace> trace = {});
     [[nodiscard]] std::shared_ptr<ConfiguredGraph> graph_for_compile_locked();
@@ -384,6 +390,7 @@ public:
     void stop_compilation();
     void request_execution_recovery();
     [[nodiscard]] bool wait_for_compilation(std::chrono::milliseconds timeout = std::chrono::seconds(30));
+    void acknowledge_execution(std::uint64_t project_generation);
     ProjectGraph(ProjectGraph const&) = delete;
     ProjectGraph& operator=(ProjectGraph const&) = delete;
 

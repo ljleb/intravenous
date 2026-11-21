@@ -481,12 +481,10 @@ test("compatible meter schemas retain identities across graph revisions while in
     const owner = Symbol("meter"), node = { instanceId: "stereo", path: [] };
     const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
     try {
-        scope.configuredGeneration(1);
         scope.node(owner, node, "visible");
         await settle();
         const initial = scope.capabilities.value.map((entry) => entry.id);
         assert.equal(initial.length, 2);
-        scope.configuredGeneration(2);
         scope.node(owner, structuredClone(node), "visible");
         scope.refresh();
         await settle();
@@ -627,25 +625,20 @@ test("meter display choices persist as frontend preferences without project muta
 });
 
 
-test("configured generation changes clear measurements and reject delayed older executable frames", () => {
+test("active generation changes clear measurements and reject delayed older executable frames", () => {
     const values = new ObservationValues();
     const update = (generation: string): ObservationSnapshotFixture => ({
         activationId: "1", generation, revision: "1", index: "0", blockSize: 64, dataVersion: "0",
         scopes: [{ scopeId: "viewport", values: [{ id: "peak", available: true, value: { peak: .5 } }] }],
     });
-    values.acceptGeneration(4);
     assert.equal(receiveSnapshot(values, update("4")), true);
     assert.equal(values.values.get("peak")?.available, true);
-    assert.equal(values.acceptGeneration(5), true);
+    assert.equal(receiveSnapshot(values, { ...update("5"), scopes: [] }), true);
     assert.equal(values.values.size, 0);
     assert.equal(receiveSnapshot(values, update("4")), false);
     assert.equal(receiveSnapshot(values, update("5")), true);
-    assert.equal(values.acceptGeneration(5), false);
     assert.equal(values.values.get("peak")?.available, true);
-    values.acceptGeneration(null);
-    assert.equal(receiveSnapshot(values, update("5")), false);
     values.clear();
     assert.equal(values.values.size, 0);
-    values.acceptGeneration(4);
     assert.equal(receiveSnapshot(values, update("4")), true);
 });

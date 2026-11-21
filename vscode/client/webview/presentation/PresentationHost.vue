@@ -3,7 +3,7 @@ import { computed, ref, toRef, watch } from "vue";
 
 import { effectiveDisplayMode, type NodeDisplayMode, type NodeViewChoice } from "./displayMode";
 import { provideNode } from "./nodeContext";
-import { presentations } from "./presentations";
+import { selectPresentation } from "./presentations";
 import type { SemanticNode } from "./semanticNode";
 import { provideLane } from "./laneContext";
 import { useNodeEventMessaging } from "./nodeEventContext";
@@ -42,7 +42,7 @@ const semanticNode = computed(() => {
 });
 provideNode(semanticNode);
 
-const selection = computed(() => presentations.select(semanticNode.value.definitionId));
+const selection = computed(() => selectPresentation(semanticNode.value.definitionId));
 const editor = useOptionalGraphEditor();
 const stateKey = computed(() => props.node.address ? presentationStateKey(props.node.address, selection.value.presentationId) : null);
 providePresentationState(({ serialize, restore }) => {
@@ -84,7 +84,8 @@ watch(
         :style="regionHeight === undefined ? undefined : { height: `${regionHeight}px`, overflow: 'hidden' }"
     >
         <NodeLane v-if="moduleBoundary" :mode="mode" module-boundary />
-        <component v-else :is="selection.component" :key="stateKey ?? selection.presentationId" :mode="mode" />
+        <component v-else :is="selection.component" :key="`${stateKey ?? selection.presentationId}:${selection.serial}`"
+            :mode="mode" v-bind="selection.program ? { program: selection.program } : {}" />
     </div>
 </template>
 

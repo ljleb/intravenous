@@ -114,6 +114,7 @@ struct ObservationWindowResult {
 // can change while queued. Cancellation leaves a running transaction intact.
 struct ObservationWindowQuery {
     std::uint64_t configured_generation = 0;
+    std::optional<std::uint64_t> execution_generation{};
     NodeBundlePortId port{};
     ObservationSourceKind kind = ObservationSourceKind::output;
     std::size_t channel = 0;

@@ -40,7 +40,8 @@ class Observations {
     std::map<WindowKey, WindowCapture> windows_{};
     std::vector<WindowCapture*> window_order_{};
     bool subscriptions_changed_ = false;
-    std::optional<std::uint64_t> configured_generation_{};
+    std::optional<std::uint64_t> window_configured_generation_{};
+    std::optional<std::uint64_t> window_execution_generation_{};
     std::uint64_t execution_data_version_ = 0;
     std::mutex mutex_;
     std::vector<Scope> scopes_;
@@ -66,6 +67,6 @@ public:
     void handle_disconnect(SocketRpcClientDisconnectedRequest& request);
     // Called by the existing runtime service on the control path. It is a
     // separate event cause, with no audio-thread callbacks into app modules.
-    void collect(Clock::time_point now = Clock::now());
+    void collect(Clock::time_point now = Clock::now(), bool execution_activated = false);
 };
 } // namespace iv

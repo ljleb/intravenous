@@ -1353,7 +1353,7 @@ GraphExecutorPreparedGeneration GraphExecutor::prepare(
         if (requires_prepared_playback(*accepted->graph))
             background_executor_.queue_initial_playback(*accepted);
         return GraphExecutorStageResult::accepted;
-    }};
+    }, true};
 }
 
 GraphExecutorStageResult GraphExecutor::stage(
@@ -1659,10 +1659,11 @@ bool GraphExecutor::activate_pending_at(PlaybackDemand const& applied, PlaybackD
         if (!initial) return false;
         auto* first = pending_head_;
         realtime_active_ = first;
-        published_active_generation_.store(first->graph->configured_generation.value_or(first->graph->project_generation), std::memory_order_relaxed);
-        published_has_active_generation_.store(true, std::memory_order_release);
         install_initial(std::move(initial));
         first->activation.store(ExecutionGeneration::Activation::active, std::memory_order_release);
+        published_active_generation_.store(first->graph->configured_generation.value_or(first->graph->project_generation), std::memory_order_relaxed);
+        published_active_project_generation_.store(first->graph->project_generation, std::memory_order_release);
+        published_has_active_generation_.store(true, std::memory_order_release);
         background_executor_.activate_initial_generation(
             first->graph->project_generation);
         pending_head_ = first->successor_owner.get();
@@ -1701,6 +1702,7 @@ bool GraphExecutor::activate_pending_at(PlaybackDemand const& applied, PlaybackD
     previous.publish_attached_successor();
     realtime_active_ = next;
     published_active_generation_.store(next->graph->configured_generation.value_or(next->graph->project_generation), std::memory_order_relaxed);
+    published_active_project_generation_.store(next->graph->project_generation, std::memory_order_release);
     published_has_active_generation_.store(true, std::memory_order_release);
     pending_head_ = next->successor_owner.get();
     if (!pending_head_) pending_tail_ = nullptr;
@@ -2476,6 +2478,7 @@ void GraphExecutor::BackgroundExecutor::process_event_windows(
             auto const& next = **it;
             if (!next.canceled.load(std::memory_order_acquire) && next.port.port_kind == PortKind::event
                 && next.configured_generation == query.configured_generation
+                && next.execution_generation == query.execution_generation
                 && next.window.begin == query.window.begin && next.window.length == query.window.length) {
                 pending.push_back(std::move(*it));
                 it = observation_windows_.erase(it);
@@ -2560,6 +2563,7 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
             || !current->background_initialized || current->background.has_selected_inputs()
             || current->background.reconciliation_required || current->background.tick_materialization_required
             || current->graph->configured_generation.value_or(current->graph->project_generation) != query.configured_generation
+            || (query.execution_generation && current->graph->project_generation != query.execution_generation)
             || !owner_.published_has_active_generation_.load(std::memory_order_acquire)
             || owner_.published_active_generation_.load(std::memory_order_acquire) != query.configured_generation) {
             query.complete.store(true, std::memory_order_release);

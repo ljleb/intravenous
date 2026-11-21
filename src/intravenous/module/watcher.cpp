@@ -38,7 +38,7 @@ namespace iv {
                 }
                 auto const& entry = *it;
                 if (entry.is_directory()) {
-                    if (is_module_dependency_ignored_directory(entry.path())) {
+                    if (is_module_dependency_ignored_directory(entry.path(), it.depth() == 0)) {
                         it.disable_recursion_pending();
                     }
                     continue;
@@ -185,7 +185,7 @@ namespace iv {
                 error.clear();
                 continue;
             }
-            if (is_module_dependency_ignored_directory(entry.path())) {
+            if (is_module_dependency_ignored_directory(entry.path(), it.depth() == 0)) {
                 it.disable_recursion_pending();
                 continue;
             }
@@ -251,16 +251,20 @@ namespace iv {
         std::array<char, 16 * 1024> buffer {};
         bool coverage_may_have_changed = false;
 
-        auto mark_watch_dependencies = [&](int descriptor) {
+        auto mark_watch_dependencies = [&](int descriptor, std::string_view child_directory = {}) {
             auto const path = _path_by_watch.find(descriptor);
-            if (path == _path_by_watch.end()) return;
+            if (path == _path_by_watch.end()) return false;
             auto const watch = _watch_by_path.find(path->second);
-            if (watch == _watch_by_path.end()) return;
+            if (watch == _watch_by_path.end()) return false;
+            bool marked = false;
             for (auto const index : watch->second.dependency_indices) {
-                if (index < _dependencies.size()) {
-                    append_unique_dependency(result, _dependencies[index]);
-                }
+                if (index >= _dependencies.size()) continue;
+                auto const& dependency = _dependencies[index];
+                if (child_directory == IV_PACKAGE_PRESENTATIONS_DIR && path->second == watch_key(dependency.module_dir)) continue;
+                append_unique_dependency(result, dependency);
+                marked = true;
             }
+            return marked;
         };
 
         auto mark_all_dependencies = [&] {
@@ -318,7 +322,7 @@ namespace iv {
                         event->mask & (IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
                     if ((event->mask & IN_ISDIR) != 0) {
                         if (name.empty()
-                            || is_module_dependency_ignored_directory(std::filesystem::path(name))) {
+                            || is_package_tree_ignored_directory(std::filesystem::path(name))) {
                             continue;
                         }
                         if (topology_mask != 0) {
@@ -326,8 +330,7 @@ namespace iv {
                             // many file mutations before its recursive watch is
                             // installed. Treat the owning dependency as dirty as
                             // well as reconciling coverage.
-                            mark_watch_dependencies(event->wd);
-                            coverage_may_have_changed = true;
+                            coverage_may_have_changed |= mark_watch_dependencies(event->wd, name);
                         }
                         continue;
                     }

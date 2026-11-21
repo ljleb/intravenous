@@ -1,6 +1,6 @@
 export type NodeEventUpdateTimers = { set(callback: () => void): unknown; clear(handle: unknown): void };
 
-const nodeEventUpdateTimers: NodeEventUpdateTimers = {
+export const nodeEventUpdateTimers: NodeEventUpdateTimers = {
     set: (callback) => setTimeout(callback, 80),
     clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };

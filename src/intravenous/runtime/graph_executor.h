@@ -43,15 +43,18 @@ enum class GraphExecutorStageResult : std::uint8_t {
 // executor is destroyed.
 class GraphExecutorPreparedGeneration {
     std::function<GraphExecutorStageResult()> publish_{};
+    bool deferred_activation_ = false;
 public:
     GraphExecutorPreparedGeneration() = default;
-    explicit GraphExecutorPreparedGeneration(std::function<GraphExecutorStageResult()> publish)
-        : publish_(std::move(publish)) {}
+    explicit GraphExecutorPreparedGeneration(std::function<GraphExecutorStageResult()> publish,
+        bool deferred_activation = false)
+        : publish_(std::move(publish)), deferred_activation_(deferred_activation) {}
     GraphExecutorPreparedGeneration(GraphExecutorPreparedGeneration&&) = default;
     GraphExecutorPreparedGeneration& operator=(GraphExecutorPreparedGeneration&&) = default;
     GraphExecutorPreparedGeneration(GraphExecutorPreparedGeneration const&) = delete;
     GraphExecutorPreparedGeneration& operator=(GraphExecutorPreparedGeneration const&) = delete;
     explicit operator bool() const noexcept { return static_cast<bool>(publish_); }
+    [[nodiscard]] bool deferred_activation() const noexcept { return deferred_activation_; }
     GraphExecutorStageResult publish() && {
         auto publish = std::exchange(publish_, {});
         return publish ? publish() : GraphExecutorStageResult::ignored_stale;
@@ -60,6 +63,7 @@ public:
 
 struct GraphExecutorExecutionReadRequest {
     std::optional<std::uint64_t> active_generation{};
+    std::optional<std::uint64_t> active_project_generation{};
 };
 
 struct ProjectGraphGraphExecutorResult {
@@ -452,6 +456,7 @@ class GraphExecutor {
     // guard. No audio callback blocks on cold generation construction.
     std::atomic_flag accepted_chain_guard_ = ATOMIC_FLAG_INIT;
     std::atomic<std::uint64_t> published_active_generation_{0};
+    std::atomic<std::uint64_t> published_active_project_generation_{0};
     std::atomic<bool> published_has_active_generation_{false};
     std::atomic<bool> failed_pending_generation_{false};
     // Held by cold preparation through publication/discard. Realtime and live
@@ -589,8 +594,10 @@ public:
     [[nodiscard]] std::optional<FailedExecutionGeneration> reject_failed_pending_generation();
 
     void handle_execution_read(GraphExecutorExecutionReadRequest& request) const {
-        if (published_has_active_generation_.load(std::memory_order_acquire))
+        if (published_has_active_generation_.load(std::memory_order_acquire)) {
+            request.active_project_generation = published_active_project_generation_.load(std::memory_order_acquire);
             request.active_generation = published_active_generation_.load(std::memory_order_relaxed);
+        }
     }
 
     void handle_project_graph_controls(

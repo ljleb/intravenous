@@ -11,6 +11,8 @@ type ObservationScopePatch = {
 };
 export type ObservationDelivery = {
     activationId: string; generation: string; revision: string; index: string; blockSize: number; dataVersion: string;
+    executionGeneration?: string;
+    sampleRate?: number | null;
     captureNs?: number | null;
     snapshot: boolean;
     scopes: Record<string, ObservationScopePatch | null>;

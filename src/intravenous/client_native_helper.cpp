@@ -142,9 +142,18 @@ bool warp_cursor(Display* display, bool cursor_hiding_supported, int editor_pid,
     };
     const bool scaled_origin_matches = near(origin_x, root_x) && near(origin_y, root_y);
     if (!verify_editor_window && !scaled_origin_matches && !(near(screen_x, root_x) && near(screen_y, root_y))) {
-        std::fprintf(stderr, "Cursor return skipped. The browser expected (%lld, %lld) or unscaled (%lld, %lld), but X11 reported (%d, %d).\n",
+        const auto screen = DefaultScreen(display);
+        const auto root_width = DisplayWidth(display, screen);
+        const auto root_height = DisplayHeight(display, screen);
+        const bool at_root_center = root_x == root_width / 2 && root_y == root_height / 2;
+        const char* editor_focus = editor_pid <= 1 ? "unknown (VSCODE_PID unavailable)"
+            : focused_editor_window(display, root, editor_pid) != None ? "yes" : "no";
+        std::fprintf(stderr, "Cursor return skipped. The browser expected (%lld, %lld) or unscaled (%lld, %lld), but X11 reported (%d, %d)%s. "
+            "X11 root size: %d x %d. VS Code owns X11 focus: %s. Requested warp: %s.\n",
             static_cast<long long>(origin_x), static_cast<long long>(origin_y),
-            static_cast<long long>(screen_x), static_cast<long long>(screen_y), root_x, root_y);
+            static_cast<long long>(screen_x), static_cast<long long>(screen_y), root_x, root_y,
+            at_root_center ? " at the root center" : "", root_width, root_height, editor_focus,
+            follow_pointer ? "relative" : "absolute");
         return false;
     }
 

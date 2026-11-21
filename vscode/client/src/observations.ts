@@ -43,8 +43,8 @@ export function compareObservationWindowVersions(left: ObservationWindowResult, 
     return 0;
 }
 
-type ReadyWindow = { generation: bigint; result: ObservationWindowResult; source: string; units: number };
-type ObservationFrame = { activation: bigint; revision: bigint; generation: bigint };
+type ReadyWindow = { execution: bigint; result: ObservationWindowResult; source: string; units: number };
+type ObservationFrame = { activation: bigint; revision: bigint; generation: bigint; execution: bigint };
 const retainedWindowsPerInterest = 8;
 const retainedWindowLimit = 512;
 // Bound the display cache across the webview. Count samples, marks, and
@@ -59,7 +59,7 @@ function windowsOverlap(left: ObservationTimeSpan, right: ObservationTimeSpan): 
 }
 
 function compareReadyWindows(left: ReadyWindow, right: ReadyWindow): number {
-    if (left.generation !== right.generation) return left.generation > right.generation ? 1 : -1;
+    if (left.execution !== right.execution) return left.execution > right.execution ? 1 : -1;
     return compareObservationWindowVersions(left.result, right.result);
 }
 
@@ -71,7 +71,6 @@ function windowSource({ source, operation, window }: Pick<ObservationInterest, "
 // activation or a result from an earlier request revision replace current data.
 export class ObservationValues {
     private revision = 0n;
-    private generation: bigint | null | undefined;
     private sampleRate: number | undefined;
     private readonly delivery = new ObservationDeliveryState();
     private frame?: ObservationFrame;
@@ -110,7 +109,7 @@ export class ObservationValues {
             // before the server changes its result. There is no new delta.
             if (frame && previous?.source === wanted.source) {
                 const result = this.delivery.window(this.scopeId, id);
-                if (result) this.applyWindow(result, frame.generation);
+                if (result) this.applyWindow(result, frame.execution);
             }
         }
     }
@@ -181,7 +180,7 @@ export class ObservationValues {
             const cached = this.readyWindows.get(id) ?? [];
             for (const ready of cached) consider(ready);
             const result = this.windows.get(id);
-            if (result?.status === "ready" && !cached.some((entry) => entry.result === result)) consider({ generation: this.frame?.generation ?? 0n,
+            if (result?.status === "ready" && !cached.some((entry) => entry.result === result)) consider({ execution: this.frame?.execution ?? 0n,
                 source: "", units: 0, result });
         }
         return [...selected.values()].map((entry) => {
@@ -191,34 +190,33 @@ export class ObservationValues {
         });
     }
 
-    acceptGeneration(generation: number | null, sampleRate?: number | null, onUsable?: (id: string) => void): boolean {
-        const next = generation === null ? null : BigInt(generation);
-        const rateChanged = this.sampleRate !== undefined && sampleRate != null && sampleRate !== this.sampleRate;
-        if (sampleRate != null) this.sampleRate = sampleRate;
-        if (next === this.generation && !rateChanged) return false;
-        this.generation = next;
-        this.values.clear();
-        this.windows.clear();
-        // Keep display history while the next configured graph prepares a
-        // reply. A different sample rate changes the window's coordinates.
-        if (rateChanged) this.clearReadyWindows();
-        this.needsSnapshot = true;
-        this.project(undefined, onUsable);
-        return true;
-    }
     acceptRevision(revision: string): void { this.revision = BigInt(revision) > this.revision ? BigInt(revision) : this.revision; }
     receive(update: ObservationDelivery, onUsable?: (id: string) => void): boolean {
-        const frame = { activation: BigInt(update.activationId), revision: BigInt(update.revision), generation: BigInt(update.generation) };
-        if ((this.generation != null && frame.generation < this.generation)
-            || (this.frame && (frame.activation < this.frame.activation || frame.generation < this.frame.generation
-                || frame.revision < this.frame.revision))) return false;
+        const frame = { activation: BigInt(update.activationId), revision: BigInt(update.revision), generation: BigInt(update.generation),
+            execution: BigInt(update.executionGeneration ?? update.generation) };
+        const previous = this.frame;
+        if (previous && (frame.activation < previous.activation || frame.generation < previous.generation
+            || frame.execution < previous.execution || frame.revision < previous.revision)) return false;
+        const rate = update.sampleRate ?? undefined;
+        const rateChanged = rate !== undefined && this.sampleRate !== undefined && rate !== this.sampleRate;
+        if (rate !== undefined) this.sampleRate = rate;
+        const checkpointChanged = previous?.execution !== frame.execution || rateChanged;
+        let cleared = false;
+        if (checkpointChanged) {
+            cleared = this.values.size > 0 || this.windows.size > 0 || (rateChanged && this.readyWindows.size > 0);
+            this.values.clear();
+            this.windows.clear();
+            this.needsSnapshot = true;
+        }
+        // History is compatible across executions as long as sample coordinates still match.
+        if (rateChanged) this.clearReadyWindows();
         this.delivery.receive(update);
         this.frame = frame;
-        return this.project(update, onUsable);
+        return this.project(update, onUsable) || cleared;
     }
     private currentFrame(): ObservationFrame | undefined {
         const frame = this.frame;
-        if (frame && frame.revision >= this.revision && (this.generation === undefined || this.generation === frame.generation)) return frame;
+        if (frame && frame.revision >= this.revision) return frame;
     }
     private project(update: ObservationDelivery | undefined, onUsable?: (id: string) => void): boolean {
         const frame = this.currentFrame();
@@ -251,13 +249,13 @@ export class ObservationValues {
         }
         for (const [id, item] of scope.windows) {
             if (!item) { if (this.windows.delete(id)) changed = true; continue; }
-            if (!this.applyWindow(item, frame.generation)) continue;
+            if (!this.applyWindow(item, frame.execution)) continue;
             changed = true;
             if (item.status === "ready" && !item.outdated && !item.truncated) onUsable?.(id);
         }
         return changed;
     }
-    private applyWindow(item: ObservationWindowResult, generation: bigint): boolean {
+    private applyWindow(item: ObservationWindowResult, execution: bigint): boolean {
         const { id } = item;
         const desired = this.desiredWindows.get(id);
         if (!desired || !sameObservationWindow(item.window, desired.window)) return false;
@@ -269,13 +267,13 @@ export class ObservationValues {
             if (current?.status === "ready" && !!current.truncated === !!item.truncated
                 && compareObservationWindowVersions(item, current) < 0) return false;
             if (previous) {
-                if (previous.generation === generation && compareObservationWindowVersions(item, previous.result) < 0) return false;
+                if (previous.execution === execution && compareObservationWindowVersions(item, previous.result) < 0) return false;
                 this.removeReadyWindows(id, (entry) => entry === previous);
             }
             const units = 1 + (item.marks?.length ?? 0) + (item.unavailableRegions?.length ?? 0)
                 + item.regions.reduce((count, region) => count + 1 + region.points.length, 0);
             if (units <= retainedWindowUnitsLimit) {
-                const entry = { generation, source: desired.source, units, result: item };
+                const entry = { execution, source: desired.source, units, result: item };
                 const recent = this.readyWindows.get(id) ?? [];
                 this.readyWindows.set(id, [entry, ...recent]);
                 this.recentWindows.add(entry);
@@ -295,7 +293,6 @@ export class ObservationValues {
     }
     clear(): void {
         this.revision = 0n;
-        this.generation = undefined;
         this.sampleRate = undefined;
         this.frame = undefined;
         this.delivery.clear();

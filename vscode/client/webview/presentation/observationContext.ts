@@ -169,9 +169,6 @@ export class PresentationObservations {
         this.accepted = undefined;
         this.schedule();
     }
-    configuredGeneration(generation: number | null, sampleRate?: number | null): void {
-        this.values.acceptGeneration(generation, sampleRate, this.profile ? this.profileUsable : undefined);
-    }
     windowForDisplay(id: string, visible?: ObservationTimeSpan) {
         return this.values.windowForDisplay(id, visible);
     }

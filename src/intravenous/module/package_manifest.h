@@ -5,6 +5,7 @@
 namespace iv {
 
 inline constexpr std::string_view IV_PROJECT_PACKAGES_DIR = "packages";
+inline constexpr std::string_view IV_PACKAGE_PRESENTATIONS_DIR = "presentations";
 
 // `iv_package.json` names the independently built and watched loader package.
 inline constexpr std::string_view IV_PACKAGE_MANIFEST_FILE = "iv_package.json";

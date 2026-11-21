@@ -14,6 +14,8 @@ import { isNodeEventRequest, isNodeEventGestureRequest, replyToNodeEvent, replyT
 import { isPendingPlaybackSeek, playbackSeekPosition, type PlaybackDrag, type PlaybackDragPhase,
     type PlaybackSeek, type PlaybackSnapshot } from "./playback";
 import type { NativeClientHelper } from "./nativeClientHelper";
+import { projectPresentationWatchPattern, readProjectPresentations } from "./projectPresentationPlugins";
+import type { PresentationScript } from "./presentationPlugin";
 
 export class GraphEditorProvider implements vscode.Disposable {
     private readonly panels = new Set<vscode.WebviewPanel>();
@@ -32,6 +34,8 @@ export class GraphEditorProvider implements vscode.Disposable {
     private lastActivePanel: vscode.WebviewPanel | null = null;
     private readonly graphUiProfiles = new Map<vscode.WebviewPanel, { id: string; waits: GraphUiTimings }>();
     private readonly pendingActions = new Map<vscode.WebviewPanel, GraphEditorAction[]>();
+    private presentationCatalog?: Promise<PresentationScript[]>;
+    private presentationWatcher?: vscode.Disposable;
     private readonly changed: vscode.Disposable;
     private readonly windowFocusChanged: vscode.Disposable;
     private readonly shortcutSettingChanged: vscode.Disposable;
@@ -455,6 +459,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                     if (owner) { this.session.manualControls.releaseOwner(owner); this.session.nodeEvents.releaseOwner(owner); }
                 }
                 this.ready.add(panel);
+                void this.postProjectPresentations(panel);
                 this.panelObservations.delete(panel);
                 void panel.webview.postMessage({ type: "observationVisibility", visible: panel.visible });
                 this.postControls(panel);
@@ -621,9 +626,27 @@ export class GraphEditorProvider implements vscode.Disposable {
         const css = panel.webview.asWebviewUri(vscode.Uri.joinPath(root, "main.css"));
         panel.webview.html = `<!doctype html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${panel.webview.cspSource} data:; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${panel.webview.cspSource} data:; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; worker-src blob:">
 <link rel="stylesheet" href="${css}"></head><body data-surface="graphEditor"><div id="app"></div>
 <script type="module" nonce="${nonce}" src="${script}"></script></body></html>`;
+    }
+
+    private async postProjectPresentations(panel: vscode.WebviewPanel): Promise<void> {
+        if (!this.presentationWatcher) {
+            const files = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(this.session.projectFolder, projectPresentationWatchPattern));
+            const reload = () => {
+                this.presentationCatalog = undefined;
+                for (const panel of this.ready) void this.postProjectPresentations(panel);
+            };
+            this.presentationWatcher = vscode.Disposable.from(files, files.onDidCreate(reload), files.onDidChange(reload),
+                files.onDidDelete(reload), vscode.workspace.onDidGrantWorkspaceTrust(reload));
+        }
+        const catalog = this.presentationCatalog ??= vscode.workspace.isTrusted
+            ? readProjectPresentations(this.session.projectFolder.fsPath, (error) => this.outputChannel.appendLine(error))
+            : Promise.resolve([]);
+        const plugins = await catalog;
+        if (this.ready.has(panel) && catalog === this.presentationCatalog)
+            void panel.webview.postMessage({ type: "projectPresentations", plugins } satisfies GraphEditorHostMessage);
     }
 
     private postControls(panel: vscode.WebviewPanel): void {
@@ -694,6 +717,7 @@ export class GraphEditorProvider implements vscode.Disposable {
 
     dispose(): void {
         this.disposed = true;
+        this.presentationWatcher?.dispose();
         clearInterval(this.playbackTimer);
         this.changed.dispose();
         this.controlsChanged.dispose();

@@ -250,6 +250,7 @@ TEST(Observations, RpcUsesServerOwnedIdentityAndRejectsUnknownSourceKinds)
     EXPECT_TRUE(request->client_id.empty());
     EXPECT_EQ(request->interests.size(), 1u);
     EXPECT_THROW(iv::parse_socket_rpc_request(R"({"jsonrpc":"2.0","id":1,"method":"observations.reconcile","params":{"scopeId":"viewport","interests":[{"id":"x","source":{"node":{"instanceId":"node"},"kind":"input","member":"in"},"operation":"level"}]}})"), std::exception);
+
 }
 
 namespace iv::test::observation_tests {
@@ -257,6 +258,8 @@ using Json = nlohmann::ordered_json;
 struct ProtocolCaller {};
 struct Graph {
     std::optional<std::uint64_t> generation = 0;
+    std::optional<std::uint64_t> active_generation = 0;
+    std::optional<std::uint64_t> execution_generation;
     ObservationRequirements accepted{};
     std::optional<ObservationRequirements> prediction{};
     std::size_t compilations = 0;
@@ -264,12 +267,13 @@ struct Graph {
     {
         request.handled = true;
         request.configured_generation = generation;
+        request.window_configured_generation = active_generation;
+        request.window_execution_generation = execution_generation;
         if (request.requirements) { accepted = *request.requirements; ++compilations; }
         if (request.prediction_changed) prediction = request.prediction;
-        for (auto const& window : request.windows) {
-            window.query->configured_generation = generation.value_or(0);
-            window.query->operation = &observation_details::sample_operations.back();
-        }
+        for (auto& window : request.windows)
+            if (window.select_execution(active_generation.value_or(0), execution_generation))
+                window.query->operation = &observation_details::sample_operations.back();
         request.capabilities = std::make_shared<Json const>(Json::array());
     }
 };
@@ -503,7 +507,7 @@ TEST_F(ObservationService, RoutesRequireReadPermissionAndBindTheConnectionIdenti
 
 
 namespace iv::test::observation_tests {
-TEST_F(ObservationService, OlderExecutableFramesArePendingUntilTheConfiguredGenerationActivates)
+TEST_F(ObservationService, ObservationDeliveryFollowsExecutionWhileNewConfigurationWaits)
 {
     ASSERT_TRUE(reconcile("a", "lane", {interest()}).error.empty());
     executor.publish(graph.accepted, 1);
@@ -512,15 +516,24 @@ TEST_F(ObservationService, OlderExecutableFramesArePendingUntilTheConfiguredGene
     EXPECT_EQ((*delivery.batches.back().payload)["scopes"][0]["values"][0]["available"], true);
     delivery.batches.clear();
     graph.generation = 5;
-    executor.publish(graph.accepted, 1);
+    executor.publish(graph.accepted, 2);
     collect();
     ASSERT_EQ(delivery.batches.size(), 1u);
+    EXPECT_EQ((*delivery.batches.back().payload)["generation"], "0");
+    EXPECT_EQ((*delivery.batches.back().payload)["scopes"][0]["values"][0]["available"], true);
+    delivery.batches.clear();
+    graph.active_generation = 4;
+    graph.execution_generation = 9;
+    collect();
+    ASSERT_EQ(delivery.batches.size(), 1u);
+    EXPECT_EQ((*delivery.batches.back().payload)["generation"], "4");
+    EXPECT_EQ((*delivery.batches.back().payload)["executionGeneration"], "9");
     EXPECT_EQ((*delivery.batches.back().payload)["scopes"][0]["values"][0]["available"], false);
     EXPECT_EQ((*delivery.batches.back().payload)["scopes"][0]["values"][0]["pending"], true);
     delivery.batches.clear();
-    executor.publish(graph.accepted, 2);
+    executor.publish(graph.accepted, 3);
     executor.frame->project_generation = 9;
-    executor.frame->configured_generation = 5;
+    executor.frame->configured_generation = 4;
     collect();
     ASSERT_EQ(delivery.batches.size(), 1u);
     EXPECT_EQ((*delivery.batches.back().payload)["scopes"][0]["values"][0]["available"], true);
@@ -528,20 +541,30 @@ TEST_F(ObservationService, OlderExecutableFramesArePendingUntilTheConfiguredGene
 
     // Actual invalidation after cutover is different from waiting for it.
     delivery.batches.clear();
-    executor.publish(graph.accepted, 3, false);
-    executor.frame->configured_generation = 5;
+    executor.publish(graph.accepted, 4, false);
+    executor.frame->project_generation = 9;
+    executor.frame->configured_generation = 4;
     collect();
     ASSERT_EQ(delivery.batches.size(), 1u);
     auto const& invalid = (*delivery.batches.back().payload)["scopes"][0]["values"][0];
     EXPECT_EQ(invalid["available"], false);
     EXPECT_FALSE(invalid.contains("pending"));
 
-    // A failed configuration has no pending executable to wait for.
+    // Failure of the desired configuration leaves observation delivery on the
+    // same active execution. With no new readings, there is no update to send.
     delivery.batches.clear();
     graph.generation.reset();
     collect();
+    EXPECT_TRUE(delivery.batches.empty());
+
+    executor.publish(graph.accepted, 5);
+    executor.frame->project_generation = 9;
+    executor.frame->configured_generation = 4;
+    collect();
     ASSERT_EQ(delivery.batches.size(), 1u);
-    EXPECT_FALSE((*delivery.batches.back().payload)["scopes"][0]["values"][0].contains("pending"));
+    auto const& frame = *delivery.batches.back().payload;
+    EXPECT_EQ(frame["executionGeneration"], "9");
+    EXPECT_EQ(frame["scopes"][0]["values"][0]["available"], true);
 }
 
 TEST_F(ObservationService, WindowScopesShareCancelableQueriesWithoutCreatingLiveProbes)
@@ -682,6 +705,37 @@ TEST_F(ObservationService, PrefetchRefreshesLessOftenThanVisibleWindows)
     ASSERT_EQ(executor.windows.size(), 4u);
     EXPECT_TRUE(executor.windows.back()->prefetch.load());
     EXPECT_EQ(graph.compilations, 0u);
+}
+
+TEST_F(ObservationService, ANewExecutionReplacesAnInflightWindowInTheSameCollection)
+{
+    auto window = interest("wave");
+    window.operation = "waveform";
+    window.window = ObservationWindow{GlobalIndex{}, 32, 8};
+    graph.generation = 5;
+    graph.active_generation = 4;
+    graph.execution_generation = 8;
+    ASSERT_TRUE(reconcile("a", "lane", {window}).error.empty());
+    collect();
+    ASSERT_EQ(executor.windows.size(), 1u);
+    auto const previous = executor.windows.front();
+
+    graph.execution_generation = 9;
+    collect();
+    ASSERT_EQ(executor.windows.size(), 2u);
+    EXPECT_TRUE(previous->canceled.load());
+    auto const current = executor.windows.back();
+    EXPECT_EQ(current->configured_generation, 4u);
+    EXPECT_EQ(current->execution_generation, 9u);
+    current->result.status = ObservationWindowResult::Status::ready;
+    current->result.execution_generation = 9;
+    current->complete.store(true, std::memory_order_release);
+    collect();
+    ASSERT_FALSE(delivery.batches.empty());
+    auto const& frame = *delivery.batches.back().payload;
+    EXPECT_EQ(frame["generation"], "4");
+    EXPECT_EQ(frame["executionGeneration"], "9");
+    EXPECT_EQ(frame["scopes"][0]["windows"][0]["status"], "ready");
 }
 
 TEST_F(ObservationService, WindowBodiesFollowContentIndependentlyOfRefreshStatusAndDataVersion)

@@ -222,3 +222,34 @@ TEST(ModuleWatcher, RelevantInotifyEventIsNotVetoedByUnchangedMaximumTimestamp)
     ASSERT_EQ(changed.size(), 1u);
     EXPECT_EQ(changed.front().id, dependency.id);
 }
+
+TEST(ModuleWatcher, PackagePresentationsDoNotInvalidateNativeDependencies)
+{
+    auto const root = iv::test::fresh_module_fixture_workspace("module_watcher_presentations");
+    auto const source = root / "module.cpp";
+    iv::test::write_text(source, "int value = 1;\n");
+    iv::ModuleDependency const dependency{
+        .id = "iv.test.presentations",
+        .module_dir = root,
+        .entry_file = source,
+        .package_stamp = iv::test::write_time(source),
+    };
+
+    auto watcher = iv::make_dependency_watcher();
+    watcher.update({dependency});
+    ASSERT_TRUE(watcher.changed_dependencies().empty());
+    auto const presentations = root / iv::IV_PACKAGE_PRESENTATIONS_DIR;
+    std::filesystem::create_directory(presentations);
+    iv::test::write_text_advancing_timestamp(presentations / "marker.js", "function present() {}\n");
+    EXPECT_TRUE(watcher.changed_dependencies().empty());
+
+    watcher.update({dependency});
+    EXPECT_TRUE(watcher.changed_dependencies().empty());
+    iv::test::write_text_advancing_timestamp(presentations / "marker.js", "function present() { return {}; }\n");
+    EXPECT_TRUE(watcher.changed_dependencies().empty());
+
+    iv::test::write_text_advancing_timestamp(source, "int value = 2;\n");
+    auto const changed = watcher.changed_dependencies();
+    ASSERT_EQ(changed.size(), 1u);
+    EXPECT_EQ(changed.front().id, dependency.id);
+}

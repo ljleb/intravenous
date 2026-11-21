@@ -298,7 +298,7 @@ std::string source_tree_fingerprint(
          !error && it != end;
          it.increment(error)) {
         if (it->is_directory()) {
-            if (is_module_dependency_ignored_directory(it->path())) {
+            if (is_module_dependency_ignored_directory(it->path(), it.depth() == 0)) {
                 it.disable_recursion_pending();
             } else if (it->path() != directory
                        && std::filesystem::exists(
@@ -366,7 +366,7 @@ std::filesystem::file_time_type directory_stamp(std::filesystem::path const &dir
          it.increment(ec)) {
         if (ec) break;
         if (it->is_directory()) {
-            if (is_module_dependency_ignored_directory(it->path())) {
+            if (is_module_dependency_ignored_directory(it->path(), it.depth() == 0)) {
                 it.disable_recursion_pending();
             } else if (it->path() != dir
                        && std::filesystem::exists(

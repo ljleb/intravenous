@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { addressKey, formatLaneLabel, isProjectInstance, type Point } from "../../src/graphScope";
-import { isTimelineSnapAddress, managedBeats, managedTimeline, timelineGridMode, type TimelineGridMode } from "../../src/timelineSnap";
+import { isGeneratedSnapConnection, isTimelineSnapAddress, managedBeats, managedTimeline, timelineGridMode,
+    type TimelineGridMode } from "../../src/timelineSnap";
 import { laneRuns } from "../../src/laneSelection";
 import { KnobPointerLock } from "../../src/knobPointerLock";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
 import { useNode } from "../presentation/nodeContext";
 import { semanticNodeFromScopeChild } from "../presentation/semanticNode";
 import PresentationHost from "../presentation/PresentationHost.vue";
-import { presentations } from "../presentation/presentations";
+import { selectPresentation } from "../presentation/presentations";
 import { nodeDisplayName } from "../presentation/nodeSummary";
 import LaneSettings from "../presentation/LaneSettings.vue";
 import BeatsSettings from "../presentation/BeatsSettings.vue";
@@ -21,7 +22,8 @@ import { usePresentationSize } from "../presentation/presentationSize";
 import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
 import type { SeekBeatReader } from "../timeline/usePlayheadSeek";
 import { timelineBeatObservationWindow } from "../timeline/geometry";
-import { beatRulerLabels, minimumBeatMarkSpacing, readBeatGrid, selectVisibleBeatMarks } from "../../src/beatGrid";
+import { beatGridTicks, beatRulerLabels, minimumBeatMarkSpacing, readBeatGrid, sameBeatGrid, selectVisibleBeatMarks,
+    type BeatGrid } from "../../src/beatGrid";
 import { gridGuideStrengths } from "../../src/gridGuideStrength";
 import { provideTimelineMarks, provideTimelineNavigation, provideTimelineWindow, timelineMarkKey, timelineMarkPosition, type TimelineMark,
     type LaneHorizontalZoomGesture, type LaneValueGesture, type LaneValueNavigation } from "../timeline/timelineContext";
@@ -99,7 +101,7 @@ const settingsGrid = computed(() => beatsNode.value?.loadState === "ready" && be
 const snapTimeline = computed(() => managedTimeline(scope.value));
 const customInput = computed(() => gridMode.value === "custom" && snapTimeline.value
     ? semanticNodeFromScopeChild(snapTimeline.value, scope.value) : null);
-const { edits: beatEdits } = useBeatGridEditing();
+const { edits: beatEdits, version: beatEditsVersion } = useBeatGridEditing();
 async function setGridMode(mode: TimelineGridMode) {
     if (!scope.value.editable || gridMode.value === mode) return;
     if (beatsNode.value) await beatEdits.finish(beatsNode.value.address);
@@ -127,7 +129,7 @@ const nestedAreas = computed(() => {
 });
 const timelineRuns = computed(() => {
     const timelineLanes = new Set(children.value.filter(({ semantic, moduleBoundary }) =>
-        !moduleBoundary && presentations.select(semantic.definitionId).timeline)
+        !moduleBoundary && selectPresentation(semantic.definitionId).timeline)
         .map(({ child }) => addressKey(child.address)));
     const height = laneHeight.value;
     return laneRuns(laneOrder.value, timelineLanes).map(({ begin, end }) => ({
@@ -181,6 +183,25 @@ const beatWindows = usePortObservationViewport(() => {
     return { source: { node, kind: "input", member: "beats", portKind: "event" }, operation: "beat-grid",
         window, indexedEvents: gridMode.value === "beats", consumer: "Timeline ruler" };
 });
+const canPreviewBeatGrid = computed(() => {
+    if (gridMode.value !== "beats" || !snapTimeline.value) return false;
+    const inputs = scope.value.connections.filter(({ connection }) =>
+        connection.kind === "event" && connection.inputs.some(isTimelineSnapAddress));
+    return inputs.length === 1 && isGeneratedSnapConnection(inputs[0]);
+});
+const previewGrid = computed<BeatGrid | undefined>((previous) => {
+    const node = beatsNode.value, accepted = settingsGrid.value;
+    if (!node || !accepted || !canPreviewBeatGrid.value) return;
+    void beatEditsVersion.value;
+    const draft = beatEdits.draft(node.address);
+    if (draft) return draft;
+    // Scope can acknowledge the edit before the receiving port delivers the
+    // new window. Keep displaying the accepted preview over retained old data.
+    const observed = beatWindows.value?.result;
+    if (previous && sameBeatGrid(previous, accepted) && (!observed || observed.status === "pending" || observed.outdated))
+        return previous;
+    return undefined;
+});
 const observedBeatMarks = computed<NonNullable<ObservationWindowResult["marks"]>>((previous) => {
     const window = visibleBeatWindow.value, observation = beatWindows.value;
     if (!window || !observation) return [];
@@ -206,14 +227,22 @@ function projectBeatMarks(raw: NonNullable<ObservationWindowResult["marks"]>, fi
     return selectVisibleBeatMarks(candidates, width);
 }
 const timelineMarks = computed<readonly TimelineMark[]>((previous) => profileGraphUi("Project timeline beat grid", () => {
-    if (gridMode.value === "seconds" || !observedTimeline.value) return [];
+    if (gridMode.value === "seconds") return [];
     const { beginSeconds, spanSeconds, sampleRate } = timeWindow.value;
     const visible = beatViewport.value;
     const width = timeWidth.value;
     if (!sampleRate || !visible) return [];
-    const pixelsPerSample = width / (spanSeconds * sampleRate);
-    const originX = automationSampleOffset(visible.first, beginSeconds, sampleRate) / spanSeconds * width;
-    const displayed = projectBeatMarks(observedBeatMarks.value, visible.first, pixelsPerSample, width, originX);
+    const draft = previewGrid.value;
+    let displayed: TimelineMark[];
+    if (draft) {
+        displayed = beatGridTicks(draft, { beginSeconds, spanSeconds }, sampleRate, width)
+            .map(({ sample, depth, x }) => ({ index: sample, depth, x }));
+    } else {
+        if (!observedTimeline.value) return [];
+        const pixelsPerSample = width / (spanSeconds * sampleRate);
+        const originX = automationSampleOffset(visible.first, beginSeconds, sampleRate) / spanSeconds * width;
+        displayed = projectBeatMarks(observedBeatMarks.value, visible.first, pixelsPerSample, width, originX);
+    }
     if (previous?.length === displayed.length && displayed.every(({ index, depth, x }, i) =>
         index === previous[i].index && depth === previous[i].depth && x === previous[i].x)) return previous;
     return displayed;
@@ -221,6 +250,19 @@ const timelineMarks = computed<readonly TimelineMark[]>((previous) => profileGra
 function openBeatReader(): SeekBeatReader | undefined {
     const node = observedTimeline.value;
     const mode = gridMode.value;
+    const draft = previewGrid.value;
+    if (draft) {
+        let cached: { first: bigint; length: bigint; targets: bigint[] } | undefined;
+        return { marks({ first, length }, sampleRate, width) {
+            if (mode !== gridMode.value || sampleRate !== scope.value.sampleRate) return;
+            if (cached?.first !== first || cached.length !== length) {
+                const targets = beatGridTicks(draft, { beginSample: first, spanSeconds: Number(length) / sampleRate }, sampleRate, width)
+                    .map(({ sample }) => sample);
+                cached = { first, length, targets };
+            }
+            return cached.targets;
+        } };
+    }
     if (!observations || !node || mode === "seconds") return;
     const id = observations.portObservationId();
     let requested: ObservationWindow | undefined;
@@ -257,9 +299,10 @@ provideTimelineMarks(timelineMarks);
 const beatStrengths = computed(() => gridGuideStrengths(timelineMarks.value, timelineMarkPosition));
 const beatLabels = computed(() => {
     const sampleRate = timeWindow.value.sampleRate;
-    if (gridMode.value !== "beats" || !settingsGrid.value || !sampleRate) return [];
+    const grid = previewGrid.value ?? settingsGrid.value;
+    if (gridMode.value !== "beats" || !grid || !sampleRate) return [];
     // Reserve room for the ruler's settings button.
-    return beatRulerLabels(settingsGrid.value, timelineMarks.value, sampleRate, timeWidth.value - 56);
+    return beatRulerLabels(grid, timelineMarks.value, sampleRate, timeWidth.value - 56);
 });
 const valueNavigationTargets = new Map<Element, LaneValueNavigation>();
 provideTimelineNavigation({ wheel, beginMiddleDrag, registerValueNavigation(element, lane) {
@@ -782,9 +825,10 @@ onBeforeUnmount(() => {
 .timeline-grid-choices button:not([aria-pressed="true"]):hover { background: var(--vscode-list-hoverBackground); }
 .timeline-heading { display: grid; grid-template-columns: var(--node-label-width) minmax(0, 1fr); }
 .timeline-heading { box-sizing: border-box; position: sticky; top: 0; z-index: 1; background: var(--vscode-editor-background); flex: 0 0 var(--timeline-header-height); border-bottom: 1px solid var(--vscode-panel-border); }
-.node-column { min-width: 0; border-right: 1px solid var(--vscode-panel-border); }
-.timeline-snap-input { padding-inline: 12px; }
-.timeline-snap-input :deep(.node-ports) { height: var(--port-row-height); margin: 0; }
+.node-column { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0;
+    border-right: 1px solid var(--vscode-panel-border); }
+.timeline-snap-input { min-height: 0; padding-inline: 12px; }
+.timeline-snap-input :deep(.node-ports) { height: 100%; margin: 0; }
 .lanes { flex: 0 0 auto; min-height: 0; position: relative; isolation: isolate; }
 .nested-lane-area {
     position: absolute; inset-inline-end: 0; z-index: -3; pointer-events: none;

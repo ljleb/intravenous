@@ -34,14 +34,33 @@ struct ObservationGraphRequest {
     std::optional<ObservationRequirements> prediction{};
     std::vector<NodeAddress> describe_nodes{};
     struct WindowSource {
-        ObservationSource source{};
-        std::string operation{};
+        ObservationSource const& source;
+        std::string_view operation;
+        ObservationWindow window{};
+        bool prefetch = false;
         std::shared_ptr<ObservationWindowQuery> query{};
+
+        // Submitted queries belong to the executor until it completes them.
+        // Resolve a fresh query whenever the checkpoint changes.
+        bool select_execution(std::uint64_t configured, std::optional<std::uint64_t> execution)
+        {
+            if (query && query->configured_generation == configured && query->execution_generation == execution)
+                return false;
+            query = std::make_shared<ObservationWindowQuery>();
+            query->window = window;
+            query->configured_generation = configured;
+            query->execution_generation = execution;
+            query->prefetch.store(prefetch, std::memory_order_relaxed);
+            return true;
+        }
     };
     std::vector<WindowSource> windows{};
     std::shared_ptr<nlohmann::ordered_json const> capabilities{};
     std::string error{};
     std::optional<std::uint64_t> configured_generation{};
+    std::optional<std::uint64_t> window_configured_generation{};
+    std::optional<std::uint64_t> window_execution_generation{};
+    std::optional<std::size_t> window_sample_rate{};
     std::uint64_t scheduling_us = 0;
     bool handled = false;
 };

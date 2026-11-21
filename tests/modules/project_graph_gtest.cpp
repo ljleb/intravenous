@@ -1,5 +1,6 @@
 #include <intravenous/dsl.h>
 #include "../event_source_test_support.h"
+#include <intravenous/basic_nodes/constant.h>
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/runtime/graph_connections.h>
 #include <intravenous/runtime/node_definitions.h>
@@ -1074,6 +1075,7 @@ class ManualControlSchedulerProbe {
     std::vector<iv::ProjectControlCompileStatus> control_statuses_{};
     std::optional<iv::FailedExecutionGeneration> recovery_{};
     bool dynamic_controls_need_storage_ = false;
+    bool defer_activation_ = false;
     bool block_next_compilation_ = false;
     bool compilation_is_blocked_ = false;
     bool release_blocked_compilation_ = false;
@@ -1152,6 +1154,7 @@ public:
     iv::ProjectGraphGraphExecutorResult accept_structural_graph(
         std::shared_ptr<iv::CompiledGraph const> const& graph)
     {
+        std::scoped_lock guard(mutex_);
         return {.attempted = true, .prepared = iv::GraphExecutorPreparedGeneration{[this, graph] {
             {
                 std::scoped_lock lock(mutex_);
@@ -1161,7 +1164,13 @@ public:
             }
             changed_.notify_all();
             return iv::GraphExecutorStageResult::accepted;
-        }}};
+        }, defer_activation_}};
+    }
+
+    void defer_activation()
+    {
+        std::scoped_lock lock(mutex_);
+        defer_activation_ = true;
     }
 
     void require_storage_for_dynamic_controls()
@@ -2491,7 +2500,10 @@ TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForANamedMonoQuotientWithoutAT
     using namespace iv;
     auto configure = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
         auto const detune = graph.input<"main">(0, -100, 100);
-        auto detune_pair = detune * 2 / 15;
+        // Use private constant nodes because this fixture has no package-generated type metadata.
+        auto const numerator_scale = graph.node<Constant>(Sample{2});
+        auto const denominator = graph.node<Constant>(Sample{15});
+        auto detune_pair = detune * numerator_scale / denominator;
         detune_pair._annotate_source_info("detune_pair", "/tmp/quotient.cpp", 1, 2, "detune_pair");
         graph.outputs("main"_P = detune_pair);
     };
@@ -2511,6 +2523,7 @@ TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForANamedMonoQuotientWithoutAT
     in_event_source([&] { project_graph.handle_project_create_node_instance(
         {.instance_id = "module", .definition_id = definition_id}, create); });
     ASSERT_EQ(create.build(), "module");
+    ASSERT_FALSE(project_graph.configuration_failure());
 
     auto const scope = read_graph_scope(project_graph, {{.instance_id = "module"}});
     auto const& children = scope.at("childScopes").at(0).at("nodes");
@@ -2552,8 +2565,11 @@ TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForTiledMultiplicationAndItsMe
 {
     using namespace iv;
     auto configure = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
-        auto const balance = graph.tile<stereo>(0.25, 0.75);
-        auto const gain = 0.5 * balance;
+        auto const left = graph.node<Constant>(Sample{0.25});
+        auto const right = graph.node<Constant>(Sample{0.75});
+        auto const level = graph.node<Constant>(Sample{0.5});
+        auto const balance = graph.tile<stereo>(left, right);
+        auto const gain = level * balance;
         gain._annotate_source_info("gain", "/tmp/gain.cpp", 1, 2, "gain");
         graph.outputs("main"_P = gain);
     };
@@ -2562,6 +2578,7 @@ TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForTiledMultiplicationAndItsMe
     in_event_source([&] { project_graph.handle_project_create_node_instance(
         {.instance_id = "module", .definition_id = definition_id}, create); });
     ASSERT_EQ(create.build(), "module");
+    ASSERT_FALSE(project_graph.configuration_failure());
 
     auto expect_knobs = [](auto const& node, bool input_enabled) {
         auto const& inputs = node.at("sampleInputs");
@@ -4728,13 +4745,15 @@ TEST_F(ProjectGraphManualControlSchedulingFixture, ConfigurationCommitsAndCoales
 {
     (void)realize_controls(1);
     auto const baseline = probe.structural_stage_count();
+    auto const initial = project_graph.current_generation();
+    probe.defer_activation();
     probe.block_next_compilation();
     iv::ProjectStringBuilder first;
     in_event_source([&] { project_graph.handle_project_create_node_instance({
         .instance_id = "queued:first", .definition_id = manual_control_leaf_definition_id}, first); });
     ASSERT_EQ(first.build(), "queued:first");
     ASSERT_TRUE(probe.wait_for_blocked_compilation());
-    auto const blocked_generation = project_graph.current_generation()->generation;
+    auto const blocked = project_graph.current_generation();
     auto edit = std::async(std::launch::async, [&] {
         iv::ProjectStringBuilder added;
         in_event_source([&] { project_graph.handle_project_create_node_instance({
@@ -4750,7 +4769,7 @@ TEST_F(ProjectGraphManualControlSchedulingFixture, ConfigurationCommitsAndCoales
     ASSERT_NO_THROW(edit.get());
     auto const configured = project_graph.current_generation();
     ASSERT_TRUE(configured);
-    EXPECT_GT(configured->generation, blocked_generation);
+    EXPECT_GT(configured->generation, blocked->generation);
     EXPECT_TRUE(configured->placements.contains("queued:latest"));
     EXPECT_FALSE(configured->placements.contains("queued:first"));
     EXPECT_FALSE(configured->compiled_graph);
@@ -4759,19 +4778,37 @@ TEST_F(ProjectGraphManualControlSchedulingFixture, ConfigurationCommitsAndCoales
     ASSERT_TRUE(metadata.error.empty()) << metadata.error;
     ASSERT_TRUE(metadata.capabilities);
     EXPECT_EQ(metadata.configured_generation, configured->configured_generation);
+    EXPECT_EQ(metadata.window_execution_generation, initial->generation);
     auto const inputs = iv::read_node_instance_interface(configured->graph->node_bundles,
         configured->placements.at("queued:latest").root).sample_inputs;
     ASSERT_EQ(inputs.size(), 1u);
     EXPECT_EQ(inputs.front().name, "gain");
     EXPECT_EQ(probe.structural_stage_count(), baseline);
     probe.release_blocked_compilation();
+    ASSERT_TRUE(probe.wait_for_structural_stages(baseline + 1));
+    iv::ObservationGraphRequest before_activation;
+    in_event_source([&] { project_graph.handle_observation_request(before_activation); });
+    EXPECT_EQ(before_activation.window_execution_generation, initial->generation);
+    EXPECT_EQ(probe.structural_stage_count(), baseline + 1);
+    EXPECT_EQ(project_graph.current_generation()->generation, configured->generation);
+
+    project_graph.acknowledge_execution(blocked->generation);
+    iv::ObservationGraphRequest intermediate;
+    in_event_source([&] { project_graph.handle_observation_request(intermediate); });
+    EXPECT_EQ(intermediate.configured_generation, configured->configured_generation);
+    EXPECT_EQ(intermediate.window_configured_generation, blocked->configured_generation);
+    EXPECT_EQ(intermediate.window_execution_generation, blocked->generation);
+
     ASSERT_TRUE(project_graph.wait_for_compilation());
     auto const ready = project_graph.current_generation();
     ASSERT_TRUE(ready->compiled_graph);
     EXPECT_EQ(ready->compiled_graph->project_generation, configured->generation);
     EXPECT_TRUE(ready->graph_executor_accepted);
-    // The blocked result and intermediate queued edit never stage.
-    EXPECT_EQ(probe.structural_stage_count(), baseline + 1);
+    EXPECT_EQ(probe.structural_stage_count(), baseline + 2);
+    project_graph.acknowledge_execution(ready->generation);
+    iv::ObservationGraphRequest settled;
+    in_event_source([&] { project_graph.handle_observation_request(settled); });
+    EXPECT_EQ(settled.window_execution_generation, ready->generation);
 }
 
 TEST_F(ProjectGraphManualControlSchedulingFixture, RecompilesAcceptedSuccessorsBeforeEditsArrivingDuringRecovery)

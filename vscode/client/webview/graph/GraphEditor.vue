@@ -19,7 +19,7 @@ import { cursorWarpAnchor, PointerLockCursorReturn, type CursorWarpAnchor, type 
 import NodeEditor from "./NodeEditor.vue";
 import NodeDefinitionPicker from "./NodeDefinitionPicker.vue";
 import type { NodeDefinitionPreview } from "../../src/nodeDefinitionSearch";
-import { presentations } from "../presentation/presentations";
+import { replaceProjectPresentations, selectPresentation } from "../presentation/presentations";
 import { canContinuePortConnection, fixedConnectionPorts, type GraphConnectionEnd, type GraphPortEndpoint } from "../../src/graphConnectionEditing";
 import { beginPortConnection, canDropPortConnection, finishPortConnection, movePortConnection, type PortConnectionDrag } from "../../src/portConnectionGesture";
 import { initialPortHoverShift, keyboardPortHoverShift, pointerPortHoverShift } from "../../src/portHoverShift";
@@ -283,6 +283,7 @@ function moveCapturedControl(event: PointerEvent) {
         event.preventDefault(); event.stopImmediatePropagation();
         if (document.pointerLockElement === surface.value) return;
         updateAutomationShift(event.shiftKey);
+        objectDrag.modifiers?.(event);
         if (!(event.buttons & objectDrag.buttonMask)) { releaseCapturedControl(event); return; }
         const origin = pointerLock.status().origin;
         if (!objectDrag.moved && (event.clientX !== origin?.x || event.clientY !== origin?.y)) {
@@ -308,6 +309,7 @@ function releaseCapturedControl(event: PointerEvent) {
         drag.trace?.log("Pointer release event", { type: event.type, x: event.clientX, y: event.clientY, buttons: event.buttons });
         if (event.type !== "pointerup" && event.type !== "pointermove") { pointerLock.cancel(); return; }
         updateAutomationShift(event.shiftKey);
+        drag.modifiers?.(event);
     }
     if (knobDrag?.pointerId === event.pointerId) knobClicks.release(performance.now());
     pointerLock.release(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -316,6 +318,7 @@ function lockedControlMove(event: MouseEvent) {
     if (document.pointerLockElement !== surface.value) return;
     event.stopImmediatePropagation();
     updateAutomationShift(event.shiftKey);
+    objectDrag?.modifiers?.(event);
     // A synthesized move with an empty buttons mask is not a mouse release.
     // Mouseup, pointerup, native focus loss and pointerlockchange own termination.
     pointerLock.move({ x: event.movementX, y: event.movementY });
@@ -327,6 +330,7 @@ function lockedControlRelease(event: MouseEvent) {
     if (id === undefined) return;
     objectDrag?.trace?.log("Mouse release event", { type: event.type, x: event.clientX, y: event.clientY, buttons: event.buttons });
     updateAutomationShift(event.shiftKey);
+    objectDrag?.modifiers?.(event);
     if (knobDrag) knobClicks.release(performance.now());
     pointerLock.release(id, { x: event.clientX, y: event.clientY });
 }
@@ -961,7 +965,7 @@ function closeNodePicker() {
 }
 function nodeConstructionCallback(definition: NodeDefinitionPreview) {
     if (definition.requiresConfiguration) {
-        return presentations.select(definition.id).createInitialConfiguration;
+        return selectPresentation(definition.id).createInitialConfiguration;
     }
 }
 function nodeCreationUnavailable(definition: NodeDefinitionPreview) {
@@ -1061,6 +1065,7 @@ function handleProjectHistory(event: KeyboardEvent) {
 }
 function keyDown(event: KeyboardEvent) {
     updateAutomationShift(event.shiftKey);
+    objectDrag?.modifiers?.(event);
     const target = event.target instanceof Element ? event.target : null;
     const editingText = isTextEditingTarget(event.target);
     const editingLaneItems = !!target?.closest("[data-lane-item-editor]");
@@ -1099,6 +1104,7 @@ function keyDown(event: KeyboardEvent) {
 }
 function keyUp(event: KeyboardEvent) {
     updateAutomationShift(event.shiftKey);
+    objectDrag?.modifiers?.(event);
     hoverShift.value = keyboardPortHoverShift(hoverShift.value, event.shiftKey);
 }
 function observePointerShift(event: PointerEvent) {
@@ -1267,6 +1273,10 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
         if (event.data.lanes.length) selectNewLanes(event.data.lanes);
         return;
     }
+    if (event.data?.type === "projectPresentations") {
+        replaceProjectPresentations(event.data.plugins);
+        return;
+    }
     if (event.data?.type !== "graphState") return;
     state.value = event.data.state;
     if (editing.value !== null && !editedNode.value) editing.value = null;
@@ -1274,7 +1284,6 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
     manualGestures.configuredGeneration(state.value.scope?.generation ?? null);
     const scope = state.value.scope;
     const generation = scope?.execution?.phase === "configurationFailed" ? null : scope?.generation ?? null;
-    observations.configuredGeneration(generation, scope?.sampleRate);
     if (state.value.sessionStatus === "running") {
         const prepared = generation !== null && scope?.execution?.preparedGeneration === generation;
         const configuration = JSON.stringify([generation, prepared]);

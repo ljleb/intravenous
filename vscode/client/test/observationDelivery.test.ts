@@ -77,26 +77,25 @@ test("a live patch leaves unrelated window readers alone", () => {
     } finally { stop(reader); }
 });
 
-test("the next accepted scope includes patches received while waiting for its generation and revision", () => {
+test("observation checkpoints advance with execution and retain patches while waiting for a revision", () => {
     const values = new ObservationValues();
     const window = { begin: "0", length: "64", points: 8 };
     values.expectWindows([{ id: "beats", source: { node: { instanceId: "timeline" }, kind: "input", member: "beats" },
         operation: "beat-grid", window }]);
-    values.acceptGeneration(1);
-    assert.equal(values.receive(initial), false);
-    assert.equal(values.receive({ ...initial, snapshot: false, scopes: {
+    assert.equal(values.receive({ ...initial, executionGeneration: "5" }), true);
+    assert.equal(values.receive({ ...initial, executionGeneration: "6", snapshot: false, scopes: {
         viewport: { windows: { beats: { dataVersion: "2" } } },
-    } }), false);
-    values.acceptGeneration(2);
+    } }), true);
+    assert.equal(values.receive({ ...initial, executionGeneration: "5" }), false);
     assert.equal(values.values.get("meter")?.value?.peak, .5);
     assert.equal(values.windowForDisplay("beats")?.dataVersion, "2");
 
     values.acceptRevision("4");
-    assert.equal(values.receive({ ...initial, snapshot: false, scopes: {
+    assert.equal(values.receive({ ...initial, executionGeneration: "6", snapshot: false, scopes: {
         viewport: { values: { meter: { available: true, value: { peak: .75 } } } },
     } }), false);
     assert.equal(values.values.get("meter")?.value?.peak, .5);
-    assert.equal(values.receive({ ...initial, snapshot: false, revision: "4", scopes: {} }), true);
+    assert.equal(values.receive({ ...initial, executionGeneration: "6", snapshot: false, revision: "4", scopes: {} }), true);
     assert.equal(values.values.get("meter")?.value?.peak, .75);
     assert.equal(values.windowForDisplay("beats")?.marks, body.marks);
 });

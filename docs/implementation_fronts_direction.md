@@ -7111,23 +7111,8 @@ definitions it presents and supplies header metadata, including an icon.
 The host owns the graph, lane header, ports, viewport, and observation budgets.
 The plugin owns the contents and local presentation state of its lane.
 
-The current `PresentationRegistry` only selects Vue components built into the
-client. `AutomationCurvePresentation` receives the internal graph editor
-context and hands it a DOM pointer event to start a drag. `BeatsSettings`
-uses the internal beats editing controller. A separate execution context needs
-a serializable boundary for those operations.
-
-The rendering boundary is an open design choice. A sandboxed Vue renderer
-allows custom layouts. It needs a bridge for pointer gestures, coordinates,
-host menus, and cursor return. Host-rendered controls and drawing primitives
-put those interactions in the host and constrain the UI plugins can build.
-Importing project Vue components directly into the graph editor would share
-its browser context. A TypeScript interface alone does not enforce isolation.
-
-After the rendering choice, define host-to-plugin snapshots and plugin-to-host
-commands, including their version, ownership, and disposal rules. Use the
-automation curve and Beats lanes to prove the interface. Then add project
-discovery and loading through the isolated runtime.
+The [initial review](historical/project_presentation_rendering_review.md)
+records the rendering options and sequencing considered before the pilot.
 
 The snapshot needs the selected node, accepted construction data, ports,
 display mode, timeline coordinates, and observation results. Reads and
@@ -7136,6 +7121,153 @@ edits against the current project revision and returns the outcome to the
 plugin. A plugin can save its own presentation state as JSON through the
 existing project presentation state path. Closing the lane releases its
 observations, gestures, and callbacks.
+
+**Accepted direction and pilot, 2026-11-20.** The host schedules a plugin and
+renders standard controls and a programmable scene. The contract uses plain
+data so a headless host and a different renderer can use the same program.
+Polylines, rectangles, and text use stable IDs. Hit targets identify gestures
+without reference to DOM objects. Hosts can offer pointer lock and cursor
+return when the platform supports them. Keep exact sample indices as decimal
+strings across the boundary. Consider worker-drawn pixels only when measured
+work needs a drawing facility beyond the initial scene.
+
+Prove project discovery, worker scheduling, validation, and edit lifecycle
+with a project-authored lane and Beats. Automation Curve also needs ordered
+relative movement, dynamic modifiers, selection, and release cursor placement
+through the common contract. Its current `GraphEditor` drag entry point makes
+that migration depend on exercising the portable gesture path first. Keep
+the existing curve editor usable during the pilot.
+
+The host keeps one frame in flight for a lane and a bounded input queue.
+Replaceable viewport requests coalesce. A completed frame can be stale for
+drawing, while its ordered edit commands still need to be delivered. Preserve
+these distinctions in any other host that implements the protocol.
+
+The [project presentation guide](project_presentation_plugins.md) describes the
+pilot artifact and host behavior. Use the same lane in a headless test to check
+the contract without Vue. Before moving Automation Curve, exercise its
+rectangle selection, modifier changes during a drag, wheel sensitivity, edit
+acknowledgements, retained observation windows, and native cursor placement.
+Measure observation copies and worker startup before choosing a bulk data
+format or sharing execution across open graph views.
+
+**Package ownership and lane choices.** A package can ship zero or more
+presentations for its own definitions and for public definitions available
+through its package dependencies. The provider package owns the presentation,
+and the target package still owns the node definition. A presentation
+declaration names the target definition and a package-relative artifact.
+Resolve the target against the published definition and its owning package
+using the same dependency rules as node construction, including the implicit
+builtin import. Keep the provider package namespace and presentation ID
+together as the saved identity.
+
+The lane picker always offers the host's generic presentation as **Default**.
+Show all compatible named presentations, with the provider package to
+disambiguate labels. A defining package can recommend one of its own
+presentations for a new lane. An alternative becomes available for selection
+when its provider package is loaded.
+Installing an alternative leaves the existing lane choice in place.
+Save that choice by node address in the project presentation data and keep
+each presentation's local state under its own identity. If a preferred
+presentation is unavailable, use the generic view and retain the preference.
+
+The pilot now reads `packages/<package>/presentations/` and takes one
+candidate per definition. A project package directory can contain only
+presentations. The client discovers those files directly. The native
+package loader skips this directory when it fingerprints and watches
+package source files. See the [project presentation guide](project_presentation_plugins.md).
+
+Package discovery still needs to publish a catalog from the resolved
+packages. The lane selector and the timeline overlay must use the same
+selection. Keep node creation defaults attached to the defining package so
+changing the lane view leaves creation behavior independent of which
+alternatives are installed. Reload an edited presentation artifact without
+recompiling the audio graph. To publish presentation-only packages through
+the package resolver, add a package declaration that can omit the C++ entry.
+
+**Remote delivery follow-up.** A server could advertise a presentation ID,
+contract version, available artifact formats, and content digests with the
+node definitions it exposes. The client could select a supported artifact,
+authorize execution under its own trust policy, fetch and verify it, and cache
+it by digest. A client with no compatible or trusted artifact can use the
+default lane with the server's node metadata. Determine the runtime and
+package trust model before adding an artifact download route.
+
+A small remote display can use the same frame and input contract with the
+plugin running on a companion host. The device can select one node by
+address with a physical rotary encoder and request a frame at its screen
+size. Scope observations to the displayed lane. The device renders the
+returned marks and controls and forwards any edits through the companion.
+This gives clients a way to use package presentations with only a renderer
+and a transport. Artifact delivery can also support clients that choose to
+execute the presentation locally.
+
+**Accepted distribution format.** Distribute core WebAssembly. Keep it as the
+sole supported format for as long as it serves the target clients. Additional
+formats may never be needed. Version the presentation data schema and the
+module calling convention separately. Each artifact declares its format, the
+supported ABI and data schema versions, and its digest. If another format
+becomes necessary, a package can publish multiple artifacts for the same
+presentation ID and the client can select a compatible one. Package
+resolution and network delivery stay outside the module calling convention.
+
+**Proposed first binary presentation ABI.**
+
+Use `PresentationSnapshot` and the ordered `PresentationInput` array as the
+request and `PresentationFrame` as the response. Specify their wire schema
+independently of TypeScript. UTF-8 JSON can be the first encoding. Sample
+indices remain decimal strings. The host provides the viewport and
+observations, validates the frame, and applies its commands.
+
+For a first binary binding, use a core WebAssembly module with 32-bit linear
+memory offsets, plain integer exports, and no host imports. The module
+exports its memory plus `iv_alloc(size)`, `iv_free(offset)`, and
+`iv_present(request_offset, request_length, response_offset, response_capacity)`.
+The host reserves disjoint buffers in module memory and reuses them across
+frames. `iv_present` returns a positive byte count on success and a negative
+error code on failure. The host checks bounds and frame validity before
+using the result. A failed invocation discards the frame and the instance,
+so recovery starts from the last accepted host-owned state without replaying
+edit commands. Validate this ABI in a browser and a native headless host with
+the same small artifact before making it public.
+
+The host renders the scene using its own controls and input devices. C++,
+Rust, and other languages can generate an artifact if their selected
+libraries fit the ABI and the target runtime's memory and execution budgets.
+A later build service could use LLVM to produce target-specific artifacts
+before delivery. A target-specific artifact declares its architecture and
+runtime requirements and keeps the same presentation data schema. Shipping
+LLVM IR to clients would require its own compiler and target profile, plus
+an isolation mechanism for compiled code.
+
+**Continuous edit scheduling review.** `ProjectGraph` already kept one
+replaceable `pending_graph_compile_` request. An in-flight compile could finish
+and still fail the publication checks if a newer configured graph or
+observation plan had arrived. This could leave Custom beat-grid observations
+waiting during a stream of edits. Pacing full-state preview edits reduced the
+pressure, and activation let pending observation windows retry sooner.
+
+Consider letting one in-flight preview checkpoint reach a usable execution
+state, then taking the latest queued checkpoint. Keep ordered project
+mutations and undo effects intact. Before changing the publication checks,
+define which in-flight checkpoints remain eligible after a conflicting edit
+or seek. An `ObservationWindowQuery` resolves its port against a specific
+configured graph, so resolving, evaluating, and delivering an intermediate
+window must retain that graph's generation throughout. A new query must use
+that generation's port mapping. Test a drag whose updates arrive faster than
+compilation and verify that it produces observations before release and
+eventually observes the final checkpoint.
+
+**Execution checkpoint implementation.** `ProjectGraph` retains the newest
+configured snapshot for edits and graph scope. The compile worker finishes its
+in-flight build against the executor's accepted predecessor. One compiled
+checkpoint can await activation, and newer configuration replaces the single
+waiting compile request. If preparation fails, the worker takes the waiting
+request against the surviving predecessor. An observation window resolves its
+address against the active checkpoint and carries both configured and execution
+generation to background evaluation. The client uses the observation frame to
+advance its readings and preserves the last compatible plot while a replacement
+window is pending.
 
 ## Dependency summary
 

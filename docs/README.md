@@ -28,6 +28,7 @@ The primary application-architecture entry points are:
 - [Vue Output Observation And Query Direction](./vue_output_observation_direction.md)
 - [Vue Lane, Meter, Port-Control, Cable, And Automation Interaction Direction](./vue_presentation_refinement_direction.md) (normative owner refinement, 2026-11-16)
 - [Node Presentation And Manual Controls Direction](./node_presentation_and_manual_controls_direction.md)
+- [Project Presentation Plugins](./project_presentation_plugins.md)
 - [System Audio Devices Direction](./system_audio_devices_direction.md)
 - [Graph JIT Direction](./graph_jit_direction.md)
 - [Realtime / Background Execution, Queues, And Capacity](./realtime_background_execution_and_queues.md)

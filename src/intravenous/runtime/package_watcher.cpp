@@ -47,7 +47,7 @@ std::filesystem::file_time_type package_source_stamp(std::filesystem::path const
          it.increment(error)) {
         auto const& entry = *it;
         if (entry.is_directory()) {
-            if (is_module_dependency_ignored_directory(entry.path())
+            if (is_module_dependency_ignored_directory(entry.path(), it.depth() == 0)
                 || std::filesystem::exists(entry.path() / IV_PACKAGE_MANIFEST_FILE)) {
                 it.disable_recursion_pending();
             }

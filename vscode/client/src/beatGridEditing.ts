@@ -48,6 +48,9 @@ export class BeatGridEditing {
         const track = target && this.tracks.get(addressKey(target));
         return track?.draft?.grid ?? track?.grid;
     }
+    draft(target: NodeAddress): BeatGrid | undefined {
+        return this.tracks.get(addressKey(target))?.draft?.grid;
+    }
     error(target: NodeAddress | undefined): string {
         return (target && this.tracks.get(addressKey(target))?.error) ?? "";
     }

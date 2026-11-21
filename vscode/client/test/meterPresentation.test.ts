@@ -117,7 +117,6 @@ test("compatible graph transitions keep latest and held peaks through pending te
     const before = meter.reading("value");
     assert.equal(before.displayValue, .1);
     assert.ok(before.heldPosition > .9);
-    values.acceptGeneration(2);
     meter.update(values.values.get("meter"), true, 200);
     assert.deepEqual(meter.reading("value"), before);
     assert.equal(meter.updating, true);

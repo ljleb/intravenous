@@ -13,6 +13,7 @@ export type ObjectDrag = {
     trace?: CursorTrace;
     move: (point: Point) => void;
     moveBy: (delta: Point) => void;
+    modifiers?: (event: MouseEvent | KeyboardEvent) => void;
     finish: (point: Point | null, lockOrigin: Point | null) => CursorFollowTarget | undefined;
 };
 export type KnobDrag = {

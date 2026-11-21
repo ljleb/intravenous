@@ -218,6 +218,7 @@ void ProjectGraph::stop_compilation()
     {
         std::scoped_lock lock(mutex_);
         pending_graph_compile_.reset();
+        staged_execution_.reset();
         observation_candidate_.reset();
         predicted_observation_requirements_.reset();
         observation_prediction_pending_ = false;
@@ -237,6 +238,20 @@ bool ProjectGraph::wait_for_compilation(std::chrono::milliseconds timeout)
         return !pending_graph_compile_ && !execution_recovery_requested_ && !compile_inflight_ && !restore_live_targets_
             && !pending_control_compile_ && !inflight_control_compile_ && !can_compile_observation_prediction_locked();
     });
+}
+
+void ProjectGraph::acknowledge_execution(std::uint64_t project_generation)
+{
+    {
+        std::scoped_lock lock(mutex_);
+        if (!staged_execution_ || staged_execution_->compiled->project_generation != project_generation) return;
+        active_execution_ = std::exchange(staged_execution_, std::nullopt);
+    }
+    control_compile_changed_.notify_all();
+    IV_EVENT_SOURCE(ProjectGraph, "execution checkpoint activated") {
+        IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_execution_published_event,
+            ProjectGraphPublication{.graph_changed = true});
+    }
 }
 
 std::vector<ManualControlId> ProjectGraph::desired_dynamic_inputs_locked(
@@ -621,6 +636,7 @@ std::shared_ptr<ConfiguredGraph> ProjectGraph::graph_for_compile_locked()
 bool ProjectGraph::can_compile_observation_prediction_locked() const
 {
     return observation_prediction_pending_ && predicted_observation_requirements_
+        && !staged_execution_
         && predicted_observation_requirements_->revision == observation_requirements_.revision + 1
         && current_generation_ && current_generation_->graph && current_generation_->graph_executor_accepted
         && !configuration_failure_ && accepted_execution_graph_;
@@ -630,6 +646,21 @@ void ProjectGraph::schedule_graph_compile_locked(std::shared_ptr<ControlCompileT
 {
     if (!current_generation_ || !current_generation_->graph
         || configuration_failure_ || compile_worker_.get_stop_token().stop_requested()) return;
+    // Some manual-control requests change the executable plan on the same
+    // configured graph. Give each requested build its own execution identity.
+    if (current_generation_->generation == last_scheduled_execution_generation_) {
+        auto generation = std::make_shared<ProjectGraphGeneration>(*current_generation_);
+        generation->generation = next_generation_++;
+        generation->execution_phase = "queued";
+        generation->execution_message.clear();
+        generation->compiled_graph.reset();
+        generation->graph_jit_attempted = false;
+        generation->graph_executor_attempted = false;
+        generation->graph_executor_accepted = false;
+        generation->graph_jit_diagnostics.clear();
+        generation->graph_jit_timings.clear();
+        current_generation_ = std::move(generation);
+    }
     auto candidate = std::exchange(observation_candidate_, {});
     if (candidate && (candidate->requirements != observation_requirements_
         || candidate->predecessor != accepted_execution_graph_
@@ -642,8 +673,9 @@ void ProjectGraph::schedule_graph_compile_locked(std::shared_ptr<ControlCompileT
     observation_prediction_pending_ = predicted_observation_requirements_.has_value();
     if (pending_graph_compile_ && pending_graph_compile_->trace)
         queue_control_compile_status_locked(pending_graph_compile_->trace, "superseded");
+    last_scheduled_execution_generation_ = inputs.project_generation;
     pending_graph_compile_ = GraphCompileRequest{
-        .request_id = ++latest_graph_compile_request_,
+        .configured = current_generation_,
         .inputs = std::move(inputs),
         .trace = std::move(trace),
         .observation_candidate = std::move(candidate),
@@ -676,19 +708,22 @@ void ProjectGraph::compile_graph(GraphCompileRequest request, std::stop_token st
         }
     }};
     std::shared_ptr<CompiledGraph const> predecessor;
-    auto current = [&] {
-        return !stop.stop_requested()
-            && latest_graph_compile_request_ == request.request_id
-            && compile_inputs_are_current_locked(
-                request.inputs.project_generation, request.inputs.observations.revision);
+    auto desired = [&] {
+        return current_generation_ && current_generation_->generation == request.inputs.project_generation;
+    };
+    auto eligible = [&] {
+        return !stop.stop_requested() && !configuration_failure_
+            && accepted_execution_graph_ == predecessor;
     };
     {
         std::scoped_lock lock(mutex_);
-        if (!current()) return;
         predecessor = accepted_execution_graph_;
-        auto state = std::make_shared<ProjectGraphGeneration>(*current_generation_);
-        state->execution_phase = "compiling";
-        current_generation_ = std::move(state);
+        if (!eligible()) return;
+        if (desired()) {
+            auto state = std::make_shared<ProjectGraphGeneration>(*current_generation_);
+            state->execution_phase = "compiling";
+            current_generation_ = std::move(state);
+        }
     }
     IV_EVENT_SOURCE(ProjectGraph, "graph compilation started") {
         IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_execution_published_event,
@@ -710,7 +745,7 @@ void ProjectGraph::compile_graph(GraphCompileRequest request, std::stop_token st
             auto const compiled_at = Clock::now();
             {
                 std::scoped_lock lock(mutex_);
-                if (!current()) {
+                if (!eligible()) {
                     queue_control_compile_status_locked(request.trace, "superseded");
                     return;
                 }
@@ -724,24 +759,32 @@ void ProjectGraph::compile_graph(GraphCompileRequest request, std::stop_token st
                     ProjectGraphGraphExecutorRequest{.graph = compiled.compiled_graph,
                         .definitions = request.inputs.definitions});
             std::scoped_lock lock(mutex_);
-            if (!current()) {
+            if (!eligible()) {
                 queue_control_compile_status_locked(request.trace, "superseded");
                 return;
             }
-            auto state = std::make_shared<ProjectGraphGeneration>(*current_generation_);
+            bool const is_desired = desired();
+            auto state = std::make_shared<ProjectGraphGeneration>(*request.configured);
             state->graph_jit_attempted = compiled.attempted;
             state->compiled_graph = std::move(compiled.compiled_graph);
             state->graph_jit_diagnostics = std::move(compiled.diagnostics);
             state->graph_jit_timings = std::move(compiled.timings);
             state->graph_executor_attempted = execution.attempted;
             if (state->compiled_graph) queue_control_compile_status_locked(request.trace, "prepared");
+            bool const deferred = execution.prepared.deferred_activation();
             state->graph_executor_accepted = execution.prepared
                 && std::move(execution.prepared).publish() == GraphExecutorStageResult::accepted;
             if (state->graph_executor_accepted) {
                 accepted_execution_graph_ = state->compiled_graph;
+                auto& checkpoint = deferred ? staged_execution_ : active_execution_;
+                checkpoint = ExecutionCheckpoint{.configured = request.configured, .compiled = state->compiled_graph};
                 staged_control_graph_ = state->compiled_graph;
                 state->execution_phase = "staged";
                 queue_control_compile_status_locked(request.trace, "staged");
+                // The next worker cause attaches live targets to this
+                // accepted checkpoint even when a newer edit is queued.
+                std::scoped_lock live(live_mutex_);
+                restore_live_targets_ = !live_interactions_.empty();
             } else {
                 state->execution_phase = compiled.attempted ? "failed" : "unavailable";
                 state->execution_message = state->graph_jit_diagnostics.empty()
@@ -754,7 +797,7 @@ void ProjectGraph::compile_graph(GraphCompileRequest request, std::stop_token st
             state->rebuild_timings.graph_jit_us = us(begin, compiled_at);
             state->rebuild_timings.executor_stage_us = us(compiled_at, end);
             state->rebuild_timings.total_us += us(begin, end);
-            current_generation_ = state;
+            if (is_desired) current_generation_ = state;
             publication.graph_changed = true;
             publication.execution_generation = state->generation;
             publication.execution_pending = false;
@@ -773,7 +816,7 @@ void ProjectGraph::compile_graph(GraphCompileRequest request, std::stop_token st
                     .level = "error", .code = "graphCompilationFailed", .message = std::move(message)};
             }
             if (diagnostic_flag_enabled("IV_EDIT_TIMING")) log_edit_timing(*state);
-            if (state->graph_executor_accepted) {
+            if (state->graph_executor_accepted && is_desired) {
                 // Storage-changing controls settle through structural staging
                 // rather than code replacement. Release the same settlement
                 // gate before preparing the latest hover-only variant.
@@ -783,34 +826,21 @@ void ProjectGraph::compile_graph(GraphCompileRequest request, std::stop_token st
                         *state->compiled_graph->configured_graph, dynamic_inputs_)) {
                     settling_controls_ = false;
                 }
-                // Attach any gestures opened while the executable was pending
-                // to this generation's own live cells, never the older graph.
-                ProjectGraphGraphExecutorControlsRequest controls;
-                {
-                    std::scoped_lock live(live_mutex_);
-                    for (auto const& interaction : live_interactions_)
-                        controls.targets.push_back({.project_generation = state->generation,
-                            .id = interaction.control, .value = interaction.value,
-                            .gesture = ManualControlGesturePhase::begin});
-                }
-                // Targets are installed in the next independent worker cause;
-                // the executor has already been entered once in this cause.
-                restore_live_targets_ = !controls.targets.empty();
                 prepare_released_control_locked();
                 auto const predictive = desired_dynamic_inputs_locked(true);
                 if (!predictive.empty()) schedule_control_compile_locked(predictive, false);
             }
         } catch (std::exception const& error) {
             std::scoped_lock lock(mutex_);
-            if (!current()) return;
-            auto state = std::make_shared<ProjectGraphGeneration>(*current_generation_);
+            if (!eligible()) return;
+            auto state = std::make_shared<ProjectGraphGeneration>(*request.configured);
             state->execution_phase = "failed";
             state->execution_message = error.what();
             state->graph_jit_attempted = true;
             state->graph_jit_diagnostics = {{.message = error.what()}};
             publication.execution_generation = state->generation;
             publication.execution_pending = false;
-            current_generation_ = std::move(state);
+            if (desired()) current_generation_ = std::move(state);
             queue_control_compile_status_locked(request.trace, "failed", error.what());
             publication.graph_changed = true;
             publication.execution_failure = ProjectStatusNotification{
@@ -855,6 +885,9 @@ void ProjectGraph::recover_failed_execution(std::stop_token stop)
         {
             std::scoped_lock lock(mutex_);
             accepted_execution_graph_ = recovery->predecessor;
+            staged_execution_.reset();
+            if (active_execution_ && active_execution_->compiled != recovery->predecessor)
+                active_execution_.reset();
             staged_control_graph_ = recovery->predecessor;
             ready_control_code_.reset();
             cancel_pending_control_compile_locked();
@@ -886,6 +919,7 @@ void ProjectGraph::recover_failed_execution(std::stop_token stop)
         IV_EVENT_SOURCE(ProjectGraph, "recompile pending execution generation") {
             GraphJitCompileResult compiled;
             std::string failure;
+            bool deferred = false;
             try {
                 compiled = IV_INVOKE_SINGLETON_EVENT(iv_runtime_project_graph_graph_jit_requested_event,
                     ProjectGraphGraphJitRequest{.successor = request, .predecessor = predecessor,
@@ -898,6 +932,7 @@ void ProjectGraph::recover_failed_execution(std::stop_token stop)
                         ProjectGraphGraphExecutorRequest{.graph = compiled.compiled_graph,
                             .definitions = request.definitions});
                     if (stop.stop_requested()) return;
+                    deferred = execution.prepared.deferred_activation();
                     if (!execution.prepared
                         || std::move(execution.prepared).publish() != GraphExecutorStageResult::accepted) {
                         failure = "GraphExecutor did not accept the rebased cutover";
@@ -923,6 +958,11 @@ void ProjectGraph::recover_failed_execution(std::stop_token stop)
                     state->graph_executor_accepted = failure.empty();
                     state->execution_phase = failure.empty() ? "staged" : "failed";
                     state->execution_message = failure;
+                    if (failure.empty()) {
+                        auto& checkpoint = deferred ? staged_execution_ : active_execution_;
+                        checkpoint = ExecutionCheckpoint{
+                            .configured = current_generation_, .compiled = compiled.compiled_graph};
+                    }
                     current_generation_ = std::move(state);
                     restore_live_targets_ = failure.empty();
                 }
@@ -942,12 +982,11 @@ void ProjectGraph::compile_worker(std::stop_token stop)
         {
             IV_EVENT_SOURCE(ProjectGraph, "restore live controls after graph preparation") {
                 std::scoped_lock lock(mutex_);
-                if (std::exchange(restore_live_targets_, false) && current_generation_
-                    && current_generation_->graph_executor_accepted) {
+                if (std::exchange(restore_live_targets_, false) && accepted_execution_graph_) {
                     std::scoped_lock live(live_mutex_);
                     ProjectGraphGraphExecutorControlsRequest controls;
                     for (auto const& entry : live_interactions_) controls.targets.push_back({
-                        .project_generation = current_generation_->generation, .id = entry.control,
+                        .project_generation = accepted_execution_graph_->project_generation, .id = entry.control,
                         .value = entry.value, .gesture = ManualControlGesturePhase::begin});
                     if (!controls.targets.empty()) {
                         (void)IV_INVOKE_SINGLETON_EVENT(iv_runtime_project_graph_graph_executor_controls_requested_event, controls);
@@ -977,7 +1016,7 @@ void ProjectGraph::compile_worker(std::stop_token stop)
             compile_inflight_ = false;
             control_compile_changed_.notify_all();
             control_compile_changed_.wait(lock, [&] {
-                return stop.stop_requested() || execution_recovery_requested_ || pending_graph_compile_.has_value()
+                return stop.stop_requested() || execution_recovery_requested_ || (pending_graph_compile_ && !staged_execution_)
                     || pending_control_compile_.has_value() || !control_compile_notifications_.empty()
                     || can_compile_observation_prediction_locked();
             });
@@ -985,7 +1024,7 @@ void ProjectGraph::compile_worker(std::stop_token stop)
             if (execution_recovery_requested_) {
                 recover_execution = std::exchange(execution_recovery_requested_, false);
                 compile_inflight_ = true;
-            } else if (pending_graph_compile_) {
+            } else if (pending_graph_compile_ && !staged_execution_) {
                 graph_request = std::exchange(pending_graph_compile_, std::nullopt);
                 compile_inflight_ = true;
             } else if (pending_control_compile_) {
@@ -1368,7 +1407,6 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         if (publish_execution) {
             log_configuration_failure(*shared);
             configuration_failure_ = shared;
-            ++latest_graph_compile_request_;
             pending_graph_compile_.reset();
             cancel_pending_control_compile_locked();
             ready_control_code_.reset();
@@ -4096,6 +4134,12 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
         };
         request.configured_generation = current_generation_ && !configuration_failure_
             ? std::optional(current_generation_->configured_generation) : std::nullopt;
+        if (active_execution_) {
+            auto const& active = *active_execution_;
+            request.window_configured_generation = active.configured->configured_generation;
+            request.window_execution_generation = active.compiled->project_generation;
+            request.window_sample_rate = active.compiled->specialization.sample_rate;
+        }
         auto const* observation_graph = current_generation_ ? current_generation_->compiled_graph.get() : nullptr;
         if (!observation_graph && request.configured_generation && accepted_execution_graph_
             && accepted_execution_graph_->configured_generation == request.configured_generation) {
@@ -4229,23 +4273,21 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
                     observation_graph);
             }
         }
-        for (auto const& window : request.windows) {
+        for (auto& window : request.windows) {
+            if (!window.select_execution(request.window_configured_generation.value_or(0),
+                    request.window_execution_generation)) continue;
             auto& query = *window.query;
-            query.configured_generation = current_generation_ && !configuration_failure_
-                ? current_generation_->configured_generation : 0;
-            if (current_generation_ && !configuration_failure_) {
-                auto const* compiled = observation_graph;
-                if (resolve_observation_window_source(*current_generation_->graph, current_generation_->placements,
-                        window.source, window.operation, query, compiled ? &compiled->port_realization : nullptr, compiled))
+            if (active_execution_) {
+                auto const& active = *active_execution_;
+                if (resolve_observation_window_source(*active.configured->graph, active.configured->placements,
+                        window.source, window.operation, query, &active.compiled->port_realization, active.compiled.get()))
                     continue;
-                if (window.source.kind == ObservationSourceKind::input && !compiled
-                    && (current_generation_->execution_phase == "queued" || current_generation_->execution_phase == "compiling")) {
-                    query.result.status = ObservationWindowResult::Status::pending_execution;
-                    query.complete.store(true, std::memory_order_release);
-                    continue;
-                }
             }
-            query.result.status = ObservationWindowResult::Status::unavailable;
+            bool const pending_first_execution = !active_execution_ && current_generation_ && !configuration_failure_
+                && (current_generation_->execution_phase == "queued" || current_generation_->execution_phase == "compiling"
+                    || staged_execution_.has_value());
+            query.result.status = pending_first_execution ? ObservationWindowResult::Status::pending_execution
+                : ObservationWindowResult::Status::unavailable;
             query.complete.store(true, std::memory_order_release);
         }
         request.capabilities = std::make_shared<nlohmann::ordered_json const>(std::move(capabilities));

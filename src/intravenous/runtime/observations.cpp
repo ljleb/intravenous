@@ -41,6 +41,7 @@ Json project_value(RawObservationValue const& value)
 }
 } // namespace
 
+
 bool Observations::reconcile_locked()
 {
     auto ids = active_probe_ids_;
@@ -243,15 +244,17 @@ void Observations::update_subscriptions_locked()
     subscriptions_changed_ = false;
 }
 
-void Observations::collect(Clock::time_point now)
+void Observations::collect(Clock::time_point now, bool execution_activated)
 {
     IV_EVENT_SOURCE(Observations, "live observation collection") {
         std::scoped_lock lock(mutex_);
-        if (now < next_collection_) return;
+        if (now < next_collection_ && !execution_activated) return;
         // Keep the cadence independent of the runtime service's 20 ms poll.
-        // A late collection skips missed deadlines instead of sending a burst.
-        next_collection_ += collection_interval;
-        if (next_collection_ <= now) next_collection_ = now + collection_interval;
+        // Activation can submit windows early without moving the regular deadline.
+        if (now >= next_collection_) {
+            next_collection_ += collection_interval;
+            if (next_collection_ <= now) next_collection_ = now + collection_interval;
+        }
         auto const expired = std::erase_if(scopes_, [&](auto const& scope) { return scope.expires <= now; });
         requirements_dirty_ |= expired != 0;
         subscriptions_changed_ |= expired != 0;
@@ -261,46 +264,43 @@ void Observations::collect(Clock::time_point now)
         }
         if (subscriptions_changed_) update_subscriptions_locked();
         ObservationGraphRequest target;
+        target.windows.reserve(window_order_.size());
         for (auto* pointer : window_order_) {
             auto& capture = *pointer;
             if (capture.query && capture.query->complete.load(std::memory_order_acquire)) {
                 auto const& result = capture.query->result;
                 auto const retry_interval = capture.interest.prefetch ? std::chrono::milliseconds(2000) : std::chrono::milliseconds(250);
                 bool const retry_due = now >= capture.requested_at + retry_interval;
-                bool const outdated = capture.query->configured_generation != configured_generation_.value_or(0)
-                    || ((result.status == ObservationWindowResult::Status::ready || result.status == ObservationWindowResult::Status::failed)
+                bool const outdated = ((result.status == ObservationWindowResult::Status::ready || result.status == ObservationWindowResult::Status::failed)
                         && result.data_version < execution_data_version_ && retry_due)
                     || (result.status == ObservationWindowResult::Status::pending_execution && retry_due);
                 if (outdated) {
-                    if (capture.query->configured_generation != configured_generation_.value_or(0)) {
-                        capture.payload.reset(); capture.body.reset(); capture.payload_query.reset();
-                    }
                     capture.query->canceled.store(true, std::memory_order_release); capture.query.reset();
                 }
             }
-            if (!capture.query) {
-                capture.query = std::make_shared<ObservationWindowQuery>();
-                capture.query->window = *capture.interest.window;
-                capture.submitted = false;
-                capture.requested_at = now;
-                target.windows.push_back({capture.interest.source, capture.interest.operation, capture.query});
-            }
-            capture.query->prefetch.store(capture.interest.prefetch, std::memory_order_relaxed);
+            if (capture.query) capture.query->prefetch.store(capture.interest.prefetch, std::memory_order_relaxed);
+            target.windows.push_back({capture.interest.source, capture.interest.operation, *capture.interest.window,
+                capture.interest.prefetch, capture.query});
         }
         IV_INVOKE_LINKER_EVENT(iv_observations_project_graph_event, target);
-        configured_generation_ = target.configured_generation;
+        bool const checkpoint_changed = window_configured_generation_ != target.window_configured_generation
+            || window_execution_generation_ != target.window_execution_generation;
+        window_configured_generation_ = target.window_configured_generation;
+        window_execution_generation_ = target.window_execution_generation;
         ObservationCollectRequest collection;
-        for (auto* pointer : window_order_) {
-            auto& capture = *pointer;
-            if (capture.query->configured_generation != configured_generation_.value_or(0)) {
-                capture.query->canceled.store(true, std::memory_order_release);
-                capture.query.reset();
-                capture.payload.reset();
-                capture.body.reset();
-                capture.payload_query.reset();
-                continue;
+        for (std::size_t i = 0; i < window_order_.size(); ++i) {
+            auto& capture = *window_order_[i];
+            auto& resolved = target.windows[i];
+            if (checkpoint_changed) {
+                capture.payload.reset(); capture.body.reset(); capture.payload_query.reset();
             }
-            if (!capture.submitted && !capture.query->complete.load(std::memory_order_acquire)) {
+            if (capture.query != resolved.query) {
+                if (capture.query) capture.query->canceled.store(true, std::memory_order_release);
+                capture.query = std::move(resolved.query);
+                capture.submitted = false;
+                capture.requested_at = now;
+            }
+            if (capture.query && !capture.submitted && !capture.query->complete.load(std::memory_order_acquire)) {
                 collection.windows.push_back(capture.query);
                 capture.submitted = true;
             }
@@ -323,8 +323,9 @@ void Observations::collect(Clock::time_point now)
             latest_ = std::move(collection.frame);
         }
         bool const live_current = latest_ && latest_->requirements_revision == accepted_.revision;
-        bool const current_generation = live_current && (!target.handled || (target.configured_generation
-            && *target.configured_generation == latest_->configured_generation));
+        bool const current_generation = live_current && (!target.handled || (window_configured_generation_
+            && *window_configured_generation_ == latest_->configured_generation
+            && (!window_execution_generation_ || *window_execution_generation_ == latest_->project_generation)));
         auto window_payload = [&](WindowCapture& capture) -> Json const& {
             if (capture.payload_query == capture.query && capture.payload) return *capture.payload;
             capture.payload_query = capture.query;
@@ -411,25 +412,22 @@ void Observations::collect(Clock::time_point now)
                         windows.push_back(std::move(payload));
                         batch.bodies.push_back(capture->body);
                     } else {
+                        Json window{{"begin", std::to_string(interest.window->begin.signed_value())},
+                            {"length", std::to_string(interest.window->length)}, {"points", interest.window->points}};
+                        if (interest.window->max_depth) window["maxDepth"] = *interest.window->max_depth;
                         windows.push_back({{"id", interest.id}, {"status", "pending"}, {"approximate", true},
-                            {"window", {{"begin", std::to_string(interest.window->begin.signed_value())},
-                                {"length", std::to_string(interest.window->length)}, {"points", interest.window->points}}}});
+                            {"window", std::move(window)}});
                     }
                     continue;
                 }
-                if (!live_current) {
+                if (!current_generation) {
                     values.push_back({{"id", interest.id}, {"available", false}, {"pending", true}});
                     continue;
                 }
                 auto const found = live_capture_indices_.find(scope.captures[i].probe_id);
                 if (found == live_capture_indices_.end()) continue;
                 auto const& value = latest_->values[found->second];
-                Json entry{{"id", interest.id}, {"available", current_generation && value.status == ObservationValueStatus::available
-                    && value.value.captured}};
-                // Configuration can be newer than the active executable. That
-                // is pending work, not evidence that an observed source was
-                // removed or became unavailable at an audio cutover.
-                if (!current_generation && target.configured_generation) entry["pending"] = true;
+                Json entry{{"id", interest.id}, {"available", value.status == ObservationValueStatus::available && value.value.captured}};
                 if (entry["available"].get<bool>()) entry["value"] = project_value(value);
                 values.push_back(std::move(entry));
             }
@@ -440,7 +438,8 @@ void Observations::collect(Clock::time_point now)
             auto& scopes = batch.scopes;
             bool const has_windows = std::ranges::any_of(scopes, [](auto const& scope) { return !scope["windows"].empty(); });
             auto const signature = std::to_string(last_activation_) + ":"
-                + std::to_string(target.configured_generation.value_or(0)) + ":"
+                + std::to_string(window_configured_generation_.value_or(0)) + ":"
+                + std::to_string(window_execution_generation_.value_or(0)) + ":"
                 + std::to_string(accepted_.revision) + ":"
                 + std::to_string(has_windows ? execution_data_version_ : 0) + scopes.dump();
             if (scopes.empty()) last_delivered_.erase(client);
@@ -451,8 +450,9 @@ void Observations::collect(Clock::time_point now)
             deliveries.push_back({client,
             std::make_shared<Json const>(Json{
                 {"activationId", std::to_string(last_activation_)},
-                {"generation", std::to_string(target.configured_generation.value_or(latest_ ? latest_->configured_generation : 0))},
-                {"executionGeneration", std::to_string(latest_ ? latest_->project_generation : 0)},
+                {"generation", std::to_string(window_configured_generation_.value_or(latest_ ? latest_->configured_generation : 0))},
+                {"executionGeneration", std::to_string(window_execution_generation_.value_or(latest_ ? latest_->project_generation : 0))},
+                {"sampleRate", target.window_sample_rate ? Json(*target.window_sample_rate) : Json(nullptr)},
                 {"dataVersion", std::to_string(execution_data_version_)},
                 {"revision", std::to_string(accepted_.revision)},
                 {"index", std::to_string(latest_ ? latest_->sample_index.signed_value() : 0)},

@@ -11,6 +11,7 @@ import type { PlaybackDragPhase, PlaybackSnapshot } from "./playback";
 import type { StatusHint } from "./statusBarText";
 import type { TimelineGridMode } from "./timelineSnap";
 import type { NodeDefinitionCatalog, NodeDefinitionSearch } from "./nodeDefinitionSearch";
+import type { PresentationScript } from "./presentationPlugin";
 
 export type CursorWarp = {
     originX: number; originY: number;
@@ -40,6 +41,7 @@ export type GraphEditorState = {
 export type GraphEditorAction = "addNode" | "editNode" | "deleteNode" | "openNodeSource" | "createPackage" | "deleteConnection" | "undo" | "redo";
 export type GraphLaneInsertion = { instanceId: string };
 export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorState }
+    | { type: "projectPresentations"; plugins: PresentationScript[] }
     | { type: "playbackUpdate"; snapshot: PlaybackSnapshot | null; requestedPosition: string | null;
         releasedDragPosition: string | null; dragReleaseId?: string }
     | ObservationResponse

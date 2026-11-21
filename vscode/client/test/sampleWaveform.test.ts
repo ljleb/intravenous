@@ -36,7 +36,6 @@ test("waveforms keep separate paths for gaps, unavailable points and overlapping
 });
 test("window results reject obsolete viewport positions and data versions without live probes", () => {
     const values = new ObservationValues();
-    values.acceptGeneration(7);
     const source = { node: { instanceId: "curve" }, kind: "output" as const, member: "value" };
     const data = result();
     values.expectWindows([{ id: "wave", source, operation: "waveform", window: data.window }]);
@@ -55,18 +54,17 @@ test("window results reject obsolete viewport positions and data versions withou
     assert.equal(values.windowForDisplay("wave"), undefined);
     receiveSnapshot(values, update({ ...data, window: next, regions: [] }));
     assert.deepEqual(values.windowForDisplay("wave")?.window, next);
-    values.acceptGeneration(8);
+    receiveSnapshot(values, { ...update({ ...data, window: next }), generation: "8", scopes: [] });
     receiveSnapshot(values, update({ ...data, window: next }));
     assert.equal(values.windowForDisplay("wave")?.outdated, true);
 });
 test("window previews reproject the last ready result while an overlapping viewport loads", () => {
     const values = new ObservationValues();
-    values.acceptGeneration(7);
     const data = result();
     const source = { node: { instanceId: "curve" }, kind: "output" as const, member: "value" };
     const request = { id: "wave", source, operation: "waveform", window: data.window };
-    const receive = (window: ObservationWindowResult) => receiveSnapshot(values, {
-        activationId: "0", generation: "7", revision: "0", index: "0", blockSize: 0, dataVersion: "4",
+    const receive = (window: ObservationWindowResult, generation = "7") => receiveSnapshot(values, {
+        activationId: "0", generation, revision: "0", index: "0", blockSize: 0, dataVersion: "4",
         scopes: [{ scopeId: "viewport", values: [], windows: [window] }],
     });
     values.expectWindows([request]);
@@ -84,7 +82,7 @@ test("window previews reproject the last ready result while an overlapping viewp
     values.expectWindows([{ ...request, source: { ...source, member: "another" }, window: next }]);
     assert.equal(values.windowForDisplay("wave"), undefined);
     receive({ ...data, window: next });
-    values.acceptGeneration(8);
+    receive({ ...data, window: next, status: "pending", regions: [] }, "8");
     assert.equal(values.windowForDisplay("wave")?.outdated, true);
 });
 
@@ -102,9 +100,8 @@ test("a ready window overlaps a new request across the signed timeline seam", ()
     assert.equal(values.windowForDisplay("wave")?.outdated, true);
 });
 
-test("bound windows arriving before the matching graph scope are used when it arrives", () => {
+test("bound windows are usable as soon as their execution frame arrives", () => {
     const values = new ObservationValues();
-    values.acceptGeneration(7);
     const data = result();
     const bounds = ["min", "max"] as const;
     values.expectWindows(bounds.map((id) => ({ id, window: data.window, operation: "waveform",
@@ -113,9 +110,7 @@ test("bound windows arriving before the matching graph scope are used when it ar
         activationId: "1", generation: "8", revision: "0", index: "0", blockSize: 0, dataVersion: "0",
         scopes: [{ scopeId: "viewport", values: [], windows: bounds.map((id) => ({ ...data, id })) }],
     };
-    assert.equal(receiveSnapshot(values, update), false);
-    assert.equal(values.windowForDisplay("min"), undefined);
-    values.acceptGeneration(8);
+    assert.equal(receiveSnapshot(values, update), true);
     for (const id of bounds) assert.deepEqual(values.windowForDisplay(id)?.regions, data.regions);
 });
 
@@ -124,20 +119,17 @@ test("window display retains the last compatible samples across graph refreshes"
     const data = { ...result(), sampleRate: 48000 };
     const source = { node: { instanceId: "curve" }, kind: "input" as const, member: "max" };
     const request = { id: data.id, source, operation: "waveform", window: data.window };
-    const publish = (generation: string, window: ObservationWindowResult) => receiveSnapshot(values, {
-        activationId: "1", generation, revision: "0", index: "0", blockSize: 64, dataVersion: "0",
+    const publish = (generation: string, window: ObservationWindowResult, sampleRate = 48000) => receiveSnapshot(values, {
+        activationId: "1", generation, revision: "0", index: "0", blockSize: 64, dataVersion: "0", sampleRate,
         scopes: [{ scopeId: "viewport", values: [], windows: [window] }],
     });
-    values.acceptGeneration(7, 48000);
     values.expectWindows([request]);
     publish("7", data);
     const geometry = sampleWaveform(data);
 
-    values.acceptGeneration(8, 48000);
-    assert.deepEqual(sampleWaveform(values.windowForDisplay(data.id)), geometry);
-    assert.equal(values.windowForDisplay(data.id)?.outdated, true);
     publish("8", { ...data, status: "pending", regions: [] });
     assert.deepEqual(sampleWaveform(values.windowForDisplay(data.id)), geometry);
+    assert.equal(values.windowForDisplay(data.id)?.outdated, true);
     publish("8", { ...data, status: "failed", error: "Snapshot changed", regions: [] });
     assert.deepEqual(sampleWaveform(values.windowForDisplay(data.id)), geometry);
     assert.equal(values.windowForDisplay(data.id)?.error, "Snapshot changed");
@@ -146,17 +138,13 @@ test("window display retains the last compatible samples across graph refreshes"
     publish("8", { ...data, dataVersion: "1", regions: [] });
     assert.deepEqual(sampleWaveform(values.windowForDisplay(data.id)).paths, []);
     assert.equal(values.windowForDisplay(data.id)?.dataVersion, "1");
-    values.acceptGeneration(9, 44100);
+    publish("9", data, 44100);
     assert.equal(values.windowForDisplay(data.id), undefined);
-    publish("9", data);
-    assert.equal(values.windowForDisplay(data.id), undefined);
-    publish("9", { ...data, sampleRate: 44100 });
+    publish("9", { ...data, sampleRate: 44100 }, 44100);
     assert.equal(values.windowForDisplay(data.id)?.sampleRate, 44100);
-    publish("9", { ...data, status: "unavailable", regions: [] });
+    publish("9", { ...data, status: "unavailable", regions: [] }, 44100);
     assert.equal(values.windowForDisplay(data.id)?.status, "unavailable");
-    values.acceptGeneration(10, 44100);
-    assert.equal(values.windowForDisplay(data.id), undefined);
-    publish("10", { ...data, sampleRate: 44100 });
+    publish("10", { ...data, sampleRate: 44100 }, 44100);
     values.clear();
     assert.equal(values.windowForDisplay(data.id), undefined);
 });

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <intravenous/module/package_manifest.h>
+
 #include <filesystem>
 #include <string>
 
@@ -12,9 +14,10 @@ namespace iv {
         return name == "build" || name == ".git" || name == ".cache";
     }
 
-    inline bool is_module_dependency_ignored_directory(std::filesystem::path const& path)
+    inline bool is_module_dependency_ignored_directory(std::filesystem::path const& path, bool at_package_root)
     {
-        return is_package_tree_ignored_directory(path);
+        return is_package_tree_ignored_directory(path)
+            || (at_package_root && path.filename() == IV_PACKAGE_PRESENTATIONS_DIR);
     }
 
     inline bool is_module_dependency_package_path(std::filesystem::path const& path)

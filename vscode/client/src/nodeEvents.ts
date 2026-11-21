@@ -30,6 +30,11 @@ declare const eventBrand: unique symbol;
 // without exposing transport arguments to presentation authors.
 export interface NodeEvent<Payload = unknown> { readonly [eventBrand]: Payload }
 const events = new WeakMap<object, SerializedNodeEvent>();
+export function presentationNodeEvent(value: SerializedNodeEvent): NodeEvent {
+    const event = {} as NodeEvent;
+    events.set(event, value);
+    return event;
+}
 const sameType = (left: NodeEventTypeId, right: NodeEventTypeId) =>
     left.nominalId === right.nominalId && left.definitionFingerprint === right.definitionFingerprint;
 

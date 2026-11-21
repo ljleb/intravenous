@@ -151,6 +151,8 @@ export class WorkspaceSession {
         return this.lastSessionRevision;
     }
 
+    get projectFolder(): vscode.Uri { return this.workspaceFolder.uri; }
+
     async describeObservations(nodes: NodeAddress[]) {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         return this.rpc.describeObservations(nodes);

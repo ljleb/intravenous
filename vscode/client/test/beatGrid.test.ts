@@ -168,7 +168,10 @@ test("the BPM gesture coalesces updates and holds the final grid until the accep
         acceptedRevision: () => 3,
     }) }, () => {}, { set: (callback) => { scheduled = callback; return 1; }, clear: () => { scheduled = undefined; } });
     editing.reconcile(scope(1, 120));
+    assert.equal(editing.draft(address), undefined);
     editing.update(address, readBeatGrid([130])!, true);
+    assert.equal(beatBpm(editing.draft(address)!), 130);
+    assert.deepEqual(received, []);
     scheduled!();
     await Promise.resolve();
     editing.update(address, readBeatGrid([140])!, true);
@@ -180,8 +183,10 @@ test("the BPM gesture coalesces updates and holds the final grid until the accep
     assert.equal(closed, 1);
     editing.reconcile(scope(2, 130));
     assert.equal(beatBpm(editing.view(address)!), 150);
+    assert.equal(beatBpm(editing.draft(address)!), 150);
     editing.reconcile(scope(4, 160));
     assert.equal(beatBpm(editing.view(address)!), 160);
+    assert.equal(editing.draft(address), undefined);
 });
 
 test("a rejected settings event restores accepted settings and closes its undo group", async () => {
