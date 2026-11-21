@@ -48,6 +48,21 @@ feedback, `detach()`, replay dependencies, Region inputs, and complete-buffer
 inputs. The effective routes drive the background schedule, the realtime
 schedule, and physical storage planning.
 
+### Connection routing, scheduling, and port grouping
+
+`ConnectionTopology::build()` owns effective routing and authored validation.
+`plan_realtime_schedule()` assigns Tick order and feedback regions, then
+aligns feed-forward read latencies. Region formation and final ordering
+share one list of Tick dependencies.
+[Realtime scheduling](../src/intravenous/graph_jit/connections/realtime_schedule_plan.cpp#L648)
+
+`plan_port_groups()` uses the resulting schedule and read latencies. It
+partitions ports by their uses and records live intervals and storage
+requirements for Sample and Event producer groups.
+`ConnectionTopology::build_analysis_plan()` calls both planners and
+completes the background bindings.
+[Port grouping](../src/intravenous/graph_jit/connections/port_group_plan.cpp#L1347) · [Connection analysis](../src/intravenous/graph_jit/connection_plan.cpp#L5039)
+
 ### Observation compilation
 
 `ProjectGraph::compile_graph()` first tries to attach observation bindings to
@@ -133,16 +148,6 @@ which object files each executable and test links. [CMake targets](../src/intrav
 
 ## Open findings and proposals
 
-### Connection routing, scheduling, and port grouping
-
-`ConnectionTopology::build()` owns effective routing and authored
-validation. `build_analysis_plan()` orders callbacks, binds `detach()`
-regions, computes latency compensation, and groups ports for storage.
-The proposed split extracts scheduling and compensation together first.
-A second extraction groups `plan_port_atoms()`, `plan_sample_groups()`,
-and `plan_event_groups()` in a file that owns port grouping.
-[Connection analysis](../src/intravenous/graph_jit/connection_plan.cpp#L7007)
-
 ### Realtime root construction and execution
 
 `RootPlanBuilder` resolves bindings and validates the plan before
@@ -163,7 +168,7 @@ batch, GraphJit builds the declarations again for the new order.
 
 | File | Lines | Boundary to scrutinize |
 | --- | ---: | --- |
-| [`connection_plan.cpp`](../src/intravenous/graph_jit/connection_plan.cpp#L7007) | 7,286 | `ConnectionTopology::build_analysis_plan()` turns effective routes into a realtime schedule, derives compensation and in-flight requirements, and records background bindings for the schedule. |
+| [`connection_plan.cpp`](../src/intravenous/graph_jit/connection_plan.cpp#L5039) | 5,275 | `ConnectionTopology::build()` resolves effective routes and validates authored routes. `build_analysis_plan()` calls the scheduling and grouping planners, inventories in-flight requirements, and records background bindings. |
 | [`lowering_plan.cpp`](../src/intravenous/graph_jit/lowering_plan.cpp#L5528) | 6,132 | `build_lowering_plan()` coordinates connection analysis, storage choice, package imports and scheduling. The separate Event planner keeps stream binding, storage selection, and buffer packing together. Storage trials share one connection analysis per callback order. |
 | [`realtime_root.cpp`](../src/intravenous/graph_jit/realtime_root.cpp#L2871) | 5,757 | `RootPlanBuilder::build()` validates addresses and materializes primitive bindings, ready groups and region specializations. `execute_realtime_root()` consumes a completed `RealtimeRootPlan` on the audio thread. Use that plan as the boundary between cold binding and realtime execution, including the layout checks that the executor can then rely on. |
 | [`project_graph.cpp`](../src/intravenous/project/project_graph.cpp#L1558) | 4,390 | `rebuild_locked()` handles authored edits, calls instance and connection configuration, and publishes a snapshot. `configure_manual_controls()` now owns control binding on a finished `ConfiguredGraph`. Read-model projection, edit history, and executor preparation can consume that result. |

@@ -5,6 +5,7 @@
 #include <intravenous/graph/realtime_port_planning.h>
 #include <intravenous/node/tick_replay_mode.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
+#include <intravenous/graph_jit/connections/realtime_schedule_plan.h>
 #include <intravenous/graph_jit/port_realization.h>
 #include <intravenous/graph_jit/sequential_coverage.h>
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
@@ -69,43 +70,6 @@ struct DependencyEdgePlan {
     // Background materialization and replay dependencies are retained
     // separately by BackgroundEvaluationPlan.
     bool sequential_tick_dependency = true;
-};
-
-struct SccRegionPlan {
-    std::vector<NodeBundleHandle> nodes{};
-    // Explicit (non-detached) dependencies remain acyclic. Cyclic regions are
-    // created only by restoring validated detached source->target dependencies,
-    // so this order is a deterministic topological order with those temporal
-    // feedback dependencies omitted.
-    std::vector<NodeBundleHandle> execution_order{};
-    bool cyclic = false;
-    std::size_t maximum_block_size = 0;
-    // Scheduling quantum exposed to callbacks in this region. This is derived
-    // from node block limits and internal detach latencies; it is not the
-    // transport delay of any particular detach.
-    std::size_t scc_feedback_latency = 0;
-};
-
-struct SchedulePlan {
-    std::vector<SccRegionPlan> regions{};
-    std::vector<std::size_t> region_order{};
-    // Each entry is one snapshot of mutually ready SCC regions. A multi-entry
-    // group contains either compatible acyclic one-node regions or compatible
-    // cyclic regions whose corresponding execution-order entries have equal
-    // callback batch classes. Later lowering may keep the group scalar, but it
-    // need not rediscover whether its members form an antichain.
-    std::vector<std::vector<std::size_t>> ready_groups{};
-    // Entry positions correspond to configured NodeBundleHandle values.
-    // Boundary/non-concrete bundles have no region.
-    std::vector<std::optional<std::size_t>> bundle_to_region{};
-    // Entry positions correspond to configured NodeBundleHandle values. Values
-    // are positions in the flattened provisional execution schedule. For a
-    // batched cyclic group, positions are phase-major across its regions.
-    std::vector<std::optional<std::size_t>> bundle_execution_position{};
-    // Entry positions correspond to configured NodeBundleHandle values. A set
-    // entry means planning proved that the node's Tick result is immutable and
-    // omitted its callback before constructing the schedule.
-    std::vector<std::uint8_t> callback_elided{};
 };
 
 struct SampleSourceChannelTimingPlan {
@@ -462,6 +426,20 @@ struct ConnectionAnalysisPlan {
     // reuse it instead of rediscovering either graph view.
     BackgroundEvaluationPlan background{};
 };
+
+// Queries shared by connection analysis, realtime scheduling, and port grouping.
+bool reads_output_gain_source_indices(ConfiguredGraph const& graph, NodeBundlePortId input);
+
+PlannedSourceProduction source_production(
+    ConnectionAnalysisPlan const& plan, NodeBundleHandle bundle) noexcept;
+
+PlannedDestinationAccess destination_access(
+    InputAccessConfig const& access) noexcept;
+
+std::vector<std::vector<std::size_t>> dependency_adjacency(
+    ConfiguredGraph const& graph,
+    ConnectionAnalysisPlan const& plan,
+    bool sequential_only);
 
 // A live Sequential read uses current Tick coverage, including from a
 // persisted producer. A background read of that producer remains a read of its

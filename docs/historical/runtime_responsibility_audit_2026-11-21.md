@@ -159,3 +159,25 @@ source filter, and whether the result keeps source indices.
 [Ordinary fan-in](../../src/intravenous/graph_jit/lowering/event_port_plan.cpp#L2166) ·
 [Single-source delivery](../../src/intravenous/graph_jit/lowering/event_port_plan.cpp#L2541) ·
 [Feedback](../../src/intravenous/graph_jit/lowering/event_port_plan.cpp#L3016)
+
+## Scheduling and port grouping extraction proposal
+
+The runtime responsibility audit recorded this proposal on 2026-11-21.
+The [completed work](../runtime_responsibility_audit.md#connection-routing-scheduling-and-port-grouping)
+records where the responsibilities moved. The source references below
+describe the file before the extraction.
+
+### Connection routing, scheduling, and port grouping
+
+`ConnectionTopology::build()` owns effective routing and authored
+validation. `build_analysis_plan()` orders callbacks, binds `detach()`
+regions, computes latency compensation, and groups ports for storage.
+The proposed split extracts scheduling and compensation together first.
+A second extraction groups `plan_port_atoms()`, `plan_sample_groups()`,
+and `plan_event_groups()` in a file that owns port grouping.
+[Connection analysis](../../src/intravenous/graph_jit/connection_plan.cpp#L7007)
+
+
+| File | Lines | Boundary to scrutinize |
+| --- | ---: | --- |
+| [`connection_plan.cpp`](../../src/intravenous/graph_jit/connection_plan.cpp#L7007) | 7,286 | `ConnectionTopology::build_analysis_plan()` turns effective routes into a realtime schedule, derives compensation and in-flight requirements, and records background bindings for the schedule. |
